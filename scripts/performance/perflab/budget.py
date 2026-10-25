@@ -7,7 +7,15 @@ deadline less a reserve kept for cleanup and the terminal record, and is not sta
 is left. A step the deadline ended is reported as the deadline's, never as the step's own
 failure; a later incomplete verdict is not what bounds it.
 """
-from .values import ContractError
+from contextlib import contextmanager
+import signal
+import threading
+
+from .values import ContractError, require
+
+
+class Interrupted(BaseException):
+    """An absolute deadline interruption, never swallowed as a per-item refusal."""
 
 
 class Expired(ContractError):
@@ -52,3 +60,31 @@ class Budget(object):
         return Expired("the run's total deadline ended %s after %.3f s, %d s before the "
                        "deadline, which is kept for cleanup and the terminal record"
                        % (step, seconds, self.reserve))
+
+    @contextmanager
+    def enforce(self, step):
+        """Interrupt synchronous trusted collection work at this budget's absolute limit.
+
+        Unix main-thread only, with no existing interval timer. No worker, credential
+        transfer, alternate code loader or process ownership boundary is introduced. Git
+        receives this same Budget for its own subprocess timeout/kill/wait path.
+        """
+        require(threading.current_thread() is threading.main_thread()
+                and hasattr(signal, "setitimer"),
+                "bounded collection needs a Unix main thread with setitimer")
+        require(signal.getitimer(signal.ITIMER_REAL) == (0.0, 0.0),
+                "bounded collection cannot replace another owner's interval timer")
+        seconds = self.seconds(step)
+        previous = signal.getsignal(signal.SIGALRM)
+
+        def interrupt(signum, frame):
+            raise Interrupted(str(self.expired(step, seconds)))
+
+        signal.signal(signal.SIGALRM, interrupt)
+        try:
+            signal.setitimer(signal.ITIMER_REAL, seconds)
+            yield
+            self.seconds(step)
+        finally:
+            signal.setitimer(signal.ITIMER_REAL, 0)
+            signal.signal(signal.SIGALRM, previous)

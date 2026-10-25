@@ -1928,11 +1928,23 @@
       "shape": false
     },
     {
+      "path": "telemetry-collection/invalid-prior-version.json",
+      "contract": "telemetry-collection",
+      "valid": false,
+      "error": "schema",
+      "shape": true
+    },
+    {
       "path": "telemetry-collection/invalid-unknown-field.json",
       "contract": "telemetry-collection",
       "valid": false,
       "error": "unknown field token",
       "shape": true
+    },
+    {
+      "path": "telemetry-collection/valid-incomplete.json",
+      "contract": "telemetry-collection",
+      "valid": true
     },
     {
       "path": "telemetry-collection/valid-one-cycle.json",
@@ -1982,6 +1994,13 @@
       "shape": false
     },
     {
+      "path": "telemetry-history/invalid-prior-version.json",
+      "contract": "telemetry-history",
+      "valid": false,
+      "error": "schema",
+      "shape": true
+    },
+    {
       "path": "telemetry-history/invalid-results-bound.json",
       "contract": "telemetry-history",
       "valid": false,
@@ -2006,6 +2025,13 @@
       "valid": false,
       "error": ".levels: exactly off, spans",
       "shape": false
+    },
+    {
+      "path": "telemetry-lab/invalid-prior-version.toml",
+      "contract": "telemetry-lab",
+      "valid": false,
+      "error": "schema",
+      "shape": true
     },
     {
       "path": "telemetry-lab/invalid-rounds-over-cap.toml",

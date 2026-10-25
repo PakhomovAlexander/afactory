@@ -219,7 +219,7 @@ def cycle(dry_run=False):
     status = {"status": reason, "cohort_digest": digest, "originals": len(originals),
               "declared_members": len(cohort["members"]), "history": summary,
               "readiness": "not_evaluated", "checked_at": now.isoformat()}
-    if member is None and (not dry_run or reason.startswith("dispatch_uncertain:")):
+    if member is None and not dry_run:
         return status
     head = merged_head(api, config["control_sha"])
     require(content(api, config["cohort_path"], config["control_sha"]) == cohort_bytes,

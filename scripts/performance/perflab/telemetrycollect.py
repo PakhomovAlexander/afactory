@@ -30,7 +30,7 @@ It reuses the archive collector's conventions:
   and its ZIP's members, ratio and decompressed bytes (`transport.read_zip`), the root's bytes,
   results and retention (`telemetrylab.HistoryRoot`), all under the root's one lock, every
   import staged and renamed whole.
-- **Accounting.** `collection.json` (`af.perf-telemetry-collection/1`) records every attempted
+- **Accounting.** `collection.json` (`af.perf-telemetry-collection/2`) records every attempted
   run with what it kept, why it kept nothing, what it refused and what it pruned. The kept
   results are the idempotency record. `collection-position.json` rotates attempted runs across
   cycles, including failures, while they remain within lookback; it never records success.
@@ -41,13 +41,14 @@ import shutil
 import stat
 from datetime import datetime, timedelta, timezone
 
-from . import contracts, telemetrylab, tomlfile, transport
+from . import budget as deadlines, contracts, telemetrylab, tomlfile, transport
 from .values import ContractError, require, sha256_bytes
 
 ARTIFACT = re.compile(r"^perf-telemetry-([1-9][0-9]{0,15})-([1-9][0-9]{0,3})$")
 COLLECTION_JSON = "collection.json"
 POSITION_JSON = "collection-position.json"
 POSITION_BYTES_MAX = 1024
+TERMINAL_SECONDS = 5
 PAGE_SIZE = 100
 PAGES_MAX = 10
 TRIGGERS = {"pull_request": "pr", "schedule": "nightly", "release": "release",
@@ -208,60 +209,124 @@ class Cycle(object):
     """One collection cycle of `config` through the `transport.Collector` `api`, reading
     measurement authorities from the trusted repository `git` (`gitrefs.Git`)."""
 
-    def __init__(self, config, api, git, wall, now=None):
+    def __init__(self, config, api, git, wall, now=None, budget=None):
         self.config = config
         self.api = api
         self.git = git
         self.wall = wall
         self.now = now or datetime.now(timezone.utc)
         self.records = []
+        self.interrupted_import = None
+        self.budget = budget or deadlines.Budget(api.deadline, api.clock, TERMINAL_SECONDS)
+        # Reachability, tree enumeration and cat-file all share the HTTP cycle's instant.
+        self.git.budget = self.budget
 
     def run(self):
         config = self.config
         started = int(self.wall() * 1000)
-        detail = ""
-        ident = None
-        with telemetrylab.HistoryRoot(config["root"], config["bytes_max"],
-                                      config["results_max"], config["retention_days"],
-                                      self.wall) as kept:
-            kept.prune()
+        detail, ident, history = "", None, None
+        kept = telemetrylab.HistoryRoot(config["root"], config["bytes_max"],
+                                       config["results_max"], config["retention_days"],
+                                       self.wall, budget=self.budget, sweep=False)
+        self.pruned = kept.pruned
+        fallback = {"schema": contracts.TELEMETRY_COLLECTION_SCHEMA,
+                    "repository": config["repository"], "workflow_id": None,
+                    "started_unix_ms": started, "ended_unix_ms": None,
+                    "status": "failed", "detail": "cycle incomplete; final accounting unavailable",
+                    "runs": [], "pruned": [], "results": None, "used_bytes": None}
+        try:
             try:
-                ident = workflow_id(self.api)
-                after, through = read_position(kept, config["repository"], ident)
-                runs = completed_runs(self.api, ident, config["lookback_days"], self.now)
-                # Rotate all observed runs, including missing/refused/kept ones. This is an
-                # attempt position, never a success watermark; every run stays retryable.
-                more = len(runs) > config["runs_max"]
-                if more:
-                    detail = ("the listing held %d completed runs; this cycle attempts at "
-                              "most %d from its rotating position; unattempted runs remain "
-                              "pending within lookback" % (len(runs), config["runs_max"]))
-                for run, through in scheduled_runs(runs, after, through, config["runs_max"]):
-                    self.api.remaining("collecting run %d" % run["id"])
-                    self.collect(kept, run)
-                    write_position(kept, config["repository"], ident, run["id"], through)
-            except (ContractError, OSError) as error:
+                with self.budget.enforce("telemetry collection"):
+                    kept.__enter__()
+                    # If even terminal I/O is interrupted, this atomic record remains truthful:
+                    # this cycle has not completed accounting or published a final success.
+                    self.write_status(kept, fallback)
+                    kept.cleanup_staging()
+                    kept.prune()
+                    ident = workflow_id(self.api)
+                    after, through = read_position(kept, config["repository"], ident)
+                    runs = completed_runs(self.api, ident, config["lookback_days"], self.now)
+                    if len(runs) > config["runs_max"]:
+                        detail = ("the listing held %d completed runs; this cycle attempts at "
+                                  "most %d from its rotating position; unattempted runs remain "
+                                  "pending within lookback" % (len(runs), config["runs_max"]))
+                    for run, through in scheduled_runs(runs, after, through, config["runs_max"]):
+                        self.budget.seconds("collecting run %d" % run["id"])
+                        self.api.remaining("collecting run %d" % run["id"])
+                        self.collect(kept, run)
+                        write_position(kept, config["repository"], ident, run["id"], through)
+                    refused = [{"input": "Actions run %d attempt %d" % (item["run_id"], item["attempt"]),
+                                "reason": item["reason"]}
+                               for item in self.records if item["outcome"] == "refused"]
+                    history = kept.write(refused)
+                    if history["refused"]:
+                        detail = (detail + "; " if detail else "") + "history refused retained or imported evidence"
+            except (deadlines.Interrupted, ContractError, OSError) as error:
+                if kept.fd is None and not isinstance(error, (deadlines.Interrupted, deadlines.Expired)):
+                    raise
                 detail = ("the cycle ended early: %s" % error)[:4096]
-            refused = [{"input": "Actions run %d attempt %d" % (item["run_id"], item["attempt"]),
-                        "reason": item["reason"]}
-                       for item in self.records if item["outcome"] == "refused"]
-            history = kept.write(refused)
-            doc = {"schema": contracts.TELEMETRY_COLLECTION_SCHEMA,
-                   "repository": config["repository"], "workflow_id": ident,
-                   "started_unix_ms": started,
-                   "ended_unix_ms": max(started, int(self.wall() * 1000)),
-                   "status": "ok", "detail": detail, "runs": self.records[:4096],
-                   "pruned": history["pruned"], "results": len(history["results"]),
-                   "used_bytes": history["used_bytes"]}
-            doc["status"] = "failed" if detail or any(
-                item["outcome"] == "refused" for item in doc["runs"]) else "ok"
-            data = contracts.write_bytes(doc, "telemetry-collection")
-            path = os.path.join(kept.root, COLLECTION_JSON)
-            temporary = path + ".tmp-" + os.urandom(4).hex()
+            terminal = deadlines.Budget(self.budget.deadline, self.budget.clock, 0)
+            try:
+                with terminal.enforce("collection cleanup and terminal record"):
+                    doc = dict(fallback, detail=detail or fallback["detail"])
+                    if kept.fd is not None:
+                        if self.interrupted_import is not None:
+                            run, attempt, artifact, result_id = self.interrupted_import
+                            # A deadline may land immediately after the verified atomic rename.
+                            # Reconcile under the same lock and terminal deadline, never claim
+                            # refusal for a result this cycle actually accepted.
+                            if os.path.isdir(os.path.join(kept.results, result_id)):
+                                if self.records and self.records[-1]["run_id"] == run["id"] \
+                                        and self.records[-1]["attempt"] == attempt:
+                                    self.records.pop()
+                                self.record(run, attempt, "collected", artifact, result_id)
+                        doc = self.document(started, ident, history, detail)
+                        self.write_status(kept, self.document(started, ident, None,
+                                          "cycle incomplete; cleanup and final recording pending"))
+                        # A deadline may have interrupted an artifact's finally block. Such
+                        # state is unaccepted and may be left for the next locked sweep.
+                        kept.cleanup_staging()
+                        self.write_status(kept, doc)
+            except (deadlines.Interrupted, ContractError, OSError) as error:
+                # No validator, clock callback or I/O after the terminal timer has ended.
+                # This schema-valid record explicitly has no terminal time or root accounting.
+                doc = dict(fallback, workflow_id=ident, runs=self.records[:4096],
+                           pruned=kept.pruned[:4096],
+                           detail=("cleanup or terminal recording incomplete: %s" % error)[:4096])
+            return doc
+        finally:
+            # This covers arbitrary exceptions as well as deadline and contract failures.
+            kept.__exit__()
+
+    def document(self, started, ident, history, detail):
+        doc = {"schema": contracts.TELEMETRY_COLLECTION_SCHEMA,
+               "repository": self.config["repository"], "workflow_id": ident,
+               "started_unix_ms": started,
+               "ended_unix_ms": max(started, int(self.wall() * 1000)),
+               "status": "ok", "detail": detail, "runs": self.records[:4096],
+               "pruned": self.pruned[:4096] if history is None else history["pruned"],
+               "results": None if history is None else len(history["results"]),
+               "used_bytes": None if history is None else history["used_bytes"]}
+        doc["status"] = "failed" if detail or any(
+            item["outcome"] == "refused" for item in doc["runs"]) else "ok"
+        contracts.validate_telemetry_collection(doc)
+        return doc
+
+    def write_status(self, kept, doc):
+        data = contracts.write_bytes(doc, "telemetry-collection")
+        path = os.path.join(kept.root, COLLECTION_JSON)
+        temporary = path + ".tmp"
+        if os.path.lexists(temporary):
+            os.unlink(temporary)
+        try:
             with open(temporary, "xb") as stream:
                 stream.write(data)
+                stream.flush()
+                os.fsync(stream.fileno())
             os.replace(temporary, path)
-        return doc
+        finally:
+            if os.path.lexists(temporary):
+                os.unlink(temporary)
 
     def record(self, run, attempt, outcome, artifact=None, result_id=None, reason=""):
         self.records.append({
@@ -339,15 +404,22 @@ class Cycle(object):
                     "%s" % (sha[:12], ", ".join(self.config["trusted_refs"])))
             telemetrylab.materialize_authority(self.git, sha, authority)
             self.api.remaining("verifying the result")
+            self.interrupted_import = (run, attempt, artifact, result_id)
             kept.import_result(staging, authority)
+        except deadlines.Interrupted as error:
+            self.interrupted_import = (run, attempt, artifact, result_id)
+            self.record(run, attempt, "refused", artifact, reason=str(error))
+            raise
         except (ContractError, OSError) as error:
+            self.interrupted_import = None
             self.record(run, attempt, "refused", artifact, reason=str(error))
             return
         finally:
             for path in (staging, authority):
-                if os.path.lexists(path):
-                    shutil.rmtree(path, ignore_errors=True)
+                if self.budget.left() > 0 and os.path.lexists(path):
+                    shutil.rmtree(path)
         self.record(run, attempt, "collected", artifact, result_id)
+        self.interrupted_import = None
 
     def bind(self, run, attempt, result):
         """Refuse a result that is not the one this run and attempt measured."""

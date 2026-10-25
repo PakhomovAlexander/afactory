@@ -244,6 +244,41 @@ class Operator(TempDir):
                 self.workflow_at_authority, self.control_tree = self.workflow, self.authority_tree
                 self.final_head = self.head
 
+    def test_latched_disabled_dry_run_runs_all_guards_and_preserves_intent(self):
+        member, reason = operator.choose(self.cohort, {}, {}, self.rows, NOW, False)
+        self.assertEqual(reason, "due")
+        path = self.state / "dispatches.json"
+        original = json.dumps({member["member_id"]: {"state": "intent"}}, indent=3).encode()
+        path.write_bytes(original)
+        code, status = self.main(dry_run=True)
+        self.assertEqual(code, 4)
+        self.assertEqual(status["status"], "dispatch_uncertain:" + member["member_id"])
+        self.assertIn(("/git/ref/heads/main", "main before dispatch"), self.gets)
+        self.assertTrue(any(purpose == "producer tree" for _, purpose in self.gets))
+        self.assertEqual(path.read_bytes(), original)
+        for guard in ("cohort", "control", "history", "workflow", "scheduler", "main"):
+            with self.subTest(guard=guard):
+                remote, ancestors, rows = self.remote_cohort, self.ancestors, copy.deepcopy(self.rows)
+                if guard == "cohort":
+                    self.remote_cohort = b"different"
+                elif guard == "control":
+                    self.ancestors = []
+                elif guard == "history":
+                    self.rows[0]["run_number"] += 2
+                elif guard == "workflow":
+                    self.workflow_at_authority = b"different workflow"
+                elif guard == "scheduler":
+                    self.control_tree = "f" * 40
+                else:
+                    self.final_head = "f" * 40
+                code, status = self.main(dry_run=True)
+                self.assertEqual((code, status["status"]), (4, "refused"))
+                self.assertEqual(path.read_bytes(), original)
+                self.assertEqual(self.posts, [])
+                self.remote_cohort, self.ancestors, self.rows = remote, ancestors, rows
+                self.workflow_at_authority, self.control_tree = self.workflow, self.authority_tree
+                self.final_head = self.head
+
     def test_enabled_one_shot_fsyncs_intent_then_posts_exact_checked_main_head(self):
         self.config["enabled"] = True
         self.save_config()

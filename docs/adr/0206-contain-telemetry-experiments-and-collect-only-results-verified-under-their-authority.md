@@ -91,19 +91,28 @@ a reader of earlier versions.
 3. **Admission recomputes everything from the plan.** A document must name its side's binary
    version and the planned pairs, scale, seed, fixtures, cases and repeats. Read latency must
    name the corpus this result generated, by runs, seed, name and file facts the controller read
-   itself.
+   itself. Every indexed count is derived independently from the trusted generator layout: executions,
+   spans, events, distinct/shared blobs, occurrences and retained bytes. Protocol v2 also records
+   `content_indexed`; content indexing must be enabled and every generated text blob indexed.
    - **Paired scripts.** The script's own `summarize` must give back the whole document.
    - **Read latency.** Each latency must be the median of its samples, each bound the script's,
      and `within_bound` and `passed` what they give. It is judged only on the full corpus.
 4. **Verification needs the exact authority.** A result is verified only under a checkout whose
    authority digest, file count and registry hash are the result's; anything else is refused,
-   never kept as recorded. Only that authority's scripts are executed.
+   never kept as recorded. Its closure includes every `perflab` module, all schemas and performance
+   fixtures, the CLI, workflow, bench inputs and build/toolchain manifests. A retained checkout
+   must also match the installed trusted verifier's complete closure before any authority script
+   is loaded. Another installed verifier is refused, even if the retained tree matches the result;
+   retained code is data, never an automatically selected executable verifier. CLI startup
+   refuses cached bytecode before any laboratory import, and authority admission refuses
+   cached executable artifacts. Bench modules compile their admitted source bytes directly;
+   `-B` alone would still permit Python to read a stale or foreign cache.
 5. **The workflow uploads only admitted results.** Both sides are built in the pinned image,
    with a build record (`af.perf-telemetry-build/1`). Nothing is planned without the image.
    `telemetry-admit` verifies the result and scans it for credentials, and upload is
    conditioned on its `admitted` output. Otherwise the job fails and uploads nothing.
 6. **A separate, bounded collection lane.** `cli.py telemetry-collect` (configuration
-   `af.perf-telemetry-collector/1`, cycle record `af.perf-telemetry-collection/1`) collects
+   `af.perf-telemetry-collector/1`, cycle record `af.perf-telemetry-collection/2`) collects
    only `perf-telemetry-<run>-<attempt>` artifacts of completed runs of
    `performance-telemetry.yml`.
    - **Collection.** It reuses the archive collector's credential confinement and its bounded
@@ -113,9 +122,31 @@ a reader of earlier versions.
      trusted mirror, and verifies the result under that commit's authority files read from Git
      objects.
    - **History root.** The root is locked, staged and bounded by bytes, results and retention.
+     Trusted authority trees are retained separately under `authorities/<digest>/`, included in
+     the byte bound, reused only by exact identity and swept after their last result is pruned.
+     History re-verifies every result against its retained tree and the matching installed
+     verifier; missing, altered or incompatible authority never becomes a verified trend.
      A systemd service and timer example lives in `scripts/performance/service/`; nothing is
      installed.
-7. **The archive lane remains distinct.** The old cohort file is unchanged, and its archive
+7. **One absolute collection deadline.** The transport's original monotonic deadline also
+   bounds Git reachability/object subprocesses, authority copies, verification, import, retention
+   and history/report derivation. Git receives the existing `Budget`; a Unix main-thread
+   `Budget.enforce` interval timer interrupts synchronous work, with an interruption type that
+   per-artifact refusals cannot swallow. No credential-bearing worker or artifact-code loader
+   is introduced. An existing interval timer or unsupported invocation is refused.
+   - Five seconds of the same deadline are reserved for cleanup and atomic terminal recording.
+     An expired operation leaves unaccepted staging for the bounded locked sweep, rather than
+     entering an unbounded `finally` deletion. Lock acquisition failure leaves the owner alone;
+     failure after acquisition closes the descriptor, including failures during entry cleanup.
+   - Imports publish only a complete, verified staging directory. Expiry immediately around
+     its rename is reconciled under the lock. A fully verified result accepted before history
+     expiry remains kept, while cycle accounting stays unknown and failed.
+   - Collection v2 uses null result/byte counts when history construction did not finish,
+     and a null terminal time if terminal recording itself did not complete. An
+     atomic incomplete record precedes work and terminal cleanup, so interrupted final writes
+     cannot leave a success record for the current cycle. The reserved timer also bounds
+     cleanup/rendering/status; the service timeout is a separate outer backstop.
+8. **The archive lane remains distinct.** The old cohort file is unchanged, and its archive
    collector remains pinned to that cohort's control. The current workflow includes published
    main and ADR-0208's repair and cannot produce evidence for that old authority. In current
    source, only the archive collector's bounded ZIP reading is shared through
@@ -123,11 +154,12 @@ a reader of earlier versions.
 
 ## Consequences
 
-- **Contracts.** `af.perf-telemetry-result/1`, `af.perf-telemetry-history/1` and
-  `af.perf-telemetry-lab/1`, new with ADR-0205 and never released, change shape in place: the
-  result's execution, build and corpus facts, the history's bounds, mode and pruning, and the
-  registry's containment. `af.perf-telemetry-build/1`, `af.perf-telemetry-collector/1` and
-  `af.perf-telemetry-collection/1` are new.
+- **Contracts.** Read-latency protocol/schema v2 adds `content_indexed`; registry v2 names
+  that protocol. History v2 records each retained `authority_path`; collection v2 permits
+  explicitly unknown accounting. Authority identity uses domain v2 and the complete closure.
+  Writers, readers, schemas and fixtures change together; earlier shapes and incomplete
+  historical identities are refused without fallback (ADR-0145). Result v1's typed shape
+  remains unchanged; its old authority identities cannot verify under the new closure.
 - **Limits.** The contained limits are those the container was started with; they are not read
   back from its cgroup. Within one execution a candidate shares the script's user and can still
   falsify that run's own document, never the other side's, the controller's or the history's.

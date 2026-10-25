@@ -1,13 +1,13 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "$id": "urn:af:schema:performance-telemetry-history:1",
-  "title": "af.perf-telemetry-history/1",
+  "$id": "urn:af:schema:performance-telemetry-history:2",
+  "title": "af.perf-telemetry-history/2",
   "description": "Compatible history of telemetry results (ADR-0199, ADR-0200): the durable root's bounds and use, every result verified under its exact measurement authority once, groups of one configuration under one authority, execution mode and image on one host, each group's series by experiment, subject, level, metric and shape, what was pruned and every refused input with its reason.",
   "type": "object",
   "additionalProperties": false,
   "properties": {
     "schema": {
-      "const": "af.perf-telemetry-history/1"
+      "const": "af.perf-telemetry-history/2"
     },
     "limits": {
       "type": "object",
@@ -60,6 +60,9 @@
             "$ref": "#/$defs/digest"
           },
           "page": {
+            "$ref": "#/$defs/relative_path"
+          },
+          "authority_path": {
             "$ref": "#/$defs/relative_path"
           },
           "trigger": {
@@ -118,6 +121,7 @@
           "result_id",
           "bundle_sha256",
           "page",
+          "authority_path",
           "trigger",
           "profile",
           "mode",

@@ -4194,14 +4194,14 @@ def validate_enforcement(doc, where="enforcement.toml"):
 
 
 # Telemetry experiments (ADR-0199) ----------------------------------------------------------
-# af.perf-telemetry-lab/1 is fixtures/performance/telemetry.toml; af.perf-telemetry-result/1 one
+# af.perf-telemetry-lab/2 is fixtures/performance/telemetry.toml; af.perf-telemetry-result/1 one
 # experiment run of a baseline and a candidate binary on one host with this checkout's scripts
-# and fixtures; af.perf-telemetry-history/1 the compatible series across results. Advisory: no
+# and fixtures; af.perf-telemetry-history/2 the compatible series across results. Advisory: no
 # verdict, sample or required check reads any of them.
 
-TELEMETRY_LAB_SCHEMA = "af.perf-telemetry-lab/1"
+TELEMETRY_LAB_SCHEMA = "af.perf-telemetry-lab/2"
 TELEMETRY_RESULT_SCHEMA = "af.perf-telemetry-result/1"
-TELEMETRY_HISTORY_SCHEMA = "af.perf-telemetry-history/1"
+TELEMETRY_HISTORY_SCHEMA = "af.perf-telemetry-history/2"
 TELEMETRY_EXPERIMENTS = ("overhead", "invocation_cost", "read_latency")
 TELEMETRY_PROFILES = ("pr", "nightly", "release", "manual")
 TELEMETRY_DOCUMENTS = {"overhead": ("af/telemetry-overhead@1", "telemetry-overhead-v1.json",
@@ -4210,8 +4210,8 @@ TELEMETRY_DOCUMENTS = {"overhead": ("af/telemetry-overhead@1", "telemetry-overhe
                                            "telemetry-invocation-cost-v1.json",
                                            "scripts/telemetry-invocation-cost.py",
                                            ("off", "spans")),
-                       "read_latency": ("af/telemetry-read-latency@1",
-                                        "telemetry-read-latency-v1.json",
+                       "read_latency": ("af/telemetry-read-latency@2",
+                                        "telemetry-read-latency-v2.json",
                                         "scripts/telemetry-corpus.py", ("content",))}
 TELEMETRY_LEVEL_NAMES = ("off", "spans", "content")
 TELEMETRY_ROUNDS_MAX = 8
@@ -4493,7 +4493,7 @@ TELEMETRY_HISTORY = Obj(
                         Field("retention_days", Nullable(Int(1, 3650))))),
     Field("used_bytes", COUNT),
     Field("results", Arr(Obj(Field("result_id", ID), Field("bundle_sha256", DIGEST),
-                             Field("page", REL_PATH),
+                             Field("page", REL_PATH), Field("authority_path", REL_PATH),
                              Field("trigger", Str(enum=("pr", "main_push", "nightly", "release",
                                                         "manual"))),
                              Field("profile", Str(enum=TELEMETRY_PROFILES)),
@@ -4544,6 +4544,9 @@ def validate_telemetry_history(doc, where="history.json"):
                 where + ".results: each result in its group")
         require(item["mode"] == groups[item["group_id"]]["mode"],
                 where + ".results: each result in a group of its execution mode")
+        require(item["authority_path"] == "authorities/" + groups[
+            item["group_id"]]["authority_digest"].split(":")[1],
+            where + ".results: exact retained authority path")
     for group in doc["groups"]:
         require(group["group_id"] == telemetry_group_id(
             group["configuration_digest"], group["authority_digest"], group["host_id"],
@@ -4559,7 +4562,7 @@ def validate_telemetry_history(doc, where="history.json"):
 # The telemetry collector (ADR-0200): an operator's configuration of the trusted collection
 # lane, separate from the archive collector, and what one cycle did.
 TELEMETRY_COLLECTOR_SCHEMA = "af.perf-telemetry-collector/1"
-TELEMETRY_COLLECTION_SCHEMA = "af.perf-telemetry-collection/1"
+TELEMETRY_COLLECTION_SCHEMA = "af.perf-telemetry-collection/2"
 TELEMETRY_COLLECTION_POSITION_SCHEMA = "af.perf-telemetry-collection-position/1"
 TELEMETRY_WORKFLOW = "performance-telemetry.yml"
 ABSOLUTE_PATH = Str(pattern=r"^/[^\x00]*$", min_len=2, max_len=4096)
@@ -4607,7 +4610,7 @@ TELEMETRY_COLLECTION_OUTCOMES = ("collected", "already_collected", "no_result", 
 TELEMETRY_COLLECTION = Obj(
     Field("schema", Const(TELEMETRY_COLLECTION_SCHEMA)),
     Field("repository", REPOSITORY), Field("workflow_id", Nullable(ACTIONS_ID)),
-    Field("started_unix_ms", Int(0, 2 ** 53)), Field("ended_unix_ms", Int(0, 2 ** 53)),
+    Field("started_unix_ms", Int(0, 2 ** 53)), Field("ended_unix_ms", Nullable(Int(0, 2 ** 53))),
     Field("status", Str(enum=("ok", "failed"))), Field("detail", TEXT),
     Field("runs", Arr(Obj(
         Field("run_id", ACTIONS_ID), Field("attempt", Int(1, 1000)),
@@ -4618,12 +4621,19 @@ TELEMETRY_COLLECTION = Obj(
                                        Field("sha256", Nullable(DIGEST))))),
         Field("result_id", Nullable(ID)), Field("reason", TEXT)), 0, 4096)),
     Field("pruned", Arr(Obj(Field("result_id", ID), Field("reason", TEXT)), 0, 4096)),
-    Field("results", COUNT), Field("used_bytes", COUNT))
+    Field("results", Nullable(COUNT)), Field("used_bytes", Nullable(COUNT)))
 
 
 def validate_telemetry_collection(doc, where="collection.json"):
     TELEMETRY_COLLECTION.validate(doc, where)
-    require(doc["started_unix_ms"] <= doc["ended_unix_ms"], where + ": ordered instants")
+    require(doc["ended_unix_ms"] is None or doc["started_unix_ms"] <= doc["ended_unix_ms"],
+            where + ": ordered observed instants")
+    require(doc["ended_unix_ms"] is not None or doc["status"] == "failed",
+            where + ": no terminal time means incomplete")
+    require((doc["results"] is None) == (doc["used_bytes"] is None),
+            where + ": result and byte accounting are known together")
+    require(doc["results"] is not None or doc["status"] == "failed",
+            where + ": unknown accounting is incomplete")
     for index, item in enumerate(doc["runs"]):
         at = "%s.runs[%d]" % (where, index)
         require((item["outcome"] in ("collected", "already_collected"))

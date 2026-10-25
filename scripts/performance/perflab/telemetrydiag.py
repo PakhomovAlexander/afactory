@@ -199,16 +199,42 @@ def _evidence(runs, runs_run, show, status, config):
         if segments[state]:
             reasons.add(reason)
     ids = set(item["execution_id"] for item in executions["list"])
-    captures = []
+    require(len(ids) == len(executions["list"]), "show.json repeats an execution")
+    observed = {}
+    counts = dict((state, 0) for state in ("live", "unsealed", "sealed", "corrupt"))
     for entry in status["bytes"]["entries"]:
-        if entry["kind"] != "segment" or entry["name"] not in ids:
+        if entry["kind"] != "segment":
             continue
+        require(entry["name"] not in observed, "status.json repeats a segment observation")
+        observed[entry["name"]] = entry
+        state = entry.get("state")
+        if state in counts:
+            counts[state] += 1
+        else:
+            reasons.add("history_partial")
+    for state, count in counts.items():
+        require(count <= segments[state], "status.json contradicts its %s segment count" % state)
+        if count != segments[state]:
+            reasons.add("history_partial")
+    captures = []
+    for execution in executions["list"]:
+        entry = observed.get(execution["execution_id"])
+        if entry is None:
+            # No observation is evidence of unknown history, never a complete capture.
+            reasons.add("history_partial")
+            captures.append({"execution_id": execution["execution_id"], "state": None,
+                             "exit": None, "capture": None})
+            continue
+        require(entry.get("state") in (None, execution["segment"]),
+                "status.json and show.json disagree about an execution's segment state")
+        if entry.get("state") is None:
+            reasons.add("history_partial")
         capture = entry.get("capture")
         captures.append({"execution_id": entry["name"][:LABEL_MAX],
                          "state": entry.get("state"), "exit": entry.get("exit"),
                          "capture": None if capture is None else capture[:LABEL_MAX]})
         if entry.get("state") == "sealed" and (capture != "complete"
-                                               or entry.get("exit") == "recovered"):
+                                               or entry.get("exit") not in ("ok", "error", "signal")):
             reasons.add("dropped_or_recovered_capture")
     if runs_run.get("coverage") != "complete":
         reasons.add("dropped_or_recovered_capture")

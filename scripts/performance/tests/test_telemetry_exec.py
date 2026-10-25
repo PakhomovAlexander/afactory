@@ -224,6 +224,21 @@ class TrustedLocal(TempDir):
 class LocalEvidence(TempDir):
     setUp = TrustedLocal.setUp
 
+    def test_fixture_proc_read_handles_only_vanished_processes_as_absent(self):
+        # Linux may report ESRCH after /proc/stat was opened but before its read.
+        for error in (FileNotFoundError(errno.ENOENT, "vanished"),
+                      ProcessLookupError(errno.ESRCH, "vanished")):
+            stream = mock.MagicMock()
+            stream.__enter__.return_value.read.side_effect = error
+            with mock.patch("builtins.open", return_value=stream):
+                self.assertIsNone(state(os.getpid()))
+        for error in (PermissionError(errno.EACCES, "unknown"), OSError(errno.EIO, "unknown")):
+            stream = mock.MagicMock()
+            stream.__enter__.return_value.read.side_effect = error
+            with mock.patch("builtins.open", return_value=stream):
+                with self.assertRaises(type(error)):
+                    state(os.getpid())
+
     def test_signals_only_use_the_still_reserved_owned_leader(self):
         signal_group = os.killpg
         observed = []

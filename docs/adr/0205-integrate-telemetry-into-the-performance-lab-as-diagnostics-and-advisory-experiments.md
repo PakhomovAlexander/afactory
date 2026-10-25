@@ -62,7 +62,10 @@ published main and ADR-0208 change the workflow producer. The timing verdict is 
      of intervals and the product's self time, never a sum across overlaps), a bounded
      timeline, a Perfetto export without any attribute, and an evidence state: `complete` only
      with nothing open, unsealed, dropped, recovered, unreadable, problematic or incomplete,
-     otherwise `partial` with every reason.
+     otherwise `partial` with every reason. Each shown execution needs exactly one segment
+     observation, matching its state and complete capture metadata. Missing observations or
+     unknown metadata make the history partial; repeated observations, contradictory states
+     and counts are refused. Report admission repeats this reconciliation.
    - **Matrix.** Every other selected case is an omission naming the supported matrix
      (`no_telemetry_subscriber`, `records_no_telemetry`). The trace recipe keeps their phase
      coverage.
@@ -71,7 +74,7 @@ published main and ADR-0208 change the workflow producer. The timing verdict is 
      report derives every capture again from the archived documents and refuses a child whose
      figures differ. Earlier versions are refused.
 2. **Telemetry experiments.** `fixtures/performance/telemetry.toml`
-   (`af.perf-telemetry-lab/1`) names exactly the three bench scripts, their documents, schemas
+   (`af.perf-telemetry-lab/2`) names exactly the three bench scripts, their documents, schemas
    and levels, and one bounded profile per trigger. `cli.py telemetry-run` measures a baseline
    and a candidate binary on one host, with one measurement authority identified by the SHA-256
    of every file it reads and checked again at the end.
@@ -86,7 +89,7 @@ published main and ADR-0208 change the workflow producer. The timing verdict is 
    - **Contract and history.** `af.perf-telemetry-result/1` keeps the raw documents and capped
      logs and is verified offline (`telemetry-verify`). `telemetry-history` keeps verified
      bundles in a durable root and groups them only by configuration, authority and host
-     (`af.perf-telemetry-history/1`). `content` is never an experiment. ADR-0206 contains every
+     (`af.perf-telemetry-history/2`). `content` is never an experiment. ADR-0206 contains every
    execution, admits a document only as its planned run and verifies only under the exact
    authority.
 3. **A separate workflow.** `.github/workflows/performance-telemetry.yml` runs the experiments

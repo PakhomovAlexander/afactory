@@ -12,7 +12,7 @@
 # measured and compared separately, finalization included in every wall time; `content` is
 # never measured here (it is diagnostic only and perturbing: cli.py profile --telemetry content).
 
-schema = "af.perf-telemetry-lab/1"
+schema = "af.perf-telemetry-lab/2"
 description = "Telemetry's own cost and read latency, measured beside the comparison, advisory."
 seed = 20261021
 
@@ -43,8 +43,8 @@ levels = ["off", "spans"]
 [experiments.read_latency]
 description = "`af telemetry status` on a fresh and an unchanged index and `show` of one run over one deterministic corpus this checkout generates once, warm (and cold where the host may drop its page cache); latency, peak RSS and index size."
 script = "scripts/telemetry-corpus.py"
-document = "af/telemetry-read-latency@1"
-schema_file = "telemetry-read-latency-v1.json"
+document = "af/telemetry-read-latency@2"
+schema_file = "telemetry-read-latency-v2.json"
 inputs = ["scripts/telemetry-corpus.py"]
 levels = ["content"]
 

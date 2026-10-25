@@ -72,8 +72,10 @@ def write_corpus(out, runs):
     for index in range(runs * 2):
         with open(os.path.join(segments, "seg-%05d.jsonl.gz" % index), "wb") as stream:
             stream.write(gzip.compress(b'{"segment": %d}\n' % index, mtime=0))
-    with open(os.path.join(blobs, "abcdef.gz"), "wb") as stream:
-        stream.write(gzip.compress(b"blob", mtime=0))
+    module = telemetrylab.script_module("scripts/telemetry-corpus.py")
+    for index in range(module.Layout(20261021, runs).blobs):
+        with open(os.path.join(blobs, "%06d.gz" % index), "wb") as stream:
+            stream.write(gzip.compress(b"blob", mtime=0))
     return out
 
 
@@ -88,16 +90,18 @@ def latency_doc(runs, slow=1.0, repeat=3, facts=None, name=None, version=VERSION
         measurements.append({"name": item, "command": "af telemetry %s" % item,
                              "bound_ms": bound, "warm": warm, "cold": None,
                              "within_bound": warm["latency_ms"] <= bound})
-    facts = facts if facts is not None else dict((key, 1) for key in
-                                                 telemetrylab.CORPUS_FACTS)
+    module = telemetrylab.script_module("scripts/telemetry-corpus.py")
+    expected = module.expected_counts(20261021, runs)
+    facts = facts if facts is not None else dict(
+        (key, expected.get(key, 1)) for key in telemetrylab.CORPUS_FACTS)
     corpus = {"dir": "/work/corpus",
               "name": name or ("telemetry-corpus-10k" if runs == 10000
                                else "telemetry-corpus-%d" % runs),
-              "seed": 20261021, "runs": runs, "executions": 2 * runs, "spans": 1, "events": 1,
-              "blobs": 1, "shared_blobs": 0, "blob_occurrences": 1, "blob_bytes": 1,
-              "content_index": True}
+              "seed": 20261021, "runs": runs}
+    module = telemetrylab.script_module("scripts/telemetry-corpus.py")
+    corpus.update(module.expected_counts(corpus["seed"], runs))
     corpus.update(facts)
-    return {"schema": "af/telemetry-read-latency@1",
+    return {"schema": "af/telemetry-read-latency@2",
             "af": {"path": "/x/af", "version": version},
             "machine": {"os": "linux", "arch": "x86_64", "cpus": 4, "load1": 1.0},
             "corpus": corpus,
@@ -111,7 +115,9 @@ def expect(experiment, seed=20261021, pairs=2, scale="smoke", repeat=3, runs=10,
     """An expectation as `telemetrylab.expectation` would give it."""
     if experiment == "read_latency":
         corpus = dict(facts if facts is not None else dict(
-            (key, 1) for key in telemetrylab.CORPUS_FACTS), runs=runs, seed=20261021)
+            (key, telemetrylab.script_module("scripts/telemetry-corpus.py").expected_counts(
+                20261021, runs).get(key, 1)) for key in telemetrylab.CORPUS_FACTS),
+                      runs=runs, seed=20261021)
         return {"runs": runs, "repeat": repeat, "seed": seed, "version": version,
                 "corpus": corpus}
     return {"pairs": pairs, "scale": scale, "seed": seed, "version": version, "corpus": None}

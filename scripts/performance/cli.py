@@ -131,9 +131,35 @@ import time
 sys.dont_write_bytecode = True
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
+# -B prevents writes, but Python still reads matching timestamp/size bytecode caches.
+# Refuse them before importing any measurement/verifier code: only source is authority.
+def _source_only_library():
+    library = os.path.join(os.path.dirname(os.path.abspath(__file__)), "perflab")
+    pending, entries = [library], 0
+    while pending:
+        directory = pending.pop()
+        if os.path.islink(directory):
+            raise SystemExit("measurement library must not contain directory links")
+        with os.scandir(directory) as listing:
+            for entry in listing:
+                entries += 1
+                if entries > 4096:
+                    raise SystemExit("measurement library exceeds its 4096-entry bound")
+                if entry.is_symlink():
+                    raise SystemExit("measurement library must not contain links")
+                if entry.name == "__pycache__" or entry.name.endswith((".pyc", ".pyo")):
+                    raise SystemExit("measurement library bytecode cache refused; use a clean "
+                                     "trusted source installation")
+                if entry.is_dir(follow_symlinks=False):
+                    pending.append(entry.path)
+
+
+_source_only_library()
+
 from perflab import activation, archive, builds, bundle, calibration  # noqa: E402
 from perflab import capability, contracts, costs  # noqa: E402
 from perflab import diagnostics  # noqa: E402
+from perflab import budget as deadlines  # noqa: E402
 from perflab import buildpack, ci, credentials, gitrefs, hostprep  # noqa: E402
 from perflab import history, kernelguard, kernelmeasure, oracle, phasetrace, planning  # noqa: E402
 from perflab import reference, render, telemetrycollect, telemetrylab  # noqa: E402
@@ -811,14 +837,15 @@ def cmd_telemetry_collect(args):
         api = transport.Collector(transport.HttpsTransport(), config["repository"], token,
                                   api_url=config["api_url"],
                                   seconds=config["collection_seconds"])
-        doc = telemetrycollect.Cycle(config, api, gitrefs.Git(config["authority_repository"]),
-                                     time.time).run()
+        budget = deadlines.Budget(api.deadline, api.clock, telemetrycollect.TERMINAL_SECONDS)
+        doc = telemetrycollect.Cycle(config, api, gitrefs.Git(
+            config["authority_repository"], budget), time.time, budget=budget).run()
     except (ContractError, OSError) as error:
         return _refuse("invalid", "invalid_telemetry_collection", str(error))
     counts = {}
     for item in doc["runs"]:
         counts[item["outcome"]] = counts.get(item["outcome"], 0) + 1
-    sys.stderr.write("telemetry collection %s: %s; %d results kept in %d bytes%s\n" % (
+    sys.stderr.write("telemetry collection %s: %s; %s results kept in %s bytes%s\n" % (
         doc["status"], ", ".join("%d %s" % (count, name) for name, count in sorted(
             counts.items())) or "no runs", doc["results"], doc["used_bytes"],
         ("; " + doc["detail"]) if doc["detail"] else ""))

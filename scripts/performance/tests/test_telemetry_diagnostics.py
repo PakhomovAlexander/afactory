@@ -56,6 +56,40 @@ class Documents(TempDir):
             self.assertLessEqual(row["longest_us"], row["covered_us"])
         self.assertEqual(derived["af"]["version"], "0.12.0-rc.5")
 
+    def test_missing_wrong_duplicate_and_conflicting_segment_evidence(self):
+        for mutation in ("missing", "wrong_execution", "missing_metadata", "unknown_state",
+                         "duplicate", "mismatched_state", "sealed_count", "duplicate_execution"):
+            with self.subTest(mutation=mutation):
+                docs = loaded()
+                entry = docs["status"]["bytes"]["entries"][0]
+                if mutation == "missing":
+                    docs["status"]["bytes"]["entries"].pop(0)
+                elif mutation == "wrong_execution":
+                    entry["name"] = "another-execution"
+                elif mutation == "missing_metadata":
+                    entry.pop("capture")
+                    entry.pop("exit")
+                elif mutation == "unknown_state":
+                    entry.pop("state")
+                elif mutation == "duplicate":
+                    docs["status"]["bytes"]["entries"].append(dict(entry))
+                elif mutation == "mismatched_state":
+                    entry["state"] = "live"
+                    docs["status"]["segments"].update(sealed=0, live=1)
+                elif mutation == "sealed_count":
+                    docs["status"]["segments"]["sealed"] = 0
+                else:
+                    docs["show"]["run"]["executions"]["list"].append(
+                        dict(docs["show"]["run"]["executions"]["list"][0]))
+                if mutation in ("duplicate", "mismatched_state", "sealed_count", "duplicate_execution"):
+                    with self.assertRaises(ContractError):
+                        telemetrydiag.capture(dumped(docs), TASK)
+                else:
+                    evidence = telemetrydiag.capture(dumped(docs), TASK)["evidence"]
+                    self.assertEqual(evidence["state"], "partial")
+                    self.assertTrue(evidence["reasons"])
+                    self.assertEqual(len(evidence["segment_captures"]), 1)
+
     def test_the_perfetto_export_nests_valid_tracks_and_copies_no_attribute(self):
         data = telemetrydiag.perfetto(documents()["show"], "case side")
         doc = json.loads(data.decode("utf-8"))
@@ -117,6 +151,11 @@ class Documents(TempDir):
         def live(docs):
             execution = docs["show"]["run"]["executions"]["list"][0]
             execution["segment"], execution["open"] = "live", True
+            docs["status"]["segments"].update(sealed=0, live=1)
+            entry = docs["status"]["bytes"]["entries"][0]
+            entry["state"] = "live"
+            entry.pop("exit", None)
+            entry.pop("capture", None)
         cases.append((live, "open_execution"))
         for mutate, reason in cases:
             with self.subTest(reason=reason):
@@ -292,7 +331,7 @@ class TelemetryChildRuns(ChildRunBase):
         doc, _ = self.run_child()
         for item in doc["telemetry"]["captures"]:
             self.assertEqual(item["evidence"]["state"], "partial")
-            self.assertEqual(item["evidence"]["reasons"], ["unsealed_segment"])
+            self.assertEqual(item["evidence"]["reasons"], ["history_partial", "unsealed_segment"])
 
     def test_a_tampered_child_is_refused_by_the_report_even_with_a_consistent_manifest(self):
         _, output = self.run_child()
@@ -318,6 +357,43 @@ class TelemetryChildRuns(ChildRunBase):
         with self.assertRaises(ContractError) as caught:
             report.admit_child(output, self.parent)
         self.assertIn("telemetry", str(caught.exception))
+
+    def test_report_rederives_missing_duplicate_wrong_state_and_count_evidence(self):
+        _, output = self.run_child()
+        original = read(os.path.join(output, "telemetry", TASK_RUN, "baseline", "status.json"))
+        profiles_path = os.path.join(output, "profiles.json")
+        original_profiles = json.loads(read(profiles_path))
+        for mutation in ("missing", "duplicate", "wrong_execution", "mismatched_state", "sealed_count"):
+            with self.subTest(mutation=mutation):
+                status = json.loads(original)
+                entry = status["bytes"]["entries"][0]
+                if mutation == "missing":
+                    status["bytes"]["entries"].pop(0)
+                elif mutation == "duplicate":
+                    status["bytes"]["entries"].append(dict(entry))
+                elif mutation == "wrong_execution":
+                    entry["name"] = "another-execution"
+                elif mutation == "mismatched_state":
+                    entry["state"] = "live"
+                    status["segments"].update(sealed=0, live=1)
+                else:
+                    status["segments"]["sealed"] = 0
+                path = os.path.join(output, "telemetry", TASK_RUN, "baseline", "status.json")
+                data = json.dumps(status).encode()
+                with open(path, "wb") as stream:
+                    stream.write(data)
+                profiles = json.loads(json.dumps(original_profiles))
+                for capture in profiles["telemetry"]["captures"]:
+                    for artifact in capture["artifacts"]:
+                        if artifact["path"].endswith("/baseline/status.json"):
+                            artifact["bytes"] = len(data)
+                            artifact["sha256"] = "sha256:" + __import__("hashlib").sha256(data).hexdigest()
+                with open(profiles_path, "wb") as stream:
+                    stream.write(contracts.write_bytes(profiles, "profiles"))
+                os.unlink(os.path.join(output, bundle.MANIFEST))
+                bundle.write_manifest(output, 1 << 30)
+                with self.assertRaises(ContractError):
+                    report.admit_child(output, self.parent)
 
     def test_telemetry_is_refused_beside_counters_and_without_a_level(self):
         doc, _ = self.run_child()

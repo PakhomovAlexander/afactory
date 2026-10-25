@@ -47,7 +47,10 @@ The product entry point `scripts/performance/cohort-dispatch.py` retains the cap
 operator's `ROOT`, `LAB`, `main()` and `--dry-run` interface, installed-library verification,
 bounds, locks, credentials separation, UTC cutoff, sealed-parameter gate and no retry/backfill.
 A disabled explicit dry-run executes preflight, including authority workflow equality and
-control scheduler-tree equality, without intent or POST. A normal disabled cycle stays disabled.
+control scheduler-tree equality and the final main recheck, without intent or POST. This
+also applies when an uncertain retained intent prevents member selection: a valid dry-run
+returns that uncertainty only after all guards, and leaves the journal byte-identical. A failed
+guard takes precedence over uncertainty. A normal disabled cycle stays disabled.
 An enabled cycle durably fsyncs intent before one POST; an ambiguous response or a raced
 non-member run leaves the intent latched for operator inspection.
 

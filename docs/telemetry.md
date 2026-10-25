@@ -1198,9 +1198,11 @@ homes and `content_index` on, `af telemetry status` on a fresh index, `af teleme
 nothing new and `af telemetry show` of one run, each warm (every file read once first) and, where
 the script may drop the page cache (Linux or macOS as root), cold; otherwise it reports warm-only
 and why. It prints the latency, peak memory and index size of each against its bound, or with
-`--json` the `af/telemetry-read-latency@1` document
-([`schemas/telemetry-read-latency-v1.json`](../schemas/telemetry-read-latency-v1.json)), and
-exits 3 when a warm figure is over its bound.
+`--json` the `af/telemetry-read-latency@2` document
+([`schemas/telemetry-read-latency-v2.json`](../schemas/telemetry-read-latency-v2.json)), and
+exits 3 when a warm figure is over its bound. Protocol v2 records `content_indexed` as well as
+the enable bit: the laboratory validates every index count against the generator layout and
+requires all generated text blobs indexed before admitting a latency judgment.
 
 ```sh
 python3 scripts/telemetry-corpus.py generate --out /scratch/telemetry-corpus-10k

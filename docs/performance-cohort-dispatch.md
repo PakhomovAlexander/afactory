@@ -165,3 +165,9 @@ silently resend. Future incompatible workflow changes could change the workflow 
 ADR-0184's unchanged producer verification still refuses their evidence. This repair does not
 claim an atomic API, eliminate arbitrary future workflow changes, complete calibration, or
 activate enforcement.
+
+A retained uncertain dispatch intent does not skip disabled dry-run preflight. Every producer,
+control/cohort, workflow, scheduler and final-main guard still runs. Valid preflight reports
+`dispatch_uncertain:<member>`; a failing guard reports refusal. Both preserve the intent journal
+byte for byte, create no additional intent and send no POST. Enabled non-dry-run cycles keep
+the uncertainty latch and never retry it.

@@ -22,7 +22,7 @@ def state(pid):
     try:
         with open("/proc/%d/stat" % pid, "rb") as stream:
             raw = stream.read(4096)
-    except FileNotFoundError:
+    except (FileNotFoundError, ProcessLookupError):
         return None
     fields = raw[raw.rindex(b")") + 1:].split()
     return [pid, fields[0].decode("ascii"), int(fields[1]), int(fields[2]), int(fields[3])]
@@ -32,7 +32,7 @@ def thread_states(pid):
     """Only a known fixture's threads, including a zombie leader with a live worker."""
     try:
         names = os.listdir("/proc/%d/task" % pid)
-    except FileNotFoundError:
+    except (FileNotFoundError, ProcessLookupError):
         return []
     if len(names) > 8:
         raise AssertionError("fixture thread evidence exceeds its bound")
@@ -41,7 +41,7 @@ def thread_states(pid):
         try:
             with open("/proc/%d/task/%s/stat" % (pid, name), "rb") as stream:
                 raw = stream.read(4096)
-        except FileNotFoundError:
+        except (FileNotFoundError, ProcessLookupError):
             continue
         result.append([int(name), raw[raw.rindex(b")") + 1:].split()[0].decode("ascii")])
     return result

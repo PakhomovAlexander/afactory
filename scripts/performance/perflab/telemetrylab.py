@@ -61,9 +61,9 @@ ROOT = jsonsubset.ROOT
 REGISTRY_PATH = "fixtures/performance/telemetry.toml"
 # The laboratory's own code that runs the scripts, reads the documents and derives every figure,
 # beside the registry's declared inputs and the product schemas.
-OWN_INPUTS = ("scripts/performance/perflab/telemetrylab.py",
-              "scripts/performance/perflab/telemetryexec.py",
-              "scripts/performance/perflab/jsonsubset.py")
+OWN_INPUTS = ("scripts/performance/perflab", "scripts/performance/cli.py", "schemas",
+              "fixtures/performance", ".github/workflows/performance-telemetry.yml",
+              "Cargo.toml", "Cargo.lock", "rust-toolchain.toml")
 RESULT_JSON = "result.json"
 REPORT_HTML = "report.html"
 SUMMARY_MD = "summary.md"
@@ -124,8 +124,9 @@ def authority_files(registry, root=None):
                                                                                item))]:
                     full = os.path.join(directory, entry)
                     relative = os.path.relpath(full, root).replace(os.sep, "/")
-                    if "/__pycache__/" in "/" + relative or entry.endswith(".pyc"):
-                        continue
+                    require("/__pycache__/" not in "/" + relative
+                            and not entry.endswith((".pyc", ".pyo")),
+                            "%s: bytecode cache is not measurement authority" % relative)
                     require(not os.path.islink(full) and os.path.isfile(full),
                             "%s: the measurement authority holds only regular files" % relative)
                     files.append(relative)
@@ -155,7 +156,7 @@ def authority_digest(registry, root=None):
                         "bytes" % AUTHORITY_BYTES_MAX)
                 digest.update(chunk)
         entries.append([relative, "sha256:" + digest.hexdigest()])
-    return canonical_digest({"schema": "af.perf-telemetry-authority/1", "files": entries}), \
+    return canonical_digest({"schema": "af.perf-telemetry-authority/2", "files": entries}), \
         len(entries)
 
 
@@ -290,7 +291,7 @@ def script_module(script, root=None):
             name = "af_bench_" + hashlib.sha256(repr(key).encode("utf-8")).hexdigest()[:12]
             spec = importlib.util.spec_from_file_location(name, path)
             module = importlib.util.module_from_spec(spec)
-            spec.loader.exec_module(module)
+            exec(compile(data, path, "exec"), module.__dict__)
         finally:
             sys.dont_write_bytecode = previous
         _MODULES[key] = module
@@ -389,6 +390,10 @@ def _admit_read_latency(module, doc, expect):
         require(name in planned and corpus[name] == planned[name],
                 "its corpus %s is %s, not the generated corpus's %s" % (
                     name, corpus[name], planned.get(name)))
+    for name, expected in module.expected_counts(planned["seed"], expect["runs"]).items():
+        require(corpus[name] == expected,
+                "its corpus %s is %s, not the generator protocol's %s" % (
+                    name, corpus[name], expected))
     names = [item["name"] for item in doc["measurements"]]
     require(names == list(READ_MEASUREMENTS), "its measurements are not exactly " + ", ".join(
         READ_MEASUREMENTS))
@@ -1130,6 +1135,12 @@ def verify(source, root=None):
     label = "telemetry result %s" % os.path.basename(os.path.normpath(source))
     result, identity, hashes = read_bundle(source)
     digest, files = authority_digest(registry, root)
+    installed_registry, installed_registry_sha = load_registry(ROOT)
+    installed_digest, installed_files = authority_digest(installed_registry, ROOT)
+    require((digest, files, registry_sha)
+            == (installed_digest, installed_files, installed_registry_sha),
+            "%s: installed verifier does not match the retained measurement authority; "
+            "install its trusted verifier before verification" % label)
     authority = result["authority"]
     require((authority["digest"], authority["files"], authority["registry_sha256"])
             == (digest, files, registry_sha),
@@ -1212,7 +1223,10 @@ def materialize_authority(git, sha, target):
     entries = git.tree_entries(sha, authority_names(registry))
     require(len(entries) <= AUTHORITY_FILES_MAX, "the authority holds over %d files"
             % AUTHORITY_FILES_MAX)
-    blobs = git.blobs([obj for mode, kind, obj, _ in entries if kind == "blob"])
+    blobs = git.blobs([obj for mode, kind, obj, _ in entries if kind == "blob"],
+                     bytes_max=AUTHORITY_BYTES_MAX)
+    require(sum(len(blobs[obj]) for _, kind, obj, _ in entries if kind == "blob")
+            <= AUTHORITY_BYTES_MAX, "the authority exceeds its materialized byte bound")
     for mode, kind, obj, path in entries:
         require(kind == "blob" and mode in ("100644", "100755"),
                 "%s at %s is not a regular file" % (path, sha[:12]))
@@ -1494,6 +1508,7 @@ HISTORY_JSON = "history.json"
 HISTORY_HTML = "history.html"
 RESULTS = "results"
 HISTORY_LOCK = "lock"
+AUTHORITIES = "authorities"
 STAGING_PREFIX = ".staging-"
 HISTORY_BYTES_DEFAULT = 32 * 1024 * 1024 * 1024
 HISTORY_RESULTS_DEFAULT = 2048
@@ -1515,7 +1530,8 @@ class HistoryRoot(object):
     prune and history write holds it, so two collectors never interleave."""
 
     def __init__(self, root, bytes_max=HISTORY_BYTES_DEFAULT,
-                 results_max=HISTORY_RESULTS_DEFAULT, retention_days=None, wall=time.time):
+                 results_max=HISTORY_RESULTS_DEFAULT, retention_days=None, wall=time.time,
+                 budget=None, sweep=True):
         self.root = os.path.abspath(root)
         self.bytes_max = bytes_max
         self.results_max = results_max
@@ -1523,6 +1539,8 @@ class HistoryRoot(object):
         self.wall = wall
         self.fd = None
         self.pruned = []
+        self.budget = budget
+        self.sweep = sweep
 
     def __enter__(self):
         import errno
@@ -1547,16 +1565,32 @@ class HistoryRoot(object):
                 raise ContractError("another telemetry history command holds %s" % self.root)
             raise
         self.fd = fd
-        # Staging an interrupted import left; nothing in it was ever kept.
-        for name in os.listdir(results):
-            if name.startswith(STAGING_PREFIX):
-                shutil.rmtree(os.path.join(results, name), ignore_errors=True)
+        try:
+            authority_dir = os.path.join(self.root, AUTHORITIES)
+            if not os.path.lexists(authority_dir):
+                os.mkdir(authority_dir, 0o755)
+            require(os.path.isdir(authority_dir) and not os.path.islink(authority_dir),
+                    "the retained authorities directory must not be a link")
+            if self.sweep:
+                self.cleanup_staging()
+        except BaseException:
+            self.__exit__()
+            raise
         return self
 
     def __exit__(self, *exc):
         if self.fd is not None:
             os.close(self.fd)
             self.fd = None
+
+    def cleanup_staging(self):
+        # Interrupted staging is never accepted, and is swept under this lock.
+        for directory in (self.results, os.path.join(self.root, AUTHORITIES)):
+            for name in os.listdir(directory):
+                if name.startswith(STAGING_PREFIX):
+                    path = os.path.join(directory, name)
+                    require(not os.path.islink(path), "staging must not be a link")
+                    shutil.rmtree(path)
 
     @property
     def results(self):
@@ -1567,14 +1601,66 @@ class HistoryRoot(object):
                       if not name.startswith("."))
 
     def used_bytes(self):
-        return telemetryexec.allocated([self.results])
+        return telemetryexec.allocated([self.results, os.path.join(self.root, AUTHORITIES)])
+
+    def authority_path(self, result):
+        return os.path.join(self.root, AUTHORITIES, result["authority"]["digest"].split(":")[1])
+
+    def retain_authority(self, result, root):
+        """Copy only trusted checkout bytes, never files from the downloaded bundle."""
+        registry, _ = load_registry(root)
+        digest, _ = authority_digest(registry, root)
+        require(digest == result["authority"]["digest"], "authority changed before retention")
+        target = self.authority_path(result)
+        if os.path.lexists(target):
+            require(not os.path.islink(target), "retained authority must not be a link")
+            kept_registry, _ = load_registry(target)
+            require(authority_digest(kept_registry, target)[0] == digest,
+                    "retained authority bytes changed")
+            return
+        names = authority_files(registry, root)
+        size = sum(os.lstat(os.path.join(root, name)).st_size for name in names)
+        require(self.used_bytes() + size <= self.bytes_max,
+                "retaining the measurement authority would exceed the history byte bound")
+        staging = os.path.join(self.root, AUTHORITIES, STAGING_PREFIX + os.urandom(6).hex())
+        os.mkdir(staging)
+        try:
+            for name in names:
+                destination = os.path.join(staging, name)
+                os.makedirs(os.path.dirname(destination), exist_ok=True)
+                shutil.copyfile(os.path.join(root, name), destination)
+            require(self.used_bytes() <= self.bytes_max,
+                    "the staged authority exceeds the history byte bound")
+            require(authority_digest(registry, staging)[0] == digest,
+                    "authority copy does not match its identity")
+            os.rename(staging, target)
+        finally:
+            if (self.budget is None or self.budget.left() > 0) and os.path.lexists(staging):
+                shutil.rmtree(staging)
+
+    def prune_authorities(self):
+        referenced = set()
+        for name in self.names():
+            try:
+                result, _, _ = read_bundle(os.path.join(self.results, name))
+            except (ContractError, OSError):
+                # An unreadable kept bundle may still reference an authority. Preserve
+                # those bytes rather than deleting evidence on an uncertain projection.
+                return
+            referenced.add(os.path.basename(self.authority_path(result)))
+        directory = os.path.join(self.root, AUTHORITIES)
+        for name in os.listdir(directory):
+            if name not in referenced:
+                path = os.path.join(directory, name)
+                require(not os.path.islink(path), "retained authority must not be a link")
+                shutil.rmtree(path)
 
     def remove(self, name, reason):
         """Remove kept result `name` whole: renamed away first, so a reader never sees half."""
         doomed = os.path.join(self.results, STAGING_PREFIX + "removed-" + os.urandom(6).hex())
         os.rename(os.path.join(self.results, name), doomed)
-        shutil.rmtree(doomed, ignore_errors=True)
         self.pruned.append({"result_id": name, "reason": reason[:4096]})
+        shutil.rmtree(doomed)
 
     def prune(self):
         """Remove results older than the retention; then, oldest first, results beyond the
@@ -1597,6 +1683,7 @@ class HistoryRoot(object):
         while len(kept) > self.results_max:
             started, name = kept.pop(0)
             self.remove(name, "beyond the %d-result bound, oldest first" % self.results_max)
+        self.prune_authorities()
 
     def import_result(self, source, authority_root=None):
         """Keep the result bundle at `source` below `results/<result id>/`, verified under
@@ -1611,6 +1698,7 @@ class HistoryRoot(object):
             require(existing == identity, "%s already holds another bundle under result %s"
                     % (self.root, result["result_id"]))
             return result, False
+        self.retain_authority(result, authority_root or ROOT)
         size = sum(os.lstat(os.path.join(source, *path.split("/"))).st_size
                    for path in list(hashes) + [bundle.MANIFEST])
         require(self.used_bytes() + size <= self.bytes_max,
@@ -1634,10 +1722,14 @@ class HistoryRoot(object):
             _, copied, _ = read_bundle(staging)
             require(copied == identity, "the copy of %s is not the verified bundle"
                     % result["result_id"])
+            require(self.used_bytes() <= self.bytes_max,
+                    "the staged result exceeds the history byte bound")
+            if self.budget is not None:
+                self.budget.seconds("publishing a verified result")
             os.rename(staging, target)
         finally:
-            if os.path.lexists(staging):
-                shutil.rmtree(staging, ignore_errors=True)
+            if (self.budget is None or self.budget.left() > 0) and os.path.lexists(staging):
+                shutil.rmtree(staging)
         return result, True
 
     def write(self, refused=()):
@@ -1647,7 +1739,9 @@ class HistoryRoot(object):
         results = []
         for name in self.names():
             try:
-                result, identity, _ = read_bundle(os.path.join(self.results, name))
+                result, _, _ = read_bundle(os.path.join(self.results, name))
+                result, identity, _ = verify(os.path.join(self.results, name),
+                                              self.authority_path(result))
                 require(result["result_id"] == name, "is kept under another result's name")
                 results.append((result, identity))
             except (ContractError, OSError) as error:
@@ -1677,6 +1771,8 @@ def history_document(results, refused, pruned, limits_doc, used_bytes):
            "refused": list(refused)[:4096]}
     for result, identity in results:
         doc["results"].append({"result_id": result["result_id"], "bundle_sha256": identity,
+                               "authority_path": "%s/%s" % (AUTHORITIES, result[
+                                   "authority"]["digest"].split(":")[1]),
                                "page": "%s/%s/%s" % (RESULTS, result["result_id"], REPORT_HTML),
                                "trigger": result["trigger"], "profile": result["profile"],
                                "mode": result["execution"]["mode"],

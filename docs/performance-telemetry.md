@@ -87,7 +87,12 @@ overlapping spans), the self time the product computed summed over the name, and
 span. It holds a timeline of at most 512 spans and an evidence state. The state is `complete`
 only when every execution was sealed by its writer with nothing dropped, nothing is open or
 unreadable, no problem was recorded, the history is a prefix and the configuration record is
-complete. Otherwise it is `partial` with every reason:
+complete. Every shown execution must have exactly one observed segment with matching state
+and capture metadata. Missing observations or unknown metadata are partial (`history_partial`,
+with an explicit unknown capture row); missing or lossy terminal metadata remains
+`dropped_or_recovered_capture`. Duplicate observations, contradictory known states and counts
+are refused. Extra counts lacking observations make the history partial. Otherwise it is
+`partial` with every reason:
 
 `config_incomplete`, `corrupt_segment`, `dropped_or_recovered_capture`, `history_partial`,
 `index_absent`, `live_segment`, `open_execution`, `open_spans`, `problems_recorded`,
@@ -105,7 +110,7 @@ views.
 
 ## Telemetry experiments
 
-`fixtures/performance/telemetry.toml` (`af.perf-telemetry-lab/1`) declares the experiments and
+`fixtures/performance/telemetry.toml` (`af.perf-telemetry-lab/2`) declares the experiments and
 one bounded profile per trigger:
 
 | Experiment | Script | Levels | Each side judged by |
@@ -145,8 +150,10 @@ python3 scripts/performance/cli.py telemetry-history --root /srv/af-perf/telemet
 
 Both binaries run on this host with this checkout's registry, scripts, fixtures, schemas and
 laboratory code. That is one measurement authority, identified by the SHA-256 of every file it
-reads (`authority_digest`, including `telemetrylab.py`, `telemetryexec.py` and
-`jsonsubset.py`). Rounds alternate which side runs first, and both sides of a round use the
+reads (`authority_digest` domain v2). The closure includes every `perflab` module and vendor
+module, all schemas and performance fixtures, the CLI, telemetry workflow, declared bench
+inputs and build/toolchain manifests. Transitive admission, arithmetic, bundle, rendering, build
+and containment helpers therefore change its identity too. Rounds alternate which side runs first, and both sides of a round use the
 same seed. The machine's performance lock is held for the whole run, and one deadline, the
 profile's timeout, bounds everything: the host checks, both version queries, the corpus, every
 run and the teardown, with 90 seconds kept for the last teardown and the result.
@@ -223,7 +230,11 @@ A script's stdout is admitted only as the run it was planned as (`telemetrylab.a
 - **`invocation_cost`.** The planned pairs, scale and seed; exactly the cases of that scale,
   each level with the planned pairs.
 - **`read_latency`.** The generated corpus: its runs, seed, the name those runs are given and
-  every file fact. Exactly `fresh_status`, `unchanged_status` and `show`, each with the
+  every file fact. The trusted generator's layout derives all index counts for that seed and
+  scale: executions, spans, events, blobs, shared blobs, blob occurrences and blob bytes.
+  `af/telemetry-read-latency@2` also records `content_indexed`; content indexing must be enabled
+  and its indexed count must equal all generated text blobs. Correct runs and file sizes cannot
+  excuse dropped contents, either during execution or offline verification. Exactly `fresh_status`, `unchanged_status` and `show`, each with the
   script's own bound, one fresh sample and `repeat` unchanged and show samples, each latency
   the median of its samples, `within_bound` and `passed` what the latencies and bounds give,
   and no cold figure where none was measured.
@@ -265,20 +276,29 @@ The checkout at `--authority-root` (default: this one) must have the same author
 file count and registry hash, or the result is refused; a result of another authority is never
 kept "as recorded". It then rehashes the bundle and admits every raw document again as its
 planned run. It judges every document again with that authority's own scripts, never with
-anything of the result. And it recomputes the figures, the comparisons, the page and the
+anything of the result. The installed trusted verifier must also match that complete authority;
+a retained checkout alone never selects code to execute. Install the matching reviewed verifier
+or verification is refused. CLI startup refuses library bytecode caches before importing
+`perflab`, and authority admission refuses cached executable artifacts; bench loaders compile
+the source bytes directly. Use a clean trusted source installation: `-B` alone prevents writes
+but does not prevent cached bytecode reads. And it recomputes the figures, the comparisons, the page and the
 summary, refusing anything that differs.
 
 `telemetry-history` holds its root under one lock (`ROOT/lock`) for every import, prune and
 write. It keeps each bundle verified so, whole, under `ROOT/results/<result id>/`, staged and
 renamed. Importing the same bundle again changes nothing, and another bundle under a kept ID is
-refused. It is bounded:
+refused. Its trusted authority is copied separately to `ROOT/authorities/<digest>/`; history
+records `authority_path` and re-verifies under that tree and the matching installed verifier on
+every write. Missing, changed or unavailable authority is refused. Authority bytes count toward
+the root's bound, and unreferenced authority trees are pruned under the same lock. It is bounded:
 
 - an import that would take the root past `--bytes-max` (32 GiB by default) or
-  `--results-max` (2,048) is refused before anything is written;
+  `--results-max` (2,048) is refused before a result is accepted; unaccepted staging or an
+  unreferenced authority from an interrupted import is swept on a later locked command;
 - `--retention-days` prunes whole results older than that, oldest first, then any results
   beyond the result bound.
 
-It then writes `ROOT/history.json` (`af.perf-telemetry-history/1`: the bounds, the bytes used,
+It then writes `ROOT/history.json` (`af.perf-telemetry-history/2`: the bounds, the bytes used,
 every result, the groups, what this write pruned and every refused input) and
 `ROOT/history.html`. A series holds only results of one configuration under one measurement
 authority, in one execution mode and image, on one host. A different group is never a trend.
@@ -365,7 +385,7 @@ bytes and results, and retention. A cycle does this:
    writes that commit's authority files from the mirror's Git objects
    (`telemetrylab.materialize_authority`).
 7. **Keep.** It imports the result verified under exactly that authority, then writes
-   `history.json`, `history.html` and `collection.json` (`af.perf-telemetry-collection/1`):
+   `history.json`, `history.html` and `collection.json` (`af.perf-telemetry-collection/2`):
    every run attempted, with what was collected, already collected, missing, expired or refused
    and why, what was pruned, and the root's results and bytes.
 
@@ -436,3 +456,29 @@ reads it, and the archive's existing reports and evidence are not touched.
 
 The `authority_runtime_new` investigation that used these paths is
 [`performance-runtime-new-investigation.md`](performance-runtime-new-investigation.md).
+
+## Collection deadline and protocol upgrades
+
+One absolute monotonic `collection_seconds` deadline covers transport, Git object subprocesses,
+authority materialization, verification, copies, retention and history/report construction.
+Git receives the existing `Budget`; the trusted collector's Unix main thread also uses its
+interruptible timer across synchronous work. The collector refuses an unsupported thread or an
+existing interval timer. It runs no candidate binary, downloaded code or credential-bearing
+helper worker.
+
+Five seconds of that same deadline are reserved for bounded cleanup and atomic status writing.
+An expired import leaves unaccepted staging for a later locked sweep. If expiry follows the
+verified atomic rename, the accepted result stays kept and is recorded accurately. If history
+construction expires, collection v2 reports failed with `results` and `used_bytes` null, rather
+than fabricated zeroes or counts copied from a previous cycle. A terminal record that could
+not be completed also has `ended_unix_ms: null`. An atomic incomplete record
+precedes work and terminal cleanup; interrupted final I/O leaves that record. The history lock
+is released on all exception paths, including entry cleanup. The service timeout does not
+replace this CLI deadline.
+
+The raw read-latency document and schema, experiment registry, history and collection now use
+v2. Earlier shapes and incomplete authority identities are refused without compatibility
+fallback. Result v1's shape is unchanged. Historical artifacts require their matching trusted
+verifier and complete authority; a newer verifier never silently admits them. Tests use
+synthetic documents, not claimed measurements; hosted execution and deployment still require
+operator evidence.
