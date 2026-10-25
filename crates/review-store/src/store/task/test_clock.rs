@@ -67,20 +67,20 @@ fn scoped_clocks_are_independent_on_concurrent_threads_and_not_inherited() {
                     scope.spawn(move || {
                         let inherited = now();
                         let readings = with_time(time, |clock| {
-                            barrier.wait();
+                            std::sync::Barrier::wait(barrier);
                             let first = super::now().unwrap();
                             clock.set(time + 1);
-                            barrier.wait();
+                            std::sync::Barrier::wait(barrier);
                             (first, super::now().unwrap())
                         });
                         (inherited, readings, now())
                     })
                 })
                 .collect();
-            barrier.wait();
+            std::sync::Barrier::wait(&barrier);
             let first = super::now().unwrap();
             parent.set(101);
-            barrier.wait();
+            std::sync::Barrier::wait(&barrier);
             assert_eq!((first, super::now().unwrap()), (100, 101));
             for (child, time) in children.into_iter().zip([200, 300]) {
                 assert_eq!(child.join().unwrap(), (None, (time, time + 1), None));
