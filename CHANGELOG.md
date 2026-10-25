@@ -19,6 +19,1437 @@ publish step — so everything it carried shipped in `0.9.0-rc.6`.
 Changes since the last release are notes under [`changelog.d/`](changelog.d/), one file per
 pull request; the release pull request collects them here.
 
+## [0.13.0-rc.1] - 2026-10-25
+
+### Authority compatibility
+
+Existing committed .af/ policy that validates under 0.12.0-rc.5 needs no hand edit. Run af onboard --refresh-lock to pin 0.13.0-rc.1 and its signed bytes; a pipeline opting into recovery_attempts uses af.pipeline/3 and needs its refreshed lock.
+
+### Changes
+
+- release: v0.12.0-rc.5 (#300)
+- Fix every finding of the 2026-10-20 GA and security audit (#299)
+- Fix clock-skewed warm Cargo targets after PR297 light review (#301)
+- Integrate the continuous performance laboratory into the SDLC (#304)
+- fix: sanitize missing review keys in terminal errors (#306)
+- Fix hosted performance artifact layouts and offline CLI fixtures (#308)
+- perf: complete hosted suite coverage and calibrate mixed CPU shards (#309)
+- perf: predeclare hosted calibration for 23–29 October (#311)
+- Telemetry P2–P5: recording, spans, storage kind, accounting, ledger, bench (#294)
+- State the lines a pull request adds per directory, and check them in CI (#312)
+- Telemetry P6–P7: harness streams, turns and tools, content blobs (#313)
+- Give the af task report tests' body the lines block the check now requires (#314)
+- Count a capped stream's gaps by the observer's runs, not by one chunking (#315)
+- fix: supersede stale unavailable optimization gaps (#318)
+- build(deps): bump the actions-minor-and-patch group across 1 directory with 2 updates (#253)
+- perf(store): avoid redundant plan dependency decoding (#326)
+- feat: skip PR performance measurements with no-perf label (#325)
+- ci: use latest Python and model-based Task independence (#329)
+- feat: disable Providers temporarily with automatic expiry (#334)
+- GA polish: provider detection, first run, one outcome model, agent loop and kernel resilience (#332)
+
+- Telemetry, second package: the commands that run a kernel run (`af task run`,
+  `af task start --execute`, `af review run`, `af provider doctor`, `af self optimize --execute`)
+  now record `af.command > af.run > af.authority.load, af.plan` (one `af/TelemetryNode@1` record
+  per plan node), `af.node > af.attempt` with the kernel's exact accounting, and the run's
+  `af.sweep`; every other command, and every command at `off`, opens no telemetry directory. From
+  the first `af.run` until the seal one consumer thread is the segment's only writer and makes
+  every record visible within `flush_latency_ms`; the command's end and the seal are one request
+  to it, bounded at 2 s, after which it is abandoned and publishes nothing, leaving the segment
+  for the next reader to recover. Every lease that begins kernel execution now commits an
+  execution marker to its Task's log, the event `TaskExecutionStarted@1`
+  (`af/TaskExecutionStarted@1`) beside `TaskTransition@5`, at every telemetry level. `af telemetry runs`, `show`, `tail` and `gc`
+  (`--json`: `af/telemetry-runs@1`, `af/telemetry-show@1`, `af/telemetry-tail@1`,
+  `af/telemetry-gc@1`) report a run's executions — numbered by those markers, active time as
+  their union, execution time as their sum, elapsed time, history `prefix:k` or `partial`, never
+  complete, the open ones named beside the sealed ones in every label and total, the outcome the
+  latest execution's own, by ordinal — its span tree and its live tail, which ends only at a
+  published seal or a recovery (at once for a run whose every execution was already sealed,
+  its sealed records printed), recovers a crashed writer's segment itself, fails naming a
+  sealed segment it cannot read, a live one with interior corruption or a followed one gone
+  without a seal (the `.corrupt` file another reader's recovery left), exits 1 for an unknown
+  run before following anything (naming the unreadable segment instead when one could hold
+  it), refuses naming a `.corrupt` segment that held one of the run's executions or exists
+  while the run cannot be found, also one renamed after it started, before it ever saw it
+  (checked at every look and before it exits 0), and follows a run in one Store, refusing with `--store`
+  guidance, once the followed Store's pending records are printed, a second Store that starts
+  the same run id while it is followed, even in a segment sealed during its startup or between
+  two of its looks.
+  Telemetry is the kind `telemetry` of the Storage Budget (`af/storage@4`,
+  `af/storage-prune@4`, the Project Store, Survey and claim kinds' `@3` documents extended, both
+  planned by the one sweep plan): every registered directory counted once, one entry per segment by what
+  its eviction frees, a sealed one last used at its seal time, evicted under ADR-0144's rules
+  past `[telemetry] max_bytes` or the whole budget, every file of an entry, its manifest
+  included, checked again before either is unlinked and the whole entry left in place, reported
+  `changed`, when one is no longer what the inventory found, with temporaries, unreferenced blobs
+  and free index pages reclaimed by every applied sweep and an overlapping directory reported
+  `overlapping`, never evicted as telemetry.
+- Telemetry, third package: every phase of a run is a span of the crate that owns it —
+  `af.admission`, `af.context.compose`, `af.harness`, `af.output.parse` and `af.usage.account`
+  under an Attempt, `af.gate` with its `af.check` spans and `af.warm.restore`/`af.warm.save`
+  under a check node, and `af.snapshot.capture`, `af.cas.materialize`, `af.store.append`,
+  `af.store.read`, `af.git`, `af.remote_check` and `af.process` wherever the run does them — each
+  named in the catalogue in `docs/architecture.md`. Every supervised process now carries its
+  process id and its CPU time and peak memory through every `review-process` result, a
+  timed-out, killed or cancelled one included, and its span records them (`af.rusage.*`, absent
+  when the platform did not deliver a figure, never zero), read safely from the children totals
+  around each reap because the workspace forbids the `unsafe` a direct `wait4` needs — every
+  child reap of `af` now goes through `review-process`'s one reap lock, so a figure is never
+  another child's. A check
+  records `af.check.status` and its comparability key `af.check.fingerprint`
+  (`af/check-fingerprint@1`, the environment only as a digest with a runtime path a placeholder
+  only where a path equals it or lies under it, a relative `PATH` entry resolved against the
+  check's directory, `unknown` when a part is unavailable); a kernel measurement is a run of its own (`af.run.kind = measure`,
+  `af.measurement.id`). At `spans` every run an execution works on has its own configuration
+  record (`af/TelemetryConfig@2`, as many 16 KiB parts as it needs, each naming its run, an
+  environment-origin value as `<env>`, a file under the home as `~/…`), its `configuration` and
+  `machine` sections written when the run opens and its `plan` section when the plan resolves,
+  with `af.config.text` naming the pipeline's `pipeline.toml`, the Task file and `.af/af.toml`
+  by the SHA-256 of their own bytes and their size;
+  `af telemetry config RUN [--execution ID]` assembles it, saying per section `complete`,
+  `incomplete` or `unknown` (`--json`: `af/TelemetryConfig@2`).
+- Telemetry, fourth package: every recording command installs one post-commit observer on its
+  Stores, told of each committed transaction once, after its commit, in committed order — a
+  generic append, a Task transition, a Round publication, an atomic integration — and never of a
+  rollback; from `spans` on each committed event is `af.store.event` (type, sequence, id,
+  causation, artifact references, the payload's digest and size), every Report a Campaign admits
+  and every change of a summarized Finding field is an `af/TelemetryFinding@2` record (with the
+  admitting Worker's bound model when the kernel recorded it) and a status change an
+  `af.finding.disposition` event, and its Demands are `af/TelemetryDemand@2` records keyed by the
+  Demand id, naming the Demand's own Subject and its Snapshot, with `af.demand.opened`,
+  `af.demand.evidence_satisfied` (an admitted reuse that satisfies a stale Demand again
+  included), `af.demand.stale` and `af.demand.waived`; every summary carries the committed
+  sequence of the event that caused it. From `metrics` on every committed accounting transition records the
+  Attempt's charge as the Task projection holds it (`af.usage.state`, by the committed event's
+  sequence) and every sidecar write its merged row (`af.usage.wall`, ordered within one
+  execution only); `af telemetry runs` now sums the Attempts' latest charges. A mirror failure is
+  one problem, never a Store error, and makes the run `af.ledger.coverage = incomplete`. The new
+  `af telemetry ledger RUN` (`--json`: `af/telemetry-ledger@1`) prints a run's committed events,
+  Finding and Demand summaries and each Attempt's charge beside its sidecar observations, from
+  the telemetry directory alone, each Store log in its committed sequence, with the coverage and
+  history markers.
+- Telemetry, fifth package: the performance contract of design §12 is measurable.
+  `make telemetry-gate` builds a release `af` and runs `scripts/telemetry-overhead.py`: `off`
+  against `spans` on three pinned, credential-free bench fixtures under
+  `fixtures/telemetry-bench/` (four concurrent Attempts, one Attempt streaming 50 MiB, a Review
+  appending Store events), 20 randomized pairs each with private homes, the paired overhead's
+  median and 95% bootstrap interval per fixture and the dense fixture's drain latency, failing
+  (exit 3) past a 2% median, a 3% upper bound or a 10 ms drain difference (`--json`:
+  `af/telemetry-overhead@1`); `make check` runs only its one-pair smoke.
+  `scripts/telemetry-corpus.py` generates the deterministic read-latency corpus
+  `telemetry-corpus-10k` into a directory the operator names and measures `af telemetry status`
+  (fresh and unchanged index) and `show` on it, warm and, where the page cache can be dropped,
+  cold (`--json`: `af/telemetry-read-latency@1`); an unchanged `status` now opens each blob
+  prefix directory once instead of once per object. `docs/telemetry.md` gains a `Performance`
+  section with the protocol and this machine's first numbers.
+- Telemetry, sixth package: every Claude and Codex Attempt's streams are tapped as they arrive.
+  The supervisor's drain offers each chunk to a bounded queue (`[telemetry]
+  observer_queue_bytes`) without ever waiting — a full queue drops it and counts it — so the
+  process, its bytes, status, deadline, held output and accounting are unchanged, and from
+  `spans` on the consumer records validated structure only, timed by arrival: each Claude
+  `assistant` message and each Codex turn is `af.turn` with the harness's own per-turn usage and
+  stop reason, a Claude message's turn ending as soon as its line is read (a further line of the
+  same message is `af.turn.continued` on that turn, which `turns` folds into its row), each `tool_use` block or Codex command and MCP item is `af.tool` with its input and
+  output bytes, the other lines are events, every harness identifier is a correlation id
+  (`af.corr`) and every untrusted string only a size. A frame too long to judge is withheld
+  whole, a dropped chunk is `af.stream.gap` and makes the stream incomplete, and once the
+  process has ended Telemetry takes its own release decision over the complete streams and a
+  Codex Attempt's `-o` final message, judged for every observed process whatever its ending —
+  login-challenge material, a final message that cannot be read whole, a replaced capture or a
+  stream the output cap truncated withholds everything pending (`af.stream.withheld`), a
+  successful reply's included — before
+  `af.harness.ids` lists the originals that pass the credential rules, continued in
+  `af.harness.ids.part` events past what one record holds; an identifier past the 4096 a
+  process pends or longer than 256 bytes has no mapping and is counted in
+  `af.harness.ids.omitted`, with `af.harness.ids.analysis = incomplete`. A Claude Attempt asks for `--output-format
+  stream-json --verbose` at `spans` and `content` and keeps `json` at `off` and `metrics`, the
+  invocation-cost gate (`scripts/telemetry-invocation-cost.py`, `af/telemetry-invocation-cost@1`)
+  having failed; `claude --help` must declare `--verbose`. The Store now keeps of a Claude
+  Attempt's stdout only its `result` line (under `stream-json` the only envelope there is), and of a Codex Attempt's its turn and error lines
+  beside the `-o` final message — never the native text around them, which classification
+  reads in memory — so accounting, classification and raw evidence are the same at every
+  level. `af telemetry turns` and `tools` (`--json`: `af/telemetry-turns@1`,
+  `af/telemetry-tools@1`) print one row per turn or tool call with its timing, usage, outcome
+  and sizes.
+- Telemetry, seventh package: at `[telemetry] level = "content"`, and only there, Telemetry
+  keeps content as blobs, each redacted whole before any truncation with its source's digest
+  and size intact and named by one event: the composed Worker input of `af.context.compose`
+  (`gen_ai.content.input`, `gen_ai.content.system`); once Telemetry's release decision withheld
+  nothing, a harness's assistant text and Codex agent messages (`gen_ai.content.output`), its
+  thinking blocks and reasoning items (`af.content.reasoning`, with `content_reasoning`) and its
+  tool arguments and results (`af.content.tool_input`, `af.content.tool_output`, with
+  `content_tool_io`); a check's stdout and stderr (`af.check.output`); every mirrored Store
+  event's payload (published without waiting for the consumer: a busy consumer delays no Store
+  append and no lease renewal; a released stream published under the seal renews the 2 s
+  shutdown bound with each content, so a release that outlasts it completes); an admitted Finding's body (`af.finding.body`); and `.af/af.toml`, the
+  pipeline's `pipeline.toml` and the Task file (`af.config.text`). A document `af` composed
+  treats its identities and counters as typed only in the positions its kind declares — in a Worker
+  request's input payloads only where the schema of an artifact type `af` owns declares one, the
+  Task's requirements always judged whole. Past `content_attempt_max_bytes` for an Attempt or
+  `content_process_max_bytes` outside one, further content is dropped and counted with one
+  `budget` problem (a piece publication drops is never charged), and nothing about the Worker
+  changes. The index (now `af/telemetry-index@3`; an earlier one is refused until `af telemetry
+  reindex`) keeps the FTS5 table `content_fts` at ingest when `content_index` is on and empties
+  it when it is off. `af telemetry context RUN ATTEMPT
+  [--raw]`, `reasoning RUN ATTEMPT` and `search TEXT [--since D] [--run RUN]` (`--json`:
+  `af/telemetry-context@1`, `af/telemetry-reasoning@1`, `af/telemetry-search@1`) read it back;
+  `search` reads a bounded number of matches and shows an excerpt only of a blob it verified,
+  listing a missing or corrupt one as unreadable; below `content` the first two say the content
+  was not captured and `search` is refused. No
+  prompt, Warm Set, Worker Notes or optimization source reads any of it.
+- Telemetry measures its bytes the way the Storage Budget measures every other kind (ADR-0159
+  clause 13): the allocated bytes of regular files, a hard-linked file once, directories and
+  symbolic links nothing. `af telemetry status`, `af telemetry gc`, `af storage` and
+  `af storage prune` now report the same telemetry numbers on ext4 as on APFS; on Linux they
+  are smaller than before by 4096 bytes for every directory under the telemetry root, which
+  they no longer count.
+- Telemetry merged with the 2026-10-20 security audit: `[telemetry] max_bytes` is enforced, not
+  advisory — the Storage Budget's sweep evicts sealed segments past it, and `af telemetry status`
+  over the cap warns that the next storage sweep evicts them (its help, `af help telemetry`,
+  `docs/telemetry.md` and `schemas/telemetry-status-v1.json` say the same, and name no overhead
+  gate). `af/storage-prune@4` carries the audit's `left` (what a removal left in place in a Store
+  not proven af's) beside `telemetry`; `af/storage-prune@3` stays superseded and ships no
+  schema. Every `review-process` result carries the capture cap's `truncation` beside the
+  leader's process id and resource use, a check, an Attempt, a container command or a gate call
+  past the cap fails naming it inside its `af.check`, `af.harness`, `af.process` or `af.git`
+  span, which ends after that judgement: a capture rejected for its cap ends its process span as
+  failed (`error.type = "failed"`) with the cap reason, whatever the exit code, its stream sizes
+  and resource use still recorded, and the Linux subreaper's reaps of escaped descendants take the same reap lock. At
+  `metrics` a recording command's segment header keeps `argv[0]` and the subcommand chain the
+  argument parser matched, which `af task run` and the other recording commands now pass in.
+- A blob published again is renamed over its existing file, so the file's age restarts with the
+  publication: a sweep that runs while the new reference is still buffered — a detached Store
+  mirror publication's, or an attached one's past the bounded wait — and evicts the segment that
+  referenced the file before no longer collects it as an orphan before the reference is written.
+
+- Security audit 2026-10-20, state, storage and policy parsing (H2, M6, M5, L10, L14, L4, I7). An
+  explicit `--state` directory must be absent, empty or already an af Store: one holding anything
+  else is refused before anything is written or registered, and a new Store carries the owner
+  marker `.af-store`. The sweep, `af storage prune --apply`, `af review gc --state-root` and
+  `af self uninstall --purge` remove a Store outside af's roots whole only while it is marked and
+  holds nothing but af's entries, each known by its exact name (`notes.lock`, `backup.lock` or
+  `events.sqlite.notes` is never af's), and a removal claim only when its name
+  (`.af-removing-<pid>-<device>-<inode>`, as removals now name it) binds the very directory it
+  holds, so a user's `.af-removing-1-2-3` is kept, reported and not measured, and the sweep
+  finishes only such proven claims; otherwise they remove af's entries alone and name what they
+  left (`left` in `af/storage-prune@4`), and such a Store counts only af's entries against the
+  budget. af's state and telemetry directories are created `0700` and its files there `0600`
+  (the SQLite `-wal` and `-shm` included) whatever the umask, and an open af-owned root is
+  narrowed to `0700`; the checkout keeps the user's umask. Route patterns match in
+  O(pattern × path) and are capped at 1024 bytes and 64 wildcards. Authority files are read
+  by the path as named, never canonicalised first, without following a final link and within
+  1 MiB each: a linked configuration layer is refused in one line, and a project's `.af/af.lock`
+  that dispatch or the remembered pins read is refused, in one line on stderr, when it is a link
+  or over 1 MiB, Worker packages within 256 files and 8 MiB,
+  and a parse error quotes at most 200 bytes of its line. A Task cancelled or abandoned after its
+  gate published is listed and cleaned up like a finished one. A Campaign label is at most 128
+  bytes and refuses format, bidi-control and separator characters
+  ([ADR-0144](docs/adr/0144-hold-afs-disk-use-to-a-machine-budget.md),
+  [ADR-0035](docs/adr/0035-address-campaign-state-by-opaque-id.md)). Outside this package's
+  files, minimal edits: the `--state` help in `crates/af/src/cli.rs`, the Task Store creation
+  and `--state` admission in `crates/af/src/task_execution.rs`, the private `git-home/` in
+  `crates/af/src/task.rs`, and the `nix` features of `review-store` and `review-telemetry`.
+
+- Security audit package D (process capture, containers, Worker environments, the remote gate).
+  Each captured stdout and stderr of a check, a Worker or a container command is kept to 64 MiB
+  (`review_process::MAX_CAPTURED_STREAM_BYTES`); the rest is read and discarded so the child never
+  stalls, the total is recorded, and a check whose output passed the cap fails with a reason
+  naming it, as does a Worker Attempt. On Linux af is a child subreaper, and a shell Attempt or a
+  local check ends every descendant that left its process group (`setsid`, or a `set -m` job in
+  another group of the same session) but kept the `AF_PROCESS_TREE` value it inherited from its
+  leader, before its tree is sealed: that value alone, never how many runs are live, tells it
+  from any concurrent run's, so a run never ends a process another live run started; when the
+  subreaper cannot be set, af warns once on stderr and every check (`reason`) and Attempt
+  (stored stderr) records that descendant cleanup fell back to the process-group kill. A
+  descendant that clears or replaces that variable and leaves its process group can still
+  outlive the run under `trusted_local`, on Linux as on macOS, where any such descendant can;
+  `trusted_local` is no security boundary, and untrusted code belongs in a container
+  ([ADR-0118](docs/adr/0118-let-review-workers-execute-checks-in-an-ephemeral-clone.md),
+  [ADR-0120](docs/adr/0120-give-a-source-writing-worker-a-shell.md), amended). Container checks
+  run with `--pids-limit 4096`, `--cap-drop=ALL`, `--security-opt=no-new-privileges` and
+  `--init`, and with `--memory`/`--memory-swap` and `--cpus` when the `[gate]` binding sets the
+  new optional `memory` and `cpus` keys. Attempts and local checks get a `PATH` without empty or
+  relative entries; a Codex Attempt's `HOME` is a private empty directory, not the candidate
+  tree; a Claude Worker's `CLAUDE_CONFIG_DIR` is redacted from stored output like `CODEX_HOME`,
+  in its canonical spelling too. The Remote Check gate streams each blob into `git fast-import`,
+  runs `git` and `gh` from an allowlisted environment (no `GIT_CONFIG_COUNT`, `GH_HOST` or
+  `GH_TOKEN`), calls `gh api --hostname github.com`, redacts any URL's user information, also
+  refuses a candidate that changes `.github` itself, `.gitmodules`, `.cargo/` or a root
+  `action.yml`/`action.yaml`, and cleans up through the mapping entry of the Task's
+  `repository_id`; the docs now say the workflow *file* is protected and everything it runs is
+  candidate code
+  ([ADR-0140](docs/adr/0140-run-a-declared-check-through-a-gate-pull-request.md), amended). Two
+  edits outside this package were unavoidable: the `[gate]` keys in `review-config` (with the
+  struct literals in `af/src/onboard.rs` and the Integration tests, the two provider sites in
+  `review-pipeline/src/review_domain` and the container Gate argv test beside them), and the
+  cleanup lookup in `af/src/storage/gate.rs`.
+
+- Self-management, the installer and the release tooling are hardened after the 2026-10-20
+  security audit. An install a project's `.af/af.lock` asks for now needs the archive to match
+  both the lock's digest and the release's signed `SHA256SUMS` (receipt
+  `verified_by = "lock+signature"`); a release without signature material is refused under a lock
+  as outside one. `[self] install_pins` is `"ask"` (the new default), `"always"` or `"never"`
+  (`true` and `false` still mean `"always"` and `"never"`): under `"ask"` a pin that is not
+  installed is installed only after a terminal confirmation naming the version, the lock, and
+  whether the release is older than the running `af` or a pre-release; without a terminal nothing
+  is installed and an older pin's command runs under the current `af` after a notice naming
+  `af self install <version>`. `af review plan` never installs. `af self update` without
+  `--version` refuses a listed newest that is older than the running release. Releases of a public
+  repository are listed and downloaded anonymously over HTTPS with `curl` (pinned to HTTPS and
+  TLS 1.2), so updates work without `gh`, which is used only when that is refused, and judged by
+  the call it makes rather than by `gh auth status`. `af self uninstall` leaves
+  `$XDG_BIN_HOME/af` in place unless it is af's link into its versions, and `af self remove` and
+  `prune` delete through the same descriptor-based removal as uninstall, never following a link.
+  `install.sh` pins `curl` to HTTPS, refuses without `minisign` unless
+  `AF_INSTALL_ALLOW_UNSIGNED=1` (saying so on stderr), and verifies an installed binary again on a
+  re-run. The PR-report check exempts a `release/` branch only from this repository itself, never
+  a fork's. The release workflow installs `cargo-zigbuild` and `ziglang` from
+  `scripts/release-toolchain.txt` with `--require-hashes --only-binary=:all:` (hashes of every
+  published wheel, taken from PyPI), and a weekly, on-demand `cargo deny check advisories bans
+  sources` workflow with `deny.toml` gates advisories, duplicate crates and sources.
+  `SECURITY.md` states what the update check sends and the pinned projects `self.toml` keeps,
+  and the release docs the `pin` job's blast radius
+  ([ADR-0044](docs/adr/0044-af-manages-itself-and-dispatches-to-the-pinned-release.md),
+  [ADR-0045](docs/adr/0045-one-release-train-and-a-pin-that-binds-bytes.md),
+  [ADR-0142](docs/adr/0142-carry-the-af-task-report-in-every-pull-request.md),
+  [ADR-0152](docs/adr/0152-push-the-release-pin-with-a-deploy-key-that-bypasses-mains-ruleset.md),
+  amended in place). Outside this package's own files, the `af help self` text in
+  `crates/af/src/topics.rs`, the `af self` and `af onboard` help in `crates/af/src/cli.rs`, and the
+  TUI settings golden (`install_pins = "ask"`) change with the new default.
+
+- Bare `af` no longer runs `git diff` against the working tree or `git hash-object` to mark
+  drifted Pipelines and Workers. Both could run an fsmonitor or a clean filter that a checkout's
+  own `.git/config` names. The browser now takes the committed blob ids from `ls-tree`, hashes
+  each working-tree file in-process as git hashes a blob (`blob <len>\0`, then the bytes,
+  streamed through one 64 KiB buffer), and compares the ids, so its drift check never holds a
+  whole blob or a whole working-tree file. Every
+  git call the browser makes, and the Task file advice's `git check-ignore`, now runs with
+  capture's cleared environment and full `-c` override set
+  (`review_source_git::git::isolated_command`). That advice still reads the global excludes file
+  at git's default place
+  ([ADR-0122](docs/adr/0122-show-committed-workers-and-their-recorded-attempts.md),
+  [ADR-0115](docs/adr/0115-declare-the-af-layout-and-keep-task-files-out-of-git.md), amended).
+- A tree that names a path git itself refuses is refused, with an error naming the path, at
+  capture, materialization and Task binding. One shared predicate (`git_refuses_path`) covers
+  `.git` in any ASCII case, its NTFS and HFS+ spellings (`.git.`, `.git` with a trailing space,
+  `git~1`, HFS-ignorable code points) and a symlinked `.gitmodules`. On a sandbox volume that
+  folds case or Unicode normalisation (probed once per root), materialization refuses two paths
+  that would name one file, naming both. Committed capture streams `cat-file --batch` bodies
+  through one 64 KiB buffer and no longer allocates a blob whole. Stored bytes and digests are
+  unchanged
+  ([ADR-0020](docs/adr/0020-stream-cas-materialization-and-clone-duplicates.md), amended).
+  `review-source-git` gains the `unicode-normalization` dependency, already in `Cargo.lock`.
+- A tree entry with a legacy regular-file mode such as `100664` is captured and reviewed as a
+  file, executable when its owner bit is set, instead of failing the review.
+- Text output of `af review plan`, `ledger`, `show`, `report` (text and Markdown), `render` and
+  `run` shows every control character in a changed path, finding title or other repository- or
+  model-authored string (pipeline node IDs, edges, reservation, input and provider lines of
+  `plan`, Proposal paths and report JSON lines of `show`, the selectors and node of `render`) as
+  a visible `\u{…}` escape. ESC, BEL and newlines no longer reach the
+  terminal raw. `--json` output is unchanged.
+
+- Security audit fixes (redaction, provider login, telemetry): the shared credential heuristic now
+  also withholds a URL carrying a password or an `http(s)` user, `password <value>` after whitespace
+  (`--password x`, `.netrc` lines), `mysql -u … -p…`, AWS access key ids, device codes beside
+  `code`, `/login/device`, one-time codes and `#code=`, `Bearer: …`, JSON Web Tokens with a `+` or a
+  short signature, hex runs of 20 or more mixing letters and digits, lower-case runs of 40 or more,
+  the account a login names, and two long words that are one secret split by a space; a `sha256:`
+  digest and a 40- or 64-hex git object id are no longer withheld. JSON values are judged whole
+  whatever their member's name (`pw` now counts as a secret name), and a granted path is replaced in
+  its home-relative, canonical, JSON-escaped, percent-encoded and non-normalised spellings, the
+  last wherever the path starts (after `=`, `:`, a quote, a bracket or whitespace); blobs
+  record `af-redact/2`. Provider login processes disable core dumps (non-dumpable on Linux) and zero
+  the challenge and the returned code when dropped (new dependency: `zeroize`); every buffer of
+  the private-host transport that holds a challenge or a code (the serialized frame, the read
+  buffer and the pending input, each allocated once at its bound) is zeroed on every exit path. The terminal-only
+  login is documented as protection against accidental capture, with a pseudo-terminal caller out of
+  scope and a test pinning it ([ADR-0112](docs/adr/0112-refuse-agent-mediated-provider-logins.md),
+  amended). At telemetry level `metrics` the segment header keeps only `argv[0]` and the subcommand
+  path its caller's argument parser matched (`Start::command`; never guessed from leading
+  lower-case words, so `af provider setup alice` records `provider setup`; `argv[0]` alone when
+  none is passed in) and no working directory; `-p` and `--pw` values are withheld at `spans`. `sink = "otlp"`,
+  `sink_endpoint` and `sink_headers_file` are refused at load as not implemented; `[telemetry]
+  max_bytes` is documented as the cap the storage sweep enforces and `af telemetry status` warns
+  when over it that the next sweep evicts; its `--json`
+  paths (and `reindex --json`'s) are `~`-prefixed like the text output; no help or status text names
+  an overhead gate; `docs/security/containment-probes.md` records the green `container-probes` job
+  and closes live Gate routing. Fixtures outside this package's files changed only where they pinned
+  a 40-hex run or a bare digest as a secret (`review-runner` CLI tests, the Claude and Codex
+  auth-failure tests, one `record.rs` test), plus the `af telemetry` text output, the `af telemetry
+  status` help in `cli.rs` and the `nix` features in `crates/af/Cargo.toml`.
+
+- Native Task checks and measurements now refresh the mtimes of regular files in their private
+  source trees before running. Reusing a warm Cargo target across Snapshots, including an
+  A→B→A reversion, rebuilds workspace crates from the current Snapshot while keeping registry
+  dependencies warm. Sources are ordered after the held target's actual mtimes without a future
+  lead; future-dated targets run cold while Cargo home stays warm. Repeated Cargo invocations
+  within a check reuse the units just built. Warm diagnostics still report available target bytes rather than a
+  compiler cache hit or a previously built Snapshot (#266,
+  [ADR-0161](docs/adr/0161-refresh-native-check-source-mtimes-before-reusing-cargo-target.md)).
+
+- Performance laboratory P10 repair. The kernel receipts reader (`af.perf-kernel-receipts/3`,
+  shape and schema unchanged) now refuses a Task result whose `evidence` or
+  `missing_obligations` is not strictly ascending in the kernel's string order, as `unique_set`
+  does when the kernel deserializes it. Before, it accepted the root's reversed evidence. An
+  output's `artifact_ids` stays valid in any order. Four generated fixtures cover an unsorted
+  and a duplicated entry in each set. A Rust test also checks eleven variants built at test
+  time, and the laboratory's reader and `review_core`'s own deserialization agree on every one.
+  The retained evidence is byte-exact. `checks/p10-repair-reconciliation.json` reconciles the
+  current source with the measured commit through the earlier repair's record, using the new
+  `fingerprint.py rerepair`
+  ([ADR-0189](docs/adr/0189-read-a-task-result-s-sets-in-the-kernel-s-order-and-reconcile-a-second-repair-through-the-first.md)).
+
+- Activation closeout of the performance laboratory. A new `Performance activation` workflow
+  verifies a proposed activation with the base revision's own code and a read-only token
+  scoped to that one step. When the manifest or a record it names changed, it runs `cli.py
+  activate --verify-proposed`, which recomputes readiness and a bridge's evidence from the
+  retained Actions evidence. An unchanged activation is verified locally, and `--fetch` is gone.
+  Active plans carry their calibrated CPU/image groups. A run measured on any other host cannot
+  satisfy the required check (`uncalibrated_cpu_group`). An equivalent-adapter bridge measures
+  as active only with verified executions: a golden check of both product sources and a
+  post-merge A/A, recorded by the new `cli.py equivalence-evidence`. Its protected diff now
+  covers lock files, Cargo manifests, build scripts, the toolchain and Cargo configuration.
+  Readiness binds each original's head commit and refuses another producer. It names
+  history gaps from the listed numbers alone. Capped or inconsistent listings are refused.
+  `cost-report` reads each run's cache from its build manifest, keeps failed attempts and needs
+  five distinct completed comparisons per group. `shipping-report` refuses repeated runs and
+  other policies, and keeps failed or missing samples visible. No real cohort, activation,
+  bridge or demonstration has run (`af.perf-run/6`, `af.perf-readiness/5`,
+  `af.perf-activation/3`, `af.perf-equivalence/1`, `af.perf-activation-verification/2`,
+  `af.perf-cost/2`, `af.perf-shipping/2`;
+  [ADR-0184](docs/adr/0184-verify-proposed-activations-in-trusted-ci-and-bind-bridges-groups-and-costs-to-retained-executions.md)).
+
+- Calibration readiness now detects a deleted original. A cohort records the performance
+  workflow's run number when it is declared, and readiness requires every later run number in
+  the history it reads, so a deleted first dispatch refuses rather than letting a later one
+  stand in. Readiness also counts only successful original attempts. It recomputes A0, loop costs
+  and counts from the A/A and preparation originals and refuses other sealed parameters. It
+  invalidates a member with two artifacts of one expected name and requires its measuring jobs on
+  fresh hosted runners. An impossible timestamp is invalid evidence, not a traceback. New
+  `cli.py activate --verify` verifies an activation manifest: every active plan rehashes its
+  cohort, parameter and readiness records and recomputes the decision, and `--fetch` recomputes
+  readiness from the cohort's retained Actions evidence. A full plan outside the calibrated
+  environment and recipe is unavailable. An equivalent-adapter admission may change only its
+  named adapter files and registry entries, and owner approval, golden checks and a post-merge
+  A/A stay pending. New `cli.py cost-report` and `shipping-report` compute the cost and
+  shipping-budget demonstrations from retained runs. No real cohort, activation or demonstration
+  has run yet (`af.perf-cohort/4`, `af.perf-readiness/4`, `af.perf-activation/2`,
+  `af.perf-activation-verification/1`, `af.perf-cost/1`, `af.perf-shipping/1`;
+  [ADR-0183](docs/adr/0183-detect-deleted-originals-recompute-parameters-and-verify-activations-from-retained-evidence.md)).
+
+- Calibration readiness now binds each cohort member to its first dispatch rather than to
+  whichever of its artifacts can still be read. The performance workflow names a calibration
+  run for its cohort's digest and member as the run is created. `cli.py readiness` and
+  `calibration-prepare` read the complete workflow-run history and that run's attempt-1 record,
+  so an original that failed, expired or became unreadable keeps its place and no later
+  dispatch replaces it. Each member's plan must also be exactly the plan its authority freezes
+  for it again (`--repo`). Also fixed: the authority probe gives each setup write a lease of its
+  own and times its region through a fresh, cold authority. Three real-time tests run alone,
+  and `make lint` now builds and runs the calibration builds of the probe and `af`
+  (`af.perf-cohort/3`, `af.perf-readiness/3`;
+  [ADR-0182](docs/adr/0182-bind-each-calibration-member-to-its-first-dispatch-and-its-authoritys-plan.md)).
+
+- Calibration cohorts can now be declared, run and judged. `cli.py cohort-declare` fixes a
+  cohort's logical members, seeds, days and CPU/image groups before any member runs; GitHub's
+  run IDs are recorded beside it as provenance, so its bytes never change. Preparation and
+  slowdown members build both sides with the default-off `perf-calibration` feature, and only
+  the candidate runs a deterministic CPU loop inside its timed operation. Shipped builds refuse
+  the loop's control. `cli.py calibration-prepare` seals A0 and the loop counts before any
+  trial. `cli.py readiness` recomputes readiness from each member's original retained run. It
+  refuses reruns and replacements and requires all 20 A/A members within tolerance and 9 of 10
+  power trials valid in every critical case of the same trial. No real cohort has run yet.
+  Also fixed: an unreadable or inconsistent claim from the trusted release handoff now stops a
+  release measurement instead of allowing a second one. The authority probe's timed region takes
+  a fresh lease of its own after setup. The supervisor kills again a process that a single group kill
+  missed while it was being forked (`af.perf-run/5`, `af.perf-cohort/2`,
+  `af.perf-calibration-parameters/2`, `af.perf-readiness/2`;
+  [ADR-0181](docs/adr/0181-declare-cohorts-before-they-run-inject-only-the-candidate-and-count-whole-power-trials.md)).
+
+- Published releases are now measured. `performance-release.yml` runs when a release run
+  completes. Its read-only handoff checks that the run is this repository's `release.yml`,
+  that the release is published under its exact tag and SHA, and that `sign and publish`
+  succeeded in some attempt, so a later failed pin retry still counts. It claims the release's
+  upstream run, tag and SHA once, before any sample, and measures only the first valid claim.
+  A later run of the same release links that claim's result, and a claim without a result is
+  reported incomplete and never measured again on its own; only a `remeasure_of` dispatch
+  measures again, keeping the parent claim. The measurement calls the token-free
+  `performance.yml` and stays advisory. A CLI trace that outgrows its evidence room is now
+  always `trace_over_cap`, also when the watch cancelled the command while it was still
+  running (`af.perf-schedule/2`, `af.perf-release-claim/1`, `af.perf-release-handoff/1`;
+  [ADR-0180](docs/adr/0180-hand-off-published-releases-read-only-and-measure-each-claimed-identity-once.md)).
+
+- Guarded kernel performance experiments. The new `cli.py measure --case ID --metric KEY` is
+  one repetition of a kernel `measure`: it builds the native probe offline into the kernel's
+  Cargo target, runs one golden-judged nonspawning library sample and prints one
+  `af.measure-report/1` line, or exits nonzero with no report. Before importing the driver or
+  building anything, the literal isolated bootstrap of the staged policy verifies the whole
+  protected harness against the digest the captured policy holds. The harness is the driver,
+  fixtures, probe, adapters, trace and calibration helpers, and every manifest, lock, build
+  script, toolchain pin and Cargo configuration, with additions. The bootstrap refuses links and
+  stray bytecode. `fixtures/performance/kernel-measure/` stages the measures for a reviewed
+  human installation; `cli.py harness-digest --check` runs in `make check` and release
+  preparation, `--write` re-pins. Objectives compare `elapsed_ms` until the guard is accepted. A
+  real kernel integration proves tampered candidates never reach an improved receipt. A warm
+  target never measures another revision's product. Costs count every retained execution, fail
+  any with a failed sample, timeout or unhealthy sentinel, and observe real cold or primed warm
+  compiled caches. Shipping keeps one target per binary and host group, with median and p95, and
+  never demonstrates from unhealthy runs. A bridge's protected diff covers the instrument helpers,
+  and fetched bridge runs are bound to the Performance workflow, attempt and hosted jobs
+  (`af.perf-builds/6`, `af.perf-cost/3`, `af.perf-shipping/3`,
+  `af.perf-activation-verification/3`, `af.perf-kernel-inventory/1`;
+  [ADR-0185](docs/adr/0185-measure-guarded-kernel-experiments-through-a-literal-bootstrap-over-a-protected-harness.md)).
+
+- Performance laboratory p8 closeout. The kernel receipts reader (`af.perf-kernel-receipts/3`)
+  now binds each retained baseline, candidate and comparison to the artifact, type and Snapshot
+  its Task's result names, and refuses a retained output the result does not name or a named one
+  that is missing, as a failed Task leaves it. It recomputes every envelope's content and
+  artifact IDs and every whole stream's ID with the kernel's canonical JSON and domains, so a
+  changed run under its original IDs is refused. A stream cut to its first and last 32 KiB says
+  so, and its omitted middle is never claimed rehashed; `/2` is refused. Reports list only failed
+  or incomplete cases in their first view, keep passing improvements and non-regressions in the
+  Cases table, and say every case passed, by status, instead of calling an improvement within
+  tolerance. A measured run with a missing or failed slot states how many planned records it
+  holds and what is missing or failed, never that every pair ran. ADR-0186 no longer asserts an
+  unmeasured hashing time. `docs/performance-evidence/p8-local/` retains one real same-source run
+  of the documented workflow on a macOS arm64 host, from the frozen plan and offline build to the
+  report, its linked phase-trace child, archive, history, exact reproduction and link checks; it
+  is functional local evidence, not a product speed claim
+  ([ADR-0187](docs/adr/0187-bind-kernel-receipts-to-their-task-results-word-reports-by-what-was-admitted-and-retain-a-real-local-run.md)).
+
+- Performance laboratory acceptance repairs. The guarded kernel measure's bootstrap now protects
+  case variants of build inputs, such as `BUILD.RS` and `.CaRgO/config.toml`, that a
+  case-insensitive filesystem hands to Cargo. A warm Cargo target is keyed by the content of the
+  whole measured Snapshot, so a source below a directory named `target` or a file a package
+  includes from outside its member is never measured stale. The probe's output is bounded while
+  it is read: one that outgrows its bound or timeout is killed, a held stream fails, and the
+  build log and failure tail are capped. A fetched bridge run must be exactly the plan the
+  bridged authority freezes for its dispatch, so a widened tolerance or another changed frozen
+  field is refused. The native kernel integration adds a case-variant tampered candidate. It
+  exports schema-checked `af.perf-kernel-receipts/2` receipts with each output's envelope and
+  every repetition's bounded public streams, and runs alone because it asserts real elapsed
+  time. Test helpers keep an `af` process's real exit status and signal instead of `-1`.
+  Reports lead with the verdict and the affected cases' baseline, candidate, absolute and
+  relative change, keep exact statistics and provenance in expandable details, and word
+  synthetic, measured, mixed and empty evidence by what it is. `docs/performance-acceptance.md`
+  records what is implemented, unavailable and still pending
+  ([ADR-0186](docs/adr/0186-fold-protected-paths-key-warm-targets-by-the-whole-snapshot-bound-measure-output-and-replan-bridge-runs.md)).
+
+- Performance laboratory P9 repairs. The kernel receipts reader (`af.perf-kernel-receipts/3`,
+  shape and schema unchanged) now refuses what the kernel itself refuses. That covers a blank
+  producer run, node or operation (blank as Rust's `trim` defines it), a blank domain
+  conclusion, satisfied acceptance without completed execution, evidence and outputs, an empty
+  or over-cardinality output binding, and a retained stream part longer than 32 KiB once
+  decoded, in either encoding. Seven self-consistent invalid fixtures each break one rule, and
+  a Rust test deserializes them into `review_core`'s own types to confirm the refusals. The
+  retained receipts are still admitted. The p8 local workflow's snapshot stage no longer
+  inherits a checkout's `.git`, and every stage stops at its first failure. The retained
+  history now holds the original run's page, regenerated byte for byte from its retained
+  bundle. Its links are checked in the exported directory itself, and the original measured
+  fingerprints are unchanged
+  ([ADR-0188](docs/adr/0188-validate-kernel-receipts-as-the-kernel-does-and-restore-the-retained-history.md)).
+
+- The performance laboratory's first package: a reviewed registry of the design's initial cases
+  (`fixtures/performance/suite.toml`), closed versioned evidence contracts with generated
+  schemas and golden fixtures, and `python3 scripts/performance/cli.py` `list`, `plan` and
+  `compare`. `plan` resolves baselines and the measuring authority and freezes the seeded paired
+  schedule; `compare` recomputes an exact `paired_median_tolerance_v2` verdict from retained
+  evidence and refuses missing, duplicate or tampered records. Nothing executes a workload yet,
+  and full plans stay unavailable until a calibrated activation exists
+  ([ADR-0162](docs/adr/0162-freeze-performance-plans-and-judge-them-by-exact-paired-verdicts.md)).
+
+- The performance laboratory's native probe: `crates/review-pipeline/examples/perf-probe.rs`
+  times each library case's real production operation (canonical serialize and validate, CAS raw
+  and typed reads, Git source capture of 100 and 10,000 files, cold and prewarmed projection of
+  exactly 10,000 Task events, the current-plan check and first `TaskRuntime::new` at both issue
+  #255 package sizes, and an advisory persistence round trip) on fixtures it generates through the
+  product's own writers, with setup timed apart. Independent golden entries
+  (`fixtures/performance/golden/native.json`) come from a reference generator that never runs the
+  product, and `python3 scripts/performance/cli.py probe` and `judge` check each side against
+  them. The registry is now `af.perf-suite/2`; its `/1` is refused. Nothing runs paired
+  comparisons yet
+  ([ADR-0163](docs/adr/0163-measure-native-workloads-through-a-public-api-probe-and-independent-golden-oracles.md)).
+
+- The performance laboratory's `compare` now refuses evidence it used to pass: a missing advisory
+  or sentinel record, a shard whose terminal record says failed or interrupted, records out of
+  planned order, and builds whose recorded recipe settings or Cargo.lock differ from the frozen
+  recipe and the digests `plan` now reads from each source's Git objects. A missed enabled budget
+  fails a complete healthy case even when its interval is inconclusive. The plan, build and
+  verdict contracts are now `af.perf-run/2`, `af.perf-builds/2` and `af.perf-verdict/2`, and their
+  `/1` documents are refused. The required `lint` check now fails unless the laboratory's Python
+  3.9 and 3.11+ legs succeed
+  ([ADR-0162](docs/adr/0162-freeze-performance-plans-and-judge-them-by-exact-paired-verdicts.md)).
+
+- The performance laboratory now writes the source capture and state projection fixtures once
+  per side and shard through each side's own probe. Each writer's check is judged against its
+  own golden entry before the fixture is sealed, and every sample copies it privately as
+  untimed setup. How a recipe builds, its image included, is frozen in the plan's recipe
+  identity (`cli.py plan --build-image` or `--trusted-host-build`), and a build never chooses
+  another image. A `name@sha256:` image is compared by its full reference. The `review ledger`
+  and `review report` oracles check every declared Finding and a findings summary consistent
+  with them. The supervisor's host backstop covers a sample's setup as well as its child. The
+  whole run is bounded by one execution start and total deadline, recorded when its build
+  begins. The plan, build, shard, probe request, golden, CLI and registry contracts are now
+  `af.perf-run/3`, `af.perf-builds/5`, `af.perf-shard/4`, `af.perf-probe-request/2`,
+  `af.perf-golden/2`, `af.perf-cli/3` and `af.perf-suite/3`, and earlier versions are refused
+  ([ADR-0170](docs/adr/0170-seed-native-fixtures-freeze-the-build-image-and-bound-the-run-by-one-deadline.md)).
+
+- The performance laboratory no longer kills only a sample's supervisor when its backstop or
+  the run's total deadline expires. The supervisor is sent SIGTERM and cancels the sample
+  through the same supervision: a running child or setup is ended and verified gone, and a
+  child not yet launched never is. A launch the deadline could not cancel in time is not made.
+  When nothing confirms that a sample ended, the shard stops (`cleanup_uncertain`). It then
+  keeps the sample's private scratch and the shard's seeds for recovery and names them in
+  `shard.json`. A diagnostic `cli.py probe` keeps its scratch the same way. The run's total
+  deadline now also bounds a shard's preflight: each Git read of the authority, the container
+  runtime query and the scratch enforcement fill ends 30 s before it. A step the deadline ended
+  refuses the shard as `run_deadline`, and no later step starts. The `task show` oracle now
+  requires the Task history to be numbered exactly 0..9999, each once and in order, over the
+  whole output, which the supervisor observes past any retained log. The supervisor request,
+  supervisor result and CLI registry contracts are now `af.perf-supervisor-request/3`,
+  `af.perf-supervisor-result/4` and `af.perf-cli/4`, and earlier versions are refused
+  ([ADR-0171](docs/adr/0171-cancel-samples-through-their-supervisor-carry-the-deadline-through-preflight-and-observe-history-order.md)).
+
+- The performance laboratory's native probe driver now refuses what it used to pass or damage:
+  `cli.py judge` refuses a recorded request whose case, contract, parameters or repetitions
+  differ from the registry, `probe` and `judge` refuse a golden document the reference generator
+  does not derive, a persistence sample without exact `logical_bytes` fails, and an explicit
+  `probe --timeout` outside 1 to 120 seconds launches nothing. The driver bounds a probe's
+  stdout and stderr while reading them and kills and reaps the direct child on overflow or
+  timeout; the probe removes `probe-work` only while it is the directory it created, and the
+  state persistence sample refreshes its production lease immediately before its region
+  ([ADR-0164](docs/adr/0164-judge-only-declared-probe-requests-against-a-reference-checked-golden.md)).
+
+- The native performance probe no longer removes anything: it creates `probe-work` in the
+  scratch it is given and leaves it for its caller. `cli.py probe` runs each sample in a private
+  0700 namespace that it holds by a directory handle, below a `--scratch` parent owned by you or
+  root and not writable by others unless sticky. It removes the namespace only through that
+  handle, confirms the removal, and fails the sample when cleanup is not confirmed; it no longer
+  ignores cleanup errors. A lease-bound sample is `lease_expired` only when the Store reports the
+  lease expired or fenced. A SQLite, decoding or clock error keeps the operation's own failure,
+  with both diagnostics. The state persistence sample finishes its Store reads before the lease
+  refresh that starts its region
+  ([ADR-0165](docs/adr/0165-own-probe-scratch-in-the-driver-and-take-lease-expiry-only-from-the-store.md)).
+
+- The performance supervisor bounds every wait. If it cannot observe a child's exit without
+  reaping it, it still enforces the deadline and cancellation and reports the exit as
+  `unobserved` or reaped by polling, with no timed interval. A failed process enumeration, reap
+  or kill makes the cleanup uncertain and keeps the original error; it is never `clean`. The
+  shared `review_process::sample` refuses PID-namespace containment unless it runs as a
+  namespace's PID 1. The supervisor result is now `af.perf-supervisor-result/2` and the
+  capability report `af.perf-capabilities/2`. `cli.py capabilities --verify-scratch-enforcement`
+  verifies a scratch bound only by the filesystem's own ENOSPC or EDQUOT after progress, with
+  the filesystem then reporting itself full; I/O and permission errors, no progress, the fill's
+  time bound and a failed cleanup refuse it. `cargo test --test perf_supervisor` builds the
+  example it tests. On macOS, cache metadata normalization no longer goes through `/dev/fd`,
+  whose lookup could fail intermittently when many processes ran at once
+  ([ADR-0167](docs/adr/0167-bound-every-supervisor-wait-and-verify-only-what-was-observed.md)).
+
+- The performance laboratory builds and supervises its samples. `cli.py build --plan run.json`
+  builds a frozen plan's two products and one authority-built `perf-supervisor` from detached
+  worktrees under `target/performance/<run>/`, using a credential-free private repository,
+  locked offline builds and an allowlisted environment. It verifies each AF binary's embedded
+  commit, overlays the authority probe from `fixtures/performance/adapters.toml` in fixed
+  priority order, and writes `builds.json` (`af.perf-builds/3`) beside hashed, read-only
+  artifacts. The supervisor times each child from launch to its observed exit, drains capped
+  output, forwards termination signals and establishes descendant lifecycle. In a Linux sample
+  container it is PID 1 and kills and verifies every escapee. `cli.py capabilities` reports what
+  the host can run and why. `cli.py probe` now needs `--trusted-local`, runs under the
+  supervisor, refuses spawning cases and removes its scratch only through verified tombstones.
+  A failed sample keeps its original diagnostic ahead of a bounded cleanup note
+  ([ADR-0166](docs/adr/0166-build-frozen-plans-and-supervise-samples-with-one-authority-instrument.md)).
+
+- The performance laboratory's shards and scratch enforcement fills take one machine lock,
+  `/tmp/af-perf-machine.lock`, before touching anything shared. It does not depend on `TMPDIR`
+  or `HOME`, and is held until the shard's terminal record. `review ledger` and
+  `review report` are now measured over a 10,000-event Campaign: each side's own
+  `af review run` writes it, and that side's Findings Ledger writer tops it up. Large Task and
+  Campaign state is written once per side and shard as a sealed seed. Every sample copies the
+  seed privately, and a changed seed stops the shard. Linux recipes build in a pinned build
+  image (`cli.py build --build-image`): no network, only the run's directories mounted, and the
+  authority closure read-only. Host builds need an explicit `--trusted-host-build`. Every
+  recipe, environment and case is executable where its host provides it; elsewhere the run
+  refuses with the host's reason. The CLI registry, shard and build records are now
+  `af.perf-cli/2`, `af.perf-shard/3` and `af.perf-builds/4`, and earlier versions are refused
+  ([ADR-0169](docs/adr/0169-coordinate-a-machine-seed-each-side-once-and-build-linux-recipes-in-a-pinned-image.md)).
+
+- The performance laboratory runs frozen plans. `cli.py run` executes exactly one shard of a
+  plan from its verified build, in planned order with its start and end sentinels. Nothing is
+  rebuilt, retried or reordered. Each binary is rehashed before each launch. Whatever happens,
+  the shard writes a terminal `shard.json`; slots past a deadline stay unstarted, and a cleanup
+  that is not confirmed stops it. `cli.py aggregate` imports shard bundles from other hosts and
+  recomputes the verdict. `fixtures/performance/cli.toml` declares whole-CLI commands and
+  independent oracles. They check each side's package version from its own Cargo.lock, help
+  tokens, a captured Task, a `task run` whose check(`true`) is proved to have run, and exact
+  counts over `task show --json` on 10,000 Task events. Each side writes its own fixtures in an
+  untimed setup step. `review ledger` and `review report` stay unavailable until a Campaign
+  fixture writer exists. Samples and shards are now `af.perf-sample/2` and `af.perf-shard/2`,
+  recording identity, metric scopes, execution and host observations with reasons for every
+  unknown. The supervisor's request and result are `/2` and `/3`, adding the setup step and
+  whole-stream pattern counts. Earlier versions are refused. The local macOS environment runs
+  discovery and nonspawning library cases as `partial_scope`; Linux environments stay
+  unavailable until validated on a host with a verified scratch. A container sample now binds
+  only its own `sample/` directory, never the scratch filesystem's root. A build refuses when
+  the overlaid probe closure changes during a compile, and `cli.py build --zigbuild-bin` builds
+  the musl shipping recipe with exactly its pinned cargo-zigbuild and Zig.
+  `cargo test --test perf_supervisor` finds its target from cargo's own layout, so a precreated
+  target directory works
+  ([ADR-0168](docs/adr/0168-run-frozen-shards-with-whole-cli-oracles-and-only-a-per-sample-scratch.md)).
+
+- The performance laboratory now bounds its work by absolute deadlines that a slow step cannot
+  stretch. A scratch filesystem check fixes one deadline before its first step. A capacity
+  refusal that arrives after the fill's bound no longer verifies the scratch. A fill still
+  blocked at the deadline is abandoned, and its file is kept and named. A sample container is
+  removed once, within one 60 s allowance that also ends by the run's deadline. A seed's
+  directories are refused while they are read, as soon as they exceed the entry bound. Each
+  HTTPS request of the archive collector, its redirects included, is refused at its deadline
+  however slowly the server sends, with TLS verification unchanged. A cancellation admitted
+  before a sample's launch now always prevents the spawn; one that arrives during it cancels the
+  launched child. The supervisor's integration test runs its own copy of the example, so a
+  parallel test's rebuild can no longer remove it mid-run
+  ([ADR-0173](docs/adr/0173-own-the-supervisor-a-test-runs-and-bound-admission-collection-scratch-and-cancellation-by-absolute-deadlines.md)).
+
+- The performance laboratory admits files a measured side wrote only through held, non-following
+  descriptors, within declared entry, depth, logical-byte and deadline bounds checked before
+  anything is read. A seed with a symlink is refused before any mode changes, and a sparse
+  oversized file before it is read. A build output that is a symlink, lies under a symlinked
+  directory or exceeds the artifact budget is never copied. An AF binary without its own commit
+  is never published. A shard also fixes its run's deadline before it rehashes any artifact. The
+  `task show` oracle now judges the whole output as one complete JSON document: the Task's
+  identity, every history entry numbered 0..9999 in order and 9,997 lease renewals. Fractions,
+  exponents, misplaced entries and unclosed documents fail, and equivalent whitespace and member
+  order pass (`af.perf-supervisor-request/4`, `af.perf-supervisor-result/5`, `af.perf-cli/5`).
+  `cli.py report` writes a run's self-contained offline report, its JSON and a job-summary table.
+  `cli.py archive` keeps run evidence in a content-addressed filesystem archive with retention,
+  pins, capacity health and a read-only Actions collector. `cli.py history` shows compatible
+  history across runs
+  ([ADR-0172](docs/adr/0172-admit-candidate-files-through-bounded-descriptors-and-report-archive-and-trend-runs-offline.md)).
+
+- The performance laboratory's diagnostic child runs (`cli.py profile`) now run in the contained
+  Linux mode: `--mode linux_container --image … --scratch-fs …` takes a shard's preflight, then
+  runs every execution in its own sample container, with only the run's own directory of the
+  verified disk-bounded scratch filesystem writable. Outputs staged there are admitted into the
+  evidence. CLI cases are diagnosed through each side's own AF binary, each execution in a
+  private HOME and XDG. A state read uses that side's own seed, and every command's whole
+  output is judged by its oracle. Musl shipping diagnostic recipes sit beside the GNU and macOS
+  ones. A supervised run whose stdout was truncated fails before any oracle, even when its
+  retained prefix parses. A step whose files together outgrow the evidence room is cancelled
+  and refused, with every byte it wrote kept and counted. A seed tree is admitted and sealed
+  before its confined copy into each repetition. Each trace states its region's coverage, so a
+  setup-only trace is never complete (`af.perf-profiles/4`,
+  [ADR-0176](docs/adr/0176-diagnose-cli-cases-and-contained-linux-runs-and-bound-every-step-and-seed-before-it-is-used.md)).
+  The `af` browser now flushes typed keys before it shows a finished command's exit line, so an
+  Enter pressed as the line appears is never discarded.
+
+- The performance laboratory's diagnostic child runs (`cli.py profile`) now run every tool and
+  candidate as a request to the build's authority supervisor under the machine lock. The
+  execution mode is explicit (`--mode`), recorded beside what the plan's environment declares,
+  and the contained Linux mode is refused as not implemented. Each repetition of a profiled
+  probe is a fresh execution of its image within one recording, and its message is judged as it
+  arrives. Every file a tool or candidate wrote is admitted as a confined, bounded regular file
+  before it is read. The byte usage recorded is the evidence's actual size, with an
+  administrative reserve inside the cap. Lost events and potentially lost samples are decoded
+  apart from the recording itself, and are unknown, never zero, when it cannot be decoded.
+  Sanitized flamegraphs keep only the SVG namespace and a parsed safe CSS subset. Explicit zero
+  bounds are refused (`af.perf-profiles/3`,
+  [ADR-0175](docs/adr/0175-supervise-every-diagnostic-execution-admit-what-it-wrote-and-record-what-it-used.md)).
+
+- `report --diagnostic` now admits a child run's views against the trusted renderer, not their
+  hashes. The child page must be exactly the page drawn from its admitted profiles and traces.
+  Each sanitized flamegraph must be what the sanitizer makes of its original, and each Perfetto
+  export must be its trace's. The frozen child plan must carry the parent's sources, selectors
+  and authority, and the profiles must name that plan's sources, recipe, capture bounds and
+  cases. An inconsistent child, or one with active HTML or SVG, is refused, and no child bundle
+  is rewritten. A dispatched `refs/heads/NAME` now resolves where the workflow's checkout
+  fetched it, `refs/remotes/origin/NAME`, in the control step and the scheduler alike, and is
+  refused as ambiguous when a local branch of that name disagrees
+  ([ADR-0178](docs/adr/0178-admit-linked-diagnostic-views-by-their-renderer-and-read-dispatched-branches-where-the-checkout-fetched-them.md)).
+
+- A diagnostic child's page now links and embeds only sanitized flamegraphs. inferno's original
+  SVG, which may hold a script, stays archived byte for byte in the child bundle, named by path
+  and hash but never linked. `report --diagnostic` now refuses a child whose selected cases are
+  not the parent's workloads, whatever IDs they share. Each case must keep the parent case's
+  parameters, seed, timing, cache, oracle and AF environment; only its pairs, rank, alpha,
+  orders and shard may differ. The report also refuses a child whose profiles claim another
+  recipe kind than its frozen plan states, or whose evidence is not of that kind. Children are
+  classified by the plan's kind, never by a recipe ID. Diagnostic plans now freeze the recipe's
+  kind, base recipe and tools (`af.perf-run/4`), and earlier plans are refused. The comparison
+  fixtures commit only their golden verdicts and generate their run bundles at test time
+  ([ADR-0179](docs/adr/0179-link-only-sanitized-views-and-bind-a-diagnostic-child-to-its-parent-workloads-and-frozen-recipe-kind.md)).
+
+- The performance laboratory now runs continuously through `.github/workflows/performance.yml`:
+  pull requests to `main`, pushes to `main`, a nightly schedule and explicit dispatch all use one
+  planner, runner, comparator and report, every script running from the trusted control
+  revision. Gate branches are skipped, pull requests run only on ephemeral hosted runners with
+  read-only permissions and no secrets, and enforcement stays advisory; before an activation
+  exists the full check is unavailable and an advisory control bootstrap runs, and a policy
+  change adds both proposed-policy bootstraps (`af.perf-schedule/1`). One credential-free job
+  builds each run once and packs it with its modes for verified shards (`af.perf-build-pack/1`);
+  shards upload their evidence failed or not, and the aggregation keeps missing shards
+  incomplete. The report links validated diagnostic child runs and its rerun command keeps the
+  frozen configuration (`af.perf-report/2`). Diagnostic runs now keep the scratch of an execution
+  whose end was not confirmed, and count a raw trace against the evidence room while it is
+  written
+  ([ADR-0177](docs/adr/0177-schedule-continuous-runs-from-trusted-control-and-move-builds-once-to-bounded-shards.md)).
+
+### Added
+
+- Integrate the performance laboratory with advisory PR, main, nightly and release comparisons,
+  a stable final check, verified toolchain image provisioning and bounded continuous evidence
+  collection. Enforcement remains disabled until hosted calibration establishes readiness.
+
+- `af review show` escapes control characters in a missing Finding key before printing its error,
+  so the key cannot split or restyle the stderr line (#298).
+
+### Fixed
+
+- Admit the pinned artifact action's flat single-download layout for performance shards and
+  reports, retaining run/plan identity checks and missing-shard failures. Run benchmark CLI
+  setup, samples and diagnostics with `AF_SELF_OFFLINE=1`, preventing a detached update check
+  from invalidating otherwise completed fixture setup.
+
+Reduce repeated performance-fixture setup by writing admitted authority Tasks once per side
+and shard, then restoring a private copy with a cold validator and a fresh production lease
+for every sample. Distribute the complete quick suite over sixteen schedules, four at a time,
+with up to 25 sampling minutes per shard inside the unchanged 60-minute total limit.
+Keep the pair counts, coverage, performance thresholds and per-sample limits unchanged. Require complete full-suite
+bootstrap evidence before calibration; enforcement remains advisory.
+
+Authority compatibility: committed `.af/` policy is unchanged. The performance authority,
+authority probe contracts and staged protected-harness digest change; earlier calibration
+evidence does not activate this harness.
+
+Seed readers construct the cold production validator with a non-executing host; the full
+execution host is captured by the seed writer. This removes unused per-sample setup while
+keeping the timed Store checks and runtime construction unchanged. Reader contracts advance
+to version 3, and earlier contracts are refused.
+
+Make diagnostic seed-reuse and flamegraph tests request exactly three fresh executions, so
+FIFO scheduling delays cannot change the exercised repetition count. Production capture
+bounds and the separate recording-cap tests are unchanged.
+
+- Calibrate each performance case against the CPU group observed by its paired shard,
+  allowing a hosted trial to use different allowed CPUs across shards. Keep whole-trial
+  acceptance and all thresholds unchanged; unknown hosts still invalidate the trial.
+  Readiness records advance to version 6 and refuse earlier versions
+  ([ADR-0194](docs/adr/0194-bind-calibration-to-each-cases-observed-shard-cpu-group.md)).
+
+- Predeclare a seven-day hosted performance calibration cohort for 23–29 October 2026,
+  with 20 A/A comparisons, 16 preparation runs and 40 slowdown trials. Freeze its authority,
+  cases, pairs and six observed CPU/image groups before execution. Retain every original;
+  trials require separately sealed parameters and enforcement remains advisory.
+
+- Every pull request description states the lines the pull request adds per directory, in a
+  `Lines added` block that `python3 scripts/pr-lines.py` prints: a title with the total and a
+  table with one row per directory — its figure, and its share as a bar and a percentage (a
+  file under a `tests` directory counts as tests, a root file under its own name, figures
+  rounded past 1000) — and the `PR report` check renders the block again from the pull
+  request's commits and refuses a description whose block is missing or differs
+  ([ADR-0195](docs/adr/0195-state-the-lines-a-pull-request-adds-per-directory-and-check-them.md)).
+
+Fix self-optimization economics projections so a later complete capture clears earlier
+unavailable gaps for the same declared source. Still-unavailable sources, incomplete
+recaptures, and newer failures remain visible; retained capture history and
+execution accounting are preserved.
+
+- A pull request to `main` labeled exactly `no-perf` is not measured by the `Performance`
+  workflow: adding the label cancels the running measurement, removing it measures again, and
+  the stable `Performance check` reports the exemption as `exempt (label no-perf), not
+  measured`, never as a measured pass. Pushes to `main`, the nightly schedule, dispatches,
+  calibration, release handoffs and reruns ignore the label. Agents apply it only to a pull
+  request whose whole diff is plainly prose with no performance impact. A Remote Check
+  mapping entry may list `no_perf_paths`; a gate pull request whose whole change from the
+  Task's source lies in them gets the label, which af removes before a head update that no
+  longer qualifies and never creates in the repository
+  ([ADR-0196](docs/adr/0196-skip-pull-request-measurements-only-for-an-explicit-no-perf-label.md)).
+
+- `af provider detect` finds the `claude` and `codex` CLIs (on `PATH`, then in the usual install
+  directories) and every auth directory on the machine — the CLI variables, `~/.claude` and
+  `~/.codex`, their sibling names, the registry and `--dir` — asks each logged-in-looking
+  directory's CLI what `af provider status` asks, and prints the one command that registers it;
+  `--apply` registers every logged-in directory through `af provider add`'s publication, `--json`
+  prints `af/provider-detect@1`, and with nothing found it prints the install commands. A directory
+  without a login marker is never handed to its CLI, in `detect` or `status`, so neither creates
+  `~/.codex` any more. `af provider add` refuses a directory that is not logged in (exit 6) unless
+  `--unverified`; `af provider setup` creates a missing `--auth-dir` only with `--login`; its lock
+  moved to `$XDG_STATE_HOME/af/locks`; each status row names one `setup … --login` fix
+  (`--verbose` adds the CLI's own login command); `af help providers` explains the order of first
+  use; and the Codex private-host login accepts the device prompt of codex-cli releases after
+  0.159.2 (#305) ([ADR-0206](docs/adr/0206-detect-provider-logins-and-register-them-through-add.md)).
+
+- Task plan dependency reference checks reuse the validated typed CAS envelope, avoiding a
+  repeated decode and identity validation while preserving lock checks, reference sets and
+  existing errors ([ADR-0076](docs/adr/0076-decode-and-verify-typed-cas-reads-once.md)).
+
+- An Attempt survives one failed call inside its own wall and token reservation
+  ([ADR-0208](docs/adr/0208-recover-an-attempt-from-a-transient-provider-failure-and-a-reply-that-does-not-parse.md)):
+  a typed reply that does not parse is read tolerantly and then re-asked once, with both replies
+  kept and named (#283); Codex typed calls pass their reply contract as `--output-schema` (#33);
+  a network, capacity, timeout or silent-exit failure is waited out and retried up to three
+  times, each wait recorded as a `TaskProviderEvent@1` that `af task show` names while it lasts
+  (#295); an identity probe that times out or answers malformed is re-probed instead of read as
+  an account change, and a Provider CLI update with the same account passes (#289); a refused
+  admission probe is sent once more in other words, and every admission is decided before any
+  gate starts; a report draft is validated for shape before sealing and the author is
+  re-dispatched with the validation (#167). The shipped reviewer and evaluator slots allow two
+  Attempts, and `af task show` prints each failed node's cause and first line. A sealed report
+  whose verification missed the plan deadline still cannot be verified later (#166).
+
+- The first run says what to do next
+  ([ADR-0210](docs/adr/0210-make-the-first-run-say-what-to-do-next.md)).
+  `install.sh` ends with the next steps and the PATH line for your shell, takes
+  `AF_INSTALL_CHANNEL=rc` (or `--rc`) for the newest pre-release, and names the `minisign` install
+  line for your package manager. Bare `af` without a terminal prints first-run hints before its
+  usage; at a terminal with no Provider registered it opens on the Providers pane, and the
+  Settings pane says `absent  <- af onboard` for a repository without `.af/`. `af onboard` picks
+  the runner from the Provider kinds you registered, prints a `providers` block with the
+  `--provider` binding for every model Worker (`--probe` adds their login state), and says what
+  happened when it cannot fetch a release's checksums. New `af doctor [--json]` (`af/doctor@1`)
+  checks the binary, PATH, shell, updates, tools, Providers, storage and the repository,
+  token-free. `af help start` and `af help concepts` are new topics, `af --help` lists the
+  commands once in first-use order, every flag of every command is documented, and
+  `af task output` writes to stdout without `--output`. `af self setup-shell` gains `--remove`
+  and says what is left to do; `af self uninstall` names the completion files and man pages it
+  leaves, and `--purge` removes them. The README Quickstart is four steps with a first Task.
+
+- One Task state behind every rendering: `af task list`, `af task show`, `af task report` and the
+  last line of `af task run` print the same `phase/outcome/cause` (`finished/gate_failed/check_failed`),
+  in text and under `--json` (`state`), with the one command to run next (`next: af task run ID
+  --retry-gate`); `af help task-states` and [docs/tasks.md](docs/tasks.md#task-states) list every
+  phase, outcome and cause. A failed gate is `gate_failed`, never `changes_requested`, and
+  `af task run`, `af task start --execute` and `af task explain` exit 5 for it, 6 for a Provider
+  failure and 7 for an expired deadline, while `af task show`, `list`, `report`, `status` and
+  `findings` exit 0 (`af help exit-codes`). The documents are new versions:
+  `af/task-inspection@13`, `af/task-list@3` of `af/task-list-entry@3`, `af/task-report@2`,
+  `af/task-collected-inspection@2` and `af/task-selection@3`; the previous ones are refused.
+- `af task show ID --checks` (`af/task-checks@2` under `--json`) prints the gate's last check
+  receipt with each check's failing and flaky tests and the end of its stderr; `af task list
+  --json` rows carry `gate`, the run log names the failing tests after a failed gate, and
+  `af task show` names each failed node's cause, first error line and diagnostic artifact.
+- `af task list` prints a header row with ID, state, round, tokens, age and the next command's
+  verb, and shows a delivery only once there is one.
+- A refused plan prints its reason on stderr, and an infeasible one the smallest limits that fit,
+  computed from the reserve each verification slot protects (issue #250); `af task plan --fit`
+  plans with them and prints what it raised, and `--json` carries
+  `planning_diagnostic.required_limits`.
+- A Task file without `strategy` takes its kind's (`implement`: `reviewed`, `review`,
+  `facts.standard`); planning the same file again shows the existing plan, and `af task plan
+  --replace` re-plans an unstarted Task in place.
+- A Task's wall clock starts at its first `af task run`, not at `plan`: the preview says
+  `deadline starts when you run`, and the run prints the deadline in local time
+  (`deadline 17:41:18 +03 (2 h 59 min from now)`).
+- Not-found errors name the Task, the Store's path and the Tasks it holds; an unreadable Task file,
+  a missing output port and Task state inside the repository name the path, the ports or the
+  repository root.
+- A non-zero exit always says why on stderr: `af task explain`, `af task refresh`, a plan
+  decision and `af task run` of a Task that already finished end with the run log's last line,
+  `Task ID: phase/outcome/cause; next: …`, on stderr beside their result on stdout.
+
+- A review Pipeline may leave an `advisory` reviewer of the captured review policy unbound.
+  `[review.reviewers]` can name a reviewer only some Pipelines run (the `uix` reviewer of
+  `kernel/review-light`) while the stock `kernel/review-code` Pipelines still plan on the same
+  policy; before, the review reduce refused any Pipeline that did not bind every reviewer. A
+  bound reviewer with no runtime result is still missing evidence and the round stays
+  incomplete; a `required` reviewer must still be bound. Compiled signatures carry the allowed
+  names in a new optional `unbound_allowed` field that older plans read as empty.
+
+- The gate reruns the tests that failed in its parallel run once each, alone, before it fails: a
+  test that passes alone is printed `flaky:` and no longer fails the step; one that fails twice
+  does, as before. More than 25 failed tests, or 15 minutes of reruns, fail with the whole list
+  ([ADR-0205](docs/adr/0205-rerun-a-failed-test-alone-report-the-gate-and-retry-a-failed-gate-on-the-same-candidate.md)).
+  `make test-repeat` (`scripts/nextest-gate.py --repeat N`) runs a selection N times in a row to
+  prove a flake fixed.
+- Every Task check records `af/TaskCheckReport@1` beside its receipt: the host's 1-minute load
+  average at the check's start and end, its CPUs, and what the check wrote to `AF_CHECK_REPORT`
+  (`af.check-report/1` lines: its steps by stage, its test threads, its failed and flaky tests).
+  `af task show` and `af task run` print where a gate stopped, with its fix (a stale
+  protected-harness pin names `python3 -I scripts/performance/cli.py harness-digest --write`),
+  the flaky tests and the tests that failed twice, each on its own line.
+- `af task run ID --retry-gate` runs a finished Task's failed gate again on the same sealed
+  candidate, in a new check Attempt of the same round, under the confirmed plan, with nothing
+  re-planned or re-admitted; the Task continues into review when the check passes. A Task that
+  ended at a failed gate prints `next: af task run ID --retry-gate`. The Task log gains the event
+  `TaskGateRetried@1`; a release before this one cannot read a log that holds it.
+- A Task whose source Snapshot pins a Rust toolchain that its `[warm]` checks cannot resolve on
+  this machine is refused before its plan is admitted, before any implementer Attempt, naming the
+  code policy file and the field, instead of building cold after the implementer ran.
+- Two `af task plan` into one Store no longer collide in the content store: every object is
+  staged under a temporary name of its own and a lost race is retried (#159).
+- The heavy review, starter repair, interrupted repair, source capture, concurrent pipes and TUI
+  tests no longer fail under load, the gate's fixtures pass under umask 0077 and with Rust
+  coreutils, the real Rust build finds `cc` through `CC` and `~/.local/bin`, the protected
+  harness pin made in a Worker sandbox equals a checkout's, and `cargo test` without nextest no
+  longer meets `Text file busy` (#121); the reflink cache materialization of #149 has its
+  regression test.
+
+- New Worker package `kernel/implementer-long` 1.0.0: `kernel/implementer` with a six-hour attempt wall
+  (the stock package keeps three hours, which the stock Task limits are sized for). The GA polish
+  campaign's `kernel/implementation-ux` 1.1.0 runs its implementer slot on it after two packages
+  were killed at the three-hour wall under host load with nothing sealed.
+
+- Help that runs and refusals that name the fix. Every example in every `--help` page and
+  `af help <topic>` now runs as written in an onboarded repository, or says what it needs first
+  with `# needs: …`; a test runs them all. `af review plan` refuses, at exit 1, a
+  `--provider NODE=ID` whose Provider this machine has not registered or whose node is no model
+  Worker of the pipeline, in the words `af review run` uses, and ends with a `next` line, the
+  exact `af review run` command once the plan is ready. A repository without `.af/`, an unknown
+  `--policy-rev`, a missing binding and an empty diff each say what to do next. Things af cannot
+  find are said in one shape, `<Thing> <name> not found in <where>; <fix>`, and a malformed
+  Task file names the field path and the shape it takes. `docs/README.md` gains a
+  troubleshooting table of the messages people meet most.
+- A Store names the af release that wrote it. Every Store records each release that opens it
+  for writing (`af/store-writer@1`, beside the event log), so a release that cannot replay
+  another release's Store, which it still refuses (ADR-0145), says `Store … was written by af
+  <v> (this is af <w>); fix: AF_VERSION=<v> af …`; `af task list`, `af review campaigns`, the
+  browser and `af storage` list such Stores in one row by release. A Store from before this
+  release is named as an older release's.
+- The canonical Document text escapes only what is Markdown markup where it stands, so paths and
+  ordinary punctuation read as written; its payload is now `af.document/2`, and a Document of
+  `af.document/1` is not read. `af task output --format markdown` writes the readable
+  presentation of a Document or report; `--format canonical-markdown` writes the recorded bytes.
+- `af provider list` and `af providers …` work, `af review tui` points at the browser, `af
+  provider doctor` shows only its own flags and requires `--campaign`, `af self --help` leads
+  with `status` and `update`, `af review --help` groups its commands by a Campaign's life, and
+  `af onboard --help` reads as four steps for a person. The roots af keeps state under are
+  resolved once, so a home under a symlink (macOS `/tmp`) no longer prints `skipped … is a
+  symlink`, and a path `af storage` cannot measure is a note of the new `af storage --verbose`
+  rather than a warning after every run. Human text shows sizes, durations and local times in
+  units; `--json` keeps the raw figures.
+
+- The release check cannot stall: `curl` runs with `--connect-timeout 5 --max-time 30` (its
+  retries within the limit), `gh` under a 30 s deadline, and af ends a client that outlives
+  them. The cache is `af/self-check@3`: it records the last attempt and why it failed, which
+  `af self status` prints (`last check: <time> · last attempt <time> failed: <reason>`); a check
+  that has held `latest.lock` for over an hour counts as none and is reported with `rm <lock>`.
+  `af self status` schedules a due check itself, `af self status --refresh` runs it at once, and
+  `--json` prints `af/self-status@1`. A pre-release af asks for pre-releases whatever the channel
+  and hears `latest stable X · latest pre-release Y (you run R: af self update --rc)`; a release
+  older than the running one is never shown as simply `latest`. `af self update --check` honours
+  `AF_SELF_OFFLINE` (`offline: check skipped`, exit 0) and says the anonymous route's HTTP status
+  or curl error before any `gh auth login` hint; neither it nor `install.sh` needs `gh` for a
+  public repository ([docs/self-management.md](../docs/self-management.md)).
+- The Storage Budget keeps what it ate before: the newest warm key of a project checked in the
+  last 7 days is never evicted, nor a key a check holds; caches go before telemetry and records;
+  a finished Task younger than `[storage] keep_days` or behind a delivered Workspace stays; a
+  Store with a live writer lease is judged in use before the sweep plans; a Project Store another
+  release wrote is never collected, with or without Workspaces (#302). The default `[storage]
+  max_bytes` is `"auto"`: 20 GiB, or 40 GiB when the cache volume has more than 100 GiB free, and
+  `af storage` and the run say once when a warm key does not fit the budget, with the budget that
+  does.
+- A Task command prints one sweep line, `storage: freed 1.2 GiB (2 warm keys)`, instead of every
+  `af storage:` removal; `af task run --verbose` and `af task start --execute --verbose` print
+  them all. `insufficient_disk` names the volume by mount point and type with both numbers and
+  the way out (`/tmp (tmpfs): 1.9 GiB … free, floor 10.0 GiB …; the sandbox root is /tmp; set
+  TMPDIR or [storage] sandbox_root to a volume with room`); `[storage] sandbox_root` and
+  `build_cache_root` move sandboxes and warm keys, and the floor measures those volumes.
+- The Rust toolchain mapping is configured: `[task] rust_toolchain_policy` in the user's
+  configuration or a project's `.af/af.toml`, with `AF_TASK_RUST_TOOLCHAIN_POLICY_FILE` as the
+  override, and `af config show --origin` names where it came from. `af self optimize --execute`
+  runs under the interrupt watcher like every Task-running command (#158). `make prereqs` checks a
+  contributor's machine, one line per tool with its install command, and changes nothing (#161).
+
+- A Task whose `af task run` died mid-Attempt (a lid closed on battery, SIGTERM, a reboot, a
+  killed process, a lost lease) resumes with `af task run TASK_ID`: the lost Attempt is settled
+  as abandoned, charged only the usage its Provider reported (never its reservation, which goes
+  back to the Task's budget), and its node is dispatched again without using one of its
+  Attempts, once per node unless its slot declares `recovery_attempts` (`af.pipeline/3`, compiled
+  as `af.compiled-task/2`). SIGINT and SIGTERM settle the interrupted Attempt the same way, so the
+  advertised resume now runs the node again. The resume's first line says which node runs again,
+  or `cannot continue Task X: node N lost its writer 2 times (recovery allowance 1); fix: …`
+  with exit 1; a dead run's lease is waited out with a line saying so instead of refused
+  ([ADR-0209](docs/adr/0209-recover-a-lost-or-interrupted-attempt-without-charging-its-reservation.md)).
+- The writer lease is 60 s, renewed by its own heartbeat thread once a third has passed; a writer
+  that loses it stops its Workers at once and says `lost its writer lease (writer_lost: …)` with
+  the Store's observed time and the lease's expiry. On macOS `af task run` and
+  `af task start --execute` hold a power assertion (`caffeinate -i -s -w`) while they run, and
+  `af task run --verbose` says so.
+- An interrupted Task's state reads `abandoned/cancelled/writer_lost` (or `host_cancelled`) with
+  `next: af task run TASK_ID`, or `af task start --file TASK_FILE` once a node used up its
+  recovery allowance, and `af task show` adds `why: node N stopped at T`. The refusal `Task reservation is not
+  dispatchable` names the guard that fired and its numbers (`reservation 40 > remaining 129`).
+- The performance laboratory follows the production lease: its `product_constraints` and golden
+  constants say `task_lease_ms = 60000`, its probe takes the 60 s lease, and the protected
+  harness digest is re-pinned.
+
+- A Task that ended at a failed gate is `finished/gate_failed/CAUSE`: `af task run` (gate retry
+  included), `af task start --execute` and `af task explain` exit 5 for it, while `af task show`,
+  `list`, `report`, `status` and `findings` exit 0 once they read the Store (`af help exit-codes`),
+  and its one `next:` line is `af task run ID --retry-gate` only when the kernel would run that
+  gate again on the same candidate; otherwise it is `af task show ID --checks` (ADR-0205).
+  `af task show ID --json` carries the gate's check reports (`gate.check_reports`, each check node's latest `af/TaskCheckReport@1`) and its retries
+  (`gate.retries`, every `TaskGateRetried@1`) in `af/task-inspection@13`; `af task report` counts
+  each `af task run ID --retry-gate` as a run of the Task and an `af task refresh` as none. The
+  run log's last line on stderr, the Task's state and next command, now comes after what the
+  stale sandbox sweep and the Storage Budget sweep that end a run print.
+
+Validation runs the performance laboratory once on the latest stable Python, with required
+Tomli/tomllib parity and fail-closed propagation to the required lint check. Other validation
+jobs select the same latest-stable policy before running Python and Make commands.
+
+This repository opts into distinct-model Worker independence under the owner-approved policy,
+allowing one Codex Personal account with explicit Sol implementation, Astra correctness/evaluation
+and Terra bug review bindings. Engine defaults and generic catalog Provider defaults are unchanged;
+fresh sessions, distinct packages, role-scoped inputs, required checks/review and exact-plan
+approval remain required. Different models do not establish different accounts (ADR-0198).
+
+`af provider disable ID --for 2d` now suspends a registered Provider on this machine until an exact
+wall-clock expiry; `af provider enable ID` restores it immediately. Positive durations accept
+seconds, minutes, hours and days up to 30 days. Separate private versioned state leaves registry
+v1 unchanged, survives restarts and refuses new probes and Task private sends while disabled.
+Status JSON advances to `af/provider-status@3` with expiry and the enable action. Already-running
+calls may finish, and older pinned releases do not honor suspension. Provider documentation also
+explains how the trusted independence knobs retain model diversity or restore strict principal
+separation without a general bypass.
+
+- `af self --help` lists `status` with a one-line summary that no longer wraps into a phantom
+  `release` command; `af self status --help` keeps the full description. The examples of `af
+  provider add --help`, `af task run --help` and `af task show --help` that need existing state
+  now say what they need (`# needs: …`), as every other help example does. `af provider doctor`
+  keeps `--campaign NAME` required: its admission evidence belongs to a Campaign that `af review
+  run --campaign` reuses.
+
+Provider disable now preserves long registered IDs within the existing 64 KiB aggregate state
+bound, and `af provider enable ID` can clear a retained disable entry after registry removal to
+recover the 32-entry capacity. Unknown IDs and unsafe or malformed state still fail closed;
+updates remain private, atomic and token-free. Command, status and refusal diagnostics show the
+exact expiry as a UTC calendar date and time while persisted Unix seconds and nanoseconds stay
+unchanged. Provider documentation now correctly describes `distinct_providers` as comparing
+adapter families, preserving the existing trusted principal/model policy knobs.
+
+Admit an explicitly configured 90-minute check Attempt without changing the 60-minute explicit
+per-process cap, aggregate multiplication or configured defaults. Provider disable schema fixtures
+now resolve through the runtime workspace root. Copied Command-worker catalogs explicitly use
+package independence while asserting production model diversity, and Project collection failures
+report raw exit status and Unix signal. Telemetry corpus facts query a private database/WAL copy
+to avoid native SQLite's sidecar-free read-only failure while preserving the measured index and
+committed WAL rows. Provider suspension retains its private sidecar, exact
+expiry, long-ID lifecycle, orphan cleanup and pre-invocation checks.
+
+- A warm check layer is reused by content, not by modification times: af records, per Cargo
+  package, the content each layer last built and stamps only the packages whose content differs,
+  so a crate another Snapshot compiled can no longer be linked (#266) and unchanged crates keep
+  their build. A check that finds the layer busy waits for it until its deadline, saying every
+  minute whom it waits for (`[warm] clone_when_busy = true` builds in a private copy instead), and
+  the Storage Budget never evicts a layer a check holds. `[warm] build_wall_ms` gives the build
+  its own deadline, ending at the gate's `build` step, so `check_wall_ms` is left for the tests; a
+  layer evicted under a running build is named as the cause. An `offline = true` check runs with
+  no network from the layer's `npm_cache`, its `npm_packages` pinned by SHA-256 and filled once;
+  this repository's markdownlint gate now runs that way (#230). Sealing leaves out the generated
+  files a Worker's runs left (`__pycache__/`, `*.pyc`, `/target/`, `node_modules/`, the tree's
+  `.gitignore` and `.af/seal-ignore`), lists them in `af.seal-ignored/1`, and refuses a FIFO,
+  socket or device file by name (#160). `af task show --checks` prints each check's layer, lock,
+  source groups and phases; its `--json` document is now `af/task-checks@2`
+  ([ADR-0207](docs/adr/0207-key-warm-check-layers-by-content-lock-them-split-the-build-deadline-and-seal-without-generated-files.md)).
+
+- The agent loop's verbs
+  ([ADR-0211](docs/adr/0211-give-the-agent-loop-its-verbs-and-deliver-a-verified-verification.md)):
+  `af task findings ID [--round N]` prints a review round's findings per reviewer — severity,
+  confidence, title, location, evidence and fix, grouped by severity — and the evaluator's
+  verdict (`af/task-findings@1`); `af task diff ID` prints a candidate's change as `git diff`
+  would, touching no worktree (`af/task-diff@1`); `af task materialize ID --into DIR` makes a
+  worktree's tracked tree equal to a Task's candidate, refusing uncommitted changes without
+  `--force` and an unverified candidate without `--allow-unverified` (`af/task-materialized@1`).
+- `af task run ID --detach` runs a Task in the background and returns with its pid and its log,
+  `runs/<ID>-<N>.log` in the Store (`af/task-detached@1`); `af task wait ID [--timeout S]` blocks
+  until the Task settles and exits with its code (124 on timeout); `af task status ID` prints one
+  line now (`af/task-status@1`); `af task cancel ID` stops the run its lease names, by its
+  recorded pid only, records who asked, and leaves the Task `abandoned/cancelled/host_cancelled`
+  and resumable (`af/task-cancelled@1`). Every run records its process in `runs/<ID>-<N>.json`.
+- `af task run` prints one stderr line per node that starts or finishes, with the elapsed time
+  and the tokens so far, and a heartbeat every 5 minutes (`--quiet` keeps them back); its last
+  stderr line is the state and the next command in text as under `--json`.
+- A verified `verification` Task of another Task's candidate delivers that candidate on the
+  other Task's source, recording both Tasks (`af/TaskDeliveryProof@1`); `af task deliver`'s
+  other refusals name `af task materialize`.
+- `af task report IDS… --pr-body [--template FILE]` prints the whole pull request description,
+  the report and the `scripts/pr-lines.py` block spliced into the template, which
+  `scripts/check-pr-report.py` accepts; `af help agents` and [docs/agents.md](docs/agents.md)
+  walk the loop.
+
+Stabilize Provider disable verification fixtures by waiting for the complete project TUI frame,
+scheduling heavy starter repair exclusively under the existing realtime nextest policy, and
+using the existing debug-only fixed Store clock for the telemetry-level invariance comparison.
+Guarded measurement failures now include bounded nested Task inspection, invocation, feedback
+and diagnostic artifacts with their exact scenario. Preserve all Provider behavior, checks,
+assertions, internal budgets and the approved 90-minute whole-check allowance.
+
+Run targeted starter repair exclusively within the existing CI nextest realtime override,
+alongside heavy starter repair, preserving its five-second Workers, 15-second lease and every
+assertion. Captured-admission accounting/replay failures now report debug and raw Unix exit
+status and the Unix signal while retaining exact exit-code checks; the earlier signal remains
+unknown. Preserve Provider disable behavior, the authorized gate-local four-thread command,
+all gate targets and internal budgets, and the approved 90-minute whole-check allowance.
+
+- `af task run NEW --from TASK [--round N] [--goal FILE]` plans a new Task from a finished
+  reviewed Task: its source is the candidate that review round reviewed, not the base, and its
+  implementer receives the round's reviewer findings and the evaluator's verdict as one
+  `af/TaskReviewFindings@1` document on the Pipeline's optional `findings` input; nothing is pasted into
+  the goal. A Task file says the same with `"continue": {"task": "TASK", "round": N}`. `af task
+  show` prints `continues TASK round N`, `--json` carries `continues` in
+  `af/task-inspection@13` (`@12` is no longer written or read), and `af task report` names it in
+  the row
+  ([ADR-0212](docs/adr/0212-continue-a-task-from-its-reviewed-candidate-and-give-judging-workers-the-base.md)).
+- The kernel's `kernel/implementer` and `kernel/implementer-long` take the optional `findings`
+  input and list each finding by ID as `fixed`, `disputed` or `out of scope`;
+  `kernel/implementation-reviewed`, `kernel/implementation-ux` and `kernel/review-light` declare
+  it, re-pinned in `.af/task-catalog.toml`.
+- Every reviewer, evaluator and verifier gets the tree before the change read-only at `../base`
+  and `../diff-subject.json` (`af/diff-subject@1`, each changed path with its digest on each
+  side). The base is a sealed candidate's parent or a bound tree's; a Task file may name it with
+  `"base": {"commit": "SHA"}`.
+- A Task file needs only `task_id`, `kind` and `goal`: `[task.defaults]` of `.af/af.toml` supplies
+  `limits`, `pipeline` and `fallback`, and `af task plan` prints what came from it. `context`
+  names files the Worker reads first and `.af/rules.md` holds standing rules; both are listed at
+  the end of the Worker's requirements with the digest of the bytes the Task captured. `af help
+  task-file` describes the shape.
+
+- The browser shows review Campaigns and every Task Store. Bare `af` gains a `campaigns/` folder
+  that lists every review Campaign on the machine: the default Campaign root, the Store a plain
+  `af review run` keeps for each repository under `review/local/`, and every `--state` Store
+  and `--state-root` directory `stores.toml` records. Each row shows the Campaign's newest
+  Round, its state, its verdict, what it spent, when its Store was last written, and its
+  reviewer nodes as chips. The rows update once a second while a Round is open. Opening a
+  Campaign shows its Ledger by reviewer. Enter on a row puts the matching `af review report`,
+  `ledger`, `show` or `run --restart-round` command on the `:` line. The `tasks/` folder also
+  lists every `--state` Task Store the registry records, each under its path, and `:state DIR`
+  adds one for the session; `r` and `D` name such a Store with `--state`. `?` opens a help
+  overlay naming the panes, the keys and `: <af command>`, so backward search is now `/` then
+  `N`. While no key comes, the status line takes turns with `? help - : run a command - q
+  quit`. An ambient Provider says how it got there and how to make it go: through
+  `CLAUDE_CONFIG_DIR` or `CODEX_HOME`, or the CLI's default directory, with the
+  `af provider add` command that registers it. Stores other releases wrote are one row in both
+  panes. `af review campaigns` text is now a table in 100 columns (Campaign, Round, state,
+  verdict, tokens, wall, last update); `--format json` is unchanged.
+
+- The documentation index names what the merged packages added: the `docs/README.md` row for
+  `tasks.md` lists Task states, resuming an interrupted run, retrying a failed gate, continuing a
+  reviewed Task and warm checks (`af help task-states`, `af help task-file`), and
+  `docs/task-execution.md` gains a contracts row for continuing a reviewed Task
+  ([ADR-0212](docs/adr/0212-continue-a-task-from-its-reviewed-candidate-and-give-judging-workers-the-base.md))
+  and links `af/task-collected-inspection@2`, the version af writes. The release notes of the
+  one-outcome state model and the gate evidence name `af/task-inspection@13` and
+  `af/task-checks@2`, the versions this release prints.
+
+- The Storage Budget keeps every Task a delivered Workspace was made from. The delivery records the
+  Task ID as data in a new Project Store event, `WorkspaceDelivered@1`, so the protection holds
+  when the label was suffixed because the Task ID was taken. Every Project Store is read for this
+  without the discovery ceiling. While one cannot be read, a sweep collects no finished Task and
+  names that Project Store. A campaign whose writer leases cannot be read is in use for the sweep
+  and `af review gc`
+  ([ADR-0158](../docs/adr/0158-give-a-repository-one-project-identity-and-register-its-checkouts-as-workspaces.md)).
+- `af storage --json` prints `af/storage@5`. Its `volumes` name each root the free-disk floor
+  measures (`sandbox`, `cache`, `build_cache`) with its volume, `free_bytes`, `below_floor` and
+  `next_action`. Its `unreadable_store` entries carry the `writer_release` and the `next_action`
+  from the Store's provenance. A version-1 `stores.toml` is replaced by the first write that
+  meets it, said once, instead of a warning on every run.
+- `af self update --check --rc` on the stable channel records the pre-release only as
+  `latest_prerelease`, and status keeps naming `af self update --rc`. A failed explicit check is
+  recorded as the last attempt with its cause. `af self status --json` prints `af/self-status@2`,
+  with `check_lock` and `next_action` (`rm <lock>` for a stalled check). The update row of
+  `af doctor` warns of a failed or stalled check with the same fix. On macOS its storage row warns
+  when Spotlight indexes the warm build cache, the warm Workspaces or the sandbox root, and
+  [docs/README.md](../docs/README.md#macos-spotlight-and-gatekeeper) gives the exclusion.
+- `af provider detect` prints `af/provider-detect@2`. Each auth probe waits 10 seconds at most,
+  and an unknown login carries `auth_cause` and `auth_detail`. A directory that cannot be listed
+  is probed by its marker names. An unreadable registry makes every row's `registration`
+  `unknown`, and `--apply` refuses it with exit 1. `--apply` checks a registered row again under
+  the registry lock, and leaves a login whose CLI is off `PATH` unregistered with the PATH line
+  (exit 4). A conflict names `conflict_with` and suggests the retry with a free ID. The closing
+  `next:` line follows the outcome, and `--kind claude` gives no Codex advice
+  ([ADR-0206](../docs/adr/0206-detect-provider-logins-and-register-them-through-add.md)).
+- `af provider status --json` prints `af/provider-status@3`, with `found_unregistered` and
+  `next_action`. `af doctor` and `af onboard` list the same directories from the same scan. A
+  quota window without a reset time says `Claude does not report when this window resets`
+  (`reset_reported: false`). The browser's ambient row now says that unsetting `CODEX_HOME` lists
+  `~/.codex` instead, rather than that it stops the listing.
+- A Claude reply that is the account's usage-limit refusal now says `the Claude account's usage
+  limit is reached; it resets at <time>` (cause `provider_capacity`). It no longer reports the
+  internal model-bound error. `make prereqs` reports rust missing when the pinned toolchain lacks
+  `clippy` or `rustfmt`, with the `rustup component add` command. Its report wraps at 100 columns
+  and spells `$HOME` and `$TMPDIR` short.
+
+- A failed gate names `af task run ID --retry-gate` only when the kernel would run it: a Task
+  whose budget leaves no Attempt for a new check, whose plan approval expired or whose deadline
+  passed names `af task show ID --checks` instead, and `--retry-gate` refuses it with the reason
+  and `af task plan --file TASK_FILE --fit`. A failed paid Worker that ran beside the gate, with
+  no edge to it, refuses the retry too (`a paid node ran beside its failed gate`).
+- While a gate retry is pending, `af task show --json` keeps the `gate` object, with the checks
+  of the receipt the retry superseded and the pending retry under `retries`.
+- An Attempt abandoned by SIGTERM or by a lost writer is charged the usage its Provider reported,
+  incomplete counters included, never its reservation; the rest returns to the Task's budget
+  ([ADR-0209](docs/adr/0209-recover-a-lost-or-interrupted-attempt-without-charging-its-reservation.md)).
+  An Attempt its own answer or failure ended still keeps the reservation floor.
+- An interrupted `af task run` whose node used up its recovery allowance names `af task start
+  --file TASK_FILE`, the next command `af task show` names, instead of a resume that refuses.
+  Under `af task run --verbose` the resume line comes first and the power assertion line after
+  it, each wrapped at 100 columns.
+- A verification Task delivers another Task's candidate only when its output is the very
+  Snapshot it verified; another Snapshot with the same tree is refused
+  ([ADR-0211](docs/adr/0211-give-the-agent-loop-its-verbs-and-deliver-a-verified-verification.md)).
+- A judging Worker that restores write permission on `../base` or `../diff-subject.json` and
+  changes them has its Attempt refused at seal, naming the path
+  ([ADR-0212](docs/adr/0212-continue-a-task-from-its-reviewed-candidate-and-give-judging-workers-the-base.md)).
+- A Task Worker that misses its wall is named by its slot (`implementer did not answer within
+  …`), not as a reviewer. A check line whose warm directory was evicted ends `; the next check
+  runs cold`. The deadline refusal lists each node on the longest path as `1 × wall`, the
+  verification reserve, their total and the Task's wall.
+- Concurrent content-store writers never replace an object another one already published; the
+  existing object is verified and kept. A sandboxed macOS check whose `sysctl` lookup is refused
+  reads the load average through `uptime`. The gate's own preflight gives its child builds a
+  private `TMPDIR`.
+
+- A usage error under `--json` is the one `af/error@1` document `af help json` promises, with
+  clap's message, `exit_code` 2 and `cause: usage`, beside clap's own lines on stderr; `--help`
+  and `--version` stay what they are. `af/error@1` now has a schema (`schemas/error-v1.json`), and
+  a refusal af classifies adds typed fields a script branches on: `cause`, `next_action` and
+  `details`. A node past its recovery allowance is `recovery_exhausted` with the node, how often
+  it was abandoned and its allowance; a zero `limits.wall_ms` is `task_file_invalid` naming the
+  file and field instead of `--timeout-secs`; an unreadable `--goal` file is `input_unreadable`
+  and says how to fix it.
+- Every next command af prints for a Task carries the `--repo`, `--state` or `--workspace` the
+  command was given, as typed: the `next:` lines of `af task show`, `run` and `list`, the
+  `state.next_action` of every `--json` document but `af task report`'s, the preview's approve and
+  `Details` commands (no more "use the same selectors" line), a refused plan's `--fit` command and
+  a recovery refusal's fix. Run as printed, each acts on the same Store; under the default Store
+  nothing is added.
+- A refused plan is `af/task-selection@3` (version 2 is refused): it adds `error`, `exit_code` and
+  `next_action`, the `--fit` command for an infeasible plan. A refused `af task refresh` says why
+  on stderr, and under `--json` is one `af/error@1` with `cause: refresh_refused`, exit 4.
+- `af review plan --json` carries `next_action`, the command its text prints, or null; its text
+  wraps at the terminal's width, prose under its label and a long command continued with a
+  backslash between its arguments. `af task list` moves each row's next command to an indented
+  line of its own when the table is wider than the terminal.
+- Every `--help` page and `af help` topic fits 100 columns, and every example fits 80: a note
+  that did not now sits on its own `#` line above its command. `af task --help` names `run
+  --from`, and `af task report --help` counts a gate retry's lease as active time.
+- The human Markdown of a Document or report escapes a line's first word only where it could
+  open a block, so `-foo`, `+1` and `!wow` read as written; the canonical `af.document/2` bytes
+  are unchanged.
+
+- `af task run --detach` no longer claims a run it did not see start: its document is now
+  `af/task-detached@2` with `admitted` and `next_action`, and a run that neither took the Task
+  nor admitted its plan within 2 minutes exits 4 with `admitted: false` and `af task status ID`
+  next
+  ([ADR-0211](docs/adr/0211-give-the-agent-loop-its-verbs-and-deliver-a-verified-verification.md)).
+- A second `af task cancel` of one run reports the first request, its requester and time, and
+  waits for the same stop instead of signalling again. `af task status` names the run that holds
+  the Task's lease and prints the next command on its own indented lines, broken between its
+  arguments, within 100 columns (the terminal's width when narrower). `af task run` prints a
+  `started` line for every node, the kernel's own (`seal`, `check`, `review.reduce`, `accept`)
+  included, before its `finished` or `failed` line.
+- `af task report --pr-body` exits 1, naming `--base REF`, when the checkout's
+  `scripts/pr-lines.py` cannot print its lines added block, instead of printing a body the pull
+  request check refuses; the new `--base REF` is passed to the script. `af task report` warns on
+  stderr when two Tasks' candidates add the same `docs/adr/NNNN-*.md` number, naming both.
+- `af task findings --round N` and a continued Task's `af/TaskReviewFindings@1` are built by one
+  function and carry the same findings; a refused `--round` of a Task without a review round
+  ends with the Task's next command.
+- A Store gets this release's writer marker in the transaction of its first appended event, never
+  at an open: a Store another release wrote and this one refused stays named by that release, and
+  a marker that cannot be written fails the append. The summary of Stores several releases wrote
+  names one `AF_VERSION=…` command per release instead of the newest for all, within 100 columns.
+- The browser's Campaigns pane reads the Stores every 5 seconds while no Round is open, so a new
+  Campaign appears without a key; shows a Campaign Store it cannot look at as an error naming the
+  path; shows an open Round's own reviewer chips, none before its first Attempt, and a node's
+  latest Attempt by its start, not its ID. Two unavailable registered Task Stores are two rows.
+  `af review campaigns --state-root R` with no Campaign names
+  `af review run --campaign NAME --state R/NAME`, within 100 columns.
+
+- A failed gate's next command is the one the retry eligibility chooses, with the Store
+  selectors the command was given: `af task show ID --checks --state DIR` when the kernel would
+  refuse `--retry-gate` (no Attempt left, deadline passed, a failed paid node beside the gate),
+  `af task run ID --retry-gate --state DIR` when it would run it. The message of a run stopped by
+  SIGINT or SIGTERM and of one whose writer lease was lost now name their `af task run ID` or `af
+  task start --file TASK_FILE` with the `--repo`, `--state` or `--workspace` it was given, the
+  same command `af task show` names. `af help json` lists `af/task-detached@2`, the version af
+  prints, among the documents that carry the Task's `state`. A Store path wider than the
+  terminal keeps a line of its own in a printed command, alone or with its `--state`; it is never
+  broken.
+
+- `af provider detect` recognizes the default Claude context `af provider status` accepts, a
+  `~/.claude` with no marker inside it and a regular `~/.claude.json` beside it: both commands ask
+  one predicate, so detect lists it (marker `~/.claude.json`), probes it and `--apply` registers
+  it as `claude-main`, and status probes the registered Provider instead of calling it
+  `not_probed`. `af provider detect --json` prints `af/provider-detect@3`
+  (`schemas/provider-detect-v3.json`; versions 1 and 2 are neither printed nor read), whose next
+  actions are typed fields: `install`, one `{kind, command, docs}` per kind whose CLI was not
+  found, and `next_action`, the scan to run again with its own `--kind`, `--dir`, `--id` and
+  `--all` when no CLI was found
+  ([ADR-0206](docs/adr/0206-detect-provider-logins-and-register-them-through-add.md),
+  amended).
+- `af task findings ID --round N` shows round N's own evaluator verdict, the one the Task log
+  recorded after that round, instead of the last one the current execution holds, and a
+  continuation (`af task run NEW --from TASK --round N`) hands its implementer that verdict, not
+  the verdict of another round that reviewed the same Snapshot.
+- `af task report --pr-body` refuses a lines added block that `scripts/pr-lines.py` printed
+  and `scripts/check-pr-report.py` would refuse, with exit 1 and a message naming what is
+  missing. A whole block is the begin marker, then the title `**Lines added: <figure>**`, the
+  header `| Directory | Added | Share |`, its separator and at least one directory row, each
+  directory once, or `**Lines added: none**` alone, then the end marker; `af task report --help`
+  and `docs/tasks.md` say the same.
+- `af help start` binds its review command to the Providers registered on this machine, as
+  `af onboard` binds them, and prints `PROVIDER` with the reason when none is registered; the
+  README shows the placeholder form and says that `af onboard` prints the exact command.
+  `af help agents` teaches `af task run NEW_ID --from TASK_ID [--round N]` for another round,
+  keeping the hand-made source binding only as the form that carries no findings.
+- `af doctor`'s rows fit 100 columns, or the terminal's width when narrower (at least 60): a long
+  detail or path continues on indented lines, broken after a `/` and never cut short, and each
+  fix command stays whole on its line or is broken between its arguments.
+- `af task report --pr-body` accepts only a lines added block that `scripts/pr-lines.py`'s own
+  parser reads back: the title, then the table header, its separator and at least one row, each
+  directory once, or `**Lines added: none**` alone. A title without its table is refused with
+  exit 1, naming what follows the title, instead of printing a body `scripts/check-pr-report.py`
+  refuses.
+- A continuation from an earlier review round (`af task run NEW --from TASK --round N`) records
+  the provenance of that round's own candidate: its source origin names the `af/TaskOutput@1`
+  record that published the candidate, not TASK's result when the result holds a later Snapshot.
+  A round whose candidate no recorded output holds is refused with `af/error@1`, and binding a
+  source refuses any reference whose output holds a Snapshot other than the bound one
+  ([ADR-0212](docs/adr/0212-continue-a-task-from-its-reviewed-candidate-and-give-judging-workers-the-base.md),
+  amended).
+- `af doctor`'s fixes are commands a shell runs as given, and what a command cannot say moves to a
+  new hint: `af doctor --json` prints `af/doctor@2` (`schemas/doctor-v2.json`; version 1 is
+  neither printed nor read), each check with `fix` and `hint`, and the text prints a `hint:` line
+  under the fix. The shell check names the shell `$SHELL` names (`af self setup-shell --shell zsh
+  --write`), or `--shell SHELL` with the choices in its hint; the project check's fix is `af
+  onboard --repo PATH`, its hint says it is a token-free preview; the PATH fix is the line for
+  the shell `$SHELL` names, its hint where it belongs. A problem no single command fixes (no
+  known package manager, Spotlight indexing, an unreadable lock) has a null `fix` and a hint that
+  says what to do ([ADR-0210](docs/adr/0210-make-the-first-run-say-what-to-do-next.md), amended).
+- `af doctor`'s PATH fix runs in the user's own shell and keeps the directory literal: `export
+  PATH='DIR':"$PATH"` for bash, zsh and sh (a `'` written `'\''`), `fish_add_path 'DIR'` for
+  fish, `set paths = ['DIR' $@paths]` for elvish and `$env:PATH = 'DIR' +
+  [IO.Path]::PathSeparator + $env:PATH` for pwsh, each in that shell's single quotes, so a `$`,
+  `"`, backquote or `$(…)` in the directory is never expanded when the line is pasted. Another
+  shell, or a directory with a `:` or a control character, gets a null `fix` and a hint naming
+  the directory. `af self setup-shell --write` writes completions and man pages and leaves PATH
+  alone, so it is never the PATH fix.
+- `af doctor` offers a fix only when running it can clear the check, never when the error the
+  check reported would stop it. A `.af/` that does not validate (`af onboard` would stop on it),
+  a machine `config.toml` that does not load (`af config show`, `af self` and `af storage` would
+  stop on it) and an unreadable Provider registry have a null `fix` and a hint naming the file,
+  the parse error's line and `af doctor` (with `--repo PATH` for the project) to check again;
+  another check's fix that would run one of those commands moves into its hint, after the file
+  to correct first. A `.af/` that does not validate is shown by its error's first line.
+- Binding a continuation's source checks the referenced output's artifact, not only its port: the
+  `af/SourceTree@1` the port names must hold the Snapshot the port names, and the bound one, or
+  the binding is refused with `af/error@1` and nothing is recorded.
+- The pseudo-terminal test helpers pass the test process's `TMPDIR` (and, for `af provider
+  detect`'s, the fixture's home and XDG directories) to the child they start after clearing its
+  environment, so the tests pass in a sandbox whose `TMPDIR` is private.
+
+Reconcile the Provider disable feature with current repository authority: preserve upstream
+ADRs 0196–0198, renumber the feature decisions to 0199–0203 and update their references. Keep
+the experiment, report and remote-twin planning fixtures under distinct-model policy, retaining
+isolated Provider probes, exact Worker identities and admission reservations; cover the
+Command-only policy helper separately on a disposable catalog (ADR-0204). Provider disable,
+status and registry contracts, the approved ninety-minute check allowance, all internal budgets
+and required checks remain unchanged.
+
+### Fixed
+
+- `install.sh` no longer stops with `SHELL: parameter not set` where `$SHELL` is unset (containers,
+  CI runners, cron). It prints the generic PATH line instead of a shell-specific one.
+
 ## [0.12.0-rc.5] - 2026-10-21
 
 ### Authority compatibility
