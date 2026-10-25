@@ -264,9 +264,7 @@ class Cycle(object):
             except (deadlines.Interrupted, ContractError, OSError) as error:
                 if kept.fd is None and not isinstance(error, (deadlines.Interrupted, deadlines.Expired)):
                     raise
-                detail = ("the cycle ended early: %s%s" % (
-                    error, "; " + "; ".join(error.__notes__) if getattr(error, "__notes__", None)
-                    else ""))[:4096]
+                detail = ("the cycle ended early: %s" % error)[:4096]
             terminal = deadlines.Budget(self.budget.deadline, self.budget.clock, 0)
             try:
                 with terminal.enforce("collection cleanup and terminal record"):
@@ -284,7 +282,8 @@ class Cycle(object):
                                 self.record(run, attempt, "collected", artifact, result_id)
                         doc = self.document(started, ident, history, detail)
                         self.write_status(kept, self.document(started, ident, None,
-                                          "cycle incomplete; cleanup and final recording pending"))
+                                          ("cycle incomplete; cleanup and final recording pending"
+                                           + ("; " + detail if detail else ""))[:4096]))
                         # A deadline may have interrupted an artifact's finally block. Such
                         # state is unaccepted and may be left for the next locked sweep.
                         kept.cleanup_staging()
@@ -294,7 +293,8 @@ class Cycle(object):
                 # This schema-valid record explicitly has no terminal time or root accounting.
                 doc = dict(fallback, workflow_id=ident, runs=self.records[:4096],
                            pruned=kept.pruned[:4096],
-                           detail=("cleanup or terminal recording incomplete: %s" % error)[:4096])
+                           detail=((detail + "; " if detail else "")
+                                   + "cleanup or terminal recording incomplete: %s" % error)[:4096])
             return doc
         finally:
             # This covers arbitrary exceptions as well as deadline and contract failures.

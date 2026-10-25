@@ -26,14 +26,32 @@ class Expired(ContractError):
 def defer_alarm():
     """Defer the deadline signal only across descriptor ownership transfer/close.
 
-    No waits, flock, traversal or cleanup work belongs here. Restore the caller's exact
-    mask; a pending deadline is delivered on restoration, with ownership already recorded.
+    No waits, flock, traversal or cleanup work belongs here. Python runs signal handlers
+    on the main thread even when another, unmasked resolver thread receives SIGALRM.
+    Latch at the Python handler boundary, then deliver immediately after ownership is
+    recorded/released. Neither the absolute timer nor the caller's mask is changed.
     """
-    previous = signal.pthread_sigmask(signal.SIG_BLOCK, {signal.SIGALRM})
+    if threading.current_thread() is not threading.main_thread():
+        # Python cannot interrupt descriptor publication on this thread with a handler.
+        yield
+        return
+    previous = signal.getsignal(signal.SIGALRM)
+    pending = []
+
+    def latch(signum, frame):
+        if not pending:
+            pending.append((signum, frame))
+
+    signal.signal(signal.SIGALRM, latch)
     try:
         yield
     finally:
-        signal.pthread_sigmask(signal.SIG_SETMASK, previous)
+        signal.signal(signal.SIGALRM, previous)
+        if pending:
+            if callable(previous):
+                previous(*pending[0])
+            elif previous == signal.SIG_DFL:
+                signal.raise_signal(signal.SIGALRM)
 
 
 class Budget(object):

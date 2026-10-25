@@ -66,6 +66,25 @@ RATIO_MAX = 200
 CHUNK = 1 << 20
 # Maximum cleanup wait, further bounded by the request's absolute deadline.
 CLEANUP_SECONDS = 1.0
+CLEANUP_UNCERTAIN = ("exchange cleanup was not confirmed; its cancelled worker may remain "
+                     "in name lookup, with further network operations disabled")
+
+
+def _uncertain(error):
+    """Bounded Python 3.9+ evidence in the message every refusal serializer already reads.
+
+    Keep the original exception type (in particular Budget.Interrupted). OSError formats
+    strerror separately from args; Collector also preserves the marker when redacting it.
+    Put uncertainty first so a consumer's bounded diagnostic cannot truncate it away.
+    """
+    if not getattr(error, "cleanup_uncertain", False):
+        message = CLEANUP_UNCERTAIN + "; " + str(error)[:1024]
+        if isinstance(error, OSError) and error.strerror is not None:
+            error.strerror = message
+        else:
+            error.args = (message,)
+        error.cleanup_uncertain = True
+    return error
 
 
 class TransportError(ContractError):
@@ -129,11 +148,15 @@ class HttpsTransport(object):
         except BaseException as error:
             # Includes the collection Budget's BaseException interruption at any wait or
             # admission boundary. Revoke network authority before terminal accounting.
-            exchange.abort()
-            exchange.done.wait(min(CLEANUP_SECONDS, max(0.0, deadline - time.monotonic())))
+            try:
+                exchange.abort()
+                exchange.done.wait(min(CLEANUP_SECONDS, max(0.0, deadline - time.monotonic())))
+            except BaseException as cleanup_error:
+                if not exchange.done.is_set() or not exchange.finished:
+                    _uncertain(cleanup_error)
+                raise
             if not exchange.done.is_set() or not exchange.finished:
-                error.add_note("exchange cleanup was not confirmed; its cancelled worker may "
-                               "remain in name lookup, with further network operations disabled")
+                _uncertain(error)
             raise
         finally:
             exchange.abort()
@@ -327,8 +350,11 @@ class Collector(object):
         except TransportError:
             raise
         except (OSError, http.client.HTTPException) as error:
-            raise TransportError("the request to %s failed: %s" % (
+            failure = TransportError("the request to %s failed: %s" % (
                 "the API" if authorized else "signed storage", type(error).__name__))
+            if getattr(error, "cleanup_uncertain", False):
+                _uncertain(failure)
+            raise failure
 
     def _json(self, response, what):
         require(response.status == 200, "%s answered HTTP %d" % (what, response.status))

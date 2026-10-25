@@ -183,6 +183,10 @@ def _execution_inventory(executions, where):
     require(len(listed) <= EXECUTIONS_MAX, "%s lists too many executions" % where)
     by_id = {item["execution_id"]: item for item in listed}
     require(len(by_id) == len(listed), "%s repeats an execution" % where)
+    # trace::span_id binds segment/sequence; executions.span_id is the native primary
+    # key. A second execution cannot reuse it, even with consistent summary counts.
+    require(len({item["span_id"] for item in listed}) == len(listed),
+            "%s repeats an execution span identity" % where)
     require(executions["retained"] == len(listed),
             "%s contradicts its retained execution count" % where)
     sealed, opened = set(), []
@@ -212,6 +216,11 @@ def _evidence(runs, runs_run, show, status, config):
     # execution's immutable identity cannot change between the observations.
     if before != after:
         reasons.add("history_partial")
+    before_spans = {item["span_id"]: ident for ident, item in before.items()}
+    after_spans = {item["span_id"]: ident for ident, item in after.items()}
+    for span in before_spans.keys() & after_spans.keys():
+        require(before_spans[span] == after_spans[span],
+                "runs.json and show.json reassign an execution span identity")
     for ident in before.keys() & after.keys():
         for key in ("span_id", "ordinal", "start_unix_ns", "store_sequence_at_start"):
             require(before[ident].get(key) == after[ident].get(key),

@@ -16,6 +16,7 @@ from tests import telemetry_fixtures as fx
 from tests import test_telemetry_collect as tc
 from tests import test_telemetry_diagnostics as td
 from tests import test_telemetry_lab as tl
+from tests.test_telemetry_interruption import blocked_resolver
 from tests.support import ROOT, TempDir, read
 
 
@@ -238,6 +239,128 @@ class Deadlines(TempDir):
                 if exchanges:
                     self.assertTrue(exchanges[0].done.wait(1))
             sockets.assert_not_called()
+
+    def test_request_timeouts_persist_cleanup_uncertainty_at_every_refusal_boundary(self):
+        for stage in ("workflow", "run", "artifact"):
+            with self.subTest(stage=stage):
+                self.config["root"] = self.path(stage)
+                fake = tc.FakeApi([tc.run_entry(1)], {
+                    1: [tc.artifact_entry(1, 1, 'perf-telemetry-1-1', b'not downloaded')]})
+                https = tc.transport.HttpsTransport()
+                needle = {"workflow": "/actions/workflows/performance-telemetry.yml",
+                          "run": "/actions/runs/1/artifacts?",
+                          "artifact": "/actions/artifacts/1/zip"}[stage]
+
+                class Routed:
+                    def request(self, url, headers, limit, timeout):
+                        if needle in url:
+                            return https.request(url, headers, limit, timeout)
+                        return fake.request(url, headers, limit, timeout)
+
+                api = tc.transport.Collector(Routed(), tc.REPOSITORY, tc.TOKEN,
+                                             api_url=tc.API, seconds=3)
+                limit = budget.Budget(api.deadline, api.clock, 0.5)
+                with blocked_resolver() as (entered, exchanges, sockets), \
+                        mock.patch.object(tc.transport, 'REQUEST_SECONDS', 0.02):
+                    doc = telemetrycollect.Cycle(self.config, api, gitrefs.Git(self.repo.path),
+                                                 time.time, tc.NOW, budget=limit).run()
+                    self.assertTrue(entered.is_set())
+                    self.assertTrue(exchanges[0].aborted)
+                    self.assertFalse(exchanges[0].done.is_set())
+                    persisted = contracts.read_file(os.path.join(self.config['root'],
+                                                    'collection.json'), 'telemetry-collection')
+                    self.assertEqual(persisted, doc)
+                    self.assertEqual(doc['status'], 'failed')
+                    detail = doc['detail'] if stage == 'workflow' else doc['runs'][0]['reason']
+                    self.assertIn('cleanup was not confirmed', detail)
+                    self.assertIn('cancelled worker may remain', detail)
+                    self.assertIn('0.02-second bound', detail)
+                    if stage != 'workflow':
+                        self.assertEqual(doc['runs'][0]['outcome'], 'refused')
+                        self.assertEqual(doc['runs'][0]['artifact'] is not None,
+                                         stage == 'artifact')
+                    with telemetrylab.HistoryRoot(self.config['root']):
+                        pass
+
+    def test_terminal_refusal_does_not_erase_prior_unconfirmed_resolver_cleanup(self):
+        api = tc.transport.Collector(tc.transport.HttpsTransport(), tc.REPOSITORY, tc.TOKEN,
+                                     api_url=tc.API, seconds=2.5)
+        limit = budget.Budget(api.deadline, api.clock, 1.5)
+        original_sweep, calls = telemetrylab.HistoryRoot.cleanup_staging, []
+
+        def sweep(kept):
+            calls.append(True)
+            if len(calls) == 2:
+                raise budget.Interrupted('synthetic terminal cleanup interruption')
+            return original_sweep(kept)
+
+        with blocked_resolver() as (entered, exchanges, sockets), \
+                mock.patch.object(telemetrylab.HistoryRoot, 'cleanup_staging', sweep):
+            doc = telemetrycollect.Cycle(self.config, api, gitrefs.Git(self.repo.path),
+                                         time.time, tc.NOW, budget=limit).run()
+            self.assertEqual(len(calls), 2)
+            self.assertTrue(entered.is_set())
+            self.assertFalse(exchanges[0].done.is_set())
+            self.assertIn('cleanup was not confirmed', doc['detail'])
+            self.assertIn('synthetic terminal cleanup interruption', doc['detail'])
+            persisted = contracts.read_file(os.path.join(self.config['root'], 'collection.json'),
+                                            'telemetry-collection')
+            for record in (doc, persisted):
+                self.assertEqual(record['status'], 'failed')
+                self.assertIsNone(record['results'])
+                self.assertIn('cleanup was not confirmed', record['detail'])
+        with telemetrylab.HistoryRoot(self.config['root']):
+            pass
+
+    def test_whole_cycle_download_interruption_keeps_both_terminal_and_artifact_evidence(self):
+        fake = tc.FakeApi([tc.run_entry(1)], {
+            1: [tc.artifact_entry(1, 1, 'perf-telemetry-1-1', b'not downloaded')]})
+        https = tc.transport.HttpsTransport()
+
+        class Routed:
+            def request(self, url, headers, limit, timeout):
+                if '/actions/artifacts/1/zip' in url:
+                    return https.request(url, headers, limit, timeout)
+                return fake.request(url, headers, limit, timeout)
+
+        api = tc.transport.Collector(Routed(), tc.REPOSITORY, tc.TOKEN,
+                                     api_url=tc.API, seconds=2.5)
+        limit = budget.Budget(api.deadline, api.clock, 1.5)
+        with blocked_resolver() as (entered, exchanges, sockets):
+            doc = telemetrycollect.Cycle(self.config, api, gitrefs.Git(self.repo.path),
+                                         time.time, tc.NOW, budget=limit).run()
+            self.assertTrue(entered.is_set())
+            self.assertTrue(exchanges[0].aborted)
+            self.assertFalse(exchanges[0].done.is_set())
+            self.assert_incomplete(doc)
+            persisted = contracts.read_file(os.path.join(self.config['root'], 'collection.json'),
+                                            'telemetry-collection')
+            self.assertEqual(persisted, doc)
+            for detail in (doc['detail'], doc['runs'][0]['reason']):
+                self.assertIn('cleanup was not confirmed', detail)
+                self.assertIn('cancelled worker may remain', detail)
+            self.assertEqual(doc['runs'][0]['outcome'], 'refused')
+
+    def test_confirmed_transport_failure_has_no_false_cleanup_warning_in_persisted_refusal(self):
+        fake = tc.FakeApi([tc.run_entry(1)], {})
+        https = tc.transport.HttpsTransport()
+
+        class Routed:
+            def request(self, url, headers, limit, timeout):
+                if '/actions/runs/1/artifacts?' in url:
+                    return https.request(url, headers, limit, timeout)
+                return fake.request(url, headers, limit, timeout)
+
+        api = tc.transport.Collector(Routed(), tc.REPOSITORY, tc.TOKEN, api_url=tc.API)
+        with mock.patch.object(tc.transport.socket, 'getaddrinfo', side_effect=OSError('no DNS')):
+            doc = telemetrycollect.Cycle(self.config, api, gitrefs.Git(self.repo.path),
+                                         time.time, tc.NOW).run()
+        persisted = contracts.read_file(os.path.join(self.config['root'], 'collection.json'),
+                                        'telemetry-collection')
+        self.assertEqual(persisted, doc)
+        self.assertEqual(doc['runs'][0]['outcome'], 'refused')
+        self.assertIn('OSError', doc['runs'][0]['reason'])
+        self.assertNotIn('cleanup was not confirmed', json.dumps(doc))
 
     def test_stalled_authority_git_process_is_terminated_with_the_cycle_budget(self):
         data = tc.zipped(self.result(1))

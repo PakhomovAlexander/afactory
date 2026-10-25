@@ -24,6 +24,7 @@ from unittest import mock
 from perflab import archive, budget, builds, history, runner, supervise, synthetic, transport
 from perflab.values import ContractError
 from tests.support import TempDir, read, run_dir, synthetic_suite
+from tests.test_telemetry_interruption import blocked_resolver
 
 TOKEN = "marker-token-not-a-secret"
 API = "https://api.example.invalid"
@@ -112,6 +113,21 @@ class Collector(TempDir):
             found.append(artifact(1001 + index, "af-perf-%s-%s" % (content, shard),
                                   read(path)))
         return found
+
+    def test_shared_archive_refusal_persists_unconfirmed_production_resolver_cleanup(self):
+        api = transport.Collector(transport.HttpsTransport(), REPOSITORY, TOKEN, api_url=API)
+        with blocked_resolver() as (entered, exchanges, sockets), \
+                mock.patch.object(transport, "REQUEST_SECONDS", 0.02):
+            with archive.Archive(self.root, wall=lambda: T0 / 1000.0) as store:
+                with self.assertRaises(archive.Refused) as caught:
+                    transport.fetch(store, api, ACTIONS_RUN)
+                self.assertIn("cleanup was not confirmed", str(caught.exception))
+                self.assertTrue(entered.is_set())
+                self.assertFalse(exchanges[0].done.is_set())
+            with archive.Archive(self.root, wall=lambda: T0 / 1000.0) as store:
+                record = store.collections()[-1]
+                self.assertEqual(record["status"], "transport_failed")
+                self.assertIn("cleanup was not confirmed", record["detail"])
 
     def fetch(self, artifacts, lab_run=None, **options):
         fake = FakeTransport(artifacts, **options)

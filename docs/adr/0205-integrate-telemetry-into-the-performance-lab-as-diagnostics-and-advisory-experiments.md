@@ -69,8 +69,13 @@ published main and ADR-0208 change the workflow producer. The timing verdict is 
      retained count, sealed ordinals and open objects with their own full execution list,
      following the current writer (including null ordinals and sealed but open executions).
      Different inventories or evolving execution observations across the two reader instants
-     make history partial; conflicting immutable execution identities are refused. Report
-     admission repeats this reconciliation from the hashed documents.
+     make history partial; conflicting immutable execution identities are refused in both
+     directions. The native writer derives a span ID from segment/sequence, and the index
+     makes `executions.span_id` its primary key: neither inventory may repeat an execution
+     or its span identity, and a shared span cannot be reassigned to another execution
+     between readers. Distinct added/removed identities remain partial. This does not impose
+     uniqueness on unrelated optional fields. Report admission repeats the reconciliation
+     from the hashed documents, even when displayed partial figures agree.
    - **Matrix.** Every other selected case is an omission naming the supported matrix
      (`no_telemetry_subscriber`, `records_no_telemetry`). The trace recipe keeps their phase
      coverage.

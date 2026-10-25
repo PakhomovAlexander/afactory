@@ -5,11 +5,41 @@ import os
 import signal
 import threading
 import time
+from contextlib import contextmanager
 from unittest import mock
 
 from perflab import budget, telemetrylab, transport
 from perflab.values import ContractError
 from tests.support import TempDir
+
+
+@contextmanager
+def blocked_resolver():
+    """A production exchange whose cancelled resolver remains alive and unmasked."""
+    entered, release, exchanges = threading.Event(), threading.Event(), []
+    original_run = transport._Exchange.run
+
+    def resolve(*args):
+        entered.set()
+        if not release.wait(5):
+            raise AssertionError("test did not release its resolver")
+        return [(2, 1, 6, "", ("127.0.0.1", 443))]
+
+    def running(exchange):
+        exchanges.append(exchange)
+        original_run(exchange)
+
+    with mock.patch.object(transport.socket, "getaddrinfo", resolve), \
+            mock.patch.object(transport.socket, "socket") as sockets, \
+            mock.patch.object(transport._Exchange, "run", running):
+        try:
+            yield entered, exchanges, sockets
+        finally:
+            release.set()
+            for exchange in exchanges:
+                if not exchange.done.wait(1):
+                    raise AssertionError("released resolver did not finish")
+            sockets.assert_not_called()
 
 
 class Interruption(TempDir):
@@ -125,7 +155,7 @@ class Interruption(TempDir):
                 self.assertLess(time.monotonic() - started, 1.5)
                 self.assertTrue(exchanges[0].aborted)
                 self.assertFalse(exchanges[0].done.is_set(), "DNS is still blocked, never stopped")
-                self.assertIn("cancelled worker may remain", "; ".join(caught.exception.__notes__))
+                self.assertIn("cancelled worker may remain", str(caught.exception))
             finally:
                 release.set()
                 if exchanges:
@@ -159,14 +189,31 @@ class Interruption(TempDir):
                         mock.patch.object(transport._Exchange, "run", running), \
                         mock.patch.object(threading.Event, "wait", wait):
                     try:
-                        with self.assertRaises(type(error)):
+                        with self.assertRaises(type(error)) as caught:
                             transport.HttpsTransport(context=mock.Mock()).request(
                                 "https://api.example.invalid/", {}, 100, 10)
+                        self.assertIs(caught.exception, error)
+                        self.assertIn("cleanup was not confirmed", str(caught.exception))
                     finally:
                         release.set()
                     self.assertTrue(original_wait(exchanges[0].done, 1))
                     self.assertTrue(exchanges[0].aborted)
                     sockets.assert_not_called()
+
+    def test_cleanup_evidence_survives_redacted_shared_collector_errors(self):
+        # OSError has its own string formatting; Collector deliberately redacts request
+        # failures but must carry the bounded cleanup marker into its TransportError.
+        original = OSError(errno.EIO, "synthetic resource close failed")
+        transport._uncertain(original)
+        self.assertIn("cleanup was not confirmed", str(original))
+        fake = mock.Mock()
+        fake.request.side_effect = original
+        api = transport.Collector(fake, "example/af", "synthetic", api_url="https://api.invalid")
+        with self.assertRaises(transport.TransportError) as caught:
+            api.get_json("/actions/runs", "runs")
+        self.assertIn("cleanup was not confirmed", str(caught.exception))
+        self.assertIn("OSError", str(caught.exception))
+        self.assertNotIn("synthetic resource close failed", str(caught.exception))
 
     def test_interruption_after_open_or_flock_releases_real_owned_descriptor(self):
         original_open, original_flock = os.open, fcntl.flock
@@ -184,8 +231,8 @@ class Interruption(TempDir):
                     if str(path) == os.path.join(root, "lock"):
                         owned.append(fd)
                         if boundary == "open":
-                            # Pending while the tiny ownership transfer masks SIGALRM;
-                            # delivered immediately at restoration, before flock.
+                            # Latched across the tiny ownership transfer, then delivered
+                            # immediately with the descriptor already published.
                             signal.raise_signal(signal.SIGALRM)
                     return fd
 
@@ -211,6 +258,75 @@ class Interruption(TempDir):
                 self.assertEqual(signal.getsignal(signal.SIGALRM), previous_handler)
                 self.assertEqual(signal.getitimer(signal.ITIMER_REAL), previous_timer)
                 self.assertEqual(signal.pthread_sigmask(signal.SIG_BLOCK, set()), previous_mask)
+
+    def test_live_cancelled_resolver_and_real_timer_cannot_interrupt_descriptor_publication(self):
+        root = self.path("live-resolver")
+        kept = telemetrylab.HistoryRoot(root, sweep=False)
+        original_open, owned, returned = os.open, [], []
+        previous_handler = signal.getsignal(signal.SIGALRM)
+        previous_mask = signal.pthread_sigmask(signal.SIG_BLOCK, set())
+        previous_timer = signal.getitimer(signal.ITIMER_REAL)
+
+        def opened(path, *args, **kwargs):
+            fd = original_open(path, *args, **kwargs)
+            if str(path) == os.path.join(root, "lock"):
+                owned.append(fd)
+                self.assertIsNone(kept.fd)
+                # Test-only delay at the exact descriptor-return/publication boundary.
+                # The real timer expires with an unmasked resolver still alive.
+                time.sleep(0.1)
+                returned.append(True)
+            return fd
+
+        with blocked_resolver() as (entered, exchanges, sockets):
+            with self.assertRaises(transport.TransportError):
+                transport.HttpsTransport(context=mock.Mock()).request(
+                    "https://api.example.invalid/", {}, 100, 0.02)
+            self.assertTrue(entered.is_set())
+            self.assertTrue(exchanges[0].aborted)
+            self.assertFalse(exchanges[0].done.is_set())
+            started = time.monotonic()
+            with mock.patch.object(os, "open", opened):
+                with self.assertRaises(budget.Interrupted):
+                    with budget.Budget(started + 0.03, time.monotonic, 0).enforce("transfer"):
+                        kept.__enter__()
+            kept.__exit__()
+            self.assertEqual(returned, [True], "expiry must wait for descriptor publication")
+            self.assertIsNone(kept.fd)
+            self.assertEqual(len(owned), 1)
+            with self.assertRaises(OSError) as caught:
+                os.fstat(owned[0])
+            self.assertEqual(caught.exception.errno, errno.EBADF)
+            self.assertLess(time.monotonic() - started, 0.5, "no renewed deadline after transfer")
+            with telemetrylab.HistoryRoot(root, sweep=False):
+                pass
+            self.assertFalse(exchanges[0].done.is_set(), "lock safety cannot assume DNS stopped")
+        self.assertEqual(signal.getsignal(signal.SIGALRM), previous_handler)
+        self.assertEqual(signal.getitimer(signal.ITIMER_REAL), previous_timer)
+        self.assertEqual(signal.pthread_sigmask(signal.SIG_BLOCK, set()), previous_mask)
+
+    def test_nested_deferral_delivers_expiry_on_exceptional_unwind_and_restores_state(self):
+        previous_handler = signal.getsignal(signal.SIGALRM)
+        previous_mask = signal.pthread_sigmask(signal.SIG_BLOCK, {signal.SIGUSR1})
+        order = []
+        try:
+            with self.assertRaises(budget.Interrupted):
+                with budget.Budget(time.monotonic() + 2, time.monotonic, 0).enforce("nested"):
+                    with budget.defer_alarm():
+                        try:
+                            with budget.defer_alarm():
+                                signal.raise_signal(signal.SIGALRM)
+                                order.append("inner transfer finished")
+                                raise RuntimeError("transfer failure")
+                        finally:
+                            order.append("outer ownership released")
+            self.assertEqual(order, ["inner transfer finished", "outer ownership released"])
+            self.assertEqual(signal.getsignal(signal.SIGALRM), previous_handler)
+            self.assertEqual(signal.getitimer(signal.ITIMER_REAL), (0.0, 0.0))
+            self.assertEqual(signal.pthread_sigmask(signal.SIG_BLOCK, set()),
+                             previous_mask | {signal.SIGUSR1})
+        finally:
+            signal.pthread_sigmask(signal.SIG_SETMASK, previous_mask)
 
     def test_failed_acquisition_never_unlocks_the_other_owner(self):
         root = self.path("history")

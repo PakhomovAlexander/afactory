@@ -104,6 +104,10 @@ live/unsealed segment or an execution whose run span never ended, including reco
 segments. Unknown ordinals remain null in the list and absent in open summary objects.
 Internal contradictions are refused. A changed inventory or evolving observation between the
 two reader instants is `history_partial`; conflicting immutable identities are refused.
+Each inventory must map execution IDs and immutable run-span IDs one to one. The native index
+uses the latter as a primary key; sharing a span across different executions between readers
+is contradictory reassignment. Distinct additions/removals remain partial, without imposing
+uniqueness on unrelated optional fields.
 Report admission repeats these checks even when every artifact hash has been updated.
 
 A reader that fails, a document over its bound, of another version or refused by its schema, or
@@ -482,16 +486,23 @@ than fabricated zeroes or counts copied from a previous cycle. A terminal record
 not be completed also has `ended_unix_ms: null`. An atomic incomplete record
 precedes work and terminal cleanup; interrupted final I/O leaves that record. The history lock
 is released on all exception paths, including entry cleanup and interruption immediately after
-open or flock. SIGALRM is masked only during nonblocking descriptor publication and close,
-with the previous mask restored; nonblocking flock runs with ownership already registered.
+open or flock. A temporary Python SIGALRM handler latches expiry only during nonblocking
+descriptor publication and close, delivering it immediately after ownership is recorded or
+released. This also works with a cancelled unmasked resolver still alive: masking only the
+main thread cannot prevent Python from running its handler there. Nested unwinds restore
+handlers; neither the absolute timer nor the caller's signal mask changes. Nonblocking flock
+runs with ownership already registered.
 Failed acquisition closes only its own descriptor and leaves the other owner alone.
 
 An interrupted HTTP wait first revokes the exchange and shuts down/closes its published socket.
 The raw-to-TLS descriptor transfer is synchronized with abort. Cleanup waits at most one second,
 within the request's absolute deadline and enclosing cycle timer. A system resolver may stay
 blocked in its daemon thread: cancellation disables subsequent connections, TLS and requests,
-but does not stop that thread. Missing cleanup confirmation is recorded in the cycle's detail;
-an interrupted thread join is never evidence that it stopped. The service timeout does not
+but does not stop that thread. Missing cleanup confirmation prefixes a bounded exception
+message on Python 3.9+, preserving its type without the Python 3.11 exception-note API.
+Outer cycle detail, persisted per-run/per-artifact refusals and shared archive refusals retain
+it, even when a request times out before the cycle. Confirmed cleanup adds no warning.
+An interrupted thread join is never evidence that it stopped. The service timeout does not
 replace this CLI deadline.
 
 The raw read-latency document and schema, experiment registry, history and collection now use

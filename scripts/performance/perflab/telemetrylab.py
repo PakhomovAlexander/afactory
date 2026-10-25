@@ -1558,8 +1558,8 @@ class HistoryRoot(object):
         require(os.path.isdir(results) and not os.path.islink(results),
                 "%s is not a directory of results" % results)
         try:
-            # The integer returned by os.open has no destructor. Defer SIGALRM for just
-            # this nonblocking open/publication, then acquire with already-owned authority.
+            # The integer returned by os.open has no destructor. Latch Python's deadline
+            # handler for just this open/publication, then acquire with owned authority.
             with deadlines.defer_alarm():
                 self.fd = os.open(os.path.join(self.root, HISTORY_LOCK), os.O_RDWR | os.O_CREAT
                                   | os.O_NONBLOCK | getattr(os, "O_NOFOLLOW", 0), 0o600)

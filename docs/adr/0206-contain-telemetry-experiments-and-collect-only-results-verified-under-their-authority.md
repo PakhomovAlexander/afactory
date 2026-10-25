@@ -139,8 +139,12 @@ a reader of earlier versions.
      entering an unbounded `finally` deletion. Lock acquisition failure leaves the owner alone;
      failure after acquisition closes the descriptor, including failures during entry cleanup.
      SIGALRM is deferred only across the nonblocking lock-file open and descriptor publication,
-     and across close/clearing ownership. The original signal mask is restored immediately;
-     flock is nonblocking and unmasked, with the descriptor already owned before it runs.
+     and across close/clearing ownership. A temporary Python handler latches expiry, then
+     delivers it immediately after transfer, including nested exceptional unwinds. Thread-local
+     `pthread_sigmask` alone cannot do this: an unmasked cancelled resolver can receive the
+     process alarm and schedule Python's handler on the main thread. The handler is restored;
+     the absolute timer and caller's signal mask never change. No operation-wide deferral is
+     allowed; flock is nonblocking, with the descriptor already owned before it runs.
      Any exceptional exit closes that owned descriptor, never unlocking another owner's lock.
    - HTTP cancellation includes every exceptional caller exit, including deadline interruption
      while waiting. It revokes the exchange and shuts down/closes its socket before terminal
@@ -150,6 +154,12 @@ a reader of earlier versions.
      its cancelled daemon thread may remain alive, with this uncertainty recorded, and cannot
      connect, do TLS or send an authenticated request when lookup returns. The worker's own
      cleanup receipt, never an interrupted thread join's apparent state, establishes completion.
+     Unconfirmed cleanup prefixes the bounded exception message, preserving its original type
+     on Python 3.9+ without exception notes. The marker also survives Collector's redaction of
+     OS/HTTP failures. Outer cycle detail, per-run/per-artifact refusals and shared archive
+     refusals retain it, including an ordinary request timeout before the collection deadline.
+     Confirmed failures carry no cleanup warning. ADR-0197 changes only CI selection, not this
+     runtime contract.
    - Imports publish only a complete, verified staging directory. Expiry immediately around
      its rename is reconciled under the lock. A fully verified result accepted before history
      expiry remains kept, while cycle accounting stays unknown and failed.

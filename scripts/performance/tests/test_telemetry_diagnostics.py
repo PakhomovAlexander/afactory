@@ -10,6 +10,7 @@ measures anything or makes a performance claim.
 """
 import json
 import os
+from unittest import mock
 
 from perflab import (bundle, contracts, diagcontracts, diagnostics, jsonsubset, oracle,
                      phasetrace, planning, report, telemetrydiag)
@@ -88,7 +89,39 @@ def inventory_cases():
             yield source + ":" + mutation, docs, mutation != "only_here"
 
 
+def identity_cases():
+    """A valid partial observation and a contradiction with identical derived figures.
+
+    Only the execution inventory's immutable span binding changes, so neither summary
+    disagreement nor a stale rendered page/hash can stand in for reverse reconciliation.
+    """
+    valid = loaded()
+    item = valid["runs"]["runs"][0]["executions"]["list"][0]
+    original_span = item["span_id"]
+    item.update(execution_id="replacement", span_id="e" * 16)
+    valid["runs"]["runs"][0]["totals_cover"][0]["execution_id"] = "replacement"
+    invalid = json.loads(json.dumps(valid))
+    invalid["runs"]["runs"][0]["executions"]["list"][0]["span_id"] = original_span
+    yield "cross_reader_reassignment", valid, invalid
+    for source in ("runs", "show"):
+        _, valid, _ = next(case for case in inventory_cases()
+                           if case[0] == source + ":only_here")
+        invalid = json.loads(json.dumps(valid))
+        run = invalid[source]["runs"][0] if source == "runs" else invalid[source]["run"]
+        run["executions"]["list"][1]["span_id"] = run["executions"]["list"][0]["span_id"]
+        yield source + ":duplicate_span", valid, invalid
+
+
 class Documents(TempDir):
+    def test_reverse_execution_identity_refuses_reassignment_and_duplicate_spans(self):
+        for name, valid, invalid in identity_cases():
+            with self.subTest(mutation=name):
+                derived = telemetrydiag.capture(dumped(valid), TASK)
+                self.assertEqual(derived["evidence"]["state"], "partial")
+                self.assertIn("history_partial", derived["evidence"]["reasons"])
+                with self.assertRaisesRegex(ContractError, "span identity"):
+                    telemetrydiag.capture(dumped(invalid), TASK)
+
     def test_execution_summaries_and_both_reader_inventories_are_reconciled(self):
         for name, docs, refused in inventory_cases():
             with self.subTest(mutation=name):
@@ -534,6 +567,48 @@ class TelemetryChildRuns(ChildRunBase):
             self.assertEqual(entry["evidence"]["state"], "partial")
             self.assertIn("history_partial", entry["evidence"]["reasons"])
         report.admit_child(output, self.parent)
+
+    def test_report_rederives_reverse_identity_with_consistent_figures_and_updated_hashes(self):
+        for name, valid, invalid in identity_cases():
+            with self.subTest(mutation=name):
+                case_root = self.path(name)
+                os.mkdir(case_root)
+                with mock.patch.object(self, "tmp", case_root):
+                    for kind, data in dumped(valid).items():
+                        with open(os.path.join(self.docs, kind + ".json"), "wb") as stream:
+                            stream.write(data)
+                    _, output = self.run_child()
+                    report.admit_child(output, self.parent)  # distinct identities are partial
+                    profiles_path = os.path.join(output, "profiles.json")
+                    profiles = json.loads(read(profiles_path))
+                    # Forge only the immutable inventory identity; all displayed figures,
+                    # trace/Perfetto/page bytes and their hashes remain consistent.
+                    data_by_kind = dumped(invalid)
+                    for capture in profiles["telemetry"]["captures"]:
+                        if capture["side"] != "baseline":
+                            continue
+                        for artifact in capture["artifacts"]:
+                            kind = artifact["path"].rsplit("/", 1)[1].removesuffix(".json")
+                            if kind in data_by_kind:
+                                data = data_by_kind[kind]
+                                with open(os.path.join(output, artifact["path"]), "wb") as stream:
+                                    stream.write(data)
+                                artifact.update(bytes=len(data), sha256="sha256:" +
+                                                __import__("hashlib").sha256(data).hexdigest())
+                    with open(profiles_path, "wb") as stream:
+                        stream.write(contracts.write_bytes(profiles, "profiles"))
+                    traces = []
+                    for entry in profiles["traces"]:
+                        paths = [a["path"] for a in entry["artifacts"]
+                                 if a["path"].endswith("/trace.json")]
+                        traces.append(None if entry["omission"] is not None else
+                                      phasetrace.load(read(os.path.join(output, paths[0]))))
+                    with open(os.path.join(output, "diagnostic.html"), "wb") as stream:
+                        stream.write(diagnostics.page(profiles, traces))
+                    os.unlink(os.path.join(output, bundle.MANIFEST))
+                    bundle.write_manifest(output, 1 << 30)
+                    with self.assertRaisesRegex(ContractError, "span identity"):
+                        report.admit_child(output, self.parent)
 
     def test_telemetry_is_refused_beside_counters_and_without_a_level(self):
         doc, _ = self.run_child()
