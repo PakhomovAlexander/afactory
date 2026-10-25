@@ -261,7 +261,6 @@ class Cycle(object):
                     # If even terminal I/O is interrupted, this atomic record remains truthful:
                     # this cycle has not completed accounting or published a final success.
                     self.begin_status(kept, fallback)
-                    kept.cleanup_staging()
                     kept.prune()
                     ident = workflow_id(self.api)
                     after, through = read_position(kept, config["repository"], ident)
@@ -301,6 +300,11 @@ class Cycle(object):
                                     self.records.pop()
                                 self.record(run, attempt, "collected", artifact, result_id)
                         doc = self.document(started, ident, history, detail)
+                        # Preserve prior failure evidence if terminal cleanup is interrupted.
+                        # Accounting remains incomplete until cleanup and final publication.
+                        if doc["status"] == "failed":
+                            self.write_status(kept, dict(doc, ended_unix_ms=None,
+                                                        results=None, used_bytes=None))
                         # A deadline may have interrupted an artifact's finally block. Such
                         # state is unaccepted and may be left for the next locked sweep.
                         kept.cleanup_staging()
