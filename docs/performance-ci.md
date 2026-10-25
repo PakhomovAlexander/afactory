@@ -138,6 +138,32 @@ concurrency group per pull request, so every label change replaces the running r
    qualify. Advisory mode shows that outcome without blocking. Required mode fails it on PRs
    and main pushes; dispatches, calibration, nightly and post-publication release runs remain
    advisory even after PR enforcement is enabled.
+7. **Performance report — RESULT (scope)** (always). The PR check list names the actual
+   verdict: `PASS`, `FAIL`, `INCOMPLETE` or `UNAVAILABLE`. Its Details summary shows every
+   scheduled comparison, coverage and a case table with rounded decimal medians and percentage
+   changes. Bootstrap success is explicitly scoped: `PASS (bootstrap; primary unavailable)`
+   never means a qualified full primary. Synthetic evidence is labeled, a missing report is
+   unavailable, and failures take precedence over passing comparisons. The stable check also
+   emits notice/warning annotations and the same summary. Advisory checks can remain green
+   when the displayed verdict is `FAIL`; qualification and enforcement policy are unchanged.
+   A valid `no-perf` exemption instead names the check `EXEMPT (no-perf; not measured)` and
+   states that no performance claim is made. Failed or cancelled scope decisions stay
+   `UNAVAILABLE (scope decision failed)`, even if the scope emitted an exemption before it
+   stopped. The original scope guard and the measured path's control checks still apply.
+
+From a PR, open **Performance report → Details**, then **Run and report artifacts**.
+Download the named `perf-report-<run>` artifact and open `report.html` for the interactive
+report; `verdict.json` preserves exact values. The compact summary shows at most 100 cases per
+comparison, with failed/incomplete cases first and an explicit count of omitted rows.
+All presentation is rendered from validated, plan-bound verdict JSON by trusted control code;
+downloaded Markdown and HTML are never copied into GitHub summaries. The report job uses only
+status outputs and needs no write token or candidate checkout.
+
+The integration must first merge into the trusted control revision. The PR that installs it
+still runs the base's older status script, so its new check can say
+`UNAVAILABLE (trusted control has no report output)` and link to existing run summaries and
+artifacts. Later runs using the merged control publish the verdict. A status job interrupted
+before producing outputs also shows this explicit fallback.
 
 Pull request artifacts are retained 14 days, all others 90. Only `af-perf-*` artifacts are numeric
 evidence in the collector's `af.perf-transport/1` format; the plan, build and report artifacts use

@@ -353,6 +353,9 @@ jobs:
     if: ${{ always() }}
     runs-on: ubuntu-latest
     timeout-minutes: 10
+    outputs:
+      report_label: ${{ steps.exemption.outputs.report_label || steps.verdict.outputs.report_label }}
+      report_summary: ${{ steps.exemption.outputs.report_summary || steps.verdict.outputs.report_summary }}
     steps:
       - name: Require a completed scope decision
         if: ${{ always() }}
@@ -368,6 +371,7 @@ jobs:
           esac
       # An exemption is reported as one, never as a measured or qualified result (ADR-0196).
       - name: Report the no-perf exemption
+        id: exemption
         if: ${{ needs.scope.result == 'success' && needs.scope.outputs.exempt == 'true' }}
         env:
           EVENT_NAME: ${{ github.event_name }}
@@ -380,6 +384,14 @@ jobs:
             echo
             echo "This pull request carries the exact label no-perf: no comparison was planned, built or measured, and no performance claim is made. Remove the label to measure it."
           } | tee -a "$GITHUB_STEP_SUMMARY"
+          {
+            echo 'report_label=EXEMPT (no-perf; not measured)'
+            echo 'report_summary<<AF_PERFORMANCE_EXEMPT'
+            echo '## Performance report: EXEMPT (no-perf; not measured)'
+            echo
+            echo 'This pull request carries the exact label no-perf: no comparison was planned, built or measured, and no performance claim is made. Remove the label to measure it.'
+            echo 'AF_PERFORMANCE_EXEMPT'
+          } >> "$GITHUB_OUTPUT"
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         if: ${{ needs.scope.outputs.exempt != 'true' }}
         with:
@@ -401,6 +413,7 @@ jobs:
           path: ${{ runner.temp }}/reports
           merge-multiple: false
       - name: Finish the stable performance check
+        id: verdict
         if: ${{ needs.scope.outputs.exempt != 'true' }}
         env:
           CONTROL_SHA: ${{ needs.plan.outputs.control }}
@@ -416,6 +429,38 @@ jobs:
             exit 0
           fi
           python3 -I scripts/performance/ci-status.py --schedule "$RUNNER_TEMP/schedule" --reports "$RUNNER_TEMP/reports"
+
+  report:
+    # Keep the stable gate's identity and policy, and expose the actual numeric outcome in
+    # the PR's check list without a write token or execution of candidate code.
+    name: Performance report — ${{ needs.scope.result != 'success' && 'UNAVAILABLE (scope decision failed)' || needs.status.outputs.report_label || 'UNAVAILABLE (trusted control has no report output)' }}
+    needs: [scope, status]
+    if: ${{ always() }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Show the performance report
+        env:
+          PERF_SCOPE_RESULT: ${{ needs.scope.result }}
+          PERF_REPORT_SUMMARY: ${{ needs.status.outputs.report_summary }}
+          PERF_RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}/attempts/${{ github.run_attempt }}
+        run: |
+          set -eu
+          if [ "$PERF_SCOPE_RESULT" != success ]; then
+            {
+              printf '%s\n\n' '## Performance report: UNAVAILABLE (scope decision failed)'
+              printf '%s\n\n' 'The scope decision did not succeed, so no exemption or performance result can be reported.'
+              printf '[Run summary and report artifacts](%s)\n' "$PERF_RUN_URL"
+            } >> "$GITHUB_STEP_SUMMARY"
+          elif [ -n "$PERF_REPORT_SUMMARY" ]; then
+            printf '%s\n' "$PERF_REPORT_SUMMARY" >> "$GITHUB_STEP_SUMMARY"
+          else
+            {
+              printf '%s\n\n' '## Performance report: UNAVAILABLE'
+              printf '%s\n\n' 'The trusted control did not publish a report output. The report integration must be present on the trusted base; an interrupted status job can also leave no output.'
+              printf '[Run summary and report artifacts](%s)\n' "$PERF_RUN_URL"
+            } >> "$GITHUB_STEP_SUMMARY"
+          fi
 
   shard:
     name: shard (${{ matrix.run_id }} ${{ matrix.shard }})

@@ -2,14 +2,17 @@
 import copy
 import json
 import os
+import importlib.util
+import subprocess
+import sys
 import unittest
 from datetime import datetime, timezone
 from unittest import mock
 
 from perflab import ci, collection, contracts, status
 from perflab.values import ContractError
-from tests import test_planning
-from tests.support import ROOT, read
+from tests import test_ci, test_planning
+from tests.support import ROOT, SUITE, read
 
 
 class StableCheck(test_planning.History):
@@ -111,6 +114,166 @@ class StableCheck(test_planning.History):
         with self.assertRaises(OSError):
             self.evaluate()
         self.assertEqual(status.enforcement(ROOT), "advisory")
+
+    def presentation(self, **changes):
+        values = dict(schedule_dir=self.schedule, reports_dir=self.reports,
+                      repository="owner/af", run_id=42, attempt=1, sha=self.head,
+                      qualified=False, details=["primary not qualified"], mode="advisory")
+        values.update(changes)
+        return status.presentation(**values)
+
+    def test_report_exposes_actual_verdict_scope_evidence_coverage_and_rounded_values(self):
+        self.verdict["cases"][0]["baseline"]["median"] = "123456789/1000000"
+        self.write_verdict()
+        label, summary, annotations = self.presentation()
+        self.assertEqual(label, "PASS (full)")
+        self.assertIn("124/124 planned records matched", summary)
+        self.assertIn("≈ 123.457", summary)
+        self.assertNotIn("123456789/1000000", summary)
+        self.assertIn("perf-report-" + self.item["run_id"], summary)
+        self.assertIn("https://github.com/owner/af/actions/runs/42/attempts/1", summary)
+        self.assertIn("not qualified", summary)
+        self.assertIn("advisory completion", summary)
+        self.assertEqual(annotations[0][0], "notice")
+
+    def test_each_real_verdict_is_visible_without_changing_qualification(self):
+        for fixture, label in (("synthetic-regression", "FAIL"),
+                               ("synthetic-inconclusive", "INCOMPLETE")):
+            self.verdict = json.loads(read(os.path.join(ROOT,
+                "fixtures/performance/compare", fixture, "verdict.json")))
+            self.verdict.update(run_id=self.item["run_id"], plan_digest=self.item["plan_digest"],
+                                scope="full")
+            self.write_verdict()
+            title, summary, annotations = self.presentation()
+            self.assertEqual(title, label + " (full; synthetic)")
+            self.assertIn("not qualified", summary)
+            self.assertEqual(annotations[0][0], "warning")
+
+    def test_report_and_annotations_use_the_actions_server_on_github_enterprise(self):
+        _, summary, annotations = self.presentation(server_url="https://github.example.test/")
+        url = "https://github.example.test/owner/af/actions/runs/42/attempts/1"
+        self.assertIn("[Run and report artifacts](" + url + ")", summary)
+        self.assertIn(url, annotations[0][1])
+        self.assertNotIn("https://github.com/", summary)
+
+    def test_unavailable_primary_does_not_hide_bootstrap_report(self):
+        # The actual pre-activation shape: the primary cannot be planned, but the control's
+        # bootstrap comparison measured successfully. It never qualifies as the primary.
+        self.repo.git("rm", "fixtures/performance/activation.toml")
+        control = self.repo.commit("remove activation", {})
+        candidate = self.repo.commit("candidate", {"README": "candidate\n"})
+        event = ci.Event("push", {}, candidate, "refs/heads/main", "owner/af", 43, 1)
+        doc, plans = ci.schedule(self.git, event, ci.Settings({
+            "linux_gnu_native_release": "registry.invalid/tools@sha256:" + "4" * 64}))
+        schedule_dir = self.path("bootstrap-schedule")
+        ci.write(schedule_dir, doc, plans)
+        bootstrap = next(item for item in doc["comparisons"] if item["role"] == "control_bootstrap")
+        self.verdict.update(run_id=bootstrap["run_id"], plan_digest=bootstrap["plan_digest"],
+                            scope="bootstrap")
+        self.verdict["aggregate"]["satisfies_required_check"] = False
+        self.path_report = os.path.join(self.reports, "verdict.json")
+        self.write_verdict()
+        os.unlink(os.path.join(self.reports, "perf-report-" + self.item["run_id"], "verdict.json"))
+        os.rmdir(os.path.join(self.reports, "perf-report-" + self.item["run_id"]))
+        label, summary, _ = self.presentation(schedule_dir=schedule_dir, run_id=43, sha=candidate)
+        self.assertEqual(label, "PASS (bootstrap; primary unavailable)")
+        self.assertIn("PASS (control bootstrap; bootstrap; measured)", summary)
+        self.assertIn("124/124", summary)
+        self.assertFalse(status.evaluate(schedule_dir, self.reports, self.jobs,
+                                        "owner/af", 43, 1, candidate)[0])
+
+    def test_missing_foreign_and_mixed_reports_are_presented_as_unavailable(self):
+        for change in ("missing", "foreign", "mixed", "scope"):
+            with self.subTest(change=change):
+                self.write_verdict()
+                if change == "missing":
+                    os.unlink(self.path_report)
+                elif change == "foreign":
+                    self.verdict["plan_digest"] = "sha256:" + "9" * 64
+                    self.write_verdict()
+                elif change == "scope":
+                    self.verdict["scope"] = "bootstrap"
+                    self.verdict["aggregate"]["satisfies_required_check"] = False
+                    self.write_verdict()
+                else:
+                    with open(os.path.join(self.reports, "verdict.json"), "wb") as stream:
+                        stream.write(read(self.path_report))
+                label, _, _ = self.presentation()
+                self.assertEqual(label, "UNAVAILABLE")
+                self.verdict["plan_digest"] = self.item["plan_digest"]
+                self.verdict["scope"] = "full"
+                flat = os.path.join(self.reports, "verdict.json")
+                if os.path.exists(flat):
+                    os.unlink(flat)
+
+    def test_cli_exports_report_and_annotations_without_altering_advisory_exit(self):
+        script = os.path.join(ROOT, "scripts/performance/ci-status.py")
+        env = dict(os.environ, GITHUB_EVENT_NAME="pull_request", GITHUB_REPOSITORY="owner/af",
+                   GITHUB_SERVER_URL="https://github.example.test",
+                   GITHUB_RUN_ID="42", GITHUB_RUN_ATTEMPT="1", GITHUB_SHA=self.head,
+                   PERF_JOB_RESULTS=json.dumps(self.jobs), GITHUB_OUTPUT=self.path("outputs"),
+                   GITHUB_STEP_SUMMARY=self.path("summary"))
+        result = subprocess.run([sys.executable, "-I", script, "--schedule", self.schedule,
+                                 "--reports", self.reports], env=env, capture_output=True)
+        self.assertEqual(result.returncode, 0, result.stderr.decode())
+        self.assertIn(b"::notice title=Performance report::PASS", result.stdout)
+        self.assertIn(b"report_label<<af_perf_", read(env["GITHUB_OUTPUT"]))
+        self.assertIn(b"report_summary<<af_perf_", read(env["GITHUB_OUTPUT"]))
+        self.assertIn(b"124/124", read(env["GITHUB_STEP_SUMMARY"]))
+        self.assertIn(b"https://github.example.test/owner/af/actions/runs/42/attempts/1",
+                      read(env["GITHUB_STEP_SUMMARY"]))
+
+
+class AnnotationSafety(unittest.TestCase):
+    def test_newlines_percent_and_property_separators_cannot_inject_commands(self):
+        path = os.path.join(ROOT, "scripts/performance/ci-status.py")
+        spec = importlib.util.spec_from_file_location("ci_status", path)
+        module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(module)
+        line = module.command("warning", "title,:\n", "%\r\n::error::forged")
+        self.assertEqual(line, "::warning title=title%2C%3A%0A::%25%0D%0A::error::forged")
+
+
+class ComparisonPrecedence(test_planning.History):
+    def test_pass_cannot_hide_another_comparisons_failure_or_missing_report(self):
+        self.activate()
+        policy = read(SUITE).decode().replace(
+            "pairs = { quick = 40, nightly = 40, release = 40 }",
+            "pairs = { quick = 12, nightly = 40, release = 40 }", 1)
+        merge, base, head = test_ci.Events.merged(self, {test_planning.planning.SUITE_PATH: policy})
+        doc, plans = ci.schedule(self.git, test_ci.Events.pr_event(self, merge, base, head),
+                                 ci.Settings({"linux_gnu_native_release": test_ci.IMAGE}))
+        schedule_dir, reports_dir = self.path("schedule"), self.path("reports")
+        ci.write(schedule_dir, doc, plans)
+        paths = []
+        for item in doc["comparisons"]:
+            plan = contracts.read_json(plans[item["run_id"]], "run")
+            verdict = json.loads(read(os.path.join(ROOT,
+                "fixtures/performance/compare/synthetic-pass/verdict.json")))
+            verdict.update(run_id=item["run_id"], plan_digest=item["plan_digest"],
+                           scope=plan["scope"])
+            path = os.path.join(reports_dir, "perf-report-" + item["run_id"], "verdict.json")
+            os.makedirs(os.path.dirname(path))
+            with open(path, "wb") as stream:
+                stream.write(contracts.write_bytes(verdict, "verdict"))
+            paths.append((path, verdict))
+
+        def label():
+            return status.presentation(schedule_dir, reports_dir, "owner/af", 4242, 1,
+                                       merge, False, [], "advisory")[0]
+
+        self.assertTrue(label().startswith("PASS"))
+        path, verdict = paths[-1]
+        os.unlink(path)
+        self.assertTrue(label().startswith("INCOMPLETE"), label())
+        self.assertIn("report unavailable", label())
+        failed = json.loads(read(os.path.join(ROOT,
+            "fixtures/performance/compare/synthetic-regression/verdict.json")))
+        failed.update(run_id=verdict["run_id"], plan_digest=verdict["plan_digest"],
+                      scope=verdict["scope"])
+        with open(path, "wb") as stream:
+            stream.write(contracts.write_bytes(failed, "verdict"))
+        self.assertTrue(label().startswith("FAIL"), label())
 
 
 class Api:

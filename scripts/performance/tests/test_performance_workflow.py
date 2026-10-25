@@ -170,6 +170,28 @@ class Workflow(unittest.TestCase):
             "Schedule from the trusted control") if prefix in line]
         self.assertEqual(order, sorted(order))
 
+    def test_report_check_exposes_verdict_using_only_the_trusted_status_outputs(self):
+        job = self.jobs["report"]
+        self.assertEqual(text.key(job, "needs"), "[scope, status]")
+        self.assertEqual(text.key(job, "if"), "${{ always() }}")
+        self.assertIn("needs.status.outputs.report_label", text.key(job, "name"))
+        self.assertIn("needs.scope.result != 'success'", text.key(job, "name"))
+        self.assertIn("scope decision failed", text.key(job, "name"))
+        self.assertIn("UNAVAILABLE", text.key(job, "name"))
+        self.assertNotIn("uses:", "\n".join(job))
+        show = step_named(job, "Show the performance report")
+        self.assertIn("PERF_REPORT_SUMMARY: ${{ needs.status.outputs.report_summary }}", "\n".join(show))
+        script = text.block(show, "run")
+        self.assertNotIn("${{", script, "outputs enter shell only as environment data")
+        self.assertIn('printf \'%s\\n\' "$PERF_REPORT_SUMMARY"', script)
+        self.assertIn("trusted control did not publish", script)
+        self.assertIn("Run summary and report artifacts", script)
+        status = "\n".join(self.jobs["status"])
+        self.assertIn("report_label: ${{ steps.exemption.outputs.report_label || "
+                      "steps.verdict.outputs.report_label }}", status)
+        self.assertIn("report_summary: ${{ steps.exemption.outputs.report_summary || "
+                      "steps.verdict.outputs.report_summary }}", status)
+
 
 @unittest.skipUnless(shutil.which("bash") and shutil.which("git"), "bash and git needed")
 class Steps(TempDir):
@@ -190,6 +212,7 @@ class Steps(TempDir):
         values = {"PATH": os.environ.get("PATH", "/usr/bin:/bin"), "HOME": self.repo.path,
                   "GIT_CONFIG_NOSYSTEM": "1", "GIT_CONFIG_GLOBAL": os.devnull,
                   "RUNNER_TEMP": runner_temp, "GITHUB_STEP_SUMMARY": self.path("summary"),
+                  "GITHUB_OUTPUT": self.path("github-output"),
                   "GITHUB_RUN_ID": "50", "GITHUB_RUN_ATTEMPT": "2"}
         values.update(env)
         result = subprocess.run(["bash", "-e", "-c", script], cwd=cwd or self.repo.path,
@@ -363,6 +386,7 @@ class Steps(TempDir):
     def test_scope_failure_or_cancellation_cannot_pass_even_with_exemption_output(self):
         for state in ("success", "failure", "cancelled", "skipped", ""):
             for output in ("true", "false", "", "unknown"):
+<<<<<<< b9a2b3cafb4a3aa2bbf57ac03ffd2a380be300a1
                 result, _ = self.run_step("status", "Require a completed scope decision", {
                     "SCOPE_RESULT": state, "EXEMPT": output})
                 self.assertEqual(result.returncode == 0,
@@ -371,10 +395,42 @@ class Steps(TempDir):
             "EVENT_NAME": "pull_request", "GITHUB_RUN_ATTEMPT": "1"})
         self.assertEqual(result.returncode, 0)
         self.assertIn("exempt (label no-perf), not measured", read(self.path("summary")).decode())
+=======
+                with self.subTest(state=state, output=output):
+                    result, _ = self.run_step("status", "Require a completed scope decision", {
+                        "SCOPE_RESULT": state, "EXEMPT": output})
+                    self.assertEqual(result.returncode == 0,
+                                     state == "success" and output in ("true", "false"))
+
+    def test_the_exemption_is_reported_as_one_and_a_missing_plan_never_passes(self):
+        name = "Report the no-perf exemption"
+        result, _ = self.run_step("status", name, {"EVENT_NAME": "pull_request",
+                                                   "GITHUB_RUN_ATTEMPT": "1"})
+        self.assertEqual(result.returncode, 0, result.stderr.decode())
+        summary = read(self.path("summary")).decode()
+        self.assertIn("Performance check: exempt (label no-perf), not measured", summary)
+        self.assertIn("no performance claim is made", summary)
+        self.assertNotIn("qualified", summary)
+        outputs = read(self.path("github-output")).decode()
+        self.assertIn("report_label=EXEMPT (no-perf; not measured)\n", outputs)
+        self.assertIn("report_summary<<AF_PERFORMANCE_EXEMPT\n", outputs)
+        self.assertIn("## Performance report: EXEMPT (no-perf; not measured)\n", outputs)
+        self.assertNotIn("PASS", outputs)
+        self.assertNotIn("UNAVAILABLE", outputs)
+        for env in ({"EVENT_NAME": "push", "GITHUB_RUN_ATTEMPT": "1"},
+                    {"EVENT_NAME": "pull_request", "GITHUB_RUN_ATTEMPT": "2"}):
+            with self.subTest(env=env):
+                result, _ = self.run_step("status", name, env)
+                self.assertNotEqual(result.returncode, 0)
+                self.assertEqual(read(self.path("github-output")).decode(), outputs,
+                                 "an invalid exemption must not publish outputs")
+        # Without the exemption, a run whose plan never ran has no control and fails.
+>>>>>>> 7d52f39bb6d3a7eedacc00242e14f6075eee4411
         result, _ = self.run_step("status", "Finish the stable performance check", {
             "CONTROL_SHA": "", "PERF_JOB_RESULTS": "{}"})
         self.assertNotEqual(result.returncode, 0)
 
+<<<<<<< b9a2b3cafb4a3aa2bbf57ac03ffd2a380be300a1
     def test_dispatch_head_controls_both_run_naming_and_precheckout_guard(self):
         line = next(line for line in read(WORKFLOW).decode().splitlines()
                     if line.startswith("run-name: "))
@@ -402,6 +458,41 @@ class Steps(TempDir):
             result, _ = self.run_step("plan", "Refuse a calibration source mismatch", {
                 "EVENT_NAME": event, "INPUT_SCOPE": "", "DISPATCH_HEAD": ""})
             self.assertEqual(result.returncode, 0, result.stderr.decode())
+=======
+    def test_the_report_step_preserves_explicit_exemption_and_measured_outputs(self):
+        url = "https://github.com/owner/af/actions/runs/50/attempts/1"
+        for summary in ("## Performance report: EXEMPT (no-perf; not measured)\n\nNo performance claim is made.\n",
+                        "## Performance report: PASS (bootstrap; primary unavailable)\n"):
+            with self.subTest(summary=summary):
+                path = self.path("shown-report")
+                if os.path.exists(path):
+                    os.unlink(path)
+                result, _ = self.run_step("report", "Show the performance report", {
+                    "PERF_SCOPE_RESULT": "success", "PERF_REPORT_SUMMARY": summary,
+                    "PERF_RUN_URL": url, "GITHUB_STEP_SUMMARY": path})
+                self.assertEqual(result.returncode, 0, result.stderr.decode())
+                self.assertEqual(read(path).decode(), summary + "\n")
+
+    def test_nonexempt_missing_output_and_failed_scope_are_explicitly_unavailable(self):
+        url = "https://github.com/owner/af/actions/runs/50/attempts/1"
+        for state in ("success", "failure", "cancelled", "skipped", ""):
+            with self.subTest(state=state):
+                path = self.path("fallback-report")
+                if os.path.exists(path):
+                    os.unlink(path)
+                result, _ = self.run_step("report", "Show the performance report", {
+                    "PERF_SCOPE_RESULT": state,
+                    "PERF_REPORT_SUMMARY": "" if state == "success" else "EXEMPT (no-perf; not measured)",
+                    "PERF_RUN_URL": url, "GITHUB_STEP_SUMMARY": path})
+                self.assertEqual(result.returncode, 0, result.stderr.decode())
+                summary = read(path).decode()
+                self.assertIn("Performance report: UNAVAILABLE", summary)
+                self.assertIn(url, summary)
+                self.assertNotIn("EXEMPT", summary)
+                self.assertNotIn("PASS", summary)
+                self.assertIn("trusted control did not publish" if state == "success"
+                              else "scope decision failed", summary)
+>>>>>>> 7d52f39bb6d3a7eedacc00242e14f6075eee4411
 
 
 ACTIVATION = os.path.join(ROOT, ".github/workflows/performance-activation.yml")

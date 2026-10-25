@@ -4,11 +4,29 @@ import argparse
 import json
 import os
 import sys
+import uuid
 
 sys.dont_write_bytecode = True
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from perflab import status  # noqa: E402
 from perflab.values import ContractError  # noqa: E402
+
+
+def command(level, title, message):
+    """Escape data before emitting a GitHub Actions annotation command."""
+    def escape(value):
+        return value.replace("%", "%25").replace("\r", "%0D").replace("\n", "%0A")
+    return "::%s title=%s::%s" % (level, escape(title).replace(",", "%2C").replace(":", "%3A"),
+                                  escape(message))
+
+
+def outputs(path, values):
+    with open(path, "a", encoding="utf-8") as stream:
+        for key, value in values.items():
+            delimiter = "af_perf_" + uuid.uuid4().hex
+            while delimiter in value:
+                delimiter = "af_perf_" + uuid.uuid4().hex
+            stream.write("%s<<%s\n%s\n%s\n" % (key, delimiter, value, delimiter))
 
 
 def main():
@@ -27,14 +45,21 @@ def main():
             int(os.environ["GITHUB_RUN_ATTEMPT"]), os.environ["GITHUB_SHA"])
     except (ContractError, OSError, ValueError, KeyError) as error:
         qualified, details = False, ["evidence unavailable or invalid: %s" % error]
-    result = "qualified pass" if qualified else "not qualified"
-    message = "### Performance check: %s (%s)\n\n%s\n" % (
-        result, mode, "\n".join("- " + line.replace("\n", " ") for line in details)
-        or "The full measured primary satisfies the required check.")
-    print(message)
+    label, message, annotations = status.presentation(
+        args.schedule, args.reports, os.environ["GITHUB_REPOSITORY"],
+        int(os.environ["GITHUB_RUN_ID"]), int(os.environ["GITHUB_RUN_ATTEMPT"]),
+        os.environ["GITHUB_SHA"], qualified, details, mode,
+        server_url=os.environ.get("GITHUB_SERVER_URL", "https://github.com"))
+    # Summary data is never printed as raw workflow commands: a case name or refusal detail
+    # may contain a newline followed by an Actions command.
+    print("Performance report: " + label)
+    for level, annotation in annotations:
+        print(command(level, "Performance report", annotation))
     if os.environ.get("GITHUB_STEP_SUMMARY"):
         with open(os.environ["GITHUB_STEP_SUMMARY"], "a", encoding="utf-8") as stream:
             stream.write(message)
+    if os.environ.get("GITHUB_OUTPUT"):
+        outputs(os.environ["GITHUB_OUTPUT"], {"report_label": label, "report_summary": message})
     return 0 if mode == "advisory" or qualified else 1
 
 
