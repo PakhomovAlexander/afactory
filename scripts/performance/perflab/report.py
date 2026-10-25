@@ -1045,6 +1045,22 @@ def _diagnostic_cell(state):
         render.escape(state["state"]), "; ".join(links) or render.escape(state["reason"])))
 
 
+def compact_verdict_markdown(verdict):
+    """A bounded PR table with rounded numbers; the artifact retains exact rationals."""
+    lines = ["Numbers below are rounded; exact values remain in the report artifact.", "",
+             "| Case | Result | Classification | Baseline median (ms) | Candidate median (ms) | Change | Missing |",
+             "| --- | --- | --- | --- | --- | --- | --- |"]
+    cases = sorted(verdict["cases"], key=lambda item: item["outcome"] == "pass")
+    for entry in cases[:100]:
+        cells = (entry["instance_id"], entry["outcome"].upper(), entry["status"],
+                 _median(entry, "baseline"), _median(entry, "candidate"), _relative(entry),
+                 entry["missing_records"])
+        lines.append("| %s |" % " | ".join(render.markdown_cell(cell) for cell in cells))
+    if len(cases) > 100:
+        lines.extend(["", "%d more cases are in the report artifact." % (len(cases) - 100)])
+    return "\n".join(lines) + "\n"
+
+
 def summary_markdown(doc):
     """The compact GitHub job-summary table: one row per case, every cell escaped."""
     verdict = doc["verdict"]
