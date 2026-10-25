@@ -2,7 +2,7 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "urn:af:schema:performance-telemetry-history:2",
   "title": "af.perf-telemetry-history/2",
-  "description": "Compatible history of telemetry results (ADR-0213, ADR-0214): the durable root's bounds and use, every result verified under its exact measurement authority once, groups of one configuration under one authority, execution mode and image on one host, each group's series by experiment, subject, level, metric and shape, what was pruned and every refused input with its reason.",
+  "description": "Compatible history of telemetry results (ADR-0214, ADR-0215): the durable root's bounds and use, every result verified under its exact measurement authority once, groups of one configuration under one authority, execution mode and image on one host, each group's series by experiment, subject, level, metric and shape, what was pruned and every refused input with its reason.",
   "type": "object",
   "additionalProperties": false,
   "properties": {

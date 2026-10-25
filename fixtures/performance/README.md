@@ -38,14 +38,14 @@ The data of the continuous performance laboratory
   target, the counter cases, the child run's limits, the diagnostic recipes (each a verdict
   recipe of `suite.toml` with only features, symbols and frame pointers added) and every external
   tool with its pin, how it reports its version and its provisioning instructions.
-- `telemetry.toml` — the telemetry experiments (`af.perf-telemetry-lab/2`, ADR-0213): each
+- `telemetry.toml` — the telemetry experiments (`af.perf-telemetry-lab/2`, ADR-0214): each
   exactly a bench script of the telemetry design's §12 with its document, the product schema it
   is read through, its levels and the inputs that identify its measurement authority, and one
   bounded profile per trigger (rounds, pairs, scale, corpus size, timeout, work bytes and
   retention). `cli.py telemetry-run` measures it; nothing in it is a verdict sample.
 - `telemetry-diagnostic/` — the four `af telemetry` documents (`runs`, `show`, `status`,
   `config`) a debug build of this source's AF (0.12.0-rc.5) wrote for the CLI Task fixture in a
-  private HOME on a macOS development host, its directory path replaced by `/scratch/sample` (ADR-0213): the
+  private HOME on a macOS development host, its directory path replaced by `/scratch/sample` (ADR-0214): the
   telemetry-capture tests read them through the product's schemas and mutate them into every
   partial and hostile state.
 - `golden/native.json` — the native oracle's golden entries (`af.perf-golden/2`): per instance,
@@ -252,7 +252,7 @@ outgrow the room is cancelled and refused, and the byte usage recorded is the ev
 size, with an 8-MiB administrative reserve inside the cap. It
 writes `run.json`, `profiles.json` (`af.perf-profiles/5`), `diagnostic.html`, the captures,
 flamegraphs, traces, counters and, with `--telemetry spans|content`, each eligible CLI case's
-telemetry documents (`telemetry/<case>/<side>/`, ADR-0213), and a bundle manifest into the new
+telemetry documents (`telemetry/<case>/<side>/`, ADR-0214), and a bundle manifest into the new
 `--output` directory. It
 exits 0 when everything requested was captured and 4 when anything was unavailable; each
 omission names its reason and exact reproduction.

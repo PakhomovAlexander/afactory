@@ -1,4 +1,4 @@
-"""The trusted telemetry collection lane (ADR-0214).
+"""The trusted telemetry collection lane (ADR-0215).
 
 A fake transport stands for the GitHub API and its signed artifact storage on another origin; no
 network is reached and the token is a literal non-secret marker. The artifacts are real ZIP

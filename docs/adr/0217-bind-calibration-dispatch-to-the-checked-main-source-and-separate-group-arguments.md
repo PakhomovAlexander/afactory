@@ -1,4 +1,4 @@
-# ADR-0216: Bind calibration dispatch to the checked main source and separate group arguments
+# ADR-0217: Bind calibration dispatch to the checked main source and separate group arguments
 
 **Status:** proposed (2026-10-24). Renumbered from unmerged ADR-0202 after
 published main's ADR-0204. Repairs the calibration dispatch and group package of

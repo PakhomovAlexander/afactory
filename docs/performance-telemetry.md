@@ -1,7 +1,7 @@
 # Telemetry in the performance laboratory
 
 The laboratory uses [Telemetry](telemetry.md) in two ways, both apart from the timing verdict
-([ADR-0213](adr/0213-integrate-telemetry-into-the-performance-lab-as-diagnostics-and-advisory-experiments.md)):
+([ADR-0214](adr/0214-integrate-telemetry-into-the-performance-lab-as-diagnostics-and-advisory-experiments.md)):
 
 - **Diagnostics.** A diagnostic child run of a comparison can also record its CLI cases at an
   explicitly selected telemetry level and read the recording back through the side's own
@@ -11,7 +11,7 @@ The laboratory uses [Telemetry](telemetry.md) in two ways, both apart from the t
   candidate binary with the bench scripts of [design §12](design/telemetry.md), from the trusted
   control's checkout, on pull requests, nightly, on publication and on request. Every execution
   of a candidate is contained, and only verified results reach the durable history
-  ([ADR-0214](adr/0214-contain-telemetry-experiments-and-collect-only-results-verified-under-their-authority.md)).
+  ([ADR-0215](adr/0215-contain-telemetry-experiments-and-collect-only-results-verified-under-their-authority.md)).
 
 Neither ever contributes a verdict sample, changes a verdict, or satisfies a required check.
 The old hosted calibration cohort's bytes remain pinned by SHA-256. The consolidated
@@ -23,20 +23,23 @@ default telemetry cost stays inside that case's measured time.
 
 ## ADR numbering after source reconciliation
 
-Published-main ADR0199–0204 keep their files, content and references. The five unmerged
-performance decisions follow them as ADR0205–0209. This integration preserves the captured
-`scripts/performance`, workflow, fixtures and generated schema bytes. Literal ADR numbers in
-their comments, help text and schema descriptions retain the draft numbering; interpret those
-performance references using this table, rather than as references to the published-main
-Provider or fixture decisions. Documentation links use the reconciled numbers.
+Published-main ADR0001–0213 keep their files, content and references, including ADR-0213's
+CLI usage test isolation. The eight unpublished laboratory decisions move together to
+ADR0214–0221. Their filenames, titles and references in documentation, source comments,
+help, configuration comments and generated schema descriptions all use the final numbers.
+The protected inventory and staged policy are regenerated with the existing generator;
+substantive decisions and behavior are unchanged.
 
-| Captured performance draft number | Reconciled decision |
+| Previous laboratory number | Reconciled decision |
 | --- | --- |
-| 0199 | [0205: Telemetry diagnostics and advisory experiments](adr/0213-integrate-telemetry-into-the-performance-lab-as-diagnostics-and-advisory-experiments.md) |
-| 0200 | [0206: Containment, verification and collection](adr/0214-contain-telemetry-experiments-and-collect-only-results-verified-under-their-authority.md) |
-| 0201 | [0207: Reference-generation throughput](adr/0215-construct-reference-fixture-bytes-without-per-byte-python-loops.md) |
-| 0202 | [0208: Calibration dispatch and group arguments](adr/0216-bind-calibration-dispatch-to-the-checked-main-source-and-separate-group-arguments.md) |
-| 0203 | [0209: Accounting append and reservation settlement](adr/0217-reapply-an-accounting-append-once-after-only-this-writers-heartbeat-renewals.md) |
+| 0213 | [0214: Telemetry diagnostics and advisory experiments](adr/0214-integrate-telemetry-into-the-performance-lab-as-diagnostics-and-advisory-experiments.md) |
+| 0214 | [0215: Containment, verification and collection](adr/0215-contain-telemetry-experiments-and-collect-only-results-verified-under-their-authority.md) |
+| 0215 | [0216: Reference-generation throughput](adr/0216-construct-reference-fixture-bytes-without-per-byte-python-loops.md) |
+| 0216 | [0217: Calibration dispatch and group arguments](adr/0217-bind-calibration-dispatch-to-the-checked-main-source-and-separate-group-arguments.md) |
+| 0217 | [0218: Accounting append and reservation settlement](adr/0218-reapply-an-accounting-append-once-after-only-this-writers-heartbeat-renewals.md) |
+| 0218 | [0219: Native gate child ownership](adr/0219-own-native-gate-children-without-leaving-the-enclosing-process-group.md) |
+| 0219 | [0220: Scoped Store fixture clock](adr/0220-control-store-fixture-time-with-a-scoped-thread-clock.md) |
+| 0220 | [0221: Performance Lab and GA integration](adr/0221-integrate-the-performance-lab-with-ga-and-control-short-attempt-fixtures.md) |
 
 ## Supported matrix
 
@@ -172,7 +175,7 @@ run and the teardown, with 90 seconds kept for the last teardown and the result.
 
 ### Where each execution runs
 
-Every execution goes through one executor (`perflab/telemetryexec.py`, ADR-0214): each side's
+Every execution goes through one executor (`perflab/telemetryexec.py`, ADR-0215): each side's
 `--version` query, the corpus generator and every script run.
 
 - **`--mode linux_container`** runs each execution in its own container of the pinned sample
@@ -357,7 +360,7 @@ falsify its own run's document, never the other side's, the controller's or anot
 
 `cli.py telemetry-collect --config FILE` is one bounded, idempotent collection cycle of the
 workflow's result artifacts into a durable telemetry history root (`perflab/telemetrycollect.py`,
-ADR-0214). It is a lane of its own. The archive collector (`scripts/performance/collect.py`) behaves as
+ADR-0215). It is a lane of its own. The archive collector (`scripts/performance/collect.py`) behaves as
 before, never reads these artifacts, and stays pinned to the frozen cohort's control (below);
 the only code the lanes share is the bounded ZIP reader, `transport.read_zip`.
 

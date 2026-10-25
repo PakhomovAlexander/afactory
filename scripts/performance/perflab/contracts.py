@@ -1177,7 +1177,7 @@ def validate_verdict(doc, where="verdict.json"):
     return doc
 
 
-# af.perf-profiles/5 (ADR-0213), af.perf-trace/1 and af.perf-diagnostics/1 (ADR-0174) -----
+# af.perf-profiles/5 (ADR-0214), af.perf-trace/1 and af.perf-diagnostics/1 (ADR-0174) -----
 
 PROFILES_SCHEMA = diagcontracts.PROFILES_SCHEMA
 PROFILES = diagcontracts.PROFILES
@@ -3000,7 +3000,7 @@ def validate_capabilities(doc, where="capabilities"):
 
 # af.perf-report/3 ---------------------------------------------------------------------------
 # Version 2 (ADR-0177) links validated diagnostic child runs and states each reproduction's
-# limitations; version 3 (ADR-0213) adds each case's telemetry captures from the linked children
+# limitations; version 3 (ADR-0214) adds each case's telemetry captures from the linked children
 # that selected a telemetry level. Earlier versions are refused.
 
 REPORT_SCHEMA = "af.perf-report/3"
@@ -3043,7 +3043,7 @@ REPORT_CHILD = Obj(
     Field("bundle_sha256", DIGEST), Field("profiles_sha256", DIGEST),
     Field("cases", Arr(ID, 0, limits.DIAGNOSTIC_CASES_MAX, unique=True)),
     Field("retained_scratch", COUNT),
-    # The telemetry level the child selected explicitly, or null (ADR-0213).
+    # The telemetry level the child selected explicitly, or null (ADR-0214).
     Field("telemetry_level", Nullable(Str(enum=diagcontracts.TELEMETRY_LEVELS))),
     # The verified copy of the child's own page and bundle below the report.
     Field("page", REL_PATH), Field("directory", REL_PATH))
@@ -4193,7 +4193,7 @@ def validate_enforcement(doc, where="enforcement.toml"):
     return doc
 
 
-# Telemetry experiments (ADR-0213) ----------------------------------------------------------
+# Telemetry experiments (ADR-0214) ----------------------------------------------------------
 # af.perf-telemetry-lab/2 is fixtures/performance/telemetry.toml; af.perf-telemetry-result/1 one
 # experiment run of a baseline and a candidate binary on one host with this checkout's scripts
 # and fixtures; af.perf-telemetry-history/2 the compatible series across results. Advisory: no
@@ -4237,7 +4237,7 @@ TELEMETRY_PROFILE = Obj(
     Field("experiments", Arr(Str(enum=TELEMETRY_EXPERIMENTS), 1, 3, unique=True)),
     Field("overhead", TELEMETRY_PAIRED), Field("invocation_cost", TELEMETRY_PAIRED),
     Field("read_latency", TELEMETRY_CORPUS))
-# The container every contained execution runs in (ADR-0214); its scratch filesystem's bound is
+# The container every contained execution runs in (ADR-0215); its scratch filesystem's bound is
 # the profile's work bytes.
 TELEMETRY_CONTAINMENT = Obj(Field("logical_cpus", Int(1, 64)),
                             Field("memory_limit_bytes", Int(256 << 20, 64 << 30)),
@@ -4300,7 +4300,7 @@ TELEMETRY_COMPARISON = Obj(
                             Field("baseline", DECIMAL), Field("candidate", DECIMAL),
                             Field("change", RATIONAL)), 0, TELEMETRY_ROUNDS_MAX)),
     Field("median_change", Nullable(RATIONAL)))
-# How one side's binary was built (ADR-0214): written by the build job beside the binary, bound
+# How one side's binary was built (ADR-0215): written by the build job beside the binary, bound
 # to the side's source and the binary's hash, and kept in the result.
 TELEMETRY_BUILD_SCHEMA = "af.perf-telemetry-build/1"
 TELEMETRY_BUILD = Obj(
@@ -4486,7 +4486,7 @@ TELEMETRY_HISTORY_POINT = Obj(
     Field("median_change", Nullable(RATIONAL)))
 TELEMETRY_HISTORY = Obj(
     Field("schema", Const(TELEMETRY_HISTORY_SCHEMA)),
-    # The durable root's bounds (ADR-0214): bytes and results it may hold, and how long a
+    # The durable root's bounds (ADR-0215): bytes and results it may hold, and how long a
     # result is kept, when bounded.
     Field("limits", Obj(Field("bytes_max", Int(1 << 20, 1 << 40)),
                         Field("results_max", Int(1, 4096)),
@@ -4559,7 +4559,7 @@ def validate_telemetry_history(doc, where="history.json"):
     return doc
 
 
-# The telemetry collector (ADR-0214): an operator's configuration of the trusted collection
+# The telemetry collector (ADR-0215): an operator's configuration of the trusted collection
 # lane, separate from the archive collector, and what one cycle did.
 TELEMETRY_COLLECTOR_SCHEMA = "af.perf-telemetry-collector/1"
 TELEMETRY_COLLECTION_SCHEMA = "af.perf-telemetry-collection/2"
@@ -4837,7 +4837,7 @@ CONTRACTS = {
                "not it satisfies the required check, exact identity and provenance, every "
                "planned slot as a raw point, shard health and seeds, verified evidence "
                "downloads, the validated diagnostic child runs linked to it with each case's "
-               "profile, trace and telemetry items or omissions (ADR-0177, ADR-0213), and "
+               "profile, trace and telemetry items or omissions (ADR-0177, ADR-0214), and "
                "reproduction commands "
                "that keep the frozen configuration and state their limitations."),
     "archive": (ARCHIVE_SCHEMA, ARCHIVE, validate_archive,
@@ -4867,14 +4867,14 @@ CONTRACTS = {
                 "provenance, how incompatible groups of a case differ, and what could not be "
                 "shown."),
     "telemetry-lab": (TELEMETRY_LAB_SCHEMA, TELEMETRY_LAB, validate_telemetry_lab,
-                      "fixtures/performance/telemetry.toml as parsed TOML (ADR-0213): the "
+                      "fixtures/performance/telemetry.toml as parsed TOML (ADR-0214): the "
                       "telemetry experiments, each exactly a bench script of design section 12 "
                       "with its document, the product schema it is read through and its levels, "
                       "the inputs its measurement authority is identified by, and each "
                       "trigger's bounded profile of rounds, pairs, scale, corpus size, timeout, "
                       "work bytes and retention."),
     "telemetry-result": (TELEMETRY_RESULT_SCHEMA, TELEMETRY_RESULT, validate_telemetry_result,
-                         "One telemetry experiment run (ADR-0213, ADR-0214): the baseline and "
+                         "One telemetry experiment run (ADR-0214, ADR-0215): the baseline and "
                          "candidate sources, binaries and builds, the measurement authority "
                          "both ran under, the effective configuration and its digest, the "
                          "execution mode, container, bounds, cleanup and any protected state "
@@ -4886,19 +4886,19 @@ CONTRACTS = {
                          "missing. Advisory; never a verdict."),
     "telemetry-build": (TELEMETRY_BUILD_SCHEMA, TELEMETRY_BUILD, validate_telemetry_build,
                         "How one side's AF binary of a telemetry experiment was built "
-                        "(ADR-0214): its side, source commit, the binary's SHA-256, the "
+                        "(ADR-0215): its side, source commit, the binary's SHA-256, the "
                         "pinned image, the toolchain identities and the command."),
     "telemetry-collector": (TELEMETRY_COLLECTOR_SCHEMA, TELEMETRY_COLLECTOR,
                             validate_telemetry_collector,
                             "The trusted telemetry collector's configuration as parsed TOML "
-                            "(ADR-0214): the repository and its Performance telemetry "
+                            "(ADR-0215): the repository and its Performance telemetry "
                             "workflow, the credential's environment name, the durable root, "
                             "the trusted repository and refs its measurement authorities are "
                             "read from, and the cycle's time, run, artifact, byte, result and "
                             "retention bounds."),
     "telemetry-collection": (TELEMETRY_COLLECTION_SCHEMA, TELEMETRY_COLLECTION,
                              validate_telemetry_collection,
-                             "One telemetry collection cycle (ADR-0214): every completed run "
+                             "One telemetry collection cycle (ADR-0215): every completed run "
                              "it attempted, by Actions run and attempt, with its artifact, its "
                              "SHA-256, the result it kept or why it kept none, what it pruned "
                              "for the root's bounds, and the root's results and bytes."),
@@ -4911,7 +4911,7 @@ CONTRACTS = {
         "Bound to one repository and workflow; never evidence of collection success."),
     "telemetry-history": (TELEMETRY_HISTORY_SCHEMA, TELEMETRY_HISTORY,
                           validate_telemetry_history,
-                          "Compatible history of telemetry results (ADR-0213, ADR-0214): the "
+                          "Compatible history of telemetry results (ADR-0214, ADR-0215): the "
                           "durable root's bounds and use, every result verified under its exact "
                           "measurement authority once, groups of one configuration under one "
                           "authority, execution mode and image on one host, each group's "

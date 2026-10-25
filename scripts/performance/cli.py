@@ -89,13 +89,13 @@ overhead, or counters, of native or CLI cases, each with what it observed or why
 unavailable and how to reproduce it, in the explicitly selected trusted local or contained Linux
 mode (ADR-0176); it never changes the parent's verdict. With `--telemetry spans|content` it
 also records each eligible CLI case once per side at that level and reads it back through the
-side's own `af telemetry` documents (ADR-0213). It exits 4 when anything requested is
+side's own `af telemetry` documents (ADR-0214). It exits 4 when anything requested is
 unavailable. `probe --trace-output` writes a perf-trace probe's validated phase trace and its
 region breakdown, a diagnostic never judged. `telemetry-run` measures Telemetry's own cost and
 read latency on a baseline and a candidate binary with this checkout's bench scripts, advisory
 and never a verdict; `telemetry-verify` reads its result bundle back offline and recomputes it;
 `telemetry-history` keeps verified results in a durable root and draws their compatible history;
-`telemetry-schedule` resolves one event of the Performance telemetry workflow (ADR-0213). The
+`telemetry-schedule` resolves one event of the Performance telemetry workflow (ADR-0214). The
 `ci-*` commands are the continuous workflow's steps (ADR-0177): `ci-schedule`
 resolves one Actions event from the trusted control and freezes its comparisons; `ci-pack` and
 `ci-unpack` move one verified build to its shards with its modes; `ci-stage` writes a shard's
@@ -691,7 +691,7 @@ def cmd_probe(args):
 
 def _write_probe_trace(path, data):
     """Validate the phase trace one probe sample exported and write it, with its phase summary
-    on stderr: diagnostic evidence for an investigation, never a verdict sample (ADR-0213)."""
+    on stderr: diagnostic evidence for an investigation, never a verdict sample (ADR-0214)."""
     if data is None:
         sys.stderr.write("no phase trace was exported: the probe is not a perf-trace build\n")
         return
@@ -829,7 +829,7 @@ def cmd_telemetry_history(args):
 
 
 def cmd_telemetry_collect(args):
-    """One bounded telemetry collection cycle (ADR-0214); the credential is read here, from the
+    """One bounded telemetry collection cycle (ADR-0215); the credential is read here, from the
     environment variable the configuration names, and given only to the collector."""
     try:
         config = telemetrycollect.load_config(args.config)
@@ -1444,7 +1444,7 @@ def parser():
     profile.add_argument("--telemetry", choices=("spans", "content"),
                          help="also record each eligible selected CLI case once per side at "
                          "this telemetry level and read it back through that side's own af "
-                         "telemetry documents (ADR-0213); content is perturbing; never a "
+                         "telemetry documents (ADR-0214); content is perturbing; never a "
                          "verdict sample")
     profile.set_defaults(handler=cmd_profile)
 
@@ -1481,7 +1481,7 @@ def parser():
 
     telemetry_run = commands.add_parser(
         "telemetry-run", help="measure Telemetry itself on a baseline and a candidate binary "
-        "with this checkout's bench scripts (advisory, ADR-0213)")
+        "with this checkout's bench scripts (advisory, ADR-0214)")
     telemetry_run.add_argument("--profile", required=True,
                                choices=("pr", "nightly", "release", "manual"))
     telemetry_run.add_argument("--trigger", required=True,

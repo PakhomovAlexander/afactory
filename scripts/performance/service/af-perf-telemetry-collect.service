@@ -1,4 +1,4 @@
-# One bounded telemetry collection cycle (ADR-0214, docs/performance-telemetry.md). An example
+# One bounded telemetry collection cycle (ADR-0215, docs/performance-telemetry.md). An example
 # for a future always-on Linux collection host: nothing installs or enables it. The collector
 # runs from a trusted checkout the operator pins (here /opt/af-perf-telemetry/control), never
 # from a measured candidate, as its own unprivileged user, with the read token only in its

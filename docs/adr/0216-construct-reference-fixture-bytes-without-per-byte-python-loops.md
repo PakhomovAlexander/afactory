@@ -1,4 +1,4 @@
-# ADR-0215: Construct reference fixture bytes without per-byte Python loops
+# ADR-0216: Construct reference fixture bytes without per-byte Python loops
 
 **Status:** proposed (2026-10-24); renumbered from unmerged ADR-0201 after published main's
 ADR-0204. Implements package

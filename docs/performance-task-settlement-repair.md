@@ -3,7 +3,7 @@
 These are functional regressions, not performance measurements or acceptance. The implementation
 uses the pinned Rust 1.88.0 toolchain and a private offline dependency copy. The full gate and
 independent reviews run after sealing. The decision is
-[ADR-0217](adr/0217-reapply-an-accounting-append-once-after-only-this-writers-heartbeat-renewals.md).
+[ADR-0218](adr/0218-reapply-an-accounting-append-once-after-only-this-writers-heartbeat-renewals.md).
 
 ## Observed failures and what was reproduced
 

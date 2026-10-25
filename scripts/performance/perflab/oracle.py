@@ -586,7 +586,7 @@ def sample(doc, golden, supervisor, binary, instance_id, scratch_root, timeout_s
     `AF_PERF_TRACE_OUTPUT` naming a new file in the namespace, and the bytes of the phase trace
     a `perf-trace` build exported there, bounded and read without following a link, or None when
     it wrote none, are appended to it before the namespace is removed. A trace is diagnostic
-    only: nothing judges it and it changes no result (ADR-0213)."""
+    only: nothing judges it and it changes no result (ADR-0214)."""
     check_timeout(timeout_seconds)
     item, _, _ = _contract(doc, instance_id)
     case = doc["cases"].get(item["case_id"])

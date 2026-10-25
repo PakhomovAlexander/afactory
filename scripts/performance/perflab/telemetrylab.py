@@ -1,5 +1,5 @@
-"""Telemetry experiments: Telemetry's own cost, measured beside the comparison (ADR-0213,
-ADR-0214).
+"""Telemetry experiments: Telemetry's own cost, measured beside the comparison (ADR-0214,
+ADR-0215).
 
 `cli.py telemetry-run` measures a baseline and a candidate AF binary with the credential-free
 bench scripts of design section 12, exactly as `fixtures/performance/telemetry.toml` declares

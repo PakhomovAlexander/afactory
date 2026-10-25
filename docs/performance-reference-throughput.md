@@ -1,7 +1,7 @@
 # Reference-generation throughput repair
 
 Package: `telemetry-performance-verification-throughput`, 23 October 2026.
-Decision: [ADR-0215](adr/0215-construct-reference-fixture-bytes-without-per-byte-python-loops.md).
+Decision: [ADR-0216](adr/0216-construct-reference-fixture-bytes-without-per-byte-python-loops.md).
 
 ## Scope
 

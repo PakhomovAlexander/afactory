@@ -1,4 +1,4 @@
-# The trusted telemetry collector's configuration (af.perf-telemetry-collector/1, ADR-0214).
+# The trusted telemetry collector's configuration (af.perf-telemetry-collector/1, ADR-0215).
 #
 # An example for a future always-on Linux collection host; nothing installs it. Copy it outside
 # the repository (the units below read /etc/af-perf-telemetry/collector.toml), set the paths and

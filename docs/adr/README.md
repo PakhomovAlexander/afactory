@@ -395,24 +395,21 @@ future readers need.
   verification](0211-give-the-agent-loop-its-verbs-and-deliver-a-verified-verification.md)
 - [0212 — Continue a Task from its reviewed candidate, and give judging Workers the
   base](0212-continue-a-task-from-its-reviewed-candidate-and-give-judging-workers-the-base.md)
-<<<<<<< HEAD
-- [0213 — Integrate Telemetry into the performance laboratory as diagnostics and advisory
-  experiments](0213-integrate-telemetry-into-the-performance-lab-as-diagnostics-and-advisory-experiments.md)
-- [0214 — Contain telemetry experiments and collect only results verified under their
-  authority](0214-contain-telemetry-experiments-and-collect-only-results-verified-under-their-authority.md)
-- [0215 — Construct reference fixture bytes without per-byte Python
-  loops](0215-construct-reference-fixture-bytes-without-per-byte-python-loops.md)
-- [0216 — Bind calibration dispatch to the checked main source and separate group
-  arguments](0216-bind-calibration-dispatch-to-the-checked-main-source-and-separate-group-arguments.md)
-- [0217 — Reapply an accounting append once after only this writer's heartbeat
-  renewals](0217-reapply-an-accounting-append-once-after-only-this-writers-heartbeat-renewals.md)
-- [0218 — Own native gate children without leaving the enclosing process
-  group](0218-own-native-gate-children-without-leaving-the-enclosing-process-group.md)
-- [0219 — Control Store fixture time with a scoped thread
-  clock](0219-control-store-fixture-time-with-a-scoped-thread-clock.md)
-- [0220 — Integrate the Performance Lab with GA and control short Attempt
-  fixtures](0220-integrate-the-performance-lab-with-ga-and-control-short-attempt-fixtures.md)
-=======
 - [0213 — Isolate CLI usage tests from the repository release
   pin](0213-isolate-cli-usage-tests-from-the-repository-release-pin.md)
->>>>>>> 5a17f3c1b4797048b457d3c6fb97b7c2666b25b2
+- [0214 — Integrate Telemetry into the performance laboratory as diagnostics and advisory
+  experiments](0214-integrate-telemetry-into-the-performance-lab-as-diagnostics-and-advisory-experiments.md)
+- [0215 — Contain telemetry experiments and collect only results verified under their
+  authority](0215-contain-telemetry-experiments-and-collect-only-results-verified-under-their-authority.md)
+- [0216 — Construct reference fixture bytes without per-byte Python
+  loops](0216-construct-reference-fixture-bytes-without-per-byte-python-loops.md)
+- [0217 — Bind calibration dispatch to the checked main source and separate group
+  arguments](0217-bind-calibration-dispatch-to-the-checked-main-source-and-separate-group-arguments.md)
+- [0218 — Reapply an accounting append once after only this writer's heartbeat
+  renewals](0218-reapply-an-accounting-append-once-after-only-this-writers-heartbeat-renewals.md)
+- [0219 — Own native gate children without leaving the enclosing process
+  group](0219-own-native-gate-children-without-leaving-the-enclosing-process-group.md)
+- [0220 — Control Store fixture time with a scoped thread
+  clock](0220-control-store-fixture-time-with-a-scoped-thread-clock.md)
+- [0221 — Integrate the Performance Lab with GA and control short Attempt
+  fixtures](0221-integrate-the-performance-lab-with-ga-and-control-short-attempt-fixtures.md)

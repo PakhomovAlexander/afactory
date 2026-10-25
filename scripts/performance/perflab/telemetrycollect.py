@@ -1,4 +1,4 @@
-"""The trusted telemetry collection lane (ADR-0214).
+"""The trusted telemetry collection lane (ADR-0215).
 
 `cli.py telemetry-collect --config FILE` runs one bounded, idempotent collection cycle of the
 Performance telemetry workflow's result artifacts into a durable telemetry history root. It is a

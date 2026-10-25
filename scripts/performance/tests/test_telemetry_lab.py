@@ -1,4 +1,4 @@
-"""Telemetry experiments (ADR-0213, ADR-0214) over a stand-in executor.
+"""Telemetry experiments (ADR-0214, ADR-0215) over a stand-in executor.
 
 Every document a stand-in run prints is built from synthetic pairs or samples and completed by
 the real bench script's own rule (`tests/telemetry_fixtures.py`); nothing here runs AF or

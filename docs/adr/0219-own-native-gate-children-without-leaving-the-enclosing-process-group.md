@@ -1,4 +1,4 @@
-# ADR-0218: Own native gate children without leaving the enclosing process group
+# ADR-0219: Own native gate children without leaving the enclosing process group
 
 **Status:** proposed (2026-10-25).
 

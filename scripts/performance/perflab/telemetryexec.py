@@ -1,4 +1,4 @@
-"""Where one telemetry experiment script runs, and what bounds it (ADR-0214).
+"""Where one telemetry experiment script runs, and what bounds it (ADR-0215).
 
 A telemetry experiment script runs one side's AF binary, which may be a pull request's
 candidate: it is untrusted code. Each execution (a `--version` query, the corpus generator, every

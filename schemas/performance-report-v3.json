@@ -2,7 +2,7 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "urn:af:schema:performance-report:3",
   "title": "af.perf-report/3",
-  "description": "One run's offline report (ADR-0172): its recomputed verdict, whether and why not it satisfies the required check, exact identity and provenance, every planned slot as a raw point, shard health and seeds, verified evidence downloads, the validated diagnostic child runs linked to it with each case's profile, trace and telemetry items or omissions (ADR-0177, ADR-0213), and reproduction commands that keep the frozen configuration and state their limitations.",
+  "description": "One run's offline report (ADR-0172): its recomputed verdict, whether and why not it satisfies the required check, exact identity and provenance, every planned slot as a raw point, shard health and seeds, verified evidence downloads, the validated diagnostic child runs linked to it with each case's profile, trace and telemetry items or omissions (ADR-0177, ADR-0214), and reproduction commands that keep the frozen configuration and state their limitations.",
   "type": "object",
   "additionalProperties": false,
   "properties": {

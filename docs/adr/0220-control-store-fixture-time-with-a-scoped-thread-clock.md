@@ -1,4 +1,4 @@
-# ADR-0219: Control Store fixture time with a scoped thread clock
+# ADR-0220: Control Store fixture time with a scoped thread clock
 
 **Status:** proposed (2026-10-25).
 
@@ -68,4 +68,4 @@ unchanged. The seam controls Store policy time only; real CAS and SQLite writes
 and validation still run. It does not simulate asynchronous clock propagation,
 host clock skew or scheduler performance. Focused Store checks precede the
 unchanged enclosing full gate and independent reviews; they do not replace them
-or confer acceptance on ADR-0218 or the retained Performance Lab work.
+or confer acceptance on ADR-0219 or the retained Performance Lab work.

@@ -2,7 +2,7 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "urn:af:schema:performance-telemetry-collector:1",
   "title": "af.perf-telemetry-collector/1",
-  "description": "The trusted telemetry collector's configuration as parsed TOML (ADR-0214): the repository and its Performance telemetry workflow, the credential's environment name, the durable root, the trusted repository and refs its measurement authorities are read from, and the cycle's time, run, artifact, byte, result and retention bounds.",
+  "description": "The trusted telemetry collector's configuration as parsed TOML (ADR-0215): the repository and its Performance telemetry workflow, the credential's environment name, the durable root, the trusted repository and refs its measurement authorities are read from, and the cycle's time, run, artifact, byte, result and retention bounds.",
   "type": "object",
   "additionalProperties": false,
   "properties": {

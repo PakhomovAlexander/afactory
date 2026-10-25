@@ -133,7 +133,7 @@ executing Python or Make commands ([ADR-0197](adr/0197-validate-on-one-latest-st
 
 The integrated producer retains GA's 60,000 ms production lease, exact current suite/goldens,
 Task continuation and gate retry/reporting alongside the lab's diagnostic and containment
-contracts ([ADR-0220](adr/0220-integrate-the-performance-lab-with-ga-and-control-short-attempt-fixtures.md)).
+contracts ([ADR-0221](adr/0221-integrate-the-performance-lab-with-ga-and-control-short-attempt-fixtures.md)).
 The two reported Store dispatch failures use a separate 1,000 ms Attempt allowance. Their
 fixtures now control Store time locally; no production deadline or allowance is extended.
 Reproduce the repair and its neighboring expiry/accounting cases from the repository root:

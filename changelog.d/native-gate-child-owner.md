@@ -12,5 +12,5 @@ This is lifecycle management, not containment; an uncatchable kill of the owner 
 requires outer-supervisor reaping, and descendants that detach and clear their marker can
 escape that cleanup. Non-Linux hosts execute the original gate body directly after restoring
 Python-ignored SIGPIPE and available SIGXFZ/SIGXFSZ to default signal dispositions.
-The lifecycle contract and platform limits are recorded in ADR-0218.
+The lifecycle contract and platform limits are recorded in ADR-0219.
 Tests, native check targets, timing/JUnit output and gate resource budgets are unchanged.

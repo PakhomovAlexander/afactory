@@ -3,7 +3,7 @@
 `report --run DIR --output OUT` recomputes the run's verdict from its retained evidence
 (`compare.evaluate`: every bundle rehashed, every planned slot matched) and writes, below a new
 OUT, `report.html` (self-contained, `perflab.render`), the matching `report.json`
-(`af.perf-report/3`, ADR-0177, ADR-0213), the recomputed `verdict.json`, the compact GitHub job-summary table
+(`af.perf-report/3`, ADR-0177, ADR-0214), the recomputed `verdict.json`, the compact GitHub job-summary table
 `summary.md` and `evidence/`, verified copies of the run's bundle members that the page links
 as downloads. Nothing is added, dropped, retried or reclassified: the report shows the
 verdict's classifications, its exact rational bounds and every planned slot as a raw point,
@@ -47,7 +47,7 @@ EVIDENCE = "evidence"
 DIAGNOSTICS = "diagnostics"
 TELEMETRY_UNAVAILABLE = ("no linked diagnostic child run recorded this case's telemetry: a "
                          "child run selects it explicitly (cli.py profile ... --telemetry spans, "
-                         "ADR-0213); only CLI cases that run a kernel run record telemetry")
+                         "ADR-0214); only CLI cases that run a kernel run record telemetry")
 PROFILE_UNAVAILABLE = ("no linked diagnostic child run covers this case: CPU profiles and "
                        "phase traces are separate diagnostic child runs (cli.py profile --plan "
                        "run.json --case ID, ADR-0174) that never change this verdict; link one "
@@ -608,7 +608,7 @@ def _case_diagnostics(instance_id, kind, children):
 def _case_telemetry(instance_id, children):
     """A case's telemetry state from the linked children that selected a telemetry level and
     this case: each capture's verified documents, Perfetto export and timeline, its partial
-    reasons, and every telemetry omission (ADR-0213). Never a verdict input."""
+    reasons, and every telemetry omission (ADR-0214). Never a verdict input."""
     covering = [child for child in children if child.doc["telemetry"]["level"] is not None
                 and instance_id in [item["instance_id"]
                                     for item in child.doc["selection"]["cases"]]]

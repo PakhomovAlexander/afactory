@@ -475,7 +475,7 @@ def read_zip(data, remaining=None, admit=None, bytes_max=ARTIFACT_BYTES_MAX):
     (members, each member's and all members' bytes, the compression ratio) and, when given,
     the collection's time (`remaining`), refusing encrypted, linked, special, duplicate,
     absolute or traversing members; `admit(name)` refuses a member its format does not
-    hold. Shared by the archive's transport format and the telemetry collector (ADR-0214)."""
+    hold. Shared by the archive's transport format and the telemetry collector (ADR-0215)."""
     require(data[:4] == b"PK\x03\x04", "the artifact is not a ZIP container; nothing was "
             "imported")
     try:

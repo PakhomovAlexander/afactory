@@ -6,4 +6,4 @@ writer's heartbeat renewals; other changes, expiry, stale writers and owned cros
 still refuse. Review's outstanding-Attempt error names pending IDs and scheduler reports.
 Deterministic regressions cover those failure paths; no earlier intermittent failure is
 claimed resolved without its original evidence
-([ADR-0217](docs/adr/0217-reapply-an-accounting-append-once-after-only-this-writers-heartbeat-renewals.md)).
+([ADR-0218](docs/adr/0218-reapply-an-accounting-append-once-after-only-this-writers-heartbeat-renewals.md)).

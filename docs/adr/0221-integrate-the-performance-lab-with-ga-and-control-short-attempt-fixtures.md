@@ -1,4 +1,4 @@
-# ADR-0220: Integrate the Performance Lab with GA and control short Attempt fixtures
+# ADR-0221: Integrate the Performance Lab with GA and control short Attempt fixtures
 
 **Status:** proposed (2026-10-25).
 
@@ -29,7 +29,7 @@ it before `TaskBudget::begin`; neither a live lease nor retry policy extends it.
 ## Decision
 
 Keep published `.af/`, `AGENTS.md`, `CONTEXT.md` and all published ADR files byte-identical
-to main. Renumber only the seven unpublished laboratory decisions to ADR-0213–0219 and
+to main. Renumber only the seven unpublished laboratory decisions to ADR-0214–0220 and
 repair their references. Retain production's 60,000 ms lease and main's exact suite and
 golden bytes. Recompute the protected inventory and staged policy with the unchanged
 checked-in generator after protected edits; never copy an earlier parent's digest.
@@ -41,7 +41,7 @@ release of a cancelled, unstarted capability coexist with main's writer heartbea
 Task continuation and warm-layer behavior. No production budget or fencing rule changes.
 
 Both named Store fixtures now run their original assertions with the scoped thread clock of
-[ADR-0219](0219-control-store-fixture-time-with-a-scoped-thread-clock.md). After actual
+[ADR-0220](0220-control-store-fixture-time-with-a-scoped-thread-clock.md). After actual
 reservation, context binding and reopening, they start at the recorded deadline minus one
 millisecond. A regression invokes those same fixture paths at the deadline and one
 millisecond after it: dispatch must refuse with main's exact node/time diagnostic, append
@@ -82,7 +82,7 @@ windows elapsed during setup; their isolated native reruns passed and remain rec
 as flaky historical results.
 
 Those exact observed-usage recovery fixtures, plus their short-Attempt neighbors, now
-use ADR-0219's scoped test clock. Actual CAS binding and cold reopening precede dispatch
+use ADR-0220's scoped test clock. Actual CAS binding and cold reopening precede dispatch
 at deadline minus one millisecond. Equality and one millisecond later refuse dispatch
 without appending or spending, and explicit release restores reservation credit on
 cold replay. The takeover helper refuses one millisecond before lease expiry, advances
@@ -91,6 +91,15 @@ Cold reopen retains observed charges and recovery accounting; the old writer can
 renew or recover, and repeated successor recovery appends nothing. Original reservations,
 leases, recovery limits and incomplete-usage floor assertions remain. No real-time wait
 runs on a frozen clock, and production time and executable behavior are unchanged.
+
+Published main `5a17f3c1b4797048b457d3c6fb97b7c2666b25b2` then assigns ADR-0213 to
+CLI usage test isolation. Keep that decision, its changelog and CLI fixture byte-identical.
+Move only the eight unpublished laboratory ADRs from 0213–0220 to 0214–0221, including this
+decision. Resolve the index with both sides, and align every corresponding filename, title
+and reference, including comments, help and generated schema descriptions. Regenerate the
+protected inventory and staged policy with the existing generator. No substantive decision,
+behavior, old cohort evidence or published release/policy bytes change. The final producer
+must still be accepted, committed and independently verified before a new cohort is declared.
 
 ## Consequences and limits
 

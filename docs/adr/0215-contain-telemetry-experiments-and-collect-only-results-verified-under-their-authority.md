@@ -1,17 +1,17 @@
-# ADR-0214: Contain telemetry experiments and collect only results verified under their authority
+# ADR-0215: Contain telemetry experiments and collect only results verified under their authority
 
 **Status:** proposed (2026-10-24). Amends
-[ADR-0213](0213-integrate-telemetry-into-the-performance-lab-as-diagnostics-and-advisory-experiments.md)
+[ADR-0214](0214-integrate-telemetry-into-the-performance-lab-as-diagnostics-and-advisory-experiments.md)
 for its experiments and their collection.
 The consolidated integration includes published main and
-[ADR-0216](0216-bind-calibration-dispatch-to-the-checked-main-source-and-separate-group-arguments.md).
+[ADR-0217](0217-bind-calibration-dispatch-to-the-checked-main-source-and-separate-group-arguments.md).
 The old cohort bytes and pinned collector remain frozen; its changed producer requires a new
 cohort after the integrated repair is committed. Renumbered from unmerged ADR-0200 after
 published main's ADR-0204.
 
 ## Context
 
-ADR-0213 measured telemetry's own cost by running a pull request's candidate binary directly on
+ADR-0214 measured telemetry's own cost by running a pull request's candidate binary directly on
 the measuring runner. The trusted control's scripts, the result directory and the other side's
 binary sat beside it, and a new Python process supervisor had deadline, pipe and cleanup
 semantics of its own. Review of that draft found these problems:
@@ -170,7 +170,7 @@ a reader of earlier versions.
      cleanup/rendering/status; the service timeout is a separate outer backstop.
 8. **The archive lane remains distinct.** The old cohort file is unchanged, and its archive
    collector remains pinned to that cohort's control. The current workflow includes published
-   main and ADR-0216's repair and cannot produce evidence for that old authority. In current
+   main and ADR-0217's repair and cannot produce evidence for that old authority. In current
    source, only the archive collector's bounded ZIP reading is shared through
    `transport.read_zip`; the two lanes never read each other's artifacts.
 
