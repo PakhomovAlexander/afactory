@@ -395,6 +395,7 @@ future readers need.
   verification](0211-give-the-agent-loop-its-verbs-and-deliver-a-verified-verification.md)
 - [0212 — Continue a Task from its reviewed candidate, and give judging Workers the
   base](0212-continue-a-task-from-its-reviewed-candidate-and-give-judging-workers-the-base.md)
+<<<<<<< HEAD
 - [0213 — Integrate Telemetry into the performance laboratory as diagnostics and advisory
   experiments](0213-integrate-telemetry-into-the-performance-lab-as-diagnostics-and-advisory-experiments.md)
 - [0214 — Contain telemetry experiments and collect only results verified under their
@@ -411,3 +412,7 @@ future readers need.
   clock](0219-control-store-fixture-time-with-a-scoped-thread-clock.md)
 - [0220 — Integrate the Performance Lab with GA and control short Attempt
   fixtures](0220-integrate-the-performance-lab-with-ga-and-control-short-attempt-fixtures.md)
+=======
+- [0213 — Isolate CLI usage tests from the repository release
+  pin](0213-isolate-cli-usage-tests-from-the-repository-release-pin.md)
+>>>>>>> 5a17f3c1b4797048b457d3c6fb97b7c2666b25b2
