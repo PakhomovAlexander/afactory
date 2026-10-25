@@ -1,6 +1,7 @@
 //! Guarded kernel performance experiments (ADR-0185) through the real kernel. A consumer
-//! repository holds this workspace's tracked tree with the fixture authority of
-//! `fixtures/task-runtime/experiment` in its `.af/` (never this repository's own), and the staged
+//! repository holds this workspace's crate sources and complete protected harness with the
+//! fixture authority of `fixtures/task-runtime/experiment` in its `.af/` (never this
+//! repository's own), and the staged
 //! `fixtures/performance/kernel-measure/code-policy-measures.toml` installed into it verbatim,
 //! as its README describes. Every Task below runs `af task start --execute`: the kernel measures
 //! the source and the implementer's sealed candidate with the staged literal bootstrap, which
@@ -114,6 +115,94 @@ fn workspace_files(root: &Path) -> Vec<String> {
     out
 }
 
+/// Only the inputs of the real probe build and the complete protected instrument. Copying the
+/// whole repository also made every five-second Worker materialize unrelated documentation,
+/// release assets and other CLI fixtures; a judging Worker materializes them twice, for its
+/// source and its base. The release runner left only 742 ms to start the evaluator. Keep all
+/// crate files and every inventory entry, including build inputs outside the usual source
+/// directories. The unchanged literal bootstrap checks the resulting closure.
+fn consumer_file(path: &str, protected: &std::collections::BTreeSet<&str>) -> bool {
+    path != ".af"
+        && !path.starts_with(".af/")
+        && (path.starts_with("crates/")
+            || path.starts_with("scripts/performance/")
+            || path.starts_with("fixtures/performance/")
+            || protected.contains(path))
+}
+
+#[test]
+fn guarded_consumer_keeps_the_complete_instrument_and_crates_without_repository_growth() {
+    let consumer = Consumer::new();
+    let workspace = workspace();
+    let inventory: Value = serde_json::from_slice(
+        &std::fs::read(workspace.join("fixtures/performance/kernel-measure/inventory.json"))
+            .unwrap(),
+    )
+    .unwrap();
+    for entry in inventory["files"].as_array().unwrap() {
+        let path = entry["path"].as_str().unwrap();
+        assert_eq!(
+            std::fs::read(consumer.repo.join(path)).unwrap(),
+            std::fs::read(workspace.join(path)).unwrap(),
+            "the consumer keeps the exact protected file {path}"
+        );
+    }
+    for path in workspace_files(&workspace)
+        .into_iter()
+        .filter(|path| path.starts_with("crates/"))
+    {
+        assert_eq!(
+            std::fs::read(consumer.repo.join(&path)).unwrap(),
+            std::fs::read(workspace.join(&path)).unwrap(),
+            "the real probe builds with the workspace's crate file {path}"
+        );
+    }
+    assert_eq!(
+        std::fs::read(consumer.repo.join(STAGED)).unwrap(),
+        std::fs::read(workspace.join(STAGED)).unwrap()
+    );
+    for path in [
+        "docs/adr/README.md",
+        "brand/README.md",
+        ".github/workflows/release.yml",
+        "fixtures/task-runtime/experiment/.af/task-catalog.toml",
+    ] {
+        assert!(workspace.join(path).is_file(), "fixture input {path}");
+        assert!(!consumer.repo.join(path).exists(), "unrelated input {path}");
+    }
+    // Inventory membership, rather than an allowlist of today's directory names, retains a
+    // protected build input anywhere. Unrelated repository growth adds no Worker setup work.
+    let protected =
+        std::collections::BTreeSet::from(["other/build.rs", "other/.cargo/config.toml"]);
+    for path in &protected {
+        assert!(consumer_file(path, &protected));
+    }
+    for index in 0..2000 {
+        assert!(!consumer_file(&format!("docs/adr/{index}.md"), &protected));
+        assert!(!consumer_file(
+            &format!("fixtures/task-runtime/other/{index}.json"),
+            &protected
+        ));
+    }
+    let evaluator: toml::Value = toml::from_str(
+        &std::fs::read_to_string(
+            consumer
+                .repo
+                .join(".af/task-packages/fixture/experiment-evaluator/worker.toml"),
+        )
+        .unwrap(),
+    )
+    .unwrap();
+    assert_eq!(
+        evaluator["signature"]["attempt"]["wall_ms"].as_integer(),
+        Some(5000)
+    );
+    assert_eq!(
+        evaluator["signature"]["effects"][0].as_str(),
+        Some("read-source")
+    );
+}
+
 struct Consumer {
     _root: tempfile::TempDir,
     root: PathBuf,
@@ -124,15 +213,26 @@ struct Consumer {
 }
 
 impl Consumer {
-    /// The consumer repository: the workspace's files without its own `.af/`, the experiment
-    /// fixture's authority with the staged measures installed, committed.
+    /// The consumer repository: the probe's real crate sources and protected harness, plus the
+    /// experiment fixture's authority with the staged measures installed, committed.
     fn new() -> Self {
         let directory = tempfile::tempdir().unwrap();
         let root = directory.path().canonicalize().unwrap();
         let workspace = workspace();
         let repo = root.join("repo");
+        let inventory: Value = serde_json::from_slice(
+            &std::fs::read(workspace.join("fixtures/performance/kernel-measure/inventory.json"))
+                .unwrap(),
+        )
+        .unwrap();
+        let protected = inventory["files"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|entry| entry["path"].as_str().unwrap())
+            .collect();
         for path in workspace_files(&workspace) {
-            if path == ".af" || path.starts_with(".af/") {
+            if !consumer_file(&path, &protected) {
                 continue;
             }
             let target = repo.join(&path);

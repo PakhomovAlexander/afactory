@@ -397,3 +397,5 @@ future readers need.
   base](0212-continue-a-task-from-its-reviewed-candidate-and-give-judging-workers-the-base.md)
 - [0213 — Isolate CLI usage tests from the repository release
   pin](0213-isolate-cli-usage-tests-from-the-repository-release-pin.md)
+- [0214 — Bound guarded experiment consumers to build and instrument
+  inputs](0214-bound-guarded-experiment-consumers-to-build-and-instrument-inputs.md)

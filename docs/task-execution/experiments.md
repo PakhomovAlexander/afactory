@@ -178,3 +178,13 @@ Protected names match whatever their case, a warm target is rebuilt from the mea
 whenever any byte of the measured Snapshot differs, and the probe's output is bounded while it
 is read
 ([ADR-0186](../adr/0186-fold-protected-paths-key-warm-targets-by-the-whole-snapshot-bound-measure-output-and-replan-bridge-runs.md)).
+
+The guarded integration consumer contains every crate file, the performance driver and fixtures,
+and every protected inventory path, including build inputs outside those directories. Its
+literal bootstrap and staged digest check still verify the complete instrument. Unrelated
+repository documentation and CLI fixtures are omitted so their growth does not consume the
+five-second evaluator Attempt while preparing its source and base
+([ADR-0214](../adr/0214-bound-guarded-experiment-consumers-to-build-and-instrument-inputs.md)).
+Diagnose a timeout from the exact Task's nested Attempt diagnostics and remaining dispatch wall;
+repeat the affected test with `make test-repeat NEXTEST_FILTER='test(/guarded_kernel_experiments/)'`.
+The repeat facility stops on failure; an isolated retry pass alone does not establish a repair.
