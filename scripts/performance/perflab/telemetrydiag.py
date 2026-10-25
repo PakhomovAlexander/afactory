@@ -176,9 +176,46 @@ def _phases(spans):
     return out
 
 
+def _execution_inventory(executions, where):
+    """Recompute Executions::of in review-telemetry/src/view.rs, including nullable
+    ordinals and sealed segments whose af.run never ended (still open executions)."""
+    listed = executions["list"]
+    require(len(listed) <= EXECUTIONS_MAX, "%s lists too many executions" % where)
+    by_id = {item["execution_id"]: item for item in listed}
+    require(len(by_id) == len(listed), "%s repeats an execution" % where)
+    require(executions["retained"] == len(listed),
+            "%s contradicts its retained execution count" % where)
+    sealed, opened = set(), []
+    for item in listed:
+        if item["open"] or item["segment"] != "sealed":
+            entry = {"execution_id": item["execution_id"], "segment": item["segment"]}
+            if item["ordinal"] is not None:
+                entry["ordinal"] = item["ordinal"]
+            opened.append(entry)
+        elif item["ordinal"] is not None:
+            sealed.add(item["ordinal"])
+    require(executions["sealed"] == sorted(sealed),
+            "%s contradicts its sealed execution ordinals" % where)
+    require(sorted(executions["open"], key=lambda item: item["execution_id"])
+            == sorted(opened, key=lambda item: item["execution_id"]),
+            "%s contradicts its open execution summary" % where)
+    return by_id
+
+
 def _evidence(runs, runs_run, show, status, config):
     reasons = set()
     executions = show["run"]["executions"]
+    before = _execution_inventory(runs_run["executions"], "runs.json")
+    after = _execution_inventory(executions, "show.json")
+    # The readers run at different instants. New/removed executions and changing durations
+    # or segment states are observational differences, never complete history. An existing
+    # execution's immutable identity cannot change between the observations.
+    if before != after:
+        reasons.add("history_partial")
+    for ident in before.keys() & after.keys():
+        for key in ("span_id", "ordinal", "start_unix_ns", "store_sequence_at_start"):
+            require(before[ident].get(key) == after[ident].get(key),
+                    "runs.json and show.json disagree about an execution's %s" % key)
     open_spans = sum(1 for span in show["spans"] if span["status"] == "open")
     if open_spans:
         reasons.add("open_spans")
@@ -187,7 +224,8 @@ def _evidence(runs, runs_run, show, status, config):
         reasons.add("open_execution")
     if any(item["segment"] != "sealed" for item in executions["list"]):
         reasons.add("unsealed_execution")
-    if not show["run"]["history"].startswith("prefix:") or show["run"]["missing_ordinals"]:
+    if any(not run["history"].startswith("prefix:") or run["missing_ordinals"]
+           for run in (runs_run, show["run"])):
         reasons.add("history_partial")
     if show["unreadable"] or status["unreadable"] or runs["unreadable"]:
         reasons.add("unreadable_files")

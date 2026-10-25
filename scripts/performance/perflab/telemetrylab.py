@@ -53,6 +53,7 @@ import sys
 import time
 from fractions import Fraction
 
+from . import budget as deadlines
 from . import bundle, contracts, host, jsonsubset, render, telemetryexec, tomlfile
 from .values import (ContractError, canonical_digest, check_relative_path, format_decimal,
                      format_rational, require, sha256_bytes)
@@ -1545,6 +1546,7 @@ class HistoryRoot(object):
     def __enter__(self):
         import errno
         import fcntl
+        require(self.fd is None, "the history root is already open")
         if os.path.lexists(self.root):
             require(os.path.isdir(self.root) and not os.path.islink(self.root),
                     "%s is not a history directory (a link is never followed)" % self.root)
@@ -1555,17 +1557,18 @@ class HistoryRoot(object):
             os.mkdir(results, 0o755)
         require(os.path.isdir(results) and not os.path.islink(results),
                 "%s is not a directory of results" % results)
-        fd = os.open(os.path.join(self.root, HISTORY_LOCK), os.O_RDWR | os.O_CREAT
-                     | getattr(os, "O_NOFOLLOW", 0), 0o600)
         try:
-            fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
-        except OSError as error:
-            os.close(fd)
-            if error.errno in (errno.EWOULDBLOCK, errno.EAGAIN):
-                raise ContractError("another telemetry history command holds %s" % self.root)
-            raise
-        self.fd = fd
-        try:
+            # The integer returned by os.open has no destructor. Defer SIGALRM for just
+            # this nonblocking open/publication, then acquire with already-owned authority.
+            with deadlines.defer_alarm():
+                self.fd = os.open(os.path.join(self.root, HISTORY_LOCK), os.O_RDWR | os.O_CREAT
+                                  | os.O_NONBLOCK | getattr(os, "O_NOFOLLOW", 0), 0o600)
+            try:
+                fcntl.flock(self.fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            except OSError as error:
+                if error.errno in (errno.EWOULDBLOCK, errno.EAGAIN):
+                    raise ContractError("another telemetry history command holds %s" % self.root)
+                raise
             authority_dir = os.path.join(self.root, AUTHORITIES)
             if not os.path.lexists(authority_dir):
                 os.mkdir(authority_dir, 0o755)
@@ -1579,9 +1582,12 @@ class HistoryRoot(object):
         return self
 
     def __exit__(self, *exc):
-        if self.fd is not None:
-            os.close(self.fd)
-            self.fd = None
+        with deadlines.defer_alarm():
+            if self.fd is not None:
+                try:
+                    os.close(self.fd)
+                finally:
+                    self.fd = None
 
     def cleanup_staging(self):
         # Interrupted staging is never accepted, and is swept under this lock.

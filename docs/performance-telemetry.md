@@ -98,6 +98,14 @@ are refused. Extra counts lacking observations make the history partial. Otherwi
 `index_absent`, `live_segment`, `open_execution`, `open_spans`, `problems_recorded`,
 `unreadable_files`, `unsealed_execution`, `unsealed_segment`.
 
+In both the selected `runs.json` run and `show.json`, `executions.retained`, sealed ordinal
+summaries and open execution objects must match their own `executions.list`. Open means a
+live/unsealed segment or an execution whose run span never ended, including recovered sealed
+segments. Unknown ordinals remain null in the list and absent in open summary objects.
+Internal contradictions are refused. A changed inventory or evolving observation between the
+two reader instants is `history_partial`; conflicting immutable identities are refused.
+Report admission repeats these checks even when every artifact hash has been updated.
+
 A reader that fails, a document over its bound, of another version or refused by its schema, or
 one that names another run, Task or execution is an omission (`telemetry_read_failed`,
 `telemetry_unreadable`, ...). What it had written stays counted in the evidence and is never
@@ -473,7 +481,17 @@ construction expires, collection v2 reports failed with `results` and `used_byte
 than fabricated zeroes or counts copied from a previous cycle. A terminal record that could
 not be completed also has `ended_unix_ms: null`. An atomic incomplete record
 precedes work and terminal cleanup; interrupted final I/O leaves that record. The history lock
-is released on all exception paths, including entry cleanup. The service timeout does not
+is released on all exception paths, including entry cleanup and interruption immediately after
+open or flock. SIGALRM is masked only during nonblocking descriptor publication and close,
+with the previous mask restored; nonblocking flock runs with ownership already registered.
+Failed acquisition closes only its own descriptor and leaves the other owner alone.
+
+An interrupted HTTP wait first revokes the exchange and shuts down/closes its published socket.
+The raw-to-TLS descriptor transfer is synchronized with abort. Cleanup waits at most one second,
+within the request's absolute deadline and enclosing cycle timer. A system resolver may stay
+blocked in its daemon thread: cancellation disables subsequent connections, TLS and requests,
+but does not stop that thread. Missing cleanup confirmation is recorded in the cycle's detail;
+an interrupted thread join is never evidence that it stopped. The service timeout does not
 replace this CLI deadline.
 
 The raw read-latency document and schema, experiment registry, history and collection now use

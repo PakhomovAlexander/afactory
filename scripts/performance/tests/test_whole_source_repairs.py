@@ -6,6 +6,7 @@ from pathlib import Path
 import shutil
 import subprocess
 import sys
+import threading
 import time
 from unittest import mock
 
@@ -201,6 +202,42 @@ class Deadlines(TempDir):
         self.assertIsNone(persisted['results'])
         with telemetrylab.HistoryRoot(self.config['root']):
             pass  # the previous command released the lock
+
+    def test_http_deadline_revokes_blocked_dns_before_terminal_record_and_lock_release(self):
+        release, entered, exchanges = threading.Event(), threading.Event(), []
+        original_run = tc.transport._Exchange.run
+
+        def resolve(*args):
+            entered.set()
+            if not release.wait(5):
+                raise AssertionError('resolver was never released')
+            return [(2, 1, 6, '', ('127.0.0.1', 443))]
+
+        def running(exchange):
+            exchanges.append(exchange)
+            original_run(exchange)
+
+        api = tc.transport.Collector(tc.transport.HttpsTransport(), tc.REPOSITORY,
+                                     tc.TOKEN, api_url=tc.API, seconds=2.5)
+        limit = budget.Budget(api.deadline, api.clock, 1.5)
+        started = time.monotonic()
+        with mock.patch.object(tc.transport.socket, 'getaddrinfo', resolve), \
+                mock.patch.object(tc.transport.socket, 'socket') as sockets, \
+                mock.patch.object(tc.transport._Exchange, 'run', running):
+            try:
+                doc = telemetrycollect.Cycle(self.config, api, gitrefs.Git(self.repo.path),
+                                             time.time, tc.NOW, budget=limit).run()
+                self.assertTrue(entered.is_set())
+                self.assertLess(time.monotonic() - started, 2.5)
+                self.assertTrue(exchanges[0].aborted)
+                self.assertFalse(exchanges[0].done.is_set())
+                self.assertIn('cancelled worker may remain', doc['detail'])
+                self.assert_incomplete(doc)
+            finally:
+                release.set()
+                if exchanges:
+                    self.assertTrue(exchanges[0].done.wait(1))
+            sockets.assert_not_called()
 
     def test_stalled_authority_git_process_is_terminated_with_the_cycle_budget(self):
         data = tc.zipped(self.result(1))

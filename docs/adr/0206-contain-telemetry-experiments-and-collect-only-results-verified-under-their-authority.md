@@ -138,6 +138,18 @@ a reader of earlier versions.
      An expired operation leaves unaccepted staging for the bounded locked sweep, rather than
      entering an unbounded `finally` deletion. Lock acquisition failure leaves the owner alone;
      failure after acquisition closes the descriptor, including failures during entry cleanup.
+     SIGALRM is deferred only across the nonblocking lock-file open and descriptor publication,
+     and across close/clearing ownership. The original signal mask is restored immediately;
+     flock is nonblocking and unmasked, with the descriptor already owned before it runs.
+     Any exceptional exit closes that owned descriptor, never unlocking another owner's lock.
+   - HTTP cancellation includes every exceptional caller exit, including deadline interruption
+     while waiting. It revokes the exchange and shuts down/closes its socket before terminal
+     accounting. Socket-to-TLS descriptor transfer is synchronized with cancellation, without
+     handshake or network I/O under that lock. Cleanup waits at most one second within the
+     request deadline and the enclosing timer. A blocked system resolver cannot be killed:
+     its cancelled daemon thread may remain alive, with this uncertainty recorded, and cannot
+     connect, do TLS or send an authenticated request when lookup returns. The worker's own
+     cleanup receipt, never an interrupted thread join's apparent state, establishes completion.
    - Imports publish only a complete, verified staging directory. Expiry immediately around
      its rename is reconciled under the lock. A fully verified result accepted before history
      expiry remains kept, while cycle accounting stays unknown and failed.

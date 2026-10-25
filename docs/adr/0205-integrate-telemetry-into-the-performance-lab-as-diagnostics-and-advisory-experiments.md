@@ -65,7 +65,12 @@ published main and ADR-0208 change the workflow producer. The timing verdict is 
      otherwise `partial` with every reason. Each shown execution needs exactly one segment
      observation, matching its state and complete capture metadata. Missing observations or
      unknown metadata make the history partial; repeated observations, contradictory states
-     and counts are refused. Report admission repeats this reconciliation.
+     and counts are refused. Both `runs.json` and `show.json` must reconcile their execution
+     retained count, sealed ordinals and open objects with their own full execution list,
+     following the current writer (including null ordinals and sealed but open executions).
+     Different inventories or evolving execution observations across the two reader instants
+     make history partial; conflicting immutable execution identities are refused. Report
+     admission repeats this reconciliation from the hashed documents.
    - **Matrix.** Every other selected case is an omission naming the supported matrix
      (`no_telemetry_subscriber`, `records_no_telemetry`). The trace recipe keeps their phase
      coverage.

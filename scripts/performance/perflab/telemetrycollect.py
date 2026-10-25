@@ -264,7 +264,9 @@ class Cycle(object):
             except (deadlines.Interrupted, ContractError, OSError) as error:
                 if kept.fd is None and not isinstance(error, (deadlines.Interrupted, deadlines.Expired)):
                     raise
-                detail = ("the cycle ended early: %s" % error)[:4096]
+                detail = ("the cycle ended early: %s%s" % (
+                    error, "; " + "; ".join(error.__notes__) if getattr(error, "__notes__", None)
+                    else ""))[:4096]
             terminal = deadlines.Budget(self.budget.deadline, self.budget.clock, 0)
             try:
                 with terminal.enforce("collection cleanup and terminal record"):

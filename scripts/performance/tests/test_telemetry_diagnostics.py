@@ -37,7 +37,94 @@ def dumped(docs):
                 for kind, doc in docs.items())
 
 
+def inventory_cases():
+    """Mutations of the current writer's full list, sealed ordinals and open objects."""
+    for source in ("runs", "show"):
+        for mutation in ("retained_low", "retained_high", "sealed_missing", "sealed_extra",
+                         "open_extra", "open_missing", "open_ordinal_missing",
+                         "open_ordinal_extra", "only_here"):
+            docs = loaded()
+            run = docs[source]["runs"][0] if source == "runs" else docs[source]["run"]
+            inventory = run["executions"]
+            if mutation == "retained_low":
+                inventory["retained"] = 0
+            elif mutation == "retained_high":
+                inventory["retained"] = 2
+            elif mutation == "sealed_missing":
+                inventory["sealed"] = []
+            elif mutation == "sealed_extra":
+                inventory["sealed"].append(2)
+            elif mutation == "open_extra":
+                inventory["open"] = [{"execution_id": "extra", "ordinal": 2, "segment": "live"}]
+            else:
+                extra = dict(inventory["list"][0], execution_id="extra", ordinal=2,
+                             span_id="e" * 16)
+                inventory["list"].append(extra)
+                inventory["retained"] = 2
+                if mutation == "only_here":
+                    inventory["sealed"] = [1, 2]
+                    run.update(history="prefix:2", retained="retained executions 1–2")
+                    if source == "runs":
+                        run["execution_us"] += extra["wall_us"]
+                        run["totals_cover"].append({"execution_id": "extra", "ordinal": 2,
+                                                    "open": False})
+                    if source == "show":
+                        entry = dict(docs["status"]["bytes"]["entries"][0], name="extra")
+                        docs["status"]["bytes"]["entries"].append(entry)
+                        docs["status"]["segments"]["sealed"] = 2
+                        docs["show"]["spans"].append({
+                            "span_id": extra["span_id"], "name": "af.run", "depth": 0,
+                            "segment_id": "extra", "start_offset_us": 0,
+                            "total_us": extra["wall_us"], "self_us": extra["wall_us"],
+                            "status": "ok", "attributes": {}})
+                else:
+                    extra.update(segment="live", open=True)
+                    opened = {"execution_id": "extra", "ordinal": 2, "segment": "live"}
+                    inventory["open"] = [] if mutation == "open_missing" else [opened]
+                    if mutation == "open_ordinal_missing":
+                        del opened["ordinal"]
+                    elif mutation == "open_ordinal_extra":
+                        extra["ordinal"] = None
+            yield source + ":" + mutation, docs, mutation != "only_here"
+
+
 class Documents(TempDir):
+    def test_execution_summaries_and_both_reader_inventories_are_reconciled(self):
+        for name, docs, refused in inventory_cases():
+            with self.subTest(mutation=name):
+                if refused:
+                    with self.assertRaises(ContractError):
+                        telemetrydiag.capture(dumped(docs), TASK)
+                else:
+                    derived = telemetrydiag.capture(dumped(docs), TASK)
+                    self.assertEqual(derived["evidence"]["state"], "partial")
+                    self.assertIn("history_partial", derived["evidence"]["reasons"])
+
+    def test_valid_nullable_open_recovered_and_terminal_execution_summaries(self):
+        for segment, opened, ordinal in (("live", False, 1), ("unsealed", False, None),
+                                         ("sealed", True, 1), ("sealed", False, None),
+                                         ("sealed", False, 1)):
+            with self.subTest(segment=segment, opened=opened, ordinal=ordinal):
+                docs = loaded()
+                for run in (docs["runs"]["runs"][0], docs["show"]["run"]):
+                    inventory = run["executions"]
+                    item = inventory["list"][0]
+                    item.update(segment=segment, open=opened, ordinal=ordinal)
+                    is_open = opened or segment != "sealed"
+                    inventory["sealed"] = [ordinal] if not is_open and ordinal is not None else []
+                    entry = {"execution_id": item["execution_id"], "segment": segment}
+                    if ordinal is not None:
+                        entry["ordinal"] = ordinal
+                    inventory["open"] = [entry] if is_open else []
+                    if ordinal is None:
+                        run["history"] = "partial"
+                docs["status"]["segments"].update(sealed=0, live=0, unsealed=0)
+                docs["status"]["segments"][segment] = 1
+                docs["status"]["bytes"]["entries"][0]["state"] = segment
+                derived = telemetrydiag.capture(dumped(docs), TASK)
+                self.assertEqual(derived["evidence"]["state"], "complete" if
+                                 segment == "sealed" and not opened and ordinal == 1 else "partial")
+
     def test_the_recorded_documents_give_a_complete_capture_of_their_one_run(self):
         derived = telemetrydiag.capture(documents(), TASK)
         self.assertEqual(derived["evidence"]["state"], "complete")
@@ -151,6 +238,9 @@ class Documents(TempDir):
         def live(docs):
             execution = docs["show"]["run"]["executions"]["list"][0]
             execution["segment"], execution["open"] = "live", True
+            docs["show"]["run"]["executions"].update(sealed=[], open=[{
+                "execution_id": execution["execution_id"], "ordinal": execution["ordinal"],
+                "segment": "live"}])
             docs["status"]["segments"].update(sealed=0, live=1)
             entry = docs["status"]["bytes"]["entries"][0]
             entry["state"] = "live"
@@ -394,6 +484,56 @@ class TelemetryChildRuns(ChildRunBase):
                 bundle.write_manifest(output, 1 << 30)
                 with self.assertRaises(ContractError):
                     report.admit_child(output, self.parent)
+
+    def test_report_rederives_execution_summaries_and_cross_reader_inventory_with_updated_hashes(self):
+        _, output = self.run_child()
+        profiles_path = os.path.join(output, "profiles.json")
+        original_profiles = json.loads(read(profiles_path))
+        traces = []
+        for entry in original_profiles["traces"]:
+            paths = [artifact["path"] for artifact in entry["artifacts"]
+                     if artifact["path"].endswith("/trace.json")]
+            traces.append(None if entry["omission"] is not None else
+                          phasetrace.load(read(os.path.join(output, paths[0]))))
+        for name, docs, _ in inventory_cases():
+            with self.subTest(mutation=name):
+                profiles = json.loads(json.dumps(original_profiles))
+                data_by_kind = dumped(docs)
+                for kind, data in data_by_kind.items():
+                    path = os.path.join(output, "telemetry", TASK_RUN, "baseline", kind + ".json")
+                    with open(path, "wb") as stream:
+                        stream.write(data)
+                for capture in profiles["telemetry"]["captures"]:
+                    if capture["side"] != "baseline":
+                        continue
+                    for artifact in capture["artifacts"]:
+                        kind = artifact["path"].rsplit("/", 1)[1].removesuffix(".json")
+                        if kind in data_by_kind:
+                            data = data_by_kind[kind]
+                            artifact.update(bytes=len(data), sha256="sha256:" +
+                                            __import__("hashlib").sha256(data).hexdigest())
+                with open(profiles_path, "wb") as stream:
+                    stream.write(contracts.write_bytes(profiles, "profiles"))
+                # Keep the trusted page consistent too, so its hash/view checks cannot
+                # conceal a missing telemetry reconciliation in report admission.
+                with open(os.path.join(output, "diagnostic.html"), "wb") as stream:
+                    stream.write(diagnostics.page(profiles, traces))
+                os.unlink(os.path.join(output, bundle.MANIFEST))
+                bundle.write_manifest(output, 1 << 30)
+                with self.assertRaisesRegex(ContractError, "telemetry"):
+                    report.admit_child(output, self.parent)
+
+    def test_consistent_observational_inventory_difference_remains_a_valid_partial_report(self):
+        _, docs, _ = next(case for case in inventory_cases() if case[0] == "runs:only_here")
+        for kind, data in dumped(docs).items():
+            with open(os.path.join(self.docs, kind + ".json"), "wb") as stream:
+                stream.write(data)
+        doc, output = self.run_child()
+        for entry in doc["telemetry"]["captures"]:
+            self.assertIsNone(entry["omission"])
+            self.assertEqual(entry["evidence"]["state"], "partial")
+            self.assertIn("history_partial", entry["evidence"]["reasons"])
+        report.admit_child(output, self.parent)
 
     def test_telemetry_is_refused_beside_counters_and_without_a_level(self):
         doc, _ = self.run_child()

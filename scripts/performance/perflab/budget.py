@@ -22,6 +22,20 @@ class Expired(ContractError):
     """The run's deadline left a step no time, or ended it."""
 
 
+@contextmanager
+def defer_alarm():
+    """Defer the deadline signal only across descriptor ownership transfer/close.
+
+    No waits, flock, traversal or cleanup work belongs here. Restore the caller's exact
+    mask; a pending deadline is delivered on restoration, with ownership already recorded.
+    """
+    previous = signal.pthread_sigmask(signal.SIG_BLOCK, {signal.SIGALRM})
+    try:
+        yield
+    finally:
+        signal.pthread_sigmask(signal.SIG_SETMASK, previous)
+
+
 class Budget(object):
     """`deadline` and `clock` are instants of one clock; `reserve` is kept free before it."""
 
