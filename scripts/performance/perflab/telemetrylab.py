@@ -53,6 +53,8 @@ import shutil
 import sys
 import time
 from fractions import Fraction
+from dataclasses import dataclass
+from types import MappingProxyType
 
 from . import budget as deadlines
 from . import admission, bundle, contracts, host, jsonsubset, render, telemetryexec, tomlfile
@@ -1248,6 +1250,78 @@ def read_authority(git, sha):
     return members
 
 
+@dataclass(frozen=True, init=False)
+class _GitAuthority:
+    """One operation's admitted immutable objects, bound to its Git reader and commit.
+
+    Construction always performs full Git admission; no caller-provided member map or
+    cross-operation cache can stand in for it. Materialization still owns the write boundary.
+    """
+    git: object
+    repo: str
+    sha: str
+    members: object
+    digest: str
+
+    def __init__(self, git, sha):
+        require(re.fullmatch(r"(?:[0-9a-f]{40}|[0-9a-f]{64})", sha) is not None,
+                "prepared authority needs an immutable commit identity")
+        members = read_authority(git, sha)
+        for name, value in (("git", git), ("repo", git.repo), ("sha", sha),
+                            ("members", MappingProxyType(members)),
+                            ("digest", _member_identity(members))):
+            object.__setattr__(self, name, value)
+
+    def checked(self, git, sha):
+        require(self.git is git and self.repo == git.repo and self.sha == sha,
+                "prepared authority belongs to another Git source")
+        require(_member_identity(self.members) == self.digest,
+                "prepared authority bytes changed")
+        return self.members
+
+
+def _member_identity(members):
+    """Authority identity from exact bounded admitted bytes, with the existing domain."""
+    require(len(members) <= AUTHORITY_FILES_MAX, "authority file count exceeds its bound")
+    total, entries = 0, []
+    for path, data in sorted(members.items()):
+        check_relative_path(path, "an authority file")
+        require(type(data) is bytes and "/__pycache__/" not in "/" + path
+                and not path.endswith((".pyc", ".pyo")), "invalid prepared authority member")
+        total += len(data)
+        require(total <= AUTHORITY_BYTES_MAX, "authority bytes exceed their bound")
+        entries.append([path, sha256_bytes(data)])
+    return canonical_digest({"schema": "af.perf-telemetry-authority/2", "files": entries})
+
+
+@dataclass(frozen=True, init=False)
+class _AuthorityCopy:
+    """An import's exact authority bytes, rechecked against the verified result.
+
+    Filesystem inputs are freshly enumerated and read on every import. Later copies use
+    these owned immutable buffers, never a changed source path or a caller's unbound map.
+    """
+    root: str
+    members: object
+
+    def __init__(self, root, budget):
+        registry, registry_sha = load_registry(root)
+        members = read_files(root, authority_files(registry, root), AUTHORITY_BYTES_MAX, budget)
+        require(sha256_bytes(members[REGISTRY_PATH]) == registry_sha,
+                "authority registry changed during preparation")
+        object.__setattr__(self, "root", os.path.abspath(root))
+        object.__setattr__(self, "members", MappingProxyType(members))
+
+    def checked(self, result, root):
+        require(self.root == os.path.abspath(root), "prepared authority belongs to another root")
+        authority = result["authority"]
+        require((_member_identity(self.members), len(self.members),
+                 sha256_bytes(self.members[REGISTRY_PATH])) ==
+                (authority["digest"], authority["files"], authority["registry_sha256"]),
+                "authority changed before retention")
+        return self.members
+
+
 def _parents(path):
     parts = path.split("/")
     return ("/".join(parts[:index]) for index in range(1, len(parts)))
@@ -1282,8 +1356,11 @@ def _write_members(target, members, mode, parent_mode=0o777):
             stream.write(data)
 
 
-def materialize_authority(git, sha, target, kept=None):
-    members = read_authority(git, sha)
+def materialize_authority(git, sha, target, kept=None, *, _prepared=None):
+    require(_prepared is None or type(_prepared) is _GitAuthority,
+            "unbound prepared Git authority")
+    members = (read_authority(git, sha) if _prepared is None
+               else _prepared.checked(git, sha))
     if kept is not None:
         kept.reserve_trees([(target, members)])
     # Collection reads these members first and reserves all coexisting copies together.
@@ -1750,7 +1827,7 @@ class HistoryRoot(object):
         """
         require(self.fd is not None, "allocation admission needs the history lock")
         unit = self.report_allocation(1)
-        dirs, children = set(directories), {}
+        dirs, children, checked_parents = set(directories), {}, set()
         for path in list(files) + list(dirs) + list(entries):
             path = os.path.abspath(path)
             require(os.path.commonpath([path, self.root]) == self.root and path != self.root,
@@ -1758,6 +1835,11 @@ class HistoryRoot(object):
             parent = os.path.dirname(path)
             children.setdefault(parent, set()).add(os.path.basename(path))
             while parent != self.root:
+                # No writes occur during this locked admission. Each parent's ancestors
+                # and name growth need examination once, even for thousands of siblings.
+                if parent in checked_parents:
+                    break
+                checked_parents.add(parent)
                 require(not os.path.islink(parent), "allocation parent must not be a link")
                 if os.path.lexists(parent):
                     require(os.path.isdir(parent), "allocation parent must be a directory")
@@ -1766,7 +1848,7 @@ class HistoryRoot(object):
                 ancestor = os.path.dirname(parent)
                 children.setdefault(ancestor, set()).add(os.path.basename(parent))
                 parent = ancestor
-        total = sum(self.report_allocation(size) for size in files.values())
+        total = sum(((size + unit - 1) // unit) * unit for size in files.values())
         for directory in dirs | set(children):
             exists = os.path.lexists(directory)
             if exists:
@@ -1778,7 +1860,7 @@ class HistoryRoot(object):
                 names, allocated = set(), 0
             added = children.get(directory, set()) - names
             name_bytes = 24 + sum(32 + len(name.encode("utf-8")) for name in names | added)
-            needed = self.report_allocation(name_bytes)
+            needed = ((name_bytes + unit - 1) // unit) * unit
             if exists and not allocated and needed == unit:
                 # Match used_bytes on filesystems whose small directories have no blocks.
                 needed = 0
@@ -1855,11 +1937,15 @@ class HistoryRoot(object):
     def authority_path(self, result):
         return os.path.join(self.root, AUTHORITIES, result["authority"]["digest"].split(":")[1])
 
-    def retain_authority(self, result, root):
-        """Copy only trusted checkout bytes, never files from the downloaded bundle."""
-        registry, _ = load_registry(root)
-        digest, _ = authority_digest(registry, root)
-        require(digest == result["authority"]["digest"], "authority changed before retention")
+    def retain_authority(self, result, root, *, _prepared=None):
+        """Copy only exact trusted authority bytes, never files from the result bundle."""
+        require(_prepared is None or type(_prepared) is _AuthorityCopy,
+                "unbound prepared retention authority")
+        prepared = _AuthorityCopy(root, self.budget) if _prepared is None else _prepared
+        members = prepared.checked(result, root)
+        registry = contracts.validate_telemetry_lab(tomlfile.loads(
+            members[REGISTRY_PATH], REGISTRY_PATH))
+        digest = result["authority"]["digest"]
         target = self.authority_path(result)
         if os.path.lexists(target):
             require(not os.path.islink(target), "retained authority must not be a link")
@@ -1867,8 +1953,6 @@ class HistoryRoot(object):
             require(authority_digest(kept_registry, target)[0] == digest,
                     "retained authority bytes changed")
             return
-        members = read_files(root, authority_files(registry, root), AUTHORITY_BYTES_MAX,
-                             self.budget)
         staging = os.path.join(self.root, AUTHORITIES, STAGING_PREFIX + os.urandom(6).hex())
         self.reserve_trees([(staging, members)], entries=(target,))
         try:
@@ -1951,9 +2035,8 @@ class HistoryRoot(object):
                              BUNDLE_BYTES_MAX + contracts.limits.MAX_JSON_BYTES,
                              self.budget)
         root = authority_root or ROOT
-        registry, _ = load_registry(root)
-        authority_members = read_files(root, authority_files(registry, root),
-                                       AUTHORITY_BYTES_MAX, self.budget)
+        prepared = _AuthorityCopy(root, self.budget)
+        authority_members = prepared.checked(result, root)
         staging = os.path.join(self.results, STAGING_PREFIX + os.urandom(6).hex())
         trees = [(staging, members)]
         authority_target = self.authority_path(result)
@@ -1962,7 +2045,7 @@ class HistoryRoot(object):
                           authority_members))
         # Both copies coexist with downloaded/expanded inputs and all retained evidence.
         self.reserve_trees(trees, entries=(target, authority_target))
-        self.retain_authority(result, root)
+        self.retain_authority(result, root, _prepared=prepared)
         self.reserve_trees([(staging, members)], entries=(target,))
         try:
             _write_members(staging, members, 0o755)

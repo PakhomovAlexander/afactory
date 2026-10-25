@@ -17,3 +17,14 @@ interruption regressions without changing persisted formats, caps, verdicts or r
 Keep allocation fixtures in owned temporary scratch outside the source tree, including when
 source is read-only. Preserve the shared authority-materialization interruption boundary after
 the complete coexistence reservation, using the same bounded immutable Git-object admission.
+
+Reuse the bounded immutable Git authority buffers within one collection operation after the full
+coexistence reservation, preserving the materialization interruption entry point. Import captures
+fresh confined authority bytes after verification, checks their complete digest/count/registry
+identity, and retains those immutable buffers through the retention entry point. Unbound or
+corrupted prepared evidence is refused; retained and imported output are still read back. No
+preparation survives an operation. During each write-free locked allocation calculation, examine
+each parent once and use its single filesystem allocation unit for unchanged rounding. All root
+scans, simultaneous-copy reservations, terminal reserve and cleanup boundaries remain enforced.
+These changes address measured redundant admission work before the unchanged one-second expiry
+test's retention phase; hosted Python and committed whole-source verification remain required.

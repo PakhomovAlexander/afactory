@@ -475,7 +475,8 @@ class Cycle(object):
             require(any(self.git.is_ancestor(sha, ref) for ref in self.config["trusted_refs"]),
                     "its measurement authority %s is reachable from none of the trusted refs "
                     "%s" % (sha[:12], ", ".join(self.config["trusted_refs"])))
-            authority_members = telemetrylab.read_authority(self.git, sha)
+            prepared = telemetrylab._GitAuthority(self.git, sha)
+            authority_members = prepared.members
             retained = kept.authority_path(result)
             trees = [(authority, authority_members),
                      (os.path.join(kept.results, telemetrylab.STAGING_PREFIX + "import-reserve"),
@@ -491,9 +492,9 @@ class Cycle(object):
             # staging, expanded and retained authority, import copy and planning receipt.
             kept.reserve_trees(trees, files=binding_files, entries=(retained,
                                os.path.join(kept.results, result_id)))
-            # Keep materialization inside its shared interruption boundary. It re-admits
-            # the same immutable Git objects under the existing complete byte/path bounds.
-            telemetrylab.materialize_authority(self.git, sha, authority)
+            # The shared interruption boundary writes the exact immutable Git bytes whose
+            # complete coexistence was just reserved, without reading the objects again.
+            telemetrylab.materialize_authority(self.git, sha, authority, _prepared=prepared)
             self.api.remaining("verifying the result")
             self.interrupted_import = (run, attempt, artifact, result_id)
             kept.retain_binding(result_id, binding)
