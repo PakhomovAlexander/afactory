@@ -289,12 +289,16 @@ fn inflight_usage_survives_reopen_revocation_lower_settlement_and_writer_loss() 
             .begin(&attempt.reservation().id, deadline - 1)
             .unwrap();
         for time in [deadline, deadline + 1] {
+            let node = &attempt.reservation().node;
             assert_eq!(
                 budget
                     .clone()
                     .begin(&attempt.reservation().id, time)
                     .unwrap_err(),
-                "Task reservation is not dispatchable"
+                format!(
+                    "Task reservation for node {node} is not dispatchable: its Attempt deadline \
+                     passed: now {time} ms >= deadline {deadline} ms"
+                )
             );
         }
         let usage_id = f

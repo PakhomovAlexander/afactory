@@ -1,0 +1,176 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:af:schema:task-checks:2",
+  "title": "Task checks af/task-checks@2",
+  "$comment": "What `af task show ID --checks --json` prints: the Task's state and gate summary, and the last check receipt its execution recorded with every check it names. `receipt` is null before a check recorded one. Read-only: nothing runs. Under a warm layer each started check carries `layer`, its `af/TaskCheckLayer@1` entry (ADR-0207): the key, how the check came by it, warm or cold at the start, the source groups the content rule made stale, the build and test phases against their deadlines, and an eviction with its cause.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema",
+    "task_id",
+    "state",
+    "gate",
+    "receipt"
+  ],
+  "properties": {
+    "schema": {
+      "const": "af/task-checks@2"
+    },
+    "task_id": {
+      "$ref": "urn:af:schema:task-contracts:1#/$defs/name"
+    },
+    "state": {
+      "$ref": "urn:af:schema:task-state:1#/$defs/state"
+    },
+    "gate": {
+      "anyOf": [
+        {
+          "$ref": "urn:af:schema:task-state:1#/$defs/gate"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "receipt": {
+      "anyOf": [
+        {
+          "type": "null"
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "node",
+            "receipt_id",
+            "outcome",
+            "checks"
+          ],
+          "properties": {
+            "node": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 4096
+            },
+            "receipt_id": {
+              "$ref": "urn:af:schema:task-contracts:1#/$defs/digest"
+            },
+            "outcome": {
+              "enum": [
+                "passed",
+                "failed",
+                "inconclusive"
+              ]
+            },
+            "checks": {
+              "type": "array",
+              "minItems": 1,
+              "items": {
+                "$ref": "#/$defs/check"
+              }
+            }
+          }
+        }
+      ]
+    }
+  },
+  "$defs": {
+    "check": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "name",
+        "status",
+        "cache",
+        "remote",
+        "failed_tests",
+        "flaky",
+        "stderr_tail"
+      ],
+      "properties": {
+        "name": {
+          "$ref": "urn:af:schema:task-contracts:1#/$defs/name"
+        },
+        "status": {
+          "enum": [
+            "passed",
+            "failed",
+            "not_run",
+            "unknown"
+          ]
+        },
+        "exit_code": {
+          "type": "integer"
+        },
+        "reason": {
+          "type": "string",
+          "maxLength": 65536
+        },
+        "elapsed_ms": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 9007199254740991
+        },
+        "cache": {
+          "description": "The check's warm directories, `cargo_target warm 4096`, or `cold (no warm cache)`.",
+          "type": "string",
+          "minLength": 1
+        },
+        "remote": {
+          "type": "boolean"
+        },
+        "stopped_step": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "step",
+            "exit_code"
+          ],
+          "properties": {
+            "step": {
+              "type": "string",
+              "pattern": "^[A-Za-z0-9._-]{1,128}$"
+            },
+            "exit_code": {
+              "type": "integer"
+            }
+          }
+        },
+        "failed_tests": {
+          "type": "array",
+          "maxItems": 200,
+          "uniqueItems": true,
+          "items": {
+            "$ref": "urn:af:schema:task-state:1#/$defs/testName"
+          }
+        },
+        "flaky": {
+          "type": "array",
+          "maxItems": 200,
+          "uniqueItems": true,
+          "items": {
+            "$ref": "urn:af:schema:task-state:1#/$defs/testName"
+          }
+        },
+        "stdout_id": {
+          "$ref": "urn:af:schema:task-contracts:1#/$defs/digest"
+        },
+        "stderr_id": {
+          "$ref": "urn:af:schema:task-contracts:1#/$defs/digest"
+        },
+        "stderr_tail": {
+          "description": "The last 40 lines of the check's stderr, display-safe.",
+          "type": "array",
+          "maxItems": 40,
+          "items": {
+            "type": "string"
+          }
+        },
+        "layer": {
+          "description": "The check's warm layer, as `af/TaskCheckLayer@1` recorded it beside the receipt; absent without a warm layer or for a check that never started.",
+          "$ref": "urn:af:schema:task-check-layer:1#/$defs/run"
+        }
+      }
+    }
+  }
+}

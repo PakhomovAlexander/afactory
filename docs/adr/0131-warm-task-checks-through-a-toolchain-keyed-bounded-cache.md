@@ -5,7 +5,10 @@ Status: accepted, 2026-09-27; amended the same day by package R1's follow-up (Ta
 on 2026-09-28 by [ADR-0135](0135-collect-finished-tasks-behind-a-tombstone-and-a-reachability-sweep.md)
 (package R5, see [Two bounds](#amendment-two-bounds)); amended on 2026-10-07 by
 [ADR-0144](0144-hold-afs-disk-use-to-a-machine-budget.md): the key no longer depends on a
-check's runtime path, and old keys are evicted by the Storage Budget.
+check's runtime path, and old keys are evicted by the Storage Budget; amended on 2026-10-23 by
+[ADR-0207](0207-key-warm-check-layers-by-content-lock-them-split-the-build-deadline-and-seal-without-generated-files.md):
+a busy key is waited for until the check's deadline instead of 60 seconds, `npm_cache` is a third
+kind, and each check records its layer.
 Supersedes in part
 [ADR-0108](0108-carry-gate-build-caches-as-explicitly-unsafe-warm-layers.md): the one-Round
 scope of a candidate-built build cache, for Task checks only.

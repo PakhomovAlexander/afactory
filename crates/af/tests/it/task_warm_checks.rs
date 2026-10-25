@@ -239,6 +239,7 @@ fn af_with(fixture: &Fixture, extra: &[(&str, &Path)], args: &[&str]) -> (i32, S
         .env_remove("CARGO_HOME")
         .env_remove("RUSTUP_HOME")
         .env_remove("RUSTUP_TOOLCHAIN")
+        .env_remove("AF_TASK_RUST_TOOLCHAIN_POLICY_FILE")
         .envs(extra.iter().copied())
         .args(args)
         .output()
@@ -294,7 +295,7 @@ fn start_with(fixture: &Fixture, extra: &[(&str, &Path)], task_id: &str, expecte
     );
     assert_eq!(code, expected, "{stderr}\n{stdout}");
     let outcome: Value = serde_json::from_str(stdout.trim()).unwrap();
-    schemas::valid(&schemas::validator("task-inspection-v11.json"), &outcome);
+    schemas::valid(&schemas::validator("task-inspection-v13.json"), &outcome);
     outcome
 }
 
@@ -533,9 +534,9 @@ fn a_second_task_reuses_the_warm_directory_and_changes_no_snapshot_candidate_out
 
     let shown = show(&fixture, "warm-one");
     assert!(shown.contains("check pagination: "), "{shown}");
-    assert!(shown.contains(" ms, cargo_target cold empty"), "{shown}");
+    assert!(shown.contains(", cargo_target cold empty"), "{shown}");
     let shown = show(&fixture, "warm-two");
-    assert!(shown.contains(" ms, cargo_target warm 4096"), "{shown}");
+    assert!(shown.contains(", cargo_target warm 4.0 KiB"), "{shown}");
 
     let (first_receipt, first_tree) = deliver(&fixture, "warm-one");
     let (second_receipt, second_tree) = deliver(&fixture, "warm-two");
@@ -599,6 +600,16 @@ fn a_warm_check_runs_on_sources_stamped_after_the_build_it_reuses() {
             std::thread::sleep(std::time::Duration::from_millis(10));
         }
         std::thread::sleep(std::time::Duration::from_secs(3));
+        // A holder that builds another Snapshot first removes the key's sources record, as the
+        // kernel does (ADR-0207): the waiting check then finds no record and stamps every
+        // source group after what the holder built.
+        let key = target.parent().unwrap();
+        let sources = key.parent().unwrap().join(format!(
+            "{}.sources",
+            key.file_name().unwrap().to_str().unwrap()
+        ));
+        assert!(sources.exists(), "the first check recorded what it built");
+        std::fs::remove_file(sources).unwrap();
         std::fs::write(target.join("built"), b"x").unwrap();
         drop(lock);
     });
@@ -725,7 +736,7 @@ fn a_check_that_writes_past_the_bound_is_ended_failed_and_its_directory_removed(
         Some("build_cache = [\"cargo_target\"]\nmax_bytes = 4096\nhard_max_bytes = 4096"),
     ));
     let started = std::time::Instant::now();
-    let outcome = start(&fixture, "bound-grow", 3);
+    let outcome = start(&fixture, "bound-grow", 5);
     assert!(
         started.elapsed() < std::time::Duration::from_secs(80),
         "the monitor ended the check before it finished sleeping"
@@ -756,7 +767,7 @@ fn a_check_that_writes_past_the_bound_is_ended_failed_and_its_directory_removed(
     );
     let shown = show(&fixture, "bound-grow");
     assert!(
-        shown.contains("cargo_target cold empty, removed 8192 (bound_exceeded hard_max_bytes)"),
+        shown.contains("cargo_target cold empty, removed 8.0 KiB (bound_exceeded hard_max_bytes)"),
         "{shown}"
     );
 }
@@ -801,7 +812,10 @@ fn a_check_past_only_the_eviction_bound_passes_and_the_next_check_finds_it_remov
     );
     let shown = show(&fixture, "soft-grow");
     assert!(
-        shown.contains("cargo_target cold empty, removed 6144 (bound_exceeded max_bytes)"),
+        shown.contains(
+            "cargo_target cold empty, removed 6.0 KiB (bound_exceeded max_bytes); the next check \
+             runs cold"
+        ),
         "{shown}"
     );
 
@@ -825,7 +839,7 @@ fn a_check_that_removes_its_warm_root_fails_as_suspect_with_the_cause_recorded()
         false,
         Some("build_cache = [\"cargo_target\"]"),
     ));
-    let outcome = start(&fixture, "remove-root", 3);
+    let outcome = start(&fixture, "remove-root", 5);
     let cas = cas(&fixture);
     let result = check_result(&cas, &outcome);
     assert_eq!(result["status"], "failed");
@@ -843,7 +857,7 @@ fn a_check_that_removes_its_warm_root_fails_as_suspect_with_the_cause_recorded()
     let shown = show(&fixture, "remove-root");
     assert!(shown.contains("check pagination: failed in "), "{shown}");
     assert!(
-        shown.contains("cargo_target cold empty, removed 0 (suspect)"),
+        shown.contains("cargo_target cold empty, removed 0 B (suspect)"),
         "{shown}"
     );
 }
@@ -856,7 +870,7 @@ fn a_check_that_replaces_the_key_lock_with_an_oversized_file_fails_and_the_key_i
         false,
         Some("build_cache = [\"cargo_target\"]\nmax_bytes = 4096"),
     ));
-    let outcome = start(&fixture, "replace-lock", 3);
+    let outcome = start(&fixture, "replace-lock", 5);
     let cas = cas(&fixture);
     let result = check_result(&cas, &outcome);
     assert_eq!(result["status"], "failed");
@@ -878,14 +892,14 @@ fn a_check_that_widens_the_toolchain_key_fails_as_suspect_and_the_key_is_emptied
         false,
         Some("build_cache = [\"cargo_target\"]"),
     ));
-    let outcome = start(&fixture, "widen-key", 3);
+    let outcome = start(&fixture, "widen-key", 5);
     let cas = cas(&fixture);
     let result = check_result(&cas, &outcome);
     assert_eq!(result["status"], "failed");
     assert_eq!(result["reason"], "warm_cache_suspect");
     assert!(warm_directories(&fixture).is_empty());
     let shown = show(&fixture, "widen-key");
-    assert!(shown.contains("removed 0 (suspect)"), "{shown}");
+    assert!(shown.contains("removed 0 B (suspect)"), "{shown}");
 }
 
 #[test]
@@ -896,7 +910,7 @@ fn a_check_that_makes_the_key_read_only_still_fails_and_is_evicted() {
         false,
         Some("build_cache = [\"cargo_target\"]"),
     ));
-    let outcome = start(&fixture, "read-only-key", 3);
+    let outcome = start(&fixture, "read-only-key", 5);
     let cas = cas(&fixture);
     let result = check_result(&cas, &outcome);
     assert_eq!(result["status"], "failed");
@@ -926,7 +940,7 @@ fn an_oversized_entry_with_a_non_utf8_name_is_counted_and_evicted() {
         false,
         Some("build_cache = [\"cargo_target\"]\nmax_bytes = 4096\nhard_max_bytes = 4096"),
     ));
-    let outcome = start(&fixture, "odd-name", 3);
+    let outcome = start(&fixture, "odd-name", 5);
     let cas = cas(&fixture);
     let result = check_result(&cas, &outcome);
     assert_eq!(result["status"], "failed");
@@ -1160,7 +1174,7 @@ fn both_kinds_are_warm_on_the_second_run_from_the_installed_toolchain() {
     let shown = show(&fixture, "home-two");
     assert!(shown.contains("check pagination: passed in "), "{shown}");
     assert!(
-        shown.contains(" ms, cargo_target warm 4096, cargo_home warm 1024"),
+        shown.contains(", cargo_target warm 4.0 KiB, cargo_home warm 1.0 KiB"),
         "{shown}"
     );
 
@@ -1177,6 +1191,35 @@ fn both_kinds_are_warm_on_the_second_run_from_the_installed_toolchain() {
     assert_eq!(kinds(group)[0], ("cargo_target".into(), true, 0));
 }
 
+/// The implementer of `fixture` replaced by one that also removes the kernel's rustup home, as
+/// a machine whose rustup home went away while a Task ran: the toolchain resolved when the plan
+/// was admitted (ADR-0205) and no longer does when the check probes it.
+fn removing_the_rustup_home_while_it_runs(fixture: &Fixture) {
+    let implementer = fixture.repo.join(".af/task-packages/fixture/implementer");
+    std::fs::write(
+        implementer.join("worker.py"),
+        format!(
+            "import json,os,sys\njson.load(sys.stdin)\n\
+             open('pagination.py','w').write('def paginate(items, offset=0, limit=2):\\n    return items[offset:offset+limit]\\n')\n\
+             os.rmdir({:?})\n\
+             print(json.dumps({{'schema':'af.worker-reply/1','outputs':{{'report':[{{'summary':'Implemented pagination'}}]}}}}))\n",
+            fixture.home.join(".rustup").display().to_string()
+        ),
+    )
+    .unwrap();
+    let catalog_path = fixture.repo.join(".af/task-catalog.toml");
+    let mut catalog: toml::Value =
+        toml::from_str(&std::fs::read_to_string(&catalog_path).unwrap()).unwrap();
+    catalog["packages"]["fixture/implementer"]["digest"] =
+        toml::Value::String(package_digest("fixture/implementer", &implementer).unwrap());
+    std::fs::write(&catalog_path, toml::to_string(&catalog).unwrap()).unwrap();
+    git(&fixture.repo, &["add", "-A"]);
+    git(
+        &fixture.repo,
+        &["commit", "-qm", "the rustup home goes away"],
+    );
+}
+
 #[test]
 fn without_a_rustup_home_the_probe_fails_and_the_check_runs_cold_with_its_reason() {
     let fixture = fixture(code_policy(
@@ -1185,8 +1228,11 @@ fn without_a_rustup_home_the_probe_fails_and_the_check_runs_cold_with_its_reason
         false,
         Some("build_cache = [\"cargo_target\"]"),
     ));
-    std::fs::remove_dir(fixture.home.join(".rustup")).unwrap();
+    // Admission resolves the toolchain while the rustup home is there (ADR-0205); the check
+    // runs after the implementer removed it.
+    removing_the_rustup_home_while_it_runs(&fixture);
     let outcome = start(&fixture, "no-rustup", 0);
+    assert!(!fixture.home.join(".rustup").exists());
     let groups = named_groups(&outcome);
     assert_eq!(groups.len(), 1);
     assert_eq!(
@@ -1203,6 +1249,109 @@ fn without_a_rustup_home_the_probe_fails_and_the_check_runs_cold_with_its_reason
     );
 }
 
+/// A check whose toolchain does not resolve on this machine is refused before the plan is
+/// admitted (ADR-0205): before the implementer runs, with the policy file and the field in the
+/// message, and nothing charged. Here once with no rustup home at all, once with a Snapshot
+/// that pins a toolchain the rustup home does not hold.
+#[test]
+fn a_check_whose_toolchain_does_not_resolve_is_refused_before_the_implementer_runs() {
+    for (case, pinned) in [
+        ("no-rustup-home", "1.88.0"),
+        ("unavailable-toolchain", "9.9.9"),
+    ] {
+        let fixture = fixture(code_policy(
+            BUILD,
+            60_000,
+            false,
+            Some("build_cache = [\"cargo_target\"]"),
+        ));
+        if pinned == "1.88.0" {
+            std::fs::remove_dir(fixture.home.join(".rustup")).unwrap();
+        } else {
+            commit(
+                &fixture,
+                "rust-toolchain.toml",
+                &format!("[toolchain]\nchannel = \"{pinned}\"\n"),
+            );
+            // Like a rustup proxy whose home lacks the pinned channel, with auto-install off.
+            let rustc = fixture.bin.join("rustc");
+            let stub = std::fs::read_to_string(&rustc).unwrap();
+            std::fs::write(
+                &rustc,
+                stub.replacen(
+                    "#!/bin/sh\n",
+                    &format!(
+                        "#!/bin/sh\nif grep -q '{pinned}' rust-toolchain.toml 2>/dev/null; then \
+                         echo \"error: toolchain '{pinned}' is not installed\" >&2; exit 1; fi\n"
+                    ),
+                    1,
+                ),
+            )
+            .unwrap();
+        }
+        let file = fixture.root.join("tasks").join(format!("{case}.json"));
+        std::fs::write(
+            &file,
+            serde_json::to_vec(&serde_json::json!({
+                "schema": "af.task-file/1", "task_id": case, "kind": "implement",
+                "goal": "Implement this Jira ticket: offset/limit pagination",
+                "pipeline": {"name": "fixture/implementation", "fallback": "refuse"},
+                "strategy": "small", "facts": {},
+                "limits": {"tokens": 1000, "max_attempts": 3, "wall_ms": 600_000,
+                    "verification": {"tokens": 200, "attempts": 2, "wall_ms": 300_000}}
+            }))
+            .unwrap(),
+        )
+        .unwrap();
+        let (code, stdout, stderr) = af(
+            &fixture,
+            &[
+                "task",
+                "start",
+                "--execute",
+                "--file",
+                file.to_str().unwrap(),
+                "--state",
+                fixture.state.to_str().unwrap(),
+            ],
+        );
+        assert_eq!(code, 1, "{case}: {stderr}\n{stdout}");
+        let flat = stderr.split_whitespace().collect::<Vec<_>>().join(" ");
+        for needle in [
+            ".af/code-policy.toml: [warm] build_cache = [\"cargo_target\"] makes check \
+             `pagination` resolve its Rust toolchain before it runs",
+            &format!(
+                "the toolchain `{pinned}` its Snapshot's rust-toolchain.toml pins does not resolve on this machine (rustc -vV exited with"
+            ),
+            &format!("`rustup toolchain install {pinned}`"),
+            "nothing ran and nothing was charged",
+        ] {
+            assert!(
+                flat.contains(needle),
+                "{case}: `{needle}` missing:\n{stderr}"
+            );
+        }
+        let (code, shown, stderr) = af(
+            &fixture,
+            &[
+                "task",
+                "show",
+                case,
+                "--state",
+                fixture.state.to_str().unwrap(),
+                "--json",
+            ],
+        );
+        assert_eq!(code, 0, "{stderr}");
+        let shown: Value = serde_json::from_str(shown.trim()).unwrap();
+        assert_eq!(shown["attempts"], 0, "{case}: no Attempt ran: {shown}");
+        assert!(
+            shown.get("result").is_none_or(Value::is_null),
+            "{case}: {shown}"
+        );
+    }
+}
+
 #[test]
 fn a_fast_check_that_writes_past_the_bound_fails_and_its_directory_is_removed() {
     let fixture = fixture(code_policy(
@@ -1211,7 +1360,7 @@ fn a_fast_check_that_writes_past_the_bound_fails_and_its_directory_is_removed() 
         false,
         Some("build_cache = [\"cargo_target\"]\nmax_bytes = 4096\nhard_max_bytes = 4096"),
     ));
-    let outcome = start(&fixture, "fast-grow", 3);
+    let outcome = start(&fixture, "fast-grow", 5);
     let cas = cas(&fixture);
     let result = check_result(&cas, &outcome);
     assert_eq!(result["status"], "failed");
@@ -1231,7 +1380,7 @@ fn a_fast_check_that_writes_past_the_bound_fails_and_its_directory_is_removed() 
     let shown = show(&fixture, "fast-grow");
     assert!(shown.contains("check pagination: failed in "), "{shown}");
     assert!(
-        shown.contains("cargo_target cold empty, removed 8192 (bound_exceeded hard_max_bytes)"),
+        shown.contains("cargo_target cold empty, removed 8.0 KiB (bound_exceeded hard_max_bytes)"),
         "{shown}"
     );
 }
@@ -1247,7 +1396,7 @@ fn an_unreadable_subtree_a_check_leaves_fails_it_as_suspect() {
         false,
         Some("build_cache = [\"cargo_target\"]\nmax_bytes = 1048576"),
     ));
-    let outcome = start(&fixture, "hidden-grow", 3);
+    let outcome = start(&fixture, "hidden-grow", 5);
     let cas = cas(&fixture);
     let result = check_result(&cas, &outcome);
     assert_eq!(result["status"], "failed");
@@ -1404,7 +1553,7 @@ fn a_check_refused_its_declared_cache_keeps_its_name_and_every_kind() {
         false,
         Some(&format!("{BOTH}\ncaches = [\"cargo\"]")),
     ));
-    let outcome = start(&fixture, "refused-cache", 4);
+    let outcome = start(&fixture, "refused-cache", 5);
     let groups = named_groups(&outcome);
     assert_eq!(groups.len(), 1);
     assert_eq!(
@@ -1441,7 +1590,7 @@ fn every_check_of_a_warm_task_has_one_named_group_even_when_the_deadline_skips_i
         "import time\ntime.sleep(60)\n",
     ));
     check_node_runs(&fixture, &["exhaust", "pagination"]);
-    let outcome = start(&fixture, "deadline-skip", 4);
+    let outcome = start(&fixture, "deadline-skip", 5);
     let groups = named_groups(&outcome);
     let names: Vec<_> = groups
         .iter()
@@ -1486,7 +1635,9 @@ const NO_WARM_DOCUMENTS: &str = include_str!("../fixtures/task-warm/no-warm-docu
 /// deadline and every identity derived from it, an Attempt ULID, a writer pid, a fixture path —
 /// becomes `<run:N>`, N its first appearance, and the two runs must pair such values one to
 /// one, so every equality between them survives. Host timings are masked first, because two
-/// runs can agree on a duration by chance.
+/// runs can agree on a duration by chance: the inspection's `clock/wall_ms` among them, the
+/// time between the Task's opening and its deadline; so are the host's load and CPUs a check
+/// report records (ADR-0205), which two runs share by chance and two machines need not.
 #[derive(Default)]
 struct RunIndependent {
     first: std::collections::BTreeMap<String, usize>,
@@ -1494,31 +1645,52 @@ struct RunIndependent {
 }
 
 impl RunIndependent {
-    fn pair(&mut self, first: &Value, second: &Value, key: &str) -> Value {
+    fn pair(&mut self, first: &Value, second: &Value, path: &str) -> Value {
+        let key = path.rsplit('/').next().unwrap_or(path);
         match (first, second) {
             (Value::Object(a), Value::Object(b)) => {
                 assert_eq!(
                     a.keys().collect::<Vec<_>>(),
                     b.keys().collect::<Vec<_>>(),
-                    "two runs record the same fields at {key}"
+                    "two runs record the same fields at {path}"
                 );
                 Value::Object(
                     a.iter()
-                        .map(|(name, value)| (name.clone(), self.pair(value, &b[name], name)))
+                        .map(|(name, value)| {
+                            let path = format!("{path}/{name}");
+                            (name.clone(), self.pair(value, &b[name], &path))
+                        })
                         .collect(),
                 )
             }
             (Value::Array(a), Value::Array(b)) => {
-                assert_eq!(a.len(), b.len(), "two runs record as many entries at {key}");
-                Value::Array(a.iter().zip(b).map(|(a, b)| self.pair(a, b, key)).collect())
+                assert_eq!(
+                    a.len(),
+                    b.len(),
+                    "two runs record as many entries at {path}"
+                );
+                Value::Array(
+                    a.iter()
+                        .zip(b)
+                        .map(|(a, b)| self.pair(a, b, path))
+                        .collect(),
+                )
             }
-            _ if key.ends_with("_unix_ms") || key == "elapsed_ms" => Value::String("<ms>".into()),
+            _ if key.ends_with("_unix_ms")
+                || key == "elapsed_ms"
+                || path.ends_with("/clock/wall_ms") =>
+            {
+                Value::String("<ms>".into())
+            }
+            _ if key.starts_with("load_1m_") || key.starts_with("cpus_") => {
+                Value::String("<host>".into())
+            }
             _ if first == second => first.clone(),
             _ => {
                 let next = self.first.len();
                 let a = *self.first.entry(first.to_string()).or_insert(next);
                 let b = *self.second.entry(second.to_string()).or_insert(next);
-                assert_eq!(a, b, "run-dependent values pair one to one at {key}");
+                assert_eq!(a, b, "run-dependent values pair one to one at {path}");
                 Value::String(format!("<run:{a}>"))
             }
         }
@@ -1546,7 +1718,18 @@ fn no_warm_documents() -> Value {
         ],
     );
     assert_eq!(code, 0, "{stderr}");
-    let inspection: Value = serde_json::from_str(shown.trim()).unwrap();
+    let mut inspection: Value = serde_json::from_str(shown.trim()).unwrap();
+    // The next command carries the `--state` the command was given, a path of this run: the
+    // documents compare the command the state chose.
+    let selector = format!(" --state {}", fixture.state.display());
+    let next = inspection["state"]["next_action"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    let chosen = next
+        .strip_suffix(&selector)
+        .unwrap_or_else(|| panic!("{next}"));
+    inspection["state"]["next_action"] = chosen.into();
     let (delivery, worktree) = deliver(&fixture, "cold-only");
     let cas = cas(&fixture);
     let document = |id: &Value| cas.get_json(id.as_str().unwrap()).unwrap();
@@ -1888,7 +2071,7 @@ fn a_native_toolchain_check_keeps_one_warm_key_across_tasks() {
         "no second key was made"
     );
     let shown = show(&fixture, "native-two");
-    assert!(shown.contains("cargo_target warm 4096"), "{shown}");
+    assert!(shown.contains("cargo_target warm 4.0 KiB"), "{shown}");
 
     // Other toolchain bytes are another verified digest, so another key.
     let changed = native_toolchain(&fixture, "second");
@@ -1902,6 +2085,42 @@ fn a_native_toolchain_check_keeps_one_warm_key_across_tasks() {
     assert_ne!(third[0]["toolchain_id"], cold[0]["toolchain_id"]);
     assert_eq!(third[0]["bytes_available"], 0, "a new key starts cold");
     assert_eq!(warm_directories(&fixture).len(), 2);
+}
+
+/// Finding C1: `[task] rust_toolchain_policy` in the user's configuration selects the native
+/// toolchain mapping with no variable exported: the gate resolves the mapped toolchain, and the
+/// variable naming the same mapping selects the same warm key, so its check is warm.
+#[test]
+fn a_configured_toolchain_policy_resolves_the_native_toolchain_without_the_variable() {
+    let fixture = fixture(format!(
+        "{}{NATIVE}",
+        code_policy(
+            BUILD,
+            60_000,
+            false,
+            Some("build_cache = [\"cargo_target\"]")
+        )
+    ));
+    let mapping = native_toolchain(&fixture, "first");
+    let config = fixture.home.join(".config/af/config.toml");
+    std::fs::create_dir_all(config.parent().unwrap()).unwrap();
+    std::fs::write(
+        &config,
+        format!(
+            "[task]\nrust_toolchain_policy = \"{}\"\n",
+            mapping.display()
+        ),
+    )
+    .unwrap();
+    let configured = start(&fixture, "configured-one", 0);
+    let cold = observations(&configured);
+    assert!(cold[0]["toolchain_id"].is_string(), "{cold:?}");
+    assert_eq!(cold[0]["bytes_available"], 0);
+    let extra = [("AF_TASK_RUST_TOOLCHAIN_POLICY_FILE", mapping.as_path())];
+    let variable = start_with(&fixture, &extra, "variable-two", 0);
+    let warm = observations(&variable);
+    assert_eq!(warm[0]["toolchain_id"], cold[0]["toolchain_id"], "one key");
+    assert_eq!(warm[0]["bytes_available"], 4096, "the second check is warm");
 }
 
 /// A check that reports the four directories af gave it, and whether each was empty and
@@ -1953,4 +2172,287 @@ fn a_check_gets_four_private_directories_that_are_gone_after_it() {
         !runtime.exists(),
         "the runtime directory outlived its check"
     );
+}
+
+/// A check that reports its build step after a second, then runs its "tests" for a second and
+/// a half, and leaves one build product (ADR-0207).
+const PHASED: &str = "import json, os, time\n\
+time.sleep(1.2)\n\
+step = {'schema': 'af.check-report/1', 'record': 'step', 'label': 'test-build', 'stage': 'build', 'exit_code': 0, 'command': ['true']}\n\
+open(os.environ['AF_CHECK_REPORT'], 'a').write(json.dumps(step) + '\\n')\n\
+time.sleep(1.5)\n\
+target = os.environ['CARGO_TARGET_DIR']\n\
+os.makedirs(target, exist_ok=True)\n\
+open(os.path.join(target, 'built'), 'w').write('x')\n";
+
+/// A check that, during its build, has its layer evicted the way the Storage Budget evicts an
+/// idle key: the key directory removed and the sweep's eviction record left beside it. It then
+/// fails, as a build that lost its directory does.
+const EVICTED: &str = "import json, os, shutil, time\n\
+key = os.path.dirname(os.environ['CARGO_TARGET_DIR'])\n\
+shutil.rmtree(key)\n\
+record = {'schema': 'af.warm-eviction/1', 'by': 'storage_sweep', 'at_unix_ms': int(time.time() * 1000), 'bytes': 0}\n\
+open(key + '.evicted', 'w').write(json.dumps(record))\n\
+time.sleep(6)\n\
+raise SystemExit(1)\n";
+
+fn show_checks(fixture: &Fixture, task_id: &str) -> (String, Value) {
+    let args = |json: bool| {
+        let mut args = vec![
+            "task",
+            "show",
+            task_id,
+            "--checks",
+            "--state",
+            fixture.state.to_str().unwrap(),
+        ];
+        if json {
+            args.push("--json");
+        }
+        args.into_iter().map(String::from).collect::<Vec<_>>()
+    };
+    let text = {
+        let args = args(false);
+        let (_, stdout, _) = af(
+            fixture,
+            &args.iter().map(String::as_str).collect::<Vec<_>>(),
+        );
+        stdout
+    };
+    let args = args(true);
+    let (_, stdout, stderr) = af(
+        fixture,
+        &args.iter().map(String::as_str).collect::<Vec<_>>(),
+    );
+    let document: Value =
+        serde_json::from_str(stdout.trim()).unwrap_or_else(|_| panic!("{stderr}"));
+    schemas::valid(&schemas::validator("task-checks-v2.json"), &document);
+    (text, document)
+}
+
+/// Digits replaced, so a snapshot of `af task show --checks` holds still across runs.
+fn without_digits(text: &str) -> String {
+    let mut out = String::new();
+    let mut digits = false;
+    for c in text.chars() {
+        if c.is_ascii_hexdigit() && c.is_ascii_digit() {
+            if !digits {
+                out.push('N');
+            }
+            digits = true;
+        } else {
+            digits = false;
+            out.push(c);
+        }
+    }
+    out
+}
+
+/// ADR-0207, items 3 and 6: a warm check with a declared build deadline records its layer and
+/// both phases beside its receipt; `af task show --checks` prints them, and the same content
+/// the second time starts warm with every source group fresh.
+#[test]
+fn a_warm_check_records_its_layer_and_both_phases_and_show_checks_prints_them() {
+    let fixture = fixture(code_policy(
+        PHASED,
+        60_000,
+        false,
+        Some("build_cache = [\"cargo_target\"]\nbuild_wall_ms = 60000"),
+    ));
+    start(&fixture, "phased-one", 0);
+    let (text, document) = show_checks(&fixture, "phased-one");
+    let check = &document["receipt"]["checks"][0];
+    assert_eq!(check["status"], "passed", "{text}");
+    let layer = &check["layer"];
+    assert_eq!(layer["lock"], "held");
+    assert_eq!(layer["start"], "cold");
+    assert_eq!(
+        layer["sources"],
+        serde_json::json!({"stale": 1, "fresh": 0})
+    );
+    assert!(layer["key"].as_str().unwrap().contains('/'));
+    let phases = &layer["phases"];
+    assert_eq!(phases["build_wall_ms"], 60_000);
+    assert_eq!(phases["check_wall_ms"], 60_000);
+    let build = phases["build_ms"].as_u64().unwrap();
+    let tests = phases["tests_ms"].as_u64().unwrap();
+    assert!(build >= 1_200, "the build step came after 1.2 s: {phases}");
+    assert_eq!(build + tests, phases["elapsed_ms"].as_u64().unwrap());
+    assert!(phases.get("deadline").is_none());
+    let lines: Vec<String> = text
+        .lines()
+        .filter(|line| line.starts_with("  layer ") || line.starts_with("  phases: "))
+        .map(without_digits)
+        .collect();
+    assert_eq!(lines.len(), 2, "{text}");
+    assert!(
+        lines[0].ends_with(": cold at start, held at once; source groups N stale, N fresh"),
+        "{text}"
+    );
+    assert_eq!(
+        lines[1], "  phases: build N ms of N ms, tests N ms of N ms",
+        "{text}"
+    );
+
+    start(&fixture, "phased-two", 0);
+    let (_, document) = show_checks(&fixture, "phased-two");
+    let layer = &document["receipt"]["checks"][0]["layer"];
+    assert_eq!(
+        layer["start"], "warm",
+        "the second check reused the first one's build"
+    );
+    assert_eq!(
+        layer["sources"],
+        serde_json::json!({"stale": 0, "fresh": 1}),
+        "the same content keeps the build"
+    );
+}
+
+/// ADR-0207, item 3: a layer evicted under a running build is named as the cause, with its
+/// phase, its evictor and its time, in the result's reason and in the layer record.
+#[test]
+fn a_layer_evicted_during_the_build_names_the_sweep_as_the_cause() {
+    let fixture = fixture(code_policy(
+        EVICTED,
+        60_000,
+        false,
+        Some("build_cache = [\"cargo_target\"]\nbuild_wall_ms = 60000"),
+    ));
+    let outcome = start(&fixture, "evicted", 5);
+    let cas = cas(&fixture);
+    let result = check_result(&cas, &outcome);
+    let reason = result["reason"].as_str().unwrap();
+    assert!(
+        reason.starts_with("layer evicted during build by storage sweep at "),
+        "{reason}"
+    );
+    let (text, document) = show_checks(&fixture, "evicted");
+    let evicted = &document["receipt"]["checks"][0]["layer"]["evicted"];
+    assert_eq!(evicted["phase"], "build");
+    assert_eq!(evicted["by"], "storage_sweep");
+    assert!(
+        text.lines()
+            .any(|line| line.starts_with("  layer evicted during build by storage sweep at ")),
+        "{text}"
+    );
+}
+
+/// The check of an offline policy: npm reads only its cache, every proxy names a closed port,
+/// and an attempt to reach the registry fails at once (ADR-0207, item 4).
+const OFFLINE: &str = "import os, urllib.request\n\
+assert os.environ['npm_config_offline'] == 'true'\n\
+for name in ('HTTP_PROXY', 'HTTPS_PROXY', 'http_proxy', 'https_proxy'):\n    assert os.environ[name] == 'http://127.0.0.1:9', name\n\
+cache = os.environ['npm_config_cache']\n\
+assert os.path.isdir(os.path.join(cache, '_cacache')), cache\n\
+os.makedirs(os.path.join(cache, '_npx', 'tree', 'node_modules', '.bin'), exist_ok=True)\n\
+link = os.path.join(cache, '_npx', 'tree', 'node_modules', '.bin', 'tool')\n\
+if not os.path.islink(link):\n    os.symlink('../tool/cli.js', link)\n\
+try:\n    urllib.request.urlopen('http://registry.npmjs.org/', timeout=10)\n    raise SystemExit('the network was reachable')\n\
+except OSError:\n    pass\n";
+
+/// ADR-0207, item 4: an offline check runs with `HTTP_PROXY` on a dead port and passes on a
+/// pinned package its npm cache holds; the cache is filled once, by `npm exec` with the
+/// network, and a cached tarball whose bytes differ from the pin is refused before the check.
+#[test]
+fn an_offline_check_passes_with_a_dead_proxy_on_a_pinned_package_filled_once() {
+    use sha2::Digest;
+    let tarball = b"markdownlint-cli2 0.22.1 tarball bytes".as_slice();
+    let sha256: String = sha2::Sha256::digest(tarball)
+        .iter()
+        .map(|byte| format!("{byte:02x}"))
+        .collect();
+    let policy = code_policy(
+        OFFLINE,
+        60_000,
+        false,
+        Some("build_cache = [\"cargo_target\", \"npm_cache\"]"),
+    )
+    .replacen("required = true\n", "required = true\noffline = true\n", 1)
+        + &format!(
+            "\n[[checks.pagination.npm_packages]]\nspec = \"markdownlint-cli2@0.22.1\"\n\
+             sha256 = \"{sha256}\"\n"
+        );
+    let fixture = fixture(policy);
+    // What npm would fetch: the pinned tarball, filed as npm's cache files it.
+    let seed = fixture.root.join("npm-seed");
+    review_pipeline::task::warm_check::offline::cache_tarball(
+        &seed,
+        &review_check_pin("markdownlint-cli2@0.22.1", &sha256),
+        tarball,
+    )
+    .unwrap();
+    let calls = fixture.root.join("npm-calls");
+    let npm = fixture.bin.join("npm");
+    std::fs::write(
+        &npm,
+        format!(
+            "#!/bin/sh\necho \"$*\" >> '{}'\n[ \"$1\" = exec ] || exit 2\n\
+             [ -z \"$npm_config_offline\" ] || exit 3\n\
+             cp -R '{}/.' \"$npm_config_cache/\"\n",
+            calls.display(),
+            seed.display()
+        ),
+    )
+    .unwrap();
+    std::fs::set_permissions(&npm, std::fs::Permissions::from_mode(0o755)).unwrap();
+
+    let first = start(&fixture, "offline-one", 0);
+    let cas = cas(&fixture);
+    assert_eq!(check_receipt(&cas, &first)["outcome"], "passed");
+    let filled = std::fs::read_to_string(&calls).unwrap();
+    assert_eq!(
+        filled.lines().collect::<Vec<_>>(),
+        ["exec --yes --ignore-scripts --package=markdownlint-cli2@0.22.1 -- true"],
+        "filled once"
+    );
+    let cache = warm_directories_of(&fixture, "npm_cache").pop().unwrap();
+    assert!(cache.join("_cacache").is_dir(), "the layer holds the cache");
+    assert!(
+        !cache.join("_npx").exists(),
+        "npm's install tree, with its links, is removed"
+    );
+
+    let second = start(&fixture, "offline-two", 0);
+    assert_eq!(check_receipt(&cas, &second)["outcome"], "passed");
+    assert_eq!(
+        std::fs::read_to_string(&calls).unwrap().lines().count(),
+        1,
+        "a filled cache never needs the network again"
+    );
+
+    // Other bytes under the pinned tarball's name: refused before the check runs.
+    for entry in walk(&cache.join("_cacache/content-v2")) {
+        std::fs::write(entry, b"other bytes").unwrap();
+    }
+    let third = start(&fixture, "offline-tampered", 5);
+    let result = check_result(&cas, &third);
+    assert_eq!(result["status"], "not_run");
+    let reason = result["reason"].as_str().unwrap();
+    assert!(
+        reason.contains("markdownlint-cli2@0.22.1") && reason.contains("pins"),
+        "{reason}"
+    );
+}
+
+fn review_check_pin(spec: &str, sha256: &str) -> review_pipeline::task::warm_check::NpmPin {
+    review_pipeline::task::warm_check::NpmPin {
+        spec: spec.into(),
+        sha256: sha256.into(),
+    }
+}
+
+/// Every regular file below `root`.
+fn walk(root: &Path) -> Vec<PathBuf> {
+    let mut files = Vec::new();
+    let mut pending = vec![root.to_path_buf()];
+    while let Some(directory) = pending.pop() {
+        for entry in std::fs::read_dir(&directory).unwrap().flatten() {
+            if entry.file_type().unwrap().is_dir() {
+                pending.push(entry.path());
+            } else {
+                files.push(entry.path());
+            }
+        }
+    }
+    files
 }

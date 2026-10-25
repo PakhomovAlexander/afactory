@@ -48,6 +48,7 @@
 //! superseded `af/storage@2`, `af/storage@3` and `af/storage-prune@1` to `@3` are refused.
 
 use std::collections::{BTreeMap, BTreeSet};
+use std::os::unix::process::ExitStatusExt;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
@@ -127,7 +128,10 @@ impl Machine {
         assert_eq!(
             output.status.code(),
             Some(code),
-            "af {args:?}\n{stdout}\n{stderr}"
+            "af {args:?}: status {:?}, raw {}, Unix signal {:?}\n{stdout}\n{stderr}",
+            output.status,
+            output.status.into_raw(),
+            output.status.signal()
         );
         (stdout, stderr)
     }
@@ -281,10 +285,10 @@ fn refresh(machine: &Machine, repo: &Path, cutoff: &str, complete: bool) -> Stri
     machine.recorded().last().unwrap().clone()
 }
 
-/// The `survey` entries of `af storage --json`, by path, validated against `af/storage@4`.
+/// The `survey` entries of `af storage --json`, by path, validated against `af/storage@5`.
 fn survey_entries(machine: &Machine, repo: &Path) -> (Value, BTreeMap<String, Value>) {
     let shown = machine.json(repo, &[], &["storage", "--json"]);
-    schemas::valid(&schemas::validator("storage-v4.json"), &shown);
+    schemas::valid(&schemas::validator("storage-v5.json"), &shown);
     let entries = shown["entries"]
         .as_array()
         .unwrap()
@@ -1548,16 +1552,17 @@ fn a_question_mark_is_one_byte_in_the_surveyors_exclude() {
 
 /// ADR-0145 clause 2: the documents Survey collection changed are `af/storage@3` and
 /// `af/storage-prune@3` (`@2` added the kind `survey`, `@3` the `unknown` total), and
-/// Telemetry's kind (ADR-0153) made them `af/storage@4` and `af/storage-prune@4`; their
-/// superseded versions are refused and no schema of them ships.
+/// Telemetry's kind (ADR-0153) made them `af/storage@4` and `af/storage-prune@4`, and the
+/// per-volume floor and the unreadable Stores' writer release `af/storage@5`; their superseded
+/// versions are refused and no schema of them ships.
 #[test]
 fn superseded_storage_documents_are_refused() {
     let machine = Machine::new();
     let repo = repository(&machine, "");
     let mut shown = machine.json(&repo, &[], &["storage", "--json"]);
-    let current = schemas::validator("storage-v4.json");
+    let current = schemas::validator("storage-v5.json");
     assert!(current.is_valid(&shown));
-    for superseded in ["af/storage@2", "af/storage@3"] {
+    for superseded in ["af/storage@2", "af/storage@3", "af/storage@4"] {
         shown["schema"] = serde_json::json!(superseded);
         assert!(!current.is_valid(&shown), "{superseded}");
     }
@@ -1580,6 +1585,7 @@ fn superseded_storage_documents_are_refused() {
         "storage-v1.json",
         "storage-v2.json",
         "storage-v3.json",
+        "storage-v4.json",
         "storage-prune-v1.json",
         "storage-prune-v2.json",
         "storage-prune-v3.json",
@@ -2896,7 +2902,7 @@ fn af_storage_counts_an_abandoned_claim_as_the_preview_does() {
     );
     let claim_bytes = dead_claim(&claim, 96 * 1024);
     let shown = machine.json(&directory, &[], &["storage", "--json"]);
-    schemas::valid(&schemas::validator("storage-v4.json"), &shown);
+    schemas::valid(&schemas::validator("storage-v5.json"), &shown);
     let entries = shown["entries"].as_array().unwrap();
     assert_eq!(entries.len(), 1, "{shown}");
     assert_eq!(entries[0]["kind"], "claim");
@@ -3100,7 +3106,7 @@ fn a_pending_entry_stays_while_its_changed_object_is_present_and_goes_once_it_is
 /// The `reason` of every problem `af storage --json` reports under `env`, by path.
 fn storage_problems(machine: &Machine, repo: &Path, env: &[(&str, &str)]) -> Vec<(String, String)> {
     let shown = machine.json(repo, env, &["storage", "--json"]);
-    schemas::valid(&schemas::validator("storage-v4.json"), &shown);
+    schemas::valid(&schemas::validator("storage-v5.json"), &shown);
     shown["problems"]
         .as_array()
         .unwrap()
@@ -3210,7 +3216,7 @@ fn project_stores_beyond_the_store_discovery_ceiling_are_reported_and_their_surv
 
     let env = [("AF_TEST_SURVEY_DISCOVERY_STORES", "1")];
     let shown = machine.json(&first, &env, &["storage", "--json"]);
-    schemas::valid(&schemas::validator("storage-v4.json"), &shown);
+    schemas::valid(&schemas::validator("storage-v5.json"), &shown);
     let problems: Vec<&Value> = shown["problems"]
         .as_array()
         .unwrap()

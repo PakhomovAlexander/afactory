@@ -256,7 +256,7 @@ impl Consumer {
             "{task_id}: {stderr}\n{}",
             self.explain(&outcome)
         );
-        schemas::valid(&schemas::validator("task-inspection-v11.json"), &outcome);
+        schemas::valid(&schemas::validator("task-inspection-v13.json"), &outcome);
         self.retain(task_id, code, &outcome);
         outcome
     }
@@ -264,7 +264,18 @@ impl Consumer {
     /// What each measured side and the comparison of a Task came to, for a failure message.
     fn explain(&self, outcome: &Value) -> String {
         let cas = self.cas();
-        let mut out = format!("result: {}\n", outcome["result"]);
+        let mut out = format!("{}\n", failure_diagnostics(&cas, outcome));
+        // The Task's own account, which names each failed node and its first error line.
+        if let Some(task) = outcome["task_id"].as_str() {
+            let (_, shown, _) = self.af(&[
+                "task",
+                "show",
+                task,
+                "--state",
+                self.state.to_str().unwrap(),
+            ]);
+            out.push_str(&format!("show: {shown}\n"));
+        }
         for port in ["baseline", "candidate", "comparison"] {
             let Some(id) = outcome["result"]["outputs"][port]["artifact_ids"][0].as_str() else {
                 out.push_str(&format!("{port}: absent\n"));
@@ -553,7 +564,7 @@ print(json.dumps({'schema': 'af.worker-reply/1', 'outputs': {'report': [{'summar
 fn measurement(cas: &Cas, outcome: &Value, port: &str) -> MeasurementV1 {
     let id = outcome["result"]["outputs"][port]["artifact_ids"][0]
         .as_str()
-        .unwrap_or_else(|| panic!("no {port} output: {}", outcome["result"]));
+        .unwrap_or_else(|| panic!("no {port} output: {}", failure_diagnostics(cas, outcome)));
     let envelope = cas.get_json(id).unwrap();
     assert_eq!(envelope["type"], "af/Measurement@1");
     schemas::valid(
@@ -568,13 +579,149 @@ fn measurement(cas: &Cas, outcome: &Value, port: &str) -> MeasurementV1 {
 fn comparison(cas: &Cas, outcome: &Value) -> MeasurementComparisonV1 {
     let id = outcome["result"]["outputs"]["comparison"]["artifact_ids"][0]
         .as_str()
-        .unwrap_or_else(|| panic!("no comparison output: {}", outcome["result"]));
+        .unwrap_or_else(|| {
+            panic!(
+                "no comparison output: {}",
+                failure_diagnostics(cas, outcome)
+            )
+        });
     let envelope = cas.get_json(id).unwrap();
     schemas::valid(
         &schemas::validator("measurement-comparison-v1.json"),
         &envelope["payload"],
     );
     serde_json::from_value(envelope["payload"].clone()).unwrap()
+}
+
+/// Failure-only fixture diagnostics: the entire nested inspection plus the invocations,
+/// feedback and diagnostics it names. Do not follow arbitrary input/provenance references
+/// into source or Worker context. Preserve the scenario and report unreadable CAS objects
+/// without masking the original assertion. At most 64 objects, each at most 64 KiB of source
+/// JSON (head/tail with explicit byte counts above that); this is not a public receipt schema.
+fn failure_diagnostics(cas: &Cas, outcome: &Value) -> Value {
+    fn references(value: &Value, ids: &mut std::collections::BTreeSet<String>) {
+        match value {
+            Value::Object(fields) => {
+                for (key, value) in fields {
+                    if matches!(
+                        key.as_str(),
+                        "invocation_id" | "feedback_id" | "diagnostic_id"
+                    ) {
+                        if let Some(id) = value.as_str() {
+                            ids.insert(id.to_owned());
+                        }
+                    } else if key == "feedback_ids" {
+                        for id in value
+                            .as_array()
+                            .into_iter()
+                            .flatten()
+                            .filter_map(Value::as_str)
+                        {
+                            ids.insert(id.to_owned());
+                        }
+                    }
+                    references(value, ids);
+                }
+            }
+            Value::Array(values) => {
+                for value in values {
+                    references(value, ids);
+                }
+            }
+            _ => {}
+        }
+    }
+    fn bounded(value: &Value) -> Value {
+        let bytes = serde_json::to_vec(value).unwrap();
+        if bytes.len() <= 2 * STREAM_PART {
+            json!({"retained": "whole", "value": value})
+        } else {
+            retained_bytes(&review_store::canonical::blob_content_id(&bytes), &bytes)
+        }
+    }
+    const MAX_ARTIFACTS: usize = 64;
+    let mut pending = std::collections::BTreeSet::new();
+    let mut artifacts = serde_json::Map::new();
+    references(outcome, &mut pending);
+    while artifacts.len() < MAX_ARTIFACTS {
+        let Some(id) = pending.pop_first() else {
+            break;
+        };
+        if artifacts.contains_key(&id) {
+            continue;
+        }
+        let artifact = match cas.get_json(&id) {
+            Ok(value) => {
+                references(&value, &mut pending);
+                bounded(&value)
+            }
+            Err(error) => json!({"read_error": error.to_string()}),
+        };
+        artifacts.insert(id, artifact);
+    }
+    let omitted = pending
+        .iter()
+        .filter(|id| !artifacts.contains_key(*id))
+        .count();
+    json!({
+        "scenario": outcome["task_id"],
+        "inspection": bounded(outcome),
+        "artifacts": artifacts,
+        "omitted_artifacts": omitted,
+        "artifact_limit": MAX_ARTIFACTS,
+    })
+}
+
+#[test]
+fn missing_measurement_diagnostics_expose_nested_attempts_and_bound_artifacts() {
+    let root = tempfile::tempdir().unwrap();
+    let cas = Cas::open(root.path()).unwrap();
+    let diagnostic = json!({"reason": "resource", "detail": "fixture reservation exhausted"});
+    let diagnostic_id = cas.put_json(&diagnostic).unwrap();
+    let feedback = json!({"kind": "retry", "diagnostic_id": diagnostic_id});
+    let feedback_id = cas.put_json(&feedback).unwrap();
+    let invocation =
+        json!({"node": "root.nodes.trial.nodes.measure", "feedback_ids": [feedback_id]});
+    let invocation_id = cas.put_json(&invocation).unwrap();
+    let missing_id = format!("sha256:{}", "f".repeat(64));
+    let outcome = json!({
+        "task_id": "guarded-missing-candidate",
+        "result": {"execution": "exhausted", "outputs": {}},
+        "execution_records": [{"record": {
+            "kind": "reserved", "invocation_id": invocation_id,
+            "deadline_unix_ms": 1700000005000_u64, "reserved_tokens": 50,
+        }}],
+        "run_reports": [{"diagnostic_id": missing_id}],
+    });
+    let receipt = failure_diagnostics(&cas, &outcome);
+    assert_eq!(receipt["scenario"], "guarded-missing-candidate");
+    assert_eq!(receipt["inspection"]["value"], outcome);
+    for (id, expected) in [
+        (&invocation_id, &invocation),
+        (&feedback_id, &feedback),
+        (&diagnostic_id, &diagnostic),
+    ] {
+        assert_eq!(receipt["artifacts"][id]["value"], *expected);
+    }
+    assert!(receipt["artifacts"][&missing_id]["read_error"].is_string());
+    assert_eq!(receipt["omitted_artifacts"], 0);
+    let panic = std::panic::catch_unwind(|| measurement(&cas, &outcome, "candidate")).unwrap_err();
+    let message = panic.downcast_ref::<String>().unwrap();
+    assert!(message.contains("no candidate output"));
+    assert!(message.contains("guarded-missing-candidate"));
+    assert!(message.contains("fixture reservation exhausted"));
+
+    let mut large = outcome.clone();
+    large["padding"] = json!("x".repeat(2 * STREAM_PART + 1));
+    let ids: Vec<String> = (0..70)
+        .map(|index| cas.put_json(&json!({"index": index})).unwrap())
+        .collect();
+    large["feedback_ids"] = json!(ids);
+    let receipt = failure_diagnostics(&cas, &large);
+    assert_eq!(receipt["inspection"]["retained"], "head_and_tail");
+    assert!(receipt["inspection"]["omitted_bytes"].as_u64().unwrap() > 0);
+    assert_eq!(receipt["artifacts"].as_object().unwrap().len(), 64);
+    assert!(receipt["omitted_artifacts"].as_u64().unwrap() > 0);
 }
 
 fn text(cas: &Cas, id: Option<&String>) -> String {
@@ -978,8 +1125,14 @@ fn guarded_kernel_experiments_measure_one_judged_sample_and_refuse_every_tampere
             "crates/lockfile is a symbolic link",
         ),
         (
+            // Sealing leaves bytecode out of a candidate unless the tree stages it (ADR-0207);
+            // this candidate stages it, so the guard is what refuses it.
             "bytecode",
-            json!({CANONICAL: unslow, bytecode_path: {"base64": base64(&bytecode)}}),
+            json!({
+                CANONICAL: unslow,
+                bytecode_path: {"base64": base64(&bytecode)},
+                ".af/seal-ignore": "!__pycache__/\n!*.pyc\n",
+            }),
             "harness of",
         ),
     ];

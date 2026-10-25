@@ -28,7 +28,12 @@ _DHAT_TOTAL = re.compile(r"Total:\s+([0-9,]+) bytes in ([0-9,]+) blocks")
 SAMPLY_FLAGS = ("--save-only", "--rate", "--output")
 # The most a saved samply profile may inflate to before it is read.
 SAMPLY_PROFILE_BYTES_MAX = 256 * 1024 * 1024
-PROTECTED_PREFIXES = ("/System/", "/usr/bin/", "/usr/sbin/", "/usr/libexec/", "/bin/", "/sbin/")
+# System executables a profiler cannot or must not attach to, by the real path a target resolves
+# to: macOS's protected locations, the usual system bin directories, and the Rust coreutils
+# multicall binary some Linux distributions ship (Ubuntu's rust-coreutils), which `/bin/ls`
+# resolves to there.
+PROTECTED_PREFIXES = ("/System/", "/usr/bin/", "/usr/sbin/", "/usr/libexec/", "/bin/", "/sbin/",
+                      "/usr/lib/cargo/bin/coreutils")
 
 
 class CounterError(Exception):

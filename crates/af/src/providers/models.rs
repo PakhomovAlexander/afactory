@@ -172,6 +172,9 @@ fn probe_all(
 /// Read one Provider's catalog: the CLI is located, its invocation checked when `check_cli`
 /// asks, then its harness asked.
 fn probe_spec(spec: &ProviderSpec, cancelled: &AtomicBool, check_cli: bool) -> CatalogOutcome {
+    if let Err(error) = availability::check(spec) {
+        return CatalogOutcome::Unavailable(error);
+    }
     let program = match locate_cli(spec) {
         Ok(program) => program,
         Err(failure) => return CatalogOutcome::CliRefused(failure.message()),
@@ -457,6 +460,7 @@ fn claude_catalog(
     cancelled: &AtomicBool,
 ) -> Result<CatalogReport, String> {
     // Removed, with what the CLI kept for it, once the session has exited (ADR-0144).
+    availability::check(spec)?;
     let directory = ProbeDirectory::new(spec)?;
     let mut command = Command::new(program);
     command.args(CLAUDE_CATALOG_ARGS);
@@ -717,15 +721,13 @@ fn selected_specs(specs: Vec<ProviderSpec>, ids: &[String]) -> Result<Vec<Provid
     if !ids.is_empty() {
         let mut selected = Vec::new();
         for id in ids {
-            let spec = specs
-                .iter()
-                .find(|spec| &spec.id == id)
-                .ok_or_else(|| {
-                    format!(
-                        "provider `{}` is not listed; `af provider status` lists the Providers af knows",
-                        hint::shown(id)
-                    )
-                })?;
+            let spec = specs.iter().find(|spec| &spec.id == id).ok_or_else(|| {
+                format!(
+                    "Provider {} not found in this machine's Provider registry or its \
+                         discovered contexts; af provider status lists the Providers af knows",
+                    hint::shown(id)
+                )
+            })?;
             if !selected
                 .iter()
                 .any(|known: &ProviderSpec| known.id == spec.id)
@@ -846,7 +848,8 @@ pub(crate) fn table(catalogs: &[ProviderCatalog], resolve: Option<&ResolveReques
     let mut lines = Vec::new();
     if catalogs.is_empty() {
         lines.push(
-            "No supported provider CLI is installed and no provider registry entries exist"
+            "No supported provider CLI is installed and no provider registry entries exist; af \
+             provider detect finds and registers the logins on this machine"
                 .to_owned(),
         );
         return lines;

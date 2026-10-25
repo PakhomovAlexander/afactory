@@ -67,8 +67,13 @@ they cannot change tools, permissions, checks or Pipeline selection authority. R
 captured bytes even if the live file or catalog changes.
 
 `af/DocumentDraft@1` contains a title, plain-text sections and named source citations. The renderer
-escapes authored Markdown punctuation and creates `af/Document@1`, which records the exact draft
-and sources artifact IDs. It emits links only for supported, syntactically safe captured HTTPS
+creates `af/Document@1`, which records the exact draft and sources artifact IDs and the canonical
+Markdown they render to (payload `af.document/2`). It escapes only what is Markdown markup where it
+stands: `*`, a backtick, `[`, `]`, `<`, `|`, `~`, `$`, `\`, `_` outside a word, `&` before an
+entity, `#` in a heading and a block marker such as `#`, `>`, `-` or `1.` at a line's start; a
+word an autolink would claim becomes an inert code span. Ordinary punctuation, paths and
+non-ASCII text are written as authored, so `crates/af/src/cli.rs:1163` reads as itself. A
+Document of the earlier rendering, `af.document/1`, is not read. It emits links only for supported, syntactically safe captured HTTPS
 locations. Other locations remain inert text. Checks require the configured sections and size,
 citations where requested, and supported source-location syntax. They do not claim that a remote
 URL was fetched or that an HTTP server is currently available.
@@ -94,10 +99,12 @@ af task output release-notes --port verification --format json --output verifica
 ```
 
 Finished replay spends no further Attempts. `task output` writes one recorded output to an absent
-file, leaving Task state unchanged. Markdown requires a Document artifact; JSON preserves an
-artifact envelope. `--format human-markdown` writes a readable presentation of a Document for a
-person, with the Task's result and the matching review in words; it is derived from the exact
-draft, never recorded or reviewed itself (see [Report Tasks](report.md#output)). The command reports the Task's acceptance, so saving an incomplete or rejected
+file, leaving Task state unchanged. For a Document, `--format markdown` writes a readable
+presentation for a person, with the Task's result and the matching review in words; it is derived
+from the exact draft, never recorded or reviewed itself (see [Report Tasks](report.md#output)).
+`--format canonical-markdown` writes the recorded Document text, the bytes the checks and the
+verifier judged, and JSON preserves an artifact envelope. An unknown `--port` is refused with the
+ports the result has. The command reports the Task's acceptance, so saving an incomplete or rejected
 result does not promote its status. It never overwrites a file.
 
 The real CLI tests cover successful capture, planning, execution, Markdown output and exact replay

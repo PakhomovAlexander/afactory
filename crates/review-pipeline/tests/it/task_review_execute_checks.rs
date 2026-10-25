@@ -133,6 +133,7 @@ impl WorkerModelAdapter for Uix {
             "outputs":{"result":[{"reports":[],"benchmark_demands":[],"dispositions":[]}]}});
         let reply = serde_json::to_vec(&reply).unwrap();
         ModelWorkerReturn {
+            notes: Default::default(),
             usage_observation: None,
             raw_artifact_ids: vec![cas.put(&reply).unwrap()],
             message: Ok(reply),
@@ -215,6 +216,7 @@ fn run(case: &'static str) -> Outcome {
     };
     let result_type = review_core::contract::REVIEWER_RESULT_V2;
     let signature = OperatorSignature {
+        unbound_allowed: Default::default(),
         contract: PipelineContractV1 {
             inputs: BTreeMap::from([
                 (
@@ -307,6 +309,7 @@ fn run(case: &'static str) -> Outcome {
                 max_attempts: 1,
                 allow_local_replacement: false,
                 independent_from: BTreeSet::new(),
+                recovery_attempts: None,
             },
         )]),
         nodes: vec![
@@ -557,6 +560,7 @@ fn run(case: &'static str) -> Outcome {
 
 fn bare_signature(effects: &str, roles: &str) -> OperatorSignature {
     OperatorSignature {
+        unbound_allowed: Default::default(),
         contract: PipelineContractV1 {
             inputs: BTreeMap::new(),
             outputs: BTreeMap::new(),

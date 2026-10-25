@@ -172,6 +172,11 @@ def check_toml_subset():
     # and every `test(/.../)` clause of it becomes one pattern, in order.
     literal, clauses = raw_filter_clauses(real_text)
     assert override['filter'] == literal, (override, literal)
+    # Both starter repair fixtures spend fixed Worker walls under a real heartbeat lease.
+    # Pin their suite exclusivity independently of the parser's reading of the same text.
+    for test in ['heavy_starter_repair_uses_current_evidence',
+                 'targeted_starter_repair_uses_current_evidence']:
+        assert f'::{test}$' in clauses, clauses
     patterns = MODULE.exclusive_patterns(ROOT / '.config/nextest.toml', True)
     assert [p.pattern for p in patterns] == clauses, (patterns, clauses)
     # Every pattern of the real list is a plain test-name pattern anchored at the end, whichever

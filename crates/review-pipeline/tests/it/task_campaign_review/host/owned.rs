@@ -743,8 +743,14 @@ fn expired_resume_records_all_unstarted_slices_as_missing_without_new_attempts()
         .unwrap()
         .as_millis() as u64
         + 5000;
-    let deadline = limits.deadline_unix_ms;
     let (compiler, lease) = admit_owned_with_limits(&cas, &mut store, false, limits);
+    // The Task's clock started at its admission: its deadline is the recorded one moved by the
+    // wait before it.
+    let deadline = store
+        .task_projection(&cas, lease.task_id())
+        .unwrap()
+        .unwrap()
+        .deadline_unix_ms();
     let shared = SharedEventStore::new(&mut store);
     {
         let host = CampaignReviewTaskHost::new(

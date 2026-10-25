@@ -158,7 +158,7 @@ fn document_starter_runs_without_credentials_code_artifacts_or_code_checks_and_r
             "--port",
             "document",
             "--format",
-            "markdown",
+            "canonical-markdown",
             "--output",
             file.to_str().unwrap(),
         ],
@@ -175,7 +175,7 @@ fn document_starter_runs_without_credentials_code_artifacts_or_code_checks_and_r
             "--port",
             "document",
             "--format",
-            "markdown",
+            "canonical-markdown",
             "--output",
         ])
         .arg(&file)
@@ -185,6 +185,50 @@ fn document_starter_runs_without_credentials_code_artifacts_or_code_checks_and_r
         .unwrap();
     assert!(!refused.status.success());
     assert_eq!(std::fs::read_to_string(&file).unwrap(), text);
+    // Without --output the Document's bytes are the result, on stdout, and nothing is written.
+    let printed = crate::common::af()
+        .current_dir(&repo)
+        .args([
+            "task",
+            "output",
+            "release-notes",
+            "--port",
+            "document",
+            "--format",
+            "canonical-markdown",
+            "--state",
+        ])
+        .arg(&state)
+        .output()
+        .unwrap();
+    assert!(
+        printed.status.success(),
+        "{}",
+        String::from_utf8_lossy(&printed.stderr)
+    );
+    assert_eq!(String::from_utf8(printed.stdout).unwrap(), text);
+    // --json describes a written file, so without --output it is one error document.
+    let refused = run(
+        &repo,
+        &state,
+        &[
+            "task",
+            "output",
+            "release-notes",
+            "--port",
+            "document",
+            "--format",
+            "canonical-markdown",
+        ],
+        1,
+    );
+    assert!(
+        refused["error"]
+            .as_str()
+            .unwrap()
+            .contains("add --output FILE"),
+        "{refused}"
+    );
     assert_eq!(
         run(
             &repo,
@@ -277,8 +321,10 @@ fn document_failures_keep_negative_or_missing_evidence_and_never_accept_a_stale_
         }
         std::fs::write(catalog_path, toml::to_string(&catalog).unwrap()).unwrap();
         commit(&repo);
+        // A verifier whose reply is refused, or that is missing, is a failed Worker (6); a
+        // document the verifier rejects asked for changes (3).
         let code = if matches!(case, "stale_document" | "missing_verifier") {
-            4
+            6
         } else {
             3
         };

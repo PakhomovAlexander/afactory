@@ -147,11 +147,11 @@ class Registry(unittest.TestCase):
         cas = read(os.path.join(ROOT, "crates/review-store/src/cas.rs")).decode()
         probe = read(os.path.join(ROOT, "crates/review-pipeline/examples/perf-probe/"
                                   "fixtures.rs")).decode()
-        self.assertIn("const LEASE_MS: u64 = 15_000;", lease)
-        self.assertIn("pub const TASK_LEASE_MS: u64 = 15_000;", probe)
+        self.assertIn("pub const TASK_LEASE_MS: u64 = 60_000;", lease)
+        self.assertIn("pub const TASK_LEASE_MS: u64 = 60_000;", probe)
         self.assertIn("const MAX_ARTIFACT_ENVELOPE_BYTES: u64 = 8 * 1024 * 1024;", cas)
         constraints = self.suite.doc["product_constraints"]
-        self.assertEqual(constraints["task_lease_ms"], 15000)
+        self.assertEqual(constraints["task_lease_ms"], 60000)
         self.assertEqual(constraints["artifact_envelope_cap_bytes"], 8 * 1024 * 1024)
         large = self.suite.doc["fixtures"]["issue_255_large"]
         self.assertEqual((large["serialized_envelope_bytes"], large["size_rule"]),

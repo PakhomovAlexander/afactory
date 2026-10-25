@@ -198,6 +198,9 @@ struct DeliveryAssets {
     derived_snapshot_id: String,
     derived: SnapshotReceipt,
     derived_manifest: Manifest,
+    /// A verification Task's proof of the other Task's candidate it delivers, and its
+    /// artifact ID (ADR-0211).
+    proof: Option<(String, review_core::task::delivery::TaskDeliveryProofV1)>,
 }
 
 const DELIVERY_GIT_TIMEOUT: Duration = Duration::from_secs(30);
@@ -374,10 +377,15 @@ pub(super) fn deliver(options: DeliveryOptions) -> Result<(), String> {
         .map_err(|error| format!("opening repository {}: {error}", options.repo.display()))?;
     let state = resolve_task_state(&options.state, &repository)?;
     if state.starts_with(&repository) {
-        return Err("Task state must be outside the repository".into());
+        return Err(format!(
+            "Task state {} must be outside the repository {}; name a --state directory outside \
+             it, or omit --state for the default under $XDG_STATE_HOME/af",
+            state.display(),
+            repository.display()
+        ));
     }
     if !state.join("events.sqlite").is_file() {
-        return Err(format!("Task state {} does not exist", state.display()));
+        return Err(super::task_execution::store_not_found(&state));
     }
     // A separate SQLite write transaction is an OS-released process lock. Prepared delivery
     // events remain durable in the Task database while an exact concurrent command is refused;
@@ -387,11 +395,13 @@ pub(super) fn deliver(options: DeliveryOptions) -> Result<(), String> {
     let repository_text = utf8_path(&repository, "repository")?;
     let worktree_text = utf8_path(&worktree, "worktree")?;
     let cas = Cas::open(state.join("cas")).map_err(|error| error.to_string())?;
-    let task =
-        delivery_common::projection(&state, &cas, &options.task_id)?.ok_or("Unknown Task")?;
+    let task = delivery_common::projection(&state, &cas, &options.task_id)?
+        .ok_or_else(|| super::task_execution::task_not_found(&state, &options.task_id))?;
     let events = delivery_common::events(&task);
-    let assets = delivery_common::assets(&cas, &task)?;
+    let assets = delivery_common::assets(&state, &cas, &task)?;
     let mut store = delivery_common::CommonDelivery::open(&state, &task)?;
+    store.with_proof(assets.proof.as_ref().map(|(id, _)| id.clone()));
+    let proof = assets.proof.as_ref().map(|(_, proof)| proof.clone());
     // What the declared layout says about the Snapshot this delivery would place in a worktree.
     // A pure function of the recorded manifest, so it is the same answer the plan gave. Nothing
     // is removed either way: `warn` records the group in the receipt, `refuse` stops here —
@@ -437,7 +447,7 @@ pub(super) fn deliver(options: DeliveryOptions) -> Result<(), String> {
     if let Some(receipt) = latest_delivery_receipt(&cas, &events, "TaskDelivered@1")? {
         ensure_same_delivery(&prepared, &receipt)?;
         verify_sealed_delivery_identity(&git, &git_home, &prepared)?;
-        print_delivery(&options, &receipt)?;
+        print_delivery(&options, &receipt, proof.as_ref())?;
         return Ok(());
     }
 
@@ -452,7 +462,7 @@ pub(super) fn deliver(options: DeliveryOptions) -> Result<(), String> {
                 )?;
                 let receipt = delivered_receipt(&existing, ignored_paths, undeclared);
                 append_delivery_receipt(&mut store, &cas, &receipt, "TaskDelivered@1")?;
-                print_delivery(&options, &receipt)?;
+                print_delivery(&options, &receipt, proof.as_ref())?;
                 return Ok(());
             }
             Err(verification) => match rollback_owned_delivery(
@@ -503,7 +513,7 @@ pub(super) fn deliver(options: DeliveryOptions) -> Result<(), String> {
         Ok(ignored_paths) => {
             let receipt = delivered_receipt(&prepared, ignored_paths, undeclared);
             append_delivery_receipt(&mut store, &cas, &receipt, "TaskDelivered@1")?;
-            print_delivery(&options, &receipt)
+            print_delivery(&options, &receipt, proof.as_ref())
         }
         Err(reason) => match rollback_owned_delivery(
             &git,
@@ -556,13 +566,14 @@ pub(super) fn observe_adoption(
     let repository = std::fs::canonicalize(repo)
         .map_err(|error| format!("opening repository {}: {error}", repo.display()))?;
     let state = resolve_task_state(&explicit_state.cloned(), &repository)?;
+    super::task_execution::require_store(&state)?;
     let cas = Cas::open_existing(state.join("cas")).map_err(|error| error.to_string())?;
     let mut store = review_store::EventStore::open(state.join("events.sqlite"))
         .map_err(|error| error.to_string())?;
     let task = store
         .task_projection(&cas, task_id)
         .map_err(|error| error.to_string())?
-        .ok_or("Unknown Task")?;
+        .ok_or_else(|| super::task_execution::task_not_found(&state, task_id))?;
     let delivery_record_id = task
         .deliveries
         .iter()
@@ -946,7 +957,8 @@ pub(super) fn list(options: InspectOptions, sizes: bool) -> Result<(), String> {
     let repository = std::fs::canonicalize(&options.repo)
         .map_err(|error| format!("opening repository {}: {error}", options.repo.display()))?;
     let state = resolve_task_state(&options.state, &repository)?;
-    let mut tasks = super::task_execution::list_common(&state)?;
+    let mut tasks = super::task_execution::list_common(&state)
+        .map_err(|error| super::store_release::explain(&state, error))?;
     let store = if sizes {
         // Each uncollected Task's CAS bytes, from the same walk `af task gc` sweeps by
         // (ADR-0135). A collected Task reaches nothing. The rows and the walk are two reads: a
@@ -993,31 +1005,58 @@ pub(super) fn list(options: InspectOptions, sizes: bool) -> Result<(), String> {
     print_task_list(&options, tasks, store)
 }
 
-pub(super) fn show(options: InspectOptions) -> Result<(), String> {
+pub(super) fn show(options: InspectOptions, checks: bool) -> Result<(), String> {
     let repository = std::fs::canonicalize(&options.repo)
         .map_err(|error| format!("opening repository {}: {error}", options.repo.display()))?;
     let state = resolve_task_state(&options.state, &repository)?;
     let task_id = options.task_id.as_deref().expect("validated by parser");
-    if super::task_execution::show_if_common(task_id, &state, options.json)? {
+    if super::task_execution::show_if_common(task_id, &state, options.json, checks)
+        .map_err(|error| super::store_release::explain(&state, error))?
+    {
         return Ok(());
     }
-    Err(format!("Task `{task_id}` was not found"))
+    Err(super::task_execution::task_not_found(&state, task_id))
 }
 
-/// `af task report` (ADR-0142): one Markdown block, or one `af/task-report@1` document, over
+/// `af task report` (ADR-0142): one Markdown block, or one `af/task-report@2` document, over
 /// the named Tasks of one Store. Read-only; nothing is printed unless every Task is found.
-pub(super) fn report(options: InspectOptions, task_ids: &[String]) -> Result<(), String> {
+/// `af task report --pr-body`: the template it fills, and the base its lines added block counts
+/// from.
+pub(super) struct PrBody<'a> {
+    pub(super) template: Option<&'a Path>,
+    pub(super) base: Option<&'a str>,
+}
+
+pub(super) fn report(
+    options: InspectOptions,
+    task_ids: &[String],
+    pr_body: Option<PrBody<'_>>,
+) -> Result<(), String> {
     for task_id in task_ids {
         validate_task_id(task_id).map_err(|error| format!("`{task_id}`: {error}"))?;
     }
     let repository = std::fs::canonicalize(&options.repo)
         .map_err(|error| format!("opening repository {}: {error}", options.repo.display()))?;
     let state = resolve_task_state(&options.state, &repository)?;
-    let report = super::task_execution::task_report::read(&state, task_ids)?;
+    let report = super::task_execution::task_report::read(&state, task_ids)
+        .map_err(|error| super::store_release::explain(&state, error))?;
+    for line in super::task_execution::task_report::adr_collisions(&repository, &state, task_ids) {
+        if line.starts_with("warning:") {
+            eprintln!("af task report: {line}");
+        } else {
+            eprintln!("{line}");
+        }
+    }
     if options.json {
         println!(
             "{}",
             serde_json::to_string(&report).map_err(|error| error.to_string())?
+        );
+    } else if let Some(body) = pr_body {
+        let block = super::task_execution::task_report::markdown(&report);
+        print!(
+            "{}",
+            super::task_execution::pr_body::render(&repository, body.template, body.base, &block)?
         );
     } else {
         print!("{}", super::task_execution::task_report::markdown(&report));
@@ -1697,7 +1736,11 @@ fn append_delivery_receipt(
     store.append(cas, &receipt.task_id, event_type, &artifact)
 }
 
-fn print_delivery(options: &DeliveryOptions, receipt: &DeliveryReceipt) -> Result<(), String> {
+fn print_delivery(
+    options: &DeliveryOptions,
+    receipt: &DeliveryReceipt,
+    proof: Option<&review_core::task::delivery::TaskDeliveryProofV1>,
+) -> Result<(), String> {
     if options.json {
         println!(
             "{}",
@@ -1708,6 +1751,12 @@ fn print_delivery(options: &DeliveryOptions, receipt: &DeliveryReceipt) -> Resul
             "task     {}\ndelivery {}\nbranch   {}\nworktree {}\nremote   none",
             receipt.task_id, receipt.delivery_id, receipt.target.branch, receipt.target.worktree,
         );
+        if let Some(proof) = proof {
+            println!(
+                "proof    Task {} verified Task {}'s candidate {}",
+                proof.verification_task_id, proof.candidate_task_id, proof.candidate_snapshot_id
+            );
+        }
         for path in &receipt.ignored_paths {
             println!("ignored  {path}");
         }
@@ -1731,7 +1780,7 @@ fn print_task_list(
 ) -> Result<(), String> {
     if options.json {
         let mut document = serde_json::json!({
-            "schema": "af/task-list@2",
+            "schema": TASK_LIST_V3,
             "tasks": tasks,
         });
         if let Some(store) = store {
@@ -1746,45 +1795,132 @@ fn print_task_list(
     if tasks.is_empty() {
         println!("no Tasks");
     }
-    for task in tasks {
-        // A collected Task keeps only its retained summary: no delivery is shown for it.
-        let state = match task["collected"]["collected_unix_ms"].as_u64() {
-            Some(time) => format!(
-                "collected {}",
-                review_core::task::collection::collected_time(time)
-            ),
-            None => task
-                .pointer("/delivery/outcome/kind")
-                .and_then(serde_json::Value::as_str)
-                .unwrap_or("not-delivered")
-                .to_owned(),
-        };
-        let sizes = match task.get("sizes") {
-            Some(sizes) => format!(
-                "  {} bytes exclusive, {} shared",
-                sizes["exclusive_bytes"], sizes["shared_bytes"]
-            ),
-            None => String::new(),
-        };
-        // Unknown usage is never shown as spend: `1200 tokens (+1 unknown)` (ADR-0143).
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |elapsed| elapsed.as_millis() as u64);
+    let mut rows = vec![[
+        "TASK".to_owned(),
+        "STATE".to_owned(),
+        "ROUND".to_owned(),
+        "TOKENS".to_owned(),
+        "AGE".to_owned(),
+        "NEXT".to_owned(),
+    ]];
+    let mut extras = vec![String::new()];
+    for task in &tasks {
+        let state: review_core::task::state::TaskStateV1 =
+            serde_json::from_value(task["state"].clone()).map_err(|error| error.to_string())?;
+        // Unknown usage is never shown as spend: `1200 (+1 unknown)` (ADR-0143).
         let unknown = match task["unknown_usage_attempts"].as_u64() {
             Some(n) if n > 0 => format!(" (+{n} unknown)"),
             _ => String::new(),
         };
-        println!(
-            "{}  {:<10} {:>8} tokens{unknown}  {state}{sizes}",
-            task["task_id"].as_str().unwrap_or("-"),
-            task["outcome"].as_str().unwrap_or("incomplete"),
-            task["chargeable_tokens"].as_str().unwrap_or("-"),
+        let round = match task["round"].as_u64() {
+            Some(0) | None => "-".to_owned(),
+            Some(n) => n.to_string(),
+        };
+        // Delivery is shown only once there is one; a collected Task says when it went.
+        let mut extra = match task["collected"]["collected_unix_ms"].as_u64() {
+            Some(time) => format!("  collected {}", crate::human::local_time(time)),
+            None => task
+                .pointer("/delivery/outcome/kind")
+                .and_then(serde_json::Value::as_str)
+                .map(|kind| format!("  delivery {kind}"))
+                .unwrap_or_default(),
+        };
+        if let Some(sizes) = task.get("sizes") {
+            extra.push_str(&format!(
+                "  {} exclusive, {} shared",
+                crate::human::bytes(sizes["exclusive_bytes"].as_u64().unwrap_or(0)),
+                crate::human::bytes(sizes["shared_bytes"].as_u64().unwrap_or(0))
+            ));
+        }
+        rows.push([
+            task["task_id"].as_str().unwrap_or("-").to_owned(),
+            state.label(),
+            round,
+            format!(
+                "{}{unknown}",
+                task["chargeable_tokens"].as_str().unwrap_or("-")
+            ),
+            task["updated_unix_ms"]
+                .as_u64()
+                .map_or_else(|| "-".to_owned(), |at| age(now.saturating_sub(at))),
+            state.next_verb().to_owned(),
+        ]);
+        extras.push(extra);
+    }
+    if !tasks.is_empty() {
+        let mut widths = [0usize; 6];
+        for row in &rows {
+            for (width, cell) in widths.iter_mut().zip(row) {
+                *width = (*width).max(cell.chars().count());
+            }
+        }
+        // Wider than the terminal, each row's next command moves to an indented line of its
+        // own, whole, and the table keeps the other columns.
+        let terminal = crate::human::width();
+        let narrow = rows.iter().zip(&extras).any(|(row, extra)| {
+            list_row(row, &widths, true).chars().count() + extra.len() > terminal
+        });
+        let mut next_actions = std::iter::once(None).chain(
+            tasks
+                .iter()
+                .map(|task| task["state"]["next_action"].as_str().map(str::to_owned)),
         );
+        for (row, extra) in rows.iter().zip(&extras) {
+            let next = next_actions.next().flatten();
+            println!("{}{extra}", list_row(row, &widths, !narrow));
+            if let Some(next) = next.filter(|_| narrow) {
+                println!(
+                    "{}",
+                    crate::human::fit_command(&format!("  next: {next}"), terminal)
+                );
+            }
+        }
     }
     if let Some(store) = store {
         println!(
-            "Store: {} objects, {} bytes ({} bytes unreachable)",
-            store["objects"], store["bytes"], store["unreachable_bytes"]
+            "Store: {} objects, {} ({} unreachable)",
+            store["objects"],
+            crate::human::bytes(store["bytes"].as_u64().unwrap_or(0)),
+            crate::human::bytes(store["unreachable_bytes"].as_u64().unwrap_or(0))
         );
     }
     Ok(())
+}
+
+/// One row of `af task list`'s table, its columns aligned to `widths` two spaces apart, or in
+/// the narrow layout one space apart and without the `NEXT` column.
+fn list_row(row: &[String; 6], widths: &[usize; 6], wide: bool) -> String {
+    let gap = if wide { "  " } else { " " };
+    let mut line = String::new();
+    for (index, (cell, width)) in row.iter().zip(widths).enumerate() {
+        if index == 3 {
+            line.push_str(&format!("{cell:>width$}{gap}"));
+        } else if index == 5 {
+            if wide {
+                line.push_str(cell);
+            }
+        } else {
+            line.push_str(&format!("{cell:<width$}{gap}"));
+        }
+    }
+    line.trim_end().to_owned()
+}
+
+/// The document `af task list --json` prints.
+pub(crate) const TASK_LIST_V3: &str = "af/task-list@3";
+
+/// How long ago, as `af task list` prints it: `45s`, `12m`, `3h`, `2d`.
+fn age(ms: u64) -> String {
+    let seconds = ms / 1_000;
+    match seconds {
+        0..60 => format!("{seconds}s"),
+        60..3_600 => format!("{}m", seconds / 60),
+        3_600..86_400 => format!("{}h", seconds / 3_600),
+        _ => format!("{}d", seconds / 86_400),
+    }
 }
 
 fn scan_delivery_manifest(root: &Path) -> Result<Manifest, String> {

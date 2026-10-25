@@ -115,6 +115,9 @@ fn fixture(root: &Path, passing_gate: bool) -> (PathBuf, PathBuf, PathBuf) {
     let home = root.join("home");
     std::fs::create_dir_all(&home).unwrap();
     std::fs::write(repo.join(".gitignore"), "*.generated\n").unwrap();
+    // The repository stages its generated files for sealing (ADR-0207), so they reach the
+    // candidate and the delivery, which lists them as ignored paths.
+    std::fs::write(repo.join(".af/seal-ignore"), "!*.generated\n").unwrap();
     let pagination = if passing_gate {
         "open('pagination.py','w').write('def paginate(items, offset=0, limit=2):\\n    return items[offset:offset+limit]\\n')\n"
     } else {
@@ -183,7 +186,7 @@ fn verified_task_ends_at_a_materializable_internal_snapshot() {
     let (code, stdout, stderr) = run_task(&repo, &home, &state);
     assert_eq!(code, 0, "{stderr}\n{stdout}");
     let outcome: serde_json::Value = serde_json::from_str(stdout.trim()).unwrap();
-    assert_eq!(outcome["schema"], "af/task-inspection@11");
+    assert_eq!(outcome["schema"], "af/task-inspection@13");
     assert_eq!(outcome["result"]["acceptance"], "satisfied");
     assert!(outcome.get("delivery").is_none());
     assert_eq!(outcome["attempts"], 3);
@@ -241,8 +244,11 @@ fn failed_gate_is_typed_unverified_and_skips_the_evaluator() {
     let directory = tempfile::tempdir().unwrap();
     let (repo, home, state) = fixture(directory.path(), false);
     let (code, stdout, stderr) = run_task(&repo, &home, &state);
-    assert_eq!(code, 3, "{stderr}");
+    // A failed gate is `gate_failed`, never `changes_requested`, and exits 5.
+    assert_eq!(code, 5, "{stderr}");
     let outcome: serde_json::Value = serde_json::from_str(stdout.trim()).unwrap();
+    assert_eq!(outcome["state"]["outcome"], "gate_failed");
+    assert_eq!(outcome["state"]["cause"], "check_failed");
     assert_eq!(outcome["result"]["acceptance"], "unsatisfied");
     assert_eq!(verification(&outcome, &state)["outcome"], "failed");
     assert_eq!(outcome["attempts"], 2);
@@ -363,7 +369,9 @@ fn verified_task_delivery_is_local_exact_recoverable_and_inspectable() {
     assert_eq!(code, 0, "{stderr}");
     let listed: serde_json::Value = serde_json::from_str(listed.trim()).unwrap();
     assert_eq!(listed["tasks"][0]["task_id"], task_id);
-    assert_eq!(listed["tasks"][0]["outcome"], "verified");
+    assert_eq!(listed["tasks"][0]["state"]["outcome"], "verified");
+    // Once delivered, no next command is left.
+    assert!(listed["tasks"][0]["state"]["next_action"].is_null());
     assert_eq!(
         listed["tasks"][0]["delivery"]["outcome"]["kind"],
         "delivered"
@@ -385,7 +393,7 @@ fn verified_task_delivery_is_local_exact_recoverable_and_inspectable() {
     );
     assert_eq!(code, 0, "{stderr}");
     let shown: serde_json::Value = serde_json::from_str(shown.trim()).unwrap();
-    assert_eq!(shown["schema"], "af/task-inspection@11");
+    assert_eq!(shown["schema"], "af/task-inspection@13");
     assert_eq!(shown["result"]["acceptance"], "satisfied");
     assert!(shown["history"].as_array().unwrap().len() >= 8);
 }
@@ -675,7 +683,7 @@ fn delivery_refuses_unverified_and_dirty_sources_without_creating_a_target() {
     let directory = tempfile::tempdir().unwrap();
     let (repo, home, state) = fixture(directory.path(), false);
     let (code, stdout, stderr) = run_task(&repo, &home, &state);
-    assert_eq!(code, 3, "{stderr}");
+    assert_eq!(code, 5, "{stderr}");
     let outcome: serde_json::Value = serde_json::from_str(stdout.trim()).unwrap();
     let task_id = outcome["task_id"].as_str().unwrap();
     let refused = directory.path().join("refused");
@@ -819,4 +827,65 @@ fn failed_local_creation_rolls_back_only_its_owned_refs() {
     );
     let terminal = terminal_delivery(&state, task_id);
     assert_eq!(terminal, "TaskDeliveryFailed@1");
+}
+
+/// ADR-0207: without the staging rule, the generated files the Worker's run left — which the
+/// repository's `.gitignore` excludes — are left out of the sealed candidate and listed in the
+/// `af.seal-ignored/1` record its envelope references; what the Worker meant to write stays.
+#[test]
+fn generated_files_the_ignore_rules_exclude_are_left_out_of_the_candidate_unless_staged() {
+    let directory = tempfile::tempdir().unwrap();
+    let (repo, home, state) = fixture(directory.path(), true);
+    std::fs::remove_file(repo.join(".af/seal-ignore")).unwrap();
+    git(&repo, &home, &["add", "-A"]);
+    git(&repo, &home, &["commit", "-q", "-m", "no staging rule"]);
+    let (code, stdout, stderr) = run_task(&repo, &home, &state);
+    assert_eq!(code, 0, "{stderr}\n{stdout}");
+    assert!(
+        stderr.contains("seal: left out 2 generated paths the ignore rules exclude"),
+        "{stderr}"
+    );
+    let outcome: serde_json::Value = serde_json::from_str(stdout.trim()).unwrap();
+    let cas = review_store::Cas::open_existing(state.join("cas")).unwrap();
+    let candidates: Vec<serde_json::Value> = outcome["execution_records"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter_map(|entry| entry["record"]["result"]["output_id"].as_str())
+        .filter_map(|id| {
+            let output = cas.get_json(id).unwrap()["payload"].clone();
+            output["outputs"]["candidate"]["artifact_ids"][0]
+                .as_str()
+                .map(|id| cas.get_json(id).unwrap())
+        })
+        .collect();
+    assert_eq!(candidates.len(), 1, "one implementer candidate");
+    let envelope = &candidates[0];
+    let manifest = cas
+        .get_json(envelope["payload"]["manifest_id"].as_str().unwrap())
+        .unwrap();
+    let paths: Vec<&str> = manifest["entries"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|entry| entry["path"].as_str().unwrap())
+        .collect();
+    assert!(paths.contains(&"implemented.txt"), "{paths:?}");
+    assert!(
+        !paths.iter().any(|path| path.ends_with(".generated")),
+        "{paths:?}"
+    );
+    let record = envelope["input_artifacts"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter_map(|id| cas.get_json(id.as_str().unwrap()).ok())
+        .find(|value| value["schema"] == "af.seal-ignored/1")
+        .expect("the candidate references what sealing left out");
+    assert_eq!(
+        record["ignored"],
+        serde_json::json!(["50%25-off.generated", "proof.generated"])
+    );
+    assert_eq!(record["ignored_count"], 2);
+    assert_eq!(record["manifest_id"], envelope["payload"]["manifest_id"]);
 }

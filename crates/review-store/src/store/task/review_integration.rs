@@ -357,10 +357,7 @@ impl EventStore {
             ));
         }
         let execution = state.execution.as_ref().expect("active phase");
-        Ok(
-            resource_refusal(execution, state.revision.limits.deadline_unix_ms, now()?)
-                .map(str::to_owned),
-        )
+        Ok(resource_refusal(execution, state.deadline_unix_ms(), now()?).map(str::to_owned))
     }
 
     pub fn task_review_integration_evidence(
@@ -676,7 +673,7 @@ fn validate_completion(
         execution,
         registered.node(),
         report,
-        state.revision.limits.deadline_unix_ms,
+        state.deadline_unix_ms(),
         now()?,
     )?;
     validate_canonical_completion(cas, registered, report, events, evidence)
@@ -982,6 +979,7 @@ impl TaskProjection {
         if self.execution.is_none() {
             self.execution = Some(execution::TaskExecutionProjection::new(cas, self)?);
         }
+        let deadline = self.deadline_unix_ms();
         let execution = self.execution.as_mut().expect("initialized");
         match change {
             TaskChangeV1::ReviewIntegrationSelected { .. } => {
@@ -1026,13 +1024,7 @@ impl TaskProjection {
                 }
                 let report = super::report::phase_report(cas, report_id)?;
                 let checks = selected_checks(cas, active, &report)?;
-                validate_resource_recovery(
-                    execution,
-                    active.node(),
-                    &report,
-                    self.revision.limits.deadline_unix_ms,
-                    time,
-                )?;
+                validate_resource_recovery(execution, active.node(), &report, deadline, time)?;
                 if let TaskNodeOutcomeV1::Completed { output_id } = &report.nodes[0].outcome {
                     if execution.outputs.get(active.node()).map(|(id, _)| id) != Some(output_id) {
                         return Err(conflict(
@@ -1155,7 +1147,9 @@ impl EventStore {
             .and_then(|id| state.decisions.get(id))
             .map_or(u64::MAX, |d| d.valid_until);
         let valid_until = state.lease_until.min(approval_until).min(if dispatching {
-            plan.limits.deadline_unix_ms
+            plan.limits
+                .deadline_unix_ms
+                .saturating_add(state.clock_shift_ms())
         } else {
             u64::MAX
         });
@@ -1306,7 +1300,7 @@ pub(super) fn validate_handoff(
         ));
     }
     let task_events = replays.read(store, &task_run_id(&handoff.task_id)?)?;
-    let finishes:Vec<_>=task_events.iter().filter(|event| !super::is_execution_started(event)).map(super::read_task_transition).collect::<Result<Vec<_>,_>>()?.into_iter().filter(|t|matches!(&t.change,TaskChangeV1::ReviewIntegrationFinished{phase_id:p,integration_committed_event_id:Some(id),..} if p==phase_id && id==integration_committed_event_id)).collect();
+    let finishes:Vec<_>=task_events.iter().filter(|event| !super::is_beside_transitions(event)).map(super::read_task_transition).collect::<Result<Vec<_>,_>>()?.into_iter().filter(|t|matches!(&t.change,TaskChangeV1::ReviewIntegrationFinished{phase_id:p,integration_committed_event_id:Some(id),..} if p==phase_id && id==integration_committed_event_id)).collect();
     if finishes.len() != 1 {
         return Err(conflict(
             "Integrated handoff requires one protected common phase completion",

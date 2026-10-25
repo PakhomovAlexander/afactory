@@ -245,6 +245,32 @@ pub fn classify_without_result(
     strongest_native_failure(native)
 }
 
+/// The transient class of a native call that ended without a reply, when the same input may get
+/// past it after a wait (ADR-0208): a network or capacity failure, with the wait `text` names if
+/// it names one; a process that ran out of its time; or an exit 1 that wrote nothing on stdout
+/// and nothing af recognizes anywhere. Every other ending recurs, and is not retried.
+pub fn transient_ending(
+    status: &Result<std::process::ExitStatus, crate::RunnerError>,
+    kind: crate::native_failure::NativeFailureKind,
+    stdout_blank: bool,
+    text: &str,
+) -> Option<crate::native_failure::Transient> {
+    use crate::native_failure::{NativeFailureKind, Transient, TransientClass};
+    if let Some(class) = kind.transient() {
+        return Some(Transient::new(class).with_retry_after_in(text));
+    }
+    if kind != NativeFailureKind::Unknown {
+        return None;
+    }
+    match status {
+        Err(crate::RunnerError::TimedOut { .. }) => Some(Transient::new(TransientClass::Timeout)),
+        Ok(status) if status.code() == Some(1) && stdout_blank => {
+            Some(Transient::new(TransientClass::ExitedWithoutOutput))
+        }
+        _ => None,
+    }
+}
+
 /// Of several native classifications, an authentication one before any other recognized one,
 /// else [`NativeFailureKind::Unknown`](crate::native_failure::NativeFailureKind::Unknown).
 pub fn strongest_native_failure(
@@ -439,6 +465,53 @@ pub fn startup_failure(
 mod tests {
     use super::*;
     use crate::native_failure::NativeFailureKind;
+
+    #[test]
+    fn only_network_capacity_timeouts_and_a_silent_exit_1_are_transient() {
+        use crate::native_failure::TransientClass;
+        use std::os::unix::process::ExitStatusExt;
+        let exit = |code: i32| Ok(std::process::ExitStatus::from_raw(code << 8));
+        let class = |status, kind, blank| {
+            transient_ending(&status, kind, blank, "Retry-After: 7").map(|t| t.class)
+        };
+        assert_eq!(
+            class(exit(1), NativeFailureKind::Capacity, false),
+            Some(TransientClass::Capacity)
+        );
+        assert_eq!(
+            transient_ending(
+                &exit(1),
+                NativeFailureKind::Network,
+                false,
+                "Retry-After: 7"
+            )
+            .unwrap()
+            .retry_after,
+            Some(std::time::Duration::from_secs(7))
+        );
+        assert_eq!(
+            class(
+                Err(crate::RunnerError::TimedOut { after_ms: 41182 }),
+                NativeFailureKind::Unknown,
+                true
+            ),
+            Some(TransientClass::Timeout)
+        );
+        assert_eq!(
+            class(exit(1), NativeFailureKind::Unknown, true),
+            Some(TransientClass::ExitedWithoutOutput)
+        );
+        assert_eq!(class(exit(1), NativeFailureKind::Unknown, false), None);
+        assert_eq!(class(exit(2), NativeFailureKind::Unknown, true), None);
+        for kind in [
+            NativeFailureKind::Quota,
+            NativeFailureKind::AuthExpired,
+            NativeFailureKind::ModelRefused,
+            NativeFailureKind::UnsupportedInvocation,
+        ] {
+            assert_eq!(class(exit(1), kind, true), None, "{kind:?}");
+        }
+    }
 
     /// The shape Claude Code's commander help prints (abridged from 2.1.299 on 2026-10-14).
     const COMMANDER_HELP: &str = "\

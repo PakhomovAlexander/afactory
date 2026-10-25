@@ -29,8 +29,9 @@ use std::ffi::OsStr;
 use std::path::{Path, PathBuf};
 
 use review_core::project::{
-    ProjectRegisteredPayloadV1, SurveyFailedPayloadV1, SurveyRecordedPayloadV1, WorkspaceOriginV1,
-    WorkspaceRegisteredPayloadV1, WorkspaceRemovedPayloadV1,
+    ProjectRegisteredPayloadV1, SurveyFailedPayloadV1, SurveyRecordedPayloadV1,
+    WorkspaceDeliveredPayloadV1, WorkspaceOriginV1, WorkspaceRegisteredPayloadV1,
+    WorkspaceRemovedPayloadV1,
 };
 use review_core::{EventType, RunEvent};
 use review_store::{Cas, EventStore, NewEvent};
@@ -185,6 +186,19 @@ pub(crate) struct Registered {
     pub(crate) label: String,
     pub(crate) origin: WorkspaceOriginV1,
     pub(crate) registered_unix_ms: u64,
+    /// For a `delivered` Workspace, the Task it was made from as its `WorkspaceDelivered@1`
+    /// records it: data apart from the label, which carries a suffix when the Task ID was taken.
+    pub(crate) source_task: Option<String>,
+}
+
+impl Registered {
+    /// The Task a `delivered` Workspace was made from: its recorded source Task, else its label,
+    /// which is the Task ID unless that was taken (a registration whose `WorkspaceDelivered@1`
+    /// never landed, after a crash between the two appends). `None` for any other origin.
+    pub(crate) fn delivered_task(&self) -> Option<&str> {
+        (self.origin == WorkspaceOriginV1::Delivered)
+            .then(|| self.source_task.as_deref().unwrap_or(&self.label))
+    }
 }
 
 /// The fold of a Project Store's log.
@@ -227,8 +241,26 @@ impl Log {
                             label: payload.label,
                             origin: payload.origin,
                             registered_unix_ms: payload.registered_unix_ms.get(),
+                            source_task: None,
                         },
                     );
+                }
+                EventType::WorkspaceDeliveredV1 => {
+                    let payload: WorkspaceDeliveredPayloadV1 =
+                        serde_json::from_value(event.payload.clone())
+                            .map_err(|error| format!("WorkspaceDelivered@1: {error}"))?;
+                    let workspace = log
+                        .workspaces
+                        .get_mut(&payload.workspace_id)
+                        .filter(|workspace| workspace.origin == WorkspaceOriginV1::Delivered)
+                        .ok_or_else(|| {
+                            format!(
+                                "WorkspaceDelivered@1 names {}, which is no registered delivered \
+                                 Workspace",
+                                payload.workspace_id
+                            )
+                        })?;
+                    workspace.source_task = Some(payload.task_id);
                 }
                 EventType::WorkspaceRemovedV1 => {
                     let payload: WorkspaceRemovedPayloadV1 =
@@ -579,7 +611,25 @@ impl ProjectStore {
             label: payload.label,
             origin,
             registered_unix_ms: payload.registered_unix_ms.get(),
+            source_task: None,
         }))
+    }
+
+    /// Record the Task a `delivered` Workspace was made from, right after its registration.
+    pub(crate) fn record_delivered(
+        &mut self,
+        workspace_id: &str,
+        task_id: &str,
+    ) -> Result<(), String> {
+        let payload = WorkspaceDeliveredPayloadV1 {
+            workspace_id: workspace_id.to_string(),
+            task_id: task_id.to_string(),
+        };
+        payload.validate()?;
+        self.append(
+            EventType::WorkspaceDeliveredV1,
+            serde_json::to_value(&payload).map_err(|error| error.to_string())?,
+        )
     }
 
     /// Unregister one Workspace: its event, then its paths.
@@ -823,7 +873,9 @@ pub(crate) fn register_lazily(lazy: &Lazy) {
 }
 
 /// Register the worktree `af task deliver` created as a Workspace of origin `delivered`,
-/// labelled by the Task ID. Best effort, after delivery succeeded: the receipt is already out.
+/// labelled by the Task ID (suffixed when that label is taken), and record the Task ID as data
+/// in its `WorkspaceDelivered@1`, so the Storage Budget keeps that Task whatever the label. Best
+/// effort, after delivery succeeded: the receipt is already out.
 pub(crate) fn register_delivered(worktree: &Path, task_id: &str) {
     let outcome = (|| -> Result<(), String> {
         let Located::Checkout(checkout) = locate(worktree)? else {
@@ -837,14 +889,19 @@ pub(crate) fn register_delivered(worktree: &Path, task_id: &str) {
             bindings: None,
             tasks: None,
         };
-        register(
+        let (mut store, registration) = register(
             &checkout,
             WorkspaceOriginV1::Delivered,
             task_id,
             false,
             paths,
-        )
-        .map(|_| ())
+        )?;
+        match registration {
+            Registration::New(workspace) => {
+                store.record_delivered(&workspace.workspace_id, task_id)
+            }
+            Registration::Existing(_) => Ok(()),
+        }
     })();
     if let Err(error) = outcome {
         eprintln!("af: the delivered worktree was not registered as a Workspace: {error}");
@@ -924,6 +981,19 @@ pub(crate) fn resolve_task_workspace(
             }
             None
         }
+        // A continuation plans a new Task, so the Workspace's bindings come with its Store.
+        T::Run {
+            inspect, bindings, ..
+        } => {
+            if let Some(label) = inspect.workspace.take() {
+                let selected = select(&inspect.repo, &label)?;
+                inspect.state = Some(selected.state);
+                if bindings.is_none() {
+                    *bindings = selected.bindings;
+                }
+            }
+            None
+        }
         T::Deliver {
             repo,
             state,
@@ -935,14 +1005,19 @@ pub(crate) fn resolve_task_workspace(
         | T::Output { inspect, .. }
         | T::Approve { inspect, .. }
         | T::Reject { inspect, .. }
-        | T::Run { inspect, .. }
         | T::Explain { inspect, .. }
         | T::Export { inspect, .. }
         | T::ObserveAdoption { inspect, .. }
         | T::List { inspect, .. }
         | T::Gc { inspect, .. }
         | T::Show { inspect, .. }
-        | T::Report { inspect, .. } => Some((
+        | T::Report { inspect, .. }
+        | T::Wait { inspect, .. }
+        | T::Status { inspect, .. }
+        | T::Cancel { inspect, .. }
+        | T::Findings { inspect, .. }
+        | T::Materialize { inspect, .. }
+        | T::Diff { inspect, .. } => Some((
             inspect.repo.as_path(),
             &mut inspect.workspace,
             &mut inspect.state,

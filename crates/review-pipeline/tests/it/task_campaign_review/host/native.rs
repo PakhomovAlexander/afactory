@@ -67,6 +67,7 @@ impl WorkerModelAdapter for Model {
             usage.input_tokens = Some((u128::from(u64::MAX) + 20).into());
         }
         ModelWorkerReturn {
+            notes: Default::default(),
             usage_observation: None,
             message: Ok(message.as_bytes().to_vec()),
             usage: Some(usage),
@@ -321,6 +322,8 @@ fn check_native_provider_reuse(provider_only: bool) {
                     1
                 }
             );
+            // A refused admission is decided before any other node starts, so the Gate never
+            // begins its Attempt for a reviewer that cannot run (ADR-0208).
             assert_eq!(
                 execution.budget.begun_attempts(),
                 if retry {
@@ -328,7 +331,7 @@ fn check_native_provider_reuse(provider_only: bool) {
                 } else if admitted {
                     3
                 } else {
-                    2
+                    1
                 }
             );
         }
@@ -1116,6 +1119,7 @@ fn incomplete_billing_on_captured_reviewers_never_publishes_a_selected_result() 
                 11
             });
             ModelWorkerReturn {
+                notes: Default::default(),
                 usage_observation: (call > 0).then(|| {
                     review_core::task::usage::TaskUsageObservationV1 {
                         reported_usage: Some(usage.clone()),
@@ -1221,6 +1225,7 @@ fn a_reviewer_without_a_usage_report_is_selected_at_zero_with_its_usage_unknown(
         ) -> ModelWorkerReturn {
             if self.0.fetch_add(1, Ordering::SeqCst) == 0 {
                 return ModelWorkerReturn {
+                    notes: Default::default(),
                     usage_observation: None,
                     message: Ok(b"OK".to_vec()),
                     usage: Some(review_core::task::usage::TaskTokenUsageV3::charge_only(1)),
@@ -1230,6 +1235,7 @@ fn a_reviewer_without_a_usage_report_is_selected_at_zero_with_its_usage_unknown(
             }
             let message = r#"{"findings":[],"benchmark_demands":[],"dispositions":[]}"#;
             ModelWorkerReturn {
+                notes: Default::default(),
                 usage_observation: None,
                 message: Ok(message.as_bytes().to_vec()),
                 usage: None,

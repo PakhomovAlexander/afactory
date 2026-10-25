@@ -31,7 +31,7 @@ fn af(repo: &Path, state: &Path, extra: &[&str]) -> Value {
 fn valid_inspection(value: &Value) {
     static SCHEMA: std::sync::OnceLock<jsonschema::Validator> = std::sync::OnceLock::new();
     schemas::valid(
-        SCHEMA.get_or_init(|| schemas::validator("task-inspection-v11.json")),
+        SCHEMA.get_or_init(|| schemas::validator("task-inspection-v13.json")),
         value,
     );
 }
@@ -1204,7 +1204,7 @@ fn light_cache_candidate_measures_real_latency_and_grounds_later_adoption_eviden
         state,
         &["task", "show", task, "--repo", delivered.to_str().unwrap()],
     );
-    assert_eq!(adoption_projection["schema"], "af/task-inspection@11");
+    assert_eq!(adoption_projection["schema"], "af/task-inspection@13");
     valid_inspection(&adoption_projection);
     let projected = adoption_projection["adoption_observations"]
         .as_array()
@@ -1659,7 +1659,7 @@ fn experimental_cli_signs_registers_executes_and_imports_actual_child_receipt() 
     }
 
     let waiting = af(&repo, &state, &["--experiment", "--execute"]);
-    assert_eq!(waiting["schema"], "af/task-inspection@11");
+    assert_eq!(waiting["schema"], "af/task-inspection@13");
     valid_inspection(&waiting);
     assert_eq!(waiting["attempts"], 0);
     assert_eq!(waiting["phase"]["reason"], "needs_plan_review");
@@ -2072,7 +2072,7 @@ fn actual_code_task_runtime_evidence_round_trips_through_native_af_capture() {
         String::from_utf8_lossy(&task.stderr)
     );
     let receipt: Value = serde_json::from_slice(&task.stdout).unwrap();
-    assert_eq!(receipt["schema"], "af/task-inspection@11");
+    assert_eq!(receipt["schema"], "af/task-inspection@13");
     valid_inspection(&receipt);
     let runtime = receipt["runtime_observations"].as_array().unwrap();
     assert!(runtime.iter().any(|entry| {
@@ -2136,5 +2136,145 @@ fn actual_code_task_runtime_evidence_round_trips_through_native_af_capture() {
             .as_array()
             .is_some_and(|fields| fields.iter().any(|field| field == "elapsed_time")),
         "measured Attempt/check time was downgraded to missing"
+    );
+}
+
+/// Issue #158: `af self optimize --execute` runs under the interrupt watcher like every other
+/// Task-running command. Held reading its source configuration (a FIFO no one writes yet), a
+/// first SIGINT is taken by the watcher, which says so and lets the command stop on its own;
+/// without the watcher the signal would end af at once, saying nothing. Bounded throughout.
+#[test]
+fn self_optimize_execute_runs_under_the_interrupt_watcher() {
+    use std::io::Read as _;
+    use std::os::unix::fs::OpenOptionsExt as _;
+    use std::os::unix::process::ExitStatusExt as _;
+    use std::time::{Duration, Instant};
+
+    let temp = tempfile::tempdir().unwrap();
+    let repo = temp.path().join("repo");
+    std::fs::create_dir_all(&repo).unwrap();
+    for args in [
+        &["init", "-q"][..],
+        &[
+            "-c",
+            "user.email=fixture@example.invalid",
+            "-c",
+            "user.name=fixture",
+            "commit",
+            "-q",
+            "--allow-empty",
+            "-m",
+            "fixture",
+        ],
+    ] {
+        assert!(
+            std::process::Command::new("git")
+                .args(args)
+                .current_dir(&repo)
+                .env("GIT_CONFIG_GLOBAL", "/dev/null")
+                .status()
+                .unwrap()
+                .success()
+        );
+    }
+    let sources = temp.path().join("sources.toml");
+    assert!(
+        std::process::Command::new("mkfifo")
+            .arg(&sources)
+            .status()
+            .unwrap()
+            .success()
+    );
+    let mut child = crate::common::af()
+        .args(["self", "optimize", "--execute", "--repo"])
+        .arg(&repo)
+        .arg("--history-config")
+        .arg(&sources)
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::piped())
+        .spawn()
+        .unwrap();
+    let mut stderr = child.stderr.take().unwrap();
+    let said = std::sync::Arc::new(std::sync::Mutex::new(String::new()));
+    let reader = {
+        let said = said.clone();
+        std::thread::spawn(move || {
+            let mut chunk = [0_u8; 1024];
+            while let Ok(read) = stderr.read(&mut chunk) {
+                if read == 0 {
+                    break;
+                }
+                said.lock()
+                    .unwrap()
+                    .push_str(&String::from_utf8_lossy(&chunk[..read]));
+            }
+        })
+    };
+    let kill = |child: &mut std::process::Child| {
+        let _ = child.kill();
+        let _ = child.wait();
+    };
+    // af holds the FIFO open for reading once it reads its sources: past the watcher's start.
+    let until = Instant::now() + Duration::from_secs(60);
+    let writer = loop {
+        match std::fs::OpenOptions::new()
+            .write(true)
+            .custom_flags(nix::fcntl::OFlag::O_NONBLOCK.bits())
+            .open(&sources)
+        {
+            Ok(writer) => break writer,
+            Err(_) if Instant::now() < until && child.try_wait().unwrap().is_none() => {
+                std::thread::sleep(Duration::from_millis(20));
+            }
+            Err(error) => {
+                kill(&mut child);
+                panic!(
+                    "af never read its sources ({error}): {}",
+                    said.lock().unwrap()
+                );
+            }
+        }
+    };
+    let pid = nix::unistd::Pid::from_raw(i32::try_from(child.id()).unwrap());
+    nix::sys::signal::kill(pid, nix::sys::signal::Signal::SIGINT).unwrap();
+    let until = Instant::now() + Duration::from_secs(30);
+    while !said
+        .lock()
+        .unwrap()
+        .contains("af: SIGINT received; stopping Worker processes")
+    {
+        if Instant::now() > until || child.try_wait().unwrap().is_some() {
+            drop(writer);
+            kill(&mut child);
+            panic!(
+                "the interrupt watcher never took the signal: {}",
+                said.lock().unwrap()
+            );
+        }
+        std::thread::sleep(Duration::from_millis(20));
+    }
+    // The read ends; the command stops on its own, and af ends by the signal it received.
+    drop(writer);
+    let until = Instant::now() + Duration::from_secs(30);
+    let status = loop {
+        if let Some(status) = child.try_wait().unwrap() {
+            break status;
+        }
+        if Instant::now() > until {
+            kill(&mut child);
+            panic!(
+                "af did not end after its interrupt: {}",
+                said.lock().unwrap()
+            );
+        }
+        std::thread::sleep(Duration::from_millis(20));
+    };
+    reader.join().unwrap();
+    assert!(
+        status.signal() == Some(nix::sys::signal::Signal::SIGINT as i32)
+            || status.code() == Some(130),
+        "{status:?}: {}",
+        said.lock().unwrap()
     );
 }

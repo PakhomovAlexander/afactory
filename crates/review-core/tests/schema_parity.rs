@@ -30,7 +30,37 @@ use review_core::{
 };
 use serde_json::{Value, json};
 
-const SCHEMAS: [&str; 189] = [
+const SCHEMAS: [&str; 226] = [
+    "error-v1.json",
+    "task-findings-v1.json",
+    "task-materialized-v1.json",
+    "task-diff-v1.json",
+    "task-status-v1.json",
+    "task-detached-v2.json",
+    "task-cancelled-v1.json",
+    "task-run-process-v1.json",
+    "task-cancel-request-v1.json",
+    "task-delivery-proof-v1.json",
+    "task-base-v1.json",
+    "diff-subject-v1.json",
+    "task-review-findings-v1.json",
+    "task-read-first-v1.json",
+    "task-check-report-v1.json",
+    "seal-ignored-v1.json",
+    "task-check-layer-v1.json",
+    "warm-sources-v1.json",
+    "warm-holder-v1.json",
+    "warm-eviction-v1.json",
+    "task-gate-retried-v1.json",
+    "task-state-v1.json",
+    "task-selection-v3.json",
+    "pipeline-selection-v1.json",
+    "task-collected-inspection-v2.json",
+    "task-list-v3.json",
+    "task-checks-v2.json",
+    "provider-detect-v3.json",
+    "store-writer-v1.json",
+    "doctor-v2.json",
     "project-registered-v1.json",
     "project-brief-v1.json",
     "project-survey-pin-v1.json",
@@ -44,9 +74,10 @@ const SCHEMAS: [&str; 189] = [
     "project-history-v2.json",
     "project-workspace-registered-v1.json",
     "project-workspace-removed-v1.json",
+    "project-workspace-delivered-v1.json",
     "project-v1.json",
     "project-workspaces-v1.json",
-    "task-report-v1.json",
+    "task-report-v2.json",
     "provider-models-v1.json",
     "code-task-policy-v1.json",
     "remote-check-evidence-v1.json",
@@ -54,7 +85,8 @@ const SCHEMAS: [&str; 189] = [
     "measurement-comparison-v1.json",
     "task-input-bindings-v1.json",
     "task-source-origin-v2.json",
-    "provider-status-v2.json",
+    "provider-status-v3.json",
+    "provider-disables-v1.json",
     "provider-setup-v1.json",
     "build-cache-v1.json",
     "worker-notes-v1.json",
@@ -72,7 +104,7 @@ const SCHEMAS: [&str; 189] = [
     "optimization-adoption-task-evidence-v1.json",
     "optimization-evaluation-v1.json",
     "experimental-slot-v2.json",
-    "task-inspection-v11.json",
+    "task-inspection-v13.json",
     "experiment-execution-plan-v1.json",
     "task-runtime-evidence-v1.json",
     "optimization-sources-v1.json",
@@ -99,7 +131,8 @@ const SCHEMAS: [&str; 189] = [
     "task-file-v1.json",
     "task-catalog-v2.json",
     "compiled-task-v1.json",
-    "task-list-entry-v2.json",
+    "compiled-task-v2.json",
+    "task-list-entry-v3.json",
     "task-owned-child-set-v1.json",
     "task-token-usage-v3.json",
     "task-usage-observation-v1.json",
@@ -111,7 +144,7 @@ const SCHEMAS: [&str; 189] = [
     "issue-input-v1.json",
     "document-sources-v1.json",
     "document-draft-v1.json",
-    "document-v1.json",
+    "document-v2.json",
     "document-check-receipt-v1.json",
     "document-evaluation-v1.json",
     "document-verification-v1.json",
@@ -119,6 +152,7 @@ const SCHEMAS: [&str; 189] = [
     "document-draft-v2.json",
     "report-sources-v1.json",
     "report-check-receipt-v1.json",
+    "report-draft-validation-v1.json",
     "report-evaluation-v1.json",
     "report-verification-v1.json",
     "catalog-contract-fixtures-v1.json",
@@ -156,6 +190,7 @@ const SCHEMAS: [&str; 189] = [
     "task-worker-reply-v1.json",
     "task-worker-request-v1.json",
     "task-retry-feedback-v1.json",
+    "worker-reply-reask-v1.json",
     "artifact-envelope-v1.json",
     "task-contracts-v1.json",
     "task-transition-v5.json",
@@ -163,6 +198,7 @@ const SCHEMAS: [&str; 189] = [
     "task-gate-cleanup-v1.json",
     "task-storage-sweep-v2.json",
     "task-execution-started-v1.json",
+    "task-provider-event-v1.json",
     "task-review-check-sequence-policy-v1.json",
     "task-review-integration-phase-v1.json",
     "legacy-review-task-policy-v4.json",
@@ -178,6 +214,7 @@ const SCHEMAS: [&str; 189] = [
     "task-phase-v1.json",
     "pipeline-definition-v1.json",
     "pipeline-definition-v2.json",
+    "pipeline-definition-v3.json",
     "execution-plan-v1.json",
     "plan-decision-v1.json",
     "review-history-v1.json",
@@ -2378,10 +2415,14 @@ fn finding_set_roundtrips_as_an_exact_reducer_projection() {
     }
 }
 
+#[path = "schema_parity/task_agent_loop.rs"]
+mod task_agent_loop;
 #[path = "schema_parity/task_contracts.rs"]
 mod task_contracts;
 #[path = "schema_parity/task_reports.rs"]
 mod task_reports;
+#[path = "schema_parity/task_review_findings.rs"]
+mod task_review_findings;
 
 #[test]
 fn task_lifecycle_events_have_closed_versioned_payloads() {
@@ -3806,6 +3847,10 @@ fn retired_warm_set_and_session_contracts_are_refused() {
     assert!(validate_event_payload(EventType::WarmSetSelectedV2, &with_session).is_err());
 }
 
+#[path = "schema_parity/check_layer.rs"]
+mod check_layer;
+#[path = "schema_parity/task_check_report.rs"]
+mod task_check_report;
 #[path = "schema_parity/task_usage.rs"]
 mod task_usage;
 #[path = "schema_parity/task_usage_observation.rs"]
@@ -4089,9 +4134,13 @@ mod task_review_integration;
 #[path = "schema_parity/review_outcome.rs"]
 mod review_outcome;
 
+#[path = "schema_parity/doctor.rs"]
+mod doctor;
 #[path = "schema_parity/provider_doctor.rs"]
 mod provider_doctor;
 
+#[path = "schema_parity/provider_detect.rs"]
+mod provider_detect;
 #[path = "schema_parity/provider_models.rs"]
 mod provider_models;
 #[path = "schema_parity/provider_onboarding.rs"]
@@ -4099,6 +4148,8 @@ mod provider_onboarding;
 
 #[path = "schema_parity/task_recording.rs"]
 mod task_recording;
+#[path = "schema_parity/task_state.rs"]
+mod task_state;
 
 #[path = "schema_parity/project.rs"]
 mod project;
@@ -4507,3 +4558,200 @@ fn measurements_and_comparisons_match_their_schemas_in_both_directions() {
 mod project_brief;
 #[path = "schema_parity/project_collection.rs"]
 mod project_collection;
+#[path = "schema_parity/store_writer.rs"]
+mod store_writer;
+
+/// ADR-0208 and ADR-0145: `af/TaskProviderEvent@1` is its own event kind of the Task log,
+/// `TaskProviderEvent@1`, naming its lease, Attempt and node and referencing no artifact. Every
+/// event kind it carries is accepted by the schema and the typed contract alike, and the same
+/// forgeries are refused by both.
+#[test]
+fn a_provider_event_is_its_own_task_log_event() {
+    use review_core::task::provider_event::*;
+    let digest = |c: char| format!("sha256:{}", c.to_string().repeat(64));
+    let events = [
+        ProviderEventV1::RetryWait {
+            class: TransientClassV1::Capacity,
+            retry: 2,
+            max_retries: 3,
+            wait_ms: 120_000,
+            retry_after: false,
+        },
+        ProviderEventV1::ReplyReasked {
+            raw_reply_id: digest('a'),
+            reask_id: digest('b'),
+        },
+        ProviderEventV1::IdentityReprobed {
+            cause: ProbeSilenceV1::TimedOut,
+            probe: 2,
+        },
+        ProviderEventV1::IdentityRefreshed {
+            provider: "claude-main".into(),
+            previous_version: "2.1.299 (Claude Code)".into(),
+            current_version: "2.1.300 (Claude Code)".into(),
+        },
+        ProviderEventV1::AdmissionReprobed {
+            category: Some("cyber".into()),
+        },
+        ProviderEventV1::AdmissionReprobed { category: None },
+    ];
+    for kind in events {
+        let event = TaskProviderEventV1::new(
+            "cli-4242",
+            2,
+            100,
+            "01jd8m4qz9k7v3n2p6r8t0w200",
+            "root.nodes.review.nodes.bugs",
+            kind,
+        );
+        event.validate().unwrap();
+        let value = serde_json::to_value(&event).unwrap();
+        assert_eq!(value["schema"], TASK_PROVIDER_EVENT_V1);
+        assert_valid("task-provider-event-v1.json", &value);
+        review_core::event::validate_event_payload(EventType::TaskProviderEventV1, &value).unwrap();
+        let wire = serde_json::to_value(RunEvent {
+            event_id: "a".repeat(26),
+            run_id: "task:4242".into(),
+            sequence: 3,
+            event_type: EventType::TaskProviderEventV1,
+            occurred_at: "2026-10-22T00:00:00Z".into(),
+            node_id: None,
+            attempt_id: None,
+            causation_id: None,
+            correlation_id: None,
+            artifact_refs: Vec::new(),
+            payload: value.clone(),
+        })
+        .unwrap();
+        assert_eq!(wire["type"], "TaskProviderEvent@1");
+        assert_valid("run-event-v1.json", &wire);
+    }
+    let base = serde_json::to_value(TaskProviderEventV1::new(
+        "cli-4242",
+        2,
+        100,
+        "01jd8m4qz9k7v3n2p6r8t0w200",
+        "root.nodes.review",
+        ProviderEventV1::RetryWait {
+            class: TransientClassV1::Network,
+            retry: 1,
+            max_retries: 3,
+            wait_ms: 60_000,
+            retry_after: false,
+        },
+    ))
+    .unwrap();
+    for (why, pointer, forged) in [
+        ("schema", "/schema", json!("af/TaskProviderEvent@2")),
+        ("zero epoch", "/epoch", json!(0)),
+        ("attempt", "/attempt_id", json!("short")),
+        ("node", "/node", json!("root..review")),
+        ("class", "/event/class", json!("quota")),
+        ("retry zero", "/event/retry", json!(0)),
+        ("retry above three", "/event/retry", json!(4)),
+        ("zero wait", "/event/wait_ms", json!(0)),
+        ("unknown kind", "/event/kind", json!("gave_up")),
+    ] {
+        let mut value = base.clone();
+        *value.pointer_mut(pointer).unwrap() = forged;
+        assert_invalid("task-provider-event-v1.json", &value, why);
+        assert!(
+            review_core::event::validate_event_payload(EventType::TaskProviderEventV1, &value)
+                .is_err(),
+            "{why}"
+        );
+    }
+    let mut extra = base.clone();
+    extra["event"]["note"] = json!("free text");
+    assert_invalid("task-provider-event-v1.json", &extra, "unknown field");
+    assert!(
+        review_core::event::validate_event_payload(EventType::TaskProviderEventV1, &extra).is_err()
+    );
+}
+
+/// ADR-0208: the re-ask a model Worker receives for a typed reply that did not parse, and the
+/// draft validation a report author's retry feedback carries, are versioned closed shapes: the
+/// schemas and the typed contracts accept and refuse the same values.
+#[test]
+fn a_reply_reask_and_a_draft_validation_are_closed_versioned_shapes() {
+    use review_core::task::feedback::{WORKER_REPLY_REASK_V1, WorkerReplyReaskV1};
+    use review_core::task::pipeline::ReceiptOutcomeV1;
+    use review_core::task::report_task::*;
+    let reask = WorkerReplyReaskV1 {
+        schema: WORKER_REPLY_REASK_V1.into(),
+        instruction: "Return the reply once more.".into(),
+        error: "Invalid typed Worker reply: expected `,` or `]` at line 1 column 1042".into(),
+        line: Some(1),
+        column: Some(1042),
+        excerpt: "...\"title\":\"x\" \"body\"...".into(),
+        raw_reply_id: format!("sha256:{}", "a".repeat(64)),
+    };
+    reask.validate().unwrap();
+    let value = serde_json::to_value(&reask).unwrap();
+    assert_valid("worker-reply-reask-v1.json", &value);
+    for (why, pointer, forged) in [
+        ("schema", "/schema", json!("af/WorkerReplyReask@2")),
+        ("blank error", "/error", json!("  ")),
+        ("line zero", "/line", json!(0)),
+        ("digest", "/raw_reply_id", json!("sha256:short")),
+        ("long excerpt", "/excerpt", json!("x".repeat(513))),
+    ] {
+        let mut invalid = value.clone();
+        *invalid.pointer_mut(pointer).unwrap() = forged;
+        assert_invalid("worker-reply-reask-v1.json", &invalid, why);
+        let typed: Result<WorkerReplyReaskV1, _> = serde_json::from_value(invalid);
+        assert!(
+            typed.is_err() || typed.unwrap().validate().is_err(),
+            "{why}"
+        );
+    }
+
+    let validation = ReportDraftValidationV1 {
+        schema: REPORT_DRAFT_VALIDATION_V1.into(),
+        policy: ReportDraftPolicyV1 {
+            max_document_bytes: 65536,
+            required_sections: ["Findings".to_string()].into(),
+            require_citations: false,
+            require_repository_citations: true,
+        },
+        checks: [
+            ("one_draft".to_string(), ReceiptOutcomeV1::Passed),
+            ("required_sections".to_string(), ReceiptOutcomeV1::Failed),
+        ]
+        .into(),
+        failures: vec!["add a section headed exactly `Findings`".into()],
+        outcome: ReceiptOutcomeV1::Failed,
+    };
+    validation.validate().unwrap();
+    let value = serde_json::to_value(&validation).unwrap();
+    assert_valid("report-draft-validation-v1.json", &value);
+    for (why, pointer, forged) in [
+        ("schema", "/schema", json!("af/ReportDraftValidation@2")),
+        ("no sections", "/policy/required_sections", json!([])),
+        ("size bound", "/policy/max_document_bytes", json!(0)),
+        ("outcome", "/outcome", json!("inconclusive")),
+        ("check name", "/checks", json!({"-bad": "passed"})),
+    ] {
+        let mut invalid = value.clone();
+        *invalid.pointer_mut(pointer).unwrap() = forged;
+        assert_invalid("report-draft-validation-v1.json", &invalid, why);
+        let typed: Result<ReportDraftValidationV1, _> = serde_json::from_value(invalid);
+        assert!(
+            typed.is_err() || typed.unwrap().validate().is_err(),
+            "{why}"
+        );
+    }
+    // A failed check without its failure line contradicts itself in Rust; the outcome must follow.
+    let mut silent = validation.clone();
+    silent.failures.clear();
+    assert!(silent.validate().is_err());
+    let mut passed = validation;
+    passed.outcome = ReceiptOutcomeV1::Passed;
+    assert!(passed.validate().is_err());
+}
+
+#[path = "schema_parity/recovery_allowance.rs"]
+mod recovery_allowance;
+
+#[path = "schema_parity/error_document.rs"]
+mod error_document;

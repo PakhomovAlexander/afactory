@@ -11,9 +11,26 @@ pub const PROBE_INPUT: &[u8] = b"This is a Provider admission check by the af re
 it only verifies that this account can run the bound model. No file needs to be read and no \
 tool needs to be used. Reply with exactly: OK\n";
 
+/// The admission probe sent once more, in other words, when the bound model's safety
+/// classifier refused [`PROBE_INPUT`] itself (ADR-0208): a refusal of a 196-byte probe says
+/// nothing about the account, so the Task is not lost to it. Its expected reply is `OK` too.
+pub const PROBE_INPUT_ALTERNATE: &[u8] = b"Automated readiness check from af, a developer \
+tool, before a coding task starts: confirm this session can answer. Nothing needs to be read, \
+written or run. Answer with the single word: OK\n";
+
 #[cfg(test)]
 mod tests {
-    use super::PROBE_INPUT;
+    use super::{PROBE_INPUT, PROBE_INPUT_ALTERNATE};
+
+    #[test]
+    fn the_alternate_probe_is_one_other_line_that_asks_for_ok() {
+        let text = std::str::from_utf8(PROBE_INPUT_ALTERNATE).unwrap();
+        assert!(text.is_ascii());
+        assert_eq!(text.matches('\n').count(), 1);
+        assert!(text.ends_with(": OK\n"));
+        assert!(!text.contains("  "));
+        assert_ne!(PROBE_INPUT_ALTERNATE, PROBE_INPUT);
+    }
 
     #[test]
     fn the_probe_is_one_line_that_states_its_purpose_and_asks_for_ok() {

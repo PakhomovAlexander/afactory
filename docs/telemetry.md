@@ -847,8 +847,8 @@ document
 ## Telemetry in the Storage Budget
 
 Every byte of every regular file beneath every registered telemetry directory is counted once in
-`af storage` as the kind `telemetry` (`af/storage@4`,
-[`schemas/storage-v4.json`](../schemas/storage-v4.json)), whatever the current level or `dir`,
+`af storage` as the kind `telemetry` (`af/storage@5`,
+[`schemas/storage-v5.json`](../schemas/storage-v5.json)), whatever the current level or `dir`,
 Telemetry `off` included, by the rule every kind is measured by — the allocated bytes of regular
 files, a hard-linked file once, directories and links nothing (ADR-0159 clause 13):
 
@@ -1033,7 +1033,8 @@ SHA-256, the `af.config.text.digest` every level records, as its `source_digest`
   positions the schema of an artifact type `af` owns declares (`af/SourceTree@1`,
   `af/TaskCheckReceipt@1`, `af/TaskRetryFeedback@1`, `af/TaskReviewAssignment@1`,
   `af/TaskReviewSubject@2`, `af/ReviewHistory@1`, `af/TaskRepairContext@1`,
-  `af/DocumentContext@1`, `af/WorkerNotes@1`); every other payload — the Task's requirements
+  `af/DocumentContext@1`, `af/WorkerNotes@1`, `af/WorkerReplyReask@1`,
+  `af/ReportDraftValidation@1`); every other payload — the Task's requirements
   (`af/Requirements@1`, its `specification` included), another Worker's output — is untrusted
   JSON, whatever its members are named (`api_token_id`) or its values look like. In a Store
   payload and the manifest the typed positions are the members named `id`, `*_id`, `digest`,

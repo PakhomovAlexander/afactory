@@ -29,6 +29,8 @@ fn reference(node: &str, port: &str) -> ValueRefV1 {
     }
 }
 fn configure(repo: &Path, case: &str) {
+    // Eleven Attempts under one Task: none of them is about a deadline (ADR-0114).
+    task_cli::load_safe_walls(repo);
     let packages = repo.join(".af/task-packages/fixture");
     let path = packages.join("review/pipeline.toml");
     let mut review: PipelineDefinitionV1 = read(&path);
@@ -189,7 +191,7 @@ fn configure(repo: &Path, case: &str) {
     value["strategy"] = json!("heavy");
     value["limits"]["max_attempts"] = json!(11);
     value["limits"]["verification"]["attempts"] = json!(9);
-    value["limits"]["verification"]["wall_ms"] = json!(45000);
+    task_cli::load_safe_limits(&mut value["limits"]);
     std::fs::write(ticket, serde_json::to_vec_pretty(&value).unwrap()).unwrap();
     for args in [
         ["add", "-A"].as_slice(),
@@ -216,6 +218,10 @@ fn full_s2_review_retains_original_round_and_consumes_independent_fix_receipts()
     assert_eq!(plan["attempts"], 0);
     let (code, result) = run(&repo, &state, &["task", "run", "--execute", "repair-cli"]);
     assert_eq!(code, 0, "{result:#}");
+    assert!(
+        result.get("unknown_usage_attempts").is_none(),
+        "an Attempt's usage is unknown (a lease lost under load is one cause): {result:#}"
+    );
     assert_eq!(result["attempts"], 11);
     assert_eq!(result["result"]["acceptance"], "satisfied");
     let rounds = result["review_rounds"].as_array().unwrap();
@@ -262,6 +268,10 @@ fn heavy_review_cannot_erase_claims(case: &str) {
         &["task", "start", "--execute", "--file", "ticket.json"],
     );
     assert_eq!(code, 3, "{case}: {result:#}");
+    assert!(
+        result.get("unknown_usage_attempts").is_none(),
+        "{case}: an Attempt's usage is unknown (a lease lost under load is one cause): {result:#}"
+    );
     assert_eq!(
         result["result"]["acceptance"], "unsatisfied",
         "{case}: {result:#}"

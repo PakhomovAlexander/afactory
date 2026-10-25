@@ -128,6 +128,7 @@ pub(super) fn check_invocation(
     cancelled: &AtomicBool,
     attempt_deadline: Option<Instant>,
 ) -> Result<(), CliRefusal> {
+    availability::check(spec).map_err(CliRefusal::Unchecked)?;
     let invocation = invocation(spec.kind);
     let timeout = probe_timeout(match spec.kind {
         ProviderKind::Claude => CLAUDE_STRUCTURAL_TIMEOUT,
@@ -402,7 +403,7 @@ mod tests {
         let message = refused.message();
         assert!(message.contains("(version codex-cli 0.1.0)"), "{message}");
         assert!(
-            message.contains("missing: --ephemeral, --skip-git-repo-check, --json, -C/--cd, -s/--sandbox, -o/--output-last-message, --model, -c/--config; `codex exec --help` exited 2: error: unrecognized subcommand 'exec'; fix: upgrade it with `npm install -g @openai/codex@latest`"),
+            message.contains("missing: --ephemeral, --skip-git-repo-check, --json, -C/--cd, -s/--sandbox, -o/--output-last-message, --output-schema, --model, -c/--config; `codex exec --help` exited 2: error: unrecognized subcommand 'exec'; fix: upgrade it with `npm install -g @openai/codex@latest`"),
             "{message}"
         );
     }

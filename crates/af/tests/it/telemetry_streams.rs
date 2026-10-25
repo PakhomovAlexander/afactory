@@ -1135,7 +1135,22 @@ pub(crate) fn fixture_repo(source: &Path, repo: &Path) {
 /// three chunks of intermediate tool output: the machine, the run's Store and its inspection.
 fn claude_task(level: &str) -> (crate::telemetry_runs::Machine, PathBuf, Value) {
     let machine = crate::telemetry_runs::Machine::new();
-    let run = claude_run(&machine, "run", level, &json!({}), &[]);
+    // This comparison holds Store time constant, as telemetry_never_steers does. Its subject
+    // is event/evidence invariance across levels, not real-clock heartbeat cadence.
+    // Freeze the current instant for each run: native Provider admission also checks its
+    // reservation against real wall time, so a historical epoch would expire it immediately.
+    let clock = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_millis()
+        .to_string();
+    let run = claude_run(
+        &machine,
+        "run",
+        level,
+        &json!({}),
+        &[("AF_TEST_CLOCK_FIXED_MS", &clock)],
+    );
     (machine, run.state, run.inspection)
 }
 

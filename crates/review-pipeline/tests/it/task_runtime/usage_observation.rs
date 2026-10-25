@@ -42,6 +42,7 @@ impl WorkerModelAdapter for Model {
             .observed
             .map_or_else(|| usage.clone(), TaskTokenUsageV3::charge_only);
         ModelWorkerReturn {
+            notes: Default::default(),
             usage_observation: (call >= self.fail_at).then_some(TaskUsageObservationV1 {
                 reported_usage: Some(observed),
                 charge_complete: self.complete,
@@ -210,7 +211,10 @@ fn incomplete_billing_uses_original_reservation_but_known_failed_calls_keep_exac
                     .into_iter()
                     .find(|w| w.attempt_id == row.attempt_id)
                     .unwrap();
-                assert_eq!(wall.usage.unwrap().chargeable_tokens.get(), charge);
+                // The wall record keeps what the Provider reported, never the reservation floor
+                // a settlement applies, so a lost writer's successor charges only that
+                // (ADR-0209).
+                assert_eq!(wall.usage.unwrap().chargeable_tokens.get(), floor);
             }
         }
     }

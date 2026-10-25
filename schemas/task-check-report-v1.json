@@ -1,0 +1,271 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:af:schema:task-check-report:1",
+  "title": "af/TaskCheckReport@1",
+  "description": "What a Task check node observed while each of its local checks ran, retained beside its `af/TaskCheckReceipt@1` as evidence of the Attempt that ran them (ADR-0205). Per check that started: the host as af measured it (the 1-minute load average, two decimals, and the CPUs available to af, at the check's start and end), and the check's own account, the `af.check-report/1` lines it wrote to `$AF_CHECK_REPORT`: every step with its stage (`preflight` apart from `tests`), its test thread count, the tests that failed, and those that failed in the parallel run but passed alone (`flaky`). The account never decides the check's status; its exit code does. A check that wrote nothing is `absent`; lines this release does not accept are `refused`, with the reason, and nothing of them is kept.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "receipt_id",
+    "checks"
+  ],
+  "properties": {
+    "receipt_id": {
+      "$ref": "#/$defs/digest"
+    },
+    "checks": {
+      "type": "object",
+      "minProperties": 1,
+      "maxProperties": 32,
+      "propertyNames": {
+        "$ref": "#/$defs/name"
+      },
+      "additionalProperties": {
+        "$ref": "#/$defs/run"
+      }
+    }
+  },
+  "$defs": {
+    "digest": {
+      "type": "string",
+      "pattern": "^sha256:[0-9a-f]{64}$"
+    },
+    "name": {
+      "type": "string",
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9_-]*$",
+      "maxLength": 128
+    },
+    "text": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 1024,
+      "pattern": "^[^\\u0000-\\u001f\\u007f-\\u009f]*[^\\s\\u0000-\\u001f\\u007f-\\u009f][^\\u0000-\\u001f\\u007f-\\u009f]*$"
+    },
+    "test_name": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 512,
+      "pattern": "^[^\\u0000-\\u001f\\u007f-\\u009f]*[^\\s\\u0000-\\u001f\\u007f-\\u009f][^\\u0000-\\u001f\\u007f-\\u009f]*$"
+    },
+    "cpus": {
+      "type": "integer",
+      "minimum": 1,
+      "maximum": 65536
+    },
+    "load": {
+      "type": "string",
+      "pattern": "^(0|[1-9][0-9]{0,5})\\.[0-9]{2}$"
+    },
+    "run": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "host",
+        "report",
+        "steps"
+      ],
+      "properties": {
+        "host": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "cpus_start",
+            "cpus_end"
+          ],
+          "properties": {
+            "cpus_start": {
+              "$ref": "#/$defs/cpus"
+            },
+            "cpus_end": {
+              "$ref": "#/$defs/cpus"
+            },
+            "load_1m_start": {
+              "$ref": "#/$defs/load"
+            },
+            "load_1m_end": {
+              "$ref": "#/$defs/load"
+            }
+          }
+        },
+        "report": {
+          "enum": [
+            "absent",
+            "admitted",
+            "refused"
+          ]
+        },
+        "refusal": {
+          "$ref": "#/$defs/text"
+        },
+        "steps": {
+          "type": "array",
+          "maxItems": 64,
+          "items": {
+            "$ref": "#/$defs/step"
+          }
+        },
+        "tests": {
+          "$ref": "#/$defs/tests"
+        }
+      },
+      "allOf": [
+        {
+          "if": {
+            "properties": {
+              "report": {
+                "const": "refused"
+              }
+            }
+          },
+          "then": {
+            "required": [
+              "refusal"
+            ]
+          },
+          "else": {
+            "not": {
+              "required": [
+                "refusal"
+              ]
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "report": {
+                "const": "admitted"
+              }
+            }
+          },
+          "else": {
+            "properties": {
+              "steps": {
+                "maxItems": 0
+              }
+            },
+            "not": {
+              "required": [
+                "tests"
+              ]
+            }
+          }
+        }
+      ]
+    },
+    "step": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "label",
+        "stage",
+        "exit_code",
+        "command"
+      ],
+      "properties": {
+        "label": {
+          "$ref": "#/$defs/name"
+        },
+        "stage": {
+          "enum": [
+            "preflight",
+            "lint",
+            "build",
+            "tests",
+            "release"
+          ]
+        },
+        "exit_code": {
+          "type": "integer",
+          "minimum": -2147483648,
+          "maximum": 2147483647
+        },
+        "command": {
+          "type": "array",
+          "minItems": 1,
+          "maxItems": 64,
+          "prefixItems": [
+            {
+              "$ref": "#/$defs/text"
+            }
+          ],
+          "items": {
+            "anyOf": [
+              {
+                "const": ""
+              },
+              {
+                "$ref": "#/$defs/text"
+              }
+            ]
+          }
+        },
+        "fix": {
+          "$ref": "#/$defs/text"
+        }
+      }
+    },
+    "tests": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "test_threads",
+        "failed_count",
+        "failed",
+        "flaky",
+        "rerun"
+      ],
+      "properties": {
+        "test_threads": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 65536
+        },
+        "failed_count": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 4294967295
+        },
+        "failed": {
+          "type": "array",
+          "maxItems": 100,
+          "items": {
+            "$ref": "#/$defs/test_name"
+          }
+        },
+        "flaky": {
+          "type": "array",
+          "maxItems": 25,
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "name",
+              "parallel",
+              "isolated"
+            ],
+            "properties": {
+              "name": {
+                "$ref": "#/$defs/test_name"
+              },
+              "parallel": {
+                "const": "failed"
+              },
+              "isolated": {
+                "const": "passed"
+              }
+            }
+          }
+        },
+        "rerun": {
+          "enum": [
+            "not_needed",
+            "isolated",
+            "over_bound",
+            "not_run"
+          ]
+        }
+      }
+    }
+  }
+}

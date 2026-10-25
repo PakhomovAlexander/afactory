@@ -383,9 +383,13 @@ fn unmeasurable(entry: &Entry, why: &str) -> Left {
 /// finished Tasks the Stores' rules take, the campaigns beyond `keep_campaigns` and the
 /// unreadable Stores idle at least `idle_ms` (`collection`), the Surveys of each Project
 /// beyond `keep_surveys` (`keep_surveys`) and the telemetry segments idle at least `idle_ms`
-/// (`collection`); then, while the model holds more than `max_bytes`, the least recently used
-/// entry not in use and not used within the hour, a corrupt telemetry segment first among equals
-/// (`budget`), and telemetry past its own `[telemetry] max_bytes` under the same rules. A
+/// (`collection`); then, while the model holds more than `max_bytes`, the entry not in use and
+/// not used within the hour, caches first (warm keys, warm Workspaces, installed versions),
+/// telemetry next and records last (review campaigns, Stores this release cannot read, Surveys,
+/// finished Tasks), least recently used first within each class and a corrupt telemetry segment
+/// first among equals; a finished Task younger than `idle_ms` (`[storage] keep_days`) is never
+/// taken by the budget (`budget`), and telemetry past its own `[telemetry] max_bytes` under the
+/// same rules. A
 /// telemetry segment frees what it alone holds in its directory's model now, so a blob two
 /// segments share goes with the second; `af telemetry gc` plans telemetry alone. `judge`
 /// reads a Survey the plan picks against the identity the snapshot measured; nothing else is
@@ -520,10 +524,17 @@ pub(crate) fn make(mut inputs: Inputs<'_>, judge: &mut Judge<'_>) -> Plan {
                 ) && (!telemetry.only || entry.kind == Kind::Telemetry)
                     && entry.in_use.is_none()
                     && entry.last_use_unix_ms.saturating_add(HOUR_MS) <= inputs.now
+                    // A Task record younger than keep_days is never the budget's (finding I9).
+                    && !(entry.kind == Kind::Task
+                        && entry.last_use_unix_ms.saturating_add(inputs.idle_ms) > inputs.now)
             })
             .cloned()
             .collect();
-        candidates.sort_by(super::least_recently_used);
+        candidates.sort_by(|a, b| {
+            class(a.kind)
+                .cmp(&class(b.kind))
+                .then_with(|| super::least_recently_used(a, b))
+        });
         for entry in candidates {
             if model.total <= inputs.max_bytes {
                 break;
@@ -639,6 +650,21 @@ pub(crate) fn make(mut inputs: Inputs<'_>, judge: &mut Judge<'_>) -> Plan {
     plan.total_after = model.total;
     plan.stop = stop(model.total, inputs.max_bytes);
     plan
+}
+
+/// The order the budget evicts in, by kind: what af can make again (0, caches) before what it
+/// recorded of its own work (1, telemetry) before what the user's work recorded (2, records).
+pub(crate) fn class(kind: Kind) -> u8 {
+    match kind {
+        Kind::WarmKey | Kind::Workspace | Kind::Version | Kind::Claim => 0,
+        Kind::Telemetry => 1,
+        Kind::Campaign
+        | Kind::Task
+        | Kind::TaskStore
+        | Kind::ProjectStore
+        | Kind::Survey
+        | Kind::UnreadableStore => 2,
+    }
 }
 
 fn stop(total: u64, max_bytes: u64) -> Stop {
@@ -911,6 +937,7 @@ mod tests {
                 changed: Vec::new(),
                 problems: Vec::new(),
             },
+            warm_fit: None,
         }
     }
 
@@ -1024,7 +1051,8 @@ mod tests {
     }
 
     /// The applied sweep never chooses again: a Survey whose job finds its record replaced keeps
-    /// its place as failed with nothing freed, and no other entry takes its place.
+    /// its place as failed with nothing freed, and no other entry takes its place. Records
+    /// only, so the least recently used, the Survey, is the first the budget plans.
     #[test]
     fn a_failed_survey_is_kept_as_failed_and_nothing_is_planned_again() {
         let object = collect::object_path(Path::new(STORE), &survey_id(2));
@@ -1035,8 +1063,8 @@ mod tests {
         let entries = vec![
             store,
             survey,
-            entry(Kind::WarmKey, "/cache/af/warm/a/1", 40, 20),
-            entry(Kind::WarmKey, "/cache/af/warm/a/2", 40, 10),
+            entry(Kind::Campaign, "/state/af/review/campaigns/a", 40, 20),
+            entry(Kind::Campaign, "/state/af/review/campaigns/b", 40, 10),
         ];
         let projects = vec![(
             PathBuf::from(STORE),
@@ -1079,7 +1107,10 @@ mod tests {
             .iter()
             .map(|planned| planned.removal.path.as_path())
             .collect();
-        assert_eq!(planned, [object.as_path(), Path::new("/cache/af/warm/a/1")]);
+        assert_eq!(
+            planned,
+            [object.as_path(), Path::new("/state/af/review/campaigns/a")]
+        );
         let mut applied = report(50, true);
         applied.total_before = plan.total_before;
         run(
@@ -1722,5 +1753,59 @@ mod tests {
         assert_eq!(document["stop"], "unknown");
         assert_eq!(document["removals"][0]["total_after"], "unknown");
         assert_eq!(document["removals"][1]["bytes"], 10 * MIB);
+    }
+
+    /// Findings I9: under the budget caches go before telemetry before records, least recently
+    /// used first within each class, and a finished Task younger than `[storage] keep_days` is
+    /// never taken; one older is, after every cache.
+    #[test]
+    fn the_budget_takes_caches_before_records_and_never_a_task_younger_than_keep_days() {
+        let task = |id: &str, days: u64| Entry {
+            task_id: Some(id.into()),
+            ..entry(Kind::Task, "/state/af/task/local/s", 10, days)
+        };
+        let entries = vec![
+            task("young", 2),
+            task("old", 20),
+            entry(Kind::Campaign, "/state/af/review/campaigns/c", 10, 30),
+            entry(Kind::WarmKey, "/cache/af/warm/a/1", 10, 1),
+            entry(Kind::Workspace, "/cache/af/workspaces/w", 10, 3),
+            entry(Kind::Telemetry, "/state/af/telemetry/s1", 10, 40),
+        ];
+        let plan = make(
+            Inputs {
+                entries,
+                claims: Vec::new(),
+                projects: &[],
+                tasks: Vec::new(),
+                registrations: Vec::new(),
+                collection: false,
+                max_bytes: 0,
+                keep_campaigns: 10,
+                keep_surveys: 50,
+                idle_ms: 14 * DAY,
+                now: NOW,
+                telemetry: Telemetry::default(),
+            },
+            &mut |_, _, _| unreachable!("no Survey"),
+        );
+        let planned: Vec<(Kind, Option<&str>)> = plan
+            .steps
+            .iter()
+            .map(|planned| (planned.removal.kind, planned.removal.task_id.as_deref()))
+            .collect();
+        assert_eq!(
+            planned,
+            [
+                (Kind::Workspace, None),
+                (Kind::WarmKey, None),
+                (Kind::Campaign, None),
+                (Kind::Task, Some("old")),
+            ],
+            "the telemetry segment has no model, so it is not planned; the young Task stays"
+        );
+        assert_eq!(plan.stop, Stop::NothingEvictable);
+        assert!(class(Kind::WarmKey) < class(Kind::Telemetry));
+        assert!(class(Kind::Telemetry) < class(Kind::Task));
     }
 }

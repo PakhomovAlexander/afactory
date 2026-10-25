@@ -163,7 +163,7 @@ fn start(fixture: &Fixture, task_id: &str, files: Value, expected: i32) -> Value
     );
     assert_eq!(code, expected, "{stderr}\n{stdout}");
     let outcome: Value = serde_json::from_str(stdout.trim()).unwrap();
-    schemas::valid(&schemas::validator("task-inspection-v11.json"), &outcome);
+    schemas::valid(&schemas::validator("task-inspection-v13.json"), &outcome);
     outcome
 }
 
@@ -957,9 +957,40 @@ fn word(value: u32) -> String {
     format!("pub fn word() -> u32 {{\n    {value}\n}}\n")
 }
 
+/// The C linker as rustup's host toolchain finds it: `cc` names the `CC` setting, an absolute
+/// path or a name `path` resolves; else `cc` on the sanitized `path` (its absolute, existing
+/// directories, as a check sees it); else `<home>/.local/bin/cc`. A host whose compiler lives
+/// only in `~/.local/bin`, or names it in `CC`, has no `cc` on the sanitized `PATH` at all.
+fn linker(
+    cc: Option<&std::ffi::OsStr>,
+    path: &std::ffi::OsStr,
+    home: Option<&Path>,
+) -> Option<PathBuf> {
+    let on_path = |name: &std::ffi::OsStr| {
+        std::env::split_paths(path)
+            .filter(|directory| directory.is_absolute() && directory.is_dir())
+            .map(|directory| directory.join(name))
+            .find(|candidate| candidate.is_file())
+    };
+    let named = cc.filter(|cc| !cc.is_empty()).and_then(|cc| {
+        let cc = Path::new(cc);
+        if cc.is_absolute() {
+            cc.is_file().then(|| cc.to_path_buf())
+        } else {
+            on_path(cc.as_os_str())
+        }
+    });
+    named
+        .or_else(|| on_path(std::ffi::OsStr::new("cc")))
+        .or_else(|| {
+            home.map(|home| home.join(".local/bin/cc"))
+                .filter(|candidate| candidate.is_file())
+        })
+}
+
 /// The machine's real `cargo` and `rustc`, linked into `bin` so the kernel's `PATH` finds them
 /// without a rustup proxy: the toolchain's own binaries, below the sysroot this test runs with.
-/// The `cc` linker this test's own build found on its `PATH` is linked beside them.
+/// The `cc` linker rustup's host toolchain would use ([`linker`]) is linked beside them.
 fn real_toolchain(bin: &Path) {
     std::fs::create_dir_all(bin).unwrap();
     let rustc = std::env::var_os("RUSTC").unwrap_or_else(|| "rustc".into());
@@ -980,11 +1011,53 @@ fn real_toolchain(bin: &Path) {
         assert!(installed.is_file(), "{}", installed.display());
         std::os::unix::fs::symlink(&installed, bin.join(program)).unwrap();
     }
-    let linker = std::env::split_paths(&std::env::var_os("PATH").unwrap_or_default())
-        .map(|directory| directory.join("cc"))
-        .find(|path| path.is_file())
-        .expect("a cc linker on the test's PATH");
+    let home = std::env::var_os("HOME").map(PathBuf::from);
+    let linker = linker(
+        std::env::var_os("CC").as_deref(),
+        &std::env::var_os("PATH").unwrap_or_default(),
+        home.as_deref(),
+    )
+    .expect("a C linker: set CC, or put cc on PATH or in ~/.local/bin");
     std::os::unix::fs::symlink(linker, bin.join("cc")).unwrap();
+}
+
+/// A host without `cc` on its `PATH` (a sanitized one, or a machine whose compiler is in
+/// `~/.local/bin`) still finds a linker, as rustup's host toolchain does: `CC` first, as a path
+/// or a name, then `PATH`, then `~/.local/bin`.
+#[test]
+fn the_real_build_finds_a_linker_without_cc_on_the_path() {
+    use std::os::unix::fs::PermissionsExt;
+    let root = tempfile::tempdir().unwrap();
+    let make = |path: &Path| {
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        std::fs::write(path, "#!/bin/sh\n").unwrap();
+        std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o755)).unwrap();
+    };
+    let home = root.path().join("home");
+    let local = home.join(".local/bin/cc");
+    make(&local);
+    let tools = root.path().join("tools");
+    std::fs::create_dir_all(&tools).unwrap();
+    let without_cc = std::env::join_paths([tools.clone(), "relative".into()]).unwrap();
+    assert_eq!(linker(None, &without_cc, Some(&home)), Some(local.clone()));
+    assert_eq!(linker(None, &without_cc, None), None);
+    let named = tools.join("clang");
+    make(&named);
+    assert_eq!(
+        linker(
+            Some(std::ffi::OsStr::new("clang")),
+            &without_cc,
+            Some(&home)
+        ),
+        Some(named.clone())
+    );
+    assert_eq!(
+        linker(Some(named.as_os_str()), std::ffi::OsStr::new(""), None),
+        Some(named)
+    );
+    let on_path = tools.join("cc");
+    make(&on_path);
+    assert_eq!(linker(None, &without_cc, Some(&home)), Some(on_path));
 }
 
 /// ADR-0161 through the measurement runtime itself: two Tasks of one repository measure a real
@@ -1376,7 +1449,9 @@ fn repository_experiment_plan(workers: PlanningWorkers) {
                 "tokens": 3_000_000,
                 "max_attempts": 8,
                 "wall_ms": 36_000_000,
-                "verification": {"tokens": 400_000, "attempts": 3, "wall_ms": 7_200_000}
+                // The checks node holds the build deadline beside the check wall (ADR-0207):
+                // 40 + 90 minutes (ADR-0201), then the evaluator and one admission.
+                "verification": {"tokens": 400_000, "attempts": 3, "wall_ms": 10_800_000}
             }
         }))
         .unwrap(),
@@ -1558,9 +1633,8 @@ pub(crate) fn measurement_refused_below_the_floor(env: &[(&str, &str)]) {
     let failure = baseline.failure.as_ref().unwrap();
     assert_eq!(failure.reason.as_str(), "insufficient_disk");
     assert!(
-        failure
-            .detail
-            .starts_with("insufficient_disk: 0 B (0 bytes) free on the volume of "),
+        failure.detail.starts_with("insufficient_disk: ")
+            && failure.detail.contains(": 0 B (0 bytes) free, floor "),
         "{}",
         failure.detail
     );

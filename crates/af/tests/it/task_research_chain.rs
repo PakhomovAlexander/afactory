@@ -88,7 +88,7 @@ impl Chain {
     /// `af task start --execute` over a Task file, validated as the inspection it prints.
     fn start(&self, file: &str, code: i32) -> Value {
         let done = self.json(&["task", "start", "--execute", "--file", file], code);
-        schemas::valid(&schemas::validator("task-inspection-v11.json"), &done);
+        schemas::valid(&schemas::validator("task-inspection-v13.json"), &done);
         done
     }
 
@@ -249,7 +249,7 @@ fn ids(port: &Value) -> Vec<String> {
 fn unrecorded(chain: &Chain, task_id: &str) {
     let shown = chain.af(&["task", "show", task_id]);
     assert!(!shown.status.success(), "{}", text(&shown));
-    assert!(text(&shown).contains("was not found"), "{}", text(&shown));
+    assert!(text(&shown).contains(" not found in "), "{}", text(&shown));
 }
 
 #[test]
@@ -306,7 +306,7 @@ fn a_report_binds_an_experiments_comparison_measurements_and_tree_and_runs_to_ve
     }
 
     let done = chain.json(&["task", "run", "--execute", "research"], 0);
-    schemas::valid(&schemas::validator("task-inspection-v11.json"), &done);
+    schemas::valid(&schemas::validator("task-inspection-v13.json"), &done);
     assert_eq!(done["result"]["acceptance"], "satisfied");
     assert_eq!(done["result"]["domain_conclusion"], "verified");
     assert_eq!(done["attempts"], 3, "author, checks and verifier");

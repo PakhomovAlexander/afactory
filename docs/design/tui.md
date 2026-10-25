@@ -68,12 +68,15 @@ A scope error (`--repo` outside a repository) leaves the terminal before it is p
 Three regions, fixed for the whole session:
 
 - **Left bar** (29 columns, `nvim-tree` style; hidden below 90 columns with `<C-b>` to toggle).
-  A folding tree whose depth-1 folders are the four fixed tabs: `providers/`, `workers/`,
-  `pipelines/`, `tasks/`. Selecting the root row opens the settings pane for the scope.
+  A folding tree whose depth-1 folders are the five fixed tabs: `providers/`, `workers/`,
+  `pipelines/`, `tasks/`, `campaigns/`. Selecting the root row opens the settings pane for the
+  scope.
 - **Main pane**: one renderer per node kind (§5). Scrollable; never wider than the terminal.
 - **Status line**: vim mode word, breadcrumb of the selected node, the key legend for the
   focused region or the highlighted row's binding or the last message. At a narrow width the
   breadcrumb shrinks to the mode word, then goes, before the right-hand text is cut. `:` opens a one-line command prompt in the same row; `/` a search prompt.
+  Once no key came for four seconds, the legend takes turns, four seconds each, with
+  `? help - : run a command - q quit`.
 
 Glyphs are printable ASCII only (`v`/`>` for folds, `+--`/`'--` for tree branches, `#`/`.` for
 bars). Colour follows `brand/README.md`: the terminal's own foreground and ground everywhere,
@@ -103,27 +106,28 @@ few pane-local verbs, listed in its section and in the status line.
 | `<C-d>` `<C-u>` | half page |
 | `<C-f>` `<C-b>` | full page (`<C-b>` on the bar toggles it instead) |
 | `zo` `zc` `za` `zR` `zM` | fold open / close / toggle / all open / all closed (bar) |
-| `/` `?` `n` `N` | search forward / backward within the focused region, next / previous |
+| `/` `n` `N` | search forward within the focused region, next / previous match |
 | `<Tab>` `<C-w>l` `<C-w>h` | move focus bar → main → bar |
 | `]]` `[[` | next / previous sibling folder in the bar (providers → workers → …) |
 | `Enter` `o` | open the selected node in the main pane |
 | `y` | yank the selected id (Task id, plan id, provider id) via OSC 52 |
 | `gf` | open the file behind the node in `$EDITOR` (worker prompt, pipeline TOML, config layer); the screen is released and re-entered, and the panes the edit could have changed read again |
 | `R` | refresh the pane under the focus from disk: the bar's selected node's pane when the bar has focus, the opened pane otherwise (providers: run the bounded probe) |
-| `?` on the status line focus, `:help` | key help overlay |
+| `?`, `:help` | help overlay: the panes, `: <af command>`, then the keys; `?`, `q` or `Esc` closes it |
 | `q` `:q` `ZZ` | quit; `<C-c>` cancels a prompt or a running probe first |
 
 **Command line (`:`)** — the browser's own verbs, and any `af` command line:
 
 ```
 :q                       :help [topic]            :e user|directory|project|local
-:cd DIR                  :scope user|project
+:cd DIR                  :scope user|project      :state DIR
 :task run ID --confirm-plan PLAN   :task show ID   :provider setup ID --kind claude|codex   ...
 ```
 
 Commands are parsed with the same clap definition as the CLI (`Af::try_parse_from(["af", …])`),
-so the TUI can never grow a second grammar. `:q`, `:cd`, `:scope`, `:e` and `:help` belong to the
-browser. A line without a subcommand (`:--repo DIR`) would open a second browser and is refused
+so the TUI can never grow a second grammar. `:q`, `:cd`, `:scope`, `:state`, `:e` and `:help`
+belong to the browser. `:state DIR` lists the Task Store `DIR` in `tasks/` for the rest of the
+session (§5.5); it registers nothing. A line without a subcommand (`:--repo DIR`) would open a second browser and is refused
 on the status line. Any other line runs as a child of the running `af` executable, with exactly
 the parsed words as its arguments (ADR-0123). The child runs in the scope's root (the repository
 toplevel, or `~`) and inherits the browser's environment. It carries `AF_DISPATCHED_FROM`, so
@@ -133,7 +137,7 @@ The browser releases the terminal first. The child's process group then owns the
 foreground, so `<C-c>` stops the child and never the browser. When the child ends, the released
 screen shows one line, `af LINE: exit N -- Enter returns to the browser` (or the signal that
 ended it), and waits for Enter. Then the browser re-enters and reads again the scope, the
-settings and the Tasks, Workers and Providers panes (Providers without the charged probe). It
+settings and the Tasks, Campaigns, Workers and Providers panes (Providers without the charged probe). It
 keeps what is opened and the bar's selection. The status line says `af LINE: exit N`.
 
 `<Tab>` completes subcommand names at every level from `Af::command()` itself, alongside the
@@ -175,12 +179,18 @@ User scope shows only the machine-owned layers plus the provider registry path
 Mirrors `af provider status`; the left bar lists every entry from `providers::discover`.
 The main pane shows the same columns as the CLI table for the selected provider, then one row per
 `ProviderLimit` as a bar with `used_percent` and `format_limit`'s reset text, then `detail` as
-`note`. Ambient candidates render greyed with the `af provider setup` hint the CLI prints.
+`note`. Ambient candidates render greyed. Under one, the pane says how it got there and how to
+make it go: `ambient (CODEX_HOME): found through CODEX_HOME, not in the registry` when the
+browser's environment sets the variable, else `ambient (~/.codex): the codex CLI's default
+directory, not in the registry`; then `register it: af provider add codex-main --kind codex`
+with the first free id, `unsetting CODEX_HOME lists ~/.codex instead` when the variable is set
+(the row is listed while the CLI is on `PATH` and its directory is not registered, so registering
+it is what makes it go), and the `af provider setup` hint the CLI prints (ADR-0141).
 
 `d` on a registered Provider, on the bar or in its opened pane, fills the `:` line with
 `provider remove ID` and does not submit it; Enter runs it, handing the terminal over as
 described in §4 (ADR-0136). `d` on an ambient candidate says on the status line that there is no
-registry entry to remove. After the command the pane discovers again, and an opened Provider it
+registry entry to remove, and the `af provider add` command that adds it. After the command the pane discovers again, and an opened Provider it
 no longer lists gives way to the folder.
 
 `R` runs the provider probe (a probe cancelled with `<C-c>` is forgotten: the last complete
@@ -248,6 +258,13 @@ The bar groups by state: `running/`, `awaiting approval/`, `done/`, `failed/`; u
 one level for the repository. Row text is `task-id  outcome  progress%` where progress is
 `settled stages / stages in graph.order`.
 
+Beside the scope's own Stores, the pane lists every Task Store the Store registry
+(`$XDG_STATE_HOME/af/stores.toml`) records, the Stores `af task … --state DIR` made, and the
+ones `:state DIR` added for the session. Each is one more bar level named by the end of its path,
+and its main-pane heading is its path with `(--state, in stores.toml)` or `(:state, this
+session)`. `r` and `D` on its Tasks add `--state DIR` to the line. A registry this release cannot
+read is a warning above the Stores; the scope's own Stores are still listed.
+
 Main pane for one Task, top to bottom:
 
 ```
@@ -286,6 +303,49 @@ and a space, and leaves the Task ID for the user to type, which keeps delivery's
 a Task that is not verified says why on the status line. Neither verb submits the line. Enter
 runs it, handing the terminal over as described in §4.
 
+### 5.6 Campaigns
+
+Mirrors `af review campaigns --format json` and `af review report --format json`, read by the
+functions behind them (`enumerate_campaigns`, `read_campaign_view`, the report view), silently:
+a warning the CLI prints on stderr would land on the screen. The sources are the default Campaign root, each
+Store a plain `af review run` keeps under `review/local/`, and every `review` Store and
+`review_root` directory the Store registry records. A Store reached twice is listed once.
+
+```
+CAMPAIGNS  project: hub
+
+~/.local/state/af/review/campaigns
+  pr-42                 round 1.1  open  -
+      spend 40000 tok  wall 4.2 s  last write 2026-10-23 06:12Z
+      nodes  correctness  bugs
+```
+
+The bar lists each Campaign by its label, with its state as a chip: `open` (blue) while its newest
+Round has no Run Report, else its verdict: `pass` (green), `fail` or `incomplete` (pink); `new`
+before its first Round. The folder shows each Store's path, then per Campaign its newest Round,
+state and verdict, its spend (the Tasks' cumulative charge and the Rounds' wall-clock, as `af
+review report` counts them) and its Store's last write in UTC, and the reviewer nodes of the newest
+Round as chips of their latest Attempt's outcome (`running`, `selected`, `failed`): only that
+Round's Attempts, so a Round that has none yet shows no chips, never the previous Round's, and
+the latest Attempt is the one that started last, not the last one listed. While the pane shows,
+a thread reads every source again: once a second while any listed Round is open, the Tasks
+pane's cadence, and every five seconds otherwise, so a Campaign started meanwhile appears
+without a key.
+
+One Campaign's pane shows STATE, SPEND and STORE, NODES (each reviewer's latest outcome,
+charge and wall), LEDGER (the report's verdict and findings summary, then its findings grouped by
+the reviewer that reported each) and COMMANDS: `review report`, `review ledger --long`, `review
+show … KEY` and, while a Round is open, `review run … --restart-round`, each with `--campaign
+LABEL` and, unless the default root resolves it by its label, `--state DIR`. Enter on a command
+or a finding puts the line on the `:` line, unsubmitted. `y` copies the label. Stores another
+release wrote are one muted row, as in the Tasks pane, with one command per release that wrote
+them; another unreadable Store, a log that cannot even be looked at included, is an error row
+naming its path and the error, and a `! … unreadable` bar entry. Nothing is written.
+
+`af review campaigns` without `--format json` prints the same Campaigns as a 100-column table:
+`CAMPAIGN  ROUND  STATE  VERDICT  TOKENS  WALL  UPDATED`, a cut cell ending in `~`, then its
+problems.
+
 ## 6. Architecture
 
 The TUI is a new module tree under `crates/af/src/tui/`:
@@ -300,13 +360,13 @@ crates/af/src/tui/
   tree.rs       the left bar: Node { kind, label, children, folded }, fold/search/motion
   scope.rs      user vs project resolution, path roots
   panes/
-    settings.rs providers.rs workers.rs pipelines.rs tasks.rs
+    settings.rs providers.rs workers.rs pipelines.rs tasks.rs campaigns.rs
   paint.rs      paint / paint_spans / Paint palette
 ```
 
 Rendering needs no new crate: the terminal session is `rustix` termios (already a dependency
 of the `af` crate) on `/dev/tty`, with the escape sequences written by hand (ADR-0119); a widget library is not
-worth a new dependency for five list-and-detail panes. Each pane implements one trait:
+worth a new dependency for six list-and-detail panes. Each pane implements one trait:
 
 ```rust
 trait Pane {
@@ -391,6 +451,15 @@ Tests: keymap sequences, tree folding and search, and one golden render per pane
    - A child stopped by `<C-z>` is continued, because the browser has no job control.
    - A reload of the scope keeps the home directory, the Provider registry and the Task state
      root. They come from the process environment, which a child cannot change.
+6. Campaigns, every Task Store, help and discoverability. **Delivered** (package P12). §3, §4,
+   §5.2, §5.5 and §5.6 describe it. Deviations:
+   - `?` opens the help overlay, so vim's backward search moved to `/` then `N`.
+   - The Campaigns pane lists every Campaign of the machine in both scopes, as `af review
+     campaigns` does: a Campaign records no repository path to filter by.
+   - The commands a Campaign's pane offers are the CLI's own selectors (`--campaign LABEL
+     [--state DIR]`), not a positional id.
+   - A node chip's state is its latest Attempt's outcome in the Task accounting; the report
+     records no per-node state of its own.
 
 ## 7a. Review
 

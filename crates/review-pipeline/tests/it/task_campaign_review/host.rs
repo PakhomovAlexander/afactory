@@ -892,8 +892,14 @@ fn expired_review(mode: &str, wait_past_deadlines: impl FnOnce(u64)) {
     };
     let mut limits = capture::limits();
     limits.deadline_unix_ms = unix_millis() + 5000;
-    let deadline = limits.deadline_unix_ms;
     let (compiler, lease) = admit_with_limits(&cas, &mut store, &definition, limits);
+    // The Task's clock started at its admission: its deadline is the recorded one moved by the
+    // wait before it.
+    let deadline = store
+        .task_projection(&cas, lease.task_id())
+        .unwrap()
+        .unwrap()
+        .deadline_unix_ms();
     let shared = SharedEventStore::new(&mut store);
     let host = CampaignReviewTaskHost::new(
         &cas,

@@ -46,6 +46,7 @@ impl WorkerModelAdapter for Model {
         let raw = vec![cas.put(b"native failure fixture").unwrap()];
         if self.calls.fetch_add(1, Ordering::SeqCst) == 0 {
             return ModelWorkerReturn {
+                notes: Default::default(),
                 native_failure: None,
                 usage_observation: None,
                 usage: Some(TaskTokenUsageV3::charge_only(7)),
@@ -73,6 +74,7 @@ impl WorkerModelAdapter for Model {
             }
         };
         ModelWorkerReturn {
+            notes: Default::default(),
             native_failure,
             usage_observation,
             usage: None,
@@ -168,10 +170,18 @@ fn an_attempt_without_a_usage_report_is_charged_zero_with_its_cause() {
             assert_eq!(row.charged_tokens, 0);
             assert_eq!(row.unknown_usage, Some(cause));
             assert!(row.usage_id.is_none());
-            assert!(matches!(
-                row.result,
-                Some(TaskAttemptResultV1::Failed { .. })
-            ));
+            // An interrupted Attempt is abandoned by its host, not failed (ADR-0209).
+            if matches!(ending, Ending::Interrupted) {
+                assert!(matches!(
+                    row.result,
+                    Some(TaskAttemptResultV1::Abandoned { .. })
+                ));
+            } else {
+                assert!(matches!(
+                    row.result,
+                    Some(TaskAttemptResultV1::Failed { .. })
+                ));
+            }
         }
         // Only the admission call's reported usage is charged, exactly; nothing stays held.
         assert_eq!(execution.budget.committed_tokens(), 7);

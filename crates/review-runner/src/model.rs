@@ -68,16 +68,27 @@ impl std::fmt::Display for RunnerError {
                 stderr_excerpt,
             } => write!(f, "reviewer failed (exit {exit_code}): {stderr_excerpt}"),
             RunnerError::TimedOut { after_ms } => {
-                write!(
-                    f,
-                    "reviewer did not answer within {after_ms}ms and was killed"
-                )
+                write!(f, "reviewer {TIMED_OUT} {after_ms}ms and was killed")
             }
         }
     }
 }
 
 impl std::error::Error for RunnerError {}
+
+/// The words of a timeout after the Worker's name.
+const TIMED_OUT: &str = "did not answer within";
+
+/// A Worker failure `message` that names the Worker of a Task slot: a timeout this layer
+/// reported for `reviewer`, Review's own Worker, names `worker` instead (`implementer did not
+/// answer within …`). Every other message is returned unchanged.
+pub fn name_timed_out_worker(message: &str, worker: &str) -> String {
+    message.replacen(
+        &format!("reviewer {TIMED_OUT} "),
+        &format!("{worker} {TIMED_OUT} "),
+        1,
+    )
+}
 
 /// Appended to every package prompt by a model adapter: the exact `ReviewerResult@2` contract,
 /// kept in one place, versioned with the parser it feeds.
@@ -295,6 +306,28 @@ mod tests {
     use super::{
         note_cleanup_fallback, parse_proposal_declaration, parse_reviewer_result, stream_totals,
     };
+
+    /// A Task slot's timeout names its own Worker, wherever the adapter wrapped the message;
+    /// any other failure is left as it was.
+    #[test]
+    fn a_timeout_names_the_slot_that_did_not_answer() {
+        let timed_out = super::RunnerError::TimedOut {
+            after_ms: 10_797_336,
+        };
+        assert_eq!(
+            super::name_timed_out_worker(
+                &format!("Claude Worker ended ({timed_out})"),
+                "implementer"
+            ),
+            "Claude Worker ended (implementer did not answer within 10797336ms and was killed)"
+        );
+        let failed = super::RunnerError::Failed {
+            exit_code: 1,
+            stderr_excerpt: "boom".into(),
+        }
+        .to_string();
+        assert_eq!(super::name_timed_out_worker(&failed, "implementer"), failed);
+    }
 
     /// A stream the output cap truncated ends where its drain read, not where the kept prefix
     /// ends: the tap's gap protocol compares the observed total (design §7.3).

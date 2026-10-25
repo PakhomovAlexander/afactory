@@ -497,6 +497,30 @@ impl TaskProjection {
                 "Delivery differs from the exact verified Task result",
             ));
         }
+        // A verification Task's delivery of another Task's candidate references the proof that
+        // names both (ADR-0211); a proof always names this Task and its result.
+        let envelope = cas
+            .get_artifact(id)
+            .map_err(|error| StoreError::Artifact(error.to_string()))?;
+        for reference in &envelope.input_artifacts {
+            let Some(referenced) = cas
+                .get_optional_artifact(reference)
+                .map_err(|error| StoreError::Artifact(error.to_string()))?
+                .filter(|referenced| referenced.artifact_type == TASK_DELIVERY_PROOF_V1)
+            else {
+                continue;
+            };
+            let proof: TaskDeliveryProofV1 = serde_json::from_value(referenced.payload)?;
+            proof.validate().map_err(conflict)?;
+            if proof.verification_task_id != self.task_id
+                || proof.verification_result_id != *result_id
+                || !self.revision.kind.eq("verification")
+            {
+                return Err(conflict(
+                    "Delivery proof names another Task than the verification it delivers",
+                ));
+            }
+        }
         let receipt = cas
             .get_json(&value.receipt_id)
             .map_err(|e| conflict(e.to_string()))?;

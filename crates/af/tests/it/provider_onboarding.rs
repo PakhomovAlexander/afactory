@@ -112,8 +112,12 @@ fi
 exit 64
 "#;
 
+/// The fake CLI and its auth directory, which exists and holds a login marker: setup without
+/// `--login` never creates a directory, and status never probes one without a marker.
 fn logged_out_claude(root: &Path) -> (PathBuf, PathBuf) {
     let auth = root.join("claude-auth");
+    std::fs::create_dir(&auth).unwrap();
+    std::fs::write(auth.join(".claude.json"), "{}").unwrap();
     let bin = fake_provider(root, "claude", LOGGED_OUT_CLAUDE);
     (auth, bin)
 }
@@ -209,7 +213,11 @@ fn setup_refuses_json_with_interactive_login() {
     let output = af(root.path(), &bin, &borrowed(&args));
 
     assert_eq!(code(&output), 2, "{}", err(&output));
-    assert!(out(&output).is_empty(), "{}", out(&output));
+    // Under --json the usage error is the one `af/error@1` document, and nothing else.
+    let document: serde_json::Value = serde_json::from_slice(&output.stdout)
+        .unwrap_or_else(|_| panic!("not one document: {}", out(&output)));
+    assert_eq!(document["schema"], "af/error@1", "{document}");
+    assert_eq!(document["exit_code"], 2, "{document}");
     let stderr = err(&output);
     assert!(stderr.contains("cannot be used with"), "{stderr}");
     assert!(!auth.join("login-log").exists());
@@ -221,7 +229,6 @@ fn setup_refuses_json_with_interactive_login() {
 fn an_authenticated_context_registers_without_a_login() {
     let root = tempfile::tempdir().unwrap();
     let (auth, bin) = logged_out_claude(root.path());
-    std::fs::create_dir(&auth).unwrap();
     std::fs::write(auth.join("logged-in"), "").unwrap();
     let args = claude_setup(&auth, &["--json"]);
 
@@ -258,7 +265,6 @@ fn an_authenticated_context_registers_without_a_login() {
 fn documents_redact_identity_and_provider_output() {
     let root = tempfile::tempdir().unwrap();
     let (auth, bin) = logged_out_claude(root.path());
-    std::fs::create_dir(&auth).unwrap();
     std::fs::write(auth.join("logged-in"), "").unwrap();
     let args = claude_setup(&auth, &["--json"]);
 
@@ -270,7 +276,7 @@ fn documents_redact_identity_and_provider_output() {
         &["provider", "status", "--json", "--usage"],
     );
     let reported = document(&status);
-    valid("provider-status-v2.json", &reported);
+    valid("provider-status-v3.json", &reported);
 
     for rendered in [out(&setup), out(&status)] {
         for leaked in [
@@ -340,6 +346,14 @@ exit 64
     assert_eq!(code(&success), 0, "{}", err(&success));
     let stdout = out(&success);
     assert!(stdout.contains("authenticated and registered"), "{stdout}");
+    // The next step of a first run follows a registration (ADR-0210).
+    assert!(
+        stdout
+            .lines()
+            .last()
+            .is_some_and(|line| line.starts_with("next: af onboard (in a repository)")),
+        "{stdout}"
+    );
     assert!(err(&success).is_empty(), "{}", err(&success));
 
     // 5 — the same auth context under a second ID conflicts, refused before any Provider work.
@@ -436,6 +450,7 @@ fn status_keeps_authentication_when_optional_usage_is_unavailable() {
     let root = tempfile::tempdir().unwrap();
     let auth = root.path().join("codex-auth");
     std::fs::create_dir(&auth).unwrap();
+    std::fs::write(auth.join("config.toml"), "").unwrap();
     let bin = fake_provider(
         root.path(),
         "codex",
@@ -485,7 +500,7 @@ exit 64
     let fast = run(&["provider", "status", "--json"]);
     assert_eq!(code(&fast), 0, "{}", err(&fast));
     let reported = document(&fast);
-    valid("provider-status-v2.json", &reported);
+    valid("provider-status-v3.json", &reported);
     assert_eq!(reported["usage_requested"], false);
     let provider = reported["providers"][0].clone();
     assert_eq!(provider["id"], "codex-main");
@@ -500,7 +515,7 @@ exit 64
     let probed = run(&["provider", "status", "--json", "--usage"]);
     assert_eq!(code(&probed), 7, "{}", err(&probed));
     let reported = document(&probed);
-    valid("provider-status-v2.json", &reported);
+    valid("provider-status-v3.json", &reported);
     assert_eq!(reported["usage_requested"], true);
     assert_eq!(reported["exit_code"], 7);
     let provider = reported["providers"][0].clone();

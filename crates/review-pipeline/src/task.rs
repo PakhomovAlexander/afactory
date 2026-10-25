@@ -17,6 +17,7 @@ pub mod planning;
 pub mod provider;
 mod provider_admissions;
 pub mod remote_check;
+mod retry;
 pub use provider_admissions::TaskProviderAdmissionReport;
 mod report;
 pub mod report_task;
@@ -67,6 +68,9 @@ pub struct TaskWorkOutput {
     /// The Provider refused this exact input: the bound model's safety classifier flagged it.
     /// The same input is flagged again, so a failed Attempt with it is not retried (ADR-0147).
     pub refused_input: bool,
+    /// Whether the failure was transient, and what the Attempt did about its Provider, for the
+    /// runtime to retry within the Attempt and to record (ADR-0208).
+    pub notes: review_runner::task::CallNotes,
 }
 
 pub trait TaskOperatorHost: Sync {
@@ -181,6 +185,10 @@ pub struct TaskRuntime<'store, 'host> {
     authority: &'host dyn TaskAuthority,
     host: &'host dyn TaskOperatorHost,
     cancellation: Option<&'host AtomicBool>,
+    /// Set by the heartbeat when this writer lost its lease (ADR-0209): the run records nothing
+    /// more, so the successor settles its work as abandoned by a lost writer.
+    writer_lost: AtomicBool,
+    lease_timing: lease::LeaseTiming,
     prepared: Mutex<BTreeMap<String, PreparedTaskAttempt>>,
     pending_outputs: Mutex<BTreeMap<String, (String, Option<String>)>>,
     failures: Mutex<BTreeMap<String, NodeFailureClass>>,
@@ -335,9 +343,9 @@ impl<'store, 'host> TaskRuntime<'store, 'host> {
         }
         let graph: CompiledTask =
             serde_json::from_value(value.payload).map_err(|e| e.to_string())?;
-        if graph.schema != "af.compiled-task/1" {
-            return Err("Unsupported compiled Task version".into());
-        }
+        graph
+            .validate_schema()
+            .map_err(|error| format!("Unsupported compiled Task version: {error}"))?;
         if let Some(plan_id) = &projection.plan_id {
             telemetry.plan(
                 &load,
@@ -359,6 +367,8 @@ impl<'store, 'host> TaskRuntime<'store, 'host> {
             authority,
             host,
             cancellation: None,
+            writer_lost: AtomicBool::new(false),
+            lease_timing: lease::LeaseTiming::PRODUCTION,
             prepared: Mutex::new(BTreeMap::new()),
             pending_outputs: Mutex::new(BTreeMap::new()),
             failures: Mutex::new(BTreeMap::new()),
@@ -379,8 +389,126 @@ impl<'store, 'host> TaskRuntime<'store, 'host> {
         self
     }
 
+    /// Renew the lease on the cadence of `timing` instead of the production 60 s lease's: for a
+    /// caller that took its lease for another length.
+    pub fn with_lease_timing(mut self, timing: lease::LeaseTiming) -> Self {
+        self.lease_timing = timing;
+        self
+    }
+
+    /// What this run's heartbeats signal: its cancellation, its writer loss, its lease cadence.
+    fn heartbeat_control(&self) -> lease::HeartbeatControl<'_> {
+        lease::HeartbeatControl {
+            cancellation: self.cancellation,
+            writer_lost: Some(&self.writer_lost),
+            timing: self.lease_timing,
+        }
+    }
+
+    /// Whether this run's heartbeat lost the writer lease.
+    pub fn writer_lost(&self) -> bool {
+        self.writer_lost.load(std::sync::atomic::Ordering::Acquire)
+    }
+
     /// The one dispatch entry for every Task node: a cancelled or unresolvable node is
     /// refused before the host runs, charging nothing.
+    /// One Attempt's work: the host's call, called again after a transient Provider failure
+    /// within the Attempt's own wall and reservation (ADR-0208). Each wait is recorded as a
+    /// `TaskProviderEvent@1` before it begins, so `af task show` names it while it lasts; it is
+    /// cut short by cancellation, and it never extends a deadline or resets the reservation.
+    fn execute_attempt(
+        &self,
+        input: &TaskInvocationV1,
+        attempt: Option<&PreparedTaskAttempt>,
+    ) -> TaskWorkOutput {
+        let call = || {
+            std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                self.execute_host(input, attempt)
+            }))
+            .unwrap_or_else(|_| TaskWorkOutput {
+                notes: Default::default(),
+                usage_observation: None,
+                usage: None,
+                outputs: Err("Task operator panicked".into()),
+                charged_tokens: None,
+                raw_artifact_ids: vec![],
+                usage_id: None,
+                feedback_id: None,
+                unknown_usage_cause: None,
+                refused_input: false,
+            })
+        };
+        let mut result = call();
+        let Some(attempt) = attempt else {
+            return result;
+        };
+        self.record_provider_events(input, attempt, &mut result);
+        let mut retries = retry::Retries::default();
+        while let Some(transient) = result.notes.transient.filter(|_| result.outputs.is_err()) {
+            let wait = match retries.next_wait(transient, &result, attempt) {
+                Ok(wait) => wait,
+                Err(why) => {
+                    retries.stopped(why);
+                    break;
+                }
+            };
+            let recorded = self
+                .store
+                .lock()
+                .expect("Task Store")
+                .record_task_provider_event(
+                    self.cas,
+                    &self.lease,
+                    attempt.id(),
+                    &input.node,
+                    retries.event(transient, wait),
+                );
+            if let Err(error) = recorded {
+                retries.stopped(format!("its wait could not be recorded: {error}"));
+                break;
+            }
+            if !retry::sleep(wait, self.cancellation) {
+                retries.waited(transient, wait);
+                retries.stopped("the Task was interrupted while it waited".into());
+                break;
+            }
+            retries.waited(transient, wait);
+            let mut next = call();
+            self.record_provider_events(input, attempt, &mut next);
+            result = retry::merge(result, next);
+        }
+        retries.annotate(&mut result);
+        result
+    }
+
+    /// Record what the host's call did about its Provider, as typed events of the Task's log.
+    /// A record that cannot be written is the Attempt's failure, never a silent loss.
+    fn record_provider_events(
+        &self,
+        input: &TaskInvocationV1,
+        attempt: &PreparedTaskAttempt,
+        result: &mut TaskWorkOutput,
+    ) {
+        for event in std::mem::take(&mut result.notes.events) {
+            let recorded = self
+                .store
+                .lock()
+                .expect("Task Store")
+                .record_task_provider_event(
+                    self.cas,
+                    &self.lease,
+                    attempt.id(),
+                    &input.node,
+                    event,
+                );
+            if let Err(error) = recorded {
+                result.outputs = Err(format!(
+                    "The Attempt's Provider event could not be recorded: {error}"
+                ));
+            }
+        }
+    }
+
     fn execute_host(
         &self,
         input: &TaskInvocationV1,
@@ -417,11 +545,11 @@ impl<'store, 'host> TaskRuntime<'store, 'host> {
         if self.integration.is_some() {
             return Err("Activated Integration runtime can execute only its captured phase".into());
         }
-        let report = lease::with_heartbeat_controlled(
+        let report = lease::with_heartbeat_supervised(
             &self.store,
             self.cas,
             &self.lease,
-            self.cancellation,
+            self.heartbeat_control(),
             || self.graph.run(self),
         )?;
         self.record_run_report(&report)?;
@@ -837,20 +965,11 @@ impl TaskRuntime<'_, '_> {
             }
             let started = SystemTime::now();
             let timer = Instant::now();
-            let mut result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-                self.execute_host(input, attempt.as_ref())
-            }))
-            .unwrap_or_else(|_| TaskWorkOutput {
-                usage_observation: None,
-                usage: None,
-                outputs: Err("Task operator panicked".into()),
-                charged_tokens: None,
-                raw_artifact_ids: vec![],
-                usage_id: None,
-                feedback_id: None,
-                unknown_usage_cause: None,
-                refused_input: false,
-            });
+            let mut result = self.execute_attempt(input, attempt.as_ref());
+            // A Worker that missed its wall is named by its slot, not as Review's reviewer.
+            if let (Err(error), Some(slot)) = (&mut result.outputs, slot.as_deref()) {
+                *error = review_runner::model::name_timed_out_worker(error, slot);
+            }
             let refused_input = result.refused_input;
             // The kernel's accounting of the Attempt's usage, one `af.usage.account` span.
             let usage_span = if attempt.is_some() {
@@ -860,6 +979,7 @@ impl TaskRuntime<'_, '_> {
             };
             let accounting = usage_span.enter();
             let mut charge_incomplete = false;
+            let mut charge_floor: Option<u128> = None;
             if let Some(attempt) = &attempt {
                 // Capture known charge before output CAS admission: a crash during output or
                 // diagnostic publication must not hide an already reported Provider overrun.
@@ -897,15 +1017,17 @@ impl TaskRuntime<'_, '_> {
                             .and_then(|o| o.reported_usage.as_ref())
                             .map(|u| u.chargeable_tokens.get()),
                     )
-                    // Reported but incomplete counters keep the reservation floor; an
-                    // observation without any counter is no report (ADR-0143).
-                    .chain(
-                        observation
-                            .as_ref()
-                            .filter(|o| !o.charge_complete && o.reported_usage.is_some())
-                            .map(|_| u128::from(attempt.reservation().tokens)),
-                    )
                     .max();
+                // Reported but incomplete counters keep the reservation floor at settlement; an
+                // observation without any counter is no report (ADR-0143). The floor is not
+                // usage: the wall record and the usage observation below keep what was
+                // observed, so an Attempt abandoned meanwhile is charged only that (ADR-0209).
+                if observation
+                    .as_ref()
+                    .is_some_and(|o| !o.charge_complete && o.reported_usage.is_some())
+                {
+                    charge_floor = Some(u128::from(attempt.reservation().tokens));
+                }
                 result.charged_tokens = charge;
                 let wall = review_store::TaskAttemptWall {
                     run_id: task_run_id(self.lease.task_id()).map_err(|e| e.to_string())?,
@@ -955,6 +1077,9 @@ impl TaskRuntime<'_, '_> {
                     if !observation.charge_complete {
                         charge_incomplete = true;
                         refuse_billing(&mut result.outputs, INCOMPLETE_BILLING);
+                        if observation.reported_usage.is_some() {
+                            charge_floor = Some(u128::from(attempt.reservation().tokens));
+                        }
                     }
                     let id = review_store::store::task::execution::usage_observation::capture_task_usage_observation(
                         self.cas, Producer::Attempt { run_id: wall.run_id.clone(), node_id: input.node.clone(), attempt_id: attempt.id().into() },
@@ -1025,7 +1150,7 @@ impl TaskRuntime<'_, '_> {
                         .unwrap_or(Cause::Unreported),
                 }
             });
-            let charged = known.unwrap_or(0);
+            let mut charged = known.unwrap_or(0);
             drop(accounting);
             crate::telemetry::usage_account_end(
                 &usage_span,
@@ -1041,6 +1166,7 @@ impl TaskRuntime<'_, '_> {
             if attempt.is_none() && (charged != 0 || result.usage_observation.is_some()) {
                 return Err("Pure Task operator reported a paid operation".into());
             }
+            let cancelled = control::check(self.cancellation).is_err();
             if let Err(error) = control::check(self.cancellation) {
                 result.outputs = Err(error);
             }
@@ -1065,10 +1191,28 @@ impl TaskRuntime<'_, '_> {
                 })
             });
             if let Some(attempt) = &attempt {
+                // A writer that lost its lease records nothing more: its successor settles this
+                // Attempt as abandoned by a lost writer, from the usage retained above
+                // (ADR-0209).
+                if self.writer_lost() {
+                    return Err(format!(
+                        "{}: Attempt {} of {} is left for the next writer to settle",
+                        lease::WRITER_LOST,
+                        attempt.id(),
+                        input.node
+                    ));
+                }
                 let conclusion = match &produced {
                     Ok((output_id, _)) => TaskAttemptResultV1::Succeeded {
                         output_id: output_id.clone(),
                     },
+                    // Its host stopped it (SIGINT or SIGTERM): no answer of the Attempt, so it
+                    // is abandoned and counts against the node's recovery allowance, not its
+                    // Attempt limit (ADR-0209).
+                    Err(error) if cancelled => {
+                        let diagnostic_id = self.cas.put_json(&serde_json::json!({"schema":"af.task-diagnostic/1", "error":error, "cause":"host_cancelled"})).map_err(|e| e.to_string())?;
+                        TaskAttemptResultV1::Abandoned { diagnostic_id }
+                    }
                     Err(error) => {
                         let diagnostic_id = self.cas.put_json(&serde_json::json!({"schema":"af.task-diagnostic/1", "error":error})).map_err(|e| e.to_string())?;
                         TaskAttemptResultV1::Failed {
@@ -1077,6 +1221,33 @@ impl TaskRuntime<'_, '_> {
                         }
                     }
                 };
+                // An Attempt that answered, or failed on its own, is charged at least the
+                // reservation its incomplete counters keep; an abandoned one only what it was
+                // observed to use, and its reservation returns to the Task (ADR-0209).
+                let abandoned = matches!(conclusion, TaskAttemptResultV1::Abandoned { .. });
+                if !abandoned
+                    && unknown_usage.is_none()
+                    && let Some(floor) = charge_floor.filter(|floor| *floor > charged)
+                {
+                    let mut usage = result
+                        .usage_id
+                        .as_deref()
+                        .map(|id| review_runner::task::usage::read_task_usage_exact(self.cas, id))
+                        .transpose()?
+                        .unwrap_or_default();
+                    usage.chargeable_tokens = floor.into();
+                    result.usage_id = Some(review_runner::task::usage::persist_task_usage_exact(
+                        self.cas,
+                        Producer::Attempt {
+                            run_id: task_run_id(self.lease.task_id()).map_err(|e| e.to_string())?,
+                            node_id: input.node.clone(),
+                            attempt_id: attempt.id().into(),
+                        },
+                        attempt.context_id(),
+                        &usage,
+                    )?);
+                    charged = floor;
+                }
                 let settlement = self
                     .store
                     .lock()

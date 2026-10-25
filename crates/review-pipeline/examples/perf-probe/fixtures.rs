@@ -12,7 +12,7 @@ use review_core::Producer;
 use serde_json::{Value, json};
 
 /// The production Task lease (`crates/review-pipeline/src/task/lease.rs`); never extended.
-pub const TASK_LEASE_MS: u64 = 15_000;
+pub const TASK_LEASE_MS: u64 = 60_000;
 
 pub const REQUIREMENTS_V1: &str = "af/Requirements@1";
 

@@ -49,6 +49,8 @@ impl Machine {
         let root = tempfile::tempdir().unwrap();
         let auth = root.path().join("codex-auth");
         std::fs::create_dir(&auth).unwrap();
+        // A Codex home's login marker: status hands no directory without one to its CLI.
+        std::fs::write(auth.join("config.toml"), "").unwrap();
         let machine = Self { root, auth };
         machine.install("codex", &with_help("codex", WORKING_CODEX), 0o755);
         let added = machine.af(&[
@@ -111,7 +113,7 @@ fn document(output: &Output) -> Value {
     let document: Value = serde_json::from_str(stdout.trim())
         .unwrap_or_else(|error| panic!("stdout is not one document: {error}\n{stdout}"));
     crate::schemas::valid(
-        &crate::schemas::validator("provider-status-v2.json"),
+        &crate::schemas::validator("provider-status-v3.json"),
         &document,
     );
     document
@@ -216,6 +218,7 @@ fn a_claude_cli_that_cannot_start_is_reported_the_same_way() {
     let root = tempfile::tempdir().unwrap();
     let auth = root.path().join("claude-auth");
     std::fs::create_dir(&auth).unwrap();
+    std::fs::write(auth.join("settings.json"), "{}").unwrap();
     let bin = root.path().join("bin");
     std::fs::create_dir(&bin).unwrap();
     let program = bin.join("claude");
@@ -252,6 +255,7 @@ fn setup_refuses_a_cli_that_cannot_start_as_a_missing_provider_cli() {
     let machine = Machine::registered();
     machine.install("codex", &broken_codex(), 0o755);
     let other = machine.root.path().join("codex-other");
+    std::fs::create_dir(&other).unwrap();
     let setup = machine.af(&[
         "provider",
         "setup",
@@ -309,6 +313,7 @@ exit 64
     let root = tempfile::tempdir().unwrap();
     let auth = root.path().join("claude-auth");
     std::fs::create_dir(&auth).unwrap();
+    std::fs::write(auth.join("settings.json"), "{}").unwrap();
     let bin = root.path().join("bin");
     std::fs::create_dir(&bin).unwrap();
     let program = bin.join("claude");
@@ -571,6 +576,7 @@ fn a_codex_whose_app_server_exits_before_initialize_is_incompatible_on_status_an
     }
 
     let other = machine.root.path().join("codex-other");
+    std::fs::create_dir(&other).unwrap();
     let setup = machine.af(&[
         "provider",
         "setup",
@@ -877,6 +883,7 @@ fn a_refused_initialize_is_incompatible_on_status_and_setup_with(
     }
 
     let other = machine.root.path().join("codex-other");
+    std::fs::create_dir(&other).unwrap();
     let setup = af(&[
         "provider",
         "setup",
@@ -920,6 +927,7 @@ fn setup_refuses_an_incompatible_cli_before_any_login() {
         .collect();
     machine.install("codex", &with_page("codex", WORKING_CODEX, &old), 0o755);
     let other = machine.root.path().join("codex-other");
+    std::fs::create_dir(&other).unwrap();
     let setup = machine.af(&[
         "provider",
         "setup",

@@ -82,7 +82,12 @@ impl TaskCollectedV1 {
 /// A collection time as `af task list`, `af task show` and every refusal spell it: RFC 3339 UTC
 /// to the second, as in `2026-09-28T12:00:00Z`.
 pub fn collected_time(unix_ms: u64) -> String {
-    let seconds = unix_ms / 1_000;
+    utc_time(unix_ms / 1_000)
+}
+
+/// An absolute Unix timestamp in seconds, rendered as a UTC date and time. Keeping the
+/// seconds conversion here also supports wall-clock times whose milliseconds overflow u64.
+pub fn utc_time(seconds: u64) -> String {
     let days = seconds / 86_400;
     let (year, month, day) = civil_from_days(days);
     let of_day = seconds % 86_400;

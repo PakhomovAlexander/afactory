@@ -115,6 +115,29 @@ mod tests {
         );
     }
 
+    /// A slot's `recovery_attempts` loads only under `af.pipeline/3` (ADR-0209); the same file
+    /// labelled `af.pipeline/1` is refused when it loads, naming the version it needs.
+    #[test]
+    fn a_slot_recovery_allowance_loads_only_under_af_pipeline_3() {
+        let path = std::env::var_os("AF_WORKSPACE_ROOT")
+            .map(std::path::PathBuf::from)
+            .unwrap_or_else(|| std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../.."))
+            .join("fixtures/task-contracts/v3/pipeline-definition.json");
+        let definition: PipelineDefinitionV1 =
+            serde_json::from_slice(&std::fs::read(path).unwrap()).unwrap();
+        let text = toml::to_string(&definition).unwrap();
+        assert!(text.starts_with("schema = \"af.pipeline/3\""), "{text}");
+        assert!(text.contains("recovery_attempts = 2"), "{text}");
+        assert_eq!(parse_task_pipeline(&text).unwrap(), definition);
+        let refused = parse_task_pipeline(&text.replace("af.pipeline/3", "af.pipeline/1"))
+            .unwrap_err()
+            .to_string();
+        assert!(
+            refused.contains("declares recovery_attempts on slot author under af.pipeline/1"),
+            "{refused}"
+        );
+    }
+
     #[test]
     fn human_set_order_is_normalized_but_duplicates_are_not_silently_erased() {
         let text = toml::to_string(&definition()).unwrap();

@@ -36,10 +36,14 @@ mod authority;
 mod caches;
 mod cli;
 mod config;
+mod doctor;
+mod error_document;
+mod human;
 mod interrupt;
 mod model_check;
 mod model_failures;
 mod onboard;
+mod power;
 mod project;
 /// Project Briefs (ADR-0160), beside the Surveyor they render from.
 #[path = "projects/brief.rs"]
@@ -51,6 +55,7 @@ mod review_task;
 mod self_optimizer;
 mod selfmgmt;
 mod storage;
+mod store_release;
 mod task;
 mod task_execution;
 mod telemetry;
@@ -120,13 +125,15 @@ impl Options {
     }
 }
 
+/// The state root, its existing prefix resolved (`config::canonical_root`), so every Store af
+/// keeps beneath it is named and measured without a link in its path.
 fn xdg_state_root() -> Result<PathBuf, String> {
     if let Some(configured) = std::env::var_os("XDG_STATE_HOME") {
         let configured = PathBuf::from(configured);
         if !configured.is_absolute() {
             return Err("XDG_STATE_HOME must be absolute".to_string());
         }
-        return Ok(configured);
+        return Ok(config::canonical_root(&configured));
     }
     let user_home =
         std::env::var_os("HOME").ok_or("HOME is not set and XDG_STATE_HOME is absent")?;
@@ -134,7 +141,7 @@ fn xdg_state_root() -> Result<PathBuf, String> {
     if !user_home.is_absolute() {
         return Err("HOME must be absolute".to_string());
     }
-    Ok(user_home.join(".local/state"))
+    Ok(config::canonical_root(&user_home.join(".local/state")))
 }
 
 /// Where Campaign state lives when `--state` and `--state-root` are omitted.
@@ -831,6 +838,8 @@ fn task_review_options(args: cli::RunArgs, plan_only: bool) -> task_execution::S
         plan_only,
         timeout_secs: args.timeout_secs,
         optimization_history: None,
+        fit: false,
+        replace: false,
     }
 }
 
@@ -870,16 +879,18 @@ fn review_command(namespace: cli::ReviewNamespace) -> Result<i32, String> {
             print_render(&run_options(args, "review render")).map(|()| 0)
         }
         R::Ledger { selector, long } => print_ledger(&LedgerOptions {
-            state: selector.state,
-            campaign: selector.campaign,
+            state: selector.state.clone(),
+            campaign: selector.campaign.clone(),
             long,
         })
+        .map_err(|error| explain_campaign(&selector, error))
         .map(|()| 0),
         R::Show { selector, key } => show(&ShowOptions {
-            state: selector.state,
-            campaign: selector.campaign,
+            state: selector.state.clone(),
+            campaign: selector.campaign.clone(),
             key,
         })
+        .map_err(|error| explain_campaign(&selector, error))
         .map(|()| 0),
         R::Export {
             selector,
@@ -895,15 +906,23 @@ fn review_command(namespace: cli::ReviewNamespace) -> Result<i32, String> {
         })
         .map(|()| 0),
         R::Report { selector, format } => print_report(&ReportOptions {
-            state: selector.state,
-            campaign: selector.campaign,
+            state: selector.state.clone(),
+            campaign: selector.campaign.clone(),
             format: match format {
                 cli::ReportFormatArg::Md => ReportFormat::Markdown,
                 cli::ReportFormatArg::Text => ReportFormat::Text,
                 cli::ReportFormatArg::Json => ReportFormat::Json,
             },
         })
+        .map_err(|error| explain_campaign(&selector, error))
         .map(|()| 0),
+        R::Tui => {
+            eprintln!(
+                "error: `af review tui` is not a command; the browser is `af` alone, at a \
+                 terminal\n  try: af"
+            );
+            Ok(2)
+        }
         R::Gc {
             state_root,
             older_than,
@@ -1118,12 +1137,13 @@ fn help_command(words: &[String]) -> Result<i32, String> {
     let mut root = cli::Af::command();
     if words.is_empty() {
         root.print_long_help().map_err(|error| error.to_string())?;
+        println!("\n{}", topics::listing());
         return Ok(0);
     }
     if words.len() == 1
         && let Some((topic, about, text)) = topics::find(&words[0])
     {
-        let body = topics::body(topic, text);
+        let body = topics::page(topic, text);
         println!("af help {topic} — {about}\n\n{body}");
         return Ok(0);
     }
@@ -1134,7 +1154,7 @@ fn help_command(words: &[String]) -> Result<i32, String> {
             None => {
                 let topics: Vec<&str> = topics::TOPICS.iter().map(|(name, _, _)| *name).collect();
                 eprintln!(
-                    "error: `{}` is neither a topic nor a command\n  topics: {}\n  try: af --help",
+                    "error: Topic or command {} not found in af help; topics: {}\n  try: af --help",
                     terminal_text(&words.join(" ")),
                     topics.join(", ")
                 );
@@ -1212,6 +1232,12 @@ fn main() {
         Err(error) => {
             drop(startup);
             perf_trace::finish();
+            // Under --json a usage error is the one `af/error@1` document `af help json`
+            // promises, beside clap's own message on stderr and with its exit code.
+            if let Some(document) = error_document::usage(&argv, &error) {
+                println!("{document}");
+                let _ = std::io::stdout().flush();
+            }
             error.exit()
         }
     };
@@ -1226,7 +1252,9 @@ fn main() {
     }
     let Some(command) = parsed.command else {
         if !tui::wanted() {
-            // Not a terminal: the usage error a bare `af` has always been, help on stderr.
+            // Not a terminal: the usage error a bare `af` has always been, help on stderr, after
+            // the first-run hints.
+            eprintln!("{}\n", cli::FIRST_RUN_HINTS);
             let refused = cli::Af::command()
                 .arg_required_else_help(true)
                 .try_get_matches_from(["af"]);
@@ -1242,15 +1270,40 @@ fn main() {
         selfmgmt::after_command(&argv);
         std::process::exit(code);
     };
-    // Still the only thread: every thread started from here inherits the blocked signals.
+    // Still the only thread: every thread started from here inherits the blocked signals. A run
+    // `af task run --detach` started outlives the terminal that started it (ADR-0211).
+    if std::env::var_os(task_execution::runs::DETACHED_ENV).is_some()
+        && matches!(
+            &command,
+            cli::Command::Task {
+                command: cli::TaskCommand::Run { .. }
+            }
+        )
+        && let Err(error) = interrupt::ignore_hangup()
+    {
+        eprintln!("af: {}", terminal_lines(&error.to_string()));
+        std::process::exit(1);
+    }
     if needs_interrupt_handling(&command)
         && let Err(error) = interrupt::install()
     {
         eprintln!("af: {}", terminal_lines(&error.to_string()));
         std::process::exit(1);
     }
-    let sandbox_sweep = runs_task_work(&command)
-        .then(sweep_stale_sandboxes_in_background)
+    // The Storage Budget first: it names the sandbox root (`[storage] sandbox_root`) the stale
+    // sandbox sweep below looks in.
+    storage::set_output(runs_task_work(&command), verbose_sweeps(&command));
+    // A Mac does not idle-sleep while Task work runs; `af task run --verbose` says so
+    // (ADR-0209). Held until af exits.
+    let _power = runs_task_work(&command)
+        .then(|| {
+            power::hold(matches!(
+                &command,
+                cli::Command::Task {
+                    command: cli::TaskCommand::Run { verbose: true, .. }
+                }
+            ))
+        })
         .flatten();
     if runs_task_work(&command)
         && let Err(error) = storage::install()
@@ -1264,7 +1317,11 @@ fn main() {
         );
         std::process::exit(1);
     }
+    let sandbox_sweep = runs_task_work(&command)
+        .then(sweep_stale_sandboxes_in_background)
+        .flatten();
     let collects_after = collects_after_run(&command);
+    let task_work = runs_task_work(&command);
     // A command that runs a kernel run records it (ADR-0153); every other command opens no
     // telemetry directory.
     let mut recording =
@@ -1408,7 +1465,9 @@ fn main() {
                     state,
                     json,
                 }),
-                cli::SelfCommand::Status { json } => selfmgmt::status(json).map(|()| 0),
+                cli::SelfCommand::Status { json, refresh } => {
+                    selfmgmt::status(json, refresh).map(|()| 0)
+                }
                 cli::SelfCommand::Update { check, version, rc } => {
                     selfmgmt::update(check, version, rc).map(|()| 0)
                 }
@@ -1418,22 +1477,28 @@ fn main() {
                 }
                 cli::SelfCommand::Remove { version } => selfmgmt::remove(&version).map(|()| 0),
                 cli::SelfCommand::Prune => selfmgmt::prune().map(|()| 0),
-                cli::SelfCommand::SetupShell { shell, write } => {
-                    selfmgmt::setup_shell(shell, write).map(|()| 0)
-                }
+                cli::SelfCommand::SetupShell {
+                    shell,
+                    write,
+                    remove,
+                } => selfmgmt::setup_shell(shell, write, remove).map(|()| 0),
                 cli::SelfCommand::Uninstall { purge } => selfmgmt::uninstall(purge).map(|()| 0),
                 cli::SelfCommand::Man { out_dir } => selfmgmt::man(&out_dir).map(|()| 0),
                 cli::SelfCommand::RefreshCheck => selfmgmt::refresh_check().map(|()| 0),
             },
         ),
-        cli::Command::Storage { json, command } => (
+        cli::Command::Storage {
+            json,
+            verbose,
+            command,
+        } => (
             "af storage",
             match command {
-                None => storage::show(json),
+                None => storage::show(json, verbose),
                 Some(cli::StorageCommand::Prune {
                     apply,
                     json: prune_json,
-                }) => storage::prune(apply, json || prune_json),
+                }) => storage::prune(apply, json || prune_json, verbose),
             },
         ),
         cli::Command::Telemetry { command } => match command {
@@ -1549,9 +1614,11 @@ fn main() {
                 0
             }),
         ),
+        cli::Command::Doctor(args) => ("af doctor", doctor::run(&args.repo, args.json)),
         cli::Command::Help { words } => ("af help", help_command(&words)),
     };
     if let Some(signal) = interrupt::received() {
+        task_execution::print_last_lines();
         if let Some(recording) = recording.take() {
             recording.finish(
                 interrupt::exit_code(signal),
@@ -1573,16 +1640,17 @@ fn main() {
         // Whatever the run's outcome; a failure here is a warning, never the exit status.
         storage::after_run();
     }
+    if task_work {
+        // One line for every sweep the command ran, the floor's and a new warm key's included.
+        storage::flush_summary();
+    }
     let code = match outcome {
         Ok(code) => code,
         Err(error) => {
+            // A classified refusal adds its cause, next command and facts (`af help json`).
+            let detail = error_document::take(&error);
             if argv.iter().skip(1).any(|word| word == "--json") {
-                let document = serde_json::json!({
-                    "schema": "af/error@1",
-                    "command": prefix,
-                    "error": error,
-                    "exit_code": 1,
-                });
+                let document = error_document::document(prefix, &error, 1, detail.as_ref());
                 println!("{document}");
             }
             eprintln!("{prefix}: {}", terminal_lines(&error));
@@ -1602,11 +1670,16 @@ fn main() {
     if let Some(sweep) = sandbox_sweep {
         // The command's own work is done; a sweep still removing a large leftover finishes
         // before the process ends, so a stale directory never outlives two Task-running commands.
-        let _ = sweep.join();
+        if let Ok(Some(line)) = sweep.join() {
+            eprintln!("{line}");
+        }
     }
     drop(dispatched);
     perf_trace::finish();
     selfmgmt::after_command(&argv);
+    // The run log's last line, the Task's state and next command, after everything the
+    // command's housekeeping printed: a script reads it as stderr's last line.
+    task_execution::print_last_lines();
     if code != 0 {
         std::process::exit(code);
     }
@@ -1619,6 +1692,7 @@ fn task_command(command: cli::TaskCommand) -> Result<i32, String> {
         cli::TaskCommand::Start {
             file,
             execute,
+            verbose: _,
             bindings,
             source_bindings,
             repo,
@@ -1640,6 +1714,8 @@ fn task_command(command: cli::TaskCommand) -> Result<i32, String> {
             plan_only: !execute,
             timeout_secs,
             optimization_history: None,
+            fit: false,
+            replace: false,
         }),
         cli::TaskCommand::Plan {
             file,
@@ -1649,6 +1725,8 @@ fn task_command(command: cli::TaskCommand) -> Result<i32, String> {
             state,
             authority,
             uncommitted,
+            fit,
+            replace,
             json,
             workspace: _,
         } => {
@@ -1667,6 +1745,8 @@ fn task_command(command: cli::TaskCommand) -> Result<i32, String> {
                 plan_only: true,
                 timeout_secs: None,
                 optimization_history: None,
+                fit,
+                replace,
             })
         }
         cli::TaskCommand::DecisionPayload {
@@ -1725,9 +1805,42 @@ fn task_command(command: cli::TaskCommand) -> Result<i32, String> {
         ),
         cli::TaskCommand::Run {
             task_id,
-            confirm_plan,
+            detach: true,
+            inspect,
+            ..
+        } => task_execution::runs::detach(&task_id, &inspect),
+        // `--from` conflicts with `--detach` at parse time (cli.rs), so the detach arm never
+        // sees a `--from`; the continue arm precedes the foreground arm, which matches `..`.
+        cli::TaskCommand::Run {
+            task_id,
+            from: Some(from),
+            round,
+            goal,
+            bindings,
             execute,
             inspect,
+            ..
+        } => task_execution::run_from(task_execution::ContinueOptions {
+            task_id,
+            from,
+            round,
+            goal,
+            bindings,
+            repo: inspect.repo,
+            state: inspect.state,
+            json: inspect.json,
+            execute,
+        }),
+        cli::TaskCommand::Run {
+            task_id,
+            confirm_plan,
+            execute,
+            retry_gate,
+            verbose: _,
+            detach: false,
+            quiet,
+            inspect,
+            ..
         } => task_execution::run(
             &task_id,
             &inspect.repo,
@@ -1735,6 +1848,54 @@ fn task_command(command: cli::TaskCommand) -> Result<i32, String> {
             inspect.json,
             confirm_plan.as_deref(),
             execute,
+            retry_gate,
+            quiet,
+        ),
+        cli::TaskCommand::Wait {
+            task_id,
+            timeout,
+            inspect,
+        } => task_execution::runs::wait(&task_id, timeout, &inspect),
+        cli::TaskCommand::Status { task_id, inspect } => {
+            task_execution::runs::status(&task_id, &inspect)
+        }
+        cli::TaskCommand::Cancel { task_id, inspect } => {
+            task_execution::runs::cancel(&task_id, &inspect)
+        }
+        cli::TaskCommand::Findings {
+            task_id,
+            round,
+            inspect,
+        } => task_execution::findings::print(&task_id, round, &inspect),
+        cli::TaskCommand::Materialize {
+            task_id,
+            snapshot,
+            into,
+            allow_unverified,
+            force,
+            inspect,
+        } => task_execution::candidate::materialize(
+            &task_id,
+            snapshot.as_deref(),
+            &into,
+            allow_unverified,
+            force,
+            &inspect,
+        ),
+        cli::TaskCommand::Diff {
+            task_id,
+            snapshot,
+            base,
+            stat,
+            name_only,
+            inspect,
+        } => task_execution::candidate::diff(
+            &task_id,
+            snapshot.as_deref(),
+            base.as_deref(),
+            stat,
+            name_only,
+            &inspect,
         ),
         cli::TaskCommand::Output {
             task_id,
@@ -1746,7 +1907,7 @@ fn task_command(command: cli::TaskCommand) -> Result<i32, String> {
             &task_id,
             &port,
             &format,
-            &output,
+            output.as_deref(),
             &inspect.repo,
             inspect.state.as_deref(),
             inspect.json,
@@ -1827,33 +1988,63 @@ fn task_command(command: cli::TaskCommand) -> Result<i32, String> {
             inspect.state.as_deref(),
             inspect.json,
         ),
-        cli::TaskCommand::Show { task_id, inspect } => {
-            task::inspect_from_cli(Some(task_id), inspect.repo, inspect.state, inspect.json)
-                .and_then(task::show)
-                .map(|()| 0)
-        }
-        cli::TaskCommand::Report { task_ids, inspect } => {
-            task::inspect_from_cli(None, inspect.repo, inspect.state, inspect.json)
-                .and_then(|options| task::report(options, &task_ids))
-                .map(|()| 0)
-        }
+        cli::TaskCommand::Show {
+            task_id,
+            checks,
+            inspect,
+        } => task::inspect_from_cli(Some(task_id), inspect.repo, inspect.state, inspect.json)
+            .and_then(|options| task::show(options, checks))
+            .map(|()| 0),
+        cli::TaskCommand::Report {
+            task_ids,
+            pr_body,
+            template,
+            base,
+            inspect,
+        } => task::inspect_from_cli(None, inspect.repo, inspect.state, inspect.json)
+            .and_then(|options| {
+                let body = pr_body.then_some(task::PrBody {
+                    template: template.as_deref(),
+                    base: base.as_deref(),
+                });
+                task::report(options, &task_ids, body)
+            })
+            .map(|()| 0),
     }
 }
 
 /// The commands that run Task Workers through the shared Task host take over SIGINT and SIGTERM
-/// so an interrupt stops those Workers before af exits (ADR-0129).
+/// so an interrupt stops those Workers before af exits (ADR-0129); `af self optimize --execute`
+/// runs an Optimization Task's Workers the same way (issue #158).
 fn runs_task_work(command: &cli::Command) -> bool {
     match command {
         cli::Command::Review(namespace) => {
             matches!(namespace.command, None | Some(cli::ReviewCommand::Run(_)))
         }
         cli::Command::Provider { command } => matches!(command, cli::ProviderCommand::Doctor(_)),
+        // `af task run --detach` only starts the run that does the work, in the background.
         cli::Command::Task { command } => matches!(
             command,
-            cli::TaskCommand::Start { execute: true, .. } | cli::TaskCommand::Run { .. }
+            cli::TaskCommand::Start { execute: true, .. }
+                | cli::TaskCommand::Run { detach: false, .. }
         ),
+        cli::Command::SelfCmd { command } => {
+            matches!(command, cli::SelfCommand::Optimize { execute: true, .. })
+        }
         _ => false,
     }
+}
+
+/// Whether a Task command asked for every line of its storage sweeps (`--verbose`) instead of
+/// the one summary line.
+fn verbose_sweeps(command: &cli::Command) -> bool {
+    matches!(
+        command,
+        cli::Command::Task {
+            command: cli::TaskCommand::Start { verbose: true, .. }
+                | cli::TaskCommand::Run { verbose: true, .. }
+        }
+    )
 }
 
 /// The kind of kernel run a command runs, when it runs one: it records Telemetry (design §6).
@@ -1869,7 +2060,9 @@ fn recorded_run(command: &cli::Command) -> Option<review_pipeline::telemetry::Ru
             command: cli::ProviderCommand::Doctor(_),
         } => Some(RunKind::Review),
         cli::Command::Task {
-            command: cli::TaskCommand::Start { execute: true, .. } | cli::TaskCommand::Run { .. },
+            command:
+                cli::TaskCommand::Start { execute: true, .. }
+                | cli::TaskCommand::Run { detach: false, .. },
         } => Some(RunKind::Task),
         cli::Command::SelfCmd {
             command: cli::SelfCommand::Optimize { execute: true, .. },
@@ -1887,7 +2080,8 @@ fn collects_after_run(command: &cli::Command) -> bool {
         }
         cli::Command::Task { command } => matches!(
             command,
-            cli::TaskCommand::Start { execute: true, .. } | cli::TaskCommand::Run { .. }
+            cli::TaskCommand::Start { execute: true, .. }
+                | cli::TaskCommand::Run { detach: false, .. }
         ),
         _ => false,
     }
@@ -1916,9 +2110,20 @@ fn exit_interrupted(
     error: Option<String>,
 ) -> ! {
     let code = interrupt::exit_code(signal);
-    let resume = match interrupt::noted_task() {
-        Some(id) => format!("resume it with `af task run {id}`"),
-        None => "run the same command again to resume it".into(),
+    // The same next command `af task show --json` names: `af task run ID` only while the
+    // interrupted node has a recovery left (ADR-0209). Either carries the Store selectors this
+    // command was given.
+    let resume = match (interrupt::noted_task(), interrupt::noted_next()) {
+        (Some(id), Some(next)) => format!(
+            "a node of Task {id} used up its recovery allowance, so `af task run {id}` cannot \
+             continue it; start it again with `{next}` (the Task file it was started from)"
+        ),
+        (Some(id), None) => format!(
+            "resume it with `{}`, which dispatches the interrupted node again without using \
+             one of its Attempts",
+            task_execution::with_selectors(&format!("af task run {id}"))
+        ),
+        (None, _) => "run the same command again to resume it".into(),
     };
     let message = if argv.get(1).is_some_and(|s| s == "provider")
         && argv.get(2).is_some_and(|s| s == "auth")
@@ -1958,13 +2163,34 @@ fn exit_interrupted(
 /// `Err` path and exits 1.
 fn provider_command(command: cli::ProviderCommand) -> Result<i32, String> {
     match command {
-        cli::ProviderCommand::Status { json, usage } => {
+        cli::ProviderCommand::Detect {
+            dirs,
+            ids,
+            kind,
+            all,
+            apply,
+            json,
+            identity,
+        } => providers::detect::run(providers::detect::DetectOptions {
+            dirs,
+            ids,
+            kind: kind.map(|kind| provider_kind(kind).to_string()),
+            all,
+            apply,
+            json,
+            identity,
+        }),
+        cli::ProviderCommand::Status {
+            json,
+            usage,
+            verbose,
+        } => {
             let usage = if usage {
                 providers::UsageProbe::Probe
             } else {
                 providers::UsageProbe::Skip
             };
-            providers::print_status(json, usage)
+            providers::print_status(json, usage, verbose)
         }
         cli::ProviderCommand::Setup {
             id,
@@ -1979,11 +2205,20 @@ fn provider_command(command: cli::ProviderCommand) -> Result<i32, String> {
         cli::ProviderCommand::Models { ids, json, resolve } => {
             providers::models::print_models(&ids, json, resolve.as_deref())
         }
-        cli::ProviderCommand::Add { id, kind, auth_dir } => {
+        cli::ProviderCommand::Add {
+            id,
+            kind,
+            auth_dir,
+            unverified,
+        } => {
             let kind = provider_kind(kind);
-            providers::add(&id, kind, auth_dir.as_deref())
+            providers::add(&id, kind, auth_dir.as_deref(), unverified)
         }
         cli::ProviderCommand::Remove { ids } => providers::remove(&ids),
+        cli::ProviderCommand::Disable { id, duration } => {
+            providers::availability::disable(&id, &duration)
+        }
+        cli::ProviderCommand::Enable { id } => providers::availability::enable(&id),
         cli::ProviderCommand::Auth { command } => match command {
             cli::ProviderAuthCommand::Begin {
                 id,
@@ -2012,12 +2247,7 @@ fn provider_command(command: cli::ProviderCommand) -> Result<i32, String> {
         },
         cli::ProviderCommand::Recover => providers::recover().map(|()| 0),
         cli::ProviderCommand::Doctor(args) => {
-            if args.task_file.is_some() {
-                let refusal = "Task Provider admission does not use the Campaign doctor adapter";
-                Err(refusal.into())
-            } else {
-                provider_doctor(&run_options(args, "provider doctor"))
-            }
+            provider_doctor(&run_options(args.into(), "provider doctor"))
         }
     }
 }
@@ -2110,12 +2340,18 @@ fn print_plan(options: &Options) -> Result<(), String> {
     std::fs::create_dir_all(&git_home).map_err(|error| error.to_string())?;
     let repo = Repo::open(repository, git_home)
         .with_timeout(authority::requested_git_timeout(options.git_timeout));
-    let (plan, models) = authority::plan(options, &cas, &repo)?;
+    let (mut plan, models) = authority::plan(options, &cas, &repo)?;
+    let empty = plan["subject"]["empty"].as_bool() == Some(true);
+    let unfit = plan["pipeline"]["inputs_fit"].as_bool() == Some(false);
+    let missing = missing_bindings(&plan);
+    let next = plan_next_step(empty, unfit, &missing);
     if options.json {
-        // The document's shape is unchanged; the model lines go to stderr (ADR-0148).
+        // The model lines go to stderr (ADR-0148); the next command the text prints is the
+        // document's `next_action`, null where the text names no command.
         for line in &models {
             eprintln!("{}", terminal_text(line));
         }
+        plan["next_action"] = serde_json::json!(next.command);
         println!(
             "{}",
             serde_json::to_string(&plan).map_err(|error| error.to_string())?
@@ -2124,46 +2360,56 @@ fn print_plan(options: &Options) -> Result<(), String> {
     }
     let selectors = &plan["selectors"];
     let resolved = &plan["resolved"];
-    println!("review plan (token-free; no Campaign state)");
-    println!(
+    plan_line!("review plan (token-free; no Campaign state)");
+    plan_line!(
         "policy   {} => {}",
         terminal_text(selectors["policy_rev"].as_str().unwrap_or("?")),
         terminal_text(resolved["policy_snapshot_id"].as_str().unwrap_or("?"))
     );
     if let Some(base) = selectors["base"].as_str() {
-        println!(
+        plan_line!(
             "base     {} => {}",
             terminal_text(base),
             terminal_text(resolved["base_snapshot_id"].as_str().unwrap_or("?"))
         );
     }
-    println!(
+    plan_line!(
         "candidate {} => {}",
         terminal_text(selectors["candidate"].as_str().unwrap_or("?")),
         terminal_text(resolved["candidate_snapshot_id"].as_str().unwrap_or("?"))
     );
-    println!(
-        "subject  {} ({} paths, {} patch bytes{})",
+    plan_line!(
+        "subject  {} ({} paths, {} patch{})",
         terminal_text(plan["subject"]["kind"].as_str().unwrap_or("?")),
         plan["subject"]["changed_paths"]
             .as_array()
             .map_or(0, Vec::len),
-        plan["subject"]["patch_bytes"].as_u64().unwrap_or(0),
-        if plan["subject"]["empty"].as_bool() == Some(true) {
+        human::bytes(plan["subject"]["patch_bytes"].as_u64().unwrap_or(0)),
+        if empty {
             "; EMPTY — run will refuse"
         } else {
             ""
         }
     );
+    if empty {
+        // What is empty, and the selectors that would fill it.
+        plan_line!(
+            "  empty  the diff from base {} to candidate {} changes no file; change files and \
+             review them with --uncommitted, or name other revisions with --base REV and \
+             --candidate REV",
+            terminal_text(selectors["base"].as_str().unwrap_or("?")),
+            terminal_text(selectors["candidate"].as_str().unwrap_or("?")),
+        );
+    }
     for path in plan["subject"]["changed_paths"]
         .as_array()
         .into_iter()
         .flatten()
     {
-        println!("  change  {}", terminal_text(path.as_str().unwrap_or("?")));
+        plan_line!("  change  {}", terminal_text(path.as_str().unwrap_or("?")));
     }
     if let Some(route) = plan["route"].as_object() {
-        println!(
+        plan_line!(
             "route    {} => {}{}{}",
             terminal_text(
                 route
@@ -2192,13 +2438,13 @@ fn print_plan(options: &Options) -> Result<(), String> {
                 .unwrap_or_default()
         );
     }
-    println!("topology");
+    plan_line!("topology");
     for node in plan["pipeline"]["topology"]["nodes"]
         .as_array()
         .into_iter()
         .flatten()
     {
-        println!(
+        plan_line!(
             "  node {} [{}]",
             terminal_text(node["id"].as_str().unwrap_or("?")),
             terminal_text(node["kind"].as_str().unwrap_or("?"))
@@ -2209,7 +2455,7 @@ fn print_plan(options: &Options) -> Result<(), String> {
         .into_iter()
         .flatten()
     {
-        println!(
+        plan_line!(
             "  {}.{} -> {}.{}",
             terminal_text(edge["from"]["node"].as_str().unwrap_or("?")),
             terminal_text(edge["from"]["port"].as_str().unwrap_or("?")),
@@ -2218,7 +2464,7 @@ fn print_plan(options: &Options) -> Result<(), String> {
         );
     }
     for gate in plan["pipeline"]["gates"].as_array().into_iter().flatten() {
-        println!(
+        plan_line!(
             "gate     {} ({})",
             terminal_text(gate["name"].as_str().unwrap_or("?")),
             if gate["required"].as_bool() == Some(true) {
@@ -2229,7 +2475,7 @@ fn print_plan(options: &Options) -> Result<(), String> {
         );
     }
     if let Some(budgets) = plan["pipeline"]["budgets"].as_object() {
-        println!(
+        plan_line!(
             "budgets  {} tokens/Attempt; {} tokens/Round",
             budgets
                 .get("attempt")
@@ -2256,7 +2502,7 @@ fn print_plan(options: &Options) -> Result<(), String> {
                 )
             })
             .collect::<Vec<_>>();
-        println!(
+        plan_line!(
             "reserve  {}; max simultaneous {}",
             parts.join(" · "),
             plan["pipeline"]["max_simultaneous_reservation"]
@@ -2267,9 +2513,10 @@ fn print_plan(options: &Options) -> Result<(), String> {
             let Some(bytes) = reservation["input_bytes"].as_u64() else {
                 continue;
             };
-            println!(
-                "input    {} {bytes} bytes (about {} tokens){}",
+            plan_line!(
+                "input    {} {} (about {} tokens){}",
                 terminal_text(reservation["node"].as_str().unwrap_or("?")),
+                human::bytes(bytes),
                 reservation["input_tokens"].as_u64().unwrap_or(0),
                 if reservation["fits"].as_bool() == Some(false) {
                     " — EXCEEDS its Attempt cap; run will refuse"
@@ -2279,19 +2526,46 @@ fn print_plan(options: &Options) -> Result<(), String> {
             );
         }
     }
-    println!(
-        "provider admission  {} tokens, {} ms per capability (new capture; resume retains captured cost)",
-        plan["provider_admission"]["tokens"], plan["provider_admission"]["wall_ms"]
+    plan_line!(
+        "provider admission  {} tokens, {} per capability (new capture; resume retains captured cost)",
+        plan["provider_admission"]["tokens"],
+        human::duration(plan["provider_admission"]["wall_ms"].as_u64().unwrap_or(0))
     );
+    // A missing binding names its fix: a registered Provider of the Worker's kind, or how to
+    // register one when this machine has none.
     for provider in plan["providers"].as_array().into_iter().flatten() {
-        println!(
-            "provider {} -> {}",
-            terminal_text(provider["node"].as_str().unwrap_or("?")),
-            terminal_text(provider["binding"].as_str().unwrap_or("MISSING"))
-        );
+        let node = provider["node"].as_str().unwrap_or("?");
+        let kind = provider["runner"].as_str().unwrap_or("?");
+        match provider["binding"].as_str() {
+            Some(binding) => plan_line!(
+                "provider {} -> {}",
+                terminal_text(node),
+                terminal_text(binding)
+            ),
+            None if provider["required"] == true => {
+                let fix = match missing
+                    .iter()
+                    .find(|(missing, _)| missing == node)
+                    .and_then(|(_, id)| id.as_deref())
+                {
+                    Some(id) => format!("--provider {node}={id}"),
+                    None => format!(
+                        "no {kind} Provider is registered: `af provider status` lists what this \
+                         machine has, and `af provider setup {kind}-main --kind {kind} --login` \
+                         registers one"
+                    ),
+                };
+                plan_line!(
+                    "provider {} -> MISSING; fix: {}",
+                    terminal_text(node),
+                    terminal_text(&fix)
+                );
+            }
+            None => plan_line!("provider {} -> MISSING", terminal_text(node)),
+        }
     }
     for line in &models {
-        println!("{}", terminal_text(line));
+        plan_line!("{}", terminal_text(line));
     }
     let bound = plan["providers"]
         .as_array()
@@ -2300,13 +2574,158 @@ fn print_plan(options: &Options) -> Result<(), String> {
         .any(|provider| provider["required"] == true && provider["binding"].is_string());
     if bound {
         // The plan read each bound Provider's catalog, token-free (ADR-0148).
-        println!(
+        plan_line!(
             "effects  no state, Gates, Provider admission, Workers, or token spend; each bound Provider's model catalog was read token-free"
         );
     } else {
-        println!("effects  no state, Gates, Provider calls, Workers, or token spend");
+        plan_line!("effects  no state, Gates, Provider calls, Workers, or token spend");
+    }
+    // What to do, then the one command, whole: continued between its arguments when it is
+    // wider than the terminal, so it still runs as copied.
+    let width = human::width();
+    let command = next.command.as_deref().map(terminal_text);
+    match (next.prose.as_deref().map(terminal_text), command) {
+        (Some(prose), Some(command)) => {
+            println!("{}", human::wrap(&format!("next:    {prose}"), width, 9));
+            println!(
+                "{}",
+                human::fit_command(&format!("         {command}"), width)
+            );
+        }
+        (Some(prose), None) => println!("{}", human::wrap(&format!("next:    {prose}"), width, 9)),
+        (None, Some(command)) => {
+            println!(
+                "{}",
+                human::fit_command(&format!("next:    {command}"), width)
+            );
+        }
+        (None, None) => println!("next:    none"),
     }
     Ok(())
+}
+
+/// One line of `af review plan`'s text, held to the terminal's width (`af help json` keeps the
+/// document whole): prose wraps at spaces under the column its label's values start at, and a
+/// command between backticks stays on one line.
+macro_rules! plan_line {
+    ($($argument:tt)*) => {
+        println!("{}", wrap_plan_line(&format!($($argument)*)))
+    };
+}
+use plan_line;
+
+/// [`plan_line!`]'s wrapping: continuation lines start where the line's first value does
+/// (`policy   HEAD => sha256:...` continues under `HEAD`), else two columns past its indent.
+fn wrap_plan_line(line: &str) -> String {
+    let width = human::width();
+    let lead = line.len() - line.trim_start().len();
+    let rest = &line[lead..];
+    let column = rest
+        .find("  ")
+        .map(|at| lead + at + (rest[at..].len() - rest[at..].trim_start().len()))
+        .filter(|column| *column <= width / 3)
+        .unwrap_or(lead + 2);
+    human::wrap(line, width, column)
+}
+
+/// The model Workers of `plan` without a Provider binding, each with a registered Provider of
+/// its kind when this machine has one.
+fn missing_bindings(plan: &serde_json::Value) -> Vec<(String, Option<String>)> {
+    let registered = providers::registered()
+        .map(|(ids, _)| ids)
+        .unwrap_or_default();
+    plan["providers"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter(|provider| provider["binding"].is_null() && provider["required"] == true)
+        .map(|provider| {
+            let kind = provider["runner"].as_str().unwrap_or("?");
+            let candidate = registered
+                .iter()
+                .find(|(_, registered_kind)| *registered_kind == kind)
+                .map(|(id, _)| id.clone());
+            (
+                provider["node"].as_str().unwrap_or("?").to_owned(),
+                candidate,
+            )
+        })
+        .collect()
+}
+
+/// What `af review plan` says to do next: what to do, when that is more than one command, and
+/// the one command to run, when there is one. The command is the document's `next_action`.
+struct NextStep {
+    prose: Option<String>,
+    command: Option<String>,
+}
+
+/// What `af review plan` tells a person to do next: the exact `af review run` command when the
+/// plan is what run admits, else the first thing that keeps it from running.
+fn plan_next_step(empty: bool, unfit: bool, missing: &[(String, Option<String>)]) -> NextStep {
+    let words: Vec<String> = std::env::args().skip(1).collect();
+    let rerun = |subcommand: &str, extra: &[String]| {
+        let mut command = vec!["af".to_string()];
+        let mut replaced = false;
+        for word in &words {
+            if !replaced && word == "plan" {
+                command.push(subcommand.to_string());
+                replaced = true;
+            } else if word != "--json" {
+                command.push(word.clone());
+            }
+        }
+        command.extend(extra.iter().cloned());
+        shell_words::join(command)
+    };
+    if empty {
+        return NextStep {
+            prose: Some(
+                "change files first; the diff is empty and `af review run` refuses it. Then:"
+                    .into(),
+            ),
+            command: Some(rerun("plan", &[])),
+        };
+    }
+    if unfit {
+        return NextStep {
+            prose: Some(
+                "narrow the Subject (a smaller --base REV to --candidate REV range) or raise the \
+                 Worker's budget.attempt, then plan again"
+                    .into(),
+            ),
+            command: None,
+        };
+    }
+    if !missing.is_empty() {
+        if missing.iter().all(|(_, id)| id.is_some()) {
+            let flags: Vec<String> = missing
+                .iter()
+                .flat_map(|(node, id)| {
+                    [
+                        "--provider".to_string(),
+                        format!("{node}={}", id.as_deref().unwrap_or_default()),
+                    ]
+                })
+                .collect();
+            return NextStep {
+                prose: None,
+                command: Some(rerun("plan", &flags)),
+            };
+        }
+        return NextStep {
+            prose: Some(
+                "register a Provider for each model Worker (`af provider setup ID --kind KIND \
+                 --login`), then bind each with --provider NODE=ID"
+                    .into(),
+            ),
+            command: None,
+        };
+    }
+    NextStep {
+        prose: None,
+        command: Some(rerun("run", &[])),
+    }
 }
 
 /// One progress line of `af review run`: findings, nodes and reasons a reviewer or the
@@ -2320,29 +2739,43 @@ fn run_progress(options: &Options, arguments: fmt::Arguments<'_>) {
     }
 }
 
-fn open_campaign_store(state: &Path) -> Result<EventStore, String> {
+/// The not-found refusal of a Campaign, in the shape every not-found refusal takes:
+/// `<Thing> <name> not found in <where>; <what exists or the fix>`.
+fn campaign_not_found(campaign: &str, state: &Path) -> String {
+    format!(
+        "Campaign {} not found in {}; af review campaigns lists the Campaigns, and af review run \
+         --campaign {} starts it",
+        terminal_text(campaign),
+        state.display(),
+        shell_words::quote(campaign)
+    )
+}
+
+fn open_campaign_store(state: &Path, campaign: &str) -> Result<EventStore, String> {
     if !state.join("events.sqlite").exists() {
-        return Err(format!(
-            "no campaign state at {}; a campaign starts with `af review run --campaign`",
-            state.display()
-        ));
+        return Err(campaign_not_found(campaign, state));
     }
     EventStore::open(state.join("events.sqlite")).map_err(|e| e.to_string())
 }
 
-fn open_campaign_store_read_only(state: &Path) -> Result<EventStore, String> {
+fn open_campaign_store_read_only(state: &Path, campaign: &str) -> Result<EventStore, String> {
     if !state.join("events.sqlite").exists() {
-        return Err(format!(
-            "no campaign state at {}; a campaign starts with `af review run --campaign`",
-            state.display()
-        ));
+        return Err(campaign_not_found(campaign, state));
     }
     EventStore::open_read_only(state.join("events.sqlite")).map_err(|error| error.to_string())
 }
 
+/// A Campaign command's error, with the refusal named when another release wrote its Store.
+fn explain_campaign(selector: &cli::CampaignSelector, error: String) -> String {
+    match campaign_state(&selector.state, &selector.campaign) {
+        Ok(state) => store_release::explain(&state, error),
+        Err(_) => error,
+    }
+}
+
 fn print_ledger(options: &LedgerOptions) -> Result<(), String> {
     let state = campaign_state(&options.state, &options.campaign)?;
-    let store = open_campaign_store_read_only(&state)?;
+    let store = open_campaign_store_read_only(&state, &options.campaign)?;
     let cas = Cas::open_existing(state.join("cas")).map_err(|e| e.to_string())?;
     let ledger = LedgerProjection::rebuild(&store, &cas, &campaign_run_id(&options.campaign))
         .map_err(|e| e.to_string())?
@@ -2538,7 +2971,7 @@ fn proposal_links_finding(
 
 fn export_proposal(options: &ExportOptions) -> Result<(), String> {
     let state = campaign_state(&options.state, &options.campaign)?;
-    let store = open_campaign_store_read_only(&state)?;
+    let store = open_campaign_store_read_only(&state, &options.campaign)?;
     let cas = Cas::open_existing(state.join("cas")).map_err(|error| error.to_string())?;
     let run_id = campaign_run_id(&options.campaign);
     let proposals = campaign_proposals(&store, &cas, &run_id)?;
@@ -2593,7 +3026,7 @@ fn export_proposal(options: &ExportOptions) -> Result<(), String> {
 
 fn show(options: &ShowOptions) -> Result<(), String> {
     let state = campaign_state(&options.state, &options.campaign)?;
-    let store = open_campaign_store(&state)?;
+    let store = open_campaign_store(&state, &options.campaign)?;
     let cas = Cas::open(state.join("cas")).map_err(|e| e.to_string())?;
     let ledger = LedgerProjection::rebuild(&store, &cas, &campaign_run_id(&options.campaign))
         .map_err(|e| e.to_string())?
@@ -2719,6 +3152,10 @@ struct CampaignListView {
 struct CampaignProblemView {
     directory: String,
     reason: String,
+    /// Who wrote the Campaign's Store, when another release did: the text lists such Campaigns
+    /// in one row; the document keeps one problem each, its reason the named refusal.
+    #[serde(skip)]
+    release: Option<review_core::store_writer::StoreProvenance>,
 }
 
 struct CampaignEnumeration {
@@ -2757,6 +3194,52 @@ struct CampaignView {
     /// Newest write to the event store, as Unix milliseconds; what `gc` ages by.
     #[serde(skip_serializing_if = "Option::is_none")]
     last_activity_unix_ms: Option<u64>,
+    /// The newest Round started, as (Round, epoch), and whether no Run Report has closed it yet:
+    /// the text table's ROUND and STATE, and the browser's. The document is unchanged.
+    #[serde(skip)]
+    latest_round: Option<(u32, u32)>,
+    #[serde(skip)]
+    round_open: bool,
+}
+
+impl CampaignView {
+    /// `new` before its first Round, `open` while its newest Round has no Run Report, `closed`
+    /// once one closed it.
+    fn state_word(&self) -> &'static str {
+        match (self.latest_round, self.round_open) {
+            (None, _) => "new",
+            (Some(_), true) => "open",
+            (Some(_), false) => "closed",
+        }
+    }
+
+    /// The Round as the table prints it: `2`, or `2.3` for its third epoch; `-` before one.
+    fn round_label(&self) -> String {
+        match self.latest_round {
+            None => "-".to_owned(),
+            Some((round, 1)) => round.to_string(),
+            Some((round, epoch)) => format!("{round}.{epoch}"),
+        }
+    }
+
+    /// What its Tasks charged in total, exactly as `af review report` counts each Task; `None`
+    /// when no Task has run for it.
+    fn chargeable_tokens(&self) -> Option<u128> {
+        report_tasks::chargeable_tokens(&self.task_accounting)
+    }
+
+    /// The selector a command names it by: `--campaign LABEL`, and `--state DIR` unless its
+    /// Store is the default one for that label under the default root.
+    fn selector(&self, state: &Path, default_root: Option<&Path>) -> Vec<String> {
+        let mut words = vec!["--campaign".to_owned(), self.label.clone()];
+        let default = default_root.is_some_and(|root| state.parent() == Some(root))
+            && self.state_dir == self.id;
+        if !default {
+            words.push("--state".to_owned());
+            words.push(state.display().to_string());
+        }
+        words
+    }
 }
 
 /// Bytes under a state directory, following no symlinks. A directory that cannot be read counts
@@ -2824,7 +3307,7 @@ fn print_campaigns(options: &CampaignsOptions) -> Result<(), String> {
             "{}",
             serde_json::to_string_pretty(&view).map_err(|error| error.to_string())?
         ),
-        CampaignsFormat::Text => print_campaigns_text(&view),
+        CampaignsFormat::Text => print_campaigns_text(&view, &root, options.state_root.is_some()),
     }
     Ok(())
 }
@@ -2860,6 +3343,7 @@ fn enumerate_campaigns(root: &Path, with_sizes: bool) -> Result<CampaignEnumerat
                 problems.push(CampaignProblemView {
                     directory: directory_lossy,
                     reason: format!("reading entry metadata: {error}"),
+                    release: None,
                 });
                 continue;
             }
@@ -2869,6 +3353,7 @@ fn enumerate_campaigns(root: &Path, with_sizes: bool) -> Result<CampaignEnumerat
                 directory: directory_lossy,
                 reason: "state-root entry is a symlink; Campaign enumeration does not follow it"
                     .to_string(),
+                release: None,
             });
             continue;
         }
@@ -2883,6 +3368,7 @@ fn enumerate_campaigns(root: &Path, with_sizes: bool) -> Result<CampaignEnumerat
                 problems.push(CampaignProblemView {
                     directory: directory_lossy,
                     reason: format!("reading events.sqlite metadata: {error}"),
+                    release: None,
                 });
                 continue;
             }
@@ -2893,6 +3379,7 @@ fn enumerate_campaigns(root: &Path, with_sizes: bool) -> Result<CampaignEnumerat
                 reason:
                     "events.sqlite is not a real regular file beneath the Campaign state directory"
                         .to_string(),
+                release: None,
             });
             continue;
         }
@@ -2902,6 +3389,7 @@ fn enumerate_campaigns(root: &Path, with_sizes: bool) -> Result<CampaignEnumerat
                 problems.push(CampaignProblemView {
                     directory: directory_lossy,
                     reason,
+                    release: None,
                 });
                 continue;
             }
@@ -2914,15 +3402,17 @@ fn enumerate_campaigns(root: &Path, with_sizes: bool) -> Result<CampaignEnumerat
                     state.display(),
                     root.display()
                 ),
+                release: None,
             });
             continue;
         }
-        let store = match open_campaign_store_read_only(&state) {
+        let store = match EventStore::open_read_only(state.join("events.sqlite")) {
             Ok(store) => store,
-            Err(reason) => {
+            Err(error) => {
                 problems.push(CampaignProblemView {
                     directory: directory_lossy,
-                    reason,
+                    reason: error.to_string(),
+                    release: None,
                 });
                 continue;
             }
@@ -2933,6 +3423,7 @@ fn enumerate_campaigns(root: &Path, with_sizes: bool) -> Result<CampaignEnumerat
                 problems.push(CampaignProblemView {
                     directory: directory_lossy,
                     reason: error.to_string(),
+                    release: None,
                 });
                 continue;
             }
@@ -2947,6 +3438,7 @@ fn enumerate_campaigns(root: &Path, with_sizes: bool) -> Result<CampaignEnumerat
                     "state contains {} campaign runs; each enumerated directory must contain exactly one",
                     run_ids.len()
                 ),
+                release: None,
             });
             continue;
         }
@@ -2959,6 +3451,7 @@ fn enumerate_campaigns(root: &Path, with_sizes: bool) -> Result<CampaignEnumerat
             problems.push(CampaignProblemView {
                 directory: directory_lossy,
                 reason,
+                release: None,
             });
             continue;
         }
@@ -2969,6 +3462,7 @@ fn enumerate_campaigns(root: &Path, with_sizes: bool) -> Result<CampaignEnumerat
                 problems.push(CampaignProblemView {
                     directory: directory_lossy,
                     reason: "Campaign state directory name is not valid UTF-8".to_string(),
+                    release: None,
                 });
                 continue;
             }
@@ -2979,6 +3473,7 @@ fn enumerate_campaigns(root: &Path, with_sizes: bool) -> Result<CampaignEnumerat
                 reason: format!(
                     "campaign {label:?} state directory must be its opaque ID `{id}` or its label"
                 ),
+                release: None,
             });
             continue;
         }
@@ -2998,7 +3493,11 @@ fn enumerate_campaigns(root: &Path, with_sizes: bool) -> Result<CampaignEnumerat
         ) {
             Ok(campaign) => campaign,
             Err(reason) => {
-                problems.push(CampaignProblemView { directory, reason });
+                problems.push(CampaignProblemView {
+                    directory,
+                    reason,
+                    release: None,
+                });
                 continue;
             }
         };
@@ -3009,6 +3508,14 @@ fn enumerate_campaigns(root: &Path, with_sizes: bool) -> Result<CampaignEnumerat
             .cmp(&right.label)
             .then_with(|| left.id.cmp(&right.id))
     });
+    // A Campaign another release wrote is named by its writer, with the fix (ADR-0145).
+    for problem in &mut problems {
+        let state = root.join(&problem.directory);
+        if let Some(provenance) = store_release::foreign(&state, &problem.reason) {
+            problem.reason = store_release::refusal(&state, &provenance, "af review campaigns");
+            problem.release = Some(provenance);
+        }
+    }
     Ok(CampaignEnumeration {
         campaigns,
         problems,
@@ -3045,6 +3552,7 @@ fn read_campaign_view(
 
     let events = store.replay(run_id).map_err(|error| error.to_string())?;
     let mut last_subject_id = None;
+    let mut latest_round = None;
     for event in events
         .iter()
         .filter(|event| event.event_type == EventType::RoundStartedV1)
@@ -3058,6 +3566,7 @@ fn read_campaign_view(
             ));
         }
         last_subject_id = Some(started.subject_id);
+        latest_round = Some((started.round, started.epoch));
     }
     let round_authority = report_round_authority(&events)?;
     let reports = events
@@ -3065,6 +3574,11 @@ fn read_campaign_view(
         .filter(|event| event.event_type.is_run_report())
         .collect::<Vec<_>>();
     let rounds = report_rounds(&reports, &round_authority)?;
+    let round_open = latest_round.is_some_and(|(round, epoch)| {
+        !rounds
+            .iter()
+            .any(|closed| closed.round == Some(round) && closed.epoch == Some(epoch))
+    });
     let last = rounds.last();
     let task_accounting = report_tasks::read(store, &cas, run_id, &events)?;
     let wall_ms = task_accounting.wall_ms();
@@ -3094,87 +3608,210 @@ fn read_campaign_view(
             .unwrap_or_default(),
         state_bytes: with_sizes.then(|| directory_bytes(state)),
         last_activity_unix_ms: newest_store_write_unix_ms(state),
+        latest_round,
+        round_open,
     })
 }
 
-fn print_campaigns_text(view: &CampaignListView) {
-    println!("Campaigns: {}", view.campaigns.len());
-    for campaign in &view.campaigns {
-        println!(
-            "{} ({})",
-            terminal_text(&campaign.label),
-            terminal_text(&campaign.id)
+/// One Campaign Store directory read on its own, whatever its name: the Store a plain `af review
+/// run` keeps under `review/local/`, or one `--state DIR` made, which the Store registry records.
+/// The browser lists it with the entry `af review campaigns` would print for it. Nothing is
+/// written, and a symlinked event log is refused as the enumeration refuses it.
+fn read_campaign_dir(state: &Path) -> Result<CampaignView, String> {
+    let database = state.join("events.sqlite");
+    let metadata = std::fs::symlink_metadata(&database)
+        .map_err(|error| format!("reading {}: {error}", database.display()))?;
+    if metadata.file_type().is_symlink() || !metadata.is_file() {
+        return Err(
+            "events.sqlite is not a real regular file beneath the Campaign state directory"
+                .to_string(),
         );
-        println!(
-            "  authority: snapshot {}; manifest {}",
-            terminal_text(&campaign.authority_snapshot_id),
-            terminal_text(&campaign.campaign_manifest_id)
-        );
-        println!(
-            "  subject: {}{}",
-            campaign.subject_kind,
-            campaign
-                .base_snapshot_id
-                .as_deref()
-                .map(|base| format!("; base {}", terminal_text(base)))
-                .unwrap_or_default()
-        );
-        println!(
-            "  last subject: {}",
-            terminal_text(campaign.last_subject_id.as_deref().unwrap_or("not started"))
-        );
-        match last_closed_summary(
-            campaign.last_closed_round,
-            campaign.last_closed_epoch,
-            campaign.verdict.as_deref(),
-        ) {
-            Some(summary) => println!("  last closed: {}", terminal_text(&summary)),
-            None => println!("  last closed: none"),
-        }
-        println!(
-            "  state: {}{}{}",
-            terminal_text(&campaign.state_dir),
-            campaign
-                .state_bytes
-                .map(|bytes| format!(", {}", human_bytes(bytes)))
-                .unwrap_or_default(),
-            campaign
-                .last_activity_unix_ms
-                .map(|at| format!("; last activity {}", age_label(at)))
-                .unwrap_or_default()
-        );
-        if let Some(wall) = campaign.wall_ms {
-            println!("  wall: {}", human_duration(wall));
-        }
-        for summary in report_tasks::summary(&campaign.task_accounting).lines() {
-            println!("  {}", terminal_text(summary));
-        }
-        if let Some(findings) = &campaign.findings {
-            println!("  findings: {}", findings_summary_line(findings));
-        }
-        println!("  history:");
-        if campaign.rounds.is_empty() {
-            println!("    none");
-        }
-        for round in &campaign.rounds {
-            println!(
-                "    run {}: round {} epoch {}; {}; {}",
-                round.run,
-                optional_number(round.round),
-                optional_number(round.epoch),
-                terminal_text(&round.verdict),
-                round.tokens_label()
+    }
+    let store = EventStore::open_read_only(&database).map_err(|error| error.to_string())?;
+    let run_ids = store
+        .run_ids()
+        .map_err(|error| error.to_string())?
+        .into_iter()
+        .filter(|run_id| run_id.starts_with("campaign-"))
+        .collect::<Vec<_>>();
+    let [run_id] = run_ids.as_slice() else {
+        return Err(format!(
+            "state contains {} campaign runs; a Campaign state directory must contain exactly one",
+            run_ids.len()
+        ));
+    };
+    let label = run_id
+        .strip_prefix("campaign-")
+        .unwrap_or(run_id)
+        .to_string();
+    validate_campaign_component(&label)?;
+    let id = campaign_id(&label);
+    read_campaign_view(state, run_id, label, id, &store, false)
+}
+
+/// The `af review report --json` document of the Campaign `label` in the Store at `state`, for
+/// the browser: read as `af review report` reads it, but silent, since a warning printed on
+/// stderr would land on the browser's screen.
+fn browse_report(state: &Path, label: &str) -> Result<serde_json::Value, String> {
+    let store = open_campaign_store_read_only(state, label)?;
+    let cas = Cas::open_existing(state.join("cas")).map_err(|error| error.to_string())?;
+    let view = read_report_view_quietly(&store, &cas, label, false)?;
+    serde_json::to_value(&view).map_err(|error| error.to_string())
+}
+
+fn print_campaigns_text(view: &CampaignListView, root: &Path, custom_root: bool) {
+    let local = |unix_ms: u64| {
+        let time = human::local_time(unix_ms);
+        // The year is left out: the table is 100 columns, and an old Campaign's date says it.
+        time.get(5..).unwrap_or(&time).to_owned()
+    };
+    print!("{}", campaigns_text(view, root, custom_root, &local));
+}
+
+/// The columns of `af review campaigns`, in order, and their widths; 100 columns with the two
+/// spaces between each.
+const CAMPAIGN_COLUMNS: [(&str, usize); 7] = [
+    ("CAMPAIGN", 20),
+    ("ROUND", 5),
+    ("STATE", 6),
+    ("VERDICT", 22),
+    ("TOKENS", 9),
+    ("WALL", 10),
+    ("UPDATED", 16),
+];
+
+/// `text` in at most `width` characters, a cut marked with `~`.
+fn clip_cell(text: &str, width: usize) -> String {
+    if text.chars().count() <= width {
+        return text.to_owned();
+    }
+    let kept: String = text.chars().take(width.saturating_sub(1)).collect();
+    format!("{kept}~")
+}
+
+/// `af review campaigns` as text: a table of one row per Campaign (its label, newest Round,
+/// state, verdict, what its Tasks charged and the wall-clock of its Rounds, and when its Store
+/// was last written), in 100 columns, then the problems. `time` prints a Unix time. An empty
+/// `custom_root` (`--state-root DIR`) names the command that starts a Campaign there: a plain
+/// `af review run` would keep it under the default root instead.
+fn campaigns_text(
+    view: &CampaignListView,
+    root: &Path,
+    custom_root: bool,
+    time: &dyn Fn(u64) -> String,
+) -> String {
+    use std::fmt::Write as _;
+    let mut text = String::new();
+    if view.campaigns.is_empty() {
+        let readable = if view.problems.is_empty() {
+            ""
+        } else {
+            "readable "
+        };
+        let shown = terminal_text(&root.display().to_string());
+        if custom_root {
+            // A Store named by its label directly beneath the root is one this listing reads
+            // (ADR-0035).
+            let head = format!("No {readable}Campaigns under {shown}; start one there with");
+            if head.chars().count() <= 100 {
+                let _ = writeln!(text, "{head}");
+            } else {
+                // The path keeps a line of its own, whole, so it copies as it is.
+                let _ = writeln!(
+                    text,
+                    "No {readable}Campaigns under\n  {shown}\nStart one there with"
+                );
+            }
+            let state = root.join("NAME").display().to_string();
+            let command = shell_words::join([
+                "af",
+                "review",
+                "run",
+                "--campaign",
+                "NAME",
+                "--state",
+                state.as_str(),
+            ]);
+            for line in
+                task_execution::runs::command_lines("  ", &terminal_text(&command), 100, "    ")
+            {
+                let _ = writeln!(text, "{line}");
+            }
+        } else {
+            let _ = writeln!(
+                text,
+                "No {readable}Campaigns under {shown}; af review run --campaign NAME starts one"
             );
         }
+    } else {
+        let row = |cells: [String; 7]| {
+            let mut line = String::new();
+            for (index, (cell, (_, width))) in cells.iter().zip(CAMPAIGN_COLUMNS).enumerate() {
+                if index > 0 {
+                    line.push_str("  ");
+                }
+                let cell = clip_cell(cell, width);
+                // The token count is a number: it lines up on the right.
+                if index == 4 {
+                    let _ = write!(line, "{cell:>width$}");
+                } else {
+                    let _ = write!(line, "{cell:<width$}");
+                }
+            }
+            line.trim_end().to_owned()
+        };
+        let _ = writeln!(
+            text,
+            "{}",
+            row(CAMPAIGN_COLUMNS.map(|(name, _)| name.into()))
+        );
+        for campaign in &view.campaigns {
+            let line = row([
+                terminal_text(&campaign.label),
+                campaign.round_label(),
+                campaign.state_word().to_owned(),
+                terminal_text(campaign.verdict.as_deref().unwrap_or("-")),
+                campaign
+                    .chargeable_tokens()
+                    .map_or("-".to_owned(), |tokens| tokens.to_string()),
+                campaign.wall_ms.map_or("-".to_owned(), human_duration),
+                campaign.last_activity_unix_ms.map_or("-".to_owned(), time),
+            ]);
+            let _ = writeln!(text, "{line}");
+        }
+        let _ = writeln!(
+            text,
+            "Details: af review report --campaign NAME; af review ledger --campaign NAME"
+        );
     }
-    println!("Problems: {}", view.problems.len());
-    for problem in &view.problems {
-        println!(
+    if !view.problems.is_empty() {
+        let _ = writeln!(text, "Problems: {}", view.problems.len());
+    }
+    for problem in view
+        .problems
+        .iter()
+        .filter(|problem| problem.release.is_none())
+    {
+        // A problem is a sentence with its fix: it keeps its line, so a command in it copies
+        // whole.
+        let _ = writeln!(
+            text,
             "  {}: {}",
             terminal_text(&problem.directory),
             terminal_text(&problem.reason)
         );
     }
+    if let Some(row) = store_release::summary(
+        view.problems
+            .iter()
+            .filter_map(|problem| problem.release.as_ref()),
+        "af review campaigns",
+    ) {
+        for line in row.lines() {
+            let _ = writeln!(text, "  {}", terminal_text(line));
+        }
+    }
+    text
 }
 
 #[derive(serde::Serialize)]
@@ -3319,16 +3956,7 @@ fn wall_spans_ms(rows: impl IntoIterator<Item = ((u32, u32), (u64, u64))>) -> Op
 }
 
 fn human_duration(ms: u64) -> String {
-    let seconds = ms / 1000;
-    if ms < 1000 {
-        format!("{ms}ms")
-    } else if seconds < 60 {
-        format!("{seconds}s")
-    } else if seconds < 3600 {
-        format!("{}m{:02}s", seconds / 60, seconds % 60)
-    } else {
-        format!("{}h{:02}m", seconds / 3600, (seconds % 3600) / 60)
-    }
+    human::duration(ms)
 }
 
 /// Whether any pinned reviewer policy keeps a Warm Workspace (`warm = { workspace = "rebase" }`).
@@ -3374,7 +4002,7 @@ fn attempt_warm_suffix(warm: Option<&AttemptWarmView>) -> String {
 
 fn print_report(options: &ReportOptions) -> Result<(), String> {
     let state = campaign_state(&options.state, &options.campaign)?;
-    let store = open_campaign_store_read_only(&state)?;
+    let store = open_campaign_store_read_only(&state, &options.campaign)?;
     let cas = Cas::open_existing(state.join("cas")).map_err(|e| e.to_string())?;
     let view = read_report_view(&store, &cas, &options.campaign)?;
     match options.format {
@@ -3393,11 +4021,24 @@ fn read_report_view(
     cas: &Cas,
     campaign: &str,
 ) -> Result<ReviewReportView, String> {
+    read_report_view_quietly(store, cas, campaign, true)
+}
+
+/// The report document; `warn` prints the Ledger's Scope authority warnings on stderr, as every
+/// command does and the browser does not.
+fn read_report_view_quietly(
+    store: &EventStore,
+    cas: &Cas,
+    campaign: &str,
+    warn: bool,
+) -> Result<ReviewReportView, String> {
     let run_id = campaign_run_id(campaign);
     let ledger = LedgerProjection::rebuild(store, cas, &run_id)
         .map_err(|e| e.to_string())?
         .into_ledger();
-    print_scope_authority_warnings(&ledger);
+    if warn {
+        print_scope_authority_warnings(&ledger);
+    }
     let events = store.replay(&run_id).map_err(|e| e.to_string())?;
     let reports: Vec<_> = events
         .iter()
@@ -3752,20 +4393,6 @@ fn optional_number(number: Option<u32>) -> String {
     number.map_or_else(|| "-".to_string(), |number| number.to_string())
 }
 
-fn last_closed_summary(
-    round: Option<u32>,
-    epoch: Option<u32>,
-    verdict: Option<&str>,
-) -> Option<String> {
-    verdict.map(|verdict| {
-        format!(
-            "round {} epoch {}; {verdict}",
-            optional_number(round),
-            optional_number(epoch)
-        )
-    })
-}
-
 fn one_line(value: &str) -> String {
     terminal_text(&value.lines().collect::<Vec<_>>().join(" "))
 }
@@ -3852,7 +4479,7 @@ fn print_scope_authority_warnings(ledger: &Ledger) {
 
 fn resolve(options: &ResolveOptions) -> Result<(), String> {
     let state = campaign_state(&options.state, &options.campaign)?;
-    let mut store = open_campaign_store(&state)?;
+    let mut store = open_campaign_store(&state, &options.campaign)?;
     let cas = Cas::open(state.join("cas")).map_err(|e| e.to_string())?;
     let run_id = campaign_run_id(&options.campaign);
     let mut ingest = Ingest::new(&mut store, &cas, run_id).map_err(|e| e.to_string())?;
@@ -3897,7 +4524,7 @@ fn resolve(options: &ResolveOptions) -> Result<(), String> {
 
 fn attest_change(options: &AttestChangeOptions) -> Result<(), String> {
     let state = campaign_state(&options.state, &options.campaign)?;
-    let mut store = open_campaign_store(&state)?;
+    let mut store = open_campaign_store(&state, &options.campaign)?;
     let cas = Cas::open(state.join("cas")).map_err(|e| e.to_string())?;
     let mut ingest = Ingest::new(&mut store, &cas, campaign_run_id(&options.campaign))
         .map_err(|e| e.to_string())?;
@@ -3919,7 +4546,7 @@ fn attest_change(options: &AttestChangeOptions) -> Result<(), String> {
 
 fn verify_fix(options: &VerifyFixOptions) -> Result<(), String> {
     let state = campaign_state(&options.state, &options.campaign)?;
-    let mut store = open_campaign_store(&state)?;
+    let mut store = open_campaign_store(&state, &options.campaign)?;
     let cas = Cas::open(state.join("cas")).map_err(|e| e.to_string())?;
     let mut ingest = Ingest::new(&mut store, &cas, campaign_run_id(&options.campaign))
         .map_err(|e| e.to_string())?;
@@ -3949,7 +4576,7 @@ fn verify_fix(options: &VerifyFixOptions) -> Result<(), String> {
 
 fn challenge_resolution(options: &ChallengeResolutionOptions) -> Result<(), String> {
     let state = campaign_state(&options.state, &options.campaign)?;
-    let mut store = open_campaign_store(&state)?;
+    let mut store = open_campaign_store(&state, &options.campaign)?;
     let cas = Cas::open(state.join("cas")).map_err(|e| e.to_string())?;
     let mut ingest = Ingest::new(&mut store, &cas, campaign_run_id(&options.campaign))
         .map_err(|e| e.to_string())?;
@@ -3971,7 +4598,7 @@ fn challenge_resolution(options: &ChallengeResolutionOptions) -> Result<(), Stri
 
 fn advance_policy_time(options: &PolicyTimeOptions) -> Result<(), String> {
     let state = campaign_state(&options.state, &options.campaign)?;
-    let mut store = open_campaign_store(&state)?;
+    let mut store = open_campaign_store(&state, &options.campaign)?;
     let cas = Cas::open(state.join("cas")).map_err(|e| e.to_string())?;
     let mut ingest = Ingest::new(&mut store, &cas, campaign_run_id(&options.campaign))
         .map_err(|e| e.to_string())?;
@@ -3992,7 +4619,7 @@ fn advance_policy_time(options: &PolicyTimeOptions) -> Result<(), String> {
 
 fn group(options: &GroupOptions, undo: bool) -> Result<(), String> {
     let state = campaign_state(&options.state, &options.campaign)?;
-    let mut store = open_campaign_store(&state)?;
+    let mut store = open_campaign_store(&state, &options.campaign)?;
     let cas = Cas::open(state.join("cas")).map_err(|e| e.to_string())?;
     let run_id = campaign_run_id(&options.campaign);
     let mut ingest = Ingest::new(&mut store, &cas, run_id).map_err(|e| e.to_string())?;
@@ -4028,7 +4655,7 @@ fn operator_actor(configured: Option<&str>) -> Result<String, String> {
 
 fn add_evidence(options: &EvidenceAddOptions) -> Result<(), String> {
     let state = campaign_state(&options.state, &options.campaign)?;
-    let mut store = open_campaign_store(&state)?;
+    let mut store = open_campaign_store(&state, &options.campaign)?;
     let cas = Cas::open(state.join("cas")).map_err(|e| e.to_string())?;
     let mut file = std::fs::File::open(&options.file)
         .map_err(|error| format!("opening Evidence {}: {error}", options.file.display()))?;
@@ -4054,7 +4681,7 @@ fn add_evidence(options: &EvidenceAddOptions) -> Result<(), String> {
 
 fn satisfy_evidence(options: &EvidenceSatisfyOptions) -> Result<(), String> {
     let state = campaign_state(&options.state, &options.campaign)?;
-    let mut store = open_campaign_store(&state)?;
+    let mut store = open_campaign_store(&state, &options.campaign)?;
     let cas = Cas::open(state.join("cas")).map_err(|e| e.to_string())?;
     let run_id = campaign_run_id(&options.campaign);
     let mut ingest = Ingest::new(&mut store, &cas, run_id).map_err(|e| e.to_string())?;
@@ -4097,7 +4724,7 @@ fn satisfy_evidence(options: &EvidenceSatisfyOptions) -> Result<(), String> {
 
 fn waive_demand(options: &DemandWaiveOptions) -> Result<(), String> {
     let state = campaign_state(&options.state, &options.campaign)?;
-    let mut store = open_campaign_store(&state)?;
+    let mut store = open_campaign_store(&state, &options.campaign)?;
     let cas = Cas::open(state.join("cas")).map_err(|e| e.to_string())?;
     let run_id = campaign_run_id(&options.campaign);
     let mut ingest = Ingest::new(&mut store, &cas, run_id).map_err(|e| e.to_string())?;
@@ -4348,19 +4975,21 @@ fn provider_doctor(options: &Options) -> Result<i32, String> {
 /// it always completes. It keeps every directory whose process still exists and every one the
 /// kernel preserved on purpose. One stderr line reports what was removed; stdout and every
 /// `--json` document are untouched.
-fn sweep_stale_sandboxes_in_background() -> Option<std::thread::JoinHandle<()>> {
+/// The sweep's line, if it removed anything, is printed once the command's own work is done:
+/// the first line of `af task run` is the one that says what the run does (ADR-0209).
+fn sweep_stale_sandboxes_in_background() -> Option<std::thread::JoinHandle<Option<String>>> {
     std::thread::Builder::new()
         .name("af-sandbox-sweep".into())
         .spawn(|| {
             let report = review_sandbox::sweep_stale_sandboxes();
-            if report.removed > 0 {
-                eprintln!(
+            (report.removed > 0).then(|| {
+                format!(
                     "af: removed {} stale sandbox director{} left by exited processes under {}",
                     report.removed,
                     if report.removed == 1 { "y" } else { "ies" },
-                    terminal_text(&std::env::temp_dir().display().to_string())
-                );
-            }
+                    terminal_text(&review_sandbox::sandbox_root().display().to_string())
+                )
+            })
         })
         .ok()
 }
@@ -4461,6 +5090,62 @@ mod terminal_text_tests {
 
 #[cfg(test)]
 mod option_tests {
+    /// Every command that runs Task Workers takes over SIGINT and SIGTERM and holds the Storage
+    /// Budget; `af self optimize --execute` is one (issue #158), its preview is not.
+    #[test]
+    fn the_commands_that_run_task_work_are_exactly_these() {
+        use clap::Parser;
+        let table: &[(&[&str], bool, bool)] = &[
+            (&["task", "run", "T"], true, false),
+            (&["task", "run", "T", "--verbose"], true, true),
+            (
+                &["task", "start", "--file", "t.json", "--execute"],
+                true,
+                false,
+            ),
+            (
+                &[
+                    "task",
+                    "start",
+                    "--file",
+                    "t.json",
+                    "--execute",
+                    "--verbose",
+                ],
+                true,
+                true,
+            ),
+            (&["task", "start", "--file", "t.json"], false, false),
+            (&["review", "run", "--campaign", "c"], true, false),
+            // P4 made `--campaign` required: a doctor's admission evidence is a Campaign's.
+            (&["provider", "doctor", "--campaign", "c"], true, false),
+            (&["self", "optimize", "--execute"], true, false),
+            (&["self", "optimize"], false, false),
+            (&["self", "status"], false, false),
+            (&["self", "update", "--check"], false, false),
+            (&["storage", "prune", "--apply"], false, false),
+            (&["task", "list"], false, false),
+        ];
+        for (words, runs, verbose) in table {
+            let parsed =
+                crate::cli::Af::try_parse_from(std::iter::once("af").chain(words.iter().copied()))
+                    .unwrap_or_else(|error| panic!("{words:?}: {error}"));
+            let command = parsed.command.unwrap();
+            assert_eq!(super::runs_task_work(&command), *runs, "{words:?}");
+            assert_eq!(
+                super::needs_interrupt_handling(&command),
+                *runs,
+                "{words:?}"
+            );
+            assert_eq!(super::verbose_sweeps(&command), *verbose, "{words:?}");
+        }
+        // --verbose belongs to the run of `af task start`, not to its preview.
+        assert!(
+            crate::cli::Af::try_parse_from(["af", "task", "start", "--file", "t", "--verbose"])
+                .is_err()
+        );
+    }
+
     #[test]
     fn private_login_handles_interrupts_without_starting_task_maintenance() {
         use clap::Parser;
@@ -4485,8 +5170,10 @@ mod option_tests {
     }
 
     use super::{
-        CampaignMode, Options, campaign_id, campaign_labels_beneath, campaign_state_beneath,
-        default_campaigns_root, enumerate_campaigns, latest_round_evidence, validate_campaign_name,
+        CampaignListView, CampaignMode, CampaignProblemView, Options, browse_report, campaign_id,
+        campaign_labels_beneath, campaign_state_beneath, campaigns_text, default_campaigns_root,
+        enumerate_campaigns, latest_round_evidence, read_campaign_dir, report_tasks,
+        validate_campaign_name,
     };
 
     fn event(
@@ -4512,7 +5199,10 @@ mod option_tests {
         }
     }
 
-    fn campaign_manifest(cas: &review_store::Cas, ledger_node: &str) -> (String, String, String) {
+    pub(crate) fn campaign_manifest(
+        cas: &review_store::Cas,
+        ledger_node: &str,
+    ) -> (String, String, String) {
         let pipeline = format!(
             "version = 2\n[subject]\nkind = \"whole-tree\"\n[[nodes]]\nid = \"{ledger_node}\"\nkind = \"ledger\"\noutputs = [{{ name = \"findings\", type = \"review.kernel/FindingSet@1\", cardinality = \"one\", optional = false, snapshot_affinity = \"any\" }}]\n"
         );
@@ -4556,7 +5246,48 @@ mod option_tests {
         (manifest_id, findings, demands)
     }
 
-    fn write_campaign_opening(state: &std::path::Path, label: &str) {
+    /// A Campaign Store at `state` holding the opening of Campaign `label` and, for each
+    /// `(round, epoch)` of `rounds`, a Round started and never closed: what the browser's
+    /// Campaigns pane lists as an open Round.
+    pub(crate) fn write_campaign_rounds(
+        state: &std::path::Path,
+        label: &str,
+        rounds: &[(u32, u32)],
+    ) {
+        write_campaign_opening(state, label);
+        let cas = review_store::Cas::open(state.join("cas")).unwrap();
+        let (manifest_id, findings, demands) = campaign_manifest(&cas, "ledger");
+        let subject = cas.put(b"subject").unwrap();
+        let mut store = review_store::EventStore::open(state.join("events.sqlite")).unwrap();
+        for (round, epoch) in rounds {
+            let started = review_core::RoundStartedPayloadV1 {
+                round: *round,
+                epoch: *epoch,
+                campaign_manifest_id: manifest_id.clone(),
+                subject_id: subject.clone(),
+                prior_finding_set_id: findings.clone(),
+                prior_demand_set_id: demands.clone(),
+            };
+            store
+                .append(
+                    &super::campaign_run_id(label),
+                    &cas,
+                    review_store::NewEvent::new(
+                        review_core::EventType::RoundStartedV1,
+                        serde_json::to_value(started).unwrap(),
+                    )
+                    .referencing(vec![
+                        manifest_id.clone(),
+                        subject.clone(),
+                        findings.clone(),
+                        demands.clone(),
+                    ]),
+                )
+                .unwrap();
+        }
+    }
+
+    pub(crate) fn write_campaign_opening(state: &std::path::Path, label: &str) {
         std::fs::create_dir_all(state).unwrap();
         let cas = review_store::Cas::open(state.join("cas")).unwrap();
         let (manifest_id, _, _) = campaign_manifest(&cas, "ledger");
@@ -4578,6 +5309,218 @@ mod option_tests {
                 .referencing(vec![manifest.authority_snapshot_id, manifest_id]),
             )
             .unwrap();
+    }
+
+    /// `af review campaigns` prints one scannable row per Campaign in 100 columns: its label,
+    /// newest Round, state, verdict, spend and last write; the problems follow, those another
+    /// release wrote as one row. The `--format json` document keeps its fields as they were.
+    #[test]
+    fn campaigns_text_is_a_table_of_one_row_per_campaign_in_100_columns() {
+        const TABLE: &str = include_str!("../tests/fixtures/review/campaigns-100.txt");
+        let temp = tempfile::tempdir().unwrap();
+        let root = std::fs::canonicalize(temp.path())
+            .unwrap()
+            .join("campaigns");
+        let long = "a-label-longer-than-its-column";
+        write_campaign_rounds(&root.join(campaign_id("pr-42")), "pr-42", &[(1, 1)]);
+        write_campaign_rounds(&root.join(campaign_id(long)), long, &[(1, 1)]);
+        write_campaign_opening(&root.join(campaign_id("fresh")), "fresh");
+        let mut campaigns = enumerate_campaigns(&root, false).unwrap().campaigns;
+        let labels: Vec<&str> = campaigns.iter().map(|c| c.label.as_str()).collect();
+        assert_eq!(labels, [long, "fresh", "pr-42"]);
+        assert_eq!(
+            campaigns
+                .iter()
+                .map(|c| (c.state_word(), c.round_label()))
+                .collect::<Vec<_>>(),
+            [
+                ("open", "1".into()),
+                ("new", "-".into()),
+                ("open", "1".into())
+            ]
+        );
+        // What a fixture Store cannot record without running reviewers: a closed Round's
+        // verdict, the Tasks' charge, the wall-clock and a fixed last write.
+        for (index, campaign) in campaigns.iter_mut().enumerate() {
+            campaign.last_activity_unix_ms = Some(1_792_735_979_000 + index as u64 * 60_000);
+        }
+        campaigns[0].verdict = Some("incomplete (2 missing nodes)".into());
+        campaigns[0].latest_round = Some((2, 3));
+        campaigns[0].round_open = false;
+        campaigns[0].task_accounting = vec![report_tasks::charged("review", 1_234_567)];
+        campaigns[0].wall_ms = Some(185_000);
+        campaigns[2].verdict = Some("fail (not_converged)".into());
+        campaigns[2].round_open = false;
+        campaigns[2].task_accounting = vec![
+            report_tasks::charged("review", 40_000),
+            report_tasks::charged("review-2", 2_345),
+        ];
+        campaigns[2].wall_ms = Some(4_250);
+        let problems = vec![
+            CampaignProblemView {
+                directory: "broken".into(),
+                reason: "events.sqlite is not a real regular file beneath the Campaign state \
+                         directory"
+                    .into(),
+                release: None,
+            },
+            CampaignProblemView {
+                directory: "old-pr".into(),
+                reason: "Store old-pr was written by af 99.1.0".into(),
+                release: Some(review_core::store_writer::StoreProvenance::OtherReleases(
+                    vec!["99.1.0".into()],
+                )),
+            },
+        ];
+        let view = CampaignListView {
+            schema: "af/review-campaigns@1",
+            campaigns,
+            problems,
+        };
+        let utc = |unix_ms: u64| crate::human::utc_time(unix_ms)[5..].to_owned();
+        let text = campaigns_text(&view, &root, false, &utc);
+        assert_eq!(text, TABLE);
+        let table = text
+            .lines()
+            .take_while(|line| !line.starts_with("Problems:"));
+        assert!(table.clone().all(|line| line.len() <= 100), "{text}");
+        assert_eq!(
+            table.count(),
+            5,
+            "a header, a row per Campaign, the details line"
+        );
+        // The document is what it was: the table's columns are not new fields of it.
+        let document = serde_json::to_value(&view).unwrap();
+        let first = document["campaigns"][0].as_object().unwrap();
+        for absent in ["latest_round", "round_open", "task_accounting", "state"] {
+            assert!(!first.contains_key(absent), "{absent}");
+        }
+        assert_eq!(document["problems"].as_array().unwrap().len(), 2);
+        // Nothing listed: one line that says where, and how to start one.
+        let empty = CampaignListView {
+            schema: "af/review-campaigns@1",
+            campaigns: Vec::new(),
+            problems: Vec::new(),
+        };
+        let text = campaigns_text(&empty, &root, false, &utc);
+        assert_eq!(
+            text,
+            format!(
+                "No Campaigns under {}; af review run --campaign NAME starts one\n",
+                root.display()
+            )
+        );
+    }
+
+    /// An empty `--state-root R` names the command that starts a Campaign under R, in 100
+    /// columns; the Store that command names is one the same listing then shows.
+    #[test]
+    fn an_empty_custom_root_names_a_command_that_starts_a_campaign_there() {
+        let temp = tempfile::tempdir().unwrap();
+        let root = std::fs::canonicalize(temp.path())
+            .unwrap()
+            .join("campaigns");
+        std::fs::create_dir_all(&root).unwrap();
+        let empty = CampaignListView {
+            schema: "af/review-campaigns@1",
+            campaigns: Vec::new(),
+            problems: Vec::new(),
+        };
+        let utc = |unix_ms: u64| crate::human::utc_time(unix_ms)[5..].to_owned();
+        let text = campaigns_text(&empty, &root, true, &utc);
+        // A root wider than the terminal (a long `TMPDIR`) is one unbreakable word: it keeps a
+        // line of its own, alone or as the value of its `--state`.
+        for line in text.lines() {
+            let unit = line.trim().trim_end_matches('\\').trim_end();
+            let alone = match shell_words::split(unit).as_deref() {
+                Ok([_]) => true,
+                Ok([flag, _]) => flag.starts_with("--"),
+                _ => false,
+            };
+            assert!(line.chars().count() <= 100 || alone, "{line}");
+        }
+        let lines: Vec<&str> = text.lines().collect();
+        // The sentence on one line where the root fits, else the root on a line of its own.
+        let head = format!(
+            "No Campaigns under {}; start one there with",
+            root.display()
+        );
+        if head.len() <= 100 {
+            assert_eq!(lines[0], head, "{text}");
+        } else {
+            assert_eq!(lines[1], format!("  {}", root.display()), "{text}");
+        }
+        let at = lines
+            .iter()
+            .position(|line| line.starts_with("  af review run"))
+            .unwrap_or_else(|| panic!("{text}"));
+        let command: String = lines[at..]
+            .iter()
+            .map(|line| line.trim().trim_end_matches('\\').trim())
+            .collect::<Vec<_>>()
+            .join(" ");
+        let words = shell_words::split(&command).unwrap();
+        assert_eq!(
+            words[..5],
+            ["af", "review", "run", "--campaign", "NAME"],
+            "{text}"
+        );
+        assert_eq!(words[5], "--state", "{text}");
+        assert_eq!(
+            std::path::PathBuf::from(&words[6]),
+            root.join("NAME"),
+            "{text}"
+        );
+        // A root too long for the sentence keeps a line of its own.
+        let long = root.join("x".repeat(80));
+        let text_long = campaigns_text(&empty, &long, true, &utc);
+        assert!(
+            text_long.starts_with(&format!(
+                "No Campaigns under\n  {}\nStart one there with\n",
+                long.display()
+            )),
+            "{text_long}"
+        );
+        // What that command writes, a Campaign `NAME` in `R/NAME`, is what the listing reads.
+        let label = "pr-7";
+        let state = std::path::PathBuf::from(words[6].replace("NAME", label));
+        write_campaign_rounds(&state, label, &[(1, 1)]);
+        let listed = enumerate_campaigns(&root, false).unwrap();
+        assert!(listed.problems.is_empty(), "{:?}", listed.problems.len());
+        assert_eq!(listed.campaigns.len(), 1);
+        assert_eq!(listed.campaigns[0].label, label);
+    }
+
+    /// A Campaign Store read on its own, whatever its directory is called: the Store of a plain
+    /// `af review run` under `review/local/`, or a registered `--state DIR`.
+    #[test]
+    fn a_campaign_store_is_read_whatever_its_directory_is_called() {
+        let temp = tempfile::tempdir().unwrap();
+        let state = temp.path().join("review/local/0123456789abcdef");
+        write_campaign_rounds(&state, "local", &[(1, 1)]);
+        let view = read_campaign_dir(&state).unwrap();
+        assert_eq!((view.label.as_str(), view.state_word()), ("local", "open"));
+        assert_eq!(view.latest_round, Some((1, 1)));
+        // Its commands name the Store: the default root does not resolve it by its label.
+        let selector = view.selector(&state, Some(&temp.path().join("campaigns")));
+        assert_eq!(
+            selector,
+            [
+                "--campaign",
+                "local",
+                "--state",
+                &state.display().to_string()
+            ]
+        );
+        // The report document the browser reads, without a word on stderr.
+        let report = browse_report(&state, "local").unwrap();
+        assert_eq!(report["schema"], "af/review-report@4");
+        assert_eq!(report["campaign"], "local");
+        // A directory without a Store is no Campaign.
+        let Err(error) = read_campaign_dir(&temp.path().join("review")) else {
+            panic!("a directory without a Store was read as a Campaign");
+        };
+        assert!(error.contains("events.sqlite"), "{error}");
     }
 
     #[test]

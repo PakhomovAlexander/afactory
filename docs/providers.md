@@ -10,6 +10,24 @@ kind, and an auth directory. Bootstrap runs in the invoking release rather than 
 pinned one, and registry publication stays atomic for older readers
 ([ADR-0111](adr/0111-keep-provider-bootstrap-machine-local-and-cross-release-safe.md)).
 
+## In a first run
+
+The [README Quickstart](../README.md#quickstart) registers a Provider in its second step, and
+every first-run surface points at it:
+
+- `af provider detect --apply` finds the `claude` and `codex` logins on this machine and registers
+  them; without a login yet, `af provider setup claude-main --kind claude --login` (or
+  `codex-main --kind codex`) at your own terminal starts one. A successful `setup` or `add` ends
+  with `next: af onboard (in a repository)`.
+- `af onboard` reads the registry without starting any CLI: it picks `claude` or `codex` Workers
+  when only that kind is registered, and its `providers` block names, for every model Worker, a
+  registered Provider of its kind and the `--provider NODE=ID` binding to pass, or the command
+  that registers one. `--probe` adds each Provider's login state from the status probe.
+- `af doctor` lists every registered Provider's login state from the same probe, and the logins
+  it found where the CLIs look by default that no registry entry names; it never charges, and
+  `af provider doctor` stays the charged end-to-end check.
+- `af` alone at a terminal opens on the Providers pane while nothing is registered.
+
 ## The default terminal boundary
 
 An interactive Provider login prints an **OAuth URL and an authorization code**. Those are
@@ -36,6 +54,143 @@ that terminal would; such a caller is out of this boundary's scope, and a test p
 reaches the login. An agent that must start a login on someone's behalf uses the private host
 protocol below, whose permission and private delivery are explicit capabilities.
 
+## Detect
+
+On a new machine, start here. `af provider detect` finds the official CLIs and every auth
+directory on the machine, asks each directory's CLI whether it holds a login, and prints the one
+command that registers it; `--apply` runs those commands
+([ADR-0206](adr/0206-detect-provider-logins-and-register-them-through-add.md)):
+
+```sh
+af provider detect              # what is here; writes nothing
+af provider detect --apply      # register every logged-in directory not registered yet
+af provider detect --json       # the same scan, as af/provider-detect@3
+```
+
+On a machine whose `CLAUDE_CONFIG_DIR` is `~/.config/claude-personal`, with logins in
+`~/.config/claude-work` and `~/.codex-acme` as well, `af provider detect` prints:
+
+```text
+KIND   AUTH DIR                   SOURCE   LOGIN                  REGISTERED AS    SUGGESTED
+claude ~/.config/claude-personal  env      Claude Max (claude.ai) -                claude-personal
+claude ~/.config/claude-work      sibling  Claude Max (claude.ai) -                claude-work
+codex  ~/.codex-acme              sibling  ChatGPT                -                codex-acme
+
+binaries: claude 2.1.299, codex 0.163.0
+  claude ~/bin/claude
+  codex ~/bin/codex
+
+next, one line per directory:
+  af provider add claude-personal --kind claude --auth-dir ~/.config/claude-personal
+  af provider add claude-work --kind claude --auth-dir ~/.config/claude-work
+  af provider add codex-acme --kind codex --auth-dir ~/.codex-acme
+
+3 logins are not registered: run af provider detect --apply to register them with the IDs above, or
+  copy a line
+shell aliases or functions that set CLAUDE_CONFIG_DIR/CODEX_HOME are not read; pass --dir for such
+  a directory
+```
+
+With a logged-out `~/.claude` beside them, `af provider detect --apply` prints its table, one row
+longer, and then:
+
+```text
+registered: af provider add claude-personal --kind claude --auth-dir ~/.config/claude-personal
+not logged in, so not registered: ~/.claude; run this yourself at a private terminal:
+  af provider setup claude-main --kind claude --auth-dir ~/.claude --login
+registered: af provider add claude-work --kind claude --auth-dir ~/.config/claude-work
+registered: af provider add codex-acme --kind codex --auth-dir ~/.codex-acme
+```
+
+A second `--apply` changes nothing and says `already registered: claude-work
+(~/.config/claude-work)` for each.
+
+What it looks at:
+
+- **Binaries.** `claude` and `codex` on the sanitized `PATH` first, then in `~/.local/bin`,
+  `~/.claude/local` (claude only), `/opt/homebrew/bin`, `/usr/local/bin`, `~/.npm-global/bin`,
+  `~/.volta/bin` and `~/.bun/bin`. One found off `PATH` is reported as `found off PATH: <path>`
+  with the line that adds its directory to `PATH` for your `$SHELL` (`fish_add_path <dir>` for
+  fish, otherwise `export PATH="<dir>:$PATH"`), and is probed through that path. No shell rc file,
+  `npm prefix` or `nvm` is evaluated. `gemini`, `cursor-agent`, `opencode`, `amp`, `copilot`,
+  `aider`, `qwen` and `goose` found on `PATH` are listed by name and version as `not supported by
+  af yet`; none of their directories is scanned.
+- **Auth directories**, each with its SOURCE: `env` (`CLAUDE_CONFIG_DIR`, `CODEX_HOME`, absolute
+  only), `default` (`~/.claude`, `~/.codex`), `sibling` (`~/.claude-*`, `~/.config/claude`,
+  `~/.config/claude-*`, `~/.codex-*`, `~/.config/codex`, `~/.config/codex-*`: literal names one
+  level deep, no recursion), `registry` (every `auth_dir` already registered) and `explicit`
+  (`--dir PATH`, repeatable). A directory found twice, by its canonical path, is listed once,
+  with the most specific source: explicit, env, default, sibling, registry. A shell alias or
+  function that sets one of the variables is not read: pass `--dir` for such a directory.
+- **Markers, by name only.** A Claude directory holds `.claude.json`, `.credentials.json` or
+  `settings.json`; the default `~/.claude` may instead have a regular file `~/.claude.json`
+  beside it, where the CLI keeps that context's state, and its row's marker is then
+  `~/.claude.json` (`af provider status` asks the same predicate). A Codex directory holds
+  `auth.json` or `config.toml`. af examines those names
+  with `fstatat` below a descriptor opened with `O_NOFOLLOW` and never opens a file under the
+  directory. A directory that cannot be listed (one that grants search but not read) has each
+  marker checked by its path instead and is probed; its row says `listing unreadable`, never
+  `empty`. A directory with none is listed `empty` and not probed, because a CLI asked about a
+  directory creates files there (`codex login status` creates its home on first contact);
+  `--all` probes it anyway. A directory that is a symlink, is not owned by you or is writable by
+  group or others is listed `unsafe (not probed)` with the reason and, for permissions, the
+  `chmod` that fixes it: the same rules `setup` and `add` apply. `--dir` needs `--kind` when the
+  markers do not say which CLI the directory belongs to.
+- **The probe** is `af provider status`'s: the capability check once per binary, then one bounded,
+  token-free login check per directory, at most four at a time, in the probe environment, each
+  cut at 10 seconds whatever the kind. A row whose login is not known says why: in the table as
+  `unavailable: provider status probe timed out after 10 seconds`, and in the document as
+  `auth_cause` (`timeout`, `unstartable`, `incompatible`, `unparsable`, `output_too_large`,
+  `cancelled`, `unchecked`, `other`) with `auth_detail`, af's own words for it. LOGIN
+  shows the plan or method — `Claude Max (claude.ai)`, `ChatGPT`, `API key`, `not logged in` —
+  never an email or an organization. The Codex plan is not part of that check's answer, so it
+  reads `ChatGPT` and `plan: unknown`. `--identity` adds the account label the CLI reported, under
+  each row, only when stdout is a terminal and `--json` is absent.
+
+`--apply` registers, in table order, every row whose LOGIN is authenticated and REGISTERED AS is
+`-`, through the same locked, atomic publication and safety checks as `af provider add`, and
+prints each line it ran. It never logs in, never creates a directory, and never touches a row
+that is not logged in: it prints that row's `af provider setup … --login` line instead. A row
+the scan read as registered is checked again under the registry lock: one whose entry was
+removed since is registered again, never reported `already registered`. A login whose CLI was
+found only off `PATH` is not registered, because `af provider status` and Tasks look on `PATH`
+only: its suggestion is the PATH line (`fix_path`), `--apply` leaves it `skipped_cli_off_path`
+and exits 4, and the closing line is that PATH line. A registry conflict stops it at that row
+with exit 5; the rows before it stay registered. The row names the ID it met
+(`applied.conflict_with`) and suggests the retry that works, `af provider detect --dir D --id
+OTHER --apply` with the first free ID (`retry_apply`), which the message and the closing `next:`
+line repeat. A registry that cannot be read (malformed, unreadable or mid-transaction) makes
+every row's `registration` `unknown` and its REGISTERED AS column `unknown`, its note is printed
+with every scan, and `--apply` refuses with exit 1 before it scans. The IDs:
+
+| Directory | ID |
+|---|---|
+| default (`~/.claude`, `~/.codex`) | `claude-main`, `codex-main` |
+| sibling | the kind and the directory name without its kind prefix: `~/.config/claude-work` is `claude-work`, `~/.codex-gridgain` is `codex-gridgain`, `~/.claude-personal` is `claude-personal`, `~/.config/claude` is `claude-config` |
+| env | the sibling rule when its name is a sibling name, else `claude-env`, `codex-env` |
+| explicit | `--id`, in `--dir` order, required when more than one `--dir` names the same kind; else the sibling rule |
+| taken | `-2`, `-3`, …; an `*-ambient` ID is never generated |
+
+With nothing found, the output is the install guidance — `npm install -g
+@anthropic-ai/claude-code` or `curl -fsSL https://claude.ai/install.sh | bash`, `npm install -g
+@openai/codex` or `brew install codex`, the directories searched and `then run: af provider
+detect` — under exit 0, with `applied` true in the document when `--apply` was given. The
+document carries the same next steps as typed fields: `install`, one `{kind, command, docs}` per
+kind whose CLI was not found (the official install command and documentation page), and
+`next_action`, the scan to run again once one is installed (`af provider detect` with the scan's
+own `--kind`, `--dir`, `--id` and `--all`), null when a CLI was found; `notes` say it to a person. `af
+provider status` prints the same guidance when no CLI is on `PATH` and nothing is registered, and
+it names what a names-only scan found that no row lists: `found but not registered:
+~/.config/claude-work, ~/.codex-acme (not probed) → af provider detect`, which its document
+carries as `found_unregistered` with `next_action` `af provider detect`. `af doctor` and `af
+onboard` list the same directories from the same scan.
+
+Exit codes: 0 the scan completed, 1 unclassified failure, an `--apply` refused for an unreadable
+registry among them, 2 usage error (both as one `af/error@1` document under `--json`), 4 a found
+CLI cannot start or is incompatible, or a login was left unregistered because its CLI is off
+`PATH` (the rows are still printed), 5 a registry conflict stopped `--apply`. Never 3 and never
+6: detect starts no login.
+
 ## Onboarding a Provider
 
 Already authenticated with the official CLI? Then no login is needed and none is started:
@@ -51,11 +206,29 @@ Not authenticated yet? Run this yourself, in your own terminal:
 af provider setup codex-main --kind codex --login
 ```
 
+`setup` verifies the named auth directory and writes only an ID, the Provider kind and the
+auth-directory path to the machine-local registry; credentials remain owned by that CLI. A login
+starts from an empty allowlisted environment in an owned auth directory that is not writable by
+other users, and one canonical auth context admits only one setup or login at a time. `setup` is
+machine-local, so it never dispatches to a repository's older pinned `af`, and registry
+publication stays atomic for those older readers. If a crash leaves publication fenced,
+`af provider recover` validates the marker plus the live, candidate and prior hashes before
+archiving it; it reports which version is live and retains both preserved copies.
+
 `--login` prints the warning above, hands the terminal to the official CLI, verifies the result,
 and only then writes the registry entry. It cannot be combined with `--json`: JSON is the
 non-interactive automation surface, while login deliberately hands the private terminal to the
-Provider CLI. Re-running any of these is safe. `af provider add` registers an already-authenticated
-context and never offers a login at all.
+Provider CLI. Re-running any of these is safe. `--auth-dir` names an existing directory: only
+`--login` creates a missing one, because a login needs a home; without it setup refuses with
+`auth directory <PATH> does not exist; pass --login to create it, or check the path`. setup's
+lock lives in af's state, `$XDG_STATE_HOME/af/locks/<kind>-<sha256 of the canonical auth
+directory>`, never in the auth directory.
+
+`af provider add` registers an already-authenticated context and never offers a login at all. It
+probes the directory first, as `status` does, and refuses a context that is not authenticated
+with exit 6, a message naming the directory and the `af provider setup <id> --kind <kind>
+--auth-dir <dir> --login` line that logs in there; `--unverified` registers it without the probe
+and prints `warning: not verified here`.
 
 Generic automation should run `setup` **without** `--login` and respect the terminal-only refusal.
 An assistant with an authorized private host integration should own browser-only setup using
@@ -67,6 +240,94 @@ OAuth output to a shared conversation. Authentication completion remains `authen
 `provider auth begin/status/cancel` are machine-local, have a separate versioned non-secret status
 schema, and never invoke model verification or resume Tasks. See the host contract for lifecycle,
 expiry, cancellation, supported providers, and the remaining runtime scope of issue #122.
+
+## Temporarily disabling a Provider
+
+```sh
+af provider disable claude-personal --for 2d
+af provider status
+af provider enable claude-personal
+```
+
+Disable requires a registered ID. Enable also accepts an ID still present in disable state after
+registry removal, reclaiming that entry's capacity; an ID in neither place is refused. Neither
+command starts a Provider process or spends tokens.
+`--for` accepts a positive integer followed by `s`, `m`, `h` or `d`, up to `30d`; `2d` is exactly
+48 hours. Repeating disable replaces the deadline. Enable restores a registered Provider's
+availability immediately and is idempotent while the ID remains registered. Clearing an orphan
+leaves its ID unknown, so a second enable is refused. Both commands run in the invoking release
+as machine-local bootstrap operations.
+Execution, status and model discovery keep their existing project pin dispatch: an older pinned
+release does **not** honor suspension. Use a pin containing this feature for the work it controls.
+
+Suspensions live separately from registry v1 in
+`$XDG_CONFIG_HOME/af/provider-disables-v1.json` (default
+`~/.config/af/provider-disables-v1.json`), independent of `AF_PROVIDERS_FILE`. They do not edit the
+registry, auth directories or credentials. The file is private, versioned, bounded to 32 entries
+and 64 KiB, and atomically published under a lock. IDs use the registry's validation without a
+separate length cap. Malformed or unsafe state refuses Provider work. Correct the reported
+path or permissions before retrying; enable deliberately refuses to overwrite malformed state.
+
+Each new lookup compares the current wall clock to the stored absolute Unix timestamp, including
+nanoseconds: the Provider is available at the expiry instant, across restarts and downtime.
+Changing the system clock changes the remaining suspension. No background process is needed.
+Status shows a disabled row, the RFC3339 UTC expiry and `af provider enable ID` without probing
+that Provider, even with `--usage`. JSON is `af/provider-status@3`, with `disabled_until` and `enable_command`
+(non-null only while disabled), `auth = "not_probed"` and `usability = "unusable"`.
+
+Review and model preflights, Task admission and every captured or resumed Task private send
+recheck suspension before account/model probes. A refusal names the expiry and enable command.
+Calls admitted before a concurrent disable may finish; this command does not kill them or revoke
+bytes already sent. The control is per registered ID; another separately registered Provider has
+its own availability. See [ADR-0199](adr/0199-disable-providers-until-a-machine-local-expiry.md).
+
+## Tuning Worker independence
+
+The repository's authorized bootstrap currently uses model diversity with
+`distinct_principals = false` and `distinct_models = true`. This policy has no expiry: it remains
+until an operator changes the trusted catalog. Distinct Worker packages and fresh isolated
+sessions remain required. Local bindings select already-admitted packages and Provider aliases;
+they cannot relax trusted independence policy.
+
+The existing `[independence]` table in the trusted `.af/task-catalog.toml` controls each axis.
+To require different native account principals, set:
+
+```toml
+[independence]
+command_workers_by_package = true
+distinct_principals = true
+distinct_providers = false
+distinct_models = false
+```
+
+To choose model diversity on one account, use:
+
+```toml
+[independence]
+command_workers_by_package = true
+distinct_principals = false
+distinct_providers = false
+distinct_models = true
+```
+
+`distinct_providers` compares Provider kinds (adapter families, such as `claude` versus `codex`);
+two registered IDs of the same kind do not satisfy it. Different IDs alone do not prove different
+principals. Setting both principal and model booleans to true requires both. Change this trusted
+table through the project's implementation and verification Tasks, review and commit the catalog,
+and bind independent slots to the appropriate registered accounts or exact model packages.
+Inspect the new capture before executing it, for example:
+
+```sh
+af provider status
+af task plan --file ticket.json --bindings local-bindings.toml --json
+af task start --file ticket.json --bindings local-bindings.toml
+```
+
+Inspect the captured hierarchy with `af task explain TASK_ID --tree`, then use the plan ID
+printed by `task start` to execute that exact plan with
+`af task run TASK_ID --confirm-plan PLAN_ID`. Existing Tasks retain captured policy and bindings;
+create a new Task to adopt a changed catalog. Provider enable/expiry restores access only; it
+never changes a captured independence decision. See [local bindings](task-execution/local-bindings.md).
 
 ## Removing a Provider
 
@@ -95,8 +356,9 @@ Two cases come up often:
   entries, so there is nothing to remove. One is listed while the directory the Provider CLI uses
   by default (`CLAUDE_CONFIG_DIR` or `~/.claude`; `CODEX_HOME` or `~/.codex`) is not a registered
   Provider's auth directory. Once a Provider of its kind is registered, it is left out when its
-  status is `not authenticated`; with a login, or when the status probe fails (`unavailable`,
-  `installation failed`), it stays listed ([ADR-0141](adr/0141-list-a-logged-out-default-context-only-until-its-kind-is-registered.md)).
+  status is `not authenticated` or `not probed` (no such directory, or no login marker in it);
+  with a login, or when the status probe fails (`unavailable`, `installation failed`), it stays
+  listed ([ADR-0141](adr/0141-list-a-logged-out-default-context-only-until-its-kind-is-registered.md)).
   Start `af` with that variable naming a registered directory, or register the default
   directory, and the label goes away.
 
@@ -107,19 +369,28 @@ Enter runs it.
 
 ```sh
 af provider status                 # fast: the registry, the CLI capability check and one authentication check per context
-af provider status --json          # the same, as af/provider-status@2
+af provider status --json          # the same, as af/provider-status@3
 af provider status --usage         # additionally probe subscription and quota windows
 af provider doctor --campaign NAME --provider correctness=codex-main
 ```
 
-`status` is deliberately cheap and says only what it checked. It reports four independent axes:
+`status` is deliberately cheap and says only what it checked. A context that does not exist or
+holds none of its CLI's login markers (see [Detect](#detect)) is not probed at all, because the
+CLI would create files there; its row says `not probed` and why. Each row without a login names
+one fix, `af provider setup <id> --kind <kind> [--auth-dir <dir>] --login`; `--verbose` adds the
+CLI's own login command (`CODEX_HOME=<dir> codex login`) under it. The `--usage` hint is printed
+only when a row is authenticated. It reports four independent axes:
 
 | Axis | Values | Means |
 |---|---|---|
 | `registered` | true / false | in the registry, so selectable by `--provider NODE=ID`; false is an ambient discovery label |
-| `auth` | `authenticated`, `not_authenticated`, `unknown`, `unavailable`, `installation_failed`, `incompatible`, `not_probed` | what the Provider CLI said about this auth directory; `installation_failed` means the CLI cannot start, so it said nothing; `incompatible` means it starts but does not accept af's invocation, so its login was not asked about |
+| `auth` | `authenticated`, `not_authenticated`, `unknown`, `unavailable`, `installation_failed`, `incompatible`, `not_probed` | what the Provider CLI said about this auth directory; `installation_failed` means the CLI cannot start, so it said nothing; `incompatible` means it starts but does not accept af's invocation, so its login was not asked about; `not_probed` means the directory is absent or holds no login marker, so the CLI was not asked |
 | `usability` | `usable_or_untested`, `unusable`, `unknown` | status never claims `usable`: only `af provider doctor` dispatches and can prove it |
 | `usage.state` | `not_requested`, `not_applicable`, `unsupported`, `available`, `unavailable` | the optional plan and quota axis |
+
+A quota window whose reset time the Provider does not report says so in its name, `Claude does
+not report when this window resets`, and its document window has `resets_at_unix: null` with
+`reset_reported: false`.
 
 Usage is separate on purpose. A subscription probe can time out, be unsupported for an API-key
 context, or be missing entirely — none of which says anything about whether the Provider is
@@ -299,8 +570,8 @@ login, `af` runs a token-free **capability check** of the resolved executable
 
 | What | Value |
 |---|---|
-| af invokes | `codex exec --ephemeral --skip-git-repo-check --json -C <sandbox> -s <mode> -o <file> [--model M -c model_reasoning_effort=…] -`, prompt on stdin |
-| Required options (`codex exec --help`) | `--ephemeral`, `--skip-git-repo-check`, `--json`, `-C`/`--cd`, `-s`/`--sandbox`, `-o`/`--output-last-message`, `--model`, `-c`/`--config` |
+| af invokes | `codex exec --ephemeral --skip-git-repo-check --json -C <sandbox> -s <mode> -o <file> [--output-schema <file>] [--model M -c model_reasoning_effort=…] -`, prompt on stdin; `--output-schema` names the typed reply's strict schema ([ADR-0208](adr/0208-recover-an-attempt-from-a-transient-provider-failure-and-a-reply-that-does-not-parse.md)) |
+| Required options (`codex exec --help`) | `--ephemeral`, `--skip-git-repo-check`, `--json`, `-C`/`--cd`, `-s`/`--sandbox`, `-o`/`--output-last-message`, `--output-schema`, `--model`, `-c`/`--config` |
 | Required protocol | `codex app-server`, started bare, answers JSON-RPC `initialize` (id 1) over its default stdio transport, then `account/read` or `account/rateLimits/read` (id 2); `codex login status` answers the status probe |
 | Checked | the options and the `initialize` answer by `af provider status` (with or without `--usage`), `af provider setup` and Task Provider admission; the whole protocol again by the identity probe before every private Worker send, and by `status --usage` |
 | Floor | 0.121.0 verified; older not verified |
@@ -318,7 +589,7 @@ af provider status: provider claude-main: incompatible Provider CLI: the claude 
 |---|---|
 | `af provider status` | The context's `auth` is `incompatible` and its usability `unusable`, whatever its login. The command exits 4. stderr carries the report above, and the table's note repeats it. |
 | `af provider setup` | `provider_cli_missing`, exit 4, before any login is asked about or started. The document's `diagnostic` is the af-authored summary, without the version; the report goes to stderr. |
-| Task Provider admission | Refused before any Worker process starts and before any Attempt is reserved or charged: `Task Provider admission refused before any Worker was dispatched: provider …: incompatible Provider CLI: …`. A refused selection also names each candidate's reason after `No Pipeline selected: …` on stderr. |
+| Task Provider admission | Refused before any Worker process starts and before any Attempt is reserved or charged: `Task Provider admission refused before any Worker was dispatched: provider …: incompatible Provider CLI: …`. A refused selection also names each candidate's reason on stderr, below `No Pipeline selected for Task …`. |
 | A Codex app-server that exits before `initialize` | The check reports `codex app-server exited 2 before answering initialize: error: unrecognized subcommand 'app-server'` — its exit status and the CLI's own first error line — and refuses the CLI as missing the protocol capability `` `codex app-server` answering JSON-RPC `initialize` over its default stdio transport ``. Plain `af provider status`, `status --usage`, setup and admission give the same `incompatible` report and exit 4; an app-server that answers `initialize` with an error is refused the same way, reported as `codex app-server exited 0 after answering initialize with an error: {"id":1,"error":{"code":-32600,"message":"bad init"}}`, and so is one whose answer has no `result` object (`{"id":1}`, a `null` or non-object `result`) or that writes, before that answer, a line that is malformed under the JSON-RPC line grammar — anything but a JSON object that is a response (an `id` and exactly one of `result` or `error`) or a notification or request (a string `method`): not JSON (`not json`), not an object (`[1,2]`), an `id` with neither `result` nor `error` (`{"id":2,"foo":"bar"}`) or neither `id` nor `method` (`{"foo":"bar"}`) — reported as `codex app-server exited 0 after answering initialize without a result object: {"id":1}` or `codex app-server was stopped by af after answering initialize with a line that is not a JSON-RPC message: {"foo":"bar"}`. Such a line is refused at once, never waited on until the timeout, and af stops the app-server; a notification, a request or a response to another id (`{"id":7,"result":{}}`) before the result is skipped, and blank lines are framing. Each carries its exit status when it exited, or `was stopped by af` when af stopped it still running, and the line it answered with. The identity and usage probes read the `initialize` answer by the same rule, and every line after it until their own id-2 answer by the same grammar: a malformed line there makes `status --usage` and admission report the CLI `incompatible` at once, as ``codex app-server was stopped by af after answering initialize, before answering `account/rateLimits/read`, with a line that is not a JSON-RPC message: {"id":2,"foo":"bar"}``. A response answers a request only if af read it after writing that request: an id-2 response written before af sent `account/read` or `account/rateLimits/read`, for example before the `initialize` answer, is skipped like a response to another id, so admission binds no principal and `status --usage` shows no limits from it; an app-server that then never answers is reported as `` codex app-server exited 0 after initialize without answering `account/read` `` or the probe timeout. When the CLI's own `--version` check also fails it is an installation failure instead. A check that times out leaves the context `unavailable`, never `authenticated`. Before a private Worker send the identity recheck refuses an app-server that stopped answering. |
 | A Worker the CLI still refuses | A parsable result is, for Claude, a JSON object with a boolean `is_error` and its `result` (or, for a schema-constrained Attempt, its `structured_output`), and for Codex the `-o` final message of a process that exited 0 without an `error` or `turn.failed` event. Anything else is none: `{}` or other JSON on Claude's stdout, a missing final-message file at exit 0, stdout holding only unrelated events, a non-zero exit after `turn.failed`. When a Worker process exits without a parsable result, the Attempt diagnostic carries its exit status and a bounded stderr excerpt, whatever the failure is classified as (`network`, every `auth_*`, `quota`, `capacity`, `model_unavailable`, `unknown`, `unsupported_invocation`), and keeps the classification: `Codex Worker failed: Provider network request failed (network); it exited 1 without a parsable result; stderr: network failed: proxy refused connection`. The excerpt is read before the privacy filter replaces the captured stream. When the CLI refused af's own arguments (`unknown option`, `unexpected argument`, `unrecognized …`, a `Usage:` block), the failure is classified `unsupported_invocation` and the diagnostic says the installed CLI does not accept af's invocation and names the upgrade. Without a parsable result, one decision per adapter classifies the Attempt in this order: such an argument error on stderr first, whatever the exit status (`0` included), the events a Codex Worker framed first, an `Authentication required` beside it or the transport outcome, so an old CLI is never blamed on credentials; then the native classification; then `unknown`. A parsable result stays a success whatever stderr warns about. |
 
@@ -376,12 +647,13 @@ discards stdout still shows the operator what happened.
 | 1 | unclassified failure (unsafe auth directory, unreadable registry, an ID `remove` does not find, …) | all |
 | 2 | usage error, from clap | all |
 | 3 | human action required | `setup` |
-| 4 | Provider CLI missing, cannot start, or does not accept af's invocation | `setup`, `status`, `models` |
-| 5 | registry conflict | `setup`, `add` |
-| 6 | authentication failed | `setup` |
+| 4 | Provider CLI missing, cannot start, or does not accept af's invocation | `setup`, `add`, `status`, `models`, `detect` |
+| 5 | registry conflict | `setup`, `add`, `detect --apply` |
+| 6 | authentication failed; for `add`, a context that is not logged in | `setup`, `add` |
 | 7 | optional usage unavailable; a model catalog unavailable | `status --usage`; `models` |
 
-The versioned documents are [`provider-status-v2.json`](../schemas/provider-status-v2.json),
+The versioned documents are [`provider-detect-v3.json`](../schemas/provider-detect-v3.json),
+[`provider-status-v3.json`](../schemas/provider-status-v3.json),
 [`provider-setup-v1.json`](../schemas/provider-setup-v1.json) and
 [`provider-models-v1.json`](../schemas/provider-models-v1.json). They are closed vocabularies; the
 models document carries model IDs, aliases, effort levels and bounded display names only. None
@@ -398,6 +670,8 @@ table keeps the Provider's own window labels.
 | exit 4, `incompatible` | The CLI starts but is too old for af's invocation. Run the upgrade printed on stderr, then rerun `af provider status`. |
 | exit 5, `registry_conflict` | The ID or the auth directory already belongs to another entry. Choose a different ID, or point `--auth-dir` at the context you meant. |
 | exit 6, `authentication_failed` | The Provider CLI answered, and not with a usable login. Repeat the login at a private terminal and confirm with `af provider status`. |
+| exit 6 from `af provider add`, `has no … login` | The directory is not logged in. Run the printed `af provider setup … --login` yourself at a private terminal, or pass `--unverified` to register it anyway. |
+| `not probed` in `status`, `empty (not probed)` in `detect` | The directory is absent or holds no login marker, so af did not hand it to its CLI. Log in there with the printed setup line, or run `af provider detect --all` to ask the CLI anyway. |
 | `model_refused` on the stderr of `af task run` or `af review run`, or in an Attempt diagnostic: `the safety classifier of MODEL (effort E) flagged the request and MODEL refused it` | The bound model's safety classifier flagged the Worker's input and Claude Code, with its automatic fallback turned off, ended the turn with a refusal (`safety_stops` above zero, `stop_reason` `refusal`, or `…'s safeguards flagged this message` in the result of an error result, whatever its `errors` holds). It is not a credential or spelling problem. af charged what the result reported and did not retry, because the same input is flagged again. Change the input or bind another model, then rerun ([ADR-0147](adr/0147-stop-the-claude-model-fallback-and-name-the-model-that-answered.md)). |
 | `Claude Code switched models, a safety-classifier fallback (model_refused)` or `an unexplained switch (model_switched)` | Claude Code answered with a model the Worker did not bind; the line names the bound model, each model that answered with its output tokens (a model ID outside the printable grammar reads `[not printable]` with its byte length), and `safety_stops` and `num_turns`. The diagnostic in `af task show` starts with it even when the usage was also malformed or listed more than 32 models, and gives those accounting reasons after it; an entry for another model that reports no activity, or only malformed counters, is not a switch. af refused the reply, because it never runs or accepts an unrequested model, and charged what the result reported. af already sets `CLAUDE_CODE_DISABLE_REFUSAL_FALLBACK=1`, so a client that still switches ignores it: upgrade it with `npm install -g @anthropic-ai/claude-code@latest` and rerun. If the classifier flags the input again, change it or bind another model. |
 | `model_unavailable` after `Claude Code rejected the model`, quoting the model ID | Claude Code answered "There's an issue with the selected model (…). It may not exist or you may not have access to it.": it does not know that model ID or the account cannot use it. The line names the Provider, the nearest exact IDs af knows and `af provider models <id>`. Correct the binding's model ID (Claude IDs use hyphens, such as `claude-fable-5-1`), then check the Provider with `af provider status` (token-free) and `af provider doctor` (charged). |

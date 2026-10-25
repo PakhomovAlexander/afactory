@@ -302,25 +302,25 @@ fn task_inspection_12_pairs_each_execution_record_type_with_its_own_generation()
     // it prints; a binding record rides beside it and is checked by its own schema.
     let record = settled(json!("7"));
     let document = |bindings: Value| {
-        json!({"schema":"af/task-inspection@11","task_id":"chain-history","revision_id":id('1'),
-            "phase":{"kind":"running"},"plan_id":id('2'),"chargeable_tokens":"7","attempts":1,
+        json!({"schema":"af/task-inspection@13","task_id":"chain-history","revision_id":id('1'),
+            "phase":{"kind":"running"}, "state":{"phase":"running","outcome":null,"cause":null,"next_action":null}, "clock":{"wall_ms":60000,"started_unix_ms":1,"deadline_unix_ms":60001},"plan_id":id('2'),"chargeable_tokens":"7","attempts":1,
             "history":[],"run_reports":[],
             "execution_records":[{"artifact_id":id('3'),
                 "artifact_type":"af/TaskExecutionRecord@5","record":record}],
             "input_bindings":bindings})
     };
     assert_valid(
-        "task-inspection-v11.json",
+        "task-inspection-v13.json",
         &document(json!({"schema":"af.task-input-bindings/1",
             "bindings":{"history":{"artifact_id":id('a')}}})),
     );
     assert_invalid(
-        "task-inspection-v11.json",
+        "task-inspection-v13.json",
         &document(json!({"schema":"af.task-input-bindings/1","bindings":{}})),
         "a binding record with no bindings",
     );
     assert_invalid(
-        "task-inspection-v11.json",
+        "task-inspection-v13.json",
         &document(json!({"schema":"af.task-input-bindings/1",
             "bindings":{"history":{"artifact_id":id('a'),"surprise":true}}})),
         "an unknown binding field",
@@ -364,16 +364,30 @@ fn document_contracts_keep_source_data_closed_and_never_use_code_snapshots() {
             .is_err()
     );
     let id = format!("sha256:{}", "1".repeat(64));
-    let document = json!({"schema":"af.document/1","draft_id":id,"sources_id":id,"format":"markdown","text":"# Release notes\n"});
-    assert_valid("document-v1.json", &document);
+    let document = json!({"schema":"af.document/2","draft_id":id,"sources_id":id,"format":"markdown","text":"# Release notes\n"});
+    assert_valid("document-v2.json", &document);
     serde_json::from_value::<DocumentV1>(document.clone())
         .unwrap()
         .validate()
         .unwrap();
+    // The rendering that escaped every ASCII punctuation character fails closed (ADR-0145).
+    let mut earlier = document.clone();
+    earlier["schema"] = json!("af.document/1");
+    assert_invalid(
+        "document-v2.json",
+        &earlier,
+        "the af.document/1 rendering is not read",
+    );
+    assert!(
+        serde_json::from_value::<DocumentV1>(earlier)
+            .unwrap()
+            .validate()
+            .is_err()
+    );
     let mut invalid = document;
     invalid["snapshot_id"] = json!(id);
     assert_invalid(
-        "document-v1.json",
+        "document-v2.json",
         &invalid,
         "a document is not a fabricated code Snapshot",
     );

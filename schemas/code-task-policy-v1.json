@@ -27,7 +27,7 @@
       }
     },
     "check_wall_ms": {
-      "description": "The whole check Attempt's wall. At most 3600000, or the per-check wall times the number of checks when that is larger.",
+      "description": "The whole check Attempt's wall. Without check_process_wall_ms, at most 5400000 (90 minutes). With an explicit per-process cap, at most max(3600000, check_process_wall_ms times the number of checks); the typed validator checks that cross-field bound.",
       "type": "integer",
       "minimum": 1,
       "maximum": 115200000
@@ -62,8 +62,53 @@
       "additionalProperties": {
         "$ref": "#/$defs/objective"
       }
+    },
+    "rust_toolchain": {
+      "description": "Optional named native checks whose Rust tools come from the operator's explicit machine mapping (ADR-0127): the exact release, the host (`native` or a triple), the components and the checks that use it. Refused together with require_container = true.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "version",
+        "host",
+        "components",
+        "checks"
+      ],
+      "properties": {
+        "version": {
+          "type": "string",
+          "pattern": "^[0-9]+\\.[0-9]+\\.[0-9]+$"
+        },
+        "host": {
+          "type": "string",
+          "pattern": "^[A-Za-z0-9_-]{1,128}$"
+        },
+        "components": {
+          "type": "array",
+          "uniqueItems": true,
+          "items": {
+            "enum": [
+              "clippy",
+              "rustfmt"
+            ]
+          }
+        },
+        "checks": {
+          "type": "array",
+          "minItems": 1,
+          "uniqueItems": true,
+          "items": {
+            "$ref": "#/$defs/name"
+          }
+        }
+      }
     }
   },
+  "allOf": [
+    {
+      "if": {"not": {"required": ["check_process_wall_ms"]}},
+      "then": {"properties": {"check_wall_ms": {"maximum": 5400000}}}
+    }
+  ],
   "if": {
     "properties": {
       "require_container": {
@@ -136,11 +181,55 @@
         },
         "remote": {
           "$ref": "#/$defs/remote"
+        },
+        "offline": {
+          "description": "The check runs without network (ADR-0207): npm reads only its cache, the warm layer's `npm_cache`, and every proxy variable names a closed local port. Needs [warm] build_cache to declare npm_cache.",
+          "type": "boolean"
+        },
+        "npm_packages": {
+          "description": "The npm packages an offline check runs, each an exact `name@version` pinned by the SHA-256 of its registry tarball. The kernel fills the npm cache once, with the network, when a pin is absent, and verifies every pin before each run; only an offline check pins packages.",
+          "type": "array",
+          "minItems": 1,
+          "maxItems": 16,
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "spec",
+              "sha256"
+            ],
+            "properties": {
+              "spec": {
+                "type": "string",
+                "pattern": "^(@[a-z0-9~][a-z0-9._~-]*/)?[a-z0-9~][a-z0-9._~-]*@(0|[1-9][0-9]*)\\.(0|[1-9][0-9]*)\\.(0|[1-9][0-9]*)(-[0-9A-Za-z.-]*[0-9A-Za-z])?$",
+                "maxLength": 256
+              },
+              "sha256": {
+                "type": "string",
+                "pattern": "^[0-9a-f]{64}$"
+              }
+            }
+          }
+        }
+      },
+      "if": {
+        "required": [
+          "npm_packages"
+        ]
+      },
+      "then": {
+        "required": [
+          "offline"
+        ],
+        "properties": {
+          "offline": {
+            "const": true
+          }
         }
       }
     },
     "warm": {
-      "description": "An explicitly unsafe, machine-local layer only a trusted_local check touches: toolchain-keyed, byte-bounded build directories (`cargo_target` bound as CARGO_TARGET_DIR, `cargo_home` bound as CARGO_HOME) and administrator-approved Cache Snapshots. A declared `cargo` Cache Snapshot supersedes a `cargo_home` directory. Refused together with require_container = true.",
+      "description": "An explicitly unsafe, machine-local layer only a trusted_local check touches: toolchain-keyed, byte-bounded build directories (`cargo_target` bound as CARGO_TARGET_DIR, `cargo_home` bound as CARGO_HOME, `npm_cache` bound as npm_config_cache) and administrator-approved Cache Snapshots. A declared `cargo` Cache Snapshot supersedes a `cargo_home` directory. Refused together with require_container = true. A check waits for a layer another check holds until its deadline, or builds in a private copy with `clone_when_busy`; its build phase has its own deadline, `build_wall_ms` (ADR-0207).",
       "type": "object",
       "additionalProperties": false,
       "anyOf": [
@@ -163,7 +252,8 @@
           "items": {
             "enum": [
               "cargo_target",
-              "cargo_home"
+              "cargo_home",
+              "npm_cache"
             ]
           }
         },
@@ -188,6 +278,16 @@
           "type": "integer",
           "minimum": 1,
           "maximum": 34359738368
+        },
+        "clone_when_busy": {
+          "description": "When another check holds the layer, build in a private copy of it (clonefile on APFS, a reflink on btrfs and XFS, else a plain copy) instead of waiting for it (ADR-0207). Absent or false, a check waits until its deadline.",
+          "type": "boolean"
+        },
+        "build_wall_ms": {
+          "description": "The deadline of a check's build phase, from its start until it reports its `build` step through `$AF_CHECK_REPORT`; check_wall_ms then governs its tests. 2400000 when absent. A check Attempt under [warm] has check_wall_ms plus build_wall_ms (ADR-0207).",
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 3600000
         }
       }
     },

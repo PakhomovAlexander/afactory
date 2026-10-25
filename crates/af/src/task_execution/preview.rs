@@ -44,20 +44,22 @@ fn line(out: &mut String, value: &str) {
 fn command(out: &mut String, value: &str) {
     writeln!(out, "{}", text(value)).unwrap();
 }
-/// The action that approves and runs exactly `plan_id`, continued only between arguments.
-fn run_action(out: &mut String, task_id: &str, plan_id: &str) {
+/// The action that approves and runs exactly `plan_id` in the Store this preview read (the
+/// `selectors` it was given), continued only between arguments.
+fn run_action(out: &mut String, task_id: &str, plan_id: &str, selectors: &str) {
     line(out, "Approve and run this plan:");
     command(out, &format!("  af task run {task_id} \\"));
-    command(out, &format!("    --confirm-plan {plan_id}"));
-    line(
-        out,
-        "Use the same --repo and --state selectors as this preview.",
-    );
+    if selectors.is_empty() {
+        command(out, &format!("    --confirm-plan {plan_id}"));
+    } else {
+        command(out, &format!("    --confirm-plan {plan_id} \\"));
+        command(out, &format!("   {selectors}"));
+    }
 }
-fn details_hint(out: &mut String, task_id: &str) {
+fn details_hint(out: &mut String, task_id: &str, selectors: &str) {
     command(
         out,
-        &format!("Details: af task explain {task_id} --tree (or --json)"),
+        &format!("Details: af task explain {task_id} --tree{selectors} (or --json)"),
     );
 }
 pub(super) fn package_label(
@@ -396,7 +398,16 @@ pub(super) fn render(
     status: &str,
     tree: bool,
 ) -> Result<String, String> {
-    render_marked(cas, revision, plan_id, plan, graph, status, tree).map(|(text, _)| text)
+    let clock = TaskClock::Deadline(plan.limits.deadline_unix_ms);
+    render_marked(cas, revision, plan_id, plan, graph, status, tree, clock).map(|(text, _)| text)
+}
+
+/// What the preview's `TIME` row states: the wall a Task that has not run yet will have once its
+/// clock starts at its first run, or the deadline of one that ran.
+#[derive(Clone, Copy)]
+enum TaskClock {
+    NotStarted { wall_ms: u64 },
+    Deadline(u64),
 }
 
 /// The preview, and the lines of its tree that name a Worker slot.
@@ -409,6 +420,7 @@ fn render_marked(
     graph: &CompiledTask,
     status: &str,
     tree: bool,
+    clock: TaskClock,
 ) -> Result<(String, SlotMarks), String> {
     let mut marks = SlotMarks::new();
     if graph.order.iter().any(|id| !graph.nodes.contains_key(id)) {
@@ -573,22 +585,33 @@ fn render_marked(
             plan.limits.tokens, plan.limits.verification.tokens, plan.limits.max_attempts
         ),
     );
-    let left = plan.limits.deadline_unix_ms.saturating_sub(
-        std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .unwrap_or_default()
-            .as_millis()
-            .min(u64::MAX as u128) as u64,
-    );
-    line(
-        &mut out,
-        &format!(
-            "TIME  {}s remaining | deadline {} Unix ms{}",
-            left / 1000,
-            plan.limits.deadline_unix_ms,
-            if left == 0 { " [EXPIRED]" } else { "" }
+    match clock {
+        TaskClock::NotStarted { wall_ms } => line(
+            &mut out,
+            &format!(
+                "TIME  {} wall | deadline starts when you run",
+                super::state::duration_words(wall_ms)
+            ),
         ),
-    );
+        TaskClock::Deadline(deadline) => {
+            let left = deadline.saturating_sub(
+                std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .unwrap_or_default()
+                    .as_millis()
+                    .min(u64::MAX as u128) as u64,
+            );
+            line(
+                &mut out,
+                &format!(
+                    "TIME  {}s remaining | deadline {}{}",
+                    left / 1000,
+                    super::state::local_time(deadline),
+                    if left == 0 { " [EXPIRED]" } else { "" }
+                ),
+            );
+        }
+    }
     line(
         &mut out,
         &format!(
@@ -625,6 +648,8 @@ fn render_marked(
         &mut out,
         "Delivery is a separate, explicitly confirmed action.",
     );
+    // The Store this preview read, as its command was told to find it.
+    let selectors = super::store_selectors();
     if status == "finished" || status == "historical plan (not current)" {
         line(&mut out, "Recorded plan only; this preview starts no work.");
     } else {
@@ -634,9 +659,9 @@ fn render_marked(
                 "First inspect and sign this exact generated plan with task decision-payload / approve.",
             );
         }
-        run_action(&mut out, &revision.task_id, plan_id);
+        run_action(&mut out, &revision.task_id, plan_id, &selectors);
     }
-    details_hint(&mut out, &revision.task_id);
+    details_hint(&mut out, &revision.task_id, &selectors);
     Ok((out, marks))
 }
 
@@ -669,7 +694,14 @@ pub(super) fn current_marked(
     } else {
         "confirmation required; no new Worker dispatched"
     };
-    render_marked(cas, &state.revision, id, &plan, &graph, status, tree)
+    // A plan that never ran has its whole wall ahead of it: the clock starts at its first run.
+    let clock = match state.clock_started_unix_ms() {
+        None => TaskClock::NotStarted {
+            wall_ms: state.wall_ms(),
+        },
+        Some(_) => TaskClock::Deadline(state.deadline_unix_ms()),
+    };
+    render_marked(cas, &state.revision, id, &plan, &graph, status, tree, clock)
 }
 
 #[cfg(test)]
@@ -737,8 +769,8 @@ mod tests {
         assert!(review_core::task::is_name(&longest));
         for id in ["pagination-cli", "x", longest.as_str()] {
             let mut out = String::new();
-            run_action(&mut out, id, &plan);
-            details_hint(&mut out, id);
+            run_action(&mut out, id, &plan, "");
+            details_hint(&mut out, id, "");
             assert_eq!(
                 copied(&out, "af task run"),
                 ["af", "task", "run", id, "--confirm-plan", &plan]
@@ -750,9 +782,37 @@ mod tests {
             // Every row ending in `\` is a continuation of the command, never a split token.
             let continued: Vec<_> = out.lines().filter(|row| row.ends_with('\\')).collect();
             assert_eq!(continued, [format!("  af task run {id} \\")]);
-            assert!(out.contains("Use the same --repo and --state selectors as this preview."));
             let prose = out.lines().filter(|row| !row.contains("af task"));
             assert!(prose.into_iter().all(|row| row.len() <= WIDTH));
+
+            // Given selectors, both commands carry them: run as printed, they read this Store.
+            let selectors = " --repo ../repo --state ../state";
+            let mut out = String::new();
+            run_action(&mut out, id, &plan, selectors);
+            details_hint(&mut out, id, selectors);
+            assert_eq!(
+                copied(&out, "af task run"),
+                [
+                    "af",
+                    "task",
+                    "run",
+                    id,
+                    "--confirm-plan",
+                    &plan,
+                    "--repo",
+                    "../repo",
+                    "--state",
+                    "../state"
+                ]
+            );
+            assert_eq!(
+                copied(&out, "af task explain")[..9],
+                [
+                    "af", "task", "explain", id, "--tree", "--repo", "../repo", "--state",
+                    "../state"
+                ]
+            );
+            assert!(!out.contains("same --repo"), "{out}");
         }
     }
 
@@ -763,12 +823,13 @@ mod tests {
             &mut out,
             "ticket\nAPPROVED\u{1b}[2J\u{202e}run",
             &digest('p'),
+            "",
         );
-        details_hint(&mut out, "x\r\u{7}y");
+        details_hint(&mut out, "x\r\u{7}y", "");
         assert!(out.is_ascii() && !out.contains('\u{1b}') && !out.contains('\r'));
         assert!(out.contains("  af task run ticket?APPROVED?[2J?run \\\n"));
         assert!(out.ends_with("Details: af task explain x??y --tree (or --json)\n"));
-        assert_eq!(out.lines().count(), 5);
+        assert_eq!(out.lines().count(), 4);
     }
 
     /// One exact-artifact binding and one Task binding whose Task ID is hostile display data
