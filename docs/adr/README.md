@@ -391,3 +391,5 @@ future readers need.
   renewals](0209-reapply-an-accounting-append-once-after-only-this-writers-heartbeat-renewals.md)
 - [0210 — Own native gate children without leaving the enclosing process
   group](0210-own-native-gate-children-without-leaving-the-enclosing-process-group.md)
+- [0211 — Control Store fixture time with a scoped thread
+  clock](0211-control-store-fixture-time-with-a-scoped-thread-clock.md)

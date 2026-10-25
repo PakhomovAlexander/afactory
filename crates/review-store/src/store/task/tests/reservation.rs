@@ -462,3 +462,143 @@ fn put<T: serde::Serialize>(cas: &Cas, kind: &str, value: &T) -> String {
     .unwrap()
     .0
 }
+
+#[test]
+fn real_store_dispatch_deadline_boundary_preserves_reopened_accounting() {
+    use review_core::task::execution::TaskAttemptResultV1;
+
+    for offset in [-1_i64, 0, 1] {
+        test_clock::with_time(1_000_000, |clock| {
+            let mut f = Fixture::new(false).with_execution_graph();
+            let original_limits = f.revision.limits.clone();
+            let lease = f.open();
+            let lease_until = f.state().lease_until;
+            assert_eq!(lease_until, clock.get() + 1_000_000);
+            f.propose(&lease);
+            f.store
+                .admit_task_plan(&f.cas, &lease, &f.authority)
+                .unwrap();
+            let invocation_id = f.record_execution_inputs(&lease);
+            let reserved = f
+                .store
+                .reserve_task_attempt(&f.cas, &lease, "root.nodes.write", &f.authority)
+                .unwrap();
+            let deadline = reserved.reservation().deadline_unix_ms;
+            assert_eq!(deadline, clock.get() + 1_000);
+            assert_eq!(reserved.reservation().tokens, 10);
+
+            // Pure context preparation spends the original reservation window. Reopening
+            // and binding the actual context must neither renew nor replace that deadline.
+            clock.set(deadline - 1);
+            let context_id = f
+                .cas
+                .put_json(&json!({"attempt_id":reserved.id(),"invocation_id":invocation_id}))
+                .unwrap();
+            f.store = EventStore::open(&f.path).unwrap();
+            let attempt = f
+                .store
+                .bind_task_attempt_context(&f.cas, &lease, &reserved, &context_id, &f.authority)
+                .unwrap();
+            assert_eq!(attempt.reservation(), reserved.reservation());
+            f.store = EventStore::open(&f.path).unwrap();
+            let run = task_run_id(lease.task_id()).unwrap();
+            let prefix = f.store.replay(&run).unwrap();
+            let reserved_limits = f.state().execution.unwrap().budget.remaining_limits();
+            clock.set(deadline.checked_add_signed(offset).unwrap());
+            assert!(clock.get() < lease_until);
+            assert!(clock.get() < original_limits.deadline_unix_ms);
+            let started = f
+                .store
+                .start_task_attempt(&f.cas, &lease, &attempt, &f.authority);
+            if offset < 0 {
+                started.unwrap();
+                f.store
+                    .check_task_attempt_current(&f.cas, &lease, &attempt, &f.authority)
+                    .unwrap();
+                clock.set(deadline);
+                assert!(
+                    f.store
+                        .check_task_attempt_current(&f.cas, &lease, &attempt, &f.authority)
+                        .is_err()
+                );
+                // Expiry ends execution authority, not settlement of already started work.
+                let diagnostic_id = f.cas.put_json(&json!({"failure":"fixture"})).unwrap();
+                f.store
+                    .settle_task_attempt(
+                        &f.cas,
+                        &lease,
+                        TaskExecutionRecordV1::Settled {
+                            attempt_id: attempt.id().into(),
+                            charged_tokens: 7,
+                            result: TaskAttemptResultV1::Failed {
+                                diagnostic_id,
+                                feedback_id: None,
+                            },
+                            raw_artifact_ids: vec![],
+                            usage_id: None,
+                            unknown_usage: None,
+                        },
+                        &f.authority,
+                    )
+                    .unwrap();
+            } else {
+                assert!(matches!(started, Err(StoreError::Conflict(message))
+                    if message == "Task reservation is not dispatchable"));
+                f.store = EventStore::open(&f.path).unwrap();
+                assert_eq!(f.store.replay(&run).unwrap(), prefix);
+                let execution = f.state().execution.unwrap();
+                assert_eq!(execution.budget.committed_tokens(), 0);
+                assert_eq!(execution.budget.reserved_tokens(), 10);
+                assert_eq!(execution.budget.begun_attempts(), 0);
+                assert_eq!(execution.budget.remaining_limits(), reserved_limits);
+                let accounting = execution.attempt_accounting();
+                assert!(!accounting[0].started);
+                assert!(!accounting[0].released);
+                assert!(accounting[0].result.is_none());
+                assert_eq!(accounting[0].charged_tokens, 0);
+                assert_eq!(accounting[0].started_unix_ms, None);
+                assert_eq!(accounting[0].settled_unix_ms, None);
+                assert_eq!(accounting[0].reservation, *reserved.reservation());
+                assert_eq!(
+                    accounting[0].context_id.as_deref(),
+                    Some(context_id.as_str())
+                );
+                f.store
+                    .release_task_attempt(&f.cas, &lease, &attempt, "expired before dispatch")
+                    .unwrap();
+            }
+            f.store = EventStore::open(&f.path).unwrap();
+            let state = f.state();
+            assert_eq!(state.lease_until, lease_until);
+            assert_eq!(state.revision.limits, original_limits);
+            assert_eq!(f.plan.limits, original_limits);
+            let execution = state.execution.unwrap();
+            let mut remaining = original_limits;
+            if offset < 0 {
+                remaining.tokens -= 7;
+                remaining.max_attempts -= 1;
+            }
+            assert_eq!(execution.budget.remaining_limits(), remaining);
+            assert_eq!(execution.budget.reserved_tokens(), 0);
+            assert_eq!(
+                execution.budget.committed_tokens(),
+                if offset < 0 { 7 } else { 0 }
+            );
+            assert_eq!(execution.budget.begun_attempts(), u64::from(offset < 0));
+            let accounting = execution.attempt_accounting();
+            assert_eq!(accounting.len(), 1);
+            assert_eq!(accounting[0].reservation, *reserved.reservation());
+            assert_eq!(accounting[0].released, offset >= 0);
+            assert_eq!(
+                accounting[0].started_unix_ms,
+                (offset < 0).then_some(deadline - 1)
+            );
+            assert_eq!(
+                accounting[0].settled_unix_ms,
+                (offset < 0).then_some(deadline)
+            );
+            assert_eq!(accounting[0].charged_tokens, if offset < 0 { 7 } else { 0 });
+            assert_eq!(accounting[0].result.is_some(), offset < 0);
+        });
+    }
+}

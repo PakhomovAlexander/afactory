@@ -20,6 +20,8 @@ use super::{EventStore, NewEvent, StoreError, u64_column};
 use crate::{Cas, content_id, validate_envelope};
 
 #[cfg(test)]
+mod test_clock;
+#[cfg(test)]
 mod tests;
 
 pub mod collection;
@@ -44,6 +46,10 @@ fn conflict(message: impl Into<String>) -> StoreError {
 /// The Store's clock, in unix milliseconds: every Task transition's time. A Task writer's
 /// heartbeat judges its lease against the same clock.
 pub fn now() -> Result<u64, StoreError> {
+    #[cfg(test)]
+    if let Some(time) = test_clock::now() {
+        return Ok(time);
+    }
     let millis = SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .ok()
