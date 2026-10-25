@@ -768,7 +768,8 @@ def cmd_telemetry_bind_attempt(args):
 def cmd_telemetry_contained_build(args):
     from perflab import telemetrybuild
     try:
-        telemetrybuild.run(args.source, args.output, args.image, args.seconds)
+        telemetrybuild.run(args.source, args.output, args.image, args.scratch_fs,
+                           args.source_sha, args.seconds)
     except (ContractError, OSError, subprocess.SubprocessError) as error:
         return _refuse("invalid", "telemetry_build_failed", str(error))
     return 0
@@ -1573,6 +1574,9 @@ def parser():
     contained_build.add_argument("--source", required=True)
     contained_build.add_argument("--output", required=True)
     contained_build.add_argument("--image", required=True)
+    contained_build.add_argument("--scratch-fs", required=True,
+                                 help="new mount path (prepares an owned 8 GiB image), or fresh dedicated block filesystem at most 8 GiB")
+    contained_build.add_argument("--source-sha", required=True)
     contained_build.add_argument("--seconds", type=int, default=4800)
     contained_build.set_defaults(handler=cmd_telemetry_contained_build)
 

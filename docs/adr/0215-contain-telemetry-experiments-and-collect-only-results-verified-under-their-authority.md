@@ -244,3 +244,47 @@ deadline; foreign entries and links are refused. Root accounting includes report
 bindings and retained foreign files. Publication reserves the peak coexistence of complete
 reports and both replacements, with exact/insufficient-capacity and interruption regressions.
 The old cohort bytes, calibration policies, release metadata and Rust behavior are unchanged.
+
+## Build and collection publication boundary repair (2026-10-25)
+
+Dependency preparation and compilation are separate invocations of the verified image's
+Cargo. Only `cargo fetch --locked` has network access. Before it, Cargo configuration is
+refused using the existing build authority rule (only an overridden `build.target-dir` is
+allowed). There are no candidate hooks, wrappers, credential providers or host configuration
+in this preparation. Compilation is `cargo build --release --locked --offline --bin af
+--target-dir /state/target`, with network disabled and the existing non-root, read-only,
+capability-free boundary. Tool discovery has no candidate mount. Real commit bytes are copied
+into a minimal read-only Git repository, with no host configuration or credentials, so the
+read-only source still embeds its real source identity.
+
+`telemetry-contained-build --source DIR --source-sha FULL_SHA --output NEW_DIR --image DIGEST
+--scratch-fs NEW_MOUNT` prepares an owned 8 GiB block filesystem through `hostprep`; an existing
+fresh dedicated filesystem may be smaller but never larger. Enforcement is verified before
+any build. HOME, TMPDIR, Cargo/Rustup homes, target and bounded controller logs all share this
+aggregate ceiling, including unlinked open files. Only the candidate's subdirectory is mounted;
+logs are separately owned, preallocated and capped, Docker logging is disabled and no shared
+memory filesystem is writable. The 10 GiB host free-disk floor remains, including admission's
+copy. One deadline (at most 4,800 seconds, 30 reserved for completion) covers preparation,
+probes, fetch, compilation, admission and cleanup. A failure retains bounded scratch and says
+so; unconfirmed container cleanup never permits publication or deletion of its backing image.
+Successful owned filesystem teardown precedes publication.
+
+Trusted tool metadata is written only in a controller directory never mounted writable.
+`admission.open_confined` and bounded descriptor copying admit the binary, rejecting links at
+every component, nonregular files, excessive logical size and mutation. The workflow copies
+only that admitted binary. The executable validation smoke exercises a prefetched registry
+dependency, real Git identity, a reachable TCP sentinel denied to build.rs, many small files,
+unlinked open writes, metadata/binary/ancestor links, FIFO and oversized output on small real
+Docker filesystems. A worker without Docker cannot establish these live results; hosted CI
+must be observed before rollout.
+
+Collection status and position use the marked report staging directory and the same locked
+root capacity policy. Every replacement reserves old and staged allocations before writing;
+initial ownership metadata also reserves capacity. Final status accounting resolves its own
+serialized size and includes position, reports, incomplete reserve and owned leftovers. A
+compact incomplete record stays allocated through success. At the next cycle it can replace
+an old success by rename even at full capacity. Interrupted writes remain bounded owned
+staging, swept on locked restart; foreign root temporaries are counted and retained, and
+links or foreign staging are refused. Complete prior reports survive capacity refusal. These
+are publication repairs within the existing typed formats, with no compatibility reader,
+release change, cohort change or statistical change.

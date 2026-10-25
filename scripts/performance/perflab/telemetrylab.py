@@ -1568,11 +1568,6 @@ class HistoryRoot(object):
                     "%s is not a history directory (a link is never followed)" % self.root)
         else:
             os.makedirs(self.root, 0o755)
-        results = os.path.join(self.root, RESULTS)
-        if not os.path.lexists(results):
-            os.mkdir(results, 0o755)
-        require(os.path.isdir(results) and not os.path.islink(results),
-                "%s is not a directory of results" % results)
         try:
             # The integer returned by os.open has no destructor. Latch Python's deadline
             # handler for just this open/publication, then acquire with owned authority.
@@ -1585,13 +1580,21 @@ class HistoryRoot(object):
                 if error.errno in (errno.EWOULDBLOCK, errno.EAGAIN):
                     raise ContractError("another telemetry history command holds %s" % self.root)
                 raise
+            results = os.path.join(self.root, RESULTS)
+            if not os.path.lexists(results):
+                self.reserve_initial(1)
+                os.mkdir(results, 0o755)
+            require(os.path.isdir(results) and not os.path.islink(results),
+                    "%s is not a directory of results" % results)
             authority_dir = os.path.join(self.root, AUTHORITIES)
             if not os.path.lexists(authority_dir):
+                self.reserve_initial(1)
                 os.mkdir(authority_dir, 0o755)
             require(os.path.isdir(authority_dir) and not os.path.islink(authority_dir),
                     "the retained authorities directory must not be a link")
             binding_dir = os.path.join(self.root, BINDINGS)
             if not os.path.lexists(binding_dir):
+                self.reserve_initial(2)
                 os.mkdir(binding_dir, 0o700)
                 with open(os.path.join(binding_dir, "owner"), "xb") as stream:
                     stream.write(BINDINGS_OWNER)
@@ -1621,6 +1624,7 @@ class HistoryRoot(object):
     def report_staging(self):
         path = os.path.join(self.root, REPORT_STAGE)
         if not os.path.lexists(path):
+            self.reserve_initial(2)
             os.mkdir(path, 0o700)
             # An interrupted marker write fails closed on restart; never adopt foreign data.
             with open(os.path.join(path, "owner"), "xb") as stream:
@@ -1632,10 +1636,16 @@ class HistoryRoot(object):
             require(stream.read(len(REPORT_OWNER) + 1) == REPORT_OWNER,
                     "foreign report staging marker")
         for name in os.listdir(path):
-            require(name in ("owner", HISTORY_JSON, HISTORY_HTML), "foreign report staging entry")
+            require(name in ("owner", HISTORY_JSON, HISTORY_HTML, "collection.json",
+                             "collection-position.json", "collection-incomplete.json"),
+                    "foreign report staging entry")
             require(stat.S_ISREG(os.lstat(os.path.join(path, name)).st_mode),
                     "report staging entries must be regular, never links")
         return path
+
+    def reserve_initial(self, blocks):
+        require(self.used_bytes() + blocks * self.report_allocation(1) <= self.bytes_max,
+                "history initialization would exceed the history byte bound")
 
     def binding_path(self, result_id):
         contracts.ID.validate(result_id, "binding result ID")
@@ -1686,7 +1696,7 @@ class HistoryRoot(object):
     def cleanup_staging(self):
         # Interrupted staging is never accepted, and is swept under this lock/deadline.
         report = self.report_staging()
-        for name in (HISTORY_JSON, HISTORY_HTML):
+        for name in (HISTORY_JSON, HISTORY_HTML, "collection.json", "collection-position.json"):
             path = os.path.join(report, name)
             if os.path.lexists(path):
                 os.unlink(path)

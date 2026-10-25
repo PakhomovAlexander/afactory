@@ -146,25 +146,43 @@ def write_position(kept, repository, ident, after_run_id, through_run_id):
            "through_run_id": through_run_id}
     data = contracts.write_bytes(doc, "telemetry-collection-position")
     require(len(data) <= POSITION_BYTES_MAX, "the collection position exceeds its byte bound")
-    path = os.path.join(kept.root, POSITION_JSON)
-    temporary = path + ".tmp"
-    # One fixed temporary under the history lock bounds leftovers from a killed writer.
-    if os.path.lexists(temporary):
-        os.unlink(temporary)
+    publish_record(kept, POSITION_JSON, data, "telemetry-collection-position")
+
+
+def record_size(kept, name, kind):
+    path = os.path.join(kept.root, name)
+    if not os.path.lexists(path):
+        return 0
+    require(stat.S_ISREG(os.lstat(path).st_mode), "collection record must be regular, never links")
+    contracts.read_file(path, kind)
+    return telemetrylab.telemetryexec.allocated([path])
+
+
+def publish_record(kept, name, data, kind):
+    """One locked, peak-reserved replacement in the marked owned staging directory.
+
+    Interrupted bytes stay owned and accounted until the next bounded locked sweep. Root
+    *.tmp files are foreign, counted and never adopted or unlinked.
+    """
+    require(kept.fd is not None, "collection publication needs the history lock")
+    require(len(data) <= contracts.limits.MAX_JSON_BYTES,
+            "collection record exceeds its reader byte bound")
+    record_size(kept, name, kind)
+    temporary = os.path.join(kept.report_staging(), name)
+    require(not os.path.lexists(temporary), "interrupted collection staging must be swept")
+    require(kept.used_bytes() + kept.report_allocation(len(data)) <= kept.bytes_max,
+            "collection record staging would exceed the history byte bound")
+    with open(temporary, "xb") as stream:
+        stream.write(data)
+        stream.flush()
+        os.fsync(stream.fileno())
+    require(kept.used_bytes() <= kept.bytes_max, "collection staging exceeds history capacity")
+    os.replace(temporary, os.path.join(kept.root, name))
+    fd = os.open(kept.root, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
     try:
-        with open(temporary, "xb") as stream:
-            stream.write(data)
-            stream.flush()
-            os.fsync(stream.fileno())
-        os.replace(temporary, path)
-        fd = os.open(kept.root, os.O_RDONLY | os.O_DIRECTORY)
-        try:
-            os.fsync(fd)
-        finally:
-            os.close(fd)
+        os.fsync(fd)
     finally:
-        if os.path.lexists(temporary):
-            os.unlink(temporary)
+        os.close(fd)
 
 
 def scheduled_runs(runs, after, through, runs_max):
@@ -242,7 +260,7 @@ class Cycle(object):
                     kept.__enter__()
                     # If even terminal I/O is interrupted, this atomic record remains truthful:
                     # this cycle has not completed accounting or published a final success.
-                    self.write_status(kept, fallback)
+                    self.begin_status(kept, fallback)
                     kept.cleanup_staging()
                     kept.prune()
                     ident = workflow_id(self.api)
@@ -283,9 +301,6 @@ class Cycle(object):
                                     self.records.pop()
                                 self.record(run, attempt, "collected", artifact, result_id)
                         doc = self.document(started, ident, history, detail)
-                        self.write_status(kept, self.document(started, ident, None,
-                                          ("cycle incomplete; cleanup and final recording pending"
-                                           + ("; " + detail if detail else ""))[:4096]))
                         # A deadline may have interrupted an artifact's finally block. Such
                         # state is unaccepted and may be left for the next locked sweep.
                         kept.cleanup_staging()
@@ -316,21 +331,53 @@ class Cycle(object):
         contracts.validate_telemetry_collection(doc)
         return doc
 
+    def begin_status(self, kept, fallback):
+        # Keep a compact failed record allocated throughout a successful cycle. On restart
+        # it can invalidate an old success with rename alone, even at a completely full cap.
+        reserve = os.path.join(kept.report_staging(), "collection-incomplete.json")
+        record_size(kept, COLLECTION_JSON, "telemetry-collection")
+        if os.path.lexists(reserve):
+            try:
+                saved = contracts.read_file(reserve, "telemetry-collection")
+            except ContractError:
+                current = contracts.read_file(os.path.join(kept.root, COLLECTION_JSON),
+                                              "telemetry-collection")
+                require(current["status"] == "failed"
+                        and current["repository"] == self.config["repository"],
+                        "invalid reserve beside a successful or foreign collection")
+                # An interrupted reserve write can only follow the initial incomplete
+                # publication. It is owned staging, never evidence or a foreign root file.
+                os.unlink(reserve)
+            else:
+                require(saved["repository"] == self.config["repository"] and saved["status"] == "failed"
+                        and saved["ended_unix_ms"] is None and saved["used_bytes"] is None,
+                        "foreign collection incomplete reserve")
+                os.replace(reserve, os.path.join(kept.root, COLLECTION_JSON))
+        # Remove only marked owned leftovers, after invalidating any previous success.
+        kept.cleanup_staging()
+        self.write_status(kept, fallback)
+        data = contracts.write_bytes(fallback, "telemetry-collection")
+        require(kept.used_bytes() + kept.report_allocation(len(data)) <= kept.bytes_max,
+                "collection incomplete reserve would exceed the history byte bound")
+        with open(reserve, "xb") as stream:
+            stream.write(data)
+            stream.flush()
+            os.fsync(stream.fileno())
+
     def write_status(self, kept, doc):
-        data = contracts.write_bytes(doc, "telemetry-collection")
-        path = os.path.join(kept.root, COLLECTION_JSON)
-        temporary = path + ".tmp"
-        if os.path.lexists(temporary):
-            os.unlink(temporary)
-        try:
-            with open(temporary, "xb") as stream:
-                stream.write(data)
-                stream.flush()
-                os.fsync(stream.fileno())
-            os.replace(temporary, path)
-        finally:
-            if os.path.lexists(temporary):
-                os.unlink(temporary)
+        old = record_size(kept, COLLECTION_JSON, "telemetry-collection")
+        base = kept.used_bytes() - old
+        # Account for position, incomplete reserve, reports and owned leftovers. The field
+        # itself may change the serialized allocation; resolve it before any write.
+        for _ in range(8):
+            data = contracts.write_bytes(doc, "telemetry-collection")
+            final = base + kept.report_allocation(len(data))
+            if doc["used_bytes"] is None or doc["used_bytes"] == final:
+                break
+            doc["used_bytes"] = final
+        else:
+            raise ContractError("collection status accounting did not stabilize")
+        publish_record(kept, COLLECTION_JSON, data, "telemetry-collection")
 
     def record(self, run, attempt, outcome, artifact=None, result_id=None, reason=""):
         self.records.append({

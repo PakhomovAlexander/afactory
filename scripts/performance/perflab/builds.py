@@ -105,9 +105,9 @@ def git_environment(home):
             "GIT_OPTIONAL_LOCKS": "0"}
 
 
-def _run(argv, env, cwd=None, check=True):
+def _run(argv, env, cwd=None, check=True, timeout=None):
     result = subprocess.run(argv, cwd=cwd, env=env, stdin=subprocess.DEVNULL,
-                            stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+                            stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=timeout)
     if check and result.returncode != 0:
         raise ContractError("%s failed: %s" % (" ".join(argv[:3]), result.stderr.decode(
             "utf-8", "replace").strip()[:2048]))
@@ -281,7 +281,8 @@ def pinned_image(reference):
 class BuildImage:
     """A build image pinned by digest and present locally, run as this user."""
 
-    def __init__(self, docker, reference, uid=None, gid=None):
+    def __init__(self, docker, reference, uid=None, gid=None, budget=None):
+        self.budget = budget
         if not pinned_image(reference):
             raise Unavailable("build_image_unpinned", "the build image %s is not pinned by "
                               "digest" % reference)
@@ -297,7 +298,8 @@ class BuildImage:
             result = _run([docker, "image", "inspect", "--format",
                            "{{json .Id}}\t{{json .Os}}\t{{json .Architecture}}\t"
                            "{{json .RepoDigests}}\t{{json .Config.Env}}", reference],
-                          docker_client_environment(), check=False)
+                          docker_client_environment(), check=False,
+                          timeout=self.seconds("image inspection", CONTAINER_PROBE_SECONDS))
         except OSError as error:
             raise Unavailable("no_container_runtime", "%s: %s" % (docker, error))
         if result.returncode != 0:
@@ -327,6 +329,19 @@ class BuildImage:
     def record(self):
         return {"reference": self.reference, "id": self.id, "platform": self.platform}
 
+    def seconds(self, step, maximum):
+        return maximum if self.budget is None else self.budget.seconds(step, maximum)
+
+    def refuse_implicit_volumes(self):
+        """A bounded build must not acquire writable anonymous image volumes."""
+        result = _run([self.docker, "image", "inspect", "--format", "{{json .Config.Volumes}}",
+                       self.reference], docker_client_environment(),
+                      timeout=self.seconds("image volume inspection", CONTAINER_PROBE_SECONDS))
+        require(len(result.stdout) <= limits.RECORD_BYTES_MAX,
+                "image volume declaration exceeds its byte bound")
+        require(json.loads(result.stdout) in (None, {}),
+                "bounded build image declares implicit writable volumes")
+
     def command(self, name, argv, cwd, env, mounts, network=False):
         """`docker run` of `argv` in a new named container of this image. The program starts
         through `env -i` with exactly `env`: whatever the image itself declares is dropped."""
@@ -345,10 +360,12 @@ class BuildImage:
         env = docker_client_environment()
         try:
             subprocess.run([self.docker, "rm", "--force", name], stdout=subprocess.DEVNULL,
-                           stderr=subprocess.DEVNULL, timeout=60, env=env)
+                           stderr=subprocess.DEVNULL,
+                           timeout=self.seconds("container removal", 60), env=env)
             listed = subprocess.run([self.docker, "ps", "--all", "--quiet", "--filter",
                                      "name=^/%s$" % name], stdout=subprocess.PIPE,
-                                    stderr=subprocess.DEVNULL, timeout=60, env=env)
+                                    stderr=subprocess.DEVNULL,
+                                    timeout=self.seconds("confirming container removal", 60), env=env)
         except (OSError, subprocess.TimeoutExpired) as error:
             return "build container %s removal unconfirmed: %s" % (name, error)
         if listed.returncode != 0 or listed.stdout.strip():
@@ -362,7 +379,7 @@ class BuildImage:
         try:
             return subprocess.run(command, stdin=subprocess.DEVNULL, stdout=subprocess.PIPE,
                                   stderr=subprocess.PIPE, env=docker_client_environment(),
-                                  timeout=CONTAINER_PROBE_SECONDS)
+                                  timeout=self.seconds("toolchain probe", CONTAINER_PROBE_SECONDS))
         except (OSError, subprocess.TimeoutExpired) as error:
             raise Unavailable("build_image_unavailable", "%s in %s: %s"
                               % (argv[0], self.reference, error))
@@ -617,6 +634,10 @@ class Steps:
             with open(log_path, "wb") as stream:
                 stream.write(b"not started: the run's total deadline has passed\n")
             return self._finish(record, "timeout", None, started, log_path, 0)
+        preallocated = getattr(self.budget, "preallocate_logs", False)
+        if preallocated:
+            with open(log_path, "xb") as stream:
+                os.posix_fallocate(stream.fileno(), 0, self.budget.log_bytes)
         try:
             child = subprocess.Popen(argv, cwd=cwd, env=env, stdin=subprocess.DEVNULL,
                                      stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
@@ -625,26 +646,40 @@ class Steps:
             with open(log_path, "wb") as stream:
                 stream.write(("cannot start %s: %s\n" % (argv[0], error)).encode("utf-8"))
             return self._finish(record, "failed", None, started, log_path, 0)
-        counted = [0]
-        reader = threading.Thread(target=_drain_log, args=(child.stdout, log_path,
-                                                           self.budget.log_bytes, counted))
+        counted, log_errors = [0], []
+        def drain():
+            try:
+                _drain_log(child.stdout, log_path, self.budget.log_bytes, counted, preallocated)
+            except BaseException as error:
+                log_errors.append(str(error)[:1024])
+            finally:
+                child.stdout.close()
+        reader = threading.Thread(target=drain, daemon=True)
         reader.start()
         status = None
         deadline = started + self.budget.deadline_seconds
         if run_deadline is not None:
             deadline = min(deadline, run_deadline)
-        while True:
-            try:
-                child.wait(timeout=max(0.0, min(POLL_SECONDS, deadline - time.monotonic())))
-                break
-            except subprocess.TimeoutExpired:
-                pass
-            reason = self.budget.exceeded()
-            if reason is not None or time.monotonic() >= deadline:
-                status = "budget_exceeded" if reason is not None else "timeout"
-                _kill_session(child)
-                child.wait()
-                break
+        try:
+            while True:
+                try:
+                    child.wait(timeout=max(0.0, min(POLL_SECONDS, deadline - time.monotonic())))
+                    break
+                except subprocess.TimeoutExpired:
+                    pass
+                reason = self.budget.exceeded()
+                if reason is not None or time.monotonic() >= deadline:
+                    status = "budget_exceeded" if reason is not None else "timeout"
+                    _kill_session(child)
+                    child.wait()
+                    break
+        except BaseException:
+            # A deadline timer can interrupt any wait or budget observation. The container
+            # wrapper still confirms removal in run()'s finally; also settle its host client.
+            _kill_session(child)
+            child.wait(timeout=2)
+            reader.join(2)
+            raise
         reader.join(10)
         if reader.is_alive():
             # A process the build left behind still holds the log pipe; it is a member of the
@@ -652,6 +687,8 @@ class Steps:
             _kill_session(child)
             reader.join(10)
             status = status or "failed"
+        if log_errors:
+            status = "failed"
         if status is None:
             status = "succeeded" if child.returncode == 0 else "failed"
             reason = self.budget.exceeded()
@@ -670,8 +707,8 @@ class Steps:
         return record
 
 
-def _drain_log(pipe, path, cap, counted):
-    with open(path, "wb") as stream:
+def _drain_log(pipe, path, cap, counted, preallocated=False):
+    with open(path, "r+b" if preallocated else "wb") as stream:
         while True:
             chunk = pipe.read(64 * 1024)
             if not chunk:
@@ -680,6 +717,8 @@ def _drain_log(pipe, path, cap, counted):
             if room > 0:
                 stream.write(chunk[:room])
             counted[0] += len(chunk)
+        if preallocated:
+            stream.truncate(min(counted[0], cap))
     pipe.close()
 
 

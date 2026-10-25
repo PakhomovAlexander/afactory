@@ -253,11 +253,13 @@ class Collection(TempDir):
         self.assertEqual(contracts.read_file(position, "telemetry-collection-position")[
             "after_run_id"], 2)
         # Restart is a fresh Cycle/Collector/HistoryRoot, with a leftover killed write.
-        with open(position + ".tmp", "wb") as stream:
+        with open(os.path.join(self.config["root"], telemetrylab.REPORT_STAGE,
+                               telemetrycollect.POSITION_JSON), "wb") as stream:
             stream.write(b"interrupted")
         doc, _ = self.cycle(runs, {})
         self.assertEqual([item["run_id"] for item in doc["runs"]], [3, 4, 5, 1])
-        self.assertFalse(os.path.exists(position + ".tmp"))
+        self.assertFalse(os.path.exists(os.path.join(self.config["root"], telemetrylab.REPORT_STAGE,
+                                                     telemetrycollect.POSITION_JSON)))
         # If the old position falls outside lookback, IDs alone still order and wrap.
         doc, _ = self.cycle([run_entry(8), run_entry(9)], {})
         self.assertEqual([item["run_id"] for item in doc["runs"]], [8, 9])

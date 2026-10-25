@@ -190,10 +190,11 @@ jobs:
       - name: Build the side's af once in the pinned image, credential-free, with its pinned toolchain
         run: |
           set -eu
-          python3 "$RUNNER_TEMP/control/scripts/performance/cli.py" telemetry-contained-build \
-            --source "$RUNNER_TEMP/side" --output "$RUNNER_TEMP/build" --image "$IMAGE"
+          python3 -B "$RUNNER_TEMP/control/scripts/performance/cli.py" telemetry-contained-build \
+            --source "$RUNNER_TEMP/side" --source-sha "$SIDE_SHA" --output "$RUNNER_TEMP/build" \
+            --image "$IMAGE" --scratch-fs "$RUNNER_TEMP/build-scratch"
           mkdir "$RUNNER_TEMP/af"
-          cp "$RUNNER_TEMP/build/target/release/af" "$RUNNER_TEMP/af/af"
+          cp "$RUNNER_TEMP/build/af" "$RUNNER_TEMP/af/af"
           sha256sum "$RUNNER_TEMP/af/af" | cut -d' ' -f1 > "$RUNNER_TEMP/af/af.sha256"
       - name: Record the build
         id: record
@@ -202,7 +203,7 @@ jobs:
           python3 "$RUNNER_TEMP/control/scripts/performance/cli.py" telemetry-build-record \
             --side "$SIDE" --source-sha "$SIDE_SHA" --binary "$RUNNER_TEMP/af/af" --image "$IMAGE" \
             --rustc "$(cat "$RUNNER_TEMP/build/af-rustc")" --cargo "$(cat "$RUNNER_TEMP/build/af-cargo")" \
-            --command "cargo build --release --locked --bin af" --output "$RUNNER_TEMP/af/af.build.json"
+            --command "cargo build --release --locked --offline --bin af --target-dir /state/target" --output "$RUNNER_TEMP/af/af.build.json"
           echo "${SIDE}_artifact=perf-telemetry-af-${SIDE}-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}" >> "$GITHUB_OUTPUT"
       - name: Publish the side's binary
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2

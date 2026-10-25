@@ -194,7 +194,7 @@ jobs:
 
   telemetry-build-smoke:
     runs-on: ubuntu-latest
-    timeout-minutes: 10
+    timeout-minutes: 20
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -206,6 +206,6 @@ jobs:
       - name: Pull the pinned telemetry build image
         timeout-minutes: 4
         run: docker pull --quiet ghcr.io/pakhomovalexander/afactory-perf-gnu@sha256:26b0c708b9cdffdeb4731da33161f148b419af3c9e656ae9dc51d318215ae8b2
-      - name: Compile the minimal runner-owned permission fixture
-        timeout-minutes: 6
+      - name: Exercise offline builds, aggregate storage and hostile output admission
+        timeout-minutes: 15
         run: python -I -B scripts/performance/tests/telemetry_build_smoke.py

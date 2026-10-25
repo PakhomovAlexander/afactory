@@ -352,7 +352,18 @@ that `performance.yml` already uses: no experiment ever runs uncontained in CI.
   read-only image and credential separation remain. Only its binary and build record reach
   the measuring job, by SHA-256. Each side outputs its exact artifact name, so a failed-jobs
   rerun can reuse the successful build without guessing the build attempt. No
-  candidate build script runs where the control measures.
+  candidate build script runs where the control measures. Dependency fetch is a separate
+  `cargo fetch --locked`; executable Cargo configuration is refused before this networked
+  step. Compilation is `--locked --offline`, network none. The helper prepares and verifies
+  an owned 8 GiB block filesystem for all writable state and controller logs; a supplied
+  fresh dedicated filesystem may be smaller. Its required `--source-sha` binds real Git
+  provenance, and `--scratch-fs` names the new mount. One `--seconds` deadline (31–4,800,
+  default 4,800) covers preparation through cleanup, with 30 seconds reserved for completion.
+  The 10 GiB host free-disk floor remains. Only confined, bounded regular binary bytes and
+  controller-owned tool identities reach `--output`; the workflow never copies a candidate
+  target path. A failed build publishes nothing and retains bounded scratch for inspection.
+  Successful teardown of a filesystem the helper prepared precedes publication; existing
+  operator-provisioned filesystems are restored to their inventory and left mounted.
 - **Measure.** The measuring job refuses any credential in its checkout or environment. It
   prepares a verified disk-bounded scratch filesystem of the profile's work bytes
   (`ci-scratch --bytes`), pulls the image and runs `telemetry-run --mode linux_container` from
@@ -374,7 +385,11 @@ The executable build smoke is `python3 -I -B
 scripts/performance/tests/telemetry_build_smoke.py`, after pulling the pinned GNU image. The
 `telemetry-build-smoke` validation job runs it on a non-root hosted runner with a 0755 source
 checkout, no target directory and a minimal Rust package. It uses the real workflow build
-command and checks writable private directories and denied source/controller writes. A live
+command with a real prefetched registry dependency. It checks real source identity, writable
+private directories, denied source/controller writes, an operator TCP sentinel (with a
+reachable positive control), many small files and unlinked writes against 128 MiB filesystems,
+and real Docker metadata/binary/ancestor symlinks, FIFO and oversized outputs. External
+sentinels must stay unchanged and refused builds must publish no artifact. A live
 CI smoke pass and a subsequent hosted measurement must be observed before rollout; source
 checks or a local environment without Docker establish neither.
 
@@ -516,6 +531,14 @@ Git receives the existing `Budget`; the trusted collector's Unix main thread als
 interruptible timer across synchronous work. The collector refuses an unsupported thread or an
 existing interval timer. It runs no candidate binary, downloaded code or credential-bearing
 helper worker.
+
+Status and position replacements reserve their peak allocations under the history lock,
+including initial ownership records. They share the marked report staging directory;
+interrupted owned writes are counted and swept on restart, while foreign root `.tmp` files
+are counted and retained. A compact incomplete reserve can invalidate an old success by
+rename even when the root is full. Capacity refusal leaves a failed/incomplete record and
+preserves complete reports. Final `collection.json.used_bytes` includes status, position,
+reports, the reserve and any owned leftovers, including the final status's own allocation.
 
 Five seconds of that same deadline are reserved for bounded cleanup and atomic status writing.
 An expired import leaves unaccepted staging for a later locked sweep. If expiry follows the

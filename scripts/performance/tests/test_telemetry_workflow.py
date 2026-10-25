@@ -69,7 +69,7 @@ class Workflow(unittest.TestCase):
 
     def test_candidate_code_is_only_built_apart_and_measured_contained(self):
         build, measure = "\n".join(self.jobs["build"]), "\n".join(self.jobs["measure"])
-        self.assertIn("cargo build --release --locked --bin af", build)
+        self.assertIn("cargo build --release --locked --offline --bin af", build)
         self.assertLess(build.index("ci-credentials --git-dir .git --environment"),
                         build.index("cargo build"))
         self.assertIn('telemetry-contained-build', build, "use the shared verified build boundary")
@@ -77,7 +77,7 @@ class Workflow(unittest.TestCase):
         self.assertIn("builds.BuildImage", helper)
         self.assertIn("builds.ContainerToolchain", helper)
         self.assertIn('(source, "/src", False)', helper)
-        self.assertIn('(output, "/state", True)', helper)
+        self.assertIn('(state, "/state", True)', helper)
         self.assertIn("telemetry-build-record", build)
         self.assertNotIn("cargo", measure.replace("af.build.json", ""),
                          "no build script runs where the control measures")
