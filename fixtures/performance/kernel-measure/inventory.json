@@ -927,8 +927,8 @@
   },
   {
    "path": "fixtures/performance/schema/index.json",
-   "sha256": "sha256:932e88c624a91ad980b890ce5ec9541808ada67e94f002295752de59e8a27a87",
-   "size": 63031
+   "sha256": "sha256:325f83392432009979e22cff3db5a74d070a26611fd33d6bfe2e60fedfc965c6",
+   "size": 64817
   },
   {
    "path": "fixtures/performance/schema/kernel-inventory/invalid-digest.json",
@@ -1916,6 +1916,61 @@
    "size": 4568
   },
   {
+   "path": "fixtures/performance/schema/telemetry-owner/invalid-active-without-container.json",
+   "sha256": "sha256:07faede6a82244a8db57201ff1b1d57d689d984a7706190bba9b4fa173152622",
+   "size": 304
+  },
+  {
+   "path": "fixtures/performance/schema/telemetry-owner/invalid-active-without-launch.json",
+   "sha256": "sha256:3a56dcebb106ff665d337372c7b72836ddd8837ad2ea83bc1e5d689bcd2e83ea",
+   "size": 330
+  },
+  {
+   "path": "fixtures/performance/schema/telemetry-owner/invalid-control-identity.json",
+   "sha256": "sha256:06f3a09cf3fb1174783cba776a576f9b31c4eb60d943ce0b3214def0578d54ad",
+   "size": 299
+  },
+  {
+   "path": "fixtures/performance/schema/telemetry-owner/invalid-phase.json",
+   "sha256": "sha256:1005b7ba482795cda6d21513e2e7c1e3052a4182b91459f5c8d9e902b9fbf03e",
+   "size": 306
+  },
+  {
+   "path": "fixtures/performance/schema/telemetry-owner/invalid-ready-after-launch.json",
+   "sha256": "sha256:679c63688c7d5cbeeabc0d2abafeedcaf6b83058b0a788146fa478856356cec2",
+   "size": 303
+  },
+  {
+   "path": "fixtures/performance/schema/telemetry-owner/valid-active.json",
+   "sha256": "sha256:718f2c401d8ec8b53b4461e4d7554697f659b36871fa7f1cae01874361b4d3a5",
+   "size": 330
+  },
+  {
+   "path": "fixtures/performance/schema/telemetry-owner/valid-ready.json",
+   "sha256": "sha256:30972994bf7a2006c10f8021fbc57173744bfc851a1e1bf8a82daf03120d4c17",
+   "size": 303
+  },
+  {
+   "path": "fixtures/performance/schema/telemetry-owner/valid-removed-after-launch.json",
+   "sha256": "sha256:1a625da8f9d349d8cf42a63b6e45086aaad8df79e05e42b272dee39eb829a3f5",
+   "size": 305
+  },
+  {
+   "path": "fixtures/performance/schema/telemetry-owner/valid-removed-before-launch.json",
+   "sha256": "sha256:750758aa401c3a2fdac68b83656e2915aa61bff83c297f52c9e9f2fa8ea83598",
+   "size": 305
+  },
+  {
+   "path": "fixtures/performance/schema/telemetry-owner/valid-stopped.json",
+   "sha256": "sha256:bacb810cd6b0d4e3fcfb7f5c1c4848282dee837384a943757ce35bcde8e093cc",
+   "size": 331
+  },
+  {
+   "path": "fixtures/performance/schema/telemetry-owner/valid-uncertain.json",
+   "sha256": "sha256:a8d3a8128762cfbf3e2f6537a7b6f1470eff880f8e227ed098743dbd3e38f8c5",
+   "size": 333
+  },
+  {
    "path": "fixtures/performance/schema/telemetry-result/invalid-a-planned-run-dropped.json",
    "sha256": "sha256:feb89fca4b37839bed34f3f63ae9be37a585a96120bfd901989a922f07259a5b",
    "size": 8896
@@ -2796,7 +2851,7 @@
    "size": 6777
   }
  ],
- "harness_digest": "sha256:2e36a81557d35ec7665812470565059ae534bab09751632c6a5b534a2849e274",
+ "harness_digest": "sha256:2b1ab47544ae990a85e6b57ab0999a15dd44666c0a6660c4e7c4d617235f5c80",
  "inner_metric": "pending",
  "inner_metric_reason": "the inner wall_ms metric is recorded in every Measurement but no staged objective selects it until the guard's real kernel integration and tampered-candidate tests are accepted on the sealed source and a reviewed human change installs and selects it",
  "objective_metric": "elapsed_ms",

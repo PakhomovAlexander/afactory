@@ -2067,6 +2067,71 @@
       "shape": true
     },
     {
+      "path": "telemetry-owner/invalid-active-without-container.json",
+      "contract": "telemetry-owner",
+      "valid": false,
+      "error": "only pre-launch or retired ownership has no execution",
+      "shape": false
+    },
+    {
+      "path": "telemetry-owner/invalid-active-without-launch.json",
+      "contract": "telemetry-owner",
+      "valid": false,
+      "error": "launch accounting disagrees",
+      "shape": false
+    },
+    {
+      "path": "telemetry-owner/invalid-control-identity.json",
+      "contract": "telemetry-owner",
+      "valid": false,
+      "error": "control: must hold 2..2 items",
+      "shape": true
+    },
+    {
+      "path": "telemetry-owner/invalid-phase.json",
+      "contract": "telemetry-owner",
+      "valid": false,
+      "error": "expected one of",
+      "shape": true
+    },
+    {
+      "path": "telemetry-owner/invalid-ready-after-launch.json",
+      "contract": "telemetry-owner",
+      "valid": false,
+      "error": "launch accounting disagrees",
+      "shape": false
+    },
+    {
+      "path": "telemetry-owner/valid-active.json",
+      "contract": "telemetry-owner",
+      "valid": true
+    },
+    {
+      "path": "telemetry-owner/valid-ready.json",
+      "contract": "telemetry-owner",
+      "valid": true
+    },
+    {
+      "path": "telemetry-owner/valid-removed-after-launch.json",
+      "contract": "telemetry-owner",
+      "valid": true
+    },
+    {
+      "path": "telemetry-owner/valid-removed-before-launch.json",
+      "contract": "telemetry-owner",
+      "valid": true
+    },
+    {
+      "path": "telemetry-owner/valid-stopped.json",
+      "contract": "telemetry-owner",
+      "valid": true
+    },
+    {
+      "path": "telemetry-owner/valid-uncertain.json",
+      "contract": "telemetry-owner",
+      "valid": true
+    },
+    {
       "path": "telemetry-result/invalid-a-planned-run-dropped.json",
       "contract": "telemetry-result",
       "valid": false,
