@@ -55,13 +55,27 @@ class Workflow(unittest.TestCase):
             self.assertNotIn(forbidden, self.text)
 
     def test_the_no_perf_scope_precedes_every_plan_build_and_matrix(self):
-        self.assertEqual(list(self.jobs)[:2], ["scope", "plan"])
+        names = list(self.jobs)
+        self.assertEqual(names[:2], ["scope", "plan"])
         scope = self.jobs["scope"]
+        self.assertIsNone(text.key(scope, "needs"))
+        self.assertEqual(text.key(scope, "outputs"), "")
+        self.assertIn("      exempt: ${{ steps.label.outputs.exempt }}", scope)
+        # The scope never checks anything out and runs no laboratory or candidate code.
+        joined = "\n".join(scope)
         for forbidden in ("actions/checkout", "cli.py", "download-artifact", "upload-artifact"):
-            self.assertNotIn(forbidden, "\n".join(scope))
+            self.assertNotIn(forbidden, joined)
         self.assertEqual(text.key(self.jobs["plan"], "needs"), "scope")
         self.assertEqual(text.key(self.jobs["plan"], "if"),
                          "needs.scope.outputs.exempt == 'false'")
+        # Everything else is planned from the plan job, so an exemption skips it all.
+        self.assertEqual(text.key(self.jobs["build"], "needs"), "plan")
+        self.assertEqual(text.key(self.jobs["build"], "if"), "needs.plan.outputs.any == 'true'")
+        self.assertIn("plan", text.key(self.jobs["shard"], "needs"))
+        self.assertIn("plan", text.key(self.jobs["aggregate"], "needs"))
+        # The label is read nowhere else.
+        self.assertEqual(self.text.count('"no-perf"'), 1)
+
         status = self.jobs["status"]
         self.assertEqual(text.key(status, "needs"), "[scope, plan, build, shard, aggregate]")
         self.assertEqual(text.key(status, "if"), "${{ always() }}")
@@ -191,6 +205,37 @@ class Workflow(unittest.TestCase):
                       "steps.verdict.outputs.report_label }}", status)
         self.assertIn("report_summary: ${{ steps.exemption.outputs.report_summary || "
                       "steps.verdict.outputs.report_summary }}", status)
+
+
+    def test_a_label_change_replaces_the_running_pull_request_measurement(self):
+        # Adding `no-perf` must cancel a running measurement and removing it must measure
+        # again: both are label events of the one pull request concurrency group (ADR-0196).
+        head = self.text[:self.text.index("\njobs:")]
+        self.assertIn("  pull_request:\n    branches: [main]\n"
+                      "    # A label change starts a new run", head)
+        self.assertIn("    types: [opened, synchronize, reopened, labeled, unlabeled]\n", head)
+        self.assertIn("  group: performance-${{ github.event_name }}-${{ "
+                      "github.event.pull_request.number || inputs.release_claim || github.ref }}\n"
+                      "  cancel-in-progress: ${{ github.event_name == 'pull_request' }}\n", head)
+
+    def test_the_stable_check_reports_an_exemption_and_otherwise_requires_the_plan(self):
+        status = self.jobs["status"]
+        self.assertEqual(text.key(status, "name"), "Performance check")
+        self.assertEqual(text.key(status, "needs"), "[scope, plan, build, shard, aggregate]")
+        self.assertEqual(text.key(status, "if"), "${{ always() }}")
+        exempt = step_named(status, "Report the no-perf exemption")
+        self.assertEqual(with_value(exempt, "if"), "${{ needs.scope.result == 'success' && "
+                                                   "needs.scope.outputs.exempt == 'true' }}")
+        guard = step_named(status, "Require a completed scope decision")
+        self.assertEqual(text.steps(status)[0], guard)
+        self.assertEqual(with_value(guard, "if"), "${{ always() }}")
+        self.assertEqual(text.steps(status)[1], exempt)
+        # Every other step is the measured path, which never runs for an exemption.
+        for step in text.steps(status)[2:]:
+            self.assertIn("        if: ${{ needs.scope.outputs.exempt != 'true' }}", step,
+                          step[0])
+        finish = text.block(step_named(status, "Finish the stable performance check"), "run")
+        self.assertIn('test -n "$CONTROL_SHA"', finish)
 
 
 @unittest.skipUnless(shutil.which("bash") and shutil.which("git"), "bash and git needed")
@@ -386,16 +431,6 @@ class Steps(TempDir):
     def test_scope_failure_or_cancellation_cannot_pass_even_with_exemption_output(self):
         for state in ("success", "failure", "cancelled", "skipped", ""):
             for output in ("true", "false", "", "unknown"):
-<<<<<<< b9a2b3cafb4a3aa2bbf57ac03ffd2a380be300a1
-                result, _ = self.run_step("status", "Require a completed scope decision", {
-                    "SCOPE_RESULT": state, "EXEMPT": output})
-                self.assertEqual(result.returncode == 0,
-                                 state == "success" and output in ("true", "false"))
-        result, _ = self.run_step("status", "Report the no-perf exemption", {
-            "EVENT_NAME": "pull_request", "GITHUB_RUN_ATTEMPT": "1"})
-        self.assertEqual(result.returncode, 0)
-        self.assertIn("exempt (label no-perf), not measured", read(self.path("summary")).decode())
-=======
                 with self.subTest(state=state, output=output):
                     result, _ = self.run_step("status", "Require a completed scope decision", {
                         "SCOPE_RESULT": state, "EXEMPT": output})
@@ -425,12 +460,10 @@ class Steps(TempDir):
                 self.assertEqual(read(self.path("github-output")).decode(), outputs,
                                  "an invalid exemption must not publish outputs")
         # Without the exemption, a run whose plan never ran has no control and fails.
->>>>>>> 7d52f39bb6d3a7eedacc00242e14f6075eee4411
         result, _ = self.run_step("status", "Finish the stable performance check", {
             "CONTROL_SHA": "", "PERF_JOB_RESULTS": "{}"})
         self.assertNotEqual(result.returncode, 0)
 
-<<<<<<< b9a2b3cafb4a3aa2bbf57ac03ffd2a380be300a1
     def test_dispatch_head_controls_both_run_naming_and_precheckout_guard(self):
         line = next(line for line in read(WORKFLOW).decode().splitlines()
                     if line.startswith("run-name: "))
@@ -458,7 +491,7 @@ class Steps(TempDir):
             result, _ = self.run_step("plan", "Refuse a calibration source mismatch", {
                 "EVENT_NAME": event, "INPUT_SCOPE": "", "DISPATCH_HEAD": ""})
             self.assertEqual(result.returncode, 0, result.stderr.decode())
-=======
+
     def test_the_report_step_preserves_explicit_exemption_and_measured_outputs(self):
         url = "https://github.com/owner/af/actions/runs/50/attempts/1"
         for summary in ("## Performance report: EXEMPT (no-perf; not measured)\n\nNo performance claim is made.\n",
@@ -492,7 +525,55 @@ class Steps(TempDir):
                 self.assertNotIn("PASS", summary)
                 self.assertIn("trusted control did not publish" if state == "success"
                               else "scope decision failed", summary)
->>>>>>> 7d52f39bb6d3a7eedacc00242e14f6075eee4411
+
+
+    def test_only_an_exact_no_perf_label_on_a_first_pull_request_attempt_exempts_it(self):
+        def pull(*names, action="labeled"):
+            return {"action": action, "pull_request": {
+                "number": 7, "labels": [{"name": name, "id": index}
+                                        for index, name in enumerate(names)]}}
+        cases = (
+            (("pull_request", pull("documentation", "no-perf")), "true"),
+            (("pull_request", pull("no-perf", action="synchronize")), "true"),
+            (("pull_request", pull("no-perf", action="opened")), "true"),
+            (("pull_request", pull("documentation", action="unlabeled")), "false"),
+            (("pull_request", pull()), "false"),
+            # Only the exact name: no case-folding, prefix or substring.
+            (("pull_request", pull("No-Perf", "NO-PERF", "no-perf ", "no-perf-x", "skip-no-perf")),
+             "false"),
+            # Non-pull-request triggers ignore the label, whatever the payload carries.
+            (("push", pull("no-perf")), "false"),
+            (("schedule", pull("no-perf")), "false"),
+            (("workflow_dispatch", pull("no-perf")), "false"),
+            (("workflow_run", pull("no-perf")), "false"),
+        )
+        for (event_name, event), expected in cases:
+            with self.subTest(event=event_name, payload=event):
+                result, outputs = self.scope(event_name, event)
+                self.assertEqual(result.returncode, 0, result.stderr.decode())
+                self.assertEqual(outputs, "exempt=%s\n" % expected)
+        # A rerun reads the event as it was when the run began, so it measures; a release
+        # claim is measured whatever the event.
+        for kwargs in ({"attempt": "2"}, {"claim": "af-release-claim-" + "a" * 64}):
+            with self.subTest(**kwargs):
+                result, outputs = self.scope("pull_request", pull("no-perf"), **kwargs)
+                self.assertEqual(result.returncode, 0, result.stderr.decode())
+                self.assertEqual(outputs, "exempt=false\n")
+        # A pull request event whose labels cannot be read fails rather than measuring nothing.
+        for event in ({"pull_request": {}}, {"pull_request": {"labels": [{"id": 1}]}}):
+            with self.subTest(event=event):
+                result, outputs = self.scope("pull_request", event)
+                self.assertNotEqual(result.returncode, 0)
+                self.assertIn(outputs, (None, ""))
+
+    def test_scope_failure_or_cancellation_cannot_pass_even_with_an_exemption_output(self):
+        for state in ("success", "failure", "cancelled", "skipped", ""):
+            for output in ("true", "false", "", "unknown"):
+                with self.subTest(state=state, output=output):
+                    result, _ = self.run_step("status", "Require a completed scope decision", {
+                        "SCOPE_RESULT": state, "EXEMPT": output})
+                    self.assertEqual(result.returncode == 0,
+                                     state == "success" and output in ("true", "false"))
 
 
 ACTIVATION = os.path.join(ROOT, ".github/workflows/performance-activation.yml")

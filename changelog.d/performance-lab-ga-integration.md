@@ -5,3 +5,10 @@ goldens; move the seven unpublished lab decisions to ADR-0213–0219. Make the t
 short-Attempt Store fixtures and adjacent paths deterministic with the existing scoped test
 clock, prove exact deadline refusal without spend, and align the slow accounting fixture with
 GA's observed-usage recovery contract. This adds no cohort, deployment or performance claim.
+
+Reconcile the published 0.13.0-rc.1 release and trusted PR Performance report with the lab:
+retain numeric verdicts, exact-plan rendering, advisory qualification and unavailable/exempt
+states, plus both workflow regression sets. Control the two observed-usage recovery fixtures
+with the scoped Store clock, including explicit lease expiry, cold replay and fencing checks;
+keep their original budgets and the binary-copy behavior unchanged. Validation uses the current
+Python runtime and latest-stable CI policy; complete native acceptance remains separate.

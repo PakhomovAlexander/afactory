@@ -63,9 +63,38 @@ resolution and main's multicall executable refusals. Source-only authority, cont
 collection deadlines, diagnostics, calibration producer equality and disabled dry-run guards
 remain required; no new cohort or compatibility reader is introduced.
 
+## Published release and report integration
+
+The subsequent mechanical merge with published main
+`7d52f39bb6d3a7eedacc00242e14f6075eee4411` retains the released version, lock,
+changelog and released fragment removals. Both parents' workflow assertions survive.
+The trusted PR report job, numeric verdict table, exact-plan binding, advisory versus
+qualified presentation and unavailable/exempt states coexist with telemetry diagnostics
+and calibration's pre-checkout source guard. The unchanged generator regenerates the
+protected inventory and staged measure policy from this integrated source.
+
+The complete native gate reported 852 Python passes and 3,670 Rust passes with three
+Rust failures. The binary-copy execute-bit failure was reproduced with identical bytes
+under differing orchestration umasks; the coordinator corrected its service umask to
+0022 inside private 0700 roots. No product or binary-copy test change addresses it.
+The two new-main recovery fixtures failed at dispatch after their 1,000 ms Attempt
+windows elapsed during setup; their isolated native reruns passed and remain recorded
+as flaky historical results.
+
+Those exact observed-usage recovery fixtures, plus their short-Attempt neighbors, now
+use ADR-0219's scoped test clock. Actual CAS binding and cold reopening precede dispatch
+at deadline minus one millisecond. Equality and one millisecond later refuse dispatch
+without appending or spending, and explicit release restores reservation credit on
+cold replay. The takeover helper refuses one millisecond before lease expiry, advances
+Store time explicitly to expiry plus one, then recovers through the existing path.
+Cold reopen retains observed charges and recovery accounting; the old writer cannot
+renew or recover, and repeated successor recovery appends nothing. Original reservations,
+leases, recovery limits and incomplete-usage floor assertions remain. No real-time wait
+runs on a frozen clock, and production time and executable behavior are unchanged.
+
 ## Consequences and limits
 
-Focused Rust repeats, affected and neighboring tests, Python 3.9 tests, schema/inventory
+Focused Rust repeats, affected and neighboring tests, current-runtime Python tests, schema/inventory
 parity and Markdown checks precede sealing. They do not replace the enclosing full native
 gate or the independent reviews and evaluator. A source-only sandbox whose empty `.git`
 placeholder prevents Git enumeration can run the same generator on an exact owned source

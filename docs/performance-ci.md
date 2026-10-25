@@ -107,7 +107,9 @@ concurrency group per pull request, so every label change replaces the running r
    attempt 1 whose pull request carries a label named exactly `no-perf`; every other trigger, a
    release claim and every rerun measure. Unreadable labels fail it. An exempt run plans, builds
    and samples nothing.
-2. **plan.** Runs only when `scope` succeeded and is not exempt. Checks out the event with `persist-credentials: false`, resolves the trusted control
+2. **plan.** Runs only when `scope` succeeded and is not exempt. A calibration dispatch first
+   refuses an absent, malformed or stale `dispatch_head` before checkout or planning. Checks out
+   the event with `persist-credentials: false`, resolves the trusted control
    revision (the PR's base SHA, the pushed commit's first parent, the scheduled tip, or the
    dispatch's control or base), and runs `ci-schedule` from that control's worktree. A
    dispatch's `refs/heads/NAME` is read as the checkout fetched it, `refs/remotes/origin/NAME`,
