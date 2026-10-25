@@ -33,7 +33,7 @@ def sweep(leader):
     remaining = []
     for pid in children():
         if pid == leader:
-            continue  # Reserve the leader's status and process-group ID until final wait.
+            continue  # Reserve the leader's status and PID until final wait.
         if os.waitpid(pid, os.WNOHANG)[0] == 0:
             remaining.append(pid)
     return remaining
@@ -44,13 +44,6 @@ def send_child(pid, sig):
     # this is our unreaped child and pins its PID until our next explicit wait.
     os.waitid(os.P_PID, pid, os.WEXITED | os.WNOHANG | os.WNOWAIT)
     os.kill(pid, sig)
-
-
-def send_group(leader, sig):
-    try:
-        os.killpg(leader, sig)
-    except ProcessLookupError:
-        pass  # No member remains in the still-reserved group; adopted children are separate.
 
 
 def finish(code):
@@ -70,6 +63,12 @@ def launch_failure(error):
 def run(command):
     if sys.platform != 'linux':
         # Preserve command, descriptors and signal semantics without unsupported prctl.
+        # exec preserves ignores: undo Python's startup ignores, as Popen's
+        # restore_signals does, before replacing this process with the gate.
+        for name in ('SIGPIPE', 'SIGXFZ', 'SIGXFSZ'):
+            sig = getattr(signal, name, None)
+            if sig is not None:
+                signal.signal(sig, signal.SIG_DFL)
         try:
             os.execvp(command[0], command)
         except OSError as error:
@@ -89,7 +88,11 @@ def run(command):
         signal.signal(sig, cancel)
     signal.signal(signal.SIGCHLD, signal.SIG_DFL)
     try:
-        leader = subprocess.Popen(command, start_new_session=True)
+        # Inherit the enclosing supervisor's group, including for ordinary orphans
+        # with cleared environments. Its uncatchable group kill must still reach
+        # the whole gate. Direct invocation may share a shell's group, so this
+        # owner never signals groups: only its reserved, unreaped child PIDs.
+        leader = subprocess.Popen(command)
     except OSError as error:
         return launch_failure(error)
     drain_until = None
@@ -120,8 +123,7 @@ def run(command):
                 stopping = signal.SIGTERM
             if stopping is not None:
                 if kill_at is None:
-                    # The unreaped leader reserves the group ID against PID reuse.
-                    send_group(leader.pid, stopping)
+                    send_child(leader.pid, stopping)
                     kill_at = now + TERM_SECONDS
                     stop_until = kill_at + KILL_SECONDS
                 # Killing direct parents exposes escaped/nested descendants by adoption.
@@ -134,7 +136,7 @@ def run(command):
                         term_sent.add(pid)
                 term_sent.intersection_update(remaining)
                 if now >= kill_at:
-                    send_group(leader.pid, signal.SIGKILL)
+                    send_child(leader.pid, signal.SIGKILL)
                 if now >= stop_until:
                     raise TimeoutError('gate-owned children did not exit after termination')
             time.sleep(POLL_SECONDS)
@@ -149,7 +151,7 @@ def run(command):
             until = stop_until if stop_until is not None else time.monotonic() + KILL_SECONDS
             try:
                 while True:
-                    send_group(leader.pid, signal.SIGKILL)
+                    send_child(leader.pid, signal.SIGKILL)
                     for pid in sweep(leader.pid):
                         send_child(pid, signal.SIGKILL)
                     if (exited(leader.pid) and not sweep(leader.pid)

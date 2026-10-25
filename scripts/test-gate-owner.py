@@ -49,7 +49,24 @@ def load_owner():
 
 
 def gate_fixture(root, mode):
-    if mode == 'zombies':
+    if mode == 'cleared':
+        assert 'AF_PROCESS_TREE' not in os.environ
+        (root / 'live').write_text(str(os.getpid()))
+        time.sleep(60)
+    elif mode == 'ordinary':
+        parent = os.fork()
+        if parent == 0:
+            if os.fork() == 0:
+                # Actually exec an empty environment, not just mutate Python's
+                # environment mapping. This orphan never changes group/session.
+                os.execve(sys.executable, [sys.executable, str(SELF), '--gate',
+                                          str(root), 'cleared'], {})
+            os._exit(0)
+        assert os.waitpid(parent, 0)[1] == 0
+        until(lambda: (root / 'live').exists())
+        (root / 'leader').write_text(str(os.getpid()))
+        time.sleep(60)
+    elif mode == 'zombies':
         # Each intermediate parent owns/reaps its direct child. Its grandchild is
         # orphaned and exits under the nearest subreaper while this leader stays alive.
         pids = []
@@ -157,6 +174,76 @@ def under_outer(command):
     return result
 
 
+def hard_outer(root, owner_path):
+    """The host's immediate group SIGKILL, beneath a real isolated subreaper.
+
+    No AF binary replacement or host scan: observe only fixture PIDs. Retain the
+    unreaped owner to reserve its group; reserve adopted children before signalling.
+    The optional owner path lets the exact predecessor run this same reproduction.
+    """
+    assert ctypes.CDLL(None, use_errno=True).prctl(36, 1, 0, 0, 0) == 0
+    owner = load_owner()
+    child = subprocess.Popen([sys.executable, str(owner_path), sys.executable,
+                              str(SELF), '--gate', str(root), 'ordinary'],
+                             start_new_session=True,
+                             env={**os.environ, 'AF_PROCESS_TREE': 'owned-fixture'})
+    sibling = subprocess.Popen([sys.executable, '-c', 'import time; time.sleep(60)'])
+    try:
+        until(lambda: (root / 'leader').exists())
+        leader = int((root / 'leader').read_text())
+        orphan = int((root / 'live').read_text())
+        until(lambda: (s := state(orphan)) and s[2] == child.pid)
+        before = state(orphan)
+        assert before[1] != 'Z', 'orphan must already be adopted and live'
+        # CheckRunner KillDescendants cancels with SIGKILL, not cooperative TERM.
+        # Popen created precisely this group; nobody has waited/released its ID.
+        os.killpg(child.pid, signal.SIGKILL)
+        until(lambda: owner.exited(child.pid))
+        until(lambda: state(leader)[2] == os.getpid())
+        # The host can identify the marked gate leader even with the predecessor's
+        # new session. Kill it too, then try to reap the ordinary unmarked orphan.
+        owner.send_child(leader, signal.SIGKILL)
+        until(lambda: owner.exited(leader))
+        os.waitpid(leader, 0)
+        until(lambda: state(orphan)[2] == os.getpid())
+        deadline = time.monotonic() + 2
+        while not owner.exited(orphan) and time.monotonic() < deadline:
+            time.sleep(.01)
+        after = state(orphan)
+        reaped = owner.exited(orphan)
+        if reaped:
+            os.waitpid(orphan, 0)
+        print(json.dumps({'outer': os.getpid(), 'owner': child.pid,
+                          'before': before, 'after': after,
+                          'reaped': reaped, 'absent': state(orphan) is None}), flush=True)
+        assert reaped and state(orphan) is None, 'ordinary orphan survived group SIGKILL'
+        assert child.wait(timeout=2) == -signal.SIGKILL
+        assert sibling.poll() is None, 'unrelated sibling must survive cancellation'
+    finally:
+        # Even failed predecessor assertions release every helper, layer by layer.
+        # The only group kill above happened while the owner PID was reserved.
+        deadline = time.monotonic() + 4
+        try:
+            while True:
+                pending = owner.children()
+                for pid in pending:
+                    if pid != sibling.pid:
+                        owner.send_child(pid, signal.SIGKILL)
+                for pid in pending:
+                    if pid != sibling.pid and owner.exited(pid):
+                        if pid == child.pid:
+                            child.wait(timeout=1)
+                        else:
+                            os.waitpid(pid, 0)
+                if owner.children() == [sibling.pid]:
+                    break
+                assert time.monotonic() < deadline, 'hard-kill fixture cleanup unconfirmed'
+                time.sleep(.01)
+        finally:
+            sibling.kill()
+            sibling.wait(timeout=2)
+
+
 @unittest.skipUnless(sys.platform == 'linux', 'actual Linux subreaper and /proc required')
 class Ownership(unittest.TestCase):
     def setUp(self):
@@ -182,6 +269,18 @@ class Ownership(unittest.TestCase):
             self.assertTrue(evidence['gate_alive'])
             self.assertEqual(len(evidence['children']), 24)
             print('outer-subreaper evidence:', result.stdout.strip(), flush=True)
+
+    def test_outer_supervisor_sigkill_reaps_environment_cleared_ordinary_orphan(self):
+        result = subprocess.run([sys.executable, str(SELF), '--hard-outer',
+                                 str(self.root), str(OWNER)], env=self.env,
+                                cwd='/', capture_output=True, text=True, timeout=15)
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        evidence = json.loads(result.stdout)
+        self.assertEqual(evidence['before'][2], evidence['owner'])
+        self.assertEqual(evidence['before'][3], evidence['owner'])
+        self.assertTrue(evidence['reaped'])
+        self.assertTrue(evidence['absent'])
+        print('outer SIGKILL evidence:', result.stdout.strip(), flush=True)
 
     def test_status_streams_spawn_and_signal(self):
         for code in (0, 23):
@@ -341,6 +440,14 @@ class Fallback(unittest.TestCase):
             with self.assertRaises(ChildProcessError):
                 owner.send_child(1234, signal.SIGTERM)
             kill.assert_not_called()
+        calls = mock.Mock()
+        with mock.patch.object(owner.os, 'waitid', calls.waitid), \
+                mock.patch.object(owner.os, 'kill', calls.kill):
+            calls.waitid.return_value = None  # A live unreaped child also pins its PID.
+            owner.send_child(1234, signal.SIGKILL)
+        self.assertEqual(calls.mock_calls, [
+            mock.call.waitid(os.P_PID, 1234, os.WEXITED | os.WNOHANG | os.WNOWAIT),
+            mock.call.kill(1234, signal.SIGKILL)])
         with mock.patch.object(owner, 'children', return_value=[1234, 5678]), \
                 mock.patch.object(owner.os, 'waitpid', return_value=(5678, 0)) as wait:
             self.assertEqual(owner.sweep(1234), [])
@@ -350,11 +457,40 @@ class Fallback(unittest.TestCase):
         owner = load_owner()
         with mock.patch.object(owner.sys, 'platform', 'darwin'), \
                 mock.patch.object(owner.ctypes, 'CDLL') as libc, \
+                mock.patch.object(owner.signal, 'signal') as restore, \
                 mock.patch.object(owner.os, 'execvp', side_effect=SystemExit) as execute:
             with self.assertRaises(SystemExit):
                 owner.run(['bash', '/source/verify-body.sh'])
             execute.assert_called_once_with('bash', ['bash', '/source/verify-body.sh'])
             libc.assert_not_called()
+            self.assertEqual(restore.call_args_list, [mock.call(getattr(signal, name),
+                signal.SIG_DFL) for name in ('SIGPIPE', 'SIGXFZ', 'SIGXFSZ')
+                if hasattr(signal, name)])
+
+    def test_fallback_subprocess_restores_real_signal_termination(self):
+        source = '''
+import importlib.util, sys
+spec = importlib.util.spec_from_file_location('gate_owner', sys.argv[1])
+owner = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(owner)
+owner.sys.platform = 'darwin'
+sys.argv = sys.argv[1:]
+sys.exit(owner.main())
+'''
+        with tempfile.TemporaryDirectory(prefix='af-gate-fallback-') as tmp:
+            env = {'PATH': os.environ['PATH'], 'HOME': tmp, 'PYTHONDONTWRITEBYTECODE': '1',
+                   **{f'XDG_{name}_HOME': tmp for name in ('CONFIG', 'CACHE', 'STATE', 'DATA')}}
+            for name in ('SIGPIPE', 'SIGXFZ', 'SIGXFSZ'):
+                if not hasattr(signal, name):
+                    continue
+                sig = getattr(signal, name)
+                command = ['bash', '-c', f'kill -{sig} $$; printf survived']
+                direct = subprocess.run(command, env=env, capture_output=True, timeout=5)
+                result = subprocess.run([sys.executable, '-c', source, str(OWNER), *command],
+                                        env=env, capture_output=True, timeout=5)
+                self.assertEqual(direct.returncode, -sig)
+                self.assertEqual((result.returncode, result.stdout, result.stderr),
+                                 (direct.returncode, direct.stdout, direct.stderr))
 
 
 if __name__ == '__main__':
@@ -364,5 +500,7 @@ if __name__ == '__main__':
         outer(Path(sys.argv[2]), bool(int(sys.argv[3])))
     elif len(sys.argv) > 1 and sys.argv[1] == '--under-outer':
         sys.exit(under_outer(sys.argv[2:]))
+    elif len(sys.argv) > 1 and sys.argv[1] == '--hard-outer':
+        hard_outer(Path(sys.argv[2]), Path(sys.argv[3]))
     else:
         unittest.main()

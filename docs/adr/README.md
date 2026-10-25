@@ -389,3 +389,5 @@ future readers need.
   arguments](0208-bind-calibration-dispatch-to-the-checked-main-source-and-separate-group-arguments.md)
 - [0209 — Reapply an accounting append once after only this writer's heartbeat
   renewals](0209-reapply-an-accounting-append-once-after-only-this-writers-heartbeat-renewals.md)
+- [0210 — Own native gate children without leaving the enclosing process
+  group](0210-own-native-gate-children-without-leaving-the-enclosing-process-group.md)

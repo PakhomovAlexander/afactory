@@ -5,6 +5,12 @@ gate leader's status; normal execution lets live descendants finish. After leade
 live descendants have ten seconds to drain before the gate fails and performs bounded
 termination. Cancellation forwards the signal, then escalates after two seconds and
 allows two seconds to confirm cleanup. An unconfirmed cleanup is reported as a failure.
+The body and ordinary descendants retain the enclosing supervisor's process group, so its
+immediate SIGKILL reaches even adopted orphans that clear their environment. Cooperative
+cleanup signals only unreaped child PIDs, never the enclosing group or unrelated siblings.
 This is lifecycle management, not containment; an uncatchable kill of the owner still
-requires outer-supervisor cleanup. Non-Linux hosts execute the original gate body directly.
+requires outer-supervisor reaping, and descendants that detach and clear their marker can
+escape that cleanup. Non-Linux hosts execute the original gate body directly after restoring
+Python-ignored SIGPIPE and available SIGXFZ/SIGXFSZ to default signal dispositions.
+The lifecycle contract and platform limits are recorded in ADR-0210.
 Tests, native check targets, timing/JUnit output and gate resource budgets are unchanged.
