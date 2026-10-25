@@ -48,6 +48,7 @@ import importlib.util
 import json
 import os
 import re
+import stat
 import shutil
 import sys
 import time
@@ -1483,6 +1484,17 @@ def schedule(git, event_name, event, inputs, sha):
     return out
 
 
+def schedule_binding(doc, event_name, event, sha, repository, run_id, attempt):
+    require(doc["state"] == "planned", "cannot bind an unavailable plan")
+    head = event["pull_request"]["head"]["sha"] if event_name == "pull_request" else sha
+    return contracts.validate_telemetry_binding({
+        "schema": contracts.TELEMETRY_BINDING_SCHEMA, "repository": repository,
+        "run_id": run_id, "attempt": attempt, "event": event_name,
+        "event_sha": sha, "run_head_sha": head,
+        "candidate_sha": doc["candidate_sha"], "baseline_sha": doc["baseline_sha"],
+        "control_sha": doc["control_sha"], "profile": doc["profile"]})
+
+
 def schedule_outputs(doc):
     """The `name=value` lines later jobs read; every value is checked text, never evidence."""
     args = []
@@ -1511,6 +1523,10 @@ RESULTS = "results"
 HISTORY_LOCK = "lock"
 AUTHORITIES = "authorities"
 STAGING_PREFIX = ".staging-"
+REPORT_STAGE = ".report-staging"
+BINDINGS = "bindings"
+BINDINGS_OWNER = b"af.telemetry-bindings/1\n"
+REPORT_OWNER = b"af.telemetry-report-staging/1\n"
 HISTORY_BYTES_DEFAULT = 32 * 1024 * 1024 * 1024
 HISTORY_RESULTS_DEFAULT = 2048
 
@@ -1574,6 +1590,19 @@ class HistoryRoot(object):
                 os.mkdir(authority_dir, 0o755)
             require(os.path.isdir(authority_dir) and not os.path.islink(authority_dir),
                     "the retained authorities directory must not be a link")
+            binding_dir = os.path.join(self.root, BINDINGS)
+            if not os.path.lexists(binding_dir):
+                os.mkdir(binding_dir, 0o700)
+                with open(os.path.join(binding_dir, "owner"), "xb") as stream:
+                    stream.write(BINDINGS_OWNER)
+            require(os.path.isdir(binding_dir) and not os.path.islink(binding_dir),
+                    "bindings directory must not be a link")
+            marker = os.path.join(binding_dir, "owner")
+            require(stat.S_ISREG(os.lstat(marker).st_mode), "binding ownership marker must be regular")
+            with open(marker, "rb") as stream:
+                require(stream.read(len(BINDINGS_OWNER) + 1) == BINDINGS_OWNER,
+                        "foreign bindings directory")
+            self.report_staging()
             if self.sweep:
                 self.cleanup_staging()
         except BaseException:
@@ -1589,8 +1618,89 @@ class HistoryRoot(object):
                 finally:
                     self.fd = None
 
+    def report_staging(self):
+        path = os.path.join(self.root, REPORT_STAGE)
+        if not os.path.lexists(path):
+            os.mkdir(path, 0o700)
+            # An interrupted marker write fails closed on restart; never adopt foreign data.
+            with open(os.path.join(path, "owner"), "xb") as stream:
+                stream.write(REPORT_OWNER)
+        require(os.path.isdir(path) and not os.path.islink(path), "report staging must be owned")
+        owner = os.path.join(path, "owner")
+        require(stat.S_ISREG(os.lstat(owner).st_mode), "report staging marker must be regular")
+        with open(owner, "rb") as stream:
+            require(stream.read(len(REPORT_OWNER) + 1) == REPORT_OWNER,
+                    "foreign report staging marker")
+        for name in os.listdir(path):
+            require(name in ("owner", HISTORY_JSON, HISTORY_HTML), "foreign report staging entry")
+            require(stat.S_ISREG(os.lstat(os.path.join(path, name)).st_mode),
+                    "report staging entries must be regular, never links")
+        return path
+
+    def binding_path(self, result_id):
+        contracts.ID.validate(result_id, "binding result ID")
+        return os.path.join(self.root, BINDINGS, result_id + ".json")
+
+    def read_binding(self, result_id):
+        path = self.binding_path(result_id)
+        require(stat.S_ISREG(os.lstat(path).st_mode), "retained binding must be regular")
+        with open(path, "rb") as stream:
+            data = stream.read(65537)
+        require(len(data) <= 65536, "retained binding exceeds its byte bound")
+        return contracts.read_json(data, "telemetry-binding", path)
+
+    def check_result_binding(self, result):
+        # Locally named experiments retain their existing offline import contract. The
+        # reserved Actions ID spelling always needs its retained original planning receipt.
+        match = re.fullmatch(r"tl_([1-9][0-9]{0,15})_([1-9][0-9]{0,3})", result["result_id"])
+        if match is None:
+            return
+        binding = self.read_binding(result["result_id"])
+        require((binding["run_id"], binding["attempt"]) == tuple(map(int, match.groups())),
+                "retained plan belongs to another run/attempt")
+        for key, source in (("candidate_sha", "candidate_sha"), ("baseline_sha", "baseline_sha"),
+                            ("control_sha", "authority_sha")):
+            require(binding[key] == result["sources"][source], "retained plan source mismatch")
+        require(binding["profile"] == result["profile"] and
+                {"pull_request": "pr", "schedule": "nightly", "release": "release",
+                 "workflow_dispatch": "manual"}[binding["event"]] == result["trigger"],
+                "retained plan event/profile mismatch")
+
+    def retain_binding(self, result_id, binding):
+        path = self.binding_path(result_id)
+        if os.path.lexists(path):
+            require(self.read_binding(result_id) == binding, "retained binding changed")
+            return
+        data = contracts.write_bytes(binding, "telemetry-binding")
+        require(self.used_bytes() + self.report_allocation(len(data)) <= self.bytes_max,
+                "retaining binding exceeds history capacity")
+        # This is unaccepted until the corresponding verified result is published. A partial
+        # write is removed on entry along with every other unreferenced binding.
+        with open(path, "xb") as stream:
+            stream.write(data)
+
+    def report_allocation(self, size):
+        unit = os.statvfs(self.root).f_frsize
+        return ((size + unit - 1) // unit) * unit
+
     def cleanup_staging(self):
-        # Interrupted staging is never accepted, and is swept under this lock.
+        # Interrupted staging is never accepted, and is swept under this lock/deadline.
+        report = self.report_staging()
+        for name in (HISTORY_JSON, HISTORY_HTML):
+            path = os.path.join(report, name)
+            if os.path.lexists(path):
+                os.unlink(path)
+        directory = os.path.join(self.root, BINDINGS)
+        for name in os.listdir(directory):
+            if name == "owner":
+                continue
+            require(name.endswith(".json"), "foreign retained binding path")
+            ident = name[:-5]
+            contracts.ID.validate(ident, "retained binding ID")
+            path = os.path.join(directory, name)
+            require(stat.S_ISREG(os.lstat(path).st_mode), "binding must be regular")
+            if not os.path.isdir(os.path.join(self.results, ident)):
+                os.unlink(path)
         for directory in (self.results, os.path.join(self.root, AUTHORITIES)):
             for name in os.listdir(directory):
                 if name.startswith(STAGING_PREFIX):
@@ -1607,7 +1717,16 @@ class HistoryRoot(object):
                       if not name.startswith("."))
 
     def used_bytes(self):
-        return telemetryexec.allocated([self.results, os.path.join(self.root, AUTHORITIES)])
+        total = telemetryexec.allocated([self.root])
+        # Some filesystems expose directory name-table length but no allocated blocks.
+        # Count their allocated blocks (zero), rather than name-table serialization bytes
+        # that move between root and staging on replace. File bytes retain allocated()'s
+        # fallback for filesystems without block accounting.
+        for directory, subdirs, _ in os.walk(self.root, followlinks=False):
+            info = os.lstat(directory)
+            if not info.st_blocks:
+                total -= info.st_size
+        return total
 
     def authority_path(self, result):
         return os.path.join(self.root, AUTHORITIES, result["authority"]["digest"].split(":")[1])
@@ -1667,6 +1786,10 @@ class HistoryRoot(object):
         os.rename(os.path.join(self.results, name), doomed)
         self.pruned.append({"result_id": name, "reason": reason[:4096]})
         shutil.rmtree(doomed)
+        path = self.binding_path(name)
+        if os.path.lexists(path):
+            require(stat.S_ISREG(os.lstat(path).st_mode), "retained binding must be regular")
+            os.unlink(path)
 
     def prune(self):
         """Remove results older than the retention; then, oldest first, results beyond the
@@ -1749,20 +1872,50 @@ class HistoryRoot(object):
                 result, identity, _ = verify(os.path.join(self.results, name),
                                               self.authority_path(result))
                 require(result["result_id"] == name, "is kept under another result's name")
+                self.check_result_binding(result)
                 results.append((result, identity))
             except (ContractError, OSError) as error:
                 refused.append({"input": (RESULTS + "/" + name)[:1024],
                                 "reason": str(error)[:4096]})
-        doc = history_document(results, refused, self.pruned, {
-            "bytes_max": self.bytes_max, "results_max": self.results_max,
-            "retention_days": self.retention_days}, self.used_bytes())
-        for name, data in ((HISTORY_JSON, contracts.write_bytes(doc, "telemetry-history")),
-                           (HISTORY_HTML, history_page(doc))):
+        stage = self.report_staging()
+        require(not any(os.path.lexists(os.path.join(stage, name))
+                        for name in (HISTORY_JSON, HISTORY_HTML)),
+                "interrupted report staging must be swept before publication")
+        old_bytes = 0
+        for name in (HISTORY_JSON, HISTORY_HTML):
             path = os.path.join(self.root, name)
-            temporary = path + ".tmp-" + os.urandom(4).hex()
-            with open(temporary, "xb") as stream:
+            if os.path.lexists(path):
+                require(stat.S_ISREG(os.lstat(path).st_mode), "history report must be regular")
+                old_bytes += telemetryexec.allocated([path])
+        base_bytes = self.used_bytes()
+        final_bytes = base_bytes - old_bytes
+        # The decimal used_bytes field can affect output length. Resolve that small fixed
+        # point before I/O; a failure cannot truncate either complete published report.
+        for _ in range(8):
+            doc = history_document(results, refused, self.pruned, {
+                "bytes_max": self.bytes_max, "results_max": self.results_max,
+                "retention_days": self.retention_days}, final_bytes)
+            outputs = ((HISTORY_JSON, contracts.write_bytes(doc, "telemetry-history")),
+                       (HISTORY_HTML, history_page(doc)))
+            allocation = sum(self.report_allocation(len(data)) for _, data in outputs)
+            projected = base_bytes - old_bytes + allocation
+            if projected == final_bytes:
+                break
+            final_bytes = projected
+        else:
+            raise ContractError("history report accounting did not stabilize")
+        require(base_bytes + allocation <= self.bytes_max,
+                "history report staging would exceed the history byte bound")
+        # Fixed owned names bound leftovers even if writing or replacement is interrupted.
+        # Both writes complete before either existing report is replaced.
+        for name, data in outputs:
+            with open(os.path.join(stage, name), "xb") as stream:
                 stream.write(data)
-            os.replace(temporary, path)
+                stream.flush()
+                os.fsync(stream.fileno())
+        require(self.used_bytes() <= self.bytes_max, "staged reports exceed history capacity")
+        for name, _ in outputs:
+            os.replace(os.path.join(stage, name), os.path.join(self.root, name))
         return doc
 
 

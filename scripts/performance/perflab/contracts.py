@@ -4202,6 +4202,23 @@ def validate_enforcement(doc, where="enforcement.toml"):
 TELEMETRY_LAB_SCHEMA = "af.perf-telemetry-lab/2"
 TELEMETRY_RESULT_SCHEMA = "af.perf-telemetry-result/1"
 TELEMETRY_HISTORY_SCHEMA = "af.perf-telemetry-history/2"
+# A separate immutable Actions planning artifact, emitted before any candidate execution.
+TELEMETRY_BINDING_SCHEMA = "af.perf-telemetry-binding/1"
+TELEMETRY_BINDING = Obj(
+    Field("schema", Const(TELEMETRY_BINDING_SCHEMA)), Field("repository", SHORT_TEXT),
+    Field("run_id", ACTIONS_ID), Field("attempt", Int(1, 1000)),
+    Field("event", Str(enum=("pull_request", "schedule", "release", "workflow_dispatch"))),
+    Field("event_sha", GIT_SHA), Field("run_head_sha", GIT_SHA),
+    Field("candidate_sha", GIT_SHA), Field("baseline_sha", GIT_SHA),
+    Field("control_sha", GIT_SHA), Field("profile", Str(enum=("pr", "nightly", "release", "manual"))),
+)
+
+
+def validate_telemetry_binding(doc, where="binding.json"):
+    TELEMETRY_BINDING.validate(doc, where)
+    return doc
+
+
 TELEMETRY_EXPERIMENTS = ("overhead", "invocation_cost", "read_latency")
 TELEMETRY_PROFILES = ("pr", "nightly", "release", "manual")
 TELEMETRY_DOCUMENTS = {"overhead": ("af/telemetry-overhead@1", "telemetry-overhead-v1.json",
@@ -4873,6 +4890,11 @@ CONTRACTS = {
                       "the inputs its measurement authority is identified by, and each "
                       "trigger's bounded profile of rounds, pairs, scale, corpus size, timeout, "
                       "work bytes and retention."),
+    "telemetry-binding": (TELEMETRY_BINDING_SCHEMA, TELEMETRY_BINDING,
+                          validate_telemetry_binding,
+                          "Immutable Actions run/attempt planning receipt: original event "
+                          "commit and branch head, planned baseline/candidate/control. "
+                          "Retained separately from untrusted measurement results."),
     "telemetry-result": (TELEMETRY_RESULT_SCHEMA, TELEMETRY_RESULT, validate_telemetry_result,
                          "One telemetry experiment run (ADR-0214, ADR-0215): the baseline and "
                          "candidate sources, binaries and builds, the measurement authority "

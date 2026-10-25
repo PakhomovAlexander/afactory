@@ -191,3 +191,21 @@ jobs:
             ${{ runner.temp }}/container-metrics.jsonl
             ${{ runner.temp }}/cache-metrics.json
           if-no-files-found: warn
+
+  telemetry-build-smoke:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: '3.x'
+          check-latest: true
+      - name: Pull the pinned telemetry build image
+        timeout-minutes: 4
+        run: docker pull --quiet ghcr.io/pakhomovalexander/afactory-perf-gnu@sha256:26b0c708b9cdffdeb4731da33161f148b419af3c9e656ae9dc51d318215ae8b2
+      - name: Compile the minimal runner-owned permission fixture
+        timeout-minutes: 6
+        run: python -I -B scripts/performance/tests/telemetry_build_smoke.py

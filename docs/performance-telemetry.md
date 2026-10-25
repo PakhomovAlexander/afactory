@@ -315,7 +315,14 @@ the root's bound, and unreferenced authority trees are pruned under the same loc
 
 It then writes `ROOT/history.json` (`af.perf-telemetry-history/2`: the bounds, the bytes used,
 every result, the groups, what this write pruned and every refused input) and
-`ROOT/history.html`. A series holds only results of one configuration under one measurement
+`ROOT/history.html`. Both reports are fully staged before either is replaced. The owned
+`ROOT/.report-staging/` has a fixed marker and at most two report files; entry sweeps partial
+writes under the lock and existing collection deadline. Links or foreign entries refuse
+cleanup. Capacity includes retained reports, report staging, bindings and other root files,
+including foreign leftovers that are counted and preserved. Publication reserves space for
+both old reports and both staged replacements; insufficient capacity preserves the complete
+reports. Accounting counts allocated file bytes and directory blocks, using file length where
+block accounting is unavailable. A series holds only results of one configuration under one measurement
 authority, in one execution mode and image, on one host. A different group is never a trend.
 
 ## CI: the Performance telemetry workflow
@@ -337,7 +344,14 @@ without the repository variable `AF_PERF_GNU_BUILD_IMAGE`, the sample image pinn
 that `performance.yml` already uses: no experiment ever runs uncontained in CI.
 
 - **Build.** Each side is built in its own job, in that image, credential-free with its pinned
-  toolchain. Only its binary and its build record reach the measuring job, by SHA-256. No
+  toolchain. `telemetry-contained-build` uses the existing lab image/toolchain verifier to
+  locate the image's exact compiler before mounting source. Compilation runs as the runner
+  UID/GID with `/src` read-only and an owned `/state` for HOME, Cargo, Rustup, temporary files
+  and target outputs. Cargo and rustc run directly from the verified toolchain; candidate
+  settings cannot request a Rustup installation. Capability dropping, no-new-privileges,
+  read-only image and credential separation remain. Only its binary and build record reach
+  the measuring job, by SHA-256. Each side outputs its exact artifact name, so a failed-jobs
+  rerun can reuse the successful build without guessing the build attempt. No
   candidate build script runs where the control measures.
 - **Measure.** The measuring job refuses any credential in its checkout or environment. It
   prepares a verified disk-bounded scratch filesystem of the profile's work bytes
@@ -355,6 +369,14 @@ Permissions are read-only, there are no secrets, every action is pinned, and pul
 cancel superseded runs. The workflow is advisory and is not a required check. Within one
 execution the script and the binary it measures share one user. A candidate can therefore still
 falsify its own run's document, never the other side's, the controller's or another run's.
+
+The executable build smoke is `python3 -I -B
+scripts/performance/tests/telemetry_build_smoke.py`, after pulling the pinned GNU image. The
+`telemetry-build-smoke` validation job runs it on a non-root hosted runner with a 0755 source
+checkout, no target directory and a minimal Rust package. It uses the real workflow build
+command and checks writable private directories and denied source/controller writes. A live
+CI smoke pass and a subsequent hosted measurement must be observed before rollout; source
+checks or a local environment without Docker establish neither.
 
 ## Collection: the telemetry history lane
 
@@ -394,8 +416,22 @@ bytes and results, and retention. A cycle does this:
    API declares, and the ZIP is read with the archive collector's bounds (`transport.read_zip`):
    members, ratio, decompressed bytes, no link, special, encrypted, absolute or traversing
    member.
-5. **Bind.** It requires the result to be `tl_<run>_<attempt>`, its trigger the run's event's,
-   and a scheduled or released run's candidate the run's own commit.
+5. **Bind.** It requires `telemetry-plan-<run>-<attempt>`, a separate immutable artifact
+   containing only `binding.json` (`af.perf-telemetry-binding/1`), with a matching API digest.
+   Planning retains `telemetry-schedule-<run>-<attempt>` and passes its checked receipt as
+   a job output. Before measurement, `telemetry-bind-attempt` binds that frozen plan to this
+   attempt's original GitHub event and retains the plan artifact. A failed-jobs rerun can reuse
+   original plan outputs without resolving moving refs again. Missing, expired, foreign or
+   mismatched receipts are explicit refusals; there is no earlier-format fallback.
+   The result ID, trigger, profile and all three source SHAs must match that receipt. The
+   event's workflow and control's workflow, read as Git objects, must exactly match the
+   installed trusted producer. A modified PR workflow cannot mint admitted planning evidence.
+   For a PR, `candidate_sha` is the original event merge, whose parents must be the original
+   baseline followed by the immutable run `head_sha`; control equals baseline. Linked
+   `pull_requests` metadata is mutable and is never a source binding. For nightly/release,
+   candidate also equals the run commit; manual candidates remain the frozen explicit plan.
+   The checked receipt is retained at `bindings/tl_<run>_<attempt>.json` under the history
+   lock and capacity, rechecked when history is read, and pruned with its result.
 6. **Authority.** It requires the authority commit to be reachable from a trusted ref. It
    writes that commit's authority files from the mirror's Git objects
    (`telemetrylab.materialize_authority`).

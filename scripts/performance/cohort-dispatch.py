@@ -10,6 +10,8 @@ import base64
 import datetime
 import fcntl
 import hashlib
+import importlib.abc
+import importlib.util
 import json
 import os
 from pathlib import Path
@@ -58,18 +60,106 @@ def atomic(path, doc):
 
 def runtime():
     """Load only the collector's installed, hashed library; never a mutable worktree."""
-    manifest = json.loads(read(LAB / "collector-manifest.json"))
-    require(re.fullmatch(r"[0-9a-f]{64}", manifest["collector_sha256"]),
+    # Normal Python imports read existing caches even with -B. Admit the entire tree
+    # before an import can run, not merely the manifest's claimed source files.
+    require(not any(name == "perflab" or name.startswith("perflab.") for name in sys.modules),
+            "installed runtime refuses previously loaded perflab modules")
+    def unique_object(pairs):
+        out = {}
+        for key, value in pairs:
+            require(key not in out, "runtime manifest repeats a field")
+            out[key] = value
+        return out
+
+    require(not LAB.is_symlink(), "installed runtime root must not be a link")
+    manifest = json.loads(read(LAB / "collector-manifest.json"), object_pairs_hook=unique_object)
+    require(isinstance(manifest, dict) and set(manifest) == {"collector_sha256", "files"},
+            "installed runtime manifest is malformed")
+    require(isinstance(manifest["collector_sha256"], str)
+            and re.fullmatch(r"[0-9a-f]{64}", manifest["collector_sha256"]),
             "installed runtime identity is malformed")
-    folder = LAB / "collector" / manifest["collector_sha256"]
-    require(folder.is_dir() and not folder.is_symlink(), "installed runtime is unavailable")
-    for name, digest in manifest["files"]:
-        path = folder / name
-        require(path.resolve().is_relative_to(folder.resolve()), "runtime path escaped")
-        require(hashlib.sha256(read(path, 4 * 1024 * 1024)).hexdigest() == digest,
-                "installed runtime changed: " + name)
+    collector = LAB / "collector"
+    folder = collector / manifest["collector_sha256"]
+    require(collector.is_dir() and not collector.is_symlink()
+            and folder.is_dir() and not folder.is_symlink(), "installed runtime is unavailable")
+    entries = manifest["files"]
+    require(isinstance(entries, list) and 1 <= len(entries) <= 8192,
+            "installed runtime manifest file bound")
+    listed, directories = {}, set()
+    total = 0
+    for entry in entries:
+        require(isinstance(entry, list) and len(entry) == 2, "runtime entry is malformed")
+        name, digest = entry
+        require(isinstance(name, str) and len(name) <= 1024
+                and re.fullmatch(r"[A-Za-z0-9_.-]+(?:/[A-Za-z0-9_.-]+)*", name)
+                and all(part not in (".", "..", "__pycache__") for part in name.split("/")),
+                "runtime path escaped or is bytecode")
+        require(name not in listed and isinstance(digest, str)
+                and re.fullmatch(r"[0-9a-f]{64}", digest), "runtime entry is duplicate or malformed")
+        require(not name.endswith((".pyc", ".pyo", ".so", ".pyd")),
+                "runtime refuses non-source executable authority")
+        listed[name] = digest
+        directories.update(str(parent) for parent in Path(name).parents if str(parent) != ".")
+    require("perflab/__init__.py" in listed, "runtime package source is missing")
+    seen, sources = set(), {}
+    pending = [folder]
+    count = 0
+    while pending:
+        directory = pending.pop()
+        with os.scandir(directory) as children:
+            for child in children:
+                count += 1
+                require(count <= 16384, "installed runtime tree exceeds its entry bound")
+                name = str(Path(child.path).relative_to(folder))
+                require(not child.is_symlink(), "runtime refuses links: " + name)
+                if child.is_dir(follow_symlinks=False):
+                    require(name in directories, "runtime refuses unlisted directory: " + name)
+                    pending.append(Path(child.path))
+                else:
+                    require(child.is_file(follow_symlinks=False) and name in listed,
+                            "runtime refuses unlisted file: " + name)
+                    data = read(Path(child.path), 4 * 1024 * 1024)
+                    total += len(data)
+                    require(total <= 64 * 1024 * 1024, "runtime source exceeds its byte bound")
+                    require(hashlib.sha256(data).hexdigest() == listed[name],
+                            "installed runtime changed: " + name)
+                    if name.startswith("perflab/") and name.endswith(".py"):
+                        parts = name[:-3].split("/")
+                        package = parts[-1] == "__init__"
+                        if package:
+                            parts.pop()
+                        require(all(part.isidentifier() for part in parts),
+                                "runtime module name is malformed")
+                        module_name = ".".join(parts)
+                        require(module_name not in sources, "runtime module authority is ambiguous")
+                        sources[module_name] = (data, str(folder / name), package)
+                    seen.add(name)
+    require(seen == set(listed), "installed runtime source is missing")
+    class SourceLoader(importlib.abc.Loader):
+        def __init__(self, data, filename):
+            self.data, self.filename = data, filename
+
+        def create_module(self, spec):
+            return None
+
+        def exec_module(self, module):
+            # Execute the exact bytes already hashed, never re-open a mutable source or
+            # consult Python's cache, even if the installed directory changes after scan.
+            exec(compile(self.data, self.filename, "exec"), module.__dict__)
+
+    class SourceFinder(importlib.abc.MetaPathFinder):
+        def find_spec(self, fullname, path=None, target=None):
+            if fullname != "perflab" and not fullname.startswith("perflab."):
+                return None
+            require(fullname in sources, "runtime refuses unlisted module: " + fullname)
+            data, filename, package = sources[fullname]
+            return importlib.util.spec_from_file_location(
+                fullname, filename, loader=SourceLoader(data, filename),
+                submodule_search_locations=[str(Path(filename).parent)] if package else None)
+
     sys.dont_write_bytecode = True
-    sys.path.insert(0, str(folder))
+    # Keep this source-only finder for later lazy imports made by the admitted modules.
+    sys.meta_path.insert(0, SourceFinder())
     from perflab import activation, calibration, contracts, transport
     return activation, calibration, contracts, transport
 

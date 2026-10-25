@@ -411,6 +411,136 @@ assert all(pathlib.Path(item.__file__).is_relative_to(module.LAB) for item in mo
         self.assertNotEqual(result.returncode, 0)
         self.assertIn(b"runtime path escaped", result.stderr)
 
+    def test_valid_timestamp_size_poisoned_cache_refuses_before_payload_or_credentials(self):
+        import py_compile
+        import importlib.util
+        folder = Path(self.path("collector", "a" * 64))
+        package = folder / "perflab"
+        package.mkdir(parents=True)
+        entries = []
+        for name in ("__init__", "activation", "calibration", "contracts", "transport"):
+            path = package / (name + ".py")
+            path.write_text('MARKER = "clean"\n')
+            entries.append(["perflab/" + path.name, hashlib.sha256(path.read_bytes()).hexdigest()])
+        manifest = Path(self.path("collector-manifest.json"))
+        manifest.write_text(json.dumps({"collector_sha256": "a" * 64, "files": entries}))
+        source = package / "calibration.py"
+        original, info = source.read_bytes(), source.stat()
+        payload = Path(self.path("payload-executed"))
+        credential = Path(self.path("credential-path-entered"))
+        # Compile the malicious bytes, then restore the exact listed source and make the
+        # timestamp/size header valid for it. -I -B alone executes this cache.
+        source.write_text("from pathlib import Path; Path(%r).write_text('executed')\n" % str(payload))
+        cache = Path(importlib.util.cache_from_source(str(source)))
+        py_compile.compile(str(source), cfile=str(cache), doraise=True,
+                           invalidation_mode=py_compile.PycInvalidationMode.TIMESTAMP)
+        import struct
+        data = bytearray(cache.read_bytes())
+        data[8:16] = struct.pack("<II", int(info.st_mtime) & 0xffffffff, len(original))
+        cache.write_bytes(data)
+        source.write_bytes(original)
+        os.utime(source, ns=(info.st_atime_ns, info.st_mtime_ns))
+        before = [(name, hashlib.sha256((folder / name).read_bytes()).hexdigest())
+                  for name, _ in entries]
+        script = """import importlib.util,pathlib,sys
+spec=importlib.util.spec_from_file_location('dispatcher',sys.argv[1])
+m=importlib.util.module_from_spec(spec); spec.loader.exec_module(m)
+m.LAB=pathlib.Path(sys.argv[2]); m.runtime()
+pathlib.Path(sys.argv[3]).write_text('credential path')
+"""
+        result = subprocess.run([sys.executable, "-I", "-B", "-c", script,
+                                 operator.__file__, self.tmp, str(credential)],
+                                capture_output=True, timeout=20)
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn(b"unlisted directory: perflab/__pycache__", result.stderr)
+        self.assertFalse(payload.exists())
+        self.assertFalse(credential.exists())
+        self.assertTrue(cache.exists(), "refusal must not delete or ignore the poisoned cache")
+        self.assertEqual(before, [(name, digest) for name, digest in entries])
+        # Demonstrate that the attack is actually executable on this interpreter.
+        witness = subprocess.run([sys.executable, "-I", "-B", "-c",
+                                  "import sys;sys.path.insert(0,sys.argv[1]);import perflab.calibration",
+                                  str(folder)], capture_output=True, timeout=20)
+        self.assertEqual(witness.returncode, 0, witness.stderr)
+        self.assertTrue(payload.exists())
+
+    def test_manifest_bounds_links_unlisted_modules_and_loaded_authority_refuse(self):
+        script = """import importlib.util,pathlib,sys,types
+spec=importlib.util.spec_from_file_location('dispatcher',sys.argv[1])
+m=importlib.util.module_from_spec(spec); spec.loader.exec_module(m)
+m.LAB=pathlib.Path(sys.argv[2])
+if sys.argv[3] == 'preloaded':
+    foreign=types.ModuleType('perflab'); foreign.__file__='/foreign/perflab/__init__.py'
+    sys.modules['perflab']=foreign
+m.runtime()
+"""
+        for kind in ("duplicate", "traversal", "bad-digest", "bad-shape", "too-many",
+                     "symlink", "directory-link", "unlisted-py", "unlisted-native", "preloaded"):
+            with self.subTest(kind=kind):
+                lab = Path(self.path(kind))
+                folder = lab / "collector" / ("a" * 64)
+                package = folder / "perflab"
+                package.mkdir(parents=True)
+                entries = []
+                for name in ("__init__", "activation", "calibration", "contracts", "transport"):
+                    data = b'VALUE = "verified"\n'
+                    (package / (name + ".py")).write_bytes(data)
+                    entries.append(["perflab/" + name + ".py", hashlib.sha256(data).hexdigest()])
+                if kind == "duplicate":
+                    entries.append(entries[0])
+                elif kind == "traversal":
+                    entries[0][0] = "perflab/../foreign.py"
+                elif kind == "bad-digest":
+                    entries[0][1] = "not a digest"
+                elif kind == "bad-shape":
+                    entries[0] = "perflab/__init__.py"
+                elif kind == "too-many":
+                    entries *= 2000
+                elif kind == "symlink":
+                    path = package / "calibration.py"
+                    path.unlink()
+                    path.symlink_to(package / "activation.py")
+                elif kind == "directory-link":
+                    (folder / "foreign").symlink_to(package, target_is_directory=True)
+                elif kind in ("unlisted-py", "unlisted-native"):
+                    (package / ("foreign.py" if kind == "unlisted-py" else "foreign.so")).write_bytes(b"bad")
+                (lab / "collector-manifest.json").write_text(json.dumps({
+                    "collector_sha256": "a" * 64, "files": entries}))
+                result = subprocess.run([sys.executable, "-I", "-B", "-c", script,
+                                         operator.__file__, str(lab), kind],
+                                        capture_output=True, timeout=20)
+                self.assertNotEqual(result.returncode, 0)
+                self.assertIn(b"runtime", result.stderr)
+                self.assertFalse(list(folder.rglob("*.pyc")))
+
+    def test_clean_current_installed_sources_and_later_lazy_imports_work_without_caches(self):
+        import shutil
+        folder = Path(self.path("collector", "a" * 64))
+        package = folder / "perflab"
+        package.mkdir(parents=True)
+        entries = []
+        original = Path(ROOT) / "scripts/performance/perflab"
+        for path in sorted(original.rglob("*.py")):
+            relative = path.relative_to(original)
+            (package / relative).parent.mkdir(parents=True, exist_ok=True)
+            shutil.copyfile(path, package / relative)
+            entries.append(["perflab/" + relative.as_posix(), hashlib.sha256(path.read_bytes()).hexdigest()])
+        Path(self.path("collector-manifest.json")).write_text(json.dumps({
+            "collector_sha256": "a" * 64, "files": entries}))
+        script = """import importlib.util,pathlib,sys
+spec=importlib.util.spec_from_file_location('dispatcher',sys.argv[1])
+m=importlib.util.module_from_spec(spec);spec.loader.exec_module(m);m.LAB=pathlib.Path(sys.argv[2])
+a,c,contracts,t=m.runtime()
+assert contracts.TELEMETRY_BINDING_SCHEMA == 'af.perf-telemetry-binding/1'
+from perflab import telemetrybuild
+assert callable(telemetrybuild.run)
+assert all(pathlib.Path(item.__file__).is_relative_to(m.LAB) for item in (a,c,contracts,t,telemetrybuild))
+"""
+        process = subprocess.run([sys.executable, "-I", "-B", "-c", script,
+                                  operator.__file__, self.tmp], capture_output=True, timeout=20)
+        self.assertEqual(process.returncode, 0, process.stderr.decode())
+        self.assertFalse(list(folder.rglob("*.pyc")))
+
     def test_frozen_old_cohort_is_preserved_byte_for_byte(self):
         path = os.path.join(ROOT, "fixtures/performance/cohort-quick-20261023-hosted-v6.json")
         self.assertEqual(hashlib.sha256(read(path)).hexdigest(),

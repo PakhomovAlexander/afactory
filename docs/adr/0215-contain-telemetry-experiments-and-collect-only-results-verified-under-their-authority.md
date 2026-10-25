@@ -210,3 +210,37 @@ member remains while preserving the distinct leftover and deadline failures. A n
 retains a genuinely live survivor and remains uncertain, including a zombie thread-group leader
 whose worker thread can still execute. None of these implementation checks establishes independent
 acceptance, hosted performance, a valid cohort or deployment.
+
+## Deployment repair (2026-10-25)
+
+The installed cohort dispatcher now validates the bounded whole installed tree before importing
+`perflab`: no bytecode, unlisted files/directories, native modules, links, duplicate paths or
+previously loaded package authority. A package-specific loader compiles the already verified
+source buffers, including later lazy imports, without re-opening source or reading caches.
+`-B` prevents writes but cannot prevent cache reads; a
+subprocess regression retains a timestamp/size-valid poisoned cache with all source hashes
+unchanged and proves refusal before payload or credential work.
+
+Telemetry planning now retains `af.perf-telemetry-binding/1` independently of result claims.
+The trusted workflow retains the original schedule and emits one original-event/frozen-source
+binding per measuring attempt, including failed-jobs reruns. Collection requires its immutable
+artifact digest and exact installed producer workflow, original run/event/attempt/head, and all
+three planned source identities. PRs measure their original merge, whose ordered parents bind
+original baseline and immutable run branch head. Mutable linked PR metadata is never used.
+The checked receipt is retained under the history lock and byte cap, and replayed as data.
+Existing result/history shapes do not change; the new binding has its own closed schema and
+fixtures. Older missing bindings fail closed.
+
+Hosted compilation reuses `BuildImage` and `ContainerToolchain` with the runner UID/GID,
+read-only source and owned writable Cargo/Rustup/target directories. Tool discovery happens
+without candidate mounts; compilation invokes the verified compiler directly. No capabilities,
+credentials or Docker socket are granted to the candidate. A bounded CI smoke compiles a
+minimal fixture through that exact command on a runner-owned 0755 checkout. Docker execution
+and eventual hosted measurements remain separate operational obligations.
+
+Report publication uses two fixed names in marked owned staging under the history lock.
+Interrupted writes and replacements remain bounded and are swept on entry within the existing
+deadline; foreign entries and links are refused. Root accounting includes reports, staging,
+bindings and retained foreign files. Publication reserves the peak coexistence of complete
+reports and both replacements, with exact/insufficient-capacity and interruption regressions.
+The old cohort bytes, calibration policies, release metadata and Rust behavior are unchanged.

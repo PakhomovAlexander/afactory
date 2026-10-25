@@ -22,8 +22,8 @@ CLI = os.path.join(ROOT, "scripts", "performance", "cli.py")
 WORKFLOW = os.path.join(ROOT, ".github/workflows/performance-telemetry.yml")
 PIN = re.compile(r"^[A-Za-z0-9_.-]+/[A-Za-z0-9_./-]+@[0-9a-f]{40}$")
 # The comparison workflow and the hosted cohort it calibrates, frozen for that cohort
-# (docs/performance-hosted-cohort-20261023.md): telemetry experiments live beside them, never in
-# them.
+# (docs/performance-hosted-cohort-20261023.md). The current producer changed for the
+# dispatch-head repair; only the historical cohort bytes are frozen.
 FROZEN = {"fixtures/performance/cohort-quick-20261023-hosted-v6.json":
           "62955096a58517dad3544425ead9b18ebe3b85de94b8518d5ce85deb761d5ab7"}
 
@@ -72,7 +72,12 @@ class Workflow(unittest.TestCase):
         self.assertIn("cargo build --release --locked --bin af", build)
         self.assertLess(build.index("ci-credentials --git-dir .git --environment"),
                         build.index("cargo build"))
-        self.assertIn('--entrypoint /bin/sh "$IMAGE"', build, "built in the pinned image")
+        self.assertIn('telemetry-contained-build', build, "use the shared verified build boundary")
+        helper = read(os.path.join(ROOT, "scripts/performance/perflab/telemetrybuild.py")).decode()
+        self.assertIn("builds.BuildImage", helper)
+        self.assertIn("builds.ContainerToolchain", helper)
+        self.assertIn('(source, "/src", False)', helper)
+        self.assertIn('(output, "/state", True)', helper)
         self.assertIn("telemetry-build-record", build)
         self.assertNotIn("cargo", measure.replace("af.build.json", ""),
                          "no build script runs where the control measures")
@@ -125,6 +130,28 @@ class Workflow(unittest.TestCase):
         unconditional = [step for step in names if "always()" in step]
         self.assertEqual(len(unconditional), 1)
         self.assertIn("ci-scratch --cleanup", unconditional[0])
+
+    def test_original_plan_is_retained_and_each_measurement_attempt_has_its_own_binding(self):
+        plan = "\n".join(self.jobs["plan"])
+        measure = "\n".join(self.jobs["measure"])
+        self.assertIn('--binding "$RUNNER_TEMP/binding.json"', plan)
+        self.assertIn("binding: ${{ steps.schedule.outputs.binding }}", plan)
+        self.assertIn("name: telemetry-schedule-${{ github.run_id }}-${{ github.run_attempt }}", plan)
+        self.assertIn("PLAN_BINDING: ${{ needs.plan.outputs.binding }}", measure)
+        self.assertIn("telemetry-bind-attempt", measure)
+        self.assertIn("name: telemetry-plan-${{ github.run_id }}-${{ github.run_attempt }}", measure)
+        build = "\n".join(self.jobs["build"])
+        for side in ("baseline", "candidate"):
+            self.assertIn(side + "_artifact: ${{ steps.record.outputs." + side + "_artifact }}", build)
+            self.assertIn("name: ${{ needs.build.outputs." + side + "_artifact }}", measure)
+        self.assertIn('echo "${SIDE}_artifact=perf-telemetry-af-${SIDE}-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"', build)
+        self.assertLess(measure.index("name: telemetry-plan-"), measure.index("telemetry-run"))
+        self.assertIn("ADR-0214, ADR-0215", self.text)
+        self.assertNotIn("ADR-0199", self.text)
+        self.assertIn("historical cohort bytes remain fixed", self.text)
+        validation = read(os.path.join(ROOT, ".github/workflows/validate.yml")).decode()
+        self.assertIn("telemetry_build_smoke.py", validation)
+        self.assertIn("telemetry-build-smoke:", validation)
 
     def test_the_control_resolution_is_the_base_for_a_pull_request(self):
         step = [item for item in text.steps(self.jobs["plan"])
@@ -204,6 +231,36 @@ class Events(TempDir):
                                           dict(inputs, **bad), self.tip)
         with self.assertRaises(ContractError):
             telemetrylab.schedule(self.git, "push", {}, {}, self.tip)
+
+
+class AttemptBinding(TempDir):
+    def test_rerun_preserves_frozen_sources_and_original_event_without_resolving_refs(self):
+        event_path = self.path("event.json")
+        head, merge, base = "a" * 40, "b" * 40, "c" * 40
+        with open(event_path, "w") as stream:
+            json.dump({"pull_request": {"head": {"sha": head}, "base": {"sha": base}}}, stream)
+        binding = {"schema": "af.perf-telemetry-binding/1", "repository": "example/repo",
+                   "run_id": 50, "attempt": 1, "event": "pull_request", "event_sha": merge,
+                   "run_head_sha": head, "candidate_sha": merge, "baseline_sha": base,
+                   "control_sha": base, "profile": "pr"}
+        env = dict(os.environ, PLAN_BINDING=json.dumps(binding), GITHUB_EVENT_PATH=event_path,
+                   EVENT_NAME="pull_request", GITHUB_REPOSITORY="example/repo",
+                   GITHUB_RUN_ID="50", GITHUB_RUN_ATTEMPT="2", GITHUB_SHA=merge)
+        output = self.path("binding.json")
+        command = [sys.executable, "-I", "-B", CLI, "telemetry-bind-attempt", "--output", output]
+        process = subprocess.run(command, env=env, capture_output=True, timeout=20)
+        self.assertEqual(process.returncode, 0, process.stderr)
+        from perflab import contracts
+        self.assertEqual(contracts.read_file(output, "telemetry-binding"), dict(binding, attempt=2))
+        for mutation in ({"GITHUB_RUN_ID": "51"}, {"GITHUB_SHA": head},
+                         {"GITHUB_RUN_ATTEMPT": "0"}, {"GITHUB_REPOSITORY": "foreign/repo"}):
+            with self.subTest(mutation=mutation):
+                process = subprocess.run(command, env=dict(env, **mutation), capture_output=True,
+                                         timeout=20)
+                self.assertNotEqual(process.returncode, 0)
+        for schema in ("af.perf-telemetry-binding/0", "af.perf-telemetry-binding/2"):
+            with self.assertRaises(ContractError):
+                contracts.validate_telemetry_binding(dict(binding, schema=schema))
 
 
 class Admission(TempDir):

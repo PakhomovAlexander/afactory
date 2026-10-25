@@ -44,6 +44,8 @@ from datetime import datetime, timedelta, timezone
 from . import budget as deadlines, contracts, telemetrylab, tomlfile, transport
 from .values import ContractError, require, sha256_bytes
 
+PLAN_ARTIFACT = re.compile(r"^telemetry-plan-([1-9][0-9]{0,15})-([1-9][0-9]{0,3})$")
+BINDING_BYTES_MAX = 65536
 ARTIFACT = re.compile(r"^perf-telemetry-([1-9][0-9]{0,15})-([1-9][0-9]{0,3})$")
 COLLECTION_JSON = "collection.json"
 POSITION_JSON = "collection-position.json"
@@ -343,9 +345,18 @@ class Cycle(object):
 
     def collect(self, kept, run):
         run_id = run["id"]
-        found = {}
+        found, plans = {}, {}
         try:
             for artifact in artifacts(self.api, run_id):
+                if artifact["name"].startswith("telemetry-plan-"):
+                    match = PLAN_ARTIFACT.fullmatch(artifact["name"])
+                    require(match is not None and int(match.group(1)) == run_id,
+                            "foreign or malformed plan artifact")
+                    attempt = int(match.group(2))
+                    require(attempt <= run["run_attempt"] and attempt not in plans,
+                            "duplicate or foreign plan attempt")
+                    plans[attempt] = artifact
+                    continue
                 if not artifact["name"].startswith("perf-telemetry-") \
                         or artifact["name"].startswith("perf-telemetry-af-"):
                     continue
@@ -366,11 +377,18 @@ class Cycle(object):
                             "conclusion"))
             return
         for attempt in sorted(found):
-            self.collect_artifact(kept, run, attempt, found[attempt])
+            self.collect_artifact(kept, run, attempt, found[attempt], plans.get(attempt))
 
-    def collect_artifact(self, kept, run, attempt, artifact):
+    def collect_artifact(self, kept, run, attempt, artifact, plan_artifact=None):
         result_id = "tl_%d_%d" % (run["id"], attempt)
         if os.path.isdir(os.path.join(kept.results, result_id)):
+            try:
+                result, _, _ = telemetrylab.read_bundle(os.path.join(kept.results, result_id))
+                binding = kept.read_binding(result_id)
+                self.bind(run, attempt, result, binding)
+            except (ContractError, OSError) as error:
+                self.record(run, attempt, "refused", artifact, reason=str(error))
+                return
             self.record(run, attempt, "already_collected", artifact, result_id)
             return
         if artifact["expired"]:
@@ -398,7 +416,10 @@ class Cycle(object):
                                          self.config["artifact_bytes_max"])
             transport._materialize(staging, members)
             result, _, _ = telemetrylab.read_bundle(staging)
-            self.bind(run, attempt, result)
+            require(result["result_id"] == result_id, "it holds result %s, not %s" % (
+                result["result_id"], result_id))
+            binding = self.read_plan(plan_artifact)
+            self.bind(run, attempt, result, binding)
             self.api.remaining("reading the measurement authority")
             sha = result["sources"]["authority_sha"]
             require(any(self.git.is_ancestor(sha, ref) for ref in self.config["trusted_refs"]),
@@ -407,6 +428,7 @@ class Cycle(object):
             telemetrylab.materialize_authority(self.git, sha, authority)
             self.api.remaining("verifying the result")
             self.interrupted_import = (run, attempt, artifact, result_id)
+            kept.retain_binding(result_id, binding)
             kept.import_result(staging, authority)
         except deadlines.Interrupted as error:
             self.interrupted_import = (run, attempt, artifact, result_id)
@@ -423,7 +445,20 @@ class Cycle(object):
         self.record(run, attempt, "collected", artifact, result_id)
         self.interrupted_import = None
 
-    def bind(self, run, attempt, result):
+    def read_plan(self, artifact):
+        require(artifact is not None, "missing original run/attempt plan binding")
+        require(not artifact["expired"] and artifact["size"] <= BINDING_BYTES_MAX,
+                "original plan binding expired or exceeds its byte bound")
+        data = self.api.download(artifact)
+        require(data is not None and len(data) <= BINDING_BYTES_MAX,
+                "original plan binding is missing or exceeds its byte bound")
+        require(artifact["sha256"] is not None and sha256_bytes(data) == artifact["sha256"],
+                "original plan binding has no matching immutable artifact digest")
+        members = transport.read_zip(data, self.api.remaining, bytes_max=BINDING_BYTES_MAX)
+        require(set(members) == {"binding.json"}, "original plan artifact holds foreign files")
+        return contracts.read_json(members["binding.json"], "telemetry-binding")
+
+    def bind(self, run, attempt, result, binding):
         """Refuse a result that is not the one this run and attempt measured."""
         expected = "tl_%d_%d" % (run["id"], attempt)
         require(result["result_id"] == expected, "it holds result %s, not %s" % (
@@ -435,3 +470,30 @@ class Cycle(object):
             require(result["sources"]["candidate_sha"] == run.get("head_sha"),
                     "its candidate %s is not the run's commit %s" % (
                         result["sources"]["candidate_sha"][:12], str(run.get("head_sha"))[:12]))
+
+        contracts.validate_telemetry_binding(binding)
+        require((binding["repository"], binding["run_id"], binding["attempt"], binding["event"],
+                 binding["run_head_sha"]) ==
+                (self.config["repository"], run["id"], attempt, event, run.get("head_sha")),
+                "original plan binding belongs to another repository/run/attempt/event/head")
+        for key, source in (("candidate_sha", "candidate_sha"), ("baseline_sha", "baseline_sha"),
+                            ("control_sha", "authority_sha")):
+            require(binding[key] == result["sources"][source],
+                    "result %s differs from the original plan binding" % source)
+        require(binding["profile"] == result["profile"], "result profile differs from original plan")
+        if event == "pull_request":
+            require(binding["candidate_sha"] == binding["event_sha"]
+                    and binding["control_sha"] == binding["baseline_sha"]
+                    and self.git.parents(binding["event_sha"]) ==
+                    [binding["baseline_sha"], run["head_sha"]],
+                    "original PR plan is not the merge of its original base and immutable run head")
+        else:
+            require(binding["event_sha"] == run["head_sha"], "original plan event commit mismatch")
+        # The run's workflow must be exactly this trusted producer, not candidate-supplied
+        # code claiming to have made a plan. Read Git objects; never execute artifact code.
+        workflow = ".github/workflows/" + contracts.TELEMETRY_WORKFLOW
+        with open(os.path.join(telemetrylab.ROOT, workflow), "rb") as stream:
+            trusted_workflow = stream.read(BINDING_BYTES_MAX + 1)
+        require(self.git.read_file(binding["event_sha"], workflow) == trusted_workflow
+                and self.git.read_file(binding["control_sha"], workflow) == trusted_workflow,
+                "original plan workflow differs from the trusted installed producer")

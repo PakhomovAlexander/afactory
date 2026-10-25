@@ -1869,6 +1869,18 @@
       "valid": true
     },
     {
+      "path": "telemetry-binding/invalid-version.json",
+      "contract": "telemetry-binding",
+      "valid": false,
+      "error": "expected af.perf-telemetry-binding/1",
+      "shape": true
+    },
+    {
+      "path": "telemetry-binding/valid-pr-merge.json",
+      "contract": "telemetry-binding",
+      "valid": true
+    },
+    {
       "path": "telemetry-build/invalid-side.json",
       "contract": "telemetry-build",
       "valid": false,

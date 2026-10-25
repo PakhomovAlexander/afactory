@@ -126,6 +126,7 @@ import argparse
 import json
 import os
 import sys
+import subprocess
 import time
 
 sys.dont_write_bytecode = True
@@ -739,6 +740,40 @@ def cmd_telemetry_run(args):
     return EXIT_UNAVAILABLE if result["status"] == "failed" or unsafe else 0
 
 
+def cmd_telemetry_bind_attempt(args):
+    try:
+        binding = contracts.read_json(os.environ["PLAN_BINDING"].encode(), "telemetry-binding")
+        # On rerun-failed-jobs the plan job's outputs come from its original attempt. Keep
+        # its frozen sources, while binding this measurement to the current attempt and the
+        # immutable original event GitHub supplies again. Never resolve manual refs again.
+        with open(os.environ["GITHUB_EVENT_PATH"], "rb") as stream:
+            event = json.loads(stream.read(contracts.limits.MAX_JSON_BYTES + 1))
+        event_name = os.environ["EVENT_NAME"]
+        head = (event["pull_request"]["head"]["sha"] if event_name == "pull_request"
+                else os.environ["GITHUB_SHA"])
+        attempt = int(os.environ["GITHUB_RUN_ATTEMPT"])
+        require = telemetrylab.require
+        require((binding["repository"], binding["run_id"], binding["event"],
+                 binding["event_sha"], binding["run_head_sha"]) ==
+                (os.environ["GITHUB_REPOSITORY"], int(os.environ["GITHUB_RUN_ID"]), event_name,
+                 os.environ["GITHUB_SHA"], head) and binding["attempt"] <= attempt,
+                "original plan does not belong to this immutable event/run/attempt")
+        binding["attempt"] = attempt
+        _emit(contracts.write_bytes(binding, "telemetry-binding"), args.output)
+    except (ContractError, KeyError, ValueError, OSError) as error:
+        return _refuse("invalid", "invalid_original_plan", str(error))
+    return 0
+
+
+def cmd_telemetry_contained_build(args):
+    from perflab import telemetrybuild
+    try:
+        telemetrybuild.run(args.source, args.output, args.image, args.seconds)
+    except (ContractError, OSError, subprocess.SubprocessError) as error:
+        return _refuse("invalid", "telemetry_build_failed", str(error))
+    return 0
+
+
 def cmd_telemetry_schedule(args):
     try:
         event = {}
@@ -750,7 +785,18 @@ def cmd_telemetry_schedule(args):
                                     args.sha)
     except (ContractError, OSError, ValueError, KeyError, TypeError) as error:
         return _refuse("invalid", "invalid_telemetry_event", str(error))
+    binding = None
+    if args.binding and doc["state"] == "planned":
+        try:
+            binding = telemetrylab.schedule_binding(
+                doc, args.event_name, event, args.sha, os.environ["GITHUB_REPOSITORY"],
+                int(os.environ["GITHUB_RUN_ID"]), int(os.environ["GITHUB_RUN_ATTEMPT"]))
+            _emit(contracts.write_bytes(binding, "telemetry-binding"), args.binding)
+        except (ContractError, KeyError, ValueError) as error:
+            return _refuse("invalid", "invalid_telemetry_binding", str(error))
     text = telemetrylab.schedule_outputs(doc)
+    if binding is not None:
+        text += "binding=" + json.dumps(binding, separators=(",", ":")) + "\n"
     if args.github_output:
         with open(args.github_output, "a") as stream:
             stream.write(text)
@@ -1519,6 +1565,17 @@ def parser():
     telemetry_run.add_argument("--candidate-build", help="the candidate's build record")
     telemetry_run.set_defaults(handler=cmd_telemetry_run)
 
+    bind_attempt = commands.add_parser("telemetry-bind-attempt")
+    bind_attempt.add_argument("--output", required=True)
+    bind_attempt.set_defaults(handler=cmd_telemetry_bind_attempt)
+
+    contained_build = commands.add_parser("telemetry-contained-build")
+    contained_build.add_argument("--source", required=True)
+    contained_build.add_argument("--output", required=True)
+    contained_build.add_argument("--image", required=True)
+    contained_build.add_argument("--seconds", type=int, default=4800)
+    contained_build.set_defaults(handler=cmd_telemetry_contained_build)
+
     telemetry_schedule = commands.add_parser(
         "telemetry-schedule", help="resolve one Actions event of the Performance telemetry "
         "workflow from the trusted control")
@@ -1527,6 +1584,7 @@ def parser():
     telemetry_schedule.add_argument("--event", help="the event's JSON payload")
     telemetry_schedule.add_argument("--inputs", help="a dispatch's inputs as JSON")
     telemetry_schedule.add_argument("--sha", required=True)
+    telemetry_schedule.add_argument("--binding", help="retain the original Actions plan receipt")
     telemetry_schedule.add_argument("--github-output")
     telemetry_schedule.add_argument("--job-summary")
     telemetry_schedule.set_defaults(handler=cmd_telemetry_schedule)

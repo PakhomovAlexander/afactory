@@ -187,7 +187,8 @@ class Deadlines(TempDir):
     result = tc.Collection.result
 
     def bounded_cycle(self, artifacts, seconds=1.0, reserve=0.4):
-        api = tc.transport.Collector(tc.FakeApi([tc.run_entry(1)], artifacts), tc.REPOSITORY,
+        runs, artifacts = tc.plan_fixtures(self, [tc.run_entry(1)], artifacts)
+        api = tc.transport.Collector(tc.FakeApi(runs, artifacts), tc.REPOSITORY,
                                      tc.TOKEN, api_url=tc.API, seconds=seconds)
         limit = budget.Budget(api.deadline, api.clock, reserve)
         return telemetrycollect.Cycle(self.config, api, gitrefs.Git(self.repo.path), time.time,
@@ -397,7 +398,7 @@ class Deadlines(TempDir):
                 if name == 'history_page':
                     # Isolate report expiry from import cost: this cycle starts with an
                     # already verified result; the import deadline is tested above.
-                    api = tc.transport.Collector(tc.FakeApi([tc.run_entry(1)], artifacts), tc.REPOSITORY,
+                    api = tc.transport.Collector(tc.FakeApi(*tc.plan_fixtures(self, [tc.run_entry(1)], artifacts)), tc.REPOSITORY,
                                                  tc.TOKEN, api_url=tc.API)
                     self.assertEqual(telemetrycollect.Cycle(self.config, api, gitrefs.Git(self.repo.path),
                                      time.time, tc.NOW).run()['status'], 'ok')
@@ -419,7 +420,7 @@ class Deadlines(TempDir):
     def test_expiry_during_retention_keeps_the_exact_known_pruning_record(self):
         data = tc.zipped(self.result(1))
         artifacts = {1: [tc.artifact_entry(1, 1, 'perf-telemetry-1-1', data)]}
-        api = tc.transport.Collector(tc.FakeApi([tc.run_entry(1)], artifacts), tc.REPOSITORY,
+        api = tc.transport.Collector(tc.FakeApi(*tc.plan_fixtures(self, [tc.run_entry(1)], artifacts)), tc.REPOSITORY,
                                      tc.TOKEN, api_url=tc.API)
         self.assertEqual(telemetrycollect.Cycle(self.config, api, gitrefs.Git(self.repo.path),
                          time.time, tc.NOW).run()['status'], 'ok')

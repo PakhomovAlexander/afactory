@@ -7,6 +7,7 @@ under the authority of a disposable trusted repository whose commit holds a copy
 checkout's authority files. Nothing here measures anything.
 """
 import io
+import copy
 import json
 import os
 import shutil
@@ -41,6 +42,39 @@ def zipped(directory, extra=()):
         for name, data in extra:
             container.writestr(name, data)
     return buffer.getvalue()
+
+
+def binding_zip(binding):
+    buffer = io.BytesIO()
+    with zipfile.ZipFile(buffer, "w", zipfile.ZIP_DEFLATED) as container:
+        container.writestr("binding.json", contracts.write_bytes(binding, "telemetry-binding"))
+    return buffer.getvalue()
+
+
+def plan_fixtures(test, runs, artifacts, add_plans=True):
+    runs, artifacts = copy.deepcopy(runs), copy.deepcopy(artifacts)
+    for run in runs:
+        if run["head_sha"] == "2" * 40:
+            run["head_sha"] = test.authority
+        if not add_plans:
+            continue
+        for item in list(artifacts.get(run["id"], [])):
+            match = telemetrycollect.ARTIFACT.fullmatch(item["name"])
+            if match is None:
+                continue
+            attempt = int(match.group(2))
+            planned = test.planned.get((run["id"], attempt))
+            if planned is None:
+                continue
+            binding = dict(planned, schema=contracts.TELEMETRY_BINDING_SCHEMA,
+                           repository=REPOSITORY, run_id=run["id"], attempt=attempt,
+                           event=run["event"], event_sha=run["head_sha"],
+                           run_head_sha=run["head_sha"])
+            data = binding_zip(binding)
+            artifacts[run["id"]].append(artifact_entry(
+                100000 + item["id"], run["id"],
+                "telemetry-plan-%d-%d" % (run["id"], attempt), data))
+    return runs, artifacts
 
 
 class FakeApi(object):
@@ -104,6 +138,7 @@ class Collection(TempDir):
     def setUp(self):
         TempDir.setUp(self)
         self.binaries = fx.binaries(self)
+        self.planned = {}
         # The trusted repository: main holds this checkout's authority files.
         self.repo = Repo(self.path("trusted"))
         registry, _ = telemetrylab.load_registry()
@@ -124,13 +159,19 @@ class Collection(TempDir):
 
     def result(self, run_id, attempt=1, authority=None, output=None, **values):
         output = output or "r%d-%d" % (run_id, attempt)
-        telemetrylab.run(fx.settings(
+        settings = fx.settings(
             self, fx.StandIn(self.binaries), output, experiments=["overhead"],
             authority_sha=authority or self.authority,
-            result_id=values.pop("result_id", "tl_%d_%d" % (run_id, attempt)), **values))
+            result_id=values.pop("result_id", "tl_%d_%d" % (run_id, attempt)), **values)
+        # Independent frozen planning inputs, not copied from the result artifact.
+        self.planned[(run_id, attempt)] = {
+            "candidate_sha": settings.candidate_sha, "baseline_sha": settings.baseline_sha,
+            "control_sha": settings.authority_sha, "profile": settings.profile}
+        telemetrylab.run(settings)
         return self.path(output)
 
-    def cycle(self, runs, artifacts, now=NOW):
+    def cycle(self, runs, artifacts, now=NOW, add_plans=True):
+        runs, artifacts = plan_fixtures(self, runs, artifacts, add_plans)
         fake = FakeApi(runs, artifacts)
         api = transport.Collector(fake, REPOSITORY, TOKEN, api_url=API)
         doc = telemetrycollect.Cycle(self.config, api, gitrefs.Git(self.repo.path), time.time,
@@ -465,6 +506,109 @@ class Collection(TempDir):
             lambda: 4102444800.0, NOW).run()
         self.assertEqual([item["result_id"] for item in future["pruned"]], ["tl_110_1"])
         self.assertEqual(future["results"], 0)
+
+    def test_retained_binding_is_required_for_offline_history_and_repeated_collection(self):
+        data = zipped(self.result(302))
+        artifacts = {302: [artifact_entry(302, 302, "perf-telemetry-302-1", data)]}
+        doc, _ = self.cycle([run_entry(302)], artifacts)
+        self.assertEqual(doc["runs"][0]["outcome"], "collected", doc)
+        binding_path = os.path.join(self.config["root"], telemetrylab.BINDINGS, "tl_302_1.json")
+        original = read(binding_path)
+        binding = json.loads(original)
+        for changed in (None, dict(binding, candidate_sha="a" * 40),
+                        dict(binding, attempt=2)):
+            with self.subTest(changed=changed):
+                if changed is None:
+                    os.unlink(binding_path)
+                else:
+                    with open(binding_path, "w") as stream:
+                        json.dump(changed, stream)
+                with telemetrylab.HistoryRoot(self.config["root"]) as kept:
+                    history = kept.write()
+                self.assertEqual(history["results"], [])
+                self.assertTrue(history["refused"])
+                doc, _ = self.cycle([run_entry(302)], artifacts)
+                self.assertEqual(doc["runs"][0]["outcome"], "refused")
+                with open(binding_path, "wb") as stream:
+                    stream.write(original)
+
+    def test_missing_original_plan_and_changed_sources_are_refused_before_import(self):
+        directory = self.result(301)
+        result, _, _ = telemetrylab.read_bundle(directory)
+        original = copy.deepcopy(result)
+        run = run_entry(301, head_sha=self.authority)
+        binding = dict(self.planned[(301, 1)], schema=contracts.TELEMETRY_BINDING_SCHEMA,
+                       repository=REPOSITORY, run_id=301, attempt=1,
+                       event="workflow_dispatch", event_sha=self.authority,
+                       run_head_sha=self.authority)
+        for change in ("missing", "candidate_sha", "baseline_sha", "authority_sha",
+                       "run_id", "attempt", "repository", "workflow", "foreign-files"):
+            with self.subTest(change=change):
+                result = copy.deepcopy(original)
+                receipt = copy.deepcopy(binding)
+                if change in ("candidate_sha", "baseline_sha", "authority_sha"):
+                    result["sources"][change] = "a" * 40
+                elif change in ("run_id", "attempt"):
+                    receipt[change] += 1
+                elif change == "repository":
+                    receipt["repository"] = "foreign/repo"
+                elif change == "workflow":
+                    receipt["event_sha"] = self.untrusted
+                fx.rewrite(directory, result)
+                listed = [artifact_entry(301, 301, "perf-telemetry-301-1", zipped(directory))]
+                if change != "missing":
+                    data = binding_zip(receipt)
+                    if change == "foreign-files":
+                        data = zipped(directory)
+                    listed.append(artifact_entry(1301, 301, "telemetry-plan-301-1", data))
+                with mock.patch.object(telemetrylab.HistoryRoot, "import_result") as imported:
+                    doc, _ = self.cycle([run], {301: listed}, add_plans=False)
+                self.assertEqual(doc["runs"][0]["outcome"], "refused", doc)
+                self.assertFalse(imported.called)
+        fx.rewrite(directory, original)
+
+    def test_pr_merge_binding_ignores_later_mutable_pr_heads_and_preserves_attempts(self):
+        # Actual Git commits model GitHub's two different SHAs: run.head_sha is the
+        # original branch head, GITHUB_SHA is the measured merge with original base first.
+        self.repo.git("checkout", "-q", "-b", "feature")
+        head = self.repo.commit("original PR push", {"feature": "one"})
+        self.repo.git("checkout", "-q", "main")
+        self.repo.git("merge", "--no-ff", "-m", "original event merge", "feature")
+        merge = self.repo.git("rev-parse", "HEAD")
+        self.repo.git("checkout", "-q", "feature")
+        later = self.repo.commit("later PR push", {"feature": "two"})
+        run = run_entry(40206196989, attempt=2, event="pull_request", head_sha=head)
+        run["pull_requests"] = [{"head": {"sha": later}, "base": {"sha": merge}}]
+        sources = {"candidate_sha": merge, "baseline_sha": self.authority,
+                   "authority_sha": self.authority}
+        result = {"result_id": "tl_40206196989_1", "trigger": "pr", "profile": "pr",
+                  "sources": sources}
+        binding = {"schema": contracts.TELEMETRY_BINDING_SCHEMA, "repository": REPOSITORY,
+                   "run_id": run["id"], "attempt": 1, "event": "pull_request",
+                   "event_sha": merge, "run_head_sha": head, "candidate_sha": merge,
+                   "baseline_sha": self.authority, "control_sha": self.authority, "profile": "pr"}
+        cycle = telemetrycollect.Cycle(self.config, transport.Collector(
+            FakeApi([], {}), REPOSITORY, TOKEN, api_url=API), gitrefs.Git(self.repo.path),
+            time.time, NOW)
+        cycle.bind(run, 1, result, binding)  # Original attempt remains valid after later push.
+        result2 = dict(result, result_id="tl_40206196989_2")
+        cycle.bind(run, 2, result2, dict(binding, attempt=2))
+        for key in sources:
+            forged = dict(result, sources=dict(sources, **{key: head}))
+            with self.subTest(key=key), self.assertRaises(ContractError):
+                cycle.bind(run, 1, forged, binding)
+        for mutation in ({"attempt": 2}, {"run_id": 40209146633}, {"run_head_sha": later},
+                         {"candidate_sha": head}, {"baseline_sha": merge},
+                         {"control_sha": merge}):
+            with self.subTest(mutation=mutation), self.assertRaises(ContractError):
+                cycle.bind(run, 1, result, dict(binding, **mutation))
+        # Altering the workflow at the event source cannot manufacture trusted planning.
+        bad = self.repo.commit("foreign workflow", {
+            ".github/workflows/performance-telemetry.yml": "foreign producer"})
+        manual = dict(result, trigger="manual")
+        receipt = dict(binding, event="workflow_dispatch", event_sha=bad, run_head_sha=bad)
+        with self.assertRaisesRegex(ContractError, "trusted installed producer"):
+            cycle.bind(dict(run, event="workflow_dispatch", head_sha=bad), 1, manual, receipt)
 
     def test_the_example_configuration_and_units_are_the_lane_s_own(self):
         path = os.path.join(SERVICE, "telemetry-collector.example.toml")

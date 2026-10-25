@@ -1,9 +1,9 @@
-# Telemetry experiments of the performance laboratory (ADR-0199, ADR-0200,
+# Telemetry experiments of the performance laboratory (ADR-0214, ADR-0215,
 # docs/performance-telemetry.md): Telemetry's own cost (`off` against `spans`, Claude `json`
 # against `stream-json` at each level) and its read latency, measured on a baseline and a candidate
 # binary with the bench scripts and fixtures of the trusted control revision, never the
-# candidate's. Separate from performance.yml, whose bytes and frozen calibration cohort stay
-# unchanged. Advisory: no job here is a required check, nothing here changes a verdict, and nothing
+# candidate's. Separate from performance.yml, whose current producer includes the dispatch-head
+# repair; historical cohort bytes remain fixed. Advisory: no job here is a required check, nothing here changes a verdict, and nothing
 # edits a ruleset. Read-only permissions, no secrets, every action pinned to a commit, every
 # checkout without a credential.
 #
@@ -76,6 +76,7 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 10
     outputs:
+      binding: ${{ steps.schedule.outputs.binding }}
       planned: ${{ steps.schedule.outputs.planned }}
       control: ${{ steps.schedule.outputs.control }}
       baseline: ${{ steps.schedule.outputs.baseline }}
@@ -141,12 +142,26 @@ jobs:
           echo "image=$IMAGE" >> "$GITHUB_OUTPUT"
           python3 "$cli" telemetry-schedule --repo . --event-name "$EVENT_NAME" \
             --event "$GITHUB_EVENT_PATH" --inputs "$INPUTS" --sha "$GITHUB_SHA" \
+            --binding "$RUNNER_TEMP/binding.json" \
             --github-output "$GITHUB_OUTPUT" --job-summary "$GITHUB_STEP_SUMMARY"
+      - name: Retain the original run and attempt plan
+        if: steps.schedule.outputs.planned == 'true'
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: telemetry-schedule-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/binding.json
+          retention-days: ${{ fromJSON(steps.schedule.outputs.retention_days) }}
+          if-no-files-found: error
 
   build:
     name: build (${{ matrix.side }})
     needs: plan
     if: needs.plan.outputs.planned == 'true'
+    # Matrix output names are unique per side; a failed-jobs rerun can consume a
+    # successful side's original exact artifact without guessing its attempt.
+    outputs:
+      baseline_artifact: ${{ steps.record.outputs.baseline_artifact }}
+      candidate_artifact: ${{ steps.record.outputs.candidate_artifact }}
     strategy:
       fail-fast: false
       matrix:
@@ -175,23 +190,20 @@ jobs:
       - name: Build the side's af once in the pinned image, credential-free, with its pinned toolchain
         run: |
           set -eu
-          channel="$(sed -n 's/^channel = "\(.*\)"$/\1/p' "$RUNNER_TEMP/side/rust-toolchain.toml")"
-          printf '%s' "$channel" | grep -Eq '^[0-9]+\.[0-9]+\.[0-9]+$'
-          docker run --rm --pull never --user 0:0 --cap-drop ALL --security-opt no-new-privileges \
-            --mount "type=bind,src=$RUNNER_TEMP/side,dst=/src" --workdir /src \
-            --env CARGO_HOME=/src/target/cargo-home --env CHANNEL="$channel" \
-            --entrypoint /bin/sh "$IMAGE" -c \
-            'rustup toolchain install "$CHANNEL" --profile minimal && cargo build --release --locked --bin af && rustc -V > target/af-rustc && cargo -V > target/af-cargo'
+          python3 "$RUNNER_TEMP/control/scripts/performance/cli.py" telemetry-contained-build \
+            --source "$RUNNER_TEMP/side" --output "$RUNNER_TEMP/build" --image "$IMAGE"
           mkdir "$RUNNER_TEMP/af"
-          cp "$RUNNER_TEMP/side/target/release/af" "$RUNNER_TEMP/af/af"
+          cp "$RUNNER_TEMP/build/target/release/af" "$RUNNER_TEMP/af/af"
           sha256sum "$RUNNER_TEMP/af/af" | cut -d' ' -f1 > "$RUNNER_TEMP/af/af.sha256"
       - name: Record the build
+        id: record
         run: |
           set -eu
           python3 "$RUNNER_TEMP/control/scripts/performance/cli.py" telemetry-build-record \
             --side "$SIDE" --source-sha "$SIDE_SHA" --binary "$RUNNER_TEMP/af/af" --image "$IMAGE" \
-            --rustc "$(cat "$RUNNER_TEMP/side/target/af-rustc")" --cargo "$(cat "$RUNNER_TEMP/side/target/af-cargo")" \
+            --rustc "$(cat "$RUNNER_TEMP/build/af-rustc")" --cargo "$(cat "$RUNNER_TEMP/build/af-cargo")" \
             --command "cargo build --release --locked --bin af" --output "$RUNNER_TEMP/af/af.build.json"
+          echo "${SIDE}_artifact=perf-telemetry-af-${SIDE}-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}" >> "$GITHUB_OUTPUT"
       - name: Publish the side's binary
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
@@ -222,12 +234,12 @@ jobs:
       - name: Fetch the baseline binary
         uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
-          name: perf-telemetry-af-baseline-${{ github.run_id }}-${{ github.run_attempt }}
+          name: ${{ needs.build.outputs.baseline_artifact }}
           path: ${{ runner.temp }}/baseline
       - name: Fetch the candidate binary
         uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
-          name: perf-telemetry-af-candidate-${{ github.run_id }}-${{ github.run_attempt }}
+          name: ${{ needs.build.outputs.candidate_artifact }}
           path: ${{ runner.temp }}/candidate
       - name: Verify both binaries by the hash their build recorded
         run: |
@@ -238,6 +250,20 @@ jobs:
           done
       - name: Refuse any credential before a candidate byte runs
         run: python3 "$RUNNER_TEMP/control/scripts/performance/cli.py" ci-credentials --git-dir .git --environment
+      - name: Bind this attempt to the original frozen plan
+        env:
+          PLAN_BINDING: ${{ needs.plan.outputs.binding }}
+          EVENT_NAME: ${{ github.event_name }}
+        run: |
+          python3 "$RUNNER_TEMP/control/scripts/performance/cli.py" telemetry-bind-attempt \
+            --output "$RUNNER_TEMP/binding.json"
+      - name: Retain this attempt's original plan binding
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: telemetry-plan-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/binding.json
+          retention-days: ${{ fromJSON(needs.plan.outputs.retention_days) }}
+          if-no-files-found: error
       - name: Prepare the disk-bounded scratch and the pinned image (trusted preparation)
         run: |
           set -eu
