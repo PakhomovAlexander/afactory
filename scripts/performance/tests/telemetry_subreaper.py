@@ -13,6 +13,9 @@ import sys
 import time
 from unittest import mock
 
+# Each fresh interpreter must keep the measurement authority source-only.
+sys.dont_write_bytecode = True
+
 # Filename launches (ancestor and inner) must import this source without PYTHONPATH or cwd.
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from perflab import telemetryexec

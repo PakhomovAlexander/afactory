@@ -22,7 +22,7 @@ from unittest import mock
 from perflab import builds, limits, supervise, telemetryexec, telemetrylab
 from perflab.values import ContractError
 from tests import telemetry_fixtures as fx
-from tests.support import TempDir
+from tests.support import TempDir, writable_copy
 from tests.telemetry_subreaper import state, thread_states
 
 DOCKER = r'''
@@ -374,21 +374,27 @@ class LocalEvidence(TempDir):
 
 @unittest.skipUnless(sys.platform == "linux", "Linux ancestor subreaper regression")
 class AncestorSubreaper(TempDir):
-    def run_helper(self, mode):
-        helper = os.path.join(os.path.dirname(os.path.abspath(__file__)), "telemetry_subreaper.py")
-        env = dict(os.environ, HOME=self.tmp, XDG_CONFIG_HOME=self.tmp,
+    def run_helper(self, mode, python_flags=()):
+        lab = writable_copy(os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+                            self.path("lab"))
+        helper = os.path.join(lab, "tests", "telemetry_subreaper.py")
+        # Neither launch may rely on the runner's flags, Python overrides or source cwd.
+        env = {key: value for key, value in os.environ.items() if not key.startswith("PYTHON")}
+        env.update(HOME=self.tmp, TMPDIR=self.tmp, XDG_CONFIG_HOME=self.tmp,
                    XDG_CACHE_HOME=self.tmp, XDG_STATE_HOME=self.tmp, XDG_DATA_HOME=self.tmp)
-        # Exercise both helper launches without the test runner's import path or cwd.
-        env.pop("PYTHONPATH", None)
         started = time.monotonic()
-        result = subprocess.run([sys.executable, helper, "ancestor", self.tmp, mode],
+        result = subprocess.run([sys.executable, *python_flags, helper, "ancestor", self.tmp, mode],
                                 env=env, cwd=self.tmp, capture_output=True, timeout=30)
         self.assertEqual(result.returncode, 0, result.stderr.decode())
         self.assertLess(len(result.stdout), 8192)
+        bytecode = [os.path.relpath(os.path.join(current, name), lab)
+                    for current, dirs, files in os.walk(lab) for name in dirs + files
+                    if name == "__pycache__" or name.endswith((".pyc", ".pyo"))]
+        self.assertEqual(bytecode, [], "helper launches must leave writable lab source bytecode-free")
         return json.loads(result.stdout), time.monotonic() - started
 
-    def check_execution(self, mode):
-        evidence, elapsed = self.run_helper(mode)
+    def check_execution(self, mode, python_flags=()):
+        evidence, elapsed = self.run_helper(mode, python_flags)
         self.assertEqual(evidence["cleanup"], "confirmed", evidence)
         leader, descendant = evidence["pids"]
         final_leader, final_child = evidence["final"]
@@ -403,6 +409,12 @@ class AncestorSubreaper(TempDir):
 
     def test_leftover_under_retaining_ancestor_subreaper(self):
         evidence = self.check_execution("leftover")
+        self.assertEqual(evidence["code"], 0)
+        self.assertIn("outlived it", evidence["failure"])
+        self.assertFalse(evidence["timed_out"])
+
+    def test_inner_launch_does_not_inherit_ancestor_bytecode_suppression(self):
+        evidence = self.check_execution("leftover", python_flags=("-B",))
         self.assertEqual(evidence["code"], 0)
         self.assertIn("outlived it", evidence["failure"])
         self.assertFalse(evidence["timed_out"])
