@@ -21,6 +21,11 @@ pull request; the release pull request collects them here.
 
 ## [0.13.0-rc.2] - 2026-10-25
 
+`0.13.0-rc.1` was tagged but never published. Its release notes are carried forward into
+`0.13.0-rc.2` below. The latest published signed release remains `0.12.0-rc.5`, so `.af/af.lock`
+continues to pin it until `0.13.0-rc.2` is published, as required by
+[ADR-0138](docs/adr/0138-the-repository-pins-its-newest-release.md).
+
 ### Authority compatibility
 
 Existing committed .af/ policy that validates under 0.12.0-rc.5 needs no hand edit. Run af onboard --refresh-lock to pin 0.13.0-rc.2 and its signed bytes; a pipeline opting into recovery_attempts uses af.pipeline/3 and needs its refreshed lock.
@@ -42,13 +47,7 @@ remain unavailable and cannot appear as an exemption or a measured pass.
   checks preserve exact JSON and stderr assertions while the signed pin awaits publication
   ([ADR-0213](../docs/adr/0213-isolate-cli-usage-tests-from-the-repository-release-pin.md)).
 
-## [0.13.0-rc.1] - 2026-10-25
-
-### Authority compatibility
-
-Existing committed .af/ policy that validates under 0.12.0-rc.5 needs no hand edit. Run af onboard --refresh-lock to pin 0.13.0-rc.1 and its signed bytes; a pipeline opting into recovery_attempts uses af.pipeline/3 and needs its refreshed lock.
-
-### Changes
+### Changes carried forward from unpublished 0.13.0-rc.1
 
 - release: v0.12.0-rc.5 (#300)
 - Fix every finding of the 2026-10-20 GA and security audit (#299)
