@@ -170,8 +170,7 @@ def publish_record(kept, name, data, kind):
     record_size(kept, name, kind)
     temporary = os.path.join(kept.report_staging(), name)
     require(not os.path.lexists(temporary), "interrupted collection staging must be swept")
-    require(kept.used_bytes() + kept.report_allocation(len(data)) <= kept.bytes_max,
-            "collection record staging would exceed the history byte bound")
+    kept.reserve_paths({temporary: len(data)}, entries=(os.path.join(kept.root, name),))
     with open(temporary, "xb") as stream:
         stream.write(data)
         stream.flush()
@@ -361,8 +360,7 @@ class Cycle(object):
         kept.cleanup_staging()
         self.write_status(kept, fallback)
         data = contracts.write_bytes(fallback, "telemetry-collection")
-        require(kept.used_bytes() + kept.report_allocation(len(data)) <= kept.bytes_max,
-                "collection incomplete reserve would exceed the history byte bound")
+        kept.reserve_paths({reserve: len(data)})
         with open(reserve, "xb") as stream:
             stream.write(data)
             stream.flush()
@@ -465,6 +463,7 @@ class Cycle(object):
                     % (artifact["downloaded"], artifact["sha256"]))
             members = transport.read_zip(data, self.api.remaining, None,
                                          self.config["artifact_bytes_max"])
+            kept.reserve_trees([(staging, members)])
             transport._materialize(staging, members)
             result, _, _ = telemetrylab.read_bundle(staging)
             require(result["result_id"] == result_id, "it holds result %s, not %s" % (
@@ -476,7 +475,23 @@ class Cycle(object):
             require(any(self.git.is_ancestor(sha, ref) for ref in self.config["trusted_refs"]),
                     "its measurement authority %s is reachable from none of the trusted refs "
                     "%s" % (sha[:12], ", ".join(self.config["trusted_refs"])))
-            telemetrylab.materialize_authority(self.git, sha, authority)
+            authority_members = telemetrylab.read_authority(self.git, sha)
+            retained = kept.authority_path(result)
+            trees = [(authority, authority_members),
+                     (os.path.join(kept.results, telemetrylab.STAGING_PREFIX + "import-reserve"),
+                      members)]
+            if not os.path.lexists(retained):
+                trees.append((os.path.join(kept.root, telemetrylab.AUTHORITIES,
+                                           telemetrylab.STAGING_PREFIX + "authority-reserve"),
+                              authority_members))
+            binding_path = kept.binding_path(result_id)
+            binding_files = ({} if os.path.lexists(binding_path) else {
+                binding_path: len(contracts.write_bytes(binding, "telemetry-binding"))})
+            # Reserve the complete coexistence before expanding authority: downloaded
+            # staging, expanded and retained authority, import copy and planning receipt.
+            kept.reserve_trees(trees, files=binding_files, entries=(retained,
+                               os.path.join(kept.results, result_id)))
+            telemetrylab._write_members(authority, authority_members, 0o700, 0o700)
             self.api.remaining("verifying the result")
             self.interrupted_import = (run, attempt, artifact, result_id)
             kept.retain_binding(result_id, binding)

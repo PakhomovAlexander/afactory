@@ -650,7 +650,7 @@ class Profile(object):
         are kept for the operator, its handles closed and nothing of it removed, and the run
         stops launching (`halted`). Only a confirmed end lets the namespace be removed, and a
         removal that is not confirmed keeps what is left the same way."""
-        if uncertain:
+        if uncertain or getattr(namespace, "reader_uncertain", False):
             self.retained.append(namespace.keep())
             raise perfcapture.CaptureError(
                 "cleanup_uncertain", ("a process the run started may still be live, so its "
@@ -1402,7 +1402,8 @@ class Profile(object):
             return result, wall, exported
         finally:
             try:
-                self.discard_trace(staged, result)
+                self.discard_trace(staged, LAUNCHING if getattr(
+                    namespace, "reader_uncertain", False) else result)
             finally:
                 self.release(namespace, _uncertain(result))
 
@@ -1574,9 +1575,24 @@ class Profile(object):
                                 + target)
             path = self.produced(target)
             argv = telemetrydiag.read_argv(binary, kind, run)
-            result = self.tool_run(argv, telemetrydiag.READ_SECONDS, 4096, namespace.path,
-                                   env=environment, stdout_path=path, file_bytes=room,
-                                   reads=(binary,), writes=(namespace.path,))
+            # The namespace owner outlives all readers. Mark the launch before calling
+            # the supervisor: an exception after launch has no confirmed cleanup receipt.
+            # A later result must never erase uncertainty from any earlier reader.
+            prior = getattr(namespace, "reader_uncertain", False)
+            if prior:
+                raise perfcapture.CaptureError("cleanup_uncertain",
+                                               "an earlier telemetry reader may still be live")
+            result = LAUNCHING
+            namespace.reader_uncertain = True
+            try:
+                result = self.tool_run(argv, telemetrydiag.READ_SECONDS, 4096, namespace.path,
+                                       env=environment, stdout_path=path, file_bytes=room,
+                                       reads=(binary,), writes=(namespace.path,))
+            finally:
+                namespace.reader_uncertain = prior or _uncertain(result)
+            if namespace.reader_uncertain:
+                raise perfcapture.CaptureError("cleanup_uncertain",
+                                               "af telemetry %s cleanup is uncertain" % kind)
             if result.exceeded is not None:
                 raise Exhausted(OVER_ROOM, "%s: %s" % (target, result.exceeded))
             if result.failure() is not None:

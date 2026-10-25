@@ -288,3 +288,23 @@ staging, swept on locked restart; foreign root temporaries are counted and retai
 links or foreign staging are refused. Complete prior reports survive capacity refusal. These
 are publication repairs within the existing typed formats, with no compatibility reader,
 release change, cohort change or statistical change.
+
+## Collection input allocation repair (2026-10-25)
+
+Collection admits downloaded ZIP members against the locked history root before creating their
+staging tree. Authority Git objects, including the registry, are bounded and regular; their
+complete path set, required inputs and file/directory conflicts are checked before materialization.
+The same history accounting reserves rounded file allocation, new directories and parent name-table
+growth. Large directory tables include room for index splits. Before authority expansion it admits
+the simultaneous downloaded, expanded-authority, retained-authority, import and binding copies.
+Standalone import and authority retention use the same admission, with confined bounded reads.
+Publication and initialization also include parent directory growth in their existing reservations.
+No result is evicted for capacity. The incomplete reserve, original initialization and terminal
+cleanup sweeps, retained leftovers, prior complete reports and retention rules keep their contracts.
+
+Regressions run complete collection cycles on the checkout filesystem and observe actual allocated
+blocks at writes, directory creation and publication. They cover valid and malformed near-full
+artifacts, many small files, parent growth, authority expansion, simultaneous retained/import copies,
+exact reservation and insufficient capacity, partial materialization and locked restart. These are
+source regression results; independent review, unchanged full gates and committed whole-source
+verification remain separate obligations. No persisted format, deployment or readiness claim changes.

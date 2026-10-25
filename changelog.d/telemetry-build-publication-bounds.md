@@ -5,3 +5,11 @@
   reservations and final accounting. Extend the real Docker CI smoke with small-budget
   storage, network and output attacks. Hosted CI remains required before rollout
   ([ADR-0215](docs/adr/0215-contain-telemetry-experiments-and-collect-only-results-verified-under-their-authority.md)).
+
+Reserve rounded history allocation before downloaded staging, authority expansion and retained/import
+copies, including directories, parent growth and bindings. Validate bounded regular authority Git
+objects and the complete path set before materializing. Keep interrupted owned bytes accounted until
+locked cleanup, without evicting results. Preserve diagnostic reader uncertainty from launch through
+namespace release and profile shutdown; retain scratch and writable evidence and prevent later
+execution when any reader may remain live. Add actual-filesystem collection and every-reader
+interruption regressions without changing persisted formats, caps, verdicts or release metadata.

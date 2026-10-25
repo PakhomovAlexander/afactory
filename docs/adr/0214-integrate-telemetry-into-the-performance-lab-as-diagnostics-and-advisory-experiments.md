@@ -136,3 +136,14 @@ published main and ADR-0217 change the workflow producer. The timing verdict is 
   hypothesis is unconfirmed. It made no optimization: the candidate changes touch the Store's
   execution authority, and their semantic tests do not exist yet
   ([`performance-runtime-new-investigation.md`](../performance-runtime-new-investigation.md)).
+
+## Reader lifecycle repair (2026-10-25)
+
+The recording namespace owns cumulative cleanup uncertainty across recording and every telemetry
+reader. Each reader marks its launch before entering supervision; an exception without a confirmed
+result remains uncertain. A later successful reader or callback cannot clear that state. Final
+release retains the namespace and writable staging, reports `cleanup_uncertain`, prevents subsequent
+execution and keeps `Profile.run` work. Successful readers share recorded state until one final
+release. Regressions exercise every reader kind through actual `cli_run`, read-back, release and
+profile finalization, including returned uncertainty and exceptions after launch. Profiles and
+reports retain their current shapes and truthful omissions; no telemetry becomes a verdict sample.

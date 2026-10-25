@@ -10,9 +10,10 @@ measures anything or makes a performance claim.
 """
 import json
 import os
+import shutil
 from unittest import mock
 
-from perflab import (bundle, contracts, diagcontracts, diagnostics, jsonsubset, oracle,
+from perflab import (budget as deadlines, bundle, contracts, diagcontracts, diagnostics, jsonsubset, oracle,
                      phasetrace, planning, report, telemetrydiag)
 from perflab.values import ContractError
 from tests import diagnostic_fixtures as fakes
@@ -444,6 +445,85 @@ class TelemetryChildRuns(ChildRunBase):
             names = sorted(a["path"].rsplit("/", 1)[1] for a in item["artifacts"])
             self.assertIn("runs.json", names)
             self.assertIn("show.json", names)
+
+    def test_every_reader_retains_uncertainty_and_post_launch_exceptions_through_profile(self):
+        actual = diagnostics.toolrun.run
+        for kind in telemetrydiag.DOCUMENT_KINDS:
+            for failure in (None, OSError, RuntimeError, KeyboardInterrupt, deadlines.Interrupted):
+                with self.subTest(kind=kind, failure=failure):
+                    launched, retained = [], []
+
+                    def reader(*args, **kwargs):
+                        result = actual(*args, **kwargs)
+                        argv = args[1]
+                        launched.append(list(argv))
+                        if "telemetry" in argv and argv[argv.index("telemetry") + 1] == kind:
+                            namespace = kwargs["cwd"]
+                            retained.append(namespace)
+                            with open(os.path.join(namespace, "reader-live-data"), "wb") as stream:
+                                stream.write(b"still reachable by the reader")
+                            if failure is not None:
+                                raise failure("exception after reader launch")
+                            result.uncertain = True
+                        return result
+
+                    # Profile.run -> telemetry_case -> cli_run -> telemetry_documents ->
+                    # release, over the real supervisor adapter and stand-in container.
+                    with mock.patch.object(diagnostics.toolrun, "run", reader):
+                        doc, output = self.profile(
+                            "linux_gnu_trace", [TASK_RUN, SMALL], {}, {},
+                            af_config={"telemetry_docs": self.docs}, contained=self.place(),
+                            telemetry="spans")
+                    self.assertEqual(len(retained), 1)
+                    profile = self.profile_object
+                    self.assertEqual(profile.retained, retained)
+                    self.assertTrue(os.path.isdir(profile.work))
+                    self.assertTrue(os.path.isdir(profile.stage))
+                    self.assertEqual(read(os.path.join(retained[0], "reader-live-data")),
+                                     b"still reachable by the reader")
+                    readers = [argv[argv.index("telemetry") + 1] for argv in launched
+                               if "telemetry" in argv]
+                    self.assertEqual(readers, list(telemetrydiag.DOCUMENT_KINDS[:
+                        telemetrydiag.DOCUMENT_KINDS.index(kind) + 1]))
+                    self.assertEqual(launched[-1][1:3], ["telemetry", kind],
+                                     "no later reader, side or case may launch")
+                    baseline, candidate = doc["telemetry"]["captures"]
+                    for entry in (baseline, candidate):
+                        self.assertEqual(entry["omission"]["reason"], "cleanup_uncertain")
+                        self.assertIsNone(entry["evidence"])
+                        self.assertEqual(entry["spans"], 0)
+                    self.assertIn("was not started", candidate["omission"]["detail"])
+                    staged = os.path.join(profile.stage, "telemetry", TASK_RUN, "baseline",
+                                          kind + ".json")
+                    self.assertTrue(read(staged), "unadmitted reader evidence is preserved")
+                    self.assertEqual(doc["execution"]["retained_scratch"], 1)
+                    # Test-owned stand-ins have actually ended; remove only these fixtures
+                    # between subcases after verifying the product retained them untouched.
+                    for directory in ("child", "probe-bin", "supervisor", "af-bin", "scratch-fs"):
+                        shutil.rmtree(self.path(directory))
+
+    def test_successful_readers_share_the_recording_until_one_final_release(self):
+        release = diagnostics.Profile.release
+        readers = []
+        actual = diagnostics.toolrun.run
+
+        def reading(*args, **kwargs):
+            if "telemetry" in args[1]:
+                readers.append(kwargs["cwd"])
+            return actual(*args, **kwargs)
+
+        with mock.patch.object(diagnostics.toolrun, "run", reading), \
+                mock.patch.object(diagnostics.Profile, "release", autospec=True,
+                                  side_effect=release) as released:
+            doc, _ = self.run_child()
+        self.assertEqual(len(readers), 2 * len(telemetrydiag.DOCUMENT_KINDS))
+        for start in (0, len(telemetrydiag.DOCUMENT_KINDS)):
+            namespace = readers[start]
+            self.assertEqual(readers[start:start + len(telemetrydiag.DOCUMENT_KINDS)],
+                             [namespace] * len(telemetrydiag.DOCUMENT_KINDS))
+            self.assertEqual(sum(call.args[1].path == namespace for call in released.call_args_list), 1)
+            self.assertFalse(os.path.lexists(namespace))
+        self.assertEqual(doc["execution"]["retained_scratch"], 0)
 
     def test_a_partial_recording_is_never_labelled_complete(self):
         docs = loaded()

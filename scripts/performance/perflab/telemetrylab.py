@@ -55,7 +55,7 @@ import time
 from fractions import Fraction
 
 from . import budget as deadlines
-from . import bundle, contracts, host, jsonsubset, render, telemetryexec, tomlfile
+from . import admission, bundle, contracts, host, jsonsubset, render, telemetryexec, tomlfile
 from .values import (ContractError, canonical_digest, check_relative_path, format_decimal,
                      format_rational, require, sha256_bytes)
 
@@ -1214,29 +1214,81 @@ def authority_names(registry):
     return sorted(names)
 
 
-def materialize_authority(git, sha, target):
-    """Write the measurement authority of commit `sha` of the trusted repository `git` into the
-    new directory `target`, from Git objects only: every file of `authority_names`, regular
-    files only. Its `authority_digest` is then what a result measured under it names."""
-    raw = git.read_file(sha, REGISTRY_PATH)
-    require(raw is not None, "commit %s has no %s" % (sha[:12], REGISTRY_PATH))
+def read_authority(git, sha):
+    """Admit the complete bounded regular Git-object closure before creating any path."""
+    entries = git.tree_entries(sha, [REGISTRY_PATH])
+    require(len(entries) == 1 and entries[0][3] == REGISTRY_PATH
+            and entries[0][0] in ("100644", "100755") and entries[0][1] == "blob",
+            "commit %s has no regular %s" % (sha[:12], REGISTRY_PATH))
+    raw = git.blobs([entries[0][2]], bytes_max=tomlfile.MAX_TOML_BYTES)[entries[0][2]]
     registry = contracts.validate_telemetry_lab(tomlfile.loads(raw, REGISTRY_PATH))
-    os.mkdir(target, 0o700)
-    entries = git.tree_entries(sha, authority_names(registry))
+    prefixes = authority_names(registry)
+    entries = git.tree_entries(sha, prefixes)
     require(len(entries) <= AUTHORITY_FILES_MAX, "the authority holds over %d files"
             % AUTHORITY_FILES_MAX)
-    blobs = git.blobs([obj for mode, kind, obj, _ in entries if kind == "blob"],
-                     bytes_max=AUTHORITY_BYTES_MAX)
-    require(sum(len(blobs[obj]) for _, kind, obj, _ in entries if kind == "blob")
-            <= AUTHORITY_BYTES_MAX, "the authority exceeds its materialized byte bound")
+    paths = set()
     for mode, kind, obj, path in entries:
         require(kind == "blob" and mode in ("100644", "100755"),
                 "%s at %s is not a regular file" % (path, sha[:12]))
         check_relative_path(path, "an authority file")
-        full = os.path.join(target, *path.split("/"))
-        os.makedirs(os.path.dirname(full), 0o700, exist_ok=True)
+        require(path not in paths and "/__pycache__/" not in "/" + path
+                and not path.endswith((".pyc", ".pyo")), "duplicate or bytecode authority path")
+        require(any(path == prefix or path.startswith(prefix + "/") for prefix in prefixes),
+                "foreign authority path")
+        paths.add(path)
+    require(all(any(path == prefix or path.startswith(prefix + "/") for path in paths)
+                for prefix in prefixes), "the authority is missing a declared input")
+    require(all(not any(parent in paths for parent in _parents(path)) for path in paths),
+            "an authority file is also a directory")
+    blobs = git.blobs([obj for _, _, obj, _ in entries], bytes_max=AUTHORITY_BYTES_MAX)
+    require(sum(len(blobs[obj]) for _, _, obj, _ in entries) <= AUTHORITY_BYTES_MAX,
+            "the authority exceeds its materialized byte bound")
+    members = {path: blobs[obj] for _, _, obj, path in entries}
+    require(members.get(REGISTRY_PATH) == raw, "the authority registry changed")
+    return members
+
+
+def _parents(path):
+    parts = path.split("/")
+    return ("/".join(parts[:index]) for index in range(1, len(parts)))
+
+
+def read_files(root, names, limit, budget=None):
+    """Read admitted regular files through confined descriptors, bounded in aggregate."""
+    members, total = {}, 0
+    for name in sorted(names):
+        admission.check(budget, "reading retained inputs")
+        fd, info = admission.open_confined(root, name, "retained input")
+        try:
+            require(info.st_size <= limit - total, "retained inputs exceed their byte bound")
+            chunks = []
+            admission.read_bounded(fd, info.st_size, budget, name, "reading retained inputs",
+                                   sink=chunks.append)
+            members[name] = b"".join(chunks)
+            total += info.st_size
+        finally:
+            os.close(fd)
+    return members
+
+
+def _write_members(target, members, mode, parent_mode=0o777):
+    """Write already admitted bytes, retaining the original copy paths' creation modes."""
+    os.mkdir(target, mode)
+    for name, data in sorted(members.items()):
+        check_relative_path(name, "an admitted copy member")
+        full = os.path.join(target, *name.split("/"))
+        os.makedirs(os.path.dirname(full), mode=parent_mode, exist_ok=True)
         with open(full, "xb") as stream:
-            stream.write(blobs[obj])
+            stream.write(data)
+
+
+def materialize_authority(git, sha, target, kept=None):
+    members = read_authority(git, sha)
+    if kept is not None:
+        kept.reserve_trees([(target, members)])
+    # Collection reads these members first and reserves all coexisting copies together.
+    # Standalone materialization outside history retains its bounded authority contract.
+    _write_members(target, members, 0o700, 0o700)
     return target
 
 
@@ -1582,19 +1634,19 @@ class HistoryRoot(object):
                 raise
             results = os.path.join(self.root, RESULTS)
             if not os.path.lexists(results):
-                self.reserve_initial(1)
+                self.reserve_paths({}, directories=(results,))
                 os.mkdir(results, 0o755)
             require(os.path.isdir(results) and not os.path.islink(results),
                     "%s is not a directory of results" % results)
             authority_dir = os.path.join(self.root, AUTHORITIES)
             if not os.path.lexists(authority_dir):
-                self.reserve_initial(1)
+                self.reserve_paths({}, directories=(authority_dir,))
                 os.mkdir(authority_dir, 0o755)
             require(os.path.isdir(authority_dir) and not os.path.islink(authority_dir),
                     "the retained authorities directory must not be a link")
             binding_dir = os.path.join(self.root, BINDINGS)
             if not os.path.lexists(binding_dir):
-                self.reserve_initial(2)
+                self.reserve_paths({os.path.join(binding_dir, "owner"): len(BINDINGS_OWNER)})
                 os.mkdir(binding_dir, 0o700)
                 with open(os.path.join(binding_dir, "owner"), "xb") as stream:
                     stream.write(BINDINGS_OWNER)
@@ -1624,7 +1676,7 @@ class HistoryRoot(object):
     def report_staging(self):
         path = os.path.join(self.root, REPORT_STAGE)
         if not os.path.lexists(path):
-            self.reserve_initial(2)
+            self.reserve_paths({os.path.join(path, "owner"): len(REPORT_OWNER)})
             os.mkdir(path, 0o700)
             # An interrupted marker write fails closed on restart; never adopt foreign data.
             with open(os.path.join(path, "owner"), "xb") as stream:
@@ -1642,10 +1694,6 @@ class HistoryRoot(object):
             require(stat.S_ISREG(os.lstat(os.path.join(path, name)).st_mode),
                     "report staging entries must be regular, never links")
         return path
-
-    def reserve_initial(self, blocks):
-        require(self.used_bytes() + blocks * self.report_allocation(1) <= self.bytes_max,
-                "history initialization would exceed the history byte bound")
 
     def binding_path(self, result_id):
         contracts.ID.validate(result_id, "binding result ID")
@@ -1682,8 +1730,7 @@ class HistoryRoot(object):
             require(self.read_binding(result_id) == binding, "retained binding changed")
             return
         data = contracts.write_bytes(binding, "telemetry-binding")
-        require(self.used_bytes() + self.report_allocation(len(data)) <= self.bytes_max,
-                "retaining binding exceeds history capacity")
+        self.reserve_paths({path: len(data)})
         # This is unaccepted until the corresponding verified result is published. A partial
         # write is removed on entry along with every other unreferenced binding.
         with open(path, "xb") as stream:
@@ -1692,6 +1739,73 @@ class HistoryRoot(object):
     def report_allocation(self, size):
         unit = os.statvfs(self.root).f_frsize
         return ((size + unit - 1) // unit) * unit
+
+    def allocation_for(self, files, directories=(), entries=()):
+        """Additional allocated peak, including rounded files and directory name growth.
+
+        All paths belong to this locked root. A directory's small linear table fits in
+        one allocation unit; larger tables reserve four units per new name for leaf/index
+        splits, as well as their rounded name storage. Never use logical byte totals as
+        the capacity admission for copies or expanded archives.
+        """
+        require(self.fd is not None, "allocation admission needs the history lock")
+        unit = self.report_allocation(1)
+        dirs, children = set(directories), {}
+        for path in list(files) + list(dirs) + list(entries):
+            path = os.path.abspath(path)
+            require(os.path.commonpath([path, self.root]) == self.root and path != self.root,
+                    "allocation path escapes history")
+            parent = os.path.dirname(path)
+            children.setdefault(parent, set()).add(os.path.basename(path))
+            while parent != self.root:
+                require(not os.path.islink(parent), "allocation parent must not be a link")
+                if os.path.lexists(parent):
+                    require(os.path.isdir(parent), "allocation parent must be a directory")
+                    break
+                dirs.add(parent)
+                ancestor = os.path.dirname(parent)
+                children.setdefault(ancestor, set()).add(os.path.basename(parent))
+                parent = ancestor
+        total = sum(self.report_allocation(size) for size in files.values())
+        for directory in dirs | set(children):
+            exists = os.path.lexists(directory)
+            if exists:
+                require(os.path.isdir(directory) and not os.path.islink(directory),
+                        "allocation directory must not be a link")
+                names = set(os.listdir(directory))
+                allocated = os.lstat(directory).st_blocks * 512
+            else:
+                names, allocated = set(), 0
+            added = children.get(directory, set()) - names
+            name_bytes = 24 + sum(32 + len(name.encode("utf-8")) for name in names | added)
+            needed = self.report_allocation(name_bytes)
+            if exists and not allocated and needed == unit:
+                # Match used_bytes on filesystems whose small directories have no blocks.
+                needed = 0
+            elif needed > unit:
+                needed = max(2 * needed, allocated + 4 * unit * len(added) if exists else 0)
+            total += max(0, needed - allocated)
+        return total
+
+    def reserve_paths(self, files, directories=(), entries=()):
+        size = self.allocation_for(files, directories, entries)
+        require(self.used_bytes() + size <= self.bytes_max,
+                "allocation would take %s past its %d-byte bound (history byte bound)"
+                % (self.root, self.bytes_max))
+        return size
+
+    def reserve_trees(self, trees, files=None, entries=()):
+        files = dict(files or {})
+        directories = []
+        for target, members in trees:
+            require(not os.path.lexists(target), "staging tree already exists")
+            directories.append(target)
+            for name, data in members.items():
+                check_relative_path(name, "a staged input")
+                path = os.path.join(target, *name.split("/"))
+                require(path not in files, "duplicate staged input")
+                files[path] = len(data)
+        return self.reserve_paths(files, directories, entries)
 
     def cleanup_staging(self):
         # Interrupted staging is never accepted, and is swept under this lock/deadline.
@@ -1753,19 +1867,12 @@ class HistoryRoot(object):
             require(authority_digest(kept_registry, target)[0] == digest,
                     "retained authority bytes changed")
             return
-        names = authority_files(registry, root)
-        size = sum(os.lstat(os.path.join(root, name)).st_size for name in names)
-        require(self.used_bytes() + size <= self.bytes_max,
-                "retaining the measurement authority would exceed the history byte bound")
+        members = read_files(root, authority_files(registry, root), AUTHORITY_BYTES_MAX,
+                             self.budget)
         staging = os.path.join(self.root, AUTHORITIES, STAGING_PREFIX + os.urandom(6).hex())
-        os.mkdir(staging)
+        self.reserve_trees([(staging, members)], entries=(target,))
         try:
-            for name in names:
-                destination = os.path.join(staging, name)
-                os.makedirs(os.path.dirname(destination), exist_ok=True)
-                shutil.copyfile(os.path.join(root, name), destination)
-            require(self.used_bytes() <= self.bytes_max,
-                    "the staged authority exceeds the history byte bound")
+            _write_members(staging, members, 0o777)
             require(authority_digest(registry, staging)[0] == digest,
                     "authority copy does not match its identity")
             os.rename(staging, target)
@@ -1793,6 +1900,7 @@ class HistoryRoot(object):
     def remove(self, name, reason):
         """Remove kept result `name` whole: renamed away first, so a reader never sees half."""
         doomed = os.path.join(self.results, STAGING_PREFIX + "removed-" + os.urandom(6).hex())
+        self.reserve_paths({}, entries=(doomed,))
         os.rename(os.path.join(self.results, name), doomed)
         self.pruned.append({"result_id": name, "reason": reason[:4096]})
         shutil.rmtree(doomed)
@@ -1837,27 +1945,27 @@ class HistoryRoot(object):
             require(existing == identity, "%s already holds another bundle under result %s"
                     % (self.root, result["result_id"]))
             return result, False
-        self.retain_authority(result, authority_root or ROOT)
-        size = sum(os.lstat(os.path.join(source, *path.split("/"))).st_size
-                   for path in list(hashes) + [bundle.MANIFEST])
-        require(self.used_bytes() + size <= self.bytes_max,
-                "keeping result %s (%d bytes) would take %s past its %d-byte bound" % (
-                    result["result_id"], size, self.root, self.bytes_max))
         require(len(self.names()) < self.results_max, "%s already keeps its %d results" % (
             self.root, self.results_max))
+        members = read_files(source, list(hashes) + [bundle.MANIFEST],
+                             BUNDLE_BYTES_MAX + contracts.limits.MAX_JSON_BYTES,
+                             self.budget)
+        root = authority_root or ROOT
+        registry, _ = load_registry(root)
+        authority_members = read_files(root, authority_files(registry, root),
+                                       AUTHORITY_BYTES_MAX, self.budget)
         staging = os.path.join(self.results, STAGING_PREFIX + os.urandom(6).hex())
-        os.mkdir(staging, 0o755)
+        trees = [(staging, members)]
+        authority_target = self.authority_path(result)
+        if not os.path.lexists(authority_target):
+            trees.append((os.path.join(self.root, AUTHORITIES, STAGING_PREFIX + "0" * 12),
+                          authority_members))
+        # Both copies coexist with downloaded/expanded inputs and all retained evidence.
+        self.reserve_trees(trees, entries=(target, authority_target))
+        self.retain_authority(result, root)
+        self.reserve_trees([(staging, members)], entries=(target,))
         try:
-            for path in sorted(hashes) + [bundle.MANIFEST]:
-                if path == bundle.MANIFEST:
-                    with open(os.path.join(source, path), "rb") as stream:
-                        data = stream.read(contracts.limits.MAX_JSON_BYTES + 1)
-                else:
-                    data = bundle.read_member(source, path, hashes, BUNDLE_BYTES_MAX)
-                full = os.path.join(staging, *path.split("/"))
-                os.makedirs(os.path.dirname(full), exist_ok=True)
-                with open(full, "xb") as stream:
-                    stream.write(data)
+            _write_members(staging, members, 0o755)
             _, copied, _ = read_bundle(staging)
             require(copied == identity, "the copy of %s is not the verified bundle"
                     % result["result_id"])
@@ -1914,8 +2022,8 @@ class HistoryRoot(object):
             final_bytes = projected
         else:
             raise ContractError("history report accounting did not stabilize")
-        require(base_bytes + allocation <= self.bytes_max,
-                "history report staging would exceed the history byte bound")
+        self.reserve_paths({os.path.join(stage, name): len(data) for name, data in outputs},
+                           entries=tuple(os.path.join(self.root, name) for name, _ in outputs))
         # Fixed owned names bound leftovers even if writing or replacement is interrupted.
         # Both writes complete before either existing report is replaced.
         for name, data in outputs:
