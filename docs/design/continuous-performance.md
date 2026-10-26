@@ -435,6 +435,10 @@ crates. `debug_symbols = true` means attribution information is retained; it doe
 full debugger information. The explicit rustflag overrides Cargo's full-debug default for a
 symbol-enabled recipe. Ordinary verdict recipes and release product settings stay unchanged.
 
+Both region and whole-command `perf record` explicitly pass `--no-buildid-cache`, including
+the capability probe, avoiding private-HOME cache hard links while retaining build IDs in
+`perf.data`. Cleanup guards remain unchanged; a hostile link still makes cleanup uncertain.
+
 Profiling requires a probed, configured host capability. The tool does not run sudo,
 change kernel sysctls, or grant privileges. Fork PRs only use ephemeral hosted runners;
 a missing profile capability produces a clear unavailable result and reproduction
@@ -452,8 +456,17 @@ Use deterministic colors and script-free SVG in the report; inferno exposes thes
 
 Retained ELF executables use lossless XZ (preset 6, CRC64, no filename or timestamp) at
 `symbols/<original-binary-sha256>.xz`. Decompress with `xz -dc FILE.xz > BINARY` and check
-the resulting SHA-256 against the filename and capture's binary identity before use. The
-bundle manifest hashes the actual compressed file. Runtime symbolization uses the original
+the resulting SHA-256 against the filename and capture's binary identity before use.
+`af.perf-profiles/6` requires the exact archive path, compressed hash and size on each retained
+capture; referenced/missing symbols require null. Collection and report admission independently
+check the manifest's compressed integrity and bounded decompressed identity, once per shared
+archive. They reject missing, unrelated, corrupt, truncated, trailing and oversized evidence.
+Decoder memory is at most 64 MiB, total decompressed originals 4 GiB, and all archives share a
+600-second admission limit, tightened by the collection deadline. The
+[decision and limits](../adr/0224-bind-diagnostic-symbol-archives-and-avoid-perf-cache-links.md)
+and [attributed executed-build report](../performance-evidence/diagnostic-symbols-353.md)
+distinguish separate AF/probe capacity proofs from capture qualification. The bundle manifest
+hashes the actual compressed file. Runtime symbolization uses the original
 admitted build executable. Compression is chunked under the diagnostic deadline and bounded
 by the remaining evidence room; only fitting archives are written, charged at their full
 logical size. Repeated captures and identical binaries reuse one verified archive. Distinct
@@ -983,7 +996,7 @@ multiple groups. Unknown or unprepared hosts still invalidate the whole trial.
 
 Telemetry joins the laboratory beside the verdict, not inside it (ADR-0214). A diagnostic child
 may record its CLI cases at an explicitly selected telemetry level and read them back through
-the side's own `af telemetry` documents (`af.perf-profiles/5`, `af.perf-report/3`). The bench
+the side's own `af telemetry` documents (`af.perf-profiles/6`, `af.perf-report/3`). The bench
 scripts of the telemetry design's §12 run as advisory telemetry experiments on a baseline and a
 candidate binary in their own workflow (`af.perf-telemetry-lab/1`,
 `af.perf-telemetry-result/1`, `af.perf-telemetry-history/1`). §13 of that design proposed

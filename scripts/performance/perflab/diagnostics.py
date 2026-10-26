@@ -58,7 +58,7 @@ from fractions import Fraction
 
 from . import (admission, builds, bundle, clicases, contracts, counters, diagcontracts,
                flamegraph, hostlock, oracle, perfcapture, phasetrace, render, reproduce, seeds,
-               stats, supervise, telemetrydiag, toolrun, tomlfile)
+               stats, supervise, symbolarchive, telemetrydiag, toolrun, tomlfile)
 from . import budget as deadlines
 from . import limits
 from .values import (ContractError, canonical_bytes, format_decimal, format_rational,
@@ -921,7 +921,7 @@ class Profile(object):
                   "samples": None, "losses": perfcapture.unknown_losses("nothing recorded"),
                   "frames": None, "unknown_frames": None, "unknown_frame_ratio": None,
                   "symbols": {"state": "missing", "build_ids": [],
-                              "binary_build_id_present": None},
+                              "binary_build_id_present": None, "archive": None},
                   "artifacts": [], "omission": None}
         data = os.path.join(directory, "capture.data")
         # Where perf writes it: the evidence, or the stage when contained (`produced`).
@@ -1030,7 +1030,7 @@ class Profile(object):
                   "samples": None, "losses": perfcapture.unknown_losses("nothing recorded"),
                   "frames": None, "unknown_frames": None, "unknown_frame_ratio": None,
                   "symbols": {"state": "missing", "build_ids": [],
-                              "binary_build_id_present": None},
+                              "binary_build_id_present": None, "archive": None},
                   "artifacts": [], "omission": None}
         names, region, setup_ns, wall, stop = [], Fraction(0), 0, 0.0, "not_started"
         try:
@@ -1168,7 +1168,7 @@ class Profile(object):
         own = perfcapture.elf_build_id(binary)
         unique = sorted(set(ids))[:256]
         symbols = {"state": "referenced", "build_ids": unique,
-                   "binary_build_id_present": (own in unique) if own else None}
+                   "binary_build_id_present": (own in unique) if own else None, "archive": None}
         target = "symbols/" + profiled[1][7:] + ".xz"
         retained = (self.admitted(self.output, target, self.budget.bytes_limit,
                                   "retained symbols")
@@ -1177,6 +1177,8 @@ class Profile(object):
             require(self.symbol_archives.get(profiled[1]) == sha256_bytes(retained),
                     "retained symbols changed")
             symbols["state"] = "retained"
+            symbols["archive"] = {"path": target, "bytes": len(retained),
+                                  "sha256": sha256_bytes(retained)}
         else:
             archive = self.symbol_archive(binary, max(0, self.budget.room()))
             if archive is not None:
@@ -1184,6 +1186,7 @@ class Profile(object):
                 artifact = self.write(target, archive)
                 self.symbol_archives[profiled[1]] = artifact["sha256"]
                 symbols["state"] = "retained"
+                symbols["archive"] = dict(artifact, path=target)
         return symbols
 
     def symbol_archive(self, binary, limit):
@@ -1306,7 +1309,7 @@ class Profile(object):
                       "losses": perfcapture.unknown_losses("samply reports no loss records"),
                       "frames": None, "unknown_frames": None, "unknown_frame_ratio": None,
                       "symbols": {"state": "missing", "build_ids": [],
-                                  "binary_build_id_present": None},
+                                  "binary_build_id_present": None, "archive": None},
                       "artifacts": [], "omission": None}
             wall = 0.0
             stop = "duration_reached"
@@ -2213,7 +2216,13 @@ def finish(output, doc, traces, budget=None):
         # admit files a possibly live local tool can still write (local output is staging).
         return None
     limit = budget.bytes_limit if budget is not None else limits.DIAGNOSTIC_BYTES_MAX
-    return bundle.write_manifest(output, limit, skip=(WORK_DIR,))
+    identity = bundle.write_manifest(output, limit, skip=(WORK_DIR,))
+    manifest = contracts.read_file(os.path.join(output, bundle.MANIFEST), "manifest")
+    hashes = {entry["path"]: entry["sha256"] for entry in manifest["entries"]}
+    timing = (deadlines.Budget(budget.deadline, budget.clock, 0)
+              if budget is not None else None)
+    symbolarchive.admit(output, doc, hashes, budget=timing)
+    return identity
 
 
 # The command -------------------------------------------------------------------------------

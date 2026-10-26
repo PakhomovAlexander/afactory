@@ -250,7 +250,7 @@ only the run's own directory of that filesystem writable (ADR-0176). Every file 
 candidate wrote is admitted as a confined bounded regular file. A step whose files together
 outgrow the room is cancelled and refused, and the byte usage recorded is the evidence's actual
 size, with an 8-MiB administrative reserve inside the cap. It
-writes `run.json`, `profiles.json` (`af.perf-profiles/5`), `diagnostic.html`, the captures,
+writes `run.json`, `profiles.json` (`af.perf-profiles/6`), `diagnostic.html`, the captures,
 flamegraphs, traces, counters and, with `--telemetry spans|content`, each eligible CLI case's
 telemetry documents (`telemetry/<case>/<side>/`, ADR-0214), and a bundle manifest into the new
 `--output` directory. It

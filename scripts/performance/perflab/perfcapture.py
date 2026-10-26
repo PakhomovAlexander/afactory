@@ -441,20 +441,22 @@ def record_argv(perf, event, frequency, unwind, output, control, command, max_by
     """`perf record` of `command` with recording disabled until the region is enabled. With
     `max_bytes`, perf itself stops the session when its output reaches them (in KiB, the unit
     perf 6.1 requires a suffix for), so a DWARF capture cannot outgrow the profile byte cap."""
+    # Retain build IDs in perf.data without hard-linking admitted executables into HOME.
     graph = "fp" if unwind == "frame_pointer" else "dwarf,%d" % 32768
     limit = [] if max_bytes is None else ["--max-size=%dK" % max(1, max_bytes // 1024)]
-    return [perf, "record", "-e", event, "-F", str(frequency), "--call-graph", graph,
-            "--delay=-1", control.argument()] + limit + ["-o", output, "--"] + list(command)
+    return [perf, "record", "--no-buildid-cache", "-e", event, "-F", str(frequency),
+            "--call-graph", graph, "--delay=-1", control.argument()] + limit + ["-o", output, "--"] + list(command)
 
 
 def whole_argv(perf, event, frequency, unwind, output, command, max_bytes=None):
     """`perf record` of the whole `command`, recording from its start to its exit: a CLI
     process, whose region is the process itself (ADR-0176). perf exits with the command's own
     status, so its oracle judges it as if it ran alone; `max_bytes` as for `record_argv`."""
+    # Retain build IDs in perf.data without hard-linking admitted executables into HOME.
     graph = "fp" if unwind == "frame_pointer" else "dwarf,%d" % 32768
     limit = [] if max_bytes is None else ["--max-size=%dK" % max(1, max_bytes // 1024)]
-    return [perf, "record", "-e", event, "-F", str(frequency), "--call-graph", graph] + limit \
-        + ["-o", output, "--"] + list(command)
+    return [perf, "record", "--no-buildid-cache", "-e", event, "-F", str(frequency),
+            "--call-graph", graph] + limit + ["-o", output, "--"] + list(command)
 
 
 # perf's text outputs ---------------------------------------------------------------------------

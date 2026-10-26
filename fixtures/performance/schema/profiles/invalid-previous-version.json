@@ -1,5 +1,5 @@
 {
-  "schema": "af.perf-profiles/4",
+  "schema": "af.perf-profiles/5",
   "run_id": "diag_child",
   "parent_run_id": "schema_fixture_run",
   "parent_plan_digest": "sha256:de1427adef11aa8cb7886c5519b526f973597182a824a146bcc1e835a3b10358",

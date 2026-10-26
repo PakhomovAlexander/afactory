@@ -417,3 +417,5 @@ future readers need.
   publication](0222-fence-filesystem-cleanup-and-bound-telemetry-admission-through-publication.md)
 - [0223 — Retain telemetry work authority before setup and register lock
   ownership](0223-retain-telemetry-work-authority-before-setup-and-register-lock-ownership.md)
+- [0224 — Bind diagnostic symbol archives and avoid perf cache
+  links](0224-bind-diagnostic-symbol-archives-and-avoid-perf-cache-links.md)

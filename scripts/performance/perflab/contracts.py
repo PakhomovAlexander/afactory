@@ -1177,7 +1177,7 @@ def validate_verdict(doc, where="verdict.json"):
     return doc
 
 
-# af.perf-profiles/5 (ADR-0214), af.perf-trace/1 and af.perf-diagnostics/1 (ADR-0174) -----
+# af.perf-profiles/6 (ADR-0224), af.perf-trace/1 and af.perf-diagnostics/1 (ADR-0174) -----
 
 PROFILES_SCHEMA = diagcontracts.PROFILES_SCHEMA
 PROFILES = diagcontracts.PROFILES
