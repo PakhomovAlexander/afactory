@@ -214,3 +214,31 @@ jobs:
         env:
           PYTHONDONTWRITEBYTECODE: '1'
         run: python -I -B scripts/performance/tests/telemetry_measurement_smoke.py
+
+  telemetry-runtime-smoke:
+    runs-on: ubuntu-latest
+    timeout-minutes: 95
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
+        with:
+          python-version: '3.x'
+          check-latest: true
+      - name: Pull the pinned GNU image for real AF setup coverage
+        timeout-minutes: 4
+        run: docker pull --quiet ghcr.io/pakhomovalexander/afactory-perf-gnu@sha256:26b0c708b9cdffdeb4731da33161f148b419af3c9e656ae9dc51d318215ae8b2
+      - name: Build actual release AF through the contained offline compiler
+        timeout-minutes: 81
+        run: |
+          python -I -B scripts/performance/cli.py telemetry-contained-build \
+            --source "$GITHUB_WORKSPACE" --source-sha "$GITHUB_SHA" \
+            --output "$RUNNER_TEMP/telemetry-runtime-build" \
+            --scratch-fs "$RUNNER_TEMP/telemetry-runtime-build-scratch" \
+            --image ghcr.io/pakhomovalexander/afactory-perf-gnu@sha256:26b0c708b9cdffdeb4731da33161f148b419af3c9e656ae9dc51d318215ae8b2
+      - name: Exercise real AF admission and all three contained telemetry paths
+        timeout-minutes: 9
+        run: |
+          python -I -B scripts/performance/tests/telemetry_runtime_smoke.py \
+            --af "$RUNNER_TEMP/telemetry-runtime-build/af" --work-parent "$RUNNER_TEMP"

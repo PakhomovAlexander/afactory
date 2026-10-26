@@ -1468,7 +1468,7 @@ class CliRegistry(TempDir):
             clicases.package_version(b'version = 4\n')
         doc = clicases.load(os.path.join(ROOT, "fixtures/performance/cli.toml"))
         self.assertEqual(clicases.choose_adapter(doc, VERSION)[0], "af_cli_v1")
-        self.assertEqual(clicases.choose_adapter(doc, "0.13.0")[0], "af_cli_v1")
+        self.assertEqual(clicases.choose_adapter(doc, "0.13.0")[0], "af_cli_v2")
         self.assertIsNone(clicases.choose_adapter(doc, "0.12.0-rc.2")[0])
         self.assertIsNone(clicases.choose_adapter(doc, "0.11.9")[0])
         repo, base, head = authority_repo(self.path("checkout"))
@@ -1522,6 +1522,41 @@ class CliOracle(TempDir):
         passed, detail, _ = self.judge("task_help", help_text, returncode=2)
         self.assertFalse(passed)
         self.assertIn("exited 2, not 0", detail)
+
+    def test_versioned_top_level_help_requires_its_heading_usage_and_commands(self):
+        doc = clicases.load(os.path.join(ROOT, "fixtures/performance/cli.toml"))
+        for version, adapter_id, heading in (
+                ("0.12.0-rc.3", "af_cli_v1", "Commands:"),
+                ("0.12.0-rc.5", "af_cli_v1", "Commands:"),
+                ("0.13.0-rc.1", "af_cli_v2", "Commands, in the order a first run needs them:"),
+                ("0.13.0-rc.2", "af_cli_v2", "Commands, in the order a first run needs them:"),
+                ("0.13.0", "af_cli_v2", "Commands, in the order a first run needs them:")):
+            with self.subTest(version=version):
+                chosen, adapter = clicases.choose_adapter(doc, version)
+                self.assertEqual(chosen, adapter_id)
+                entry = clicases.command(adapter, "cli_discovery", {"command": "help"})
+                text = ("Usage: af [OPTIONS] [COMMAND]\n\n" + heading +
+                        "\n  review  Review\n  task  Task\n\nOptions:\n  --version  Version\n").encode()
+                values = dict(self.values, package_version=version)
+
+                def judge(output, code=0):
+                    return clicases.judge(entry, values, code, output, 0, [], None)[0]
+
+                self.assertTrue(judge(text))
+                for missing in (b"Usage: af [OPTIONS] [COMMAND]", b"  review ",
+                                b"  task ", b"--version"):
+                    self.assertFalse(judge(text.replace(missing, b"broken")), missing)
+                for malformed in ("", "Commands", "Commandz:", "Unexpected " + heading,
+                                  heading + " unexpected", "Commands:" if adapter_id == "af_cli_v2"
+                                  else "Commands, in the order a first run needs them:"):
+                    self.assertFalse(judge(text.replace(heading.encode(), malformed.encode())),
+                                     malformed)
+                self.assertFalse(judge(text, 2))
+                version_entry = clicases.command(adapter, "cli_discovery", {"command": "version"})
+                self.assertTrue(clicases.judge(version_entry, values, 0,
+                    ("af " + version + "\n").encode(), 0, [], None)[0])
+                self.assertFalse(clicases.judge(version_entry, values, 0,
+                    b"af 0.0.0\n", 0, [], None)[0])
 
     def test_task_outcomes_need_the_expected_state_and_the_executed_check(self):
         run = {"task_id": "perf-check-true", "phase": {"kind": "finished"},
