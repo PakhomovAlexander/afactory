@@ -36,7 +36,7 @@ from fractions import Fraction
 import os
 
 from . import (bundle, compare, contracts, diagnostics, limits, phasetrace, render,
-               reproduce, schedule, svgsafe, telemetrydiag)
+               reproduce, schedule, svgsafe, symbolarchive, telemetrydiag)
 from .values import ContractError, document_bytes, require, sha256_bytes
 
 REPORT_HTML = "report.html"
@@ -342,6 +342,7 @@ def admit_child(source, plan):
         require(artifact["path"] in hashes and hashes[artifact["path"]] == artifact["sha256"],
                 "%s: %s is not the verified member its profiles name" % (label,
                                                                        artifact["path"]))
+    symbolarchive.admit(source, doc, hashes)
     _admit_views(source, label, doc, hashes)
     return Child(source, doc, child_plan, identity, hashes, sha256_bytes(data))
 

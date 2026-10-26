@@ -250,14 +250,13 @@ class Parity(unittest.TestCase):
         changed = ("run", "builds", "verdict", "sample", "shard", "supervisor-request",
                    "supervisor-result", "probe-request", "golden", "cohort",
                    "calibration-parameters", "readiness", "activation-verification", "cost",
-                   "shipping")
+                   "shipping", "profiles")
         self.assertEqual([contracts.schema_version(name) for name in changed],
-                         [6, 6, 2, 2, 4, 4, 5, 2, 2, 4, 2, 6, 3, 3, 3])
+                         [6, 6, 2, 2, 4, 4, 5, 2, 2, 4, 2, 6, 3, 3, 3, 6])
         self.assertEqual(contracts.schema_version("activation"), 3)
-        # profiles/5 adds the explicitly selected telemetry level and its captures, and report/3
-        # each case's telemetry state (ADR-0214); nothing reads profiles/4 or report/2.
+        # profiles/6 binds retained archives (ADR-0224); report/3 keeps telemetry (ADR-0214).
         self.assertEqual((contracts.schema_version("profiles"), contracts.schema_version("report")),
-                         (5, 3))
+                         (6, 3))
         self.assertEqual((contracts.schema_version("cli"), contracts.schema_version("suite")),
                          (5, 3))
         valid = dict((entry["contract"], entry) for entry in self.index if entry["valid"]
@@ -275,7 +274,7 @@ class Parity(unittest.TestCase):
         self.assertFalse(any(name.startswith("performance-")
                              and name.endswith(("run-v1.json", "run-v2.json", "run-v3.json",
                                                 "run-v4.json", "run-v5.json", "readiness-v4.json",
-                                                "profiles-v4.json", "report-v2.json",
+                                                "profiles-v4.json", "profiles-v5.json", "report-v2.json",
                                                 "activation-v2.json",
                                                 "activation-verification-v1.json", "cost-v1.json",
                                                 "shipping-v1.json", "cohort-v1.json",

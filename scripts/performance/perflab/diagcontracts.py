@@ -3,15 +3,17 @@
 - `af.perf-diagnostics/1`: the reviewed diagnostic registry `fixtures/performance/diagnostics.toml`
   (selection and capture defaults, diagnostic recipes derived from verdict recipes, the pinned
   tools and their provisioning instructions, the trace overhead target and resource caps).
-- `af.perf-profiles/5`: one child run's evidence, `profiles.json`: its identity and link to the
+- `af.perf-profiles/6`: one child run's evidence, `profiles.json`: its identity and link to the
   parent comparison, what it selected and why, its budgets and the actual usage of them (never
   clamped), its explicit execution mode, containment and supervisor (with the container, image,
   CPUs and verified scratch bound of a contained run), every tool identity or why it is
   unavailable, every capture of a probe region or a CLI process with its decoded loss records,
   rendered graph, trace with the coverage of its region, and counter with its artifacts, and
-  every omission with its reason and reproduction. Version 5 adds the explicitly selected
+  every omission with its reason and reproduction. Version 5 added the explicitly selected
   telemetry level and each telemetry capture of a CLI case, derived from the side's own
-  `af telemetry` documents (ADR-0214). Versions 1 to 4 are refused.
+  `af telemetry` documents (ADR-0214). Version 6 binds retained XZ archives to captures and
+  their binary identity (ADR-0224).
+  Versions 1 to 5 are refused.
 - `af.perf-trace/1`: the metadata-only phase spans a `perf-trace` build exports
   (`review_core::perf_trace`).
 
@@ -161,13 +163,20 @@ def frozen_identity(diagnostics_doc, recipe_id):
 
 def diagnostic_recipe(suite_doc, diagnostics_doc, recipe_id):
     """The suite-shaped recipe a diagnostic plan freezes: its base verdict recipe with only the
-    diagnostic recipe's features, symbols, frame pointers and the instrumented flag changed."""
+    diagnostic recipe's features, symbols, frame pointers and the instrumented flag changed.
+    GNU CPU profiles freeze line-tables-only debug information in the existing
+    rustflags field: function/line attribution and unwind information without local-variable
+    and type information. These are diagnostic build settings, never verdict settings."""
     entry = diagnostics_doc["recipes"].get(recipe_id)
     require(entry is not None, "diagnostic recipe %s is not declared" % recipe_id)
     base = dict(suite_doc["recipes"][entry["base_recipe"]])
     base.update({"description": entry["description"], "features": list(entry["features"]),
                  "debug_symbols": entry["debug_symbols"],
                  "frame_pointers": entry["frame_pointers"], "instrumented": True})
+    if entry["kind"] == "cpu_profile" and base["os"] == "linux" \
+            and base["linker"] == "system_cc":
+        base["rustflags"] = list(base["rustflags"]) + [
+            "-Cdebuginfo=line-tables-only"]
     return base
 
 
@@ -221,9 +230,9 @@ def validate_trace(doc, where="trace.json"):
     return doc
 
 
-# af.perf-profiles/5 ------------------------------------------------------------------------
+# af.perf-profiles/6 ------------------------------------------------------------------------
 
-PROFILES_SCHEMA = "af.perf-profiles/5"
+PROFILES_SCHEMA = "af.perf-profiles/6"
 # What a capture or trace observes: the native probe's acknowledged region, or a whole AF CLI
 # process judged by its command's oracle (ADR-0176).
 SUBJECTS = ("probe_region", "cli_process")
@@ -304,7 +313,8 @@ CAPTURE = Obj(
     Field("symbols", Obj(Field("state", Str(enum=("retained", "referenced", "missing"))),
                          Field("build_ids", Arr(Str(pattern=r"^[0-9a-f]{16,64}$", max_len=64),
                                                 0, 256)),
-                         Field("binary_build_id_present", Nullable(Bool())))),
+                         Field("binary_build_id_present", Nullable(Bool())),
+                         Field("archive", Nullable(ARTIFACT)))),
     Field("artifacts", Arr(ARTIFACT, 0, 64)),
     Field("omission", Nullable(OMISSION)),
 )
@@ -567,6 +577,7 @@ def validate_profiles(doc, where="profiles.json"):
                 or tool["declared_version"] is not None,
                 at + ": a declared-pin version names its pin")
     paths = []
+    archives = {}
     seen = {}
     for index, capture in enumerate(doc["captures"]):
         at = "%s.captures[%d]" % (where, index)
@@ -581,6 +592,17 @@ def validate_profiles(doc, where="profiles.json"):
         else:
             require(capture["tool"] == "samply" or capture["unwind"] == "frame_pointer",
                     at + ": a first perf capture unwinds with frame pointers")
+        symbols = capture["symbols"]
+        archive = symbols["archive"]
+        require((symbols["state"] == "retained") == (archive is not None),
+                at + ".symbols: exactly retained symbols name an archive")
+        if archive is not None:
+            binary = capture["binary_sha256"]
+            require(binary is not None and archive["path"] == "symbols/" + binary[7:] + ".xz",
+                    at + ".symbols.archive: the content-addressed binary archive")
+            require(archive["bytes"] > 0, at + ".symbols.archive: a nonempty XZ stream")
+            previous = archives.setdefault(archive["path"], archive)
+            require(previous == archive, at + ".symbols.archive: shared evidence agrees")
         region = capture["region"]
         bracketed = capture["tool"] == "perf" and capture["subject"] == "probe_region"
         require((region["mechanism"] == "acknowledged_handshake") == bracketed,
@@ -680,6 +702,7 @@ def validate_profiles(doc, where="profiles.json"):
                 at + ": callgrind counts instructions, dhat allocations")
         paths.extend(item["path"] for item in counter["artifacts"])
     paths.extend(_validate_telemetry(doc, selected, where))
+    paths.extend(archives)
     require(len(paths) == len(set(paths)), where + ": every artifact path once")
     return doc
 

@@ -190,6 +190,15 @@ if args[0] == "record":
     output = option("-o")
     controls = [item for item in args if item.startswith("--control=fifo:")]
     command = args[args.index("--") + 1:]
+    assert "--no-buildid" not in args and "-B" not in args, "build IDs must be retained"
+    with open(os.path.join(here, "record-argv.jsonl"), "a") as stream:
+        stream.write(json.dumps(args) + "\n")
+    if config.get("cache_links") and ("--no-buildid-cache" not in args
+                                      or config.get("hostile_cache_link")):
+        # perf's automatic cache hard-links an admitted executable outside its private HOME.
+        cache = os.path.join(os.environ["HOME"], ".debug", ".build-id", "ab")
+        os.makedirs(cache, exist_ok=True)
+        os.link(os.path.realpath(command[0]), os.path.join(cache, "cached-elf"))
     sizes = [item for item in args if item.startswith("--max-size=")]
     assert all(item.endswith("K") for item in sizes), sizes
     if controls:

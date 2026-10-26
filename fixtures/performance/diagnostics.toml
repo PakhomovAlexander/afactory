@@ -63,7 +63,7 @@ tool_seconds = 120
 # Diagnostic recipes: a verdict recipe of the suite with only what diagnosis needs added. ------
 
 [recipes.linux_gnu_cpu_profile]
-description = "Linux GNU release build with debug symbols and frame pointers, and the probe's region handshake."
+description = "Linux GNU release build with function/line debug tables (debuginfo=line-tables-only), frame pointers and the probe's region handshake."
 kind = "cpu_profile"
 base_recipe = "linux_gnu_native_release"
 features = ["perf-control"]

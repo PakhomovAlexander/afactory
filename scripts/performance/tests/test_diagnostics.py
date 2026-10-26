@@ -10,8 +10,10 @@ the real supervisor's bounds over diagnostic tools are exercised by
 `crates/review-process/tests/diagnostic_tools.rs`.
 """
 import struct
+import lzma
 import json
 import os
+import random
 import shutil
 import subprocess
 import sys
@@ -69,6 +71,18 @@ class Registry(unittest.TestCase):
         self.assertTrue(recipe["instrumented"] and recipe["frame_pointers"]
                         and recipe["debug_symbols"])
         self.assertEqual(recipe["features"], ["perf-control"])
+        self.assertEqual(recipe["rustflags"], base["rustflags"] + [
+            "-Cdebuginfo=line-tables-only"])
+        self.assertEqual(base["rustflags"], [])
+        # Derivation must not mutate the base's list, including on a second planning pass.
+        self.assertEqual(diagcontracts.diagnostic_recipe(
+            loaded.doc, registry, "linux_gnu_cpu_profile"), recipe)
+        for recipe_id in registry["recipes"]:
+            if recipe_id == "linux_gnu_cpu_profile":
+                continue
+            other = diagcontracts.diagnostic_recipe(loaded.doc, registry, recipe_id)
+            self.assertEqual(other["rustflags"], loaded.doc["recipes"][
+                registry["recipes"][recipe_id]["base_recipe"]]["rustflags"])
         # The verdict recipe itself is untouched: uninstrumented, no symbols, no frame pointers.
         self.assertFalse(base["instrumented"] or base["frame_pointers"] or base["debug_symbols"])
         inferno = registry["tools"]["inferno_flamegraph"]
@@ -255,6 +269,104 @@ class Evidence(TempDir):
         with open(sparse, "wb") as stream:
             stream.truncate(1 << 20)
         self.assertEqual(budget.record(1)["bytes"]["evidence_used"], 3000 + (1 << 20))
+
+
+class Symbols(TempDir):
+    def profile(self):
+        profile = Evidence.profile(self)
+        profile.retained = []
+        profile.symbol_archives = {}
+        return profile
+
+    LIMITS = Evidence.LIMITS
+
+    def noise(self, size, seed):
+        source = random.Random(seed)
+        return bytes(source.getrandbits(8) for _ in range(size))
+
+    def executable(self, name, data):
+        path = self.path(name)
+        with open(path, "wb") as stream:
+            stream.write(data)
+        return path, sha256_bytes(data)
+
+    def test_shared_symbols_pay_once_even_when_another_copy_would_not_fit(self):
+        profile = self.profile()
+        binary = self.executable("probe", self.noise(1400, 1))
+        symbols = profile.symbols(binary, ["abcd"])
+        self.assertEqual(symbols["state"], "retained")
+        self.assertEqual(symbols["build_ids"], ["abcd"])
+        self.assertEqual(symbols["archive"], profile.artifacts("symbols")[0])
+        self.assertLess(profile.budget.room(), os.stat(binary[0]).st_size)
+        before = profile.budget.used_bytes()
+        self.assertEqual(profile.symbols(binary, ["abcd"])["state"], "retained")
+        self.assertEqual(profile.budget.used_bytes(), before)
+        archive = read(self.path("run", "symbols", binary[1][7:] + ".xz"))
+        self.assertEqual(lzma.decompress(archive), read(binary[0]))
+        self.assertEqual(profile.artifacts("symbols"), [{
+            "path": "symbols/" + binary[1][7:] + ".xz", "bytes": len(archive),
+            "sha256": sha256_bytes(archive)}])
+        self.assertEqual(before, len(archive))
+
+    def test_distinct_symbols_pay_separately_and_an_oversize_binary_stays_referenced(self):
+        profile = self.profile()
+        sizes = []
+        for name, data in (("baseline", self.noise(700, 1)),
+                           ("candidate", self.noise(800, 2))):
+            binary = self.executable(name, data)
+            self.assertEqual(profile.symbols(binary, [])["state"], "retained")
+            archive = read(self.path("run", "symbols", binary[1][7:] + ".xz"))
+            self.assertEqual(sha256_bytes(lzma.decompress(archive)), binary[1])
+            sizes.append(len(archive))
+        self.assertEqual(profile.budget.used_bytes(), sum(sizes))
+        large = self.executable("large", self.noise(1000, 3))
+        self.assertEqual(profile.symbols(large, [])["state"], "referenced")
+        self.assertEqual(profile.budget.used_bytes(), sum(sizes))
+        self.assertFalse(os.path.exists(self.path("run", "symbols", large[1][7:] + ".xz")))
+        usage = profile.budget.record(0)["bytes"]
+        self.assertEqual((usage["evidence_used"], usage["evidence_overage"]), (sum(sizes), 0))
+
+    def test_lossless_archives_fit_by_their_logical_size_and_have_no_timestamp(self):
+        profile = self.profile()
+        binary = self.executable("probe", b"symbols" * 10000)
+        self.assertGreater(os.stat(binary[0]).st_size, profile.budget.evidence_limit)
+        self.assertEqual(profile.symbols(binary, [])["state"], "retained")
+        archive = read(self.path("run", "symbols", binary[1][7:] + ".xz"))
+        self.assertTrue(archive.startswith(b"\xfd7zXZ\x00"))  # XZ has no timestamp or filename
+        self.assertEqual(lzma.decompress(archive), read(binary[0]))
+        self.assertEqual(profile.budget.used_bytes(), len(archive))
+        self.assertEqual(profile.symbol_archive(read(binary[0]), len(archive)), archive)
+        self.assertIsNone(profile.symbol_archive(read(binary[0]), len(archive) - 1))
+
+    def test_compression_keeps_the_absolute_deadline(self):
+        profile = self.profile()
+        now = [0]
+        def clock():
+            now[0] += 1
+            return now[0]
+        profile.clock = clock
+        profile.budget.deadline = 2
+        with self.assertRaisesRegex(ContractError, "deadline"):
+            profile.symbol_archive(b"symbols" * 10000, 2048)
+        self.assertEqual(profile.budget.used_bytes(), 0)
+
+    def test_symbol_bytes_must_match_the_profiled_hash_and_retained_files_are_admitted(self):
+        profile = self.profile()
+        binary = self.executable("probe", b"original symbols")
+        wrong = (binary[0], sha256_bytes(b"other bytes"))
+        with self.assertRaisesRegex(ContractError, "profiled executable hash changed"):
+            profile.symbols(wrong, [])
+        self.assertEqual(profile.budget.used_bytes(), 0)
+        profile.symbols(binary, [])
+        target = self.path("run", "symbols", binary[1][7:] + ".xz")
+        with open(target, "wb") as stream:
+            stream.write(b"changed symbols!")
+        with self.assertRaisesRegex(ContractError, "retained symbols changed"):
+            profile.symbols(binary, [])
+        os.unlink(target)
+        os.symlink(binary[0], target)
+        with self.assertRaisesRegex(ContractError, "symlink"):
+            profile.symbols(binary, [])
 
 
 class AggregateRoom(TempDir):
@@ -1117,7 +1229,7 @@ class ChildRunBase(TempDir):
 
     def profile(self, recipe, cases, tools, probe_config, parent_probes=None, duration_ms=300,
                 registry=None, af_config=None, parent_af_config=None, contained=None,
-                prior_bytes=0, work_removed=True, run_id="child_run", telemetry=None):
+                prior_bytes=0, work_removed=True, run_id="child_run", telemetry=None, distinct_candidate=False):
         plan = self.child(recipe, cases, duration_ms, run_id)
         output = self.path("child")
         os.makedirs(output)
@@ -1137,6 +1249,11 @@ class ChildRunBase(TempDir):
         selection, chosen = diagnostics.select(self.parent, explicit=cases)
         probe = fakes.probe(self.path("probe-bin"), self.golden, **probe_config)
         probes = dict((side, (probe, sha256_bytes(read(probe)))) for side in diagcontracts.SIDES)
+        if distinct_candidate:
+            candidate = fakes.probe(self.path("candidate-probe"), self.golden, **probe_config)
+            with open(candidate, "ab") as stream:
+                stream.write(b"\n# distinct candidate executable\n")
+            probes["candidate"] = (candidate, sha256_bytes(read(candidate)))
         boss = supervisor(self.path("supervisor"))
         found = diagnostics.probe_tools(registry, tools, "linux",
                                         registry["recipes"][recipe]["tools"], boss,
@@ -2194,3 +2311,92 @@ class Command(TempDir):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class PerfCache(ChildRunBase):
+    """The recorder fixture models perf's build-ID cache through real namespace cleanup."""
+
+    def capture(self, whole=False, legacy=False, hostile=False):
+        perf = fakes.perf(self.path("perf"), phase_file=self.path("probe-bin", "phase"),
+                          cache_links=True, hostile_cache_link=hostile)
+        tools = diagnostics.configured_tools(perf=perf, inferno_bin=fakes.inferno(
+            self.path("inferno")))
+        name = "whole_argv" if whole else "record_argv"
+        actual = getattr(perfcapture, name)
+        def argv(*args, **kwargs):
+            values = actual(*args, **kwargs)
+            return [value for value in values if value != "--no-buildid-cache"]
+        self.cleanup_details = []
+        original_release = diagnostics.Profile.release
+        def release(profile, *args, **kwargs):
+            try:
+                return original_release(profile, *args, **kwargs)
+            except perfcapture.CaptureError as error:
+                self.cleanup_details.append(error.detail)
+                raise
+        with mock.patch.object(perfcapture, name, argv if legacy else actual), \
+                mock.patch.object(diagnostics.Profile, "release", release):
+            doc, output = self.profile("linux_gnu_cpu_profile",
+                [DISCOVERY] if whole else [SMALL], tools, {},
+                af_config={} if whole else None, work_removed=not (legacy or hostile))
+        return doc, output
+
+    def test_probe_recording_keeps_ids_and_cleans_without_a_cache(self):
+        self.check_clean(False)
+
+    def test_whole_command_recording_keeps_ids_and_cleans_without_a_cache(self):
+        self.check_clean(True)
+
+    def check_clean(self, whole):
+        doc, output = self.capture(whole=whole)
+        self.assertEqual(doc["execution"]["retained_scratch"], 0)
+        self.assertTrue(os.path.isfile(os.path.join(output, "manifest.json")))
+        for capture in doc["captures"]:
+            self.assertIsNone(capture["omission"], capture)
+            self.assertTrue(capture["symbols"]["build_ids"])
+        for line in read(self.path("perf", "record-argv.jsonl")).splitlines():
+            argv = json.loads(line)
+            self.assertIn("--no-buildid-cache", argv)
+            self.assertNotIn("--no-buildid", argv)
+            self.assertEqual(argv[argv.index("-e") + 1], self.registry["capture"]["event"])
+        self.assertEqual(len(doc["renders"]), 4)
+
+    def test_probe_without_flag_reproduces_hard_link_cleanup_uncertainty(self):
+        self.check_refused(False, True, False)
+
+    def test_whole_command_without_flag_reproduces_hard_link_cleanup_uncertainty(self):
+        self.check_refused(True, True, False)
+
+    def test_a_hostile_recorder_hard_link_is_still_refused_with_the_flag(self):
+        self.check_refused(False, False, True)
+
+    def check_refused(self, whole, legacy, hostile):
+        doc, output = self.capture(whole, legacy, hostile)
+        self.assertEqual(doc["execution"]["retained_scratch"], 1)
+        self.assertFalse(os.path.exists(os.path.join(output, "manifest.json")))
+        self.assertTrue(all(item["omission"]["reason"] == "cleanup_uncertain"
+                            for item in doc["captures"]))
+        self.assertTrue(any("still has a link" in detail for detail in self.cleanup_details),
+                        self.cleanup_details)
+        self.assertIn("was not started", doc["captures"][1]["omission"]["detail"])
+        self.assertEqual(doc["renders"], [])
+        self.assertEqual(len(read(self.path("perf", "record-argv.jsonl")).splitlines()), 1)
+        # The external admitted executable remains intact. Only this test's scratch exists.
+        profiled = self.profile_object.afs if whole else self.profile_object.probes
+        path, digest = profiled["baseline"]
+        self.assertEqual(sha256_bytes(read(path)), digest)
+        self.assertTrue(os.path.isdir(self.profile_object.retained[0]))
+
+    def test_capability_probe_uses_the_same_cache_free_recording(self):
+        boss = supervisor(self.path("supervisor"))
+        perf = fakes.perf(self.path("perf"), cache_links=True)
+        os.mkdir(self.path("work"))
+        home = self.path("home")
+        os.mkdir(home)
+        result = perfcapture.probe_capability(boss, perf, "task-clock:u", 997,
+            self.path("work"), {"PATH": "/usr/bin:/bin", "HOME": home}, 20)
+        self.assertTrue(result[0], result)
+        self.assertFalse(os.path.exists(os.path.join(home, ".debug")))
+        argv = json.loads(read(self.path("perf", "record-argv.jsonl")))
+        self.assertIn("--no-buildid-cache", argv)
+        self.assertNotIn("--no-buildid", argv)

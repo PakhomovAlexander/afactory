@@ -1148,7 +1148,7 @@
       "path": "profiles/invalid-previous-version.json",
       "contract": "profiles",
       "valid": false,
-      "error": "expected af.perf-profiles/5",
+      "error": "expected af.perf-profiles/6",
       "shape": true
     },
     {
@@ -1242,6 +1242,34 @@
       "path": "profiles/valid-trace-overhead-and-counters.json",
       "contract": "profiles",
       "valid": true
+    },
+    {
+      "path": "profiles/invalid-referenced-with-archive.json",
+      "contract": "profiles",
+      "valid": false,
+      "error": "exactly retained",
+      "shape": false
+    },
+    {
+      "path": "profiles/invalid-retained-without-archive.json",
+      "contract": "profiles",
+      "valid": false,
+      "error": "exactly retained",
+      "shape": false
+    },
+    {
+      "path": "profiles/invalid-shared-symbol-disagreement.json",
+      "contract": "profiles",
+      "valid": false,
+      "error": "shared evidence agrees",
+      "shape": false
+    },
+    {
+      "path": "profiles/invalid-unrelated-symbol-path.json",
+      "contract": "profiles",
+      "valid": false,
+      "error": "content-addressed",
+      "shape": false
     },
     {
       "path": "readiness/invalid-author-tallies.json",
