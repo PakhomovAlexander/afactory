@@ -172,9 +172,10 @@ the guide.
   result, an independent evaluator approves an exact Snapshot, and `af task deliver`, once you
   confirm the Task ID, creates a new branch and worktree for it.
   `af catalog init --profile software --destination DIR` writes a runnable starter.
-- **Gates and Provider admission.** A Gate runs in a disposable copy of the Snapshot, and a Gate
-  with no required checks does not pass. Every model Worker needs a named Provider from the
-  machine-local registry, admitted by a short, charged preflight before anything is dispatched.
+- **Gates and Provider admission.** A Gate runs in a disposable copy of the Snapshot (a Task's
+  Remote Check runs in your CI instead), and a Gate with no required checks does not pass.
+  Every model Worker needs a named Provider from the machine-local registry, admitted by a
+  short, charged preflight before anything is dispatched.
 - **Routing by changed paths.** `.af/af.toml` can send a docs-only change to a cheaper pipeline
   and an oversized diff to one that splits it; the choice is token-free and pinned for the
   Campaign's later Rounds.
@@ -230,9 +231,10 @@ Rules for a coding agent, or a script, that drives af for someone:
 - **Follow `next_action`, with care.** The documents that describe a Task's state
   (`af task show`, `status`, `wait`, `findings` and the others `af help json` lists) carry
   `state.outcome` and `state.next_action`, the command to run next with the `--repo`, `--state`
-  or `--workspace` you passed. `next_action` is null when there is none, a `TASK_FILE` in it is
-  yours to fill in (with a new `task_id` once the Task ran), and a `--login` step belongs to the
-  human. `diff` and `materialize` print no state: run `af task status` after them.
+  or `--workspace` you passed (a `report`, written for a pull request, leaves them out).
+  `next_action` is null when there is none, a `TASK_FILE` in it is yours to fill in (with a new
+  `task_id` once the Task ran), and a `--login` step belongs to the human. `diff` and
+  `materialize` print no state: run `af task status` after them.
 - **Never log in for a human.** `af provider setup --login` runs only at an interactive
   terminal, because the OAuth URL and code it prints are credentials in transit; without one it
   exits 3 with the command for the human to run
@@ -251,7 +253,7 @@ Working on af itself? Read [`AGENTS.md`](AGENTS.md).
 ## Requirements
 
 `af doctor` checks these on the machine and in the repository it runs in, including the usual
-tools a Gate calls; it does not run the Gate.
+tools a Gate calls, but not `gh` or its login for a Remote Check; it does not run the Gate.
 
 - macOS on Apple silicon, or Linux on x86_64 or arm64; on an Intel Mac, build from source.
 - Git 2.30 or later, `curl` and `minisign` for the installer, which refuses without `minisign`
@@ -259,8 +261,8 @@ tools a Gate calls; it does not run the Gate.
   downloads from a release repository that is not public.
 - The `claude` and/or `codex` CLI for model Workers; command Workers need neither.
   `af provider status` shows what each registered login can do.
-- Whatever your Gate runs, installed on this machine: the Gate runs here, so a missing tool
-  fails the first paid run at the Gate.
+- Whatever your Gate's local checks run, installed on this machine: they run here, so a missing
+  tool fails the first paid run at the Gate. A Remote Check needs its tools on the CI runner.
 - On macOS, Spotlight kept out of af's build and sandbox roots, which `af doctor` checks;
   [docs/README.md](docs/README.md#macos-spotlight-and-gatekeeper) says how.
 - Optional: Docker or another OCI container runtime for `container` Gates. An unusable runtime is
@@ -303,8 +305,8 @@ Configuration merges, lowest to highest: built-in defaults, `/etc/af`, `~/.confi
 ## Development
 
 af is built with af: changes to this repository are made and verified by af Tasks, and every
-pull request apart from dependency bumps and releases carries their `af task report`
-([ADR-0142](docs/adr/0142-carry-the-af-task-report-in-every-pull-request.md)).
+pull request apart from Dependabot's and the release pull requests carries their
+`af task report` ([ADR-0142](docs/adr/0142-carry-the-af-task-report-in-every-pull-request.md)).
 
 ```sh
 make prereqs                         # what make check needs, with the command for each missing tool
