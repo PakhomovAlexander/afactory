@@ -1,4 +1,4 @@
-# ADR-0215: Give the guarded improvement fixture a controlled timing margin
+# ADR-0228: Give the guarded improvement fixture a controlled timing margin
 
 **Status:** proposed (2026-10-26).
 

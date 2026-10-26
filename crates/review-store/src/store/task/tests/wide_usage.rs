@@ -70,6 +70,10 @@ fn append(
 
 #[test]
 fn settled_and_cumulative_attempt_usage_reopen_exactly_including_crash_recovery() {
+    test_clock::with_time(1_000_000, check_wide_usage_at_controlled_time);
+}
+
+fn check_wide_usage_at_controlled_time(clock: &std::cell::Cell<u64>) {
     for recover in [false, true] {
         let mut f = fixture_with_sibling();
         let actual = u128::from(u64::MAX) + 7;
@@ -111,6 +115,7 @@ fn settled_and_cumulative_attempt_usage_reopen_exactly_including_crash_recovery(
                 &f.authority,
             )
             .unwrap();
+        clock.set(first.reservation().deadline_unix_ms - 1);
         f.store
             .start_task_attempt(&f.cas, &lease, &first, &f.authority)
             .unwrap();
@@ -177,6 +182,7 @@ fn settled_and_cumulative_attempt_usage_reopen_exactly_including_crash_recovery(
                 &f.authority,
             )
             .unwrap();
+        clock.set(active.reservation().deadline_unix_ms - 1);
         f.store
             .start_task_attempt(&f.cas, &lease, &active, &f.authority)
             .unwrap();

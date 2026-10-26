@@ -72,7 +72,12 @@ impl CampaignReviewTaskHost<'_, '_> {
             .as_ref()
             .ok_or("Review Task has no execution")?;
         if !execution.pending_attempts().is_empty() {
-            return Err("Review Task cannot conclude with outstanding Attempts".into());
+            return Err(format!(
+                "Review Task cannot conclude with outstanding Attempts: {:?}; \
+                 inspect Task execution accounting and its recorded scheduler report {:?}",
+                execution.pending_attempts(),
+                state.run_reports,
+            ));
         }
         // An Integration phase report is additional evidence; it cannot replace the Round's
         // original scheduler report or change already published RunReport@6 bytes.

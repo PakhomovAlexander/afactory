@@ -397,7 +397,31 @@ future readers need.
   base](0212-continue-a-task-from-its-reviewed-candidate-and-give-judging-workers-the-base.md)
 - [0213 — Isolate CLI usage tests from the repository release
   pin](0213-isolate-cli-usage-tests-from-the-repository-release-pin.md)
-- [0214 — Bound guarded experiment consumers to build and instrument
-  inputs](0214-bound-guarded-experiment-consumers-to-build-and-instrument-inputs.md)
-- [0215 — Give the guarded improvement fixture a controlled timing
-  margin](0215-give-the-guarded-improvement-fixture-a-controlled-timing-margin.md)
+- [0214 — Integrate Telemetry into the performance laboratory as diagnostics and advisory
+  experiments](0214-integrate-telemetry-into-the-performance-lab-as-diagnostics-and-advisory-experiments.md)
+- [0215 — Contain telemetry experiments and collect only results verified under their
+  authority](0215-contain-telemetry-experiments-and-collect-only-results-verified-under-their-authority.md)
+- [0216 — Construct reference fixture bytes without per-byte Python
+  loops](0216-construct-reference-fixture-bytes-without-per-byte-python-loops.md)
+- [0217 — Bind calibration dispatch to the checked main source and separate group
+  arguments](0217-bind-calibration-dispatch-to-the-checked-main-source-and-separate-group-arguments.md)
+- [0218 — Reapply an accounting append once after only this writer's heartbeat
+  renewals](0218-reapply-an-accounting-append-once-after-only-this-writers-heartbeat-renewals.md)
+- [0219 — Own native gate children without leaving the enclosing process
+  group](0219-own-native-gate-children-without-leaving-the-enclosing-process-group.md)
+- [0220 — Control Store fixture time with a scoped thread
+  clock](0220-control-store-fixture-time-with-a-scoped-thread-clock.md)
+- [0221 — Integrate the Performance Lab with GA and control short Attempt
+  fixtures](0221-integrate-the-performance-lab-with-ga-and-control-short-attempt-fixtures.md)
+- [0222 — Fence filesystem cleanup and bound telemetry admission through
+  publication](0222-fence-filesystem-cleanup-and-bound-telemetry-admission-through-publication.md)
+- [0223 — Retain telemetry work authority before setup and register lock
+  ownership](0223-retain-telemetry-work-authority-before-setup-and-register-lock-ownership.md)
+- [0224 — Bind diagnostic symbol archives and avoid perf cache
+  links](0224-bind-diagnostic-symbol-archives-and-avoid-perf-cache-links.md)
+- [0225 — Declare the replacement hosted cohort from the accepted
+  producer](0225-declare-the-replacement-hosted-cohort-from-the-accepted-producer.md)
+- [0227 — Bound guarded experiment consumers to build and instrument
+  inputs](0227-bound-guarded-experiment-consumers-to-build-and-instrument-inputs.md)
+- [0228 — Give the guarded improvement fixture a controlled timing
+  margin](0228-give-the-guarded-improvement-fixture-a-controlled-timing-margin.md)

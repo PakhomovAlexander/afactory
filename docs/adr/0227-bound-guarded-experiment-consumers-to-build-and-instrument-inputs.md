@@ -1,4 +1,4 @@
-# ADR-0214: Bound guarded experiment consumers to build and instrument inputs
+# ADR-0227: Bound guarded experiment consumers to build and instrument inputs
 
 **Status:** proposed (2026-10-25).
 

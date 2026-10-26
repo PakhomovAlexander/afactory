@@ -184,7 +184,7 @@ and every protected inventory path, including build inputs outside those directo
 literal bootstrap and staged digest check still verify the complete instrument. Unrelated
 repository documentation and CLI fixtures are omitted so their growth does not consume the
 five-second evaluator Attempt while preparing its source and base
-([ADR-0214](../adr/0214-bound-guarded-experiment-consumers-to-build-and-instrument-inputs.md)).
+([ADR-0227](../adr/0227-bound-guarded-experiment-consumers-to-build-and-instrument-inputs.md)).
 Diagnose a timeout from the exact Task's nested Attempt diagnostics and remaining dispatch wall;
 repeat the affected test with `make test-repeat NEXTEST_FILTER='test(/guarded_kernel_experiments/)'`.
 The repeat facility stops on failure; an isolated retry pass alone does not establish a repair.

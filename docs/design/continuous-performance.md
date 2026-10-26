@@ -428,6 +428,17 @@ fixtures must demonstrate usable unwinding for the supported recipe. This choice
 because perf documents invalid frame-pointer call graphs for code built without the
 necessary frame pointers. [perf record documentation](https://man7.org/linux/man-pages/man1/perf-record.1.html).
 
+GNU CPU diagnostic recipes freeze `-Cdebuginfo=line-tables-only` in the existing recipe
+`rustflags` and build settings. This preserves function names, source lines, inlined call
+locations and unwind information while omitting local-variable and type debugging for compiled
+crates. `debug_symbols = true` means attribution information is retained; it does not promise
+full debugger information. The explicit rustflag overrides Cargo's full-debug default for a
+symbol-enabled recipe. Ordinary verdict recipes and release product settings stay unchanged.
+
+Both region and whole-command `perf record` explicitly pass `--no-buildid-cache`, including
+the capability probe, avoiding private-HOME cache hard links while retaining build IDs in
+`perf.data`. Cleanup guards remain unchanged; a hostile link still makes cleanup uncertain.
+
 Profiling requires a probed, configured host capability. The tool does not run sudo,
 change kernel sysctls, or grant privileges. Fork PRs only use ephemeral hosted runners;
 a missing profile capability produces a clear unavailable result and reproduction
@@ -442,6 +453,26 @@ differential views in both directions so disappearing stacks remain visible. Col
 change in CPU sample share; it is not an absolute time saving. Preserve unknown frames.
 Use deterministic colors and script-free SVG in the report; inferno exposes these controls.
 [inferno renderer source](https://github.com/jonhoo/inferno/blob/main/src/bin/flamegraph.rs).
+
+Retained ELF executables use lossless XZ (preset 6, CRC64, no filename or timestamp) at
+`symbols/<original-binary-sha256>.xz`. Decompress with `xz -dc FILE.xz > BINARY` and check
+the resulting SHA-256 against the filename and capture's binary identity before use.
+`af.perf-profiles/6` requires the exact archive path, compressed hash and size on each retained
+capture; referenced/missing symbols require null. Collection and report admission independently
+check the manifest's compressed integrity and bounded decompressed identity, once per shared
+archive. They reject missing, unrelated, corrupt, truncated, trailing and oversized evidence.
+Decoder memory is at most 64 MiB, total decompressed originals 4 GiB, and all archives share a
+600-second admission limit, tightened by the collection deadline. The
+[decision and limits](../adr/0224-bind-diagnostic-symbol-archives-and-avoid-perf-cache-links.md)
+and [attributed executed-build report](../performance-evidence/diagnostic-symbols-353.md)
+distinguish separate AF/probe capacity proofs from capture qualification. The bundle manifest
+hashes the actual compressed file. Runtime symbolization uses the original
+admitted build executable. Compression is chunked under the diagnostic deadline and bounded
+by the remaining evidence room; only fitting archives are written, charged at their full
+logical size. Repeated captures and identical binaries reuse one verified archive. Distinct
+binaries pay separately; a selection whose archives cannot all fit keeps content-addressed
+references for the rest. The 1-GiB build cap and 128-MiB evidence cap, including its 8-MiB
+administrative reserve, remain separate and unchanged.
 
 Phase spans use a default-off `perf-trace` feature and cover canonicalization, CAS,
 projection, authority, and startup composition. Export bounded timestamps, PID/TID,
@@ -962,3 +993,33 @@ Calibration readiness records each case's observed CPU/image group from its pair
 allowed groups. Preparation and dose validation select that case/group's own parameters.
 Whole-trial acceptance is unchanged; descriptive group tallies overlap when a trial uses
 multiple groups. Unknown or unprepared hosts still invalidate the whole trial.
+
+Telemetry joins the laboratory beside the verdict, not inside it (ADR-0214). A diagnostic child
+may record its CLI cases at an explicitly selected telemetry level and read them back through
+the side's own `af telemetry` documents (`af.perf-profiles/6`, `af.perf-report/3`). The bench
+scripts of the telemetry design's §12 run as advisory telemetry experiments on a baseline and a
+candidate binary in their own workflow (`af.perf-telemetry-lab/1`,
+`af.perf-telemetry-result/1`, `af.perf-telemetry-history/1`). §13 of that design proposed
+replacing `perf-trace`; this is narrower. The native probe installs no telemetry subscriber, and
+discovery, startup and state-read commands record none, so `perf-trace` keeps their phases
+([`performance-telemetry.md`](../performance-telemetry.md)). Every execution of an experiment's
+candidate runs in its own container of the pinned sample image, a document is admitted only as
+its planned run with every figure recomputed, and a result is verified, uploaded and collected
+into its own durable history only under exactly its measurement authority (ADR-0215).
+
+Measurement cleanup closes two additional write/ownership gaps: Docker logging and IPC are
+disabled, and implicit image volumes are refused by the existing build admission check.
+The telemetry workflow prepares a private `af.perf-telemetry-owner/1` record outside candidate
+mounts and carries its lock through all probes, readers and publication. Each launch first
+publishes a pending container identity; only confirmed removal settles it. Final filesystem
+cleanup requires the exact image/mount/control identities and pre-launch or stopped state,
+independently of candidate output and result publication. Unknown ownership retains recovery
+paths. The command and recovery contract are in
+[`performance-telemetry.md`](../performance-telemetry.md#where-each-execution-runs).
+
+The disputed uppercase dispatch-SHA finding assumes case-sensitive workflow equality.
+[GitHub's Expressions operators documentation](https://docs.github.com/en/actions/reference/workflows-and-actions/expressions#operators),
+checked 2026-10-25, states “GitHub ignores case when comparing strings.” The current workflow's
+`inputs.dispatch_head == github.sha` and Python's full-hex case normalization agree. The
+workflow and scheduler stay unchanged; their executable test models platform equality on the
+original uppercase input. This local model is not a hosted dispatch or a calibration original.

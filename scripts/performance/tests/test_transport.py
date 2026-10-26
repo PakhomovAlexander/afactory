@@ -10,6 +10,7 @@ import io
 import json
 import os
 import shutil
+import signal
 import socket
 import ssl
 import stat
@@ -18,10 +19,12 @@ import threading
 import time
 import warnings
 import zipfile
+from unittest import mock
 
-from perflab import archive, builds, history, runner, supervise, synthetic, transport
+from perflab import archive, budget, builds, history, runner, supervise, synthetic, transport
 from perflab.values import ContractError
 from tests.support import TempDir, read, run_dir, synthetic_suite
+from tests.test_telemetry_interruption import blocked_resolver
 
 TOKEN = "marker-token-not-a-secret"
 API = "https://api.example.invalid"
@@ -110,6 +113,21 @@ class Collector(TempDir):
             found.append(artifact(1001 + index, "af-perf-%s-%s" % (content, shard),
                                   read(path)))
         return found
+
+    def test_shared_archive_refusal_persists_unconfirmed_production_resolver_cleanup(self):
+        api = transport.Collector(transport.HttpsTransport(), REPOSITORY, TOKEN, api_url=API)
+        with blocked_resolver() as (entered, exchanges, sockets), \
+                mock.patch.object(transport, "REQUEST_SECONDS", 0.02):
+            with archive.Archive(self.root, wall=lambda: T0 / 1000.0) as store:
+                with self.assertRaises(archive.Refused) as caught:
+                    transport.fetch(store, api, ACTIONS_RUN)
+                self.assertIn("cleanup was not confirmed", str(caught.exception))
+                self.assertTrue(entered.is_set())
+                self.assertFalse(exchanges[0].done.is_set())
+            with archive.Archive(self.root, wall=lambda: T0 / 1000.0) as store:
+                record = store.collections()[-1]
+                self.assertEqual(record["status"], "transport_failed")
+                self.assertIn("cleanup was not confirmed", record["detail"])
 
     def fetch(self, artifacts, lab_run=None, **options):
         fake = FakeTransport(artifacts, **options)
@@ -482,6 +500,43 @@ class HttpsDeadline(TempDir):
             lambda: self.transport.request(server.url("/slow"), {}, 1024, 0.75), 0.75)
         # A subsecond bound is shown as it is, never truncated to 0.
         self.assertIn("within its 0.75-second bound", str(error))
+
+    def test_collection_interruption_closes_an_active_response_and_its_socket(self):
+        entered, closed, exchanges = threading.Event(), [], []
+        original_read = transport.http.client.HTTPResponse.read
+        original_close = transport.http.client.HTTPResponse.close
+        original_run = transport._Exchange.run
+
+        def reading(response, *args):
+            entered.set()
+            os.kill(os.getpid(), signal.SIGALRM)
+            return original_read(response, *args)
+
+        def closing(response):
+            original_close(response)
+            closed.append(response)
+
+        def running(exchange):
+            exchanges.append(exchange)
+            original_run(exchange)
+
+        server = self.server(lambda path: trickled(
+            b"HTTP/1.1 200 OK\r\nContent-Length: 8\r\n\r\n", [b"x"] * 8))
+        started = time.monotonic()
+        with mock.patch.object(transport._Exchange, "run", running), \
+                mock.patch.object(transport.http.client.HTTPResponse, "read", reading), \
+                mock.patch.object(transport.http.client.HTTPResponse, "close", closing):
+            with self.assertRaises(budget.Interrupted):
+                with budget.Budget(started + 2, time.monotonic, 0).enforce("active HTTP"):
+                    self.transport.request(server.url("/active"), {"Authorization": TOKEN}, 1024, 10)
+        self.assertTrue(entered.is_set(), "the interruption exercised an active response read")
+        self.assertLess(time.monotonic() - started, 1.5)
+        self.assertTrue(exchanges[0].aborted)
+        self.assertTrue(exchanges[0].done.is_set(), "the worker confirmed resource cleanup")
+        self.assertIsNone(exchanges[0].sock)
+        self.assertTrue(closed)
+        self.assertTrue(all(response.closed and response.fp is None for response in closed))
+        self.assertEqual(len(server.requests), 1)
 
     def test_certificates_and_host_names_are_still_verified(self):
         server = self.server(lambda path: [(0.0, b"HTTP/1.1 200 OK\r\nContent-Length: 0"

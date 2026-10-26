@@ -1,19 +1,30 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "$id": "urn:af:schema:telemetry-read-latency:1",
-  "title": "af/telemetry-read-latency@1",
+  "$id": "urn:af:schema:telemetry-read-latency:2",
+  "title": "af/telemetry-read-latency@2",
   "description": "`scripts/telemetry-corpus.py measure --json` (design §12, docs/telemetry.md \"Performance\"): the read latencies of `af telemetry` on a corpus the script generated deterministically (`telemetry-corpus-10k` at full scale). `fresh_status` is `af telemetry status` ingesting every segment into an absent index, `unchanged_status` the same command with nothing new, `show` `af telemetry show` of one run; each with its wall time from exec to exit, the command's peak resident memory and the index's size after it. `warm` is measured after every file of the corpus was read once (the median of `samples_ms` when repeated); `cold` after the page cache was dropped, null when this platform did not let the script drop it (`cold.available = false`, with the reason: warm-only). The bounds of design §12 are checked on the warm figures (`within_bound`); `passed` when every one holds. `corpus` counts are rows of the index the fresh ingest built, its byte totals the uncompressed and on-disk sizes of the segments and blobs.",
   "type": "object",
   "additionalProperties": false,
-  "required": ["schema", "af", "machine", "corpus", "cold", "measurements", "passed"],
+  "required": [
+    "schema",
+    "af",
+    "machine",
+    "corpus",
+    "cold",
+    "measurements",
+    "passed"
+  ],
   "properties": {
     "schema": {
-      "const": "af/telemetry-read-latency@1"
+      "const": "af/telemetry-read-latency@2"
     },
     "af": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["path", "version"],
+      "required": [
+        "path",
+        "version"
+      ],
       "properties": {
         "path": {
           "type": "string",
@@ -27,7 +38,12 @@
     "machine": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["os", "arch", "cpus", "load1"],
+      "required": [
+        "os",
+        "arch",
+        "cpus",
+        "load1"
+      ],
       "properties": {
         "os": {
           "type": "string"
@@ -40,7 +56,10 @@
           "minimum": 0
         },
         "load1": {
-          "type": ["number", "null"],
+          "type": [
+            "number",
+            "null"
+          ],
           "description": "The one-minute load average when the measurement ended."
         }
       }
@@ -65,7 +84,8 @@
         "segment_stored_bytes",
         "blob_files",
         "blob_stored_bytes",
-        "content_index"
+        "content_index",
+        "content_indexed"
       ],
       "properties": {
         "dir": {
@@ -78,7 +98,10 @@
           "description": "`telemetry-corpus-10k` for the full 10,000 runs, else `telemetry-corpus-<runs>`."
         },
         "seed": {
-          "type": ["integer", "null"],
+          "type": [
+            "integer",
+            "null"
+          ],
           "description": "The seed the generator recorded in the segment headers; null when none was."
         },
         "runs": {
@@ -127,23 +150,37 @@
         "content_index": {
           "type": "boolean",
           "description": "`[telemetry] content_index` the reads ran under."
+        },
+        "content_indexed": {
+          "$ref": "#/$defs/count",
+          "description": "Distinct text blobs with an indexed content_index row; must cover the complete generated corpus."
         }
       }
     },
     "cold": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["available", "method", "reason"],
+      "required": [
+        "available",
+        "method",
+        "reason"
+      ],
       "properties": {
         "available": {
           "type": "boolean"
         },
         "method": {
-          "type": ["string", "null"],
+          "type": [
+            "string",
+            "null"
+          ],
           "description": "How the page cache was dropped; null when it was not."
         },
         "reason": {
-          "type": ["string", "null"],
+          "type": [
+            "string",
+            "null"
+          ],
           "description": "Why the cold figures are absent; null when they were measured."
         }
       }
@@ -155,10 +192,21 @@
       "items": {
         "type": "object",
         "additionalProperties": false,
-        "required": ["name", "command", "bound_ms", "warm", "cold", "within_bound"],
+        "required": [
+          "name",
+          "command",
+          "bound_ms",
+          "warm",
+          "cold",
+          "within_bound"
+        ],
         "properties": {
           "name": {
-            "enum": ["fresh_status", "unchanged_status", "show"]
+            "enum": [
+              "fresh_status",
+              "unchanged_status",
+              "show"
+            ]
           },
           "command": {
             "type": "string",
@@ -200,7 +248,13 @@
     "figure": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["latency_ms", "peak_rss_bytes", "exit_code", "index_bytes", "samples_ms"],
+      "required": [
+        "latency_ms",
+        "peak_rss_bytes",
+        "exit_code",
+        "index_bytes",
+        "samples_ms"
+      ],
       "properties": {
         "latency_ms": {
           "type": "number",

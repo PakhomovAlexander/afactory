@@ -1451,7 +1451,32 @@ impl Dispatch for TaskRuntime<'_, '_> {
         let span = self
             .telemetry
             .node(&node.id, self.graph.nodes.get(&node.id));
-        let ran = span.in_scope(|| self.execute_node(node, inputs));
+        let mut ran = span.in_scope(|| self.execute_node(node, inputs));
+        let unstarted = if ran.is_err() {
+            self.prepared
+                .lock()
+                .expect("prepared Tasks")
+                .remove(&node.id)
+        } else {
+            None
+        };
+        if let Some(attempt) = unstarted {
+            // record_invocation admitted this context before the scheduler's worker thread
+            // began. Cancellation/currentness can stop execute_node before it takes the
+            // capability. No work started: release the exact reservation through the Store,
+            // under the current lease. Started or fenced work is never released here.
+            if let Err(error) = self.store.lock().expect("Task Store").release_task_attempt(
+                self.cas,
+                &self.lease,
+                &attempt,
+                "Task stopped before durable dispatch",
+            ) {
+                ran = Err(format!(
+                    "{}; reservation release failed: {error}",
+                    ran.unwrap_err()
+                ));
+            }
+        }
         let refused = self.disk_refusal().is_some() || control::check(self.cancellation).is_err();
         crate::telemetry::outcome(
             &span,

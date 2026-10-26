@@ -282,6 +282,14 @@ impl TaskFixture {
     /// The Task, in the Store at `directory`: `observe` installs a commit observer on the Store
     /// before anything is committed, so every commit of the fixture is told.
     pub fn new(directory: tempfile::TempDir, observe: impl FnOnce(&mut EventStore)) -> Self {
+        Self::with_setup_step(directory, observe, || {})
+    }
+
+    pub fn with_setup_step(
+        directory: tempfile::TempDir,
+        observe: impl FnOnce(&mut EventStore),
+        step: impl Fn(),
+    ) -> Self {
         let cas = Cas::open(directory.path().join("cas")).unwrap();
         let mut store = EventStore::open(directory.path().join("events.sqlite")).unwrap();
         observe(&mut store);
@@ -424,9 +432,15 @@ impl TaskFixture {
         let lease = store
             .open_task(&cas, &revision_id, "fixture", LEASE_MS)
             .unwrap();
+        step();
+        std::thread::sleep(std::time::Duration::from_millis(2));
+        store.renew_task_lease(&cas, &lease, LEASE_MS).unwrap();
         store
             .propose_task_plan(&cas, &lease, &plan_id, &Authority)
             .unwrap();
+        step();
+        std::thread::sleep(std::time::Duration::from_millis(2));
+        store.renew_task_lease(&cas, &lease, LEASE_MS).unwrap();
         store.admit_task_plan(&cas, &lease, &Authority).unwrap();
         let root = put(
             &cas,
@@ -437,6 +451,9 @@ impl TaskFixture {
                 inputs: BTreeMap::new(),
             },
         );
+        step();
+        std::thread::sleep(std::time::Duration::from_millis(2));
+        store.renew_task_lease(&cas, &lease, LEASE_MS).unwrap();
         store
             .record_task_invocation(&cas, &lease, &root, &Authority)
             .unwrap();
@@ -448,6 +465,9 @@ impl TaskFixture {
                 outputs: task.inputs.clone(),
             },
         );
+        step();
+        std::thread::sleep(std::time::Duration::from_millis(2));
+        store.renew_task_lease(&cas, &lease, LEASE_MS).unwrap();
         store
             .publish_task_output(&cas, &lease, &output, None, &Authority)
             .unwrap();
@@ -461,6 +481,9 @@ impl TaskFixture {
                     inputs: BTreeMap::from([("input".into(), task.inputs["requirements"].clone())]),
                 },
             );
+            step();
+            std::thread::sleep(std::time::Duration::from_millis(2));
+            store.renew_task_lease(&cas, &lease, LEASE_MS).unwrap();
             store
                 .record_task_invocation(&cas, &lease, &invocation, &Authority)
                 .unwrap();
@@ -497,6 +520,7 @@ impl TaskFixture {
                 &Authority,
             )
             .unwrap();
+        self.renew();
         self.store
             .bind_task_attempt_context(&self.cas, &self.lease, &reserved, &context, &Authority)
             .unwrap()
@@ -505,6 +529,7 @@ impl TaskFixture {
     /// Reserve, bind and start an Attempt of `node`; its id.
     pub fn start(&mut self, node: &str) -> String {
         let attempt = self.prepare(node);
+        self.renew();
         self.store
             .start_task_attempt(&self.cas, &self.lease, &attempt, &Authority)
             .unwrap();
@@ -583,6 +608,7 @@ impl TaskFixture {
             .cas
             .put_json(&json!({"failure":"deterministic fixture"}))
             .unwrap();
+        self.renew();
         self.store
             .settle_task_attempt_with_feedback(
                 &self.cas,

@@ -51,7 +51,7 @@ import os
 import re
 from fractions import Fraction
 
-from . import compare, contracts, gitrefs, limits, runner, schedule, transport
+from . import compare, contracts, gitrefs, images, limits, runner, schedule, transport
 from .values import (ContractError, canonical_digest, format_decimal, format_rational,
                      loads_strict, require, sha256_bytes)
 
@@ -138,12 +138,19 @@ def declare(suite, authority, cohort_id, tier, environment_id, recipe_id, groups
     return contracts.validate_cohort(cohort, "cohort")
 
 
-def parse_group(text):
-    """`ID=CPU MODEL@IMAGE`, one allowed CPU/image group."""
-    ident, sep, rest = text.partition("=")
-    model, at, image = rest.rpartition("@")
-    require(sep and at and ident and model and image,
-            "--group: ID=CPU MODEL@IMAGE, not %r" % text)
+def parse_group(parts):
+    """Three separate CLI arguments: ID, CPU MODEL, pinned registry IMAGE."""
+    require(isinstance(parts, (list, tuple)) and len(parts) == 3,
+            "--group: ID 'CPU MODEL' 'NAME@sha256:DIGEST'")
+    ident, model, image = parts
+    contracts.ID.validate(ident, "--group ID")
+    require(re.fullmatch(contracts.ID_PATTERN, ident), "--group: an exact group ID")
+    contracts.SHORT_TEXT.validate(model, "--group CPU MODEL")
+    require(model == model.strip() and bool(model) and model.isprintable(),
+            "--group: an exact nonempty printable CPU model")
+    images.canonical(image, "--group IMAGE")
+    require(re.fullmatch(images.REFERENCE_PATTERN, image) and not images.is_image_id(image),
+            "--group: an exact registry image pinned by digest")
     return {"group_id": ident, "cpu_model": model, "image": image}
 
 

@@ -10,11 +10,13 @@ sanitized SVG is ever linked (ADR-0179).
 """
 import hashlib
 import json
+import lzma
 import os
 import re
 import shutil
+from unittest import mock
 
-from perflab import bundle, contracts, diagnostics, phasetrace, report, synthetic
+from perflab import bundle, contracts, diagnostics, phasetrace, report, symbolarchive, synthetic
 from perflab import suite as suite_module
 from perflab.values import ContractError, document_bytes
 from tests import diagnostic_fixtures as fakes
@@ -637,3 +639,193 @@ class Admission(LinkedChildren):
 
 def child_path(relative, child):
     return "%s/%s/%s" % (report.DIAGNOSTICS, os.path.basename(child), relative)
+
+
+class RetainedSymbols(diag.ChildRunBase):
+    """Actual Profile writer through report admission, with sealed hostile archive edits."""
+
+    clean = LinkedChildren.clean
+    made = LinkedChildren.made
+    profile_child = LinkedChildren.profile_child
+    resealed = Admission.resealed
+
+    def archive_child(self, distinct=False):
+        perf = fakes.perf(self.path("perf"), phase_file=self.path("probe-bin", "phase"),
+                          unknown_with_frame_pointers=2)
+        tools = diagnostics.configured_tools(perf=perf, inferno_bin=fakes.inferno(
+            self.path("inferno")))
+        return self.profile("linux_gnu_cpu_profile", [SMALL], tools, {},
+                            distinct_candidate=distinct)
+
+    @staticmethod
+    def rewrite(directory, doc):
+        with open(os.path.join(directory, diagnostics.PROFILES_FILE), "wb") as stream:
+            stream.write(contracts.write_bytes(doc, "profiles"))
+        with open(os.path.join(directory, report.PAGE), "wb") as stream:
+            stream.write(diagnostics.page(doc, []))
+
+    def test_shared_archive_admits_four_captures_once_without_double_charging(self):
+        doc, child = self.archive_child()
+        self.assertEqual(len(doc["captures"]), 4)
+        self.assertEqual(len(os.listdir(os.path.join(child, "symbols"))), 1)
+        archives = [item["symbols"]["archive"] for item in doc["captures"]]
+        self.assertTrue(all(item == archives[0] for item in archives))
+        with mock.patch.object(symbolarchive.lzma, "LZMADecompressor",
+                               wraps=lzma.LZMADecompressor) as decode:
+            report.admit_child(child, self.parent)
+        self.assertEqual(decode.call_count, 1)
+        # The writer's recorded usage counts each physical evidence member once.
+        sizes = sum(os.path.getsize(os.path.join(root, name))
+                    for root, _, files in os.walk(child) for name in files
+                    if name not in ("profiles.json", "diagnostic.html", "manifest.json"))
+        self.assertEqual(doc["budgets"]["bytes"]["evidence_used"], sizes)
+        # The report also copies the admitted child without changing the parent verdict.
+        run = synthetic.write_run(self.parent, self.path("run"), lambda slot, case: 10)
+        result = report.write(run, self.path("report"), diagnostics=[child])
+        self.assertEqual(result["diagnostics"][0]["run_id"], doc["run_id"])
+
+    def test_distinct_archives_admit_both_originals(self):
+        doc, child = self.archive_child(distinct=True)
+        self.assertEqual(len(os.listdir(os.path.join(child, "symbols"))), 2)
+        self.assertEqual(len({item["binary_sha256"] for item in doc["captures"]}), 2)
+        report.admit_child(child, self.parent)
+
+    def test_resealed_missing_unrelated_corrupt_and_false_identity_archives_refuse(self):
+        doc, child = self.archive_child()
+        artifact = doc["captures"][0]["symbols"]["archive"]
+        path = artifact["path"]
+        original = read(os.path.join(child, path))
+        variants = [("missing", None, "unrelated or missing"),
+                    ("unrelated", lzma.compress(b"other executable"), "decompressed identity"),
+                    ("truncated", original[:-1], "truncated XZ"),
+                    ("concatenated", original + original, "trailing or concatenated"),
+                    ("trailing", original + b"garbage", "trailing or concatenated"),
+                    ("padding", original + bytes(4), "trailing or concatenated"),
+                    ("corrupt", original[:30] + bytes([original[30] ^ 1]) + original[31:],
+                     "invalid XZ")]
+        for name, data, needle in variants:
+            with self.subTest(name=name):
+                def edit(target):
+                    copied = json.loads(read(os.path.join(target, diagnostics.PROFILES_FILE)))
+                    if data is None:
+                        os.remove(os.path.join(target, path))
+                    else:
+                        with open(os.path.join(target, path), "wb") as stream:
+                            stream.write(data)
+                        for capture in copied["captures"]:
+                            capture["symbols"]["archive"].update(bytes=len(data),
+                                                                 sha256=diag.sha256_bytes(data))
+                    self.rewrite(target, copied)
+                target = self.resealed(child, "symbols-" + name, edit)
+                with self.assertRaisesRegex(ContractError, needle):
+                    report.admit_child(target, self.parent)
+        # A valid but unclaimed archive is refused even when the manifest verifies it.
+        def extra(target):
+            with open(os.path.join(target, "symbols", "unrelated.xz"), "wb") as stream:
+                stream.write(original)
+        target = self.resealed(child, "extra-symbols", extra)
+        with self.assertRaisesRegex(ContractError, "unrelated or missing"):
+            report.admit_child(target, self.parent)
+
+    def test_archive_integrity_size_and_resource_limits_are_independent(self):
+        doc, child = self.archive_child()
+        artifact = doc["captures"][0]["symbols"]["archive"]
+        path = artifact["path"]
+        def tamper(target):
+            with open(os.path.join(target, path), "ab") as stream:
+                stream.write(b"x")
+        target = self.resealed(child, "tamper-symbols", tamper)
+        with self.assertRaisesRegex(ContractError, "not the verified member"):
+            report.admit_child(target, self.parent)
+        # Without resealing, the ordinary manifest integrity check refuses first.
+        with open(os.path.join(child, path), "ab") as stream:
+            stream.write(b"x")
+        with self.assertRaisesRegex(ContractError, "manifest says"):
+            report.admit_child(child, self.parent)
+        with open(os.path.join(child, path), "r+b") as stream:
+            stream.truncate(artifact["bytes"])
+        for constant, value, needle in (("DECOMPRESSED_BYTES", 100, "decompressed byte bound"),
+                                         ("MEMORY_BYTES", 100, "invalid XZ"),
+                                         ("SECONDS", 0, "deadline")):
+            with self.subTest(bound=constant), mock.patch.object(symbolarchive, constant, value):
+                with self.assertRaisesRegex(ContractError, needle):
+                    report.admit_child(child, self.parent)
+        def size(target):
+            copied = json.loads(read(os.path.join(target, diagnostics.PROFILES_FILE)))
+            for capture in copied["captures"]:
+                capture["symbols"]["archive"]["bytes"] += 1
+            self.rewrite(target, copied)
+        target = self.resealed(child, "size-symbols", size)
+        with self.assertRaisesRegex(ContractError, "archive size differs"):
+            report.admit_child(target, self.parent)
+
+    def test_referenced_missing_and_retained_claims_are_strict(self):
+        doc, child = self.archive_child()
+        for state in ("referenced", "missing"):
+            copied = json.loads(json.dumps(doc))
+            copied["captures"][0]["symbols"]["state"] = state
+            with self.assertRaisesRegex(ContractError, "exactly retained"):
+                contracts.write_bytes(copied, "profiles")
+        copied = json.loads(json.dumps(doc))
+        copied["captures"][0]["symbols"]["archive"] = None
+        with self.assertRaisesRegex(ContractError, "exactly retained"):
+            contracts.write_bytes(copied, "profiles")
+        copied = json.loads(json.dumps(doc))
+        copied["captures"][0]["symbols"]["archive"]["path"] = "symbols/unrelated.xz"
+        with self.assertRaisesRegex(ContractError, "content-addressed"):
+            contracts.write_bytes(copied, "profiles")
+        copied = json.loads(json.dumps(doc))
+        copied["captures"][0]["symbols"]["archive"]["bytes"] += 1
+        with self.assertRaisesRegex(ContractError, "shared evidence agrees"):
+            contracts.write_bytes(copied, "profiles")
+        # Legitimate referenced-only evidence remains admissible with no retained archive.
+        for capture in doc["captures"]:
+            capture["symbols"].update(state="referenced", archive=None)
+        def referenced(target):
+            shutil.rmtree(os.path.join(target, "symbols"))
+            self.rewrite(target, doc)
+        target = self.resealed(child, "references-only", referenced)
+        report.admit_child(target, self.parent)
+
+
+    def test_collection_rejects_false_identity_and_expired_admission(self):
+        doc, child = self.archive_child()
+        for name in ("false-identity", "expired"):
+            with self.subTest(case=name):
+                target = writable_copy(child, self.path(name))
+                for filename in (diagnostics.PROFILES_FILE, report.PAGE, bundle.MANIFEST):
+                    os.remove(os.path.join(target, filename))
+                copied = json.loads(json.dumps(doc))
+                if name == "false-identity":
+                    archive = lzma.compress(b"unrelated executable")
+                    path = copied["captures"][0]["symbols"]["archive"]["path"]
+                    with open(os.path.join(target, path), "wb") as stream:
+                        stream.write(archive)
+                    for capture in copied["captures"]:
+                        capture["symbols"]["archive"].update(bytes=len(archive),
+                                                           sha256=diag.sha256_bytes(archive))
+                    with self.assertRaisesRegex(ContractError, "decompressed identity"):
+                        diagnostics.finish(target, copied, [])
+                else:
+                    budget = diagnostics.Budget(self.registry["limits"], target)
+                    budget.deadline = budget.clock() - 1
+                    with self.assertRaisesRegex(ContractError, "deadline"):
+                        diagnostics.finish(target, copied, [], budget)
+
+    def test_compressed_limit_and_rehash_apply_after_manifest_verification(self):
+        doc, child = self.archive_child()
+        _, hashes = bundle.verify(child, diag.diagnostics.limits.DIAGNOSTIC_BYTES_MAX)
+        artifact = doc["captures"][0]["symbols"]["archive"]
+        copied = json.loads(json.dumps(doc))
+        copied["budgets"]["bytes"]["limit"] = artifact["bytes"] - 1
+        with self.assertRaisesRegex(ContractError, "compressed byte bound"):
+            symbolarchive.admit(child, copied, hashes)
+        # Valid XZ of the same original still has to match the admitted compressed hash.
+        path = os.path.join(child, artifact["path"])
+        data = lzma.compress(lzma.decompress(read(path)), check=lzma.CHECK_SHA256)
+        with open(path, "wb") as stream:
+            stream.write(data)
+        for capture in doc["captures"]:
+            capture["symbols"]["archive"]["bytes"] = len(data)
+        with self.assertRaisesRegex(ContractError, "compressed archive hash differs"):
+            symbolarchive.admit(child, doc, hashes)
