@@ -35,6 +35,8 @@ mod reservation;
 mod resilience;
 #[path = "task_runtime/retry.rs"]
 mod retry;
+#[path = "task_runtime/startup.rs"]
+mod startup;
 #[path = "task_runtime/unknown_usage.rs"]
 mod unknown_usage;
 #[path = "task_runtime/usage_observation.rs"]

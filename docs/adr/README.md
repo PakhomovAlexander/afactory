@@ -421,3 +421,5 @@ future readers need.
   links](0224-bind-diagnostic-symbol-archives-and-avoid-perf-cache-links.md)
 - [0225 — Declare the replacement hosted cohort from the accepted
   producer](0225-declare-the-replacement-hosted-cohort-from-the-accepted-producer.md)
+- [0226 — Refuse startup projection reuse across authority
+  callbacks](0226-refuse-startup-projection-reuse-across-authority-callbacks.md)
