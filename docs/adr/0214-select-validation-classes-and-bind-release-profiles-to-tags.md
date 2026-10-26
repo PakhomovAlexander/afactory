@@ -1,4 +1,4 @@
-# ADR-0213: Select validation classes and bind release profiles to tags
+# ADR-0214: Select validation classes and bind release profiles to tags
 
 **Status:** accepted (2026-10-25)
 

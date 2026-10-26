@@ -1704,6 +1704,17 @@ fn task_run_help_and_the_task_file_topic_describe_continuation() {
 /// empty, and `--help` and `--version` under `--json` are no errors.
 #[test]
 fn usage_errors_under_json_print_one_error_document() {
+    // Parsing usage must not inherit the checkout's release pin, which legitimately trails
+    // a prerelease source build until publication.
+    let dir = tempfile::tempdir().unwrap();
+    let af = |args: &[&str]| {
+        crate::common::af()
+            .current_dir(dir.path())
+            .args(args)
+            .env("NO_COLOR", "1")
+            .output()
+            .unwrap()
+    };
     for args in [
         &[
             "task",

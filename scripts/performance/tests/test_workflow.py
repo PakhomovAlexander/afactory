@@ -114,6 +114,7 @@ class RequiredPythonCompatibility(unittest.TestCase):
                          if "uses: actions/setup-python@" in step[0]]
                 self.assertEqual(len(setup), 1)
                 text = "\n".join(actions[setup[0]])
+                self.assertIn("uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0", text)
                 self.assertIn("python-version: '3.x'", text)
                 self.assertIn("check-latest: true", text)
                 self.assertNotIn("allow-prereleases:", text)

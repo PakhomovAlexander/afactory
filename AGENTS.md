@@ -34,7 +34,7 @@ review corpora belong in consuming repositories, not here.
   in the PR description. Re-evaluate labels on updates. Local `make check` remains full;
   release selections are bound to exact SHA/version tags. This operator policy supersedes
   ADR-0196's prose-only recommendation; the kernel's remote-gate `no_perf_paths` authority
-  remains prose-only and unchanged ([ADR-0213](docs/adr/0213-select-validation-classes-and-bind-release-profiles-to-tags.md)).
+  remains prose-only and unchanged ([ADR-0214](docs/adr/0214-select-validation-classes-and-bind-release-profiles-to-tags.md)).
 - Product rebranding must not rename `review.kernel/*` artifact types, persisted events, or
   established Review Kernel domain terms until a separate accepted migration ADR supersedes this
   rule. Releases are cut only through `make release` and the release workflow; a lock pins the

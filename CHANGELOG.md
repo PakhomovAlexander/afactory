@@ -19,13 +19,35 @@ publish step — so everything it carried shipped in `0.9.0-rc.6`.
 Changes since the last release are notes under [`changelog.d/`](changelog.d/), one file per
 pull request; the release pull request collects them here.
 
-## [0.13.0-rc.1] - 2026-10-25
+## [0.13.0-rc.2] - 2026-10-25
+
+`0.13.0-rc.1` was tagged but never published. Its release notes are carried forward into
+`0.13.0-rc.2` below. The latest published signed release remains `0.12.0-rc.5`, so `.af/af.lock`
+continues to pin it until `0.13.0-rc.2` is published, as required by
+[ADR-0138](docs/adr/0138-the-repository-pins-its-newest-release.md).
 
 ### Authority compatibility
 
-Existing committed .af/ policy that validates under 0.12.0-rc.5 needs no hand edit. Run af onboard --refresh-lock to pin 0.13.0-rc.1 and its signed bytes; a pipeline opting into recovery_attempts uses af.pipeline/3 and needs its refreshed lock.
+Existing committed .af/ policy that validates under 0.12.0-rc.5 needs no hand edit. Run af onboard --refresh-lock to pin 0.13.0-rc.2 and its signed bytes; a pipeline opting into recovery_attempts uses af.pipeline/3 and needs its refreshed lock.
 
 ### Changes
+
+- release: v0.13.0-rc.1 (#335)
+- fix(perf): show verdicts and reports in PR checks (#330)
+- Isolate CLI usage test from release pin (#336)
+
+Show actual performance verdicts in the PR check list and render each planned comparison's
+coverage and rounded case table in its Details summary, including bootstrap reports when the
+full primary is unavailable. Link the retained HTML report artifact and annotate verdicts
+without changing advisory enforcement or granting a workflow write token.
+Valid `no-perf` exemptions show `EXEMPT (no-perf; not measured)`; failed scope decisions
+remain unavailable and cannot appear as an exemption or a measured pass.
+
+- Isolate the CLI usage-error fixture from the repository release pin so prerelease source
+  checks preserve exact JSON and stderr assertions while the signed pin awaits publication
+  ([ADR-0213](../docs/adr/0213-isolate-cli-usage-tests-from-the-repository-release-pin.md)).
+
+### Changes carried forward from unpublished 0.13.0-rc.1
 
 - release: v0.12.0-rc.5 (#300)
 - Fix every finding of the 2026-10-20 GA and security audit (#299)

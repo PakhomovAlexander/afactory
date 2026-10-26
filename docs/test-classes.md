@@ -2,7 +2,7 @@
 
 This design governs repository development and release validation. It changes no kernel runtime,
 Task authority, individual assertion, deadline, or nextest exclusive scheduling rule.
-[ADR-0213](adr/0213-select-validation-classes-and-bind-release-profiles-to-tags.md) supersedes the
+[ADR-0214](adr/0214-select-validation-classes-and-bind-release-profiles-to-tags.md) supersedes the
 always-full CI policy in ADR-0107, the unconditional latest-Python lab dependency in ADR-0197,
 and the repository operator's prose-only recommendation for `no-perf` in ADR-0196. The AF kernel's
 remote gate label authority and `.af/` are unchanged. The required AF/local `make check` remains full.

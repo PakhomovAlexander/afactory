@@ -395,5 +395,7 @@ future readers need.
   verification](0211-give-the-agent-loop-its-verbs-and-deliver-a-verified-verification.md)
 - [0212 — Continue a Task from its reviewed candidate, and give judging Workers the
   base](0212-continue-a-task-from-its-reviewed-candidate-and-give-judging-workers-the-base.md)
-- [0213 — Select validation classes and bind release profiles to
-  tags](0213-select-validation-classes-and-bind-release-profiles-to-tags.md)
+- [0213 — Isolate CLI usage tests from the repository release
+  pin](0213-isolate-cli-usage-tests-from-the-repository-release-pin.md)
+- [0214 — Select validation classes and bind release profiles to
+  tags](0214-select-validation-classes-and-bind-release-profiles-to-tags.md)

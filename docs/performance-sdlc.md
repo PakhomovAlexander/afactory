@@ -35,7 +35,7 @@ Reruns preserve the event selection. Push, schedule, dispatch and published-rele
 retain their prior measurement policy and ignore PR exclusions.
 
 Inspect the entire diff when choosing coverage, explain the decision in the PR description,
-and re-evaluate it on updates. ADR-0213 explicitly supersedes the older prose-only recommendation
+and re-evaluate it on updates. ADR-0214 explicitly supersedes the older prose-only recommendation
 for ordinary repository PR labels. The kernel's Remote Check `no_perf_paths` mapping remains
 prose-only and unchanged; those gate PRs are never measured here. See
 [Remote Checks](task-execution/remote-checks.md#3-give-this-machine-a-push-target).
@@ -103,5 +103,5 @@ instead of claiming native AF acceptance.
 latest stable Python, using `python-version: '3.x'`, `check-latest: true`, and mandatory Tomli/tomllib
 parity. Stable lint/check aggregators require all selected class receipts, failing for missing,
 cancelled or skipped selected work. Every validation job uses the same Python selection before
-Python or Make commands. ADR-0213 replaces ADR-0197's unconditional lab dependency with this explicit
+Python or Make commands. ADR-0214 replaces ADR-0197's unconditional lab dependency with this explicit
 selection; full validation still requires the complete lab.

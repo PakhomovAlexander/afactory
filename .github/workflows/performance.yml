@@ -8,7 +8,7 @@
 # release is measured through performance-release.yml (ADR-0180), whose read-only handoff
 # claims it first and then calls this workflow with only the claim's artifact name. A pull
 # request whose resolved plan excludes perf is not measured; the stable check reports an
-# exemption. Other triggers retain their measurement policy (ADR-0213).
+# exemption. Other triggers retain their measurement policy (ADR-0214).
 name: Performance
 # A calibration member's run is named for its cohort's digest and its member before any job
 # starts, so the complete run history binds each member's original dispatch however its
