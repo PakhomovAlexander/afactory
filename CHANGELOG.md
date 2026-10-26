@@ -19,6 +19,17 @@ publish step — so everything it carried shipped in `0.9.0-rc.6`.
 Changes since the last release are notes under [`changelog.d/`](changelog.d/), one file per
 pull request; the release pull request collects them here.
 
+## [0.13.0] - 2026-10-26
+
+### Authority compatibility
+
+Committed .af/ policy valid under 0.13.0-rc.2 needs no hand edit. Run af onboard --refresh-lock to pin 0.13.0 and its signed bytes. State written by other releases remains unsupported under ADR-0145.
+
+### Changes
+
+- release: v0.13.0-rc.2 (#337)
+- chore(deps): bump actions/setup-python from 7.0.0 to 7.1.0 in the actions-minor-and-patch group (#339)
+
 ## [0.13.0-rc.2] - 2026-10-25
 
 `0.13.0-rc.1` was tagged but never published. Its release notes are carried forward into
