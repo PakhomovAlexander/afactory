@@ -2901,11 +2901,7 @@
    "size": 6777
   }
  ],
-<<<<<<< 2ba77b154f9a0fc8a99d22218673ae446c37767a
- "harness_digest": "sha256:e81749983fa2cd9931ceb131a690a0d5d1c473a06419279cc02bd433c8aae2ba",
-=======
- "harness_digest": "sha256:9d9b2dc18d6f0474d1251360432edd97170def2e8004c743991adbb1d3a54f1d",
->>>>>>> e638219ff4a2a65d5403288cb186c9d2b73ec5f4
+ "harness_digest": "sha256:5c15a5073199a37a4d8561445f41ccdb05b5b2aa4e70ecec74ac418b4be40236",
  "inner_metric": "pending",
  "inner_metric_reason": "the inner wall_ms metric is recorded in every Measurement but no staged objective selects it until the guard's real kernel integration and tampered-candidate tests are accepted on the sealed source and a reviewed human change installs and selects it",
  "objective_metric": "elapsed_ms",
