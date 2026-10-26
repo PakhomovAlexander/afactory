@@ -1828,7 +1828,7 @@ fn review_campaigns_json_is_the_format_json_document() {
     let dir = tempfile::tempdir().unwrap();
     let root = dir.path().join("campaigns");
     let root = root.to_str().unwrap();
-    let campaigns = |extra: &[&str]| {
+    let listing = |root: &str, extra: &[&str]| {
         let mut args = vec!["review", "campaigns", "--state-root", root];
         args.extend_from_slice(extra);
         crate::common::af()
@@ -1838,6 +1838,7 @@ fn review_campaigns_json_is_the_format_json_document() {
             .output()
             .unwrap()
     };
+    let campaigns = |extra: &[&str]| listing(root, extra);
     let shorthand = campaigns(&["--json"]);
     let format = campaigns(&["--format", "json"]);
     assert_eq!(shorthand.status.code(), Some(0), "{}", err(&shorthand));
@@ -1850,14 +1851,27 @@ fn review_campaigns_json_is_the_format_json_document() {
     );
     assert_eq!(out(&campaigns(&["--json", "--sizes"])), out(&format));
 
-    let text = campaigns(&[]);
-    assert_eq!(text.status.code(), Some(0), "{}", err(&text));
-    assert_eq!(out(&text), out(&campaigns(&["--format", "text"])));
-    assert!(
-        out(&text).starts_with("No Campaigns under "),
-        "{}",
-        out(&text)
-    );
+    // The text listing wraps at the terminal width, and a root wider than it (a long `TMPDIR`)
+    // takes a line of its own: read the words, not the layout, for this root and a long one.
+    let long = dir.path().join("x".repeat(120)).join("campaigns");
+    for root in [root, long.to_str().unwrap()] {
+        let listed = listing(root, &[]);
+        assert_eq!(listed.status.code(), Some(0), "{}", err(&listed));
+        let text = out(&listed);
+        assert_eq!(text, out(&listing(root, &["--format", "text"])));
+        let words: Vec<&str> = text
+            .split_whitespace()
+            .filter(|word| *word != "\\")
+            .collect();
+        assert_eq!(words[..3], ["No", "Campaigns", "under"], "{text}");
+        assert!(
+            words.iter().any(|word| word.trim_end_matches(';') == root),
+            "{text}"
+        );
+        let document: serde_json::Value =
+            serde_json::from_slice(&listing(root, &["--json"]).stdout).unwrap();
+        assert_eq!(document["campaigns"], serde_json::json!([]), "{document}");
+    }
 
     for extra in [
         ["--json", "--format", "text"],
