@@ -261,6 +261,11 @@
    "size": 17271
   },
   {
+   "path": "fixtures/performance/cohort-quick-20261028-hosted-v7.json",
+   "sha256": "sha256:4f975367d9f27855a1318d3b18a0b0845efa26dd259fa85fe555ce45ae536308",
+   "size": 17314
+  },
+  {
    "path": "fixtures/performance/compare/index.json",
    "sha256": "sha256:696937afe70b72e4e6bd4fed2541ec718c3fe9688e39d6e104e71bb6f6c51adf",
    "size": 1973
@@ -2936,7 +2941,7 @@
    "size": 6777
   }
  ],
- "harness_digest": "sha256:4c802d229b366b1816738320bcc98aa0afc1346e20390b8d90179491db5d0f31",
+ "harness_digest": "sha256:35126e293e474d2bbeaa5b31ccb0410cd736f93cf10448cac515a19ec4f9abd9",
  "inner_metric": "pending",
  "inner_metric_reason": "the inner wall_ms metric is recorded in every Measurement but no staged objective selects it until the guard's real kernel integration and tampered-candidate tests are accepted on the sealed source and a reviewed human change installs and selects it",
  "objective_metric": "elapsed_ms",

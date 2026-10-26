@@ -419,3 +419,5 @@ future readers need.
   ownership](0223-retain-telemetry-work-authority-before-setup-and-register-lock-ownership.md)
 - [0224 — Bind diagnostic symbol archives and avoid perf cache
   links](0224-bind-diagnostic-symbol-archives-and-avoid-perf-cache-links.md)
+- [0225 — Declare the replacement hosted cohort from the accepted
+  producer](0225-declare-the-replacement-hosted-cohort-from-the-accepted-producer.md)

@@ -109,9 +109,12 @@ is installed ([`performance-telemetry.md`](performance-telemetry.md)). This coll
 before (its bounded ZIP reading is now shared with that lane), and the deployed one stays pinned
 to the frozen cohort's control.
 
-A local Mac service collects while awake. Its exit status and logs, plus archive health, must
-be monitored; after a long outage inspect the scan before transport expiry. For unattended
-operation, move the same service and archive to an always-on host with persistent storage.
+Claw is the always-on Linux collection host; keep its existing hourly collector and
+`/var/lib/af-performance/archive` intact. Do not install a periodic collector on this Mac.
+Monitor service exit status/logs and the configured history root's `history.html` and
+`archive-status.json`; after an outage inspect the scan before transport expiry. Calibration
+scheduling uses the separate [dispatcher lane](performance-cohort-dispatch.md#claw-scheduling-and-retained-reports).
+This declaration does not install or enable either service.
 
 ## Scope of the retained demonstration
 
@@ -153,5 +156,7 @@ The ordinary native gate retains its separate failed-test isolation policy and r
 Regenerate protected inventory/staged policy with `harness-digest --write` after protected
 edits; `.af/` authority is unchanged by this integration. Full native verification and independent
 reviews run on sealed source. Follow the [dispatcher runbook](performance-cohort-dispatch.md)
-only after acceptance and exact commit; the retained old cohort is unchanged, and this source
-integration declares no replacement cohort or deployment.
+only after exact-source acceptance and publication. The retained old cohort stays unchanged
+and disabled. [ADR-0225](adr/0225-declare-the-replacement-hosted-cohort-from-the-accepted-producer.md)
+declares its separate seven-day replacement; installation, parameter sealing, measurements and
+activation remain coordinator operations.
