@@ -218,3 +218,66 @@ fn catalog_destination_must_be_an_absent_project_relative_path() {
     assert!(created.status.success(), "{}", stderr(&created));
     assert!(root.path().join("demo").is_dir());
 }
+
+/// Issue #358: the README's guidance on Findings that look alike names commands that exist with
+/// the arguments it gives them, says that they stay apart until an operator groups them, and
+/// agrees with `af review group --help`. Each command runs against a Campaign that does not
+/// exist: an error (exit 1), never a usage error (exit 2).
+#[test]
+fn readme_explains_findings_that_look_alike_with_commands_that_parse() {
+    let readme = workspace_file("README.md");
+    let section = readme
+        .split("### Findings that look alike\n")
+        .nth(1)
+        .unwrap()
+        .split("\n### ")
+        .next()
+        .unwrap();
+    let flat = collapsed(section);
+    for statement in [
+        "They stay two Findings: a Finding's identity comes from its first Report, never from its \
+         path or title, and af never merges claims that only look alike",
+        "docs/adr/0006-finding-identity-is-path-independent.md",
+        "every Report and each Report's own verification stay",
+    ] {
+        assert!(flat.contains(statement), "{statement}\n{flat}");
+    }
+    let commands: Vec<&str> = flat
+        .split('`')
+        .skip(1)
+        .step_by(2)
+        .filter(|span| span.starts_with("af review "))
+        .collect();
+    assert_eq!(
+        commands,
+        [
+            "af review ledger --campaign NAME",
+            "af review group --campaign NAME FROM INTO",
+            "af review show --campaign NAME FROM",
+            "af review ungroup --campaign NAME FROM INTO",
+        ]
+    );
+    let home = tempfile::tempdir().unwrap();
+    for command in commands {
+        let output = crate::common::af()
+            .args(command.split(' ').skip(1))
+            .current_dir(home.path())
+            .output()
+            .unwrap();
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        assert_eq!(output.status.code(), Some(1), "{command}: {stderr}");
+        assert!(stderr.contains("not found"), "{command}: {stderr}");
+    }
+    let group = help(&["review", "group", "--help"]);
+    assert!(
+        group.contains(
+            "af never groups Findings by itself: two Reports at the same place with different \
+             titles or severities stay two Findings until an operator groups them (ADR-0006)"
+        ),
+        "{group}"
+    );
+    assert!(
+        group.contains("`af review ungroup FROM INTO` undoes it"),
+        "{group}"
+    );
+}

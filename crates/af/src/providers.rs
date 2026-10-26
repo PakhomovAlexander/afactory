@@ -239,6 +239,14 @@ pub(crate) fn registered() -> Result<Registered, String> {
 }
 
 pub fn discover_with_cancel(cancelled: &AtomicBool, usage: UsageProbe) -> ProviderInventory {
+    let mut inventory = discover_every_context(cancelled, usage);
+    drop_unused_ambient_contexts(&mut inventory.providers);
+    inventory
+}
+
+/// Every context [`discover_with_cancel`] probes, the logged-out ambient ones it then leaves out
+/// of the table included.
+fn discover_every_context(cancelled: &AtomicBool, usage: UsageProbe) -> ProviderInventory {
     let (specs, registry, warning) = load_specs();
     // The ID each row's one `af provider setup … --login` fix names: a registered Provider's own,
     // and for an ambient context the first free `<kind>-main`.
@@ -276,7 +284,6 @@ pub fn discover_with_cancel(cancelled: &AtomicBool, usage: UsageProbe) -> Provid
         providers.extend(specs[providers.len()..].iter().map(unprobed_status));
     }
     cross_reference_logged_in_siblings(&mut providers);
-    drop_unused_ambient_contexts(&mut providers);
     ProviderInventory {
         providers,
         registry,
@@ -589,6 +596,13 @@ pub(crate) fn read_registry_entries() -> RegistryRead {
 /// probe: what `af onboard --probe` and `af doctor` show.
 pub(crate) fn probed_statuses() -> Vec<ProviderStatus> {
     discover_with_cancel(&AtomicBool::new(false), UsageProbe::Skip).providers
+}
+
+/// [`probed_statuses`] with the logged-out ambient contexts the status table leaves out kept
+/// (ADR-0141): `af doctor` says what the one probe it ran learned about a directory found but not
+/// registered, and probes nothing more for it (ADR-0206).
+pub(crate) fn probed_statuses_with_ambient() -> Vec<ProviderStatus> {
+    discover_every_context(&AtomicBool::new(false), UsageProbe::Skip).providers
 }
 
 /// The line a successful `setup` or `add` ends with: the next step of a first run.

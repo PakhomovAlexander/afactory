@@ -278,12 +278,29 @@ fn install_sh_ends_with_the_next_steps_and_the_path_line_for_the_shell() {
         "signature\n",
     );
     let bin = sandbox.path("bin");
+    // The Provider step is the README's: it registers what it finds, where `af provider detect`
+    // alone only lists (ADR-0206). Every description starts in one column.
     let next = [
         "next:",
-        "  af provider detect   find and connect your claude/codex logins",
-        "  af onboard            in a repository: preview .af/ (token-free)",
-        "  af self setup-shell --write   completions + man pages",
+        "  af provider detect --apply   find your claude/codex logins and register them",
+        "  af onboard                   in a repository: preview .af/ (token-free)",
+        "  af self setup-shell --write  completions + man pages",
     ];
+    let readme = std::fs::read_to_string(install_script().with_file_name("README.md")).unwrap();
+    assert!(
+        readme.contains("```sh\n   af provider detect --apply\n   ```"),
+        "the README's Provider step"
+    );
+    let description_column = |line: &str| {
+        let command_end = line[2..].find("  ").unwrap() + 2;
+        command_end + line[command_end..].len() - line[command_end..].trim_start().len()
+    };
+    assert!(
+        next[1..]
+            .iter()
+            .all(|line| description_column(line) == description_column(next[1])),
+        "{next:#?}"
+    );
 
     // fish, with the bin directory off PATH: its own PATH line.
     let fish = installer.run(&installer.with_minisign, &[("SHELL", "/usr/bin/fish")]);

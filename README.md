@@ -102,13 +102,27 @@ another Campaign, and use `--heavy` only when a human asks for convergence revie
 ([ADR-0037](docs/adr/0037-default-campaigns-to-one-round-light-review.md)). `af help concepts`
 explains Task, Worker, Attempt, Snapshot and the other words in two sentences each.
 
+### Findings that look alike
+
+Two reviewers may report the same line with different titles or severities. They stay two
+Findings: a Finding's identity comes from its first Report, never from its path or title, and af
+never merges claims that only look alike
+([ADR-0006](docs/adr/0006-finding-identity-is-path-independent.md)). When they are one defect,
+say so after the Round closes. `af review ledger --campaign NAME` lists each Finding's ID, and
+`af review group --campaign NAME FROM INTO` lists FROM under INTO as one Finding, with FROM as its
+alias, the higher severity and the status that blocks more; every Report and each Report's own
+verification stay. `af review show --campaign NAME FROM` shows the group, and
+`af review ungroup --campaign NAME FROM INTO` lists them apart again.
+
 ### Agents and CI
 
-Every reading command takes `--json` for one versioned document, and exit codes are stable
-(`af help json`, `af help exit-codes`). A Provider login is a human's: `af provider setup --login`
-runs only at an interactive terminal, because the OAuth URL and code it prints are credentials in
-transit ([ADR-0112](docs/adr/0112-refuse-agent-mediated-provider-logins.md)); without one, setup
-exits 3 with the command for a human to run. `af doctor --json` (`af/doctor@2`) tells an agent
+Reading commands take `--json` for one versioned document, except `af review report`, which takes
+`--format json`, and `af review ledger` and `af review show`, which print text only; exit codes
+are stable (`af help json`, `af help exit-codes`). A Provider login is a human's:
+`af provider setup --login` runs only at an interactive terminal, because the OAuth URL and code
+it prints are credentials in transit
+([ADR-0112](docs/adr/0112-refuse-agent-mediated-provider-logins.md)); without one, setup exits 3
+with the command for a human to run. `af doctor --json` (`af/doctor@2`) tells an agent
 what is missing. `CI` turns the background update check off.
 
 ### Updating and removing

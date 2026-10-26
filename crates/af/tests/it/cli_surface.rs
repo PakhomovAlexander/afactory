@@ -1819,3 +1819,72 @@ fn task_report_help_describes_the_whole_lines_added_block() {
     );
     assert!(!flat.contains("title first inside"), "{report}");
 }
+
+/// Issue #358: `af review campaigns --json` is `--format json`, the same `af/review-campaigns@1`
+/// document byte for byte; text stays the default; and `--json` beside an explicit `--format`
+/// is a usage error under `--json`'s own contract, one `af/error@1` document on stdout.
+#[test]
+fn review_campaigns_json_is_the_format_json_document() {
+    let dir = tempfile::tempdir().unwrap();
+    let root = dir.path().join("campaigns");
+    let root = root.to_str().unwrap();
+    let campaigns = |extra: &[&str]| {
+        let mut args = vec!["review", "campaigns", "--state-root", root];
+        args.extend_from_slice(extra);
+        crate::common::af()
+            .current_dir(dir.path())
+            .args(&args)
+            .env("NO_COLOR", "1")
+            .output()
+            .unwrap()
+    };
+    let shorthand = campaigns(&["--json"]);
+    let format = campaigns(&["--format", "json"]);
+    assert_eq!(shorthand.status.code(), Some(0), "{}", err(&shorthand));
+    assert_eq!(format.status.code(), Some(0), "{}", err(&format));
+    assert_eq!(out(&shorthand), out(&format));
+    let document: serde_json::Value = serde_json::from_slice(&shorthand.stdout).unwrap();
+    assert_eq!(
+        document,
+        serde_json::json!({"schema": "af/review-campaigns@1", "campaigns": [], "problems": []})
+    );
+    assert_eq!(out(&campaigns(&["--json", "--sizes"])), out(&format));
+
+    let text = campaigns(&[]);
+    assert_eq!(text.status.code(), Some(0), "{}", err(&text));
+    assert_eq!(out(&text), out(&campaigns(&["--format", "text"])));
+    assert!(
+        out(&text).starts_with("No Campaigns under "),
+        "{}",
+        out(&text)
+    );
+
+    for extra in [
+        ["--json", "--format", "text"],
+        ["--format", "json", "--json"],
+    ] {
+        let refused = campaigns(&extra);
+        assert_eq!(
+            refused.status.code(),
+            Some(2),
+            "{extra:?}: {}",
+            err(&refused)
+        );
+        let error: serde_json::Value = serde_json::from_slice(&refused.stdout)
+            .unwrap_or_else(|_| panic!("{extra:?}: not one document: {}", out(&refused)));
+        crate::schemas::valid(&crate::schemas::validator("error-v1.json"), &error);
+        assert_eq!(error["cause"], "usage", "{error}");
+        assert!(
+            error["error"]
+                .as_str()
+                .unwrap()
+                .contains("cannot be used with"),
+            "{error}"
+        );
+        assert_eq!(error["next_action"], "af review campaigns --help");
+    }
+
+    let help = out(&af(&["review", "campaigns", "--help"]));
+    assert!(help.contains("--json"), "{help}");
+    assert!(help.contains("af review campaigns --json"), "{help}");
+}

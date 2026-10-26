@@ -940,13 +940,15 @@ fn review_command(namespace: cli::ReviewNamespace) -> Result<i32, String> {
         R::Campaigns {
             state_root,
             format,
+            json,
             sizes,
         } => print_campaigns(&CampaignsOptions {
             state_root,
             sizes,
-            format: match format {
-                cli::ListFormatArg::Text => CampaignsFormat::Text,
-                cli::ListFormatArg::Json => CampaignsFormat::Json,
+            // `--json` is `--format json`; clap refuses the two together.
+            format: match (json, format) {
+                (true, _) | (false, cli::ListFormatArg::Json) => CampaignsFormat::Json,
+                (false, cli::ListFormatArg::Text) => CampaignsFormat::Text,
             },
         })
         .map(|()| 0),

@@ -249,11 +249,12 @@ fi
 AF_SELF_OFFLINE=1 "$DATA/$version/af" self update --version "$version" >/dev/null
 
 # At most six lines end the install: the version and path above, the next steps of a first run,
-# and the PATH line for this shell when the bin directory is not on PATH yet.
+# and the PATH line for this shell when the bin directory is not on PATH yet. Each step's command
+# is padded to one column, so the three descriptions start together.
 echo "next:"
-echo "  af provider detect   find and connect your claude/codex logins"
-echo "  af onboard            in a repository: preview .af/ (token-free)"
-echo "  af self setup-shell --write   completions + man pages"
+printf '  %-28s %s\n' "af provider detect --apply" "find your claude/codex logins and register them"
+printf '  %-28s %s\n' "af onboard" "in a repository: preview .af/ (token-free)"
+printf '  %-28s %s\n' "af self setup-shell --write" "completions + man pages"
 case ":$PATH:" in
   *":$BIN:"*) ;;
   *)

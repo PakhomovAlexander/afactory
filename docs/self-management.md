@@ -19,7 +19,7 @@ installs one release. A re-run is idempotent and verifies the installed binary a
 release, never on the strength of its receipt.
 
 It ends with at most six lines: the installed version and its path, the next steps of a first
-run (`af provider detect`, `af onboard`, `af self setup-shell --write`), and, when the bin
+run (`af provider detect --apply`, `af onboard`, `af self setup-shell --write`), and, when the bin
 directory is not on `PATH`, the line that puts it there for the shell `$SHELL` names
 (`fish_add_path` for fish, an `export PATH=…` line and its rc file for bash and zsh).
 
