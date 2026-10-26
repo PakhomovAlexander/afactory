@@ -32,8 +32,8 @@ your change --> your checks -+                            +--> verdict and findi
 - **The pipeline is shared like code.** af reads `.af/` only from a commit and pins every Worker
   and its own release by digest, so the whole team runs the same review and a change to it is a
   diff you review.
-- **Agents can drive it.** Every reading command speaks `--json`, exit codes are stable, and a
-  Task's state names the next command: see [For agents](#for-agents).
+- **Agents can drive it.** Most commands print one JSON document with `--json`, exit codes are
+  stable, and a Task's state names the next command: see [For agents](#for-agents).
 
 **Status:** public alpha. A release reads only the state and configuration it writes itself, so
 finish or discard running Campaigns and Tasks before you upgrade. Each release's entry in
@@ -101,7 +101,8 @@ are at any point, token-free.
 
    The plan is token-free and needs no login: it shows the Change Set, the route, the Gate and
    the bindings the run needs. The run executes the Gate, then the reviewers, and prints the
-   verdict, the Findings and the tokens it spent; `af review report` shows them again.
+   verdict, the Findings and the tokens it spent. Name the review with `--campaign NAME` and
+   `af review report --campaign NAME` prints it again.
 
 Stuck at any step? One token-free command checks the machine and the repository and names the
 fix for whatever is missing:
@@ -192,8 +193,10 @@ the guide.
   `af task materialize --into DIR`.
 - **You publish.** af does not commit, push or open a pull request. The one exception is opt-in:
   a Task pipeline that runs a check as a Remote Check pushes exactly two `af-gate/<task-id>/`
-  branches and opens one draft pull request between them so your CI can run that check, only
-  where the machine's operator mapped a push target and the plan you confirm names it
+  branches and opens one draft pull request between them so your CI can run that check. The
+  machine's operator authorizes it by mapping the repository to a push target. The plan names
+  the destination for you to confirm, but `--execute` skips that confirmation, so map a
+  repository only on a machine where every Task may push its gate branches
   ([docs/task-execution/remote-checks.md](docs/task-execution/remote-checks.md)).
 - **No stored credentials.** A Provider is the official `claude` or `codex` CLI's own login:
   af's registry holds its ID, kind and directory, and `af provider setup --login` runs only at
@@ -213,19 +216,23 @@ Rules for a coding agent, or a script, that drives af for someone:
 - **Plan first.** `af review plan …` and `af task plan --file …` are token-free. A review plan
   needs no login; a Task plan with model Workers checks that their Providers are logged in.
   Show the plan before anything spends.
-- **Read JSON, not prose.** Every reading command takes `--json` and prints exactly one
-  versioned document on stdout, with progress on stderr. Branch on its `schema`: most refusals
+- **Read JSON, not prose.** Most commands take `--json` and print one document on stdout, with
+  progress on stderr; `af review report` and `af review campaigns` take `--format json`, and a
+  command's `--help` names its output flags. Branch on the document's `schema`: most refusals
   are `af/error@1`, while `af provider` commands and a refused Task plan print their own
-  documents (`af help json`).
+  documents (`af help json`). `af telemetry tail --json` prints one object per line, and
+  `af config show --json` a document with no `schema`.
 - **Branch on the exit code.** `af review run` exits 0 pass, 3 fail, 4 incomplete. A foreground
   `af task run` exits 0 verified, 3 changes requested, 4 cancelled, exhausted or waiting for a
   person, 5 gate failed, 6 Provider failed, 7 expired. With `--detach`, 0 only means the run
   started: `af task wait` returns the outcome, or 124 when its `--timeout` passes. 1 is an error
   and 2 a usage error (`af help exit-codes`).
-- **Follow `next_action`, with care.** Task documents carry `state.outcome` and
-  `state.next_action`, the command to run next with the `--repo`, `--state` or `--workspace` you
-  passed. It is null when there is none, a `TASK_FILE` in it is yours to fill in (with a new
-  `task_id` once the Task ran), and a `--login` step belongs to the human.
+- **Follow `next_action`, with care.** The documents that describe a Task's state
+  (`af task show`, `status`, `wait`, `findings` and the others `af help json` lists) carry
+  `state.outcome` and `state.next_action`, the command to run next with the `--repo`, `--state`
+  or `--workspace` you passed. `next_action` is null when there is none, a `TASK_FILE` in it is
+  yours to fill in (with a new `task_id` once the Task ran), and a `--login` step belongs to the
+  human. `diff` and `materialize` print no state: run `af task status` after them.
 - **Never log in for a human.** `af provider setup --login` runs only at an interactive
   terminal, because the OAuth URL and code it prints are credentials in transit; without one it
   exits 3 with the command for the human to run
@@ -248,7 +255,8 @@ tools a Gate calls; it does not run the Gate.
 
 - macOS on Apple silicon, or Linux on x86_64 or arm64; on an Intel Mac, build from source.
 - Git 2.30 or later, `curl` and `minisign` for the installer, which refuses without `minisign`
-  unless `AF_INSTALL_ALLOW_UNSIGNED=1`; `gh` only when the release repository is not public.
+  unless `AF_INSTALL_ALLOW_UNSIGNED=1`. `gh`, logged in, for a Remote Check, and for `af self`
+  downloads from a release repository that is not public.
 - The `claude` and/or `codex` CLI for model Workers; command Workers need neither.
   `af provider status` shows what each registered login can do.
 - Whatever your Gate runs, installed on this machine: the Gate runs here, so a missing tool
@@ -271,9 +279,10 @@ tools a Gate calls; it does not run the Gate.
   workers/       Worker packages: <name>/reviewer.md (the prompt) and reviewer.toml (the manifest)
 ```
 
-Configuration layers from built-in defaults through `/etc/af`, `~/.config/af` and the
-repository's `.af/af.toml` up to `AF_<TABLE>__<KEY>` variables: `af help layers` lists every
-layer, and `af config show --origin` names where each value came from. Provider bindings such as
+Configuration merges, lowest to highest: built-in defaults, `/etc/af`, `~/.config/af`, every
+`.af/af.toml` above the repository, the repository's `.af/af.toml`, its gitignored
+`.af/af.local.toml`, and `AF_<TABLE>__<KEY>` variables (`af help layers`).
+`af config show --origin` names where each value came from. Provider bindings such as
 `claude-main` and `codex-main` live in a machine-local registry, never in the repository.
 [docs/architecture.md](docs/architecture.md) describes pipelines, routing and budgets.
 
