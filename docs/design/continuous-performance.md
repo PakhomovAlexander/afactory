@@ -428,6 +428,13 @@ fixtures must demonstrate usable unwinding for the supported recipe. This choice
 because perf documents invalid frame-pointer call graphs for code built without the
 necessary frame pointers. [perf record documentation](https://man7.org/linux/man-pages/man1/perf-record.1.html).
 
+GNU CPU diagnostic recipes freeze `-Cdebuginfo=line-tables-only` in the existing recipe
+`rustflags` and build settings. This preserves function names, source lines, inlined call
+locations and unwind information while omitting local-variable and type debugging for compiled
+crates. `debug_symbols = true` means attribution information is retained; it does not promise
+full debugger information. The explicit rustflag overrides Cargo's full-debug default for a
+symbol-enabled recipe. Ordinary verdict recipes and release product settings stay unchanged.
+
 Profiling requires a probed, configured host capability. The tool does not run sudo,
 change kernel sysctls, or grant privileges. Fork PRs only use ephemeral hosted runners;
 a missing profile capability produces a clear unavailable result and reproduction
@@ -442,6 +449,17 @@ differential views in both directions so disappearing stacks remain visible. Col
 change in CPU sample share; it is not an absolute time saving. Preserve unknown frames.
 Use deterministic colors and script-free SVG in the report; inferno exposes these controls.
 [inferno renderer source](https://github.com/jonhoo/inferno/blob/main/src/bin/flamegraph.rs).
+
+Retained ELF executables use lossless XZ (preset 6, CRC64, no filename or timestamp) at
+`symbols/<original-binary-sha256>.xz`. Decompress with `xz -dc FILE.xz > BINARY` and check
+the resulting SHA-256 against the filename and capture's binary identity before use. The
+bundle manifest hashes the actual compressed file. Runtime symbolization uses the original
+admitted build executable. Compression is chunked under the diagnostic deadline and bounded
+by the remaining evidence room; only fitting archives are written, charged at their full
+logical size. Repeated captures and identical binaries reuse one verified archive. Distinct
+binaries pay separately; a selection whose archives cannot all fit keeps content-addressed
+references for the rest. The 1-GiB build cap and 128-MiB evidence cap, including its 8-MiB
+administrative reserve, remain separate and unchanged.
 
 Phase spans use a default-off `perf-trace` feature and cover canonicalization, CAS,
 projection, authority, and startup composition. Export bounded timestamps, PID/TID,

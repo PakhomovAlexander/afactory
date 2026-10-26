@@ -49,6 +49,7 @@ process whole, and its trace's region is the startup or the dispatched command. 
 spawns processes runs only in its contained environment, and is otherwise an omission naming that
 capability.
 """
+import lzma
 import os
 import socket
 import stat
@@ -441,6 +442,7 @@ class Profile(object):
                                "scratch_bound": "not_enforced_in_trusted_local_mode",
                                "container": None}, **(execution or {}))
         self.captures, self.renders, self.traces, self.counters = [], [], [], []
+        self.symbol_archives = {}
         # The explicitly selected telemetry level and each telemetry capture (ADR-0214).
         self.telemetry_level = telemetry
         self.telemetry = []
@@ -1143,19 +1145,7 @@ class Profile(object):
                                                                / region_ms)
         side = record["side"]
         profiled = binary or self.probes[side]
-        with open(profiled[0], "rb") as stream:
-            binary = stream.read(limits.BUILD_ARTIFACT_BYTES_MAX + 1)
-        own = perfcapture.elf_build_id(binary)
-        unique = sorted(set(ids))[:256]
-        symbols = {"state": "referenced", "build_ids": unique,
-                   "binary_build_id_present": (own in unique) if own else None}
-        target = "symbols/" + profiled[1][7:]
-        if len(binary) <= self.budget.room():
-            self.directory("symbols")
-            if not os.path.lexists(os.path.join(self.output, target)):
-                self.write(target, binary)
-            symbols["state"] = "retained"
-        record["symbols"] = symbols
+        record["symbols"] = self.symbols(profiled, ids)
         if self.inferno_paths() is not None and parsed.samples:
             folded = self.tool_output(relative + "/collapsed.folded",
                                       [self.tool("inferno_collapse_perf"),
@@ -1165,6 +1155,54 @@ class Profile(object):
                 flamegraph.check_folded(folded)
             except flamegraph.RenderError:
                 raise
+
+    def symbols(self, profiled, ids):
+        """Retain the exact profiled executable as deterministic XZ, once per source hash.
+        Repeated captures and identical sides reuse admitted symbols even when the remaining
+        room could not hold another copy; distinct hashes pay their full archive size. The
+        artifact hash identifies the XZ bytes; its filename identifies the original binary.
+        Runtime symbolization still uses the admitted, unmodified build executable."""
+        binary = self.admitted(os.path.dirname(profiled[0]), os.path.basename(profiled[0]),
+                               limits.BUILD_ARTIFACT_BYTES_MAX, "profiled executable")
+        require(sha256_bytes(binary) == profiled[1], "profiled executable hash changed")
+        own = perfcapture.elf_build_id(binary)
+        unique = sorted(set(ids))[:256]
+        symbols = {"state": "referenced", "build_ids": unique,
+                   "binary_build_id_present": (own in unique) if own else None}
+        target = "symbols/" + profiled[1][7:] + ".xz"
+        retained = (self.admitted(self.output, target, self.budget.bytes_limit,
+                                  "retained symbols")
+                    if os.path.lexists(os.path.join(self.output, target)) else None)
+        if retained is not None:
+            require(self.symbol_archives.get(profiled[1]) == sha256_bytes(retained),
+                    "retained symbols changed")
+            symbols["state"] = "retained"
+        else:
+            archive = self.symbol_archive(binary, max(0, self.budget.room()))
+            if archive is not None:
+                self.directory("symbols")
+                artifact = self.write(target, archive)
+                self.symbol_archives[profiled[1]] = artifact["sha256"]
+                symbols["state"] = "retained"
+        return symbols
+
+    def symbol_archive(self, binary, limit):
+        """Lossless XZ preset 6, no filename or timestamp, at most `limit` bytes retained in memory.
+        Compress bounded chunks under the same admission deadline; an archive that cannot
+        fit is only referenced, with no file written and no evidence charge avoided."""
+        compressor = lzma.LZMACompressor(format=lzma.FORMAT_XZ, check=lzma.CHECK_CRC64, preset=6)
+        chunks, size = [], 0
+        timing = self.deadlines()
+        for offset in range(0, len(binary) + (1 << 20), 1 << 20):
+            timing.seconds("compressing symbols")
+            chunk = (compressor.compress(binary[offset:offset + (1 << 20)])
+                     if offset < len(binary) else compressor.flush())
+            timing.seconds("compressing symbols")
+            size += len(chunk)
+            if size > limit:
+                return None
+            chunks.append(chunk)
+        return b"".join(chunks)
 
     def losses(self, relative, names):
         """The loss records of every recording `names` below `relative`, decoded from each

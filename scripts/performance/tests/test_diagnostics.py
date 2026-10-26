@@ -10,8 +10,10 @@ the real supervisor's bounds over diagnostic tools are exercised by
 `crates/review-process/tests/diagnostic_tools.rs`.
 """
 import struct
+import lzma
 import json
 import os
+import random
 import shutil
 import subprocess
 import sys
@@ -69,6 +71,18 @@ class Registry(unittest.TestCase):
         self.assertTrue(recipe["instrumented"] and recipe["frame_pointers"]
                         and recipe["debug_symbols"])
         self.assertEqual(recipe["features"], ["perf-control"])
+        self.assertEqual(recipe["rustflags"], base["rustflags"] + [
+            "-Cdebuginfo=line-tables-only"])
+        self.assertEqual(base["rustflags"], [])
+        # Derivation must not mutate the base's list, including on a second planning pass.
+        self.assertEqual(diagcontracts.diagnostic_recipe(
+            loaded.doc, registry, "linux_gnu_cpu_profile"), recipe)
+        for recipe_id in registry["recipes"]:
+            if recipe_id == "linux_gnu_cpu_profile":
+                continue
+            other = diagcontracts.diagnostic_recipe(loaded.doc, registry, recipe_id)
+            self.assertEqual(other["rustflags"], loaded.doc["recipes"][
+                registry["recipes"][recipe_id]["base_recipe"]]["rustflags"])
         # The verdict recipe itself is untouched: uninstrumented, no symbols, no frame pointers.
         self.assertFalse(base["instrumented"] or base["frame_pointers"] or base["debug_symbols"])
         inferno = registry["tools"]["inferno_flamegraph"]
@@ -255,6 +269,102 @@ class Evidence(TempDir):
         with open(sparse, "wb") as stream:
             stream.truncate(1 << 20)
         self.assertEqual(budget.record(1)["bytes"]["evidence_used"], 3000 + (1 << 20))
+
+
+class Symbols(TempDir):
+    def profile(self):
+        profile = Evidence.profile(self)
+        profile.retained = []
+        profile.symbol_archives = {}
+        return profile
+
+    LIMITS = Evidence.LIMITS
+
+    def noise(self, size, seed):
+        source = random.Random(seed)
+        return bytes(source.getrandbits(8) for _ in range(size))
+
+    def executable(self, name, data):
+        path = self.path(name)
+        with open(path, "wb") as stream:
+            stream.write(data)
+        return path, sha256_bytes(data)
+
+    def test_shared_symbols_pay_once_even_when_another_copy_would_not_fit(self):
+        profile = self.profile()
+        binary = self.executable("probe", self.noise(1400, 1))
+        self.assertEqual(profile.symbols(binary, ["abcd"]), {
+            "state": "retained", "build_ids": ["abcd"], "binary_build_id_present": None})
+        self.assertLess(profile.budget.room(), os.stat(binary[0]).st_size)
+        before = profile.budget.used_bytes()
+        self.assertEqual(profile.symbols(binary, ["abcd"])["state"], "retained")
+        self.assertEqual(profile.budget.used_bytes(), before)
+        archive = read(self.path("run", "symbols", binary[1][7:] + ".xz"))
+        self.assertEqual(lzma.decompress(archive), read(binary[0]))
+        self.assertEqual(profile.artifacts("symbols"), [{
+            "path": "symbols/" + binary[1][7:] + ".xz", "bytes": len(archive),
+            "sha256": sha256_bytes(archive)}])
+        self.assertEqual(before, len(archive))
+
+    def test_distinct_symbols_pay_separately_and_an_oversize_binary_stays_referenced(self):
+        profile = self.profile()
+        sizes = []
+        for name, data in (("baseline", self.noise(700, 1)),
+                           ("candidate", self.noise(800, 2))):
+            binary = self.executable(name, data)
+            self.assertEqual(profile.symbols(binary, [])["state"], "retained")
+            archive = read(self.path("run", "symbols", binary[1][7:] + ".xz"))
+            self.assertEqual(sha256_bytes(lzma.decompress(archive)), binary[1])
+            sizes.append(len(archive))
+        self.assertEqual(profile.budget.used_bytes(), sum(sizes))
+        large = self.executable("large", self.noise(1000, 3))
+        self.assertEqual(profile.symbols(large, [])["state"], "referenced")
+        self.assertEqual(profile.budget.used_bytes(), sum(sizes))
+        self.assertFalse(os.path.exists(self.path("run", "symbols", large[1][7:] + ".xz")))
+        usage = profile.budget.record(0)["bytes"]
+        self.assertEqual((usage["evidence_used"], usage["evidence_overage"]), (sum(sizes), 0))
+
+    def test_lossless_archives_fit_by_their_logical_size_and_have_no_timestamp(self):
+        profile = self.profile()
+        binary = self.executable("probe", b"symbols" * 10000)
+        self.assertGreater(os.stat(binary[0]).st_size, profile.budget.evidence_limit)
+        self.assertEqual(profile.symbols(binary, [])["state"], "retained")
+        archive = read(self.path("run", "symbols", binary[1][7:] + ".xz"))
+        self.assertTrue(archive.startswith(b"\xfd7zXZ\x00"))  # XZ has no timestamp or filename
+        self.assertEqual(lzma.decompress(archive), read(binary[0]))
+        self.assertEqual(profile.budget.used_bytes(), len(archive))
+        self.assertEqual(profile.symbol_archive(read(binary[0]), len(archive)), archive)
+        self.assertIsNone(profile.symbol_archive(read(binary[0]), len(archive) - 1))
+
+    def test_compression_keeps_the_absolute_deadline(self):
+        profile = self.profile()
+        now = [0]
+        def clock():
+            now[0] += 1
+            return now[0]
+        profile.clock = clock
+        profile.budget.deadline = 2
+        with self.assertRaisesRegex(ContractError, "deadline"):
+            profile.symbol_archive(b"symbols" * 10000, 2048)
+        self.assertEqual(profile.budget.used_bytes(), 0)
+
+    def test_symbol_bytes_must_match_the_profiled_hash_and_retained_files_are_admitted(self):
+        profile = self.profile()
+        binary = self.executable("probe", b"original symbols")
+        wrong = (binary[0], sha256_bytes(b"other bytes"))
+        with self.assertRaisesRegex(ContractError, "profiled executable hash changed"):
+            profile.symbols(wrong, [])
+        self.assertEqual(profile.budget.used_bytes(), 0)
+        profile.symbols(binary, [])
+        target = self.path("run", "symbols", binary[1][7:] + ".xz")
+        with open(target, "wb") as stream:
+            stream.write(b"changed symbols!")
+        with self.assertRaisesRegex(ContractError, "retained symbols changed"):
+            profile.symbols(binary, [])
+        os.unlink(target)
+        os.symlink(binary[0], target)
+        with self.assertRaisesRegex(ContractError, "symlink"):
+            profile.symbols(binary, [])
 
 
 class AggregateRoom(TempDir):

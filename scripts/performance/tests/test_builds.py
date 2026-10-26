@@ -506,6 +506,79 @@ class FakeBuild(TempDir):
                 builder.build()
             self.assertEqual(caught.exception.reason, reason)
 
+    def test_gnu_cpu_settings_are_frozen_recorded_and_diagnostic_only(self):
+        loaded = suite_module.load(SUITE)
+        declared = diagnostics.load(os.path.join(ROOT, diagnostics.REGISTRY_PATH), loaded.doc)
+        recipe_id = "linux_gnu_cpu_profile"
+        recipe = diagcontracts.diagnostic_recipe(loaded.doc, declared, recipe_id)
+        toolchain = builds.Toolchain(fake_toolchain(self.path("linux-toolchain"),
+                                                   "x86_64-unknown-linux-gnu"), "1.88.0")
+        for shared in (False, True):
+            plan = plan_for(self.repo, self.base, self.base if shared else self.head,
+                            self.authority, run_id="gnu_cpu_%s" % str(shared).lower(), tier="quick",
+                            environment="linux_x86_64_gnu_hosted", trusted_host_build=True,
+                            diagnostic_recipe=(recipe_id, recipe,
+                                diagcontracts.frozen_identity(declared, recipe_id)))
+            builder = builds.Builder(self.repo.path, plan, toolchain, registry(),
+                                     free_bytes=PLENTY)
+            doc = builder.build()
+            verified, paths = builds.verify_artifacts(builder.layout.build)
+            self.assertEqual(verified, doc)
+            self.assertEqual(doc["recipe_digest"], contracts.recipe_digest(
+                recipe_id, recipe, plan["profile"]["build"]))
+            records = [doc["supervisor"]]
+            total = doc["supervisor"]["artifact"]["size"]
+            for side in ("baseline", "candidate"):
+                record = doc["sides"][side]
+                self.assertEqual(record["status"], "succeeded")
+                self.assertEqual(record["settings"], contracts.recipe_settings(recipe))
+                records.append(record["product"])
+                records.extend(item["step"] for item in record["adapter_outcomes"]
+                               if item["step"] is not None)
+                for kind in ("af", "probe"):
+                    artifact = record["artifacts"][kind]
+                    data = read(paths[side + "/" + kind])
+                    self.assertEqual((artifact["size"], artifact["sha256"]),
+                                     (len(data), sha256_bytes(data)))
+                    if side == "baseline" or not shared:
+                        total += len(data)
+            for record in records:
+                env = record.get("environment", record.get("step", {}).get("environment"))
+                self.assertEqual(env["CARGO_ENCODED_RUSTFLAGS"].split("\x1f"),
+                                 recipe["rustflags"] + ["-Cforce-frame-pointers=yes"])
+                self.assertEqual(env["CARGO_PROFILE_RELEASE_DEBUG"], "true")
+            # Manifest overhead is also charged by the build's final accounting.
+            self.assertGreaterEqual(doc["artifacts"]["bytes"], total)
+            self.assertLessEqual(doc["artifacts"]["bytes"], doc["artifacts"]["limit_bytes"])
+            self.assertEqual(doc["sides"]["candidate"]["shared_with"],
+                             "baseline" if shared else None)
+        ordinary = plan_for(self.repo, self.base, self.head, self.authority, tier="quick",
+                            environment="linux_x86_64_gnu_hosted", trusted_host_build=True)
+        builder = builds.Builder(self.repo.path, ordinary, toolchain, registry(),
+                                 free_bytes=PLENTY)
+        self.assertEqual(builder.recipe["rustflags"], [])
+        self.assertNotIn("CARGO_PROFILE_RELEASE_DEBUG", builder.environment())
+        self.assertNotIn("CARGO_ENCODED_RUSTFLAGS", builder.environment())
+
+    def test_the_reported_production_probe_size_is_refused_before_reading(self):
+        # #353's actual failure: AF and the supervisor had consumed this room before the
+        # 531-MB full-debug probe arrived. Keep that refusal under the unchanged cap.
+        plan = plan_for(self.repo, self.base, self.head, self.authority)
+        builder = builds.Builder(self.repo.path, plan, self.toolchain, registry(),
+                                 free_bytes=PLENTY)
+        builder.layout.create()
+        builder.published = 799043896 + 14749752
+        output = self.path("production-probe")
+        with open(output, "wb") as stream:
+            stream.truncate(531252216)
+        with mock.patch.object(builds.admission, "read_bounded") as reading:
+            artifact, _, refusal = builder._publish(self.tmp, "production-probe",
+                                                    "baseline", "perf-probe")
+        self.assertIsNone(artifact)
+        self.assertIn("259948176 remain", refusal)
+        self.assertEqual(builder.budget.artifact_limit, 1073741824)
+        reading.assert_not_called()
+
 
 IMAGE = "sha256:" + "a" * 64
 OTHER_IMAGE = "sha256:" + "b" * 64
