@@ -352,41 +352,74 @@ class WorkflowCleanup(ContainedBase):
                     owner.doc["filesystem_pending"] = False
                     owner._write()
 
+    def assert_unused_fence_settlement(self, boundary, preparation_delay=0):
+        offset = [0.0]
+        actual_sync = telemetrylab._sync
+        calls, settlements, failures = [], [], []
+        def sync(allowance, step, function, *args, **kwargs):
+            if step != "settling unused telemetry work":
+                return actual_sync(allowance, step, function, *args, **kwargs)
+            offset[0] = allowance.deadline - time.monotonic() + (
+                .01 if boundary == "expired" else -.08)
+            start = time.monotonic()
+            try:
+                return actual_sync(allowance, step, function, *args, **kwargs)
+            except BaseException as error:
+                failures.append(error)
+                raise
+            finally:
+                # Include deadline refusal and interrupted/failed settlement returns.
+                settlements.append(time.monotonic() - start)
+        actual_write = hostprep.TelemetryOwner._write
+        def write(owner):
+            if not owner.doc["filesystem_pending"]:
+                calls.append(time.monotonic())
+                if boundary == "error": raise OSError("settlement write failed")
+                time.sleep(30)
+            return actual_write(owner)
+        actual_inspect = self.image_inspection(False)
+        def inspect_image(*args, **kwargs):
+            # Unrelated preparation precedes the settlement observation, inside the
+            # real fenced executor route, without replacing its persisted ownership.
+            if preparation_delay:
+                time.sleep(preparation_delay)
+            return actual_inspect(*args, **kwargs)
+        def configure(settings):
+            self.real_preparation(settings)
+            settings.clock = lambda: time.monotonic() + offset[0]
+        start = time.monotonic()
+        with mock.patch.object(builds, "_run", inspect_image), \
+                mock.patch.object(telemetrylab, "_sync", sync), \
+                mock.patch.object(hostprep.TelemetryOwner, "_write", write):
+            self.assertEqual(self.measure(configure), cli.EXIT_UNAVAILABLE)
+        total_elapsed = time.monotonic() - start
+        self.assertEqual(len(settlements), 1, "unused-work settlement boundary was not reached once")
+        self.assertLess(settlements[0], 1)
+        self.assertEqual(len(failures), 1)
+        self.assertIsInstance(failures[0], {"error": OSError, "stall": budget.Interrupted,
+                                          "expired": budget.Expired}[boundary])
+        self.assertEqual(len(calls), 0 if boundary == "expired" else 1)
+        self.assertEqual(self.executor.names, 0)
+        with self.owner() as owner:
+            self.assertTrue(owner.doc["filesystem_pending"])
+        self.retained()
+        with self.owner() as owner:
+            owner.doc["filesystem_pending"] = False  # Test-owned recovery.
+            owner._write()
+        return total_elapsed
+
     def test_failed_or_expired_unused_fence_settlement_is_bounded_and_conservative(self):
         for boundary in ("error", "stall", "expired"):
             with self.subTest(boundary=boundary):
-                offset = [0.0]
-                actual_sync = telemetrylab._sync
-                calls = []
-                def sync(allowance, step, function, *args, **kwargs):
-                    if step == "settling unused telemetry work":
-                        offset[0] = allowance.deadline - time.monotonic() + (
-                            .01 if boundary == "expired" else -.08)
-                    return actual_sync(allowance, step, function, *args, **kwargs)
-                actual_write = hostprep.TelemetryOwner._write
-                def write(owner):
-                    if not owner.doc["filesystem_pending"]:
-                        calls.append(time.monotonic())
-                        if boundary == "error": raise OSError("settlement write failed")
-                        time.sleep(30)
-                    return actual_write(owner)
-                def configure(settings):
-                    self.real_preparation(settings)
-                    settings.clock = lambda: time.monotonic() + offset[0]
-                start = time.monotonic()
-                with mock.patch.object(builds, "_run", self.image_inspection(False)), \
-                        mock.patch.object(telemetrylab, "_sync", sync), \
-                        mock.patch.object(hostprep.TelemetryOwner, "_write", write):
-                    self.assertEqual(self.measure(configure), cli.EXIT_UNAVAILABLE)
-                self.assertLess(time.monotonic() - start, 1)
-                self.assertEqual(len(calls), 0 if boundary == "expired" else 1)
-                self.assertEqual(self.executor.names, 0)
-                with self.owner() as owner:
-                    self.assertTrue(owner.doc["filesystem_pending"])
-                self.retained()
-                with self.owner() as owner:
-                    owner.doc["filesystem_pending"] = False  # Test-owned recovery.
-                    owner._write()
+                self.assert_unused_fence_settlement(boundary)
+
+    def test_slow_preparation_does_not_consume_unused_fence_settlement_measurement(self):
+        for boundary in ("stall", "expired"):
+            with self.subTest(boundary=boundary):
+                elapsed = self.assert_unused_fence_settlement(boundary, preparation_delay=1.05)
+                # This deliberately fails the old total-setup bound, while the shared
+                # assertions still check real interruption/expiry and durable retention.
+                self.assertGreaterEqual(elapsed, 1.05)
 
     def test_workflow_cli_stopped_runs_allow_cleanup_after_result_publication(self):
         os.rmdir(self.run_dir)
