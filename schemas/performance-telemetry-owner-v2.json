@@ -1,13 +1,13 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "$id": "urn:af:schema:performance-telemetry-owner:1",
-  "title": "af.perf-telemetry-owner/1",
-  "description": "Trusted bounded cleanup authority, outside candidate mounts; pending launches must be confirmed stopped before scratch removal.",
+  "$id": "urn:af:schema:performance-telemetry-owner:2",
+  "title": "af.perf-telemetry-owner/2",
+  "description": "Trusted bounded cleanup authority, outside candidate mounts; pending launches and filesystem work must be settled before scratch removal.",
   "type": "object",
   "additionalProperties": false,
   "properties": {
     "schema": {
-      "const": "af.perf-telemetry-owner/1"
+      "const": "af.perf-telemetry-owner/2"
     },
     "owner_uid": {
       "type": "integer",
@@ -95,6 +95,9 @@
       "type": "integer",
       "minimum": 0,
       "maximum": 1000000
+    },
+    "filesystem_pending": {
+      "type": "boolean"
     }
   },
   "required": [
@@ -109,6 +112,7 @@
     "mount_identity",
     "phase",
     "container",
-    "launches"
+    "launches",
+    "filesystem_pending"
   ]
 }

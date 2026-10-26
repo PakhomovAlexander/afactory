@@ -12,10 +12,12 @@ import os
 from pathlib import Path
 import shlex
 import shutil
+import signal
 import string
+import time
 from unittest import mock
 
-from perflab import contracts, hostprep, telemetryexec, telemetrylab
+from perflab import budget, contracts, hostprep, telemetryexec, telemetrylab
 from perflab.values import ContractError
 from tests import telemetry_fixtures as fx
 from tests import test_workflow as workflow
@@ -217,10 +219,10 @@ class WorkflowCleanup(ContainedBase):
         self.assertEqual(self.invoke("ci-scratch", cleanup=True), 0)
         self.assertFalse(os.path.exists(self.image))
 
-    def measure(self):
+    def measure(self, configure=None):
         for side in contracts.SIDES:
             binary = Path(self.tmp, side, "af")
-            binary.parent.mkdir()
+            binary.parent.mkdir(exist_ok=True)
             binary.write_text("#!/bin/sh\necho 'af 0.0.0'\n")
             binary.chmod(0o755)
             record = {"schema": contracts.TELEMETRY_BUILD_SCHEMA, "side": side,
@@ -232,17 +234,20 @@ class WorkflowCleanup(ContainedBase):
         args = cli.parser().parse_args(self.argv("telemetry-run") + ["--experiment", "overhead",
             "--rounds", "1", "--pairs", "1", "--scale", "smoke", "--corpus-runs", "10"])
         original = telemetrylab.run
-        os.mkdir(self.path("machine-lock"))
+        os.makedirs(self.path("machine-lock"), exist_ok=True)
 
         def run(settings):
             settings.executor = self.executor
             self.executor.owner = settings.scratch_owner
             settings.lock_directory = self.path("machine-lock")
             settings.host_identity = lambda: fx.HOST
+            if configure is not None:
+                configure(settings)
             return original(settings)
 
         with mock.patch.object(telemetrylab, "run", run), \
-                contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(io.StringIO()):
+                contextlib.redirect_stdout(io.TextIOWrapper(io.BytesIO(), write_through=True)), \
+                contextlib.redirect_stderr(io.StringIO()):
             return args.handler(args)
 
     def test_workflow_cli_cancellation_before_result_keeps_actual_work(self):
@@ -354,4 +359,193 @@ class WorkflowCleanup(ContainedBase):
         Path(self.image).write_bytes(b"x" * 65536)
         self.retained()
         self.assertTrue(Path(self.image + "-retained").exists())
+
+    def test_persisted_work_fence_survives_interrupted_cleanup_boundaries(self):
+        # Use actual owner records, the real timer and the workflow's cleanup admission.
+        # The last stopped record must be unsafe even if uncertainty publication fails.
+        for boundary in ("read", "write", "replace", "file_sync", "directory_sync",
+                         "delete", "settle_read", "settle_write"):
+            with self.subTest(boundary=boundary):
+                if not os.path.isdir(self.run_dir):
+                    os.mkdir(self.run_dir)
+                Path(self.run_dir, "candidate-data").write_bytes(b"retained")
+                with self.owner() as owner:
+                    # Each subcase's explicit test-owned recovery restores the initial state.
+                    owner.prepare_work()
+                    self.executor.pending = False
+                    self.assertEqual(self.run_execution(owner).cleanup, "confirmed")
+                    persisted = json.loads(Path(self.owner_path, "state.json").read_bytes())
+                    self.assertEqual(persisted["phase"], "stopped")
+                    self.assertTrue(persisted["filesystem_pending"])
+                    state = {"problems": []}
+                    real_read, real_write = owner._read, owner._write
+                    real_sync, real_replace = os.fsync, os.replace
+                    def stall():
+                        self.assertGreater(signal.getitimer(signal.ITIMER_REAL)[0], 0)
+                        time.sleep(30)
+                    def read_owner():
+                        if boundary == "read" or (boundary == "settle_read"
+                                                  and not os.path.exists(self.run_dir)):
+                            stall()
+                        return real_read()
+                    def write_owner():
+                        if boundary == "write" or (boundary == "settle_write"
+                                                   and not os.path.exists(self.run_dir)):
+                            stall()
+                        return real_write()
+                    def sync(fd):
+                        if ((boundary == "directory_sync" and fd == owner.directory)
+                                or (boundary == "file_sync" and fd != owner.directory)):
+                            stall()
+                        return real_sync(fd)
+                    def replace(*args, **kwargs):
+                        if boundary == "replace": stall()
+                        return real_replace(*args, **kwargs)
+                    start = time.monotonic()
+                    with mock.patch.object(owner, "_read", read_owner), \
+                            mock.patch.object(owner, "_write", write_owner), \
+                            mock.patch.object(os, "fsync", sync), \
+                            mock.patch.object(os, "replace", replace), \
+                            mock.patch.object(telemetrylab.shutil, "rmtree",
+                                side_effect=lambda *a, **k: stall()) if boundary == "delete" else contextlib.nullcontext():
+                        self.assertFalse(telemetrylab._remove_owned(self.run_dir,
+                            type("Settings", (), {"scratch_owner": owner})(), self.executor,
+                            state, budget.Budget(start + .08, time.monotonic, 0),
+                            self.executor.directory))
+                    self.assertLess(time.monotonic() - start, 1)
+                    self.assertEqual(state["cleanup"], "uncertain")
+                    self.assertTrue(self.executor.pending)
+                    self.assertTrue(Path(self.executor.directory).is_dir())
+                    self.assertTrue(real_read()["filesystem_pending"])
+                    before = len(self.calls())
+                    self.assertEqual(self.run_execution(owner, label="refused").cleanup,
+                                     "uncertain")
+                    self.assertEqual(len(self.calls()), before)
+                self.retained()
+                with self.owner() as reopened:
+                    with self.assertRaisesRegex(ContractError, "unsettled launch"):
+                        reopened.available()
+                    # Explicit fixture recovery only, after verifying product refusal.
+                    reopened.doc.update(phase="stopped", filesystem_pending=False)
+                    reopened._write()
+
+    def test_exception_after_container_removal_preserves_work_and_original_failure(self):
+        os.rmdir(self.run_dir)
+        os.rmdir(self.executor.directory)
+        original = hostprep.TelemetryOwner.finish
+        def stopped(owner, *args):
+            original(owner, *args)
+            raise RuntimeError("after confirmed container removal")
+        with mock.patch.object(hostprep.TelemetryOwner, "finish", stopped):
+            with self.assertRaisesRegex(RuntimeError, "after confirmed container removal"):
+                self.measure()
+        with self.owner() as owner:
+            self.assertEqual(owner.doc["phase"], "stopped")
+            self.assertTrue(owner.doc["filesystem_pending"])
+        self.retained()
+        self.assertEqual(len([call for call in self.calls() if call[0] == "run"]), 1)
+        self.assertTrue(Path(self.executor.directory).is_dir())
+        self.assertFalse(Path(self.tmp, "telemetry-result", "manifest.json").exists())
+        self.assertFalse(Path(self.tmp, "telemetry-result", "result.json").exists())
+
+    def test_failed_fence_before_setup_never_starts_candidate_work(self):
+        os.rmdir(self.run_dir)
+        os.rmdir(self.executor.directory)
+        original = hostprep.TelemetryOwner._write
+        def write(owner):
+            if owner.doc["filesystem_pending"]:
+                raise OSError("initial fence publication failed")
+            return original(owner)
+        with mock.patch.object(hostprep.TelemetryOwner, "_write", write):
+            self.assertNotEqual(self.measure(), 0)
+        self.assertEqual(self.executor.names, 0)
+        self.assertFalse(Path(self.executor.directory).exists())
+        self.assertEqual(self.invoke("ci-scratch", cleanup=True), 0)
+
+    def test_public_run_stalled_owner_fence_does_not_retry_after_expiry(self):
+        os.rmdir(self.run_dir)
+        os.rmdir(self.executor.directory)
+        offset = [0.0]
+        actual_sync, actual_write = telemetrylab._sync, hostprep.TelemetryOwner._write
+        writes = []
+        def sync(allowance, step, function, *args, **kwargs):
+            if step == "removing telemetry scratch":
+                offset[0] = allowance.deadline - time.monotonic() - .08
+            return actual_sync(allowance, step, function, *args, **kwargs)
+        def write(owner):
+            if owner.doc["phase"] == "uncertain":
+                writes.append(time.monotonic())
+                time.sleep(30)
+            return actual_write(owner)
+        start = time.monotonic()
+        with mock.patch.object(telemetrylab, "_sync", sync), \
+                mock.patch.object(hostprep.TelemetryOwner, "_write", write):
+            self.assertEqual(self.measure(lambda settings: setattr(settings, "clock",
+                lambda: time.monotonic() + offset[0])), cli.EXIT_UNAVAILABLE)
+        self.assertLess(time.monotonic() - start, 1)
+        self.assertEqual(len(writes), 1, "failure handlers must not retry ownership I/O")
+        with self.owner() as owner:
+            self.assertEqual(owner.doc["phase"], "stopped")
+            self.assertTrue(owner.doc["filesystem_pending"])
+        self.assertEqual(len([call for call in self.calls() if call[0] == "run"]), 1)
+        self.assertTrue(Path(self.executor.directory).is_dir())
+        self.assertFalse(Path(self.tmp, "telemetry-result", "manifest.json").exists())
+        self.assertFalse(Path(self.tmp, "telemetry-result", "result.json").exists())
+        self.retained()
+        self.assertNotEqual(self.invoke("telemetry-run"), 0)
+        self.assertIn("unsettled launch", self.stderr.getvalue())
+
+    def test_final_work_settlement_stall_retains_the_actual_mount_recovery_path(self):
+        for boundary in ("read", "write"):
+            with self.subTest(boundary=boundary):
+                with self.owner() as owner:
+                    owner.prepare_work()
+                    self.executor.pending = False
+                    self.assertEqual(self.run_execution(owner).cleanup, "confirmed")
+                    original = owner.work_cleaned
+                    def cleaned():
+                        with mock.patch.object(owner, "_" + boundary,
+                                               side_effect=lambda: time.sleep(30)):
+                            original()
+                    state = {"problems": []}
+                    start = time.monotonic()
+                    with mock.patch.object(owner, "work_cleaned", cleaned):
+                        self.assertFalse(telemetrylab._remove_owned(self.executor.directory,
+                            type("Settings", (), {"scratch_owner": owner})(), self.executor,
+                            state, budget.Budget(start + .08, time.monotonic, 0),
+                            self.executor.directory))
+                    self.assertLess(time.monotonic() - start, 1)
+                    self.assertFalse(os.path.exists(self.executor.directory))
+                    self.assertEqual(state["retained"], self.mount)
+                    self.assertIn("directory removed", state["stopped"])
+                    self.assertTrue(owner._read()["filesystem_pending"])
+                self.retained()
+                with self.owner() as owner:
+                    owner.doc["filesystem_pending"] = False  # Test-owned recovery only.
+                    owner._write()
+                os.makedirs(self.run_dir)
+
+    def test_controller_loss_before_launch_preserves_the_setup_fence(self):
+        with self.owner() as owner:
+            owner.prepare_work()
+            self.assertEqual(owner.doc["phase"], "ready")
+        self.retained()
+        with self.owner() as owner:
+            with self.assertRaisesRegex(ContractError, "unsettled launch"):
+                owner.available()
+
+    def test_successful_multiple_executions_allow_a_fresh_controller_launch(self):
+        os.rmdir(self.run_dir)
+        os.rmdir(self.executor.directory)
+        self.assertEqual(self.measure(), cli.EXIT_UNAVAILABLE)
+        with self.owner() as owner:
+            self.assertEqual(owner.doc["launches"], 4)
+            self.assertFalse(owner.doc["filesystem_pending"])
+            owner.available()
+        os.rename(self.path("telemetry-result"), self.path("first-result"))
+        self.assertEqual(self.measure(), cli.EXIT_UNAVAILABLE)
+        with self.owner() as owner:
+            self.assertEqual(owner.doc["launches"], 8)
+            self.assertFalse(owner.doc["filesystem_pending"])
+        self.assertEqual(self.invoke("ci-scratch", cleanup=True), 0)
 

@@ -415,3 +415,5 @@ future readers need.
   fixtures](0221-integrate-the-performance-lab-with-ga-and-control-short-attempt-fixtures.md)
 - [0222 — Fence filesystem cleanup and bound telemetry admission through
   publication](0222-fence-filesystem-cleanup-and-bound-telemetry-admission-through-publication.md)
+- [0223 — Retain telemetry work authority before setup and register lock
+  ownership](0223-retain-telemetry-work-authority-before-setup-and-register-lock-ownership.md)

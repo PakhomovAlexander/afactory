@@ -2330,6 +2330,37 @@
       "path": "verdict/valid-synthetic-regression.json",
       "contract": "verdict",
       "valid": true
+    },
+    {
+      "path": "telemetry-owner/valid-ready-filesystem-pending.json",
+      "contract": "telemetry-owner",
+      "valid": true
+    },
+    {
+      "path": "telemetry-owner/valid-stopped-filesystem-pending.json",
+      "contract": "telemetry-owner",
+      "valid": true
+    },
+    {
+      "path": "telemetry-owner/invalid-missing-filesystem-fence.json",
+      "contract": "telemetry-owner",
+      "valid": false,
+      "error": "filesystem_pending",
+      "shape": true
+    },
+    {
+      "path": "telemetry-owner/invalid-version.json",
+      "contract": "telemetry-owner",
+      "valid": false,
+      "error": "expected af.perf-telemetry-owner/2",
+      "shape": true
+    },
+    {
+      "path": "telemetry-owner/invalid-removed-filesystem-pending.json",
+      "contract": "telemetry-owner",
+      "valid": false,
+      "error": "retired ownership",
+      "shape": false
     }
   ]
 }

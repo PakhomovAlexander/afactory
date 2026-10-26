@@ -1695,6 +1695,94 @@ class UncertainCleanup(ChildRunBase):
         profile.retained = []
         return profile
 
+    def test_decoder_and_renderer_uncertainty_and_exceptions_retain_all_staging(self):
+        # Profile.run -> perf_capture -> analyse -> tool_output -> tool_run, and
+        # Profile.run -> render -> Renderer.run -> tool_output -> tool_run.
+        # These calls have no Namespace; the recording's Namespace is already released.
+        from perflab import budget as deadlines
+        for mode in ("trusted_local", "linux_container"):
+            for target in ("decoder", "renderer"):
+                for failure in (None, OSError, RuntimeError, KeyboardInterrupt,
+                                deadlines.Interrupted):
+                    with self.subTest(mode=mode, target=target, failure=failure):
+                        perf = fakes.perf(self.path("perf"),
+                                          phase_file=self.path("probe-bin", "phase"))
+                        tools = diagnostics.configured_tools(perf=perf,
+                            inferno_bin=fakes.inferno(self.path("inferno")))
+                        place = None
+                        if mode == "linux_container":
+                            root = self.path("scratch-fs")
+                            os.mkdir(root, 0o700)
+                            place = dict(scratch_root=root, docker=fakes.docker(self.path("docker")))
+                        actual = toolrun.run
+                        actual_run = diagnostics.Profile.run
+                        launched, unsafe, removals = [], [], []
+                        real_remove = diagnostics.admission.remove_tree
+                        def run_profile(profile):
+                            # Materialized authority work is separate from contained work.
+                            path = os.path.join(profile.output, diagnostics.WORK_DIR)
+                            os.makedirs(path, exist_ok=True)
+                            with open(os.path.join(path, "authority-work"), "wb") as stream:
+                                stream.write(b"retain all work roots")
+                            return actual_run(profile)
+                        def remove(path, *args, **kwargs):
+                            if unsafe: removals.append(path)
+                            return real_remove(path, *args, **kwargs)
+                        def tool(*args, **kwargs):
+                            result = actual(*args, **kwargs)
+                            argv = args[1]
+                            launched.append(list(argv))
+                            match = ((target == "decoder" and len(argv) > 1 and argv[1] == "script")
+                                     or (target == "renderer" and os.path.basename(argv[0])
+                                         == "inferno-diff-folded" and "--version" not in argv))
+                            if match:
+                                self.assertFalse(unsafe, "no second tool may launch")
+                                path = kwargs["stdout_path"]
+                                self.assertTrue(read(path), "actual tool wrote its output")
+                                unsafe.append(path)
+                                if failure is not None:
+                                    raise failure("after possible tool launch")
+                                result.uncertain = True
+                            return result
+                        with mock.patch.object(toolrun, "run", tool), \
+                                mock.patch.object(diagnostics.Profile, "run", run_profile), \
+                                mock.patch.object(diagnostics.admission, "remove_tree", remove):
+                            doc, output = self.profile("linux_gnu_cpu_profile", [SMALL, VALIDATE],
+                                tools, {}, contained=place, work_removed=False)
+                        profile = self.profile_object
+                        self.assertEqual(len(unsafe), 1)
+                        self.assertTrue(read(unsafe[0]), "unsafe output must remain untouched")
+                        self.assertEqual(removals, [], "nothing is deleted after uncertainty")
+                        self.assertTrue(os.path.isdir(profile.work))
+                        if profile.stage:
+                            self.assertTrue(os.path.isdir(profile.stage))
+                            relative = os.path.relpath(unsafe[0], profile.stage)
+                            self.assertFalse(os.path.exists(os.path.join(output, relative)),
+                                             "unsafe output was collected into evidence")
+                        self.assertIn(os.path.dirname(unsafe[0]), profile.unsafe_staging)
+                        self.assertEqual(profile.retained, [os.path.dirname(unsafe[0])])
+                        if target == "decoder":
+                            self.assertEqual(launched[-1][1], "script")
+                            self.assertTrue(all(item["omission"]["reason"] == "cleanup_uncertain"
+                                                for item in doc["captures"]))
+                            self.assertTrue(all(item["artifacts"] == [] for item in doc["captures"]))
+                        else:
+                            self.assertEqual(os.path.basename(launched[-1][0]), "inferno-diff-folded")
+                            self.assertTrue(any(item["reason"] == "cleanup_uncertain"
+                                                for item in doc["omissions"]))
+                        self.assertEqual(doc["execution"]["retained_scratch"], 1)
+                        self.assertFalse(os.path.exists(os.path.join(output, "manifest.json")),
+                                         "uncertain staging cannot become an admitted bundle")
+                        with self.assertRaises(perfcapture.CaptureError):
+                            profile.tool_run(["/bin/true"], 1, 1, self.tmp)
+                        with self.assertRaises(perfcapture.CaptureError):
+                            profile.collect("unsafe")
+                        # Only test-owned recovery after all product retention assertions.
+                        for directory in ("child", "probe-bin", "supervisor", "perf", "inferno",
+                                          "scratch-fs", "docker"):
+                            path = self.path(directory)
+                            if os.path.isdir(path): shutil.rmtree(path)
+
     def test_an_uncertain_release_keeps_the_namespace_and_its_data(self):
         profile = self.bare()
         namespace = profile.namespace()

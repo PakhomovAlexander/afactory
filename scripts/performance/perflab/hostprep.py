@@ -21,6 +21,7 @@ import stat
 import subprocess
 
 from . import contracts, limits
+from .budget import defer_alarm
 from .values import ContractError, require
 
 STEP_SECONDS = 120
@@ -123,7 +124,7 @@ def cleanup(image, mount, host=None, mounted=True):
 
 
 class TelemetryOwner:
-    """Trusted, bounded launch fence for one telemetry filesystem, outside all candidate
+    """Trusted, bounded work and launch fence for one telemetry filesystem, outside candidate
     mounts. The workflow creates it after preparation, holds its nonblocking lock throughout
     measurement, and reacquires it for cleanup. A pending launch survives loss of the controller
     or result publication. Only the executor's confirmed removal can settle that launch.
@@ -137,6 +138,7 @@ class TelemetryOwner:
         self.create = create
         self.image = os.path.abspath(image) if image else None
         self.directory = self.lock = None
+        self.work_pending = False
 
     @staticmethod
     def identity(info):
@@ -150,13 +152,15 @@ class TelemetryOwner:
         if self.create:
             os.mkdir(self.path, 0o700)
         try:
-            self.directory = os.open(self.path, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+            with defer_alarm():
+                self.directory = os.open(self.path, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
             info = os.fstat(self.directory)
             require(info.st_uid == os.getuid() and stat.S_IMODE(info.st_mode) == 0o700,
                     "scratch ownership directory must be private and owned by this user")
-            self.lock = os.open("lock", os.O_RDWR | os.O_NOFOLLOW | os.O_NONBLOCK |
-                                (os.O_CREAT | os.O_EXCL if self.create else 0),
-                                0o600, dir_fd=self.directory)
+            with defer_alarm():
+                self.lock = os.open("lock", os.O_RDWR | os.O_NOFOLLOW | os.O_NONBLOCK |
+                                    (os.O_CREAT | os.O_EXCL if self.create else 0),
+                                    0o600, dir_fd=self.directory)
             self._private(os.fstat(self.lock))
             fcntl.flock(self.lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
             if self.create:
@@ -171,7 +175,7 @@ class TelemetryOwner:
                             "image": self.image, "mount": self.mount,
                             "image_identity": self.identity(image), "image_bytes": image.st_size,
                             "mount_identity": self.identity(mount), "phase": "ready",
-                            "container": None, "launches": 0}
+                            "container": None, "launches": 0, "filesystem_pending": False}
                 self._write()
             self._read()
             return self
@@ -186,13 +190,19 @@ class TelemetryOwner:
                 "scratch ownership file must be private, regular and singly linked")
 
     def _read(self):
-        fd = os.open("state.json", os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK,
-                     dir_fd=self.directory)
-        with os.fdopen(fd, "rb") as stream:
-            self._private(os.fstat(stream.fileno()))
-            data = stream.read(8193)
+        fd = None
+        try:
+            with defer_alarm():
+                fd = os.open("state.json", os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK,
+                             dir_fd=self.directory)
+            self._private(os.fstat(fd))
+            data = os.read(fd, 8193)
             require(len(data) <= 8192, "scratch ownership exceeds its byte bound")
             self.doc = contracts.read_json(data, "telemetry-owner", self.path)
+        finally:
+            with defer_alarm():
+                if fd is not None:
+                    os.close(fd)
         doc = self.doc
         require(doc["control"] == self.identity(os.fstat(self.directory))
                 and doc["control"] == self.identity(os.lstat(self.path))
@@ -216,21 +226,22 @@ class TelemetryOwner:
         data = contracts.write_bytes(self.doc, "telemetry-owner")
         require(len(data) <= 8192, "scratch ownership exceeds its byte bound")
         name = ".state-" + secrets.token_hex(8)
-        fd = os.open(name, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW,
-                     0o600, dir_fd=self.directory)
+        # A failed/interrupted publication leaves its private temporary file for recovery.
+        # In particular, do not start unlink I/O after a deadline signal has fired.
+        fd = None
         try:
-            with os.fdopen(fd, "wb") as stream:
-                stream.write(data)
-                stream.flush()
-                os.fsync(stream.fileno())
+            with defer_alarm():
+                fd = os.open(name, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW,
+                             0o600, dir_fd=self.directory)
+            require(os.write(fd, data) == len(data), "short scratch ownership write")
+            os.fsync(fd)
             os.replace(name, "state.json", src_dir_fd=self.directory,
                        dst_dir_fd=self.directory)
             os.fsync(self.directory)
         finally:
-            try:
-                os.unlink(name, dir_fd=self.directory)
-            except FileNotFoundError:
-                pass
+            with defer_alarm():
+                if fd is not None:
+                    os.close(fd)
 
     def begin(self, container):
         doc = self.available()
@@ -239,9 +250,29 @@ class TelemetryOwner:
 
     def available(self):
         doc = self._read()
-        require(doc["phase"] in ("ready", "stopped"),
+        require(doc["phase"] in ("ready", "stopped")
+                and (not doc["filesystem_pending"] or self.work_pending),
                 "scratch has an unsettled launch; retain it and run nothing more")
         return doc
+
+    def prepare_work(self):
+        """Fence the controller's entire work lifetime before setup or candidate work.
+
+        Later stopped containers or failed uncertainty writes cannot authorize workflow
+        cleanup. Only this live controller admits more executions while the fence is set.
+        """
+        doc = self.available()
+        require(not doc["filesystem_pending"], "scratch work is already pending")
+        doc["filesystem_pending"] = True
+        self._write()
+        self.work_pending = True
+
+    def work_cleaned(self):
+        doc = self.available()
+        require(self.work_pending and doc["filesystem_pending"], "no pending scratch work")
+        doc["filesystem_pending"] = False
+        self._write()
+        self.work_pending = False
 
     def finish(self, container, confirmed):
         doc = self._read()
@@ -272,7 +303,7 @@ class TelemetryOwner:
     def cleanup(self, image, host=None):
         doc = self._read()
         require(os.path.abspath(image) == doc["image"]
-                and doc["phase"] in ("ready", "stopped"),
+                and doc["phase"] in ("ready", "stopped") and not doc["filesystem_pending"],
                 "scratch cleanup unconfirmed; retain image, mount and ownership evidence")
         problems = cleanup(doc["image"], doc["mount"], host)
         if not problems:
@@ -281,8 +312,9 @@ class TelemetryOwner:
         return problems
 
     def __exit__(self, *unused):
-        for name in ("lock", "directory"):
-            fd = getattr(self, name)
-            setattr(self, name, None)
-            if fd is not None:
-                os.close(fd)
+        with defer_alarm():
+            for name in ("lock", "directory"):
+                fd = getattr(self, name)
+                setattr(self, name, None)
+                if fd is not None:
+                    os.close(fd)

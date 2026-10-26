@@ -1470,10 +1470,10 @@ def _remove_work(path):
     shutil.rmtree(path, ignore_errors=True)
 
 
-def machine_lock(directory=None):
+def machine_lock(directory=None, register=None):
     """The machine's performance coordination lock (ADR-0169), or Unavailable."""
     try:
-        return hostlock.MachineLock(directory)
+        return hostlock.MachineLock(directory, register=register)
     except hostlock.Refused as refused:
         raise Unavailable(refused.reason, str(refused))
 

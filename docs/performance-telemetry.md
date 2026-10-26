@@ -199,19 +199,25 @@ Every execution goes through one executor (`perflab/telemetryexec.py`, ADR-0215)
     filesystem is checked against its inventory.
 
   **Final filesystem cleanup.** `ci-scratch --telemetry-owner` creates a private control
-  directory outside scratch, with a bounded `af.perf-telemetry-owner/1` record binding its
+  directory outside scratch, with a bounded `af.perf-telemetry-owner/2` record binding its
   directory/lock identities and owner UID to the backing image's path, device, inode and
   size and the mounted filesystem's path, device and root inode. The CLI holds its
   nonblocking lock through preflight, every execution and result publication. Before each
   Docker launch the executor durably publishes the exact pending container name; only
   confirmed removal and scratch inventory checks settle it. Uncertainty stops later launches.
   The workflow's unconditional final cleanup uses this ownership record, independently of
-  any result JSON. Only pre-launch `ready` or confirmed `stopped` ownership permits unmount
-  and image removal. Pending launches, a live controller, missing/corrupt/foreign evidence
+  any result JSON. Before executor setup, `filesystem_pending` is durably set for the entire
+  work lifetime. Only confirmed removal of the final work root clears it. A `stopped`
+  container never clears this fence; failed reads, writes, replacement or sync leave cleanup
+  ineligible. Failure handlers perform no compensating ownership I/O. Owner admission,
+  transitions and terminal settlement share the original absolute deadline and reserve.
+  Only `ready` or `stopped` ownership with no pending filesystem work permits unmount
+  and image removal. Pending work or launches, a live controller, missing/corrupt/foreign evidence
   or changed filesystem identity refuse all destructive commands and print the retained
   image, mount and control paths. A cancellation before result publication cannot turn into
   cleanup permission. Do not delete these recovery paths to make a failed job look clean;
   an operator must establish that the recorded container and controller have stopped first.
+  Earlier owner versions are refused; they are never repaired or migrated automatically.
 
   A pull request's candidate is measured only this way: `telemetry-run --trigger pr` refuses
   any other mode, and the result contract refuses a pull request's result recorded otherwise.

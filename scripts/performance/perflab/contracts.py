@@ -4319,7 +4319,7 @@ TELEMETRY_COMPARISON = Obj(
     Field("median_change", Nullable(RATIONAL)))
 # How one side's binary was built (ADR-0215): written by the build job beside the binary, bound
 # to the side's source and the binary's hash, and kept in the result.
-TELEMETRY_OWNER_SCHEMA = "af.perf-telemetry-owner/1"
+TELEMETRY_OWNER_SCHEMA = "af.perf-telemetry-owner/2"
 FILE_IDENTITY = Arr(Int(0, 2 ** 64 - 1), 2, 2)
 TELEMETRY_OWNER = Obj(
     Field("schema", Const(TELEMETRY_OWNER_SCHEMA)), Field("owner_uid", Int(0, 2 ** 32 - 1)),
@@ -4332,11 +4332,14 @@ TELEMETRY_OWNER = Obj(
     Field("container", Nullable(Str(pattern=r"^af-perf-telemetry-[a-z0-9_-]{1,80}$",
                                     max_len=98))),
     Field("launches", Int(0, 1000000)),
+    Field("filesystem_pending", Bool()),
 )
 
 
 def validate_telemetry_owner(doc, where="telemetry ownership"):
     TELEMETRY_OWNER.validate(doc, where)
+    require(doc["phase"] != "removed" or not doc["filesystem_pending"],
+            where + ": retired ownership still has pending filesystem work")
     require((doc["phase"] in ("ready", "removed")) == (doc["container"] is None),
             where + ": only pre-launch or retired ownership has no execution")
     require((doc["phase"] == "ready") == (doc["launches"] == 0)
@@ -4933,7 +4936,7 @@ CONTRACTS = {
                          "missing. Advisory; never a verdict."),
     "telemetry-owner": (TELEMETRY_OWNER_SCHEMA, TELEMETRY_OWNER, validate_telemetry_owner,
                         "Trusted bounded cleanup authority, outside candidate mounts; pending "
-                        "launches must be confirmed stopped before scratch removal."),
+                        "launches and filesystem work must be settled before scratch removal."),
     "telemetry-build": (TELEMETRY_BUILD_SCHEMA, TELEMETRY_BUILD, validate_telemetry_build,
                         "How one side's AF binary of a telemetry experiment was built "
                         "(ADR-0215): its side, source commit, the binary's SHA-256, the "

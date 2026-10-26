@@ -712,24 +712,37 @@ def _write_probe_trace(path, data):
 def cmd_telemetry_run(args):
     # The lock spans preflight, every probe/reader, and final result publication. Workflow
     # cancellation cannot make the final cleanup race a still-running controller.
+    started = time.monotonic()
     try:
         with contextlib.ExitStack() as stack:
             owner = None
             if args.mode == "linux_container":
                 if not args.scratch_owner:
                     raise ContractError("--scratch-owner: trusted ci-scratch ownership is required")
-                owner = stack.enter_context(hostprep.TelemetryOwner(args.scratch_owner,
-                                                                    args.scratch_fs))
-                owner.available()
-            return _telemetry_run(args, owner)
+                owner = hostprep.TelemetryOwner(args.scratch_owner, args.scratch_fs)
+                stack.callback(owner.__exit__, None, None, None)
+                with telemetrylab.deadlines.Budget(started + 60, time.monotonic, 0).enforce(
+                        "opening telemetry ownership"):
+                    owner.__enter__()
+                    owner.available()
+            return _telemetry_run(args, owner, started)
+    except (telemetrylab.deadlines.Expired, telemetrylab.deadlines.Interrupted) as error:
+        return _refuse("unavailable", "telemetry_deadline", str(error) + (
+            "; recovery ownership=%s mount=%s" % (args.scratch_owner, args.scratch_fs)
+            if args.scratch_owner else ""))
     except (ContractError, OSError) as error:
-        return _refuse("invalid", "invalid_telemetry_owner", str(error))
+        return _refuse("invalid", "invalid_telemetry_owner", _telemetry_error(error, owner))
 
 
-def _telemetry_run(args, owner):
+def _telemetry_error(error, owner):
+    return str(error) + ("; recovery ownership=%s mount=%s" % (owner.path, owner.mount)
+                         if owner else "")
+
+
+def _telemetry_run(args, owner, started=None):
     try:
         root = telemetrylab.ROOT
-        started = time.monotonic()
+        started = time.monotonic() if started is None else started
         build_paths = dict((side, getattr(args, side + "_build")) for side in contracts.SIDES)
         result = telemetrylab.run(telemetrylab.Settings(
             profile=args.profile, trigger=args.trigger, baseline_af=args.baseline_af,
@@ -741,11 +754,11 @@ def _telemetry_run(args, owner):
             image=args.image, scratch_fs=args.scratch_fs, build_paths=build_paths, started=started,
             scratch_owner=owner))
     except (telemetrylab.deadlines.Expired, telemetrylab.deadlines.Interrupted) as error:
-        return _refuse("unavailable", "telemetry_deadline", str(error))
+        return _refuse("unavailable", "telemetry_deadline", _telemetry_error(error, owner))
     except telemetrylab.Unavailable as error:
-        return _refuse("unavailable", error.reason, str(error))
+        return _refuse("unavailable", error.reason, _telemetry_error(error, owner))
     except (ContractError, OSError) as error:
-        return _refuse("invalid", "invalid_telemetry_run", str(error))
+        return _refuse("invalid", "invalid_telemetry_run", _telemetry_error(error, owner))
     sys.stderr.write(telemetrylab.headline(result) + "\n")
     print(os.path.join(os.path.abspath(args.output), telemetrylab.RESULT_JSON))
     # Advisory: a measured result exits 0 whatever it measured; 4 when nothing succeeded, a

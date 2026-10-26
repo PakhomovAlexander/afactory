@@ -812,12 +812,15 @@ def run(settings):
         output = os.path.abspath(settings.output)
         require(not os.path.lexists(output), "--output %s already exists; a result is a new "
                 "directory" % output)
+    locks = []
     try:
-        lock = _sync(budget, "acquiring telemetry machine lock",
-                     runner.machine_lock, settings.lock_directory)
-    except runner.Unavailable as refused:
-        raise Unavailable(refused.reason, str(refused))
-    try:
+        try:
+            _sync(budget, "acquiring telemetry machine lock", runner.machine_lock,
+                  settings.lock_directory, register=locks.append)
+        except runner.Unavailable as refused:
+            raise Unavailable(refused.reason, str(refused))
+        if settings.scratch_owner is not None:
+            _sync(budget, "fencing telemetry work", settings.scratch_owner.prepare_work)
         executor, work = _sync(budget, "preparing telemetry executor",
                                _executor, settings, registry, config, budget)
         try:
@@ -825,8 +828,12 @@ def run(settings):
                                binaries, builds_doc, digest, files, output, deadline, executor,
                                work)
         except BaseException as error:
-            if os.path.lexists(work):
-                _uncertain(settings, executor)
+            _uncertain(settings, executor)
+            recovery = "Recovery work: %s" % work
+            if settings.scratch_owner is not None:
+                recovery += "; ownership: %s; mount: %s" % (
+                    settings.scratch_owner.path, settings.scratch_owner.mount)
+            error.add_note(recovery)
             # A torn terminal write is never an admitted complete bundle.
             terminal = deadlines.Budget(deadline, settings.clock, 0)
             def rollback():
@@ -837,15 +844,17 @@ def run(settings):
                         pass
                 if os.path.isdir(output):
                     _write_new(os.path.join(output, "failure.txt"),
-                        ("Telemetry did not complete: %s\nRecovery work: %s\n" %
-                         (str(error)[:2048], work if os.path.lexists(work) else "removed")).encode())
+                        ("Telemetry did not complete: %s\n%s\n" %
+                         (str(error)[:2048], recovery)).encode())
             try:
                 _sync(terminal, "withdrawing interrupted terminal publication", rollback)
-            except (deadlines.Expired, deadlines.Interrupted):
+            except BaseException:
+                # Rollback cannot replace the original failure or start a new allowance.
                 pass
             raise
     finally:
-        lock.release()
+        for lock in locks:
+            lock.release()
 
 
 class _Guard(object):
@@ -905,14 +914,15 @@ def _readable(registry, root, experiment, af_path):
 
 
 def _uncertain(settings, executor):
-    # Latch before any later call can treat the last stopped container as filesystem proof.
+    # The durable work fence predates setup and every launch. Failure handlers do no
+    # compensating ownership I/O, including after the absolute timer has expired.
     executor.pending = True
-    if settings.scratch_owner is not None:
-        settings.scratch_owner.uncertain()
 
 
 def _remove_owned(path, settings, executor, state, budget, work):
+    deleted = False
     def remove():
+        nonlocal deleted
         owner = settings.scratch_owner
         fenced = owner is not None and owner.doc["launches"] > 0
         if owner is not None:
@@ -922,13 +932,19 @@ def _remove_owned(path, settings, executor, state, budget, work):
             owner.uncertain()  # Durable before a deletion can fail, stall or be cancelled.
         shutil.rmtree(path)
         require(not os.path.lexists(path), "scratch deletion left its path present")
+        deleted = True
         if fenced:
             owner.filesystem_cleaned()
+        if owner is not None and path == work:
+            owner.work_cleaned()
     try:
         _sync(budget, "removing telemetry scratch", remove)
     except (OSError, ContractError, deadlines.Interrupted) as error:
-        state.update(cleanup="uncertain", retained=work,
-                     stopped=("filesystem cleanup unconfirmed at %s: %s" % (path, error))[:4096])
+        owner = settings.scratch_owner
+        retained = owner.mount if deleted and path == work and owner is not None else work
+        state.update(cleanup="uncertain", retained=retained,
+                     stopped=("filesystem cleanup settlement unconfirmed at %s%s: %s" % (
+                         path, " (directory removed)" if deleted else "", error))[:4096])
         state["problems"].append(state["stopped"][:512])
         _uncertain(settings, executor)
         return False
@@ -937,12 +953,13 @@ def _remove_owned(path, settings, executor, state, budget, work):
 
 def _run_locked(settings, root, registry, registry_sha, config, mode, sources, binaries,
                 builds_doc, digest, files, output, deadline, executor, work):
-    require(not os.path.lexists(work), "the work directory %s already exists; it may be kept by "
-            "an earlier run whose cleanup was not confirmed, and the operator removes it" % work)
+    budget = deadlines.Budget(deadline, settings.clock, RESERVE_SECONDS)
+    require(not _sync(budget, "checking retained telemetry work", os.path.lexists, work),
+            "the work directory %s already exists; it may be kept by an earlier run whose "
+            "cleanup was not confirmed, and the operator removes it" % work)
     require(not (work + os.sep).startswith(output + os.sep) and work != output
             and not (output + os.sep).startswith(work + os.sep),
             "the work directory lies apart from the result")
-    budget = deadlines.Budget(deadline, settings.clock, RESERVE_SECONDS)
     terminal = deadlines.Budget(deadline, settings.clock, 0)
     budget.seconds("initializing telemetry work")
 

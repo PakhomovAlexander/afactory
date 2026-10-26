@@ -504,6 +504,7 @@ class Profile(object):
         directory, into the evidence: enumerated as confined, bounded directories and regular
         files and read as enumerated (`admission.copy_into`), then removed from the stage. Its
         bytes were already counted while staged. Nothing to do in trusted local mode."""
+        self.halted("collecting " + relative)
         if not self.contained():
             return
         source = os.path.join(self.stage, relative)
@@ -551,6 +552,7 @@ class Profile(object):
         trusted directory `root`: reached without following a symlink, refused when it is
         anything but a regular file or its logical size is over `limit`, and read within its
         size and the diagnostic deadline (ADR-0175)."""
+        self.halted("admitting " + what)
         fd, info = admission.open_confined(root, relative, what)
         try:
             if info.st_size > limit:
@@ -568,6 +570,8 @@ class Profile(object):
 
     def artifacts(self, relative):
         """The admitted files of one evidence directory, each hashed within its size."""
+        if self.retained:
+            return []
         directory = os.path.join(self.output, relative)
         bounds = admission.Bounds(EVIDENCE_ENTRIES_MAX, EVIDENCE_DEPTH_MAX,
                                   self.budget.bytes_limit, self.budget.bytes_limit)
@@ -585,12 +589,37 @@ class Profile(object):
         self.halted(os.path.basename(argv[0]))
         if stdout_path is not None:
             writes = tuple(writes) + (os.path.dirname(stdout_path),)
-        return toolrun.run(self.supervisor, argv, env or TOOL_ENV, timeout, cap, stdin=stdin,
+        binds = self.binds(tuple(reads) + (argv[0],), writes)
+        # This shared boundary also owns tools without a Namespace (decoders, renderers,
+        # build-id readers). Until a result confirms cleanup, every writable path stays.
+        result = LAUNCHING
+        error = None
+        try:
+            result = toolrun.run(self.supervisor, argv, env or TOOL_ENV, timeout, cap, stdin=stdin,
                            cwd=cwd, deadline=self.budget.deadline, clock=self.clock,
                            stdout_path=stdout_path, file_bytes=file_bytes,
                            watch=self.over_room,
-                           binds=self.binds(tuple(reads) + (argv[0],), writes), setup=setup,
+                           binds=binds, setup=setup,
                            patterns=patterns, selectors=selectors)
+        except BaseException as failure:
+            error = failure
+        if _uncertain(result):
+            recovery = (cwd, self.work, self.stage, os.path.join(self.output, WORK_DIR))
+            if setup is not None:
+                recovery += (setup[2],)
+            paths = sorted(set(os.path.abspath(path) for path in recovery + tuple(writes)
+                               if path))
+            self.unsafe_staging = sorted(set(getattr(self, "unsafe_staging", ())).union(paths))
+            retained = os.path.abspath(cwd or self.work)
+            if retained not in self.retained:
+                self.retained.append(retained)
+            detail = "tool cleanup unconfirmed; retained recovery paths: " + ", ".join(paths)
+            if error is not None:
+                detail += "; %s: %s" % (type(error).__name__, error)
+            raise perfcapture.CaptureError("cleanup_uncertain", detail[:4096]) from error
+        if error is not None:
+            raise error
+        return result
 
     def over_room(self):
         """While a step runs: why the evidence, all its files together, is over its room, or
@@ -650,8 +679,10 @@ class Profile(object):
         are kept for the operator, its handles closed and nothing of it removed, and the run
         stops launching (`halted`). Only a confirmed end lets the namespace be removed, and a
         removal that is not confirmed keeps what is left the same way."""
-        if uncertain or getattr(namespace, "reader_uncertain", False):
-            self.retained.append(namespace.keep())
+        if uncertain or self.retained or getattr(namespace, "reader_uncertain", False):
+            path = namespace.keep()
+            if path not in self.retained:
+                self.retained.append(path)
             raise perfcapture.CaptureError(
                 "cleanup_uncertain", ("a process the run started may still be live, so its "
                                       "scratch %s was kept for recovery and nothing more of "
@@ -665,7 +696,7 @@ class Profile(object):
     def halted(self, what):
         """Refuse to start `what` once scratch was kept for recovery: a process of an earlier
         execution may still be live, so the run uses nothing more of its work."""
-        if self.retained:
+        if getattr(self, "retained", ()):
             raise perfcapture.CaptureError(
                 "cleanup_uncertain", ("%s was not started: scratch kept for recovery (%s) may "
                                       "still be reached by a live process"
@@ -1457,7 +1488,7 @@ class Profile(object):
         process may reach stays with its kept scratch; one that left the evidence over its room
         is kept and counted where it is (moved from a contained stage into the evidence, so the
         run's cleanup of its work does not erase it), never deleted to report nothing."""
-        if staged is None or _uncertain(result):
+        if staged is None or self.retained or _uncertain(result):
             return
         directory = os.path.dirname(staged)
         if not os.path.lexists(directory):
@@ -1471,6 +1502,7 @@ class Profile(object):
     def unstage(self, directory):
         """Remove one execution's staged trace directory and the stage root once it is empty;
         a removal that is not confirmed is the run's cleanup failure."""
+        self.halted("removing " + directory)
         problems = admission.remove_tree(directory) if os.path.lexists(directory) else []
         if problems:
             raise perfcapture.CaptureError("cleanup_uncertain", "; ".join(problems)[:4096])
@@ -2138,6 +2170,10 @@ def finish(output, doc, traces, budget=None):
         stream.write(data)
     with open(os.path.join(output, PAGE_FILE), "xb") as stream:
         stream.write(html)
+    if doc["execution"]["retained_scratch"]:
+        # The administrative refusal remains readable. A bundle manifest would read and
+        # admit files a possibly live local tool can still write (local output is staging).
+        return None
     limit = budget.bytes_limit if budget is not None else limits.DIAGNOSTIC_BYTES_MAX
     return bundle.write_manifest(output, limit, skip=(WORK_DIR,))
 
@@ -2476,6 +2512,7 @@ def _run_locked(git, options, authority_factory, parent, plan, registry, raw, en
                        len(result["omissions"]))
     if profile.retained:
         # A process the run started may still be live: the operator recovers what was kept.
-        message += "; scratch kept for recovery: " + ", ".join(profile.retained)
+        paths = sorted(set(profile.retained + list(getattr(profile, "unsafe_staging", ()))))
+        message += "; scratch kept for recovery: " + ", ".join(paths)
     return (4 if actionable or profile.retained else 0), os.path.join(output, PROFILES_FILE), \
         message
