@@ -250,6 +250,25 @@ class TelemetryOwner:
         doc["phase"] = "stopped" if confirmed else "uncertain"
         self._write()
 
+    def uncertain(self):
+        """A stopped container does not prove deletion of its owned filesystem."""
+        doc = self._read()
+        if doc["launches"]:
+            if doc["phase"] != "uncertain":
+                doc["phase"] = "uncertain"
+                self._write()
+        else:
+            # Pre-launch state is safe for ci-scratch cleanup; no hostile writer ran.
+            require(doc["phase"] == "ready", "unexpected pre-launch ownership")
+
+    def filesystem_cleaned(self):
+        """Settle only the controller's completed filesystem-deletion fence."""
+        doc = self._read()
+        require(doc["phase"] == "uncertain" and doc["launches"] > 0,
+                "filesystem cleanup settlement has no fence")
+        doc["phase"] = "stopped"
+        self._write()
+
     def cleanup(self, image, host=None):
         doc = self._read()
         require(os.path.abspath(image) == doc["image"]

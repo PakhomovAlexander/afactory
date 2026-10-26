@@ -595,3 +595,19 @@ fallback. Result v1's shape is unchanged. Historical artifacts require their mat
 verifier and complete authority; a newer verifier never silently admits them. Tests use
 synthetic documents, not claimed measurements; hosted execution and deployment still require
 operator evidence.
+
+Filesystem cleanup is part of completion. A container that stopped can still leave a directory
+its owner cannot traverse; the controller never changes its permissions to manufacture cleanup.
+The trusted hosted owner is fenced before deletion. Any deletion failure retains the exact work,
+image and mount recovery paths, blocks later launches and makes `ci-scratch --cleanup` refuse.
+Restore or remove that state only through explicit operator recovery after investigating it.
+Safe pre-launch refusal and confirmed deletion remain automatically cleanable.
+
+The run's deadline starts before binary, authority and CLI build-record admission. Bounded
+non-following reads, corpus copies, integrity checks, cleanup and publication consume that same
+allowance; synchronous phases are interrupted rather than checked only afterward. A terminal
+interruption can leave unadmitted evidence without a complete bundle. Diagnostic telemetry
+readers use the native supervisor and shared sample containment: IPC and daemon logging disabled,
+implicit image volumes refused before launch. The mandatory hosted Docker smoke exercises this
+reader route beside the eight build and six measurement cases; local unit tests are not a live
+Docker result. See [ADR-0222](adr/0222-fence-filesystem-cleanup-and-bound-telemetry-admission-through-publication.md).

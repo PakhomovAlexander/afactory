@@ -157,6 +157,8 @@ else:
     raise AssertionError('filesystem did not enforce aggregate allocation')
 '''.replace("UNLINK", repr(unlinked)))
                 assert result.code == 0 and result.stdout == b"aggregate ENOSPC\n", result.stderr
+            from tests import telemetry_diagnostic_smoke
+            telemetry_diagnostic_smoke.run(root, mount, image, environment, cpus, ROOT, docker, owner)
             with tempfile.TemporaryDirectory(dir=root) as context:
                 Path(context, "Dockerfile").write_text("FROM " + IMAGE + "\nVOLUME /implicit\n")
                 volume_image = docker("build", "--quiet", "--network", "none", "--pull=false",

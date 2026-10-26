@@ -294,6 +294,51 @@ class WorkflowCleanup(ContainedBase):
         self.assertFalse(Path(self.tmp, "telemetry-result", telemetrylab.RESULT_JSON).exists())
         self.assertEqual(self.invoke("ci-scratch", cleanup=True), 0)
 
+    def test_actual_untraversable_execution_invalidates_stopped_owner_and_workflow_cleanup(self):
+        self.assertNotEqual(os.geteuid(), 0, "requires actual unprivileged deletion")
+        os.rmdir(self.run_dir)
+        os.rmdir(self.executor.directory)
+        original = self.executor.run
+        hostile = []
+        def run(execution):
+            outcome = original(execution)
+            Path(execution.cwd, "candidate-file").write_bytes(b"owned data")
+            os.chmod(execution.cwd, 0)
+            hostile.append(execution.cwd)
+            return outcome
+        try:
+            with mock.patch.object(self.executor, "run", run):
+                self.assertEqual(self.measure(), cli.EXIT_UNAVAILABLE)
+            result = json.loads(Path(self.tmp, "telemetry-result", telemetrylab.RESULT_JSON).read_bytes())
+            self.assertEqual(result["execution"]["cleanup"], "uncertain")
+            self.assertNotEqual(result["status"], "complete")
+            self.assertEqual(len(hostile), 1)
+            with self.owner() as owner:
+                self.assertEqual(owner.doc["phase"], "uncertain")
+                self.assertEqual(owner.doc["launches"], 1)
+            self.retained()
+            self.assertNotEqual(self.invoke("telemetry-run"), 0)
+            self.assertIn("unsettled launch", self.stderr.getvalue())
+            self.assertEqual(os.stat(hostile[0]).st_mode & 0o777, 0)
+        finally:
+            for path in hostile:
+                os.chmod(path, 0o700)  # Recovery belongs to this test, after refusal assertions.
+
+    def test_final_filesystem_deletion_error_invalidates_hosted_cleanup_authority(self):
+        os.rmdir(self.run_dir)
+        os.rmdir(self.executor.directory)
+        original = shutil.rmtree
+        def remove(path, *args, **kwargs):
+            if path == self.executor.directory:
+                raise PermissionError("injected work-root deletion failure")
+            return original(path, *args, **kwargs)
+        with mock.patch.object(telemetrylab.shutil, "rmtree", remove):
+            self.assertEqual(self.measure(), cli.EXIT_UNAVAILABLE)
+        with self.owner() as owner:
+            self.assertEqual(owner.doc["phase"], "uncertain")
+        self.retained()
+        self.assertTrue(os.path.isdir(self.executor.directory))
+
     def test_missing_control_directory_after_launch_preserves_recovery_state(self):
         with self.owner() as owner:
             owner.begin("af-perf-telemetry-possible-launch")

@@ -101,67 +101,88 @@ class Unavailable(ContractError):
 
 # The registry and the measurement authority ------------------------------------------------
 
-def load_registry(root=None):
+def load_registry(root=None, budget=None):
     """The validated registry of the checkout at `root`, and its SHA-256."""
     path = os.path.join(root or ROOT, REGISTRY_PATH)
-    with open(path, "rb") as stream:
-        data = stream.read(tomlfile.MAX_TOML_BYTES + 1)
+    fd, info = admission.open_confined(root or ROOT, REGISTRY_PATH, REGISTRY_PATH)
+    try:
+        require(info.st_size <= tomlfile.MAX_TOML_BYTES, "telemetry registry exceeds its byte bound")
+        chunks = []
+        admission.read_bounded(fd, info.st_size, budget, path, "reading telemetry registry", chunks.append)
+        _unchanged(fd, info, path)
+        data = b"".join(chunks)
+    finally:
+        os.close(fd)
     doc = contracts.validate_telemetry_lab(tomlfile.loads(data, REGISTRY_PATH), REGISTRY_PATH)
     return doc, sha256_bytes(data)
 
 
-def authority_files(registry, root=None):
+def authority_files(registry, root=None, budget=None, identities=None):
     """Every file the measurement authority reads, relative to `root`, sorted: the registry,
     each experiment's declared inputs (a directory whole), the product schemas its documents
     are read through, and this module. A link, a special file or an escape is refused."""
     root = root or ROOT
     files = []
+    bounds = admission.Bounds(AUTHORITY_FILES_MAX, 64, AUTHORITY_BYTES_MAX,
+                              AUTHORITY_BYTES_MAX)
     for name in authority_names(registry):
-        path = os.path.join(root, name)
-        info = os.lstat(path)
-        require(not os.path.islink(path), "%s: the measurement authority holds no link" % name)
-        if os.path.isdir(path):
-            for directory, subdirs, entries in os.walk(path):
-                subdirs.sort()
-                for entry in sorted(entries) + [item for item in subdirs
-                                                if os.path.islink(os.path.join(directory,
-                                                                               item))]:
-                    full = os.path.join(directory, entry)
-                    relative = os.path.relpath(full, root).replace(os.sep, "/")
-                    require("/__pycache__/" not in "/" + relative
-                            and not entry.endswith((".pyc", ".pyo")),
-                            "%s: bytecode cache is not measurement authority" % relative)
-                    require(not os.path.islink(full) and os.path.isfile(full),
-                            "%s: the measurement authority holds only regular files" % relative)
-                    files.append(relative)
-        else:
-            require(os.path.isfile(path) and info.st_size >= 0,
-                    "%s: not a regular file" % name)
-            files.append(name)
-        require(len(files) <= AUTHORITY_FILES_MAX, "the measurement authority holds over %d "
-                "files" % AUTHORITY_FILES_MAX)
+        admission.check(budget, "enumerating telemetry authority")
+        # Reach every declared directory through held descriptors too: scan(path) alone
+        # would permit a symlink in an ancestor of a declared input.
+        parent = admission.open_root(root, "telemetry authority")
+        try:
+            parts = name.split("/")
+            for part in parts[:-1]:
+                child = os.open(part, admission.DIRECTORY, dir_fd=parent)
+                os.close(parent)
+                parent = child
+            info = os.stat(parts[-1], dir_fd=parent, follow_symlinks=False)
+            if stat.S_ISDIR(info.st_mode):
+                directory = os.open(parts[-1], admission.DIRECTORY, dir_fd=parent)
+                try:
+                    admission._opened(directory, info, stat.S_IFDIR, name)
+                    entries = []
+                    admission._scan(directory, "", 1, entries, {"bytes": 0}, bounds,
+                                    budget, name, "enumerating telemetry authority")
+                    for entry in entries:
+                        if entry.kind == "file":
+                            relative = name + "/" + entry.path
+                            files.append(relative)
+                            if identities is not None:
+                                identities[relative] = entry.identity + (entry.size,)
+                finally:
+                    os.close(directory)
+            else:
+                require(stat.S_ISREG(info.st_mode), "%s: not a regular file" % name)
+                files.append(name)
+                if identities is not None:
+                    identities[name] = (info.st_dev, info.st_ino, info.st_size)
+        finally:
+            os.close(parent)
+        require(len(files) <= AUTHORITY_FILES_MAX,
+                "the measurement authority holds too many files")
+    require(all("/__pycache__/" not in "/" + name and not name.endswith((".pyc", ".pyo"))
+                for name in files), "bytecode cache is not measurement authority")
     return sorted(set(files))
 
 
-def authority_digest(registry, root=None):
-    """(digest, file count): SHA-256 over every authority file's path and content."""
+def authority_digest(registry, root=None, budget=None):
+    """(digest, file count), using confined, bounded, identity-checked reads."""
     root = root or ROOT
-    entries = []
-    total = 0
-    for relative in authority_files(registry, root):
-        digest = hashlib.sha256()
-        with open(os.path.join(root, relative), "rb") as stream:
-            while True:
-                chunk = stream.read(1 << 20)
-                if not chunk:
-                    break
-                total += len(chunk)
-                require(total <= AUTHORITY_BYTES_MAX, "the measurement authority is over %d "
-                        "bytes" % AUTHORITY_BYTES_MAX)
-                digest.update(chunk)
-        entries.append([relative, "sha256:" + digest.hexdigest()])
-    return canonical_digest({"schema": "af.perf-telemetry-authority/2", "files": entries}), \
-        len(entries)
+    entries, total, identities = [], 0, {}
+    for relative in authority_files(registry, root, budget, identities):
+        fd, info = admission.open_confined(root, relative, "measurement authority")
+        try:
+            require((info.st_dev, info.st_ino, info.st_size) == identities[relative],
+                    "%s changed after authority enumeration" % relative)
+            total += info.st_size
+            require(total <= AUTHORITY_BYTES_MAX, "the measurement authority exceeds its byte bound")
+            digest = admission.read_bounded(fd, info.st_size, budget, relative, "authority hashing")
+            _unchanged(fd, info, os.path.join(root, relative))
+            entries.append([relative, digest])
+        finally:
+            os.close(fd)
+    return canonical_digest({"schema": "af.perf-telemetry-authority/2", "files": entries}), len(entries)
 
 
 def configuration(registry, profile, experiments=None, rounds=None, pairs=None, scale=None,
@@ -265,15 +286,10 @@ def corpus_facts(corpus):
 def inventory(root):
     """{relative path: (size, mtime ns, inode, mode)} of every entry below `root`, nothing
     followed: what must not change while another execution runs."""
-    out = {}
-    for directory, subdirs, files in os.walk(root):
-        subdirs.sort()
-        for name in sorted(files + subdirs):
-            path = os.path.join(directory, name)
-            info = os.lstat(path)
-            out[os.path.relpath(path, root)] = (info.st_size, info.st_mtime_ns, info.st_ino,
-                                                info.st_mode)
-    return out
+    entries = admission.scan(root, admission.Bounds(1000000, 64, FILE_BYTES_MAX,
+                                                    FILE_BYTES_MAX * 16))
+    return dict((entry.path, (entry.size, info.st_mtime_ns, info.st_ino, info.st_mode))
+                for entry in entries for info in [os.lstat(os.path.join(root, entry.path))])
 
 
 # Reading a document and its script's own judgment -----------------------------------------
@@ -608,6 +624,8 @@ class Settings(object):
         self.gid = os.getgid()
         # Each side's build record (`af.perf-telemetry-build/1`, as parsed), or None.
         self.builds = {"baseline": None, "candidate": None}
+        self.build_paths = {}
+        self.started = None
         # The machine lock's directory (tests only); the system's /tmp otherwise.
         self.lock_directory = None
         # Test hooks: how the contained host is checked (a callable (docker, image, scratch_fs,
@@ -633,34 +651,63 @@ def _sha(value, name):
     return value
 
 
-def _file_sha256(path):
-    digest = hashlib.sha256()
-    with open(path, "rb") as stream:
-        while True:
-            chunk = stream.read(1 << 20)
-            if not chunk:
-                break
-            digest.update(chunk)
-    return "sha256:" + digest.hexdigest()
+BINARY_BYTES_MAX = 512 * 1024 * 1024
 
 
-def _binary(path, name):
+def _unchanged(fd, before, path):
+    def identity(info):
+        return (info.st_dev, info.st_ino, info.st_size, info.st_mtime_ns, info.st_ctime_ns)
+    require(identity(before) == identity(os.fstat(fd)) == identity(os.lstat(path)),
+            "%s changed while it was being admitted" % path)
+
+
+def _file_sha256(path, budget=None):
+    path = os.path.abspath(path)
+    fd, info = admission.open_confined(os.path.sep, path.lstrip(os.path.sep), path)
+    try:
+        require(info.st_size <= BINARY_BYTES_MAX, "%s exceeds the binary byte bound" % path)
+        digest = admission.read_bounded(fd, info.st_size, budget, path, "binary hashing")
+        _unchanged(fd, info, path)
+        return digest
+    finally:
+        os.close(fd)
+
+
+def _sync(budget, step, function, *args, **kwargs):
+    with budget.enforce(step):
+        return function(*args, **kwargs)
+
+
+def _binary(path, name, budget=None):
     require(path and os.path.isfile(path) and not os.path.islink(path)
             and os.access(path, os.X_OK), "%s: an executable AF binary, not a link" % name)
-    return os.path.abspath(path), _file_sha256(path)
+    return os.path.abspath(path), _file_sha256(path, budget)
 
 
-def read_build(path, side, source_sha, binary_sha256):
+def read_build(path, side, source_sha, binary_sha256, budget=None):
     """A side's build record (`af.perf-telemetry-build/1`), bound to that side's source and
     binary: refused when it names another."""
-    with open(path, "rb") as stream:
-        doc = contracts.read_json(stream.read(contracts.limits.MAX_JSON_BYTES + 1),
-                                  "telemetry-build", path)
+    absolute = os.path.abspath(path)
+    fd, info = admission.open_confined(os.path.sep, absolute.lstrip(os.path.sep), path)
+    try:
+        require(info.st_size <= contracts.limits.MAX_JSON_BYTES, "build record exceeds its byte bound")
+        chunks = []
+        admission.read_bounded(fd, info.st_size, budget, path, "build record admission", chunks.append)
+        _unchanged(fd, info, absolute)
+        doc = contracts.read_json(b"".join(chunks), "telemetry-build", path)
+    finally:
+        os.close(fd)
     require(doc["side"] == side and doc["source_sha"] == source_sha
             and doc["binary_sha256"] == binary_sha256,
             "%s: the build record of %s %s binary %s, not this %s's" % (
                 path, doc["side"], doc["source_sha"][:12], doc["binary_sha256"], side))
     return doc
+
+
+def _write_new(path, data):
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    with open(path, "xb") as stream:
+        stream.write(data)
 
 
 def _log(output, relative, outcome_stderr, total):
@@ -729,8 +776,11 @@ def run(settings):
     logs, report and manifest, below the new `settings.output`). The machine's performance lock
     is held throughout."""
     from . import runner
+    started = settings.clock() if settings.started is None else settings.started
     root = settings.root or ROOT
-    registry, registry_sha = load_registry(root)
+    # Registry loading is bounded too; its profile duration is anchored to entry, never now.
+    bootstrap = deadlines.Budget(started + 60, settings.clock, 0)
+    registry, registry_sha = _sync(bootstrap, "reading telemetry registry", load_registry, root, bootstrap)
     config = configuration(registry, settings.profile, settings.experiments, settings.rounds,
                            settings.pairs, settings.scale, settings.corpus_runs)
     require(settings.trigger in ("pr", "main_push", "nightly", "release", "manual"),
@@ -743,31 +793,57 @@ def run(settings):
     sources = {"baseline_sha": _sha(settings.baseline_sha, "--baseline-sha"),
                "candidate_sha": _sha(settings.candidate_sha, "--candidate-sha"),
                "authority_sha": _sha(settings.authority_sha, "--authority-sha")}
+    deadline = started + config["timeout_minutes"] * 60
+    budget = deadlines.Budget(deadline, settings.clock, RESERVE_SECONDS)
     binaries, builds_doc = {}, {}
-    for side, path in (("baseline", settings.baseline_af), ("candidate", settings.candidate_af)):
-        binaries[side] = _binary(path, "--%s-af" % side)
-        record = (settings.builds or {}).get(side)
-        if record is not None:
-            require(record["side"] == side and record["source_sha"] == sources[side + "_sha"]
-                    and record["binary_sha256"] == binaries[side][1],
-                    "the %s build record names another source or binary" % side)
-        builds_doc[side] = record
-    digest, files = authority_digest(registry, root)
-    output = os.path.abspath(settings.output)
-    require(not os.path.lexists(output), "--output %s already exists; a result is a new "
-            "directory" % output)
-    deadline = settings.clock() + config["timeout_minutes"] * 60
+    with budget.enforce("admitting telemetry inputs"):
+        for side, path in (("baseline", settings.baseline_af), ("candidate", settings.candidate_af)):
+            binaries[side] = _binary(path, "--%s-af" % side, budget)
+            record = (settings.builds or {}).get(side)
+            if settings.build_paths.get(side):
+                record = read_build(settings.build_paths[side], side, sources[side + "_sha"],
+                                    binaries[side][1], budget)
+            if record is not None:
+                require(record["side"] == side and record["source_sha"] == sources[side + "_sha"]
+                        and record["binary_sha256"] == binaries[side][1],
+                        "the %s build record names another source or binary" % side)
+            builds_doc[side] = record
+        digest, files = authority_digest(registry, root, budget)
+        output = os.path.abspath(settings.output)
+        require(not os.path.lexists(output), "--output %s already exists; a result is a new "
+                "directory" % output)
     try:
-        lock = runner.machine_lock(settings.lock_directory)
+        lock = _sync(budget, "acquiring telemetry machine lock",
+                     runner.machine_lock, settings.lock_directory)
     except runner.Unavailable as refused:
         raise Unavailable(refused.reason, str(refused))
     try:
-        from . import budget as deadlines
-        budget = deadlines.Budget(deadline, settings.clock, RESERVE_SECONDS)
-        executor, work = _executor(settings, registry, config, budget)
-        return _run_locked(settings, root, registry, registry_sha, config, mode, sources,
-                           binaries, builds_doc, digest, files, output, deadline, executor,
-                           work)
+        executor, work = _sync(budget, "preparing telemetry executor",
+                               _executor, settings, registry, config, budget)
+        try:
+            return _run_locked(settings, root, registry, registry_sha, config, mode, sources,
+                               binaries, builds_doc, digest, files, output, deadline, executor,
+                               work)
+        except BaseException as error:
+            if os.path.lexists(work):
+                _uncertain(settings, executor)
+            # A torn terminal write is never an admitted complete bundle.
+            terminal = deadlines.Budget(deadline, settings.clock, 0)
+            def rollback():
+                for name in (bundle.MANIFEST, RESULT_JSON):
+                    try:
+                        os.unlink(os.path.join(output, name))
+                    except FileNotFoundError:
+                        pass
+                if os.path.isdir(output):
+                    _write_new(os.path.join(output, "failure.txt"),
+                        ("Telemetry did not complete: %s\nRecovery work: %s\n" %
+                         (str(error)[:2048], work if os.path.lexists(work) else "removed")).encode())
+            try:
+                _sync(terminal, "withdrawing interrupted terminal publication", rollback)
+            except (deadlines.Expired, deadlines.Interrupted):
+                pass
+            raise
     finally:
         lock.release()
 
@@ -776,8 +852,9 @@ class _Guard(object):
     """What no execution may change: both binaries, the measurement authority, the result
     directory beyond what the controller wrote, and the master corpus."""
 
-    def __init__(self, registry, root, digest, binaries, output):
+    def __init__(self, registry, root, digest, binaries, output, budget=None):
         self.registry = registry
+        self.budget = budget
         self.root = root
         self.digest = digest
         self.binaries = binaries
@@ -797,12 +874,12 @@ class _Guard(object):
         found = []
         for side, (path, expected) in sorted(self.binaries.items()):
             try:
-                if os.path.islink(path) or _file_sha256(path) != expected:
+                if os.path.islink(path) or _file_sha256(path, self.budget) != expected:
                     found.append("the %s binary changed" % side)
             except OSError as error:
                 found.append("the %s binary cannot be read: %s" % (side, error.strerror))
         try:
-            if authority_digest(self.registry, self.root)[0] != self.digest:
+            if authority_digest(self.registry, self.root, self.budget)[0] != self.digest:
                 found.append("the measurement authority changed")
         except (ContractError, OSError) as error:
             found.append("the measurement authority cannot be read: %s" % error)
@@ -827,6 +904,37 @@ def _readable(registry, root, experiment, af_path):
     return sorted(set(os.path.abspath(path) for path in paths)) + ([af_path] if af_path else [])
 
 
+def _uncertain(settings, executor):
+    # Latch before any later call can treat the last stopped container as filesystem proof.
+    executor.pending = True
+    if settings.scratch_owner is not None:
+        settings.scratch_owner.uncertain()
+
+
+def _remove_owned(path, settings, executor, state, budget, work):
+    def remove():
+        owner = settings.scratch_owner
+        fenced = owner is not None and owner.doc["launches"] > 0
+        if owner is not None:
+            require(owner.doc["phase"] in ("ready", "stopped"),
+                    "scratch filesystem cleanup has unsettled ownership")
+        if fenced:
+            owner.uncertain()  # Durable before a deletion can fail, stall or be cancelled.
+        shutil.rmtree(path)
+        require(not os.path.lexists(path), "scratch deletion left its path present")
+        if fenced:
+            owner.filesystem_cleaned()
+    try:
+        _sync(budget, "removing telemetry scratch", remove)
+    except (OSError, ContractError, deadlines.Interrupted) as error:
+        state.update(cleanup="uncertain", retained=work,
+                     stopped=("filesystem cleanup unconfirmed at %s: %s" % (path, error))[:4096])
+        state["problems"].append(state["stopped"][:512])
+        _uncertain(settings, executor)
+        return False
+    return True
+
+
 def _run_locked(settings, root, registry, registry_sha, config, mode, sources, binaries,
                 builds_doc, digest, files, output, deadline, executor, work):
     require(not os.path.lexists(work), "the work directory %s already exists; it may be kept by "
@@ -834,19 +942,28 @@ def _run_locked(settings, root, registry, registry_sha, config, mode, sources, b
     require(not (work + os.sep).startswith(output + os.sep) and work != output
             and not (output + os.sep).startswith(work + os.sep),
             "the work directory lies apart from the result")
-    os.makedirs(output, 0o755)
-    os.makedirs(work, 0o700)
-    capture = os.path.join(work, "capture")
-    os.mkdir(capture, 0o700)
-    runs_dir = os.path.join(work, "runs")
-    os.mkdir(runs_dir, 0o700)
-    file_bytes = min(FILE_BYTES_MAX, config["work_bytes"])
-    started_ms = int(settings.wall() * 1000)
-    start_host = settings.host_identity()
-    guard = _Guard(registry, root, digest, dict((side, binaries[side]) for side in SIDES),
-                   output)
-    state = {"stopped": None, "cleanup": "confirmed", "retained": None, "problems": [],
-             "executions": 0}
+    budget = deadlines.Budget(deadline, settings.clock, RESERVE_SECONDS)
+    terminal = deadlines.Budget(deadline, settings.clock, 0)
+    budget.seconds("initializing telemetry work")
+
+    def initialize():
+        os.makedirs(output, 0o755)
+        os.makedirs(work, 0o700)
+        capture = os.path.join(work, "capture")
+        os.mkdir(capture, 0o700)
+        runs_dir = os.path.join(work, "runs")
+        os.mkdir(runs_dir, 0o700)
+        file_bytes = min(FILE_BYTES_MAX, config["work_bytes"])
+        started_ms = int(settings.wall() * 1000)
+        start_host = settings.host_identity()
+        guard = _Guard(registry, root, digest,
+                       dict((side, binaries[side]) for side in SIDES), output, budget)
+        state = {"stopped": None, "cleanup": "confirmed", "retained": None, "problems": [],
+                 "executions": 0}
+
+        return capture, runs_dir, file_bytes, started_ms, start_host, guard, state
+    capture, runs_dir, file_bytes, started_ms, start_host, guard, state = _sync(
+        budget, "initializing telemetry work", initialize)
 
     def remaining():
         return deadline - settings.clock()
@@ -859,7 +976,7 @@ def _run_locked(settings, root, registry, registry_sha, config, mode, sources, b
                                 "kept for teardown and the result" % (config["timeout_minutes"],
                                                                       RESERVE_SECONDS))
         elif executor.mode == "trusted_local" \
-                and settings.free_bytes(work) < config["work_bytes"]:
+                and _sync(budget, "checking telemetry free space", settings.free_bytes, work) < config["work_bytes"]:
             # A contained run's scratch filesystem is itself the work bound, verified by its
             # enforcement fill; a trusted local run needs the room free on the host.
             state["stopped"] = ("the work filesystem has less free space than the profile's %d "
@@ -870,23 +987,40 @@ def _run_locked(settings, root, registry, registry_sha, config, mode, sources, b
         """One execution in its own new directory `run_dir`, which `prepare` may fill first,
         writing only there and in `writable`; (outcome, integrity problems)."""
         state["executions"] += 1
-        os.mkdir(run_dir, 0o700)
-        home, env = private_paths(run_dir)
-        os.mkdir(home, 0o700)
-        if prepare is not None:
-            prepare(run_dir)
-        outcome = executor.run(telemetryexec.Execution(
-            argv, env, run_dir, [run_dir] + list(writable), readable, capture,
-            "x%04d" % state["executions"], room, deadline - RESERVE_SECONDS, file_bytes))
+
+        def prepare_run():
+            os.mkdir(run_dir, 0o700)
+            home, env = private_paths(run_dir)
+            os.mkdir(home, 0o700)
+            if prepare is not None:
+                prepare(run_dir)
+            return env
+        try:
+            env = _sync(budget, "preparing telemetry execution and corpus copy", prepare_run)
+            budget.seconds("launching telemetry execution")
+        except (deadlines.Expired, deadlines.Interrupted) as error:
+            state["stopped"] = str(error)[:4096]
+            outcome = telemetryexec.Outcome(error=state["stopped"], timed_out=True)
+        else:
+            outcome = _sync(terminal, "executing telemetry and teardown", executor.run,
+                telemetryexec.Execution(argv, env, run_dir, [run_dir] + list(writable),
+                    readable, capture, "x%04d" % state["executions"], room,
+                    deadline - RESERVE_SECONDS, file_bytes, cleanup_deadline=deadline))
         if outcome.cleanup != "confirmed":
             # Whatever it could reach stays for the operator; nothing more runs.
+            _uncertain(settings, executor)
             state["cleanup"] = "uncertain"
             state["retained"] = work
             state["stopped"] = ("an execution's cleanup was not confirmed (%s); its work is kept "
                                 "at %s for the operator" % (outcome.cleanup_detail, work))[:4096]
         else:
-            shutil.rmtree(run_dir, ignore_errors=True)
-        problems = guard.problems()
+            if not _remove_owned(run_dir, settings, executor, state, terminal, work):
+                outcome.cleanup = "uncertain"
+                outcome.cleanup_detail = state["stopped"]
+        try:
+            problems = _sync(budget, "checking execution integrity", guard.problems)
+        except (deadlines.Expired, deadlines.Interrupted) as error:
+            problems = [str(error)]
         if problems:
             state["problems"] += [problem for problem in problems
                                   if problem not in state["problems"]]
@@ -936,7 +1070,7 @@ def _run_locked(settings, root, registry, registry_sha, config, mode, sources, b
         if reason is not None:
             entry["detail"] = reason
         else:
-            os.mkdir(corpus_dir, 0o700)
+            _sync(budget, "creating master corpus", os.mkdir, corpus_dir, 0o700)
             run_dir = os.path.join(runs_dir, "corpus")
             outcome, problems = execute(
                 corpus_argv(settings_, config["seed"], os.path.join(root, script), corpus_dir,
@@ -944,9 +1078,9 @@ def _run_locked(settings, root, registry, registry_sha, config, mode, sources, b
                 _readable(registry, root, "read_latency", None), config["work_bytes"],
                 writable=[corpus_dir])
             entry["wall_ms"] = format_decimal(Fraction(outcome.wall_ns, 1000000))
-            entry["log"] = _log(output, LOGS + "/corpus.log", outcome.stderr,
-                                outcome.stderr_bytes)
-            guard.wrote()
+            entry["log"] = _sync(terminal, "retaining corpus log", _log, output,
+                                 LOGS + "/corpus.log", outcome.stderr, outcome.stderr_bytes)
+            _sync(terminal, "inventorying controller output", guard.wrote)
             failure = outcome.failure()
             if outcome.timed_out:
                 entry["status"], entry["detail"] = "timeout", "the corpus generator timed out"
@@ -956,9 +1090,9 @@ def _run_locked(settings, root, registry, registry_sha, config, mode, sources, b
                     failure or ("exited %s" % outcome.code if outcome.code != 0
                                 else "changed protected state")))[:4096]
             else:
-                module = script_module(script, root)
+                module = _sync(budget, "loading corpus protocol", script_module, script, root)
                 try:
-                    facts = corpus_facts(corpus_dir)
+                    facts = _sync(budget, "reading corpus facts", corpus_facts, corpus_dir)
                     expected = settings_["runs"] * module.EXECUTIONS_PER_RUN
                     require(facts["segments"] == expected, "it wrote %d segments, not the %d "
                             "of %d runs" % (facts["segments"], expected, settings_["runs"]))
@@ -967,7 +1101,7 @@ def _run_locked(settings, root, registry, registry_sha, config, mode, sources, b
                     entry["detail"] = ("the generated corpus is incomplete: %s" % error)[:4096]
                 else:
                     entry["status"], entry["facts"], corpus_ok = "ok", facts, True
-                    guard.keep_corpus(corpus_dir)
+                    _sync(budget, "inventorying master corpus", guard.keep_corpus, corpus_dir)
         result["corpus"] = entry
     for index in range(config["rounds"]):
         order = SIDES if index % 2 == 0 else tuple(reversed(SIDES))
@@ -1001,14 +1135,15 @@ def _run_locked(settings, root, registry, registry_sha, config, mode, sources, b
                 def copy_corpus(run_dir):
                     # Every read gets its own copy, counted in its room: an index one side
                     # builds is never another read's, and the master corpus is never bound.
-                    shutil.copytree(corpus_dir, os.path.join(run_dir, "corpus"), symlinks=True)
+                    admission.copy_tree(corpus_dir, os.path.join(run_dir, "corpus"),
+                        admission.Bounds(1000000, 64, file_bytes, config["work_bytes"]), budget)
                 outcome, problems = execute(
                     argv, run_dir, _readable(registry, root, experiment, binaries[side][0]),
                     config["work_bytes"],
                     copy_corpus if experiment == "read_latency" else None)
                 label = "%s/%s/round-%d-%s" % (LOGS, experiment, index, side)
-                record["log"] = _log(output, label + ".log", outcome.stderr,
-                                     outcome.stderr_bytes)
+                record["log"] = _sync(terminal, "retaining experiment log", _log, output,
+                                      label + ".log", outcome.stderr, outcome.stderr_bytes)
                 record["exit_code"] = outcome.code if outcome.code is not None and \
                     -255 <= outcome.code <= 255 else None
                 record["wall_ms"] = format_decimal(Fraction(outcome.wall_ns, 1000000))
@@ -1029,8 +1164,10 @@ def _run_locked(settings, root, registry, registry_sha, config, mode, sources, b
                 else:
                     relative = "%s/%s/round-%d-%s.json" % (RAW, experiment, index, side)
                     try:
-                        doc = read_document(experiment, outcome.stdout, relative, registry, root)
-                        verdict, reasons = admit(experiment, doc, expectation(
+                        doc = _sync(budget, "reading experiment document", read_document,
+                                    experiment, outcome.stdout, relative, registry, root)
+                        verdict, reasons = _sync(budget, "admitting experiment document",
+                            admit, experiment, doc, expectation(
                             dict(result, corpus=result["corpus"]), record), registry, root)
                         # Read latency exits 3 whenever its reads are over their bounds, at
                         # any scale; the paired scripts exactly when their gate fails.
@@ -1043,33 +1180,33 @@ def _run_locked(settings, root, registry, registry_sha, config, mode, sources, b
                         record["detail"] = str(error)[:4096]
                     else:
                         path = os.path.join(output, relative)
-                        os.makedirs(os.path.dirname(path), exist_ok=True)
-                        with open(path, "xb") as stream:
-                            stream.write(outcome.stdout)
+                        _sync(budget, "retaining experiment document", _write_new,
+                              path, outcome.stdout)
                         record["document"] = {"path": relative,
                                               "sha256": sha256_bytes(outcome.stdout),
                                               "size": len(outcome.stdout)}
                         record["judgment"] = {"verdict": verdict, "reasons": reasons}
                         record["status"] = "ok"
                         documents[(experiment, index, side)] = doc
-                guard.wrote()
+                _sync(terminal, "inventorying controller output", guard.wrote)
     if state["cleanup"] == "confirmed":
-        shutil.rmtree(work, ignore_errors=True)
-    # A side's binary ran on this host; the scripts, fixtures and schemas that measured it
-    # must still be the ones both sides were measured with.
-    if authority_digest(registry, root)[0] != digest \
-            and "the measurement authority changed" not in state["problems"]:
-        state["problems"].append("the measurement authority changed")
-    end_host = settings.host_identity()
-    result["host"]["end_host_id"] = contracts.host_id(end_host)
-    result["host"]["same_host"] = result["host"]["end_host_id"] == result["host"]["host_id"]
-    result["ended_unix_ms"] = max(started_ms, int(settings.wall() * 1000))
-    result["execution"].update(cleanup=state["cleanup"], retained=state["retained"],
-                               problems=[problem[:512] for problem in state["problems"]][:64])
-    result["within"], result["comparisons"] = derive(result, documents)
-    result["status"] = result_status(result)
-    contracts.validate_telemetry_result(result)
-    write_bundle(output, result)
+        _remove_owned(work, settings, executor, state, terminal, work)
+    with deadlines.Budget(deadline, settings.clock, 1).enforce("finalizing telemetry result"):
+        # A side's binary ran on this host; the scripts, fixtures and schemas that measured it
+        # must still be the ones both sides were measured with.
+        if authority_digest(registry, root, terminal)[0] != digest \
+                and "the measurement authority changed" not in state["problems"]:
+            state["problems"].append("the measurement authority changed")
+        end_host = settings.host_identity()
+        result["host"]["end_host_id"] = contracts.host_id(end_host)
+        result["host"]["same_host"] = result["host"]["end_host_id"] == result["host"]["host_id"]
+        result["ended_unix_ms"] = max(started_ms, int(settings.wall() * 1000))
+        result["execution"].update(cleanup=state["cleanup"], retained=state["retained"],
+                                   problems=[problem[:512] for problem in state["problems"]][:64])
+        result["within"], result["comparisons"] = derive(result, documents)
+        result["status"] = result_status(result)
+        contracts.validate_telemetry_result(result)
+        write_bundle(output, result)
     return result
 
 

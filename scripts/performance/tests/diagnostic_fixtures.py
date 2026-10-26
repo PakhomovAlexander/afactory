@@ -470,6 +470,9 @@ with open(os.path.join(here, "docker-calls.jsonl"), "a") as log:
     log.write(json.dumps(args) + "\n")
 if args[0] in ("rm", "ps"):
     sys.exit(0)
+if args[:2] == ["image", "inspect"]:
+    print('{"/implicit":{}}' if os.path.exists(os.path.join(here, "implicit-volume")) else 'null')
+    sys.exit(0)
 assert args[0] == "run", args
 mounts = {}
 for index, item in enumerate(args):

@@ -111,6 +111,12 @@ class Contained(Supervisor):
         return Supervisor.reserve(self) + supervise.REMOVAL_SECONDS
 
     def launch(self, request_doc, deadline, clock, started, file_bytes, binds):
+        from . import builds
+        from .budget import Budget
+        # The same image admission as shard/diagnostic preflight, also for direct users.
+        builds.refuse_implicit_volumes(self.docker, self.image, Budget(
+            deadline if deadline is not None else clock() + supervise.HOST_MARGIN_SECONDS,
+            clock, supervise.REMOVAL_SECONDS if deadline is not None else 0))
         self.requests += 1
         name = "af-perf-diag-%s-%d-%s" % (self.label[-12:], self.requests,
                                           os.urandom(4).hex())

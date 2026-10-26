@@ -209,7 +209,7 @@ jobs:
       - name: Exercise offline builds, aggregate storage and hostile output admission
         timeout-minutes: 15
         run: python -I -B scripts/performance/tests/telemetry_build_smoke.py
-      - name: Exercise contained measurements, denied writes, output flooding and owned cleanup
+      - name: Exercise contained measurements, diagnostic readers, denied writes and owned cleanup
         timeout-minutes: 4
         env:
           PYTHONDONTWRITEBYTECODE: '1'

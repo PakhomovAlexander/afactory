@@ -167,7 +167,8 @@ class Execution(object):
     stdout and stderr go to (the controller's own), and its room."""
 
     def __init__(self, argv, env, cwd, writable, readable, capture, label, room_bytes,
-                 deadline, file_bytes):
+                 deadline, file_bytes, cleanup_deadline=None):
+        self.cleanup_deadline = cleanup_deadline
         self.argv = list(argv)
         self.env = dict(env)
         self.cwd = cwd
@@ -212,6 +213,11 @@ class Executor(object):
         """(lifecycle problem or None, cleanup state, cleanup detail) after the process
         ended."""
         raise NotImplementedError
+
+    def cleanup_seconds(self, execution, maximum):
+        if execution.cleanup_deadline is None:
+            return maximum
+        return min(maximum, max(0, execution.cleanup_deadline - self.clock()))
 
     def run(self, execution):
         """Run `execution` once within its deadline and room; its Outcome."""
@@ -328,7 +334,7 @@ class TrustedLocal(Executor):
         for sent in (signal.SIGTERM, signal.SIGKILL):
             process.signal_group(sent)
             try:
-                process.wait(timeout=KILL_GRACE_SECONDS)
+                process.wait(timeout=self.cleanup_seconds(execution, KILL_GRACE_SECONDS))
                 return
             except subprocess.TimeoutExpired:
                 continue
@@ -338,7 +344,7 @@ class TrustedLocal(Executor):
 
     def finish(self, process, execution, stopped):
         lifecycle = None
-        until = time.monotonic() + KILL_GRACE_SECONDS
+        until = time.monotonic() + self.cleanup_seconds(execution, KILL_GRACE_SECONDS)
         notes = []
         try:
             if not stopped and _group_alive(process.pid, until):
@@ -624,16 +630,18 @@ class Contained(Executor):
     def _remove(self, execution):
         # The container's one removal; it ends every process in its PID namespace.
         deadline = max(execution.deadline, self.clock()) + supervise.REMOVAL_SECONDS
+        if execution.cleanup_deadline is not None:
+            deadline = min(deadline, execution.cleanup_deadline)
         return supervise.remove_container(self.docker, self.current, deadline, self.clock)
 
     def stop(self, process, execution):
         self.removal = self._remove(execution)
         try:
-            process.wait(timeout=KILL_GRACE_SECONDS)
+            process.wait(timeout=self.cleanup_seconds(execution, KILL_GRACE_SECONDS))
         except subprocess.TimeoutExpired:
             process.kill()
             try:
-                process.wait(timeout=KILL_GRACE_SECONDS)
+                process.wait(timeout=self.cleanup_seconds(execution, KILL_GRACE_SECONDS))
             except subprocess.TimeoutExpired:
                 pass
 
@@ -645,7 +653,7 @@ class Contained(Executor):
         if process.returncode is None:
             process.kill()
             try:
-                process.wait(timeout=KILL_GRACE_SECONDS)
+                process.wait(timeout=self.cleanup_seconds(execution, KILL_GRACE_SECONDS))
             except subprocess.TimeoutExpired:
                 pass
         problems = []

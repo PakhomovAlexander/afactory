@@ -278,6 +278,25 @@ def pinned_image(reference):
             and all(c in "0123456789abcdef" for c in value))
 
 
+def refuse_implicit_volumes(docker, reference, budget=None):
+    """One pre-launch image-volume policy for builds, samples, seeds and readers."""
+    seconds = (CONTAINER_PROBE_SECONDS if budget is None else
+               budget.seconds("image volume inspection", CONTAINER_PROBE_SECONDS))
+    try:
+        result = _run([docker, "image", "inspect", "--format", "{{json .Config.Volumes}}",
+                       reference], docker_client_environment(), timeout=seconds)
+    except subprocess.TimeoutExpired:
+        if budget is not None and budget.left() <= 0:
+            raise budget.expired("image volume inspection", seconds)
+        raise ContractError("image volume inspection exceeded its allowance")
+    if budget is not None:
+        budget.seconds("completing image volume inspection")
+    require(len(result.stdout) <= limits.RECORD_BYTES_MAX,
+            "image volume declaration exceeds its byte bound")
+    require(json.loads(result.stdout) in (None, {}),
+            "bounded build image declares implicit writable volumes")
+
+
 class BuildImage:
     """A build image pinned by digest and present locally, run as this user."""
 
@@ -334,13 +353,8 @@ class BuildImage:
 
     def refuse_implicit_volumes(self):
         """A bounded build must not acquire writable anonymous image volumes."""
-        result = _run([self.docker, "image", "inspect", "--format", "{{json .Config.Volumes}}",
-                       self.reference], docker_client_environment(),
-                      timeout=self.seconds("image volume inspection", CONTAINER_PROBE_SECONDS))
-        require(len(result.stdout) <= limits.RECORD_BYTES_MAX,
-                "image volume declaration exceeds its byte bound")
-        require(json.loads(result.stdout) in (None, {}),
-                "bounded build image declares implicit writable volumes")
+        refuse_implicit_volumes(self.docker, self.reference, self.budget)
+
 
     def command(self, name, argv, cwd, env, mounts, network=False):
         """`docker run` of `argv` in a new named container of this image. The program starts

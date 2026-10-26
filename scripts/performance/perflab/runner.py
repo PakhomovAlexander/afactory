@@ -351,6 +351,11 @@ def contained_host(docker, image, scratch_fs, environment, run_budget, clock):
             raise run_budget.expired(fill, deadline - started)
         raise Unavailable("scratch_unverified", "no verified disk-bounded scratch: "
                           + "; ".join(record["capability"]["reasons"]))
+    from . import builds
+    try:
+        builds.refuse_implicit_volumes(docker, image, run_budget)
+    except builds.Unavailable as error:
+        raise Unavailable(error.reason, str(error))
     run_budget.seconds("reading the host's CPUs")
     online, siblings = _host_cpus()
     cpus, shared = supervise.choose_cpus(online, siblings, environment["logical_cpus"])

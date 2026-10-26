@@ -413,3 +413,5 @@ future readers need.
   clock](0220-control-store-fixture-time-with-a-scoped-thread-clock.md)
 - [0221 — Integrate the Performance Lab with GA and control short Attempt
   fixtures](0221-integrate-the-performance-lab-with-ga-and-control-short-attempt-fixtures.md)
+- [0222 — Fence filesystem cleanup and bound telemetry admission through
+  publication](0222-fence-filesystem-cleanup-and-bound-telemetry-admission-through-publication.md)

@@ -729,15 +729,8 @@ def cmd_telemetry_run(args):
 def _telemetry_run(args, owner):
     try:
         root = telemetrylab.ROOT
-        builds = {}
-        for side in contracts.SIDES:
-            path = getattr(args, side + "_build")
-            builds[side] = None
-            if path:
-                af = getattr(args, side + "_af")
-                builds[side] = telemetrylab.read_build(
-                    path, side, getattr(args, side + "_sha"),
-                    telemetrylab._binary(af, "--%s-af" % side)[1])
+        started = time.monotonic()
+        build_paths = dict((side, getattr(args, side + "_build")) for side in contracts.SIDES)
         result = telemetrylab.run(telemetrylab.Settings(
             profile=args.profile, trigger=args.trigger, baseline_af=args.baseline_af,
             candidate_af=args.candidate_af, baseline_sha=args.baseline_sha,
@@ -745,7 +738,10 @@ def _telemetry_run(args, owner):
             experiments=args.experiment, rounds=args.rounds, pairs=args.pairs, scale=args.scale,
             corpus_runs=args.corpus_runs, output=args.output, work=args.work,
             result_id=args.result_id, root=root, mode=args.mode, docker=args.docker,
-            image=args.image, scratch_fs=args.scratch_fs, builds=builds, scratch_owner=owner))
+            image=args.image, scratch_fs=args.scratch_fs, build_paths=build_paths, started=started,
+            scratch_owner=owner))
+    except (telemetrylab.deadlines.Expired, telemetrylab.deadlines.Interrupted) as error:
+        return _refuse("unavailable", "telemetry_deadline", str(error))
     except telemetrylab.Unavailable as error:
         return _refuse("unavailable", error.reason, str(error))
     except (ContractError, OSError) as error:

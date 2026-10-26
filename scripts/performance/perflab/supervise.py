@@ -443,7 +443,7 @@ def container_argv(docker, name, image, environment, supervisor, binaries, sampl
             "--pids-limit", str(environment["pid_limit"]),
             "--memory", str(memory), "--memory-swap", str(memory),
             "--cpuset-cpus", ",".join(str(cpu) for cpu in cpus),
-            "--user", "%d:%d" % (uid, gid), "--cgroupns", "private", "--ipc", "private",
+            "--user", "%d:%d" % (uid, gid), "--cgroupns", "private", "--ipc", "none", "--log-driver", "none",
             "--mount", "type=bind,src=%s,dst=%s,readonly" % (supervisor, SUPERVISOR_PATH),
             "--mount", "type=bind,src=%s,dst=%s" % (sample_dir, SCRATCH),
             "--entrypoint", SUPERVISOR_PATH]

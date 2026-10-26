@@ -14,7 +14,7 @@ import shutil
 from unittest import mock
 
 from perflab import (budget as deadlines, bundle, contracts, diagcontracts, diagnostics, jsonsubset, oracle,
-                     phasetrace, planning, report, telemetrydiag)
+                     phasetrace, planning, report, supervise, telemetrydiag)
 from perflab.values import ContractError
 from tests import diagnostic_fixtures as fakes
 from tests.support import ROOT, SUITE, TempDir, fake_supervisor, read, writable_copy
@@ -429,6 +429,51 @@ class TelemetryChildRuns(ChildRunBase):
         self.assertEqual(sorted(set(item["kind"] for item in state["items"])),
                          ["telemetry", "telemetry_perfetto", "timeline"])
         self.assertEqual(report._case_telemetry(DISCOVERY, [child])["state"], "omitted")
+
+    def test_real_reader_route_and_shared_builder_deny_ipc_logging_and_check_image_volumes(self):
+        original = supervise.container_argv
+        commands = []
+        def argv(*args, **kwargs):
+            command = original(*args, **kwargs)
+            commands.append(command)
+            return command
+        with mock.patch.object(supervise, "container_argv", argv):
+            doc, _ = self.run_child()
+        self.assertTrue(all(item["evidence"]["state"] == "complete"
+                            for item in doc["telemetry"]["captures"]))
+        self.assertGreaterEqual(len(commands), 8)  # Every reader of both recorded sides.
+        for command in commands:
+            self.assertEqual(command[command.index("--ipc") + 1], "none")
+            self.assertEqual(command[command.index("--log-driver") + 1], "none")
+        calls = [json.loads(line) for line in read(self.path("docker", "docker-calls.jsonl")).splitlines()]
+        inspections = [call for call in calls if call[:2] == ["image", "inspect"]]
+        self.assertEqual(len(inspections), len(commands))
+        self.assertTrue(all("{{json .Config.Volumes}}" in call for call in inspections))
+
+    def test_reader_image_volume_is_refused_before_launch_on_the_actual_route(self):
+        original = diagnostics.Profile.telemetry_documents
+        reads = []
+        marker = self.path("docker", "implicit-volume")
+        def documents(profile, *args, **kwargs):
+            before = len(fakes.docker_calls(self.path("docker")))
+            with open(marker, "w") as stream:
+                stream.write("fixture image declares a writable volume")
+            try:
+                return original(profile, *args, **kwargs)
+            finally:
+                reads.append(fakes.docker_calls(self.path("docker"))[before:])
+                os.unlink(marker)
+        with mock.patch.object(diagnostics.Profile, "telemetry_documents", documents):
+            doc, _ = self.run_child()
+        self.assertEqual(len(reads), 2)
+        for calls in reads:
+            self.assertEqual(len(calls), 1)
+            self.assertEqual(calls[0][:2], ["image", "inspect"])
+        for capture in doc["telemetry"]["captures"]:
+            self.assertIsNotNone(capture["omission"])
+            self.assertIn("implicit writable volumes", capture["omission"]["detail"])
+        self.assertFalse(any(item["evidence"] and item["evidence"]["state"] == "complete"
+                             for item in doc["telemetry"]["captures"]))
 
     def test_content_is_labelled_perturbing(self):
         doc, output = self.run_child(telemetry="content")
