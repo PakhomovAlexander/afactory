@@ -399,3 +399,5 @@ future readers need.
   pin](0213-isolate-cli-usage-tests-from-the-repository-release-pin.md)
 - [0214 — Bound guarded experiment consumers to build and instrument
   inputs](0214-bound-guarded-experiment-consumers-to-build-and-instrument-inputs.md)
+- [0215 — Give the guarded improvement fixture a controlled timing
+  margin](0215-give-the-guarded-improvement-fixture-a-controlled-timing-margin.md)

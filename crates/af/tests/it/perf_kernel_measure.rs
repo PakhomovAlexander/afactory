@@ -39,8 +39,10 @@ const STAGED: &str = "fixtures/performance/kernel-measure/code-policy-measures.t
 const CANONICAL: &str = "crates/review-store/src/canonical.rs";
 const VALIDATE: &str =
     "pub fn validate_envelope(envelope: &review_core::ArtifactEnvelope) -> Result<(), String> {\n";
-/// The controlled slowdown of the disposable baseline revision, inside the timed operation.
-const SLOW_MS: u64 = 1500;
+/// The controlled slowdown of the successful comparison's disposable baseline revision.
+const SLOW_MS: u64 = 7500;
+/// Refusal scenarios need only a small slowdown; they do not prove improvement.
+const REFUSAL_SLOW_MS: u64 = 1500;
 const EVALUATE: &str = "root.nodes.trial.nodes.evaluate";
 const REFUSED: &str = "refused before any candidate import or build";
 
@@ -1004,6 +1006,88 @@ fn base64(bytes: &[u8]) -> String {
     out
 }
 
+/// Constructed elapsed receipts, not new measurements or a product speed claim. The old
+/// pair was observed under load; credit only one extra sleep although setup validates too.
+#[test]
+fn guarded_improvement_margin_covers_observed_load_within_sample_timeout() {
+    use review_core::task::measurement::{MeasurementRunV1, summarize};
+
+    let staged: toml::Value =
+        toml::from_str(&std::fs::read_to_string(workspace().join(STAGED)).unwrap()).unwrap();
+    let objective: MeasureObjectiveV1 = staged["objectives"][OBJECTIVE].clone().try_into().unwrap();
+    assert_eq!(objective.metric, "elapsed_ms");
+    assert_eq!(objective.min_repetitions, 3);
+    assert_eq!(
+        serde_json::to_value(&objective).unwrap()["min_improvement_ratio"],
+        "0.1"
+    );
+    let measure = &staged["measures"][MEASURE];
+    assert_eq!(measure["repetitions"].as_integer(), Some(3));
+    let id = format!("sha256:{}", "a".repeat(64));
+    let constructed = |elapsed_ms: u64| {
+        let runs: Vec<MeasurementRunV1> = (0..3)
+            .map(|_| {
+                serde_json::from_value(json!({
+                    "started_unix_ms": 1, "elapsed_ms": elapsed_ms, "exit_code": 0,
+                    "stdout_id": id, "stderr_id": id,
+                    "metrics": {"wall_ms": {"value": "1", "unit": "ms"}}
+                }))
+                .unwrap()
+            })
+            .collect();
+        let mut receipt: MeasurementV1 = serde_json::from_value(json!({
+            "plan_id": id, "policy_id": id, "snapshot_id": id, "command_id": id,
+            "measure": MEASURE, "warm": false, "repetitions": 3,
+            "wall_ms": measure["wall_ms"].as_integer().unwrap(),
+            "metrics": {"wall_ms": "ms"}, "outcome": "passed", "runs": runs,
+            "summary": {}
+        }))
+        .unwrap();
+        receipt.summary = summarize(&receipt.metrics, &receipt.runs).unwrap();
+        receipt
+    };
+    let compare = |baseline_ms, candidate_ms| {
+        compare_measurements(
+            &id,
+            &id,
+            (&id, &constructed(baseline_ms)),
+            (&id, &constructed(candidate_ms)),
+            ComparisonObjective {
+                name: OBJECTIVE,
+                objective: &objective,
+            },
+        )
+        .unwrap()
+    };
+    assert_eq!(
+        compare(8148, 10790).metrics["elapsed_ms"]
+            .conclusion
+            .as_str(),
+        "regressed"
+    );
+    let extra_sleep_ms = SLOW_MS - REFUSAL_SLOW_MS;
+    assert_eq!(extra_sleep_ms, 6000);
+    assert_eq!(
+        compare(8148 + extra_sleep_ms, 10790).metrics["elapsed_ms"]
+            .conclusion
+            .as_str(),
+        "improved"
+    );
+
+    let suite: toml::Value = toml::from_str(
+        &std::fs::read_to_string(workspace().join("fixtures/performance/suite.toml")).unwrap(),
+    )
+    .unwrap();
+    let timeout_ms = suite["cases"]["canonical_validate_small"]["sample_timeout_seconds"]
+        .as_integer()
+        .unwrap() as u64
+        * 1000;
+    assert_eq!(timeout_ms, 30_000);
+    // Two setup validations and one timed validation share the one probe sample timeout.
+    assert_eq!(3 * SLOW_MS, 22_500);
+    assert!(3 * SLOW_MS < timeout_ms);
+}
+
 #[test]
 fn guarded_kernel_experiments_measure_one_judged_sample_and_refuse_every_tampered_harness() {
     let mut consumer = Consumer::new();
@@ -1052,7 +1136,7 @@ fn guarded_kernel_experiments_measure_one_judged_sample_and_refuse_every_tampere
         &warm_cargo_home(&consumer.root),
     );
 
-    // The disposable slow product revision every later Task measures as its source.
+    // The disposable slow product revision for the successful comparison only.
     consumer.commit(
         &[(
             CANONICAL,
@@ -1156,6 +1240,17 @@ fn guarded_kernel_experiments_measure_one_judged_sample_and_refuse_every_tampere
 
     // 3. Tampered candidates: each removes the slowdown too, so only the guard keeps it from an
     // improved receipt, and each leaves an owned marker if any of its code ran.
+    // These scenarios do not need the positive comparison's larger timing margin.
+    let sleep =
+        format!("    std::thread::sleep(std::time::Duration::from_millis({REFUSAL_SLOW_MS}));\n");
+    consumer.commit(
+        &[(
+            CANONICAL,
+            canonical.replace(VALIDATE, &format!("{VALIDATE}{sleep}")),
+        )],
+        "disposable smaller slowdown for refusal scenarios",
+    );
+    let unslow = json!({"replace": [sleep, ""]});
     let golden =
         std::fs::read_to_string(workspace.join("fixtures/performance/golden/native.json")).unwrap();
     let entry: Value = serde_json::from_str::<Value>(&golden).unwrap()["entries"]
