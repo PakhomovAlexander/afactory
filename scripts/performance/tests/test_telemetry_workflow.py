@@ -33,6 +33,25 @@ class Workflow(unittest.TestCase):
         self.text = read(WORKFLOW).decode("utf-8")
         self.jobs = text.jobs(self.text)
 
+    def test_validation_builds_real_release_af_and_runs_the_contained_setup_regression(self):
+        jobs = text.jobs(read(os.path.join(ROOT, '.github/workflows/validate.yml')).decode())
+        job = jobs['telemetry-runtime-smoke']
+        self.assertIsNone(text.key(job, 'if'))
+        self.assertEqual(text.key(job, 'runs-on'), 'ubuntu-latest')
+        body = '\n'.join(job)
+        self.assertIn('persist-credentials: false', body)
+        self.assertIn('telemetry-contained-build', body)
+        self.assertIn('--source-sha "$GITHUB_SHA"', body)
+        self.assertIn('telemetry_runtime_smoke.py', body)
+        self.assertIn('--af "$RUNNER_TEMP/telemetry-runtime-build/af"', body)
+        self.assertNotIn('--native', body)
+        self.assertNotIn('continue-on-error', body)
+        self.assertNotIn('secrets.', body)
+        # Preserve the existing live hostile-write/allocation/diagnostic coverage too.
+        probes = '\n'.join(jobs['telemetry-build-smoke'])
+        self.assertIn('telemetry_build_smoke.py', probes)
+        self.assertIn('telemetry_measurement_smoke.py', probes)
+
     def test_the_frozen_cohort_is_byte_identical_and_telemetry_stays_separate(self):
         for relative, digest in FROZEN.items():
             self.assertEqual(hashlib.sha256(read(os.path.join(ROOT, relative))).hexdigest(),

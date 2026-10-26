@@ -234,7 +234,7 @@ def argv_for(experiment, settings, seed, script, af="{af}", work="{work}", corpu
 
 def corpus_argv(settings, seed, script, out="{corpus}", python="python3"):
     return [python, "-I", "-B", script, "generate", "--out", out, "--runs",
-            str(settings["runs"]), "--seed", str(seed), "--jobs", "2"]
+            str(settings["runs"]), "--seed", str(seed), "--jobs", "1"]
 
 
 def private_environment(home):

@@ -136,17 +136,40 @@ one bounded profile per trigger:
 
 | Profile | Rounds | Overhead | Invocation cost | Corpus | Timeout | Work bytes | Retention |
 | --- | ---: | --- | --- | ---: | ---: | ---: | ---: |
-| `pr` | 2 | 3 pairs, full | 2 pairs, smoke | 200 runs | 120 min | 4 GiB | 14 days |
-| `nightly` | 2 | 20 pairs, full | 5 pairs, full | 1,000 runs | 340 min | 8 GiB | 30 days |
-| `release` | 2 | 20 pairs, full | 20 pairs, full | 10,000 runs | 355 min | 12 GiB | 90 days |
-| `manual` | 2 | 3 pairs, full | 2 pairs, smoke | 200 runs | 240 min | 8 GiB | 30 days |
+| `pr` | 2 | 3 pairs, full | 2 pairs, smoke | 200 runs | 120 min | 16 GiB | 14 days |
+| `nightly` | 2 | 20 pairs, full | 5 pairs, full | 1,000 runs | 340 min | 20 GiB | 30 days |
+| `release` | 2 | 20 pairs, full | 20 pairs, full | 10,000 runs | 355 min | 24 GiB | 90 days |
+| `manual` | 2 | 3 pairs, full | 2 pairs, smoke | 200 runs | 240 min | 20 GiB | 30 days |
+
+Work bytes are gross bounded filesystem capacity, including ext4 overhead. Each profile adds
+12 GiB to its former 4/8/12 GiB workload allowance: AF still requires 10 GiB **free** before
+provider admission and checks, leaving 2 GiB for filesystem overhead and headroom. Filling
+that headroom still causes admission to refuse; the filesystem and aggregate allocation limits
+remain enforced. This costs up to 12 GiB more backing storage per measuring job. Preparation
+also requires the unchanged 10 GiB host floor above the image: 26/30/34 GiB free for the
+16/20/24 GiB profiles. The actual available capacity is smaller than the gross figure and is
+checked by the real runtime regression; no writable path moves off the bounded filesystem.
+
+Corpus preparation explicitly uses `--jobs 1`, a serial path through the same deterministic
+writers, without constructing a multiprocessing Pool or semaphore. This is untimed preparation;
+the timed reader measurements and their bounds are unchanged. Other generator callers retain
+parallel workers when they request more than one job.
+
+`validate.yml` runs `telemetry_runtime_smoke.py` with actual release AF built in the pinned GNU
+image. It reproduces the former 4 GiB concurrent fixture failure from public Task state, then
+uses the registry's 16 GiB PR capacity for one smoke pair of every overhead/invocation case and
+the three reads of a 10-run corpus, through the same contained executor with `--ipc none`.
+The test has an eight-minute total deadline, confirms execution and filesystem cleanup, and
+never judges a full performance gate. Existing hostile-write, aggregate/unlinked-allocation,
+output and diagnostic-reader probes remain separate required validation work. A native
+`--native` diagnostic is explicitly uncontained and cannot substitute for this Docker check.
 
 `content` is never measured as an experiment: it is diagnostic only and perturbing.
 
 ```sh
 # On a Linux host: contained, the only mode for source the operator does not trust.
 python3 scripts/performance/cli.py ci-scratch --image /srv/scratch.img --mount /srv/scratch-fs \
-  --bytes 8589934592 --telemetry-owner /srv/telemetry-owner
+  --bytes 21474836480 --telemetry-owner /srv/telemetry-owner
 python3 scripts/performance/cli.py telemetry-run --profile manual --trigger manual \
   --mode linux_container --image REGISTRY/IMAGE@sha256:... --scratch-fs /srv/scratch-fs \
   --scratch-owner /srv/telemetry-owner \
