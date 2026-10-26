@@ -15,6 +15,8 @@ construction. Anything else is refused, so a fixture cannot drift into a region 
 does not cover.
 """
 import hashlib
+import operator
+import re
 import struct
 
 from .values import ContractError, require
@@ -212,9 +214,14 @@ ENVELOPE_GENERATORS = {"small_envelope": "requirements_text",
 
 # The restricted canonical encoder -----------------------------------------------------------
 
+# A C-level scan of exactly the same domain as the encoder: printable ASCII, excluding
+# double quotes and backslashes. This also refuses DEL, non-ASCII and lone surrogates.
+_UNSUPPORTED_STRING = re.compile(r'[^\x20-\x21\x23-\x5b\x5d-\x7e]')
+
+
 def _string(text, where):
     require(isinstance(text, str), where + ": expected a string")
-    require(all(0x20 <= ord(char) <= 0x7e and char not in '"\\' for char in text),
+    require(_UNSUPPORTED_STRING.search(text) is None,
             where + ": the reference encoder admits only printable ASCII without escapes")
     return '"' + text + '"'
 
@@ -313,8 +320,17 @@ class Envelope:
                 "input_artifacts": 0, "producer_kind": "kernel_operation"}
 
 
+def _periodic(pattern, count):
+    """Construct a deterministic prefix without a Python iteration per character/byte.
+
+    Like range(count), accept integer indices and make a negative count empty.
+    """
+    repeats, remainder = divmod(max(0, operator.index(count)), len(pattern))
+    return pattern * repeats + pattern[:remainder]
+
+
 def letters(count):
-    return "".join(chr(ord("a") + index % 26) for index in range(count))
+    return _periodic("abcdefghijklmnopqrstuvwxyz", count)
 
 
 def requirements_envelope(text_bytes):
@@ -327,7 +343,7 @@ def policy_id():
 
 
 def padding(digits, tens):
-    return bytes(index % 10 for index in range(digits)) + bytes([10]) * tens
+    return _periodic(b"\x00\x01\x02\x03\x04\x05\x06\x07\x08\x09", digits) + bytes([10]) * tens
 
 
 def author_files(padding_bytes):
@@ -405,13 +421,11 @@ def solve_requirements(target):
 
 def source_file(index):
     path = "src/d%03d/f%05d.txt" % (index // 100, index)
-    data = bytearray(("af performance source fixture file %05d\n" % index).encode("ascii"))
-    fill = 0
-    while len(data) < SOURCE_FILE_BYTES - 1:
-        data.append(ord("a") + (index + fill) % 26)
-        fill += 1
-    data.append(ord("\n"))
-    return path, bytes(data)
+    data = ("af performance source fixture file %05d\n" % index).encode("ascii")
+    alphabet = b"abcdefghijklmnopqrstuvwxyz"
+    offset = index % len(alphabet)
+    data += _periodic(alphabet[offset:] + alphabet[:offset], SOURCE_FILE_BYTES - 1 - len(data))
+    return path, data + b"\n"
 
 
 def _framed(field):

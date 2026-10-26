@@ -572,7 +572,7 @@ def judge_supervised(doc, golden, request, supervised, containment):
 
 
 def sample(doc, golden, supervisor, binary, instance_id, scratch_root, timeout_seconds,
-           boundary=None):
+           boundary=None, trace=None):
     """One trusted local probe sample under the authority supervisor, in a private namespace
     below `scratch_root`.
 
@@ -580,7 +580,13 @@ def sample(doc, golden, supervisor, binary, instance_id, scratch_root, timeout_s
     anything is created. The namespace is removed afterwards through its handle; a cleanup that
     is not confirmed fails the sample, whatever the probe did, and is written to the returned
     stderr after the probe's own. A supervised execution whose own cleanup is uncertain leaves
-    the namespace in place, never removed beneath a process that may still be live (ADR-0171)."""
+    the namespace in place, never removed beneath a process that may still be live (ADR-0171).
+
+    With a list `trace`, the measured request (never the seed writer) runs with
+    `AF_PERF_TRACE_OUTPUT` naming a new file in the namespace, and the bytes of the phase trace
+    a `perf-trace` build exported there, bounded and read without following a link, or None when
+    it wrote none, are appended to it before the namespace is removed. A trace is diagnostic
+    only: nothing judges it and it changes no result (ADR-0214)."""
     check_timeout(timeout_seconds)
     item, _, _ = _contract(doc, instance_id)
     case = doc["cases"].get(item["case_id"])
@@ -591,9 +597,9 @@ def sample(doc, golden, supervisor, binary, instance_id, scratch_root, timeout_s
     namespace = Namespace(scratch_root, boundary)
     uncertain = []
 
-    def supervised_probe(request):
+    def supervised_probe(request, environment=None):
         order = supervise.request(
-            [binary], supervise.probe_environment(namespace.path), namespace.path,
+            [binary], environment or supervise.probe_environment(namespace.path), namespace.path,
             contracts.canonical_bytes(request).decode("utf-8"), timeout_seconds * 1000,
             limits.RECORD_BYTES_MAX, doc["limits"]["sample_log_bytes"])
         supervised = supervise.launch([supervisor], order)
@@ -615,6 +621,10 @@ def sample(doc, golden, supervisor, binary, instance_id, scratch_root, timeout_s
             written = judge_supervised(doc, golden, writer, supervised_probe(writer),
                                        "process_group")
             seed = os.path.join(seed_root, WORK_DIR)
+        elif trace is not None:
+            # The trace is exported beside the probe's own empty scratch, never into it.
+            scratch = os.path.join(namespace.path, "probe")
+            os.mkdir(scratch, 0o700)
         request = request_for(doc, instance_id, scratch, seed)
         if written is not None and written["status"] != "passed":
             result = _failed(request, "launch_failure", "the seed %s was not written, so "
@@ -623,8 +633,14 @@ def sample(doc, golden, supervisor, binary, instance_id, scratch_root, timeout_s
                                  written["failure"]["detail"]))
             supervised = None
         else:
-            supervised = supervised_probe(request)
+            environment = None
+            if trace is not None:
+                environment = dict(supervise.probe_environment(namespace.path))
+                environment[TRACE_OUTPUT] = os.path.join(namespace.path, TRACE_FILE)
+            supervised = supervised_probe(request, environment)
             result = judge_supervised(doc, golden, request, supervised, "process_group")
+            if trace is not None:
+                trace.append(_trace_bytes(namespace.path))
         result["capability"] = capability(doc, instance_id)
         if supervised is not None:
             result["supervision"] = supervise.summary(supervised)
@@ -649,6 +665,41 @@ def sample(doc, golden, supervisor, binary, instance_id, scratch_root, timeout_s
         stderr += ("perf-probe driver: %s\n" % bounded(note, CLEANUP_STDERR_MAX)).encode(
             "utf-8", "replace")
     return result, stderr
+
+
+# The phase trace a perf-trace probe exports when asked (review_core::perf_trace::OUTPUT_ENV).
+TRACE_OUTPUT = "AF_PERF_TRACE_OUTPUT"
+TRACE_FILE = "probe-trace.json"
+TRACE_BYTES_MAX = 16 * 1024 * 1024
+
+
+def _trace_bytes(directory):
+    """The regular file TRACE_FILE below `directory`, read without following a link and within
+    TRACE_BYTES_MAX, or None when the probe exported no trace there."""
+    path = os.path.join(directory, TRACE_FILE)
+    try:
+        fd = os.open(path, os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_NONBLOCK",
+                                                                               0))
+    except FileNotFoundError:
+        return None
+    except OSError as error:
+        raise ContractError("%s: the exported trace is not a readable regular file: %s"
+                            % (path, error))
+    try:
+        info = os.fstat(fd)
+        require(stat.S_ISREG(info.st_mode), path + ": the exported trace is not a regular file")
+        require(info.st_size <= TRACE_BYTES_MAX, "%s: the exported trace holds %d bytes, over "
+                "its %d-byte bound" % (path, info.st_size, TRACE_BYTES_MAX))
+        chunks, left = [], info.st_size
+        while left > 0:
+            chunk = os.read(fd, min(left, 1 << 20))
+            if not chunk:
+                break
+            chunks.append(chunk)
+            left -= len(chunk)
+        return b"".join(chunks)
+    finally:
+        os.close(fd)
 
 
 def timeout_for(doc, instance_id):

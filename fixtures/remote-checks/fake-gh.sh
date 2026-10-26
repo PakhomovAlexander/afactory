@@ -1,8 +1,6 @@
 #!/bin/sh
 # A fake `gh` serving recorded GitHub API documents; it never contacts a network. It simulates
-# GitHub's pull request and its `refs/pull/12/merge` test merge in the local bare repository,
-# and the pull request's labels (`labels`, one name per line) and the repository's labels
-# (`repo-labels`, likewise).
+# GitHub's pull request and its `refs/pull/12/merge` test merge in the local bare repository.
 STATE='@STATE@'
 BARE='@BARE@'
 TASK='@TASK@'

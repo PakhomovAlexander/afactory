@@ -96,6 +96,7 @@ release-check:
 preflight-check:
 	$(CI_STEP) --stage preflight task-preflight python3 scripts/test-task-preflight.py
 	$(CI_STEP) --stage preflight prereqs python3 scripts/test-prereqs.py
+	$(CI_STEP) --stage preflight gate-owner python3 scripts/test-gate-owner.py
 	$(CI_STEP) --stage preflight nextest-gate python3 scripts/test-nextest-gate.py
 	$(CI_STEP) --stage preflight test-time-report python3 scripts/test-test-time-report.py
 	$(CI_STEP) --stage preflight provider-auth-host python3 scripts/test-provider-auth-host.py

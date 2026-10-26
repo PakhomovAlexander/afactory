@@ -12,12 +12,19 @@
     python3 scripts/performance/cli.py golden [--write]
     python3 scripts/performance/cli.py capabilities [--scratch PATH]
     python3 scripts/performance/cli.py probe --trusted-local --build DIR --side SIDE \
-        --instance ID --scratch DIR
+        --instance ID --scratch DIR [--trace-output PATH]
     python3 scripts/performance/cli.py judge --request PATH --stdout PATH --exit-code N
     python3 scripts/performance/cli.py report --run DIR --output DIR [--job-summary PATH]
     python3 scripts/performance/cli.py profile --plan run.json (--case ID... | --verdict PATH)
         --recipe ID --output DIR [--build DIR | --no-build] [--parent-build DIR]
         [--perf PATH] [--inferno-bin DIR] [--samply PATH] [--valgrind-bin DIR]
+        [--telemetry spans|content]
+    python3 scripts/performance/cli.py telemetry-run --profile ID --trigger T --baseline-af PATH \
+        --candidate-af PATH --baseline-sha SHA --candidate-sha SHA --authority-sha SHA \
+        --output DIR
+    python3 scripts/performance/cli.py telemetry-verify --result DIR [--summary]
+    python3 scripts/performance/cli.py telemetry-history --root DIR [--import DIR...]
+    python3 scripts/performance/cli.py telemetry-schedule --event-name NAME --sha SHA ...
     python3 scripts/performance/cli.py report --run DIR --output DIR [--diagnostic DIR...]
     python3 scripts/performance/cli.py ci-schedule --event-name NAME --event PATH --sha SHA ...
     python3 scripts/performance/cli.py ci-pack|ci-unpack|ci-stage|ci-aggregate|ci-credentials|
@@ -25,7 +32,7 @@
     python3 scripts/performance/cli.py ci-release-handoff --event-name NAME --event PATH ...
     python3 scripts/performance/cli.py ci-release-confirm --handoff DIR ...
     python3 scripts/performance/cli.py cohort-declare --authority SHA --cohort-id ID --tier T \
-        --environment ID --recipe ID --group ID=CPU@IMAGE... --start-date YYYY-MM-DD \
+        --environment ID --recipe ID --group ID 'CPU MODEL' 'IMAGE' --start-date YYYY-MM-DD \
         --repository OWNER/NAME --after-run-number N [--branch main] [--days N] \
         --output cohort.json
     python3 scripts/performance/cli.py plan --scope calibration --authority SHA --cohort PATH \
@@ -80,8 +87,16 @@ parent, selects explicit cases or the parent verdict's regressed then inconclusi
 the diagnostic recipe, and records CPU profiles with flamegraphs, phase traces with their
 overhead, or counters, of native or CLI cases, each with what it observed or why it is
 unavailable and how to reproduce it, in the explicitly selected trusted local or contained Linux
-mode (ADR-0176); it never changes the parent's verdict. It exits 4 when anything requested is
-unavailable. The `ci-*` commands are the continuous workflow's steps (ADR-0177): `ci-schedule`
+mode (ADR-0176); it never changes the parent's verdict. With `--telemetry spans|content` it
+also records each eligible CLI case once per side at that level and reads it back through the
+side's own `af telemetry` documents (ADR-0214). It exits 4 when anything requested is
+unavailable. `probe --trace-output` writes a perf-trace probe's validated phase trace and its
+region breakdown, a diagnostic never judged. `telemetry-run` measures Telemetry's own cost and
+read latency on a baseline and a candidate binary with this checkout's bench scripts, advisory
+and never a verdict; `telemetry-verify` reads its result bundle back offline and recomputes it;
+`telemetry-history` keeps verified results in a durable root and draws their compatible history;
+`telemetry-schedule` resolves one event of the Performance telemetry workflow (ADR-0214). The
+`ci-*` commands are the continuous workflow's steps (ADR-0177): `ci-schedule`
 resolves one Actions event from the trusted control and freezes its comparisons; `ci-pack` and
 `ci-unpack` move one verified build to its shards with its modes; `ci-stage` writes a shard's
 evidence as its transport artifact; `ci-aggregate` imports every arrived shard and reports;
@@ -108,18 +123,48 @@ staged policy, its inventory and any installed guarded measure to match it, and 
 re-pins the staged policy for a reviewed human installation.
 """
 import argparse
+import contextlib
 import json
 import os
 import sys
+import subprocess
+import time
 
 sys.dont_write_bytecode = True
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
+# -B prevents writes, but Python still reads matching timestamp/size bytecode caches.
+# Refuse them before importing any measurement/verifier code: only source is authority.
+def _source_only_library():
+    library = os.path.join(os.path.dirname(os.path.abspath(__file__)), "perflab")
+    pending, entries = [library], 0
+    while pending:
+        directory = pending.pop()
+        if os.path.islink(directory):
+            raise SystemExit("measurement library must not contain directory links")
+        with os.scandir(directory) as listing:
+            for entry in listing:
+                entries += 1
+                if entries > 4096:
+                    raise SystemExit("measurement library exceeds its 4096-entry bound")
+                if entry.is_symlink():
+                    raise SystemExit("measurement library must not contain links")
+                if entry.name == "__pycache__" or entry.name.endswith((".pyc", ".pyo")):
+                    raise SystemExit("measurement library bytecode cache refused; use a clean "
+                                     "trusted source installation")
+                if entry.is_dir(follow_symlinks=False):
+                    pending.append(entry.path)
+
+
+_source_only_library()
+
 from perflab import activation, archive, builds, bundle, calibration  # noqa: E402
 from perflab import capability, contracts, costs  # noqa: E402
 from perflab import diagnostics  # noqa: E402
+from perflab import budget as deadlines  # noqa: E402
 from perflab import buildpack, ci, credentials, gitrefs, hostprep  # noqa: E402
-from perflab import history, kernelguard, kernelmeasure, oracle, planning, reference  # noqa: E402
+from perflab import history, kernelguard, kernelmeasure, oracle, phasetrace, planning  # noqa: E402
+from perflab import reference, render, telemetrycollect, telemetrylab  # noqa: E402
 from perflab import release, report, runner  # noqa: E402
 from perflab import transport  # noqa: E402
 from perflab import suite as suite_module  # noqa: E402
@@ -630,8 +675,13 @@ def cmd_probe(args):
         timeout = (oracle.timeout_for(doc, args.instance) if args.timeout is None
                    else oracle.check_timeout(args.timeout))
         supervisor, binary = _probe_binaries(args)
+        if args.trace_output and os.path.lexists(args.trace_output):
+            raise ContractError("--trace-output: %s already exists" % args.trace_output)
+        traces = [] if args.trace_output else None
         result, stderr = oracle.sample(doc, golden, supervisor, binary, args.instance,
-                                       args.scratch, timeout)
+                                       args.scratch, timeout, trace=traces)
+        if traces is not None:
+            _write_probe_trace(args.trace_output, traces[0] if traces else None)
     except oracle.Unsupported as error:
         sys.stderr.write("unavailable: %s\n" % error)
         return EXIT_UNAVAILABLE
@@ -639,6 +689,242 @@ def cmd_probe(args):
         sys.stderr.write("invalid probe input: %s\n" % error)
         return EXIT_INVALID
     return _report(result, stderr)
+
+
+def _write_probe_trace(path, data):
+    """Validate the phase trace one probe sample exported and write it, with its phase summary
+    on stderr: diagnostic evidence for an investigation, never a verdict sample (ADR-0214)."""
+    if data is None:
+        sys.stderr.write("no phase trace was exported: the probe is not a perf-trace build\n")
+        return
+    doc = phasetrace.load(data, path)
+    with open(path, "xb") as stream:
+        stream.write(data)
+    sys.stderr.write("phase trace %s: %d spans, %d dropped, %d open\n"
+                     % (path, len(doc["spans"]), doc["dropped"], doc["open"]))
+    for row in phasetrace.phase_summary(doc):
+        sys.stderr.write("  %-22s %6d spans  covered %12d ns  longest %12d ns\n"
+                         % (row["phase"], row["spans"], row["covered_ns"], row["longest_ns"]))
+    for line in phasetrace.region_breakdown(doc):
+        sys.stderr.write(line + "\n")
+
+
+def cmd_telemetry_run(args):
+    # The lock spans preflight, every probe/reader, and final result publication. Workflow
+    # cancellation cannot make the final cleanup race a still-running controller.
+    started = time.monotonic()
+    try:
+        with contextlib.ExitStack() as stack:
+            owner = None
+            if args.mode == "linux_container":
+                if not args.scratch_owner:
+                    raise ContractError("--scratch-owner: trusted ci-scratch ownership is required")
+                owner = hostprep.TelemetryOwner(args.scratch_owner, args.scratch_fs)
+                stack.callback(owner.__exit__, None, None, None)
+                with telemetrylab.deadlines.Budget(started + 60, time.monotonic, 0).enforce(
+                        "opening telemetry ownership"):
+                    owner.__enter__()
+                    owner.available()
+            return _telemetry_run(args, owner, started)
+    except (telemetrylab.deadlines.Expired, telemetrylab.deadlines.Interrupted) as error:
+        return _refuse("unavailable", "telemetry_deadline", str(error) + (
+            "; recovery ownership=%s mount=%s" % (args.scratch_owner, args.scratch_fs)
+            if args.scratch_owner else ""))
+    except (ContractError, OSError) as error:
+        return _refuse("invalid", "invalid_telemetry_owner", _telemetry_error(error, owner))
+
+
+def _telemetry_error(error, owner):
+    return str(error) + ("; recovery ownership=%s mount=%s" % (owner.path, owner.mount)
+                         if owner else "")
+
+
+def _telemetry_run(args, owner, started=None):
+    try:
+        root = telemetrylab.ROOT
+        started = time.monotonic() if started is None else started
+        build_paths = dict((side, getattr(args, side + "_build")) for side in contracts.SIDES)
+        result = telemetrylab.run(telemetrylab.Settings(
+            profile=args.profile, trigger=args.trigger, baseline_af=args.baseline_af,
+            candidate_af=args.candidate_af, baseline_sha=args.baseline_sha,
+            candidate_sha=args.candidate_sha, authority_sha=args.authority_sha,
+            experiments=args.experiment, rounds=args.rounds, pairs=args.pairs, scale=args.scale,
+            corpus_runs=args.corpus_runs, output=args.output, work=args.work,
+            result_id=args.result_id, root=root, mode=args.mode, docker=args.docker,
+            image=args.image, scratch_fs=args.scratch_fs, build_paths=build_paths, started=started,
+            scratch_owner=owner))
+    except (telemetrylab.deadlines.Expired, telemetrylab.deadlines.Interrupted) as error:
+        return _refuse("unavailable", "telemetry_deadline", _telemetry_error(error, owner))
+    except telemetrylab.Unavailable as error:
+        return _refuse("unavailable", error.reason, _telemetry_error(error, owner))
+    except (ContractError, OSError) as error:
+        return _refuse("invalid", "invalid_telemetry_run", _telemetry_error(error, owner))
+    sys.stderr.write(telemetrylab.headline(result) + "\n")
+    print(os.path.join(os.path.abspath(args.output), telemetrylab.RESULT_JSON))
+    # Advisory: a measured result exits 0 whatever it measured; 4 when nothing succeeded, a
+    # cleanup was not confirmed or protected state changed.
+    unsafe = (result["execution"]["cleanup"] != "confirmed" or result["execution"]["problems"])
+    return EXIT_UNAVAILABLE if result["status"] == "failed" or unsafe else 0
+
+
+def cmd_telemetry_bind_attempt(args):
+    try:
+        binding = contracts.read_json(os.environ["PLAN_BINDING"].encode(), "telemetry-binding")
+        # On rerun-failed-jobs the plan job's outputs come from its original attempt. Keep
+        # its frozen sources, while binding this measurement to the current attempt and the
+        # immutable original event GitHub supplies again. Never resolve manual refs again.
+        with open(os.environ["GITHUB_EVENT_PATH"], "rb") as stream:
+            event = json.loads(stream.read(contracts.limits.MAX_JSON_BYTES + 1))
+        event_name = os.environ["EVENT_NAME"]
+        head = (event["pull_request"]["head"]["sha"] if event_name == "pull_request"
+                else os.environ["GITHUB_SHA"])
+        attempt = int(os.environ["GITHUB_RUN_ATTEMPT"])
+        require = telemetrylab.require
+        require((binding["repository"], binding["run_id"], binding["event"],
+                 binding["event_sha"], binding["run_head_sha"]) ==
+                (os.environ["GITHUB_REPOSITORY"], int(os.environ["GITHUB_RUN_ID"]), event_name,
+                 os.environ["GITHUB_SHA"], head) and binding["attempt"] <= attempt,
+                "original plan does not belong to this immutable event/run/attempt")
+        binding["attempt"] = attempt
+        _emit(contracts.write_bytes(binding, "telemetry-binding"), args.output)
+    except (ContractError, KeyError, ValueError, OSError) as error:
+        return _refuse("invalid", "invalid_original_plan", str(error))
+    return 0
+
+
+def cmd_telemetry_contained_build(args):
+    from perflab import telemetrybuild
+    try:
+        telemetrybuild.run(args.source, args.output, args.image, args.scratch_fs,
+                           args.source_sha, args.seconds)
+    except (ContractError, OSError, subprocess.SubprocessError) as error:
+        return _refuse("invalid", "telemetry_build_failed", str(error))
+    return 0
+
+
+def cmd_telemetry_schedule(args):
+    try:
+        event = {}
+        if args.event:
+            with open(args.event, "rb") as stream:
+                event = json.loads(stream.read(contracts.limits.MAX_JSON_BYTES + 1))
+        inputs = json.loads(args.inputs) if args.inputs else {}
+        doc = telemetrylab.schedule(gitrefs.Git(args.repo), args.event_name, event, inputs,
+                                    args.sha)
+    except (ContractError, OSError, ValueError, KeyError, TypeError) as error:
+        return _refuse("invalid", "invalid_telemetry_event", str(error))
+    binding = None
+    if args.binding and doc["state"] == "planned":
+        try:
+            binding = telemetrylab.schedule_binding(
+                doc, args.event_name, event, args.sha, os.environ["GITHUB_REPOSITORY"],
+                int(os.environ["GITHUB_RUN_ID"]), int(os.environ["GITHUB_RUN_ATTEMPT"]))
+            _emit(contracts.write_bytes(binding, "telemetry-binding"), args.binding)
+        except (ContractError, KeyError, ValueError) as error:
+            return _refuse("invalid", "invalid_telemetry_binding", str(error))
+    text = telemetrylab.schedule_outputs(doc)
+    if binding is not None:
+        text += "binding=" + json.dumps(binding, separators=(",", ":")) + "\n"
+    if args.github_output:
+        with open(args.github_output, "a") as stream:
+            stream.write(text)
+    else:
+        sys.stdout.write(text)
+    if args.job_summary:
+        with open(args.job_summary, "a") as stream:
+            stream.write("### AF telemetry experiment (advisory): %s\n\n%s\n" % (
+                doc["state"], doc["reason"] or "baseline %s, candidate %s, control %s, profile "
+                "%s" % (doc["baseline_sha"], doc["candidate_sha"], doc["control_sha"],
+                        doc["profile"])))
+    return 0
+
+
+def cmd_telemetry_verify(args):
+    try:
+        result, identity, _ = telemetrylab.verify(args.result, args.authority_root)
+    except (ContractError, OSError) as error:
+        return _refuse("invalid", "invalid_telemetry_result", str(error))
+    sys.stderr.write("verified %s (bundle %s)\n" % (telemetrylab.headline(result), identity))
+    if args.summary:
+        sys.stdout.write(telemetrylab.summary_markdown(result))
+    return 0
+
+
+def cmd_telemetry_build_record(args):
+    """Write one side's build record (`af.perf-telemetry-build/1`) beside its binary."""
+    try:
+        doc = {"schema": contracts.TELEMETRY_BUILD_SCHEMA, "side": args.side,
+               "source_sha": args.source_sha,
+               "binary_sha256": telemetrylab._binary(args.binary, "--binary")[1],
+               "image": args.image, "rustc": args.rustc.strip()[:512],
+               "cargo": args.cargo.strip()[:512], "command": args.command_text}
+        data = contracts.write_bytes(doc, "telemetry-build")
+        with open(args.output, "xb") as stream:
+            stream.write(data)
+    except (ContractError, OSError) as error:
+        return _refuse("invalid", "invalid_telemetry_build", str(error))
+    return 0
+
+
+def cmd_telemetry_admit(args):
+    """Admit a workflow's result bundle for upload: present, verified under this checkout's
+    measurement authority and free of credentials, or not admitted. Writes `admitted=` and
+    `outcome=` step outputs; exits 0 only when admitted."""
+    outcome, detail, result = telemetrylab.admit_for_upload(args.result)
+    lines = "admitted=%s\noutcome=%s\n" % ("true" if outcome == "admitted" else "false",
+                                             outcome)
+    if args.github_output:
+        with open(args.github_output, "a") as stream:
+            stream.write(lines)
+    else:
+        sys.stdout.write(lines)
+    if args.job_summary:
+        with open(args.job_summary, "a") as stream:
+            if result is not None:
+                stream.write(telemetrylab.summary_markdown(result))
+            else:
+                stream.write("### AF telemetry experiment (advisory): not uploaded\n\n%s\n"
+                             % render.markdown_cell(detail))
+    sys.stderr.write("%s: %s\n" % (outcome, detail))
+    return 0 if outcome == "admitted" else EXIT_UNAVAILABLE
+
+
+def cmd_telemetry_history(args):
+    try:
+        doc = telemetrylab.history(os.path.abspath(args.root), args.import_ or (),
+                                   args.authority_root, args.bytes_max, args.results_max,
+                                   args.retention_days)
+    except (ContractError, OSError) as error:
+        return _refuse("invalid", "invalid_telemetry_history", str(error))
+    sys.stderr.write("%d results in %d groups, %d pruned, %d refused\n" % (
+        len(doc["results"]), len(doc["groups"]), len(doc["pruned"]), len(doc["refused"])))
+    print(os.path.join(os.path.abspath(args.root), telemetrylab.HISTORY_HTML))
+    return 4 if doc["refused"] else 0
+
+
+def cmd_telemetry_collect(args):
+    """One bounded telemetry collection cycle (ADR-0215); the credential is read here, from the
+    environment variable the configuration names, and given only to the collector."""
+    try:
+        config = telemetrycollect.load_config(args.config)
+        token = transport.token_from(os.environ, config["token_env"])
+        api = transport.Collector(transport.HttpsTransport(), config["repository"], token,
+                                  api_url=config["api_url"],
+                                  seconds=config["collection_seconds"])
+        budget = deadlines.Budget(api.deadline, api.clock, telemetrycollect.TERMINAL_SECONDS)
+        doc = telemetrycollect.Cycle(config, api, gitrefs.Git(
+            config["authority_repository"], budget), time.time, budget=budget).run()
+    except (ContractError, OSError) as error:
+        return _refuse("invalid", "invalid_telemetry_collection", str(error))
+    counts = {}
+    for item in doc["runs"]:
+        counts[item["outcome"]] = counts.get(item["outcome"], 0) + 1
+    sys.stderr.write("telemetry collection %s: %s; %s results kept in %s bytes%s\n" % (
+        doc["status"], ", ".join("%d %s" % (count, name) for name, count in sorted(
+            counts.items())) or "no runs", doc["results"], doc["used_bytes"],
+        ("; " + doc["detail"]) if doc["detail"] else ""))
+    print(os.path.join(config["root"], telemetrylab.HISTORY_HTML))
+    return 0 if doc["status"] == "ok" else EXIT_UNAVAILABLE
 
 
 def cmd_build(args):
@@ -720,7 +1006,7 @@ def cmd_profile(args):
             docker=args.docker, image=args.image, scratch_fs=args.scratch_fs,
             builder=None if args.no_build else builder, toolchain_bin=args.toolchain_bin,
             cargo_home=args.cargo_home, zigbuild_bin=args.zigbuild_bin,
-            build_image=args.build_image)
+            build_image=args.build_image, telemetry=args.telemetry)
         code, path, message = diagnostics.run_profile(gitrefs.Git(args.repo), options)
     except (gitrefs.Unavailable, diagnostics.Unavailable) as error:
         return _refuse("unavailable", error.reason, str(error))
@@ -1017,15 +1303,30 @@ def cmd_ci_credentials(args):
 def cmd_ci_scratch(args):
     try:
         if args.cleanup:
-            problems = hostprep.cleanup(args.image, args.mount)
+            if args.telemetry_owner:
+                with hostprep.TelemetryOwner(args.telemetry_owner, args.mount) as owner:
+                    problems = owner.cleanup(args.image)
+            else:
+                problems = hostprep.cleanup(args.image, args.mount)
             for problem in problems:
                 sys.stderr.write("cleanup: %s\n" % problem)
             return EXIT_UNAVAILABLE if problems else 0
         record = hostprep.prepare(args.image, args.mount, args.bytes)
+        if args.telemetry_owner:
+            try:
+                with hostprep.TelemetryOwner(args.telemetry_owner, args.mount, create=True,
+                                            image=args.image):
+                    pass
+            except BaseException:
+                # Preparation has returned but no measurement can have launched yet.
+                hostprep.cleanup(args.image, args.mount)
+                raise
     except hostprep.Refused as error:
         return _refuse("unavailable", error.reason, str(error))
     except (ContractError, OSError) as error:
-        return _refuse("invalid", "invalid_scratch", str(error))
+        return _refuse("invalid", "invalid_scratch", "%s; retained recovery paths: image=%s "
+                       "mount=%s ownership=%s" % (error, args.image, args.mount,
+                                                 args.telemetry_owner))
     sys.stderr.write("mounted %d bytes at %s (%d bytes were free)\n" % (
         record["size_bytes"], record["mount"], record["free_bytes"]))
     return 0
@@ -1229,6 +1530,11 @@ def parser():
     profile.add_argument("--zigbuild-bin")
     profile.add_argument("--build-image")
     profile.add_argument("--docker", default="docker")
+    profile.add_argument("--telemetry", choices=("spans", "content"),
+                         help="also record each eligible selected CLI case once per side at "
+                         "this telemetry level and read it back through that side's own af "
+                         "telemetry documents (ADR-0214); content is perturbing; never a "
+                         "verdict sample")
     profile.set_defaults(handler=cmd_profile)
 
     capabilities = commands.add_parser("capabilities", help="report what this host can run")
@@ -1256,7 +1562,131 @@ def parser():
                        "else in it is touched")
     probe.add_argument("--timeout", type=int,
                        help="seconds, 1 to 120; default: the case's declared timeout")
+    probe.add_argument("--trace-output",
+                       help="with a perf-trace probe build: write the measured request's "
+                       "validated phase trace to this new file and print its phase summary; "
+                       "diagnostic only, never a verdict sample")
     probe.set_defaults(handler=cmd_probe)
+
+    telemetry_run = commands.add_parser(
+        "telemetry-run", help="measure Telemetry itself on a baseline and a candidate binary "
+        "with this checkout's bench scripts (advisory, ADR-0214)")
+    telemetry_run.add_argument("--profile", required=True,
+                               choices=("pr", "nightly", "release", "manual"))
+    telemetry_run.add_argument("--trigger", required=True,
+                               choices=("pr", "main_push", "nightly", "release", "manual"))
+    telemetry_run.add_argument("--baseline-af", required=True)
+    telemetry_run.add_argument("--candidate-af", required=True)
+    telemetry_run.add_argument("--baseline-sha", required=True)
+    telemetry_run.add_argument("--candidate-sha", required=True)
+    telemetry_run.add_argument("--authority-sha", required=True,
+                               help="the commit of this checkout, whose scripts and fixtures "
+                               "measure both sides")
+    telemetry_run.add_argument("--experiment", action="append",
+                               choices=("overhead", "invocation_cost", "read_latency"),
+                               help="measure only this experiment (repeatable)")
+    telemetry_run.add_argument("--rounds", type=int)
+    telemetry_run.add_argument("--pairs", type=int, help="pairs per script run, 1 to 40")
+    telemetry_run.add_argument("--scale", choices=("full", "smoke"))
+    telemetry_run.add_argument("--corpus-runs", type=int)
+    telemetry_run.add_argument("--output", required=True, help="the result's new directory")
+    telemetry_run.add_argument("--work", help="a new private work directory (default: "
+                               "OUTPUT.work, removed afterwards)")
+    telemetry_run.add_argument("--result-id")
+    telemetry_run.add_argument("--mode", required=True, choices=("trusted_local",
+                                                                "linux_container"),
+                               help="where every execution runs: linux_container, each in its "
+                               "own container of the pinned image (required for pull "
+                               "requests), or trusted_local, on this host for trusted source")
+    telemetry_run.add_argument("--docker", default="docker")
+    telemetry_run.add_argument("--image", help="linux_container: the sample image, pinned by "
+                               "digest")
+    telemetry_run.add_argument("--scratch-fs", help="linux_container: the dedicated "
+                               "disk-bounded scratch filesystem's mount point")
+    telemetry_run.add_argument("--scratch-owner", help="linux_container: trusted ownership "
+                               "directory created by ci-scratch --telemetry-owner")
+    telemetry_run.add_argument("--baseline-build", help="the baseline's build record "
+                               "(af.perf-telemetry-build/1)")
+    telemetry_run.add_argument("--candidate-build", help="the candidate's build record")
+    telemetry_run.set_defaults(handler=cmd_telemetry_run)
+
+    bind_attempt = commands.add_parser("telemetry-bind-attempt")
+    bind_attempt.add_argument("--output", required=True)
+    bind_attempt.set_defaults(handler=cmd_telemetry_bind_attempt)
+
+    contained_build = commands.add_parser("telemetry-contained-build")
+    contained_build.add_argument("--source", required=True)
+    contained_build.add_argument("--output", required=True)
+    contained_build.add_argument("--image", required=True)
+    contained_build.add_argument("--scratch-fs", required=True,
+                                 help="new mount path (prepares an owned 8 GiB image), or fresh dedicated block filesystem at most 8 GiB")
+    contained_build.add_argument("--source-sha", required=True)
+    contained_build.add_argument("--seconds", type=int, default=4800)
+    contained_build.set_defaults(handler=cmd_telemetry_contained_build)
+
+    telemetry_schedule = commands.add_parser(
+        "telemetry-schedule", help="resolve one Actions event of the Performance telemetry "
+        "workflow from the trusted control")
+    telemetry_schedule.add_argument("--repo", default=".")
+    telemetry_schedule.add_argument("--event-name", required=True)
+    telemetry_schedule.add_argument("--event", help="the event's JSON payload")
+    telemetry_schedule.add_argument("--inputs", help="a dispatch's inputs as JSON")
+    telemetry_schedule.add_argument("--sha", required=True)
+    telemetry_schedule.add_argument("--binding", help="retain the original Actions plan receipt")
+    telemetry_schedule.add_argument("--github-output")
+    telemetry_schedule.add_argument("--job-summary")
+    telemetry_schedule.set_defaults(handler=cmd_telemetry_schedule)
+
+    telemetry_verify = commands.add_parser(
+        "telemetry-verify", help="verify a telemetry result bundle offline and recompute it")
+    telemetry_verify.add_argument("--result", required=True)
+    telemetry_verify.add_argument("--summary", action="store_true",
+                                  help="print its job-summary Markdown")
+    telemetry_verify.add_argument("--authority-root", help="a checkout of exactly the "
+                                  "measurement authority the result names (default: this one)")
+    telemetry_verify.set_defaults(handler=cmd_telemetry_verify)
+
+    telemetry_build = commands.add_parser(
+        "telemetry-build-record", help="write one side's telemetry build record")
+    telemetry_build.add_argument("--side", required=True, choices=("baseline", "candidate"))
+    telemetry_build.add_argument("--source-sha", required=True)
+    telemetry_build.add_argument("--binary", required=True)
+    telemetry_build.add_argument("--image", required=True)
+    telemetry_build.add_argument("--rustc", required=True)
+    telemetry_build.add_argument("--cargo", required=True)
+    telemetry_build.add_argument("--command", dest="command_text", required=True)
+    telemetry_build.add_argument("--output", required=True)
+    telemetry_build.set_defaults(handler=cmd_telemetry_build_record)
+
+    telemetry_admit = commands.add_parser(
+        "telemetry-admit", help="admit a workflow's telemetry result for upload: verified and "
+        "free of credentials, or not uploaded")
+    telemetry_admit.add_argument("--result", required=True)
+    telemetry_admit.add_argument("--github-output")
+    telemetry_admit.add_argument("--job-summary")
+    telemetry_admit.set_defaults(handler=cmd_telemetry_admit)
+
+    telemetry_collect = commands.add_parser(
+        "telemetry-collect", help="one bounded collection cycle of the Performance telemetry "
+        "workflow's results into a durable history root (trusted collector)")
+    telemetry_collect.add_argument("--config", required=True,
+                                   help="the collector's af.perf-telemetry-collector/1 TOML")
+    telemetry_collect.set_defaults(handler=cmd_telemetry_collect)
+
+    telemetry_history = commands.add_parser(
+        "telemetry-history", help="keep verified telemetry results in a durable root and draw "
+        "its compatible history")
+    telemetry_history.add_argument("--root", required=True)
+    telemetry_history.add_argument("--import", dest="import_", action="append",
+                                   help="a result bundle to verify and keep (repeatable)")
+    telemetry_history.add_argument("--authority-root", help="a checkout of exactly the "
+                                   "measurement authority the imports name (default: this one)")
+    telemetry_history.add_argument("--bytes-max", type=int,
+                                   default=telemetrylab.HISTORY_BYTES_DEFAULT)
+    telemetry_history.add_argument("--results-max", type=int,
+                                   default=telemetrylab.HISTORY_RESULTS_DEFAULT)
+    telemetry_history.add_argument("--retention-days", type=int)
+    telemetry_history.set_defaults(handler=cmd_telemetry_history)
 
     judging = commands.add_parser("judge", help="judge one recorded probe execution")
     judging.add_argument("--suite", default="fixtures/performance/suite.toml")
@@ -1411,6 +1841,8 @@ def parser():
     scratch.add_argument("--mount", required=True)
     scratch.add_argument("--bytes", type=int, default=2 * 1024 * 1024 * 1024)
     scratch.add_argument("--cleanup", action="store_true")
+    scratch.add_argument("--telemetry-owner", help="private control directory outside scratch; "
+                         "required for telemetry preparation and its guarded final cleanup")
     scratch.set_defaults(handler=cmd_ci_scratch)
 
     declaring = commands.add_parser("cohort-declare", help="declare a fixed calibration cohort "
@@ -1421,8 +1853,9 @@ def parser():
     declaring.add_argument("--tier", required=True, choices=("quick", "nightly", "release"))
     declaring.add_argument("--environment", required=True)
     declaring.add_argument("--recipe", required=True)
-    declaring.add_argument("--group", action="append", required=True,
-                           help="an allowed CPU/image group, ID=CPU MODEL@IMAGE")
+    declaring.add_argument("--group", action="append", nargs=3, required=True,
+                           metavar=("ID", "CPU_MODEL", "IMAGE"),
+                           help="an allowed group: ID 'CPU MODEL' 'NAME@sha256:DIGEST'")
     declaring.add_argument("--start-date", required=True, help="the first day, YYYY-MM-DD UTC")
     declaring.add_argument("--days", type=int, default=5)
     declaring.add_argument("--preparation-members", type=int, default=2)

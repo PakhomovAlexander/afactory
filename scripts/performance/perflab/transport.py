@@ -64,8 +64,27 @@ ZIP_MEMBERS_MAX = 8192
 RATIO_FLOOR_BYTES = limits.MIB
 RATIO_MAX = 200
 CHUNK = 1 << 20
-# How long a request's worker is given to end once its deadline shut its connection down.
+# Maximum cleanup wait, further bounded by the request's absolute deadline.
 CLEANUP_SECONDS = 1.0
+CLEANUP_UNCERTAIN = ("exchange cleanup was not confirmed; its cancelled worker may remain "
+                     "in name lookup, with further network operations disabled")
+
+
+def _uncertain(error):
+    """Bounded Python 3.9+ evidence in the message every refusal serializer already reads.
+
+    Keep the original exception type (in particular Budget.Interrupted). OSError formats
+    strerror separately from args; Collector also preserves the marker when redacting it.
+    Put uncertainty first so a consumer's bounded diagnostic cannot truncate it away.
+    """
+    if not getattr(error, "cleanup_uncertain", False):
+        message = CLEANUP_UNCERTAIN + "; " + str(error)[:1024]
+        if isinstance(error, OSError) and error.strerror is not None:
+            error.strerror = message
+        else:
+            error.args = (message,)
+        error.cleanup_uncertain = True
+    return error
 
 
 class TransportError(ContractError):
@@ -100,9 +119,10 @@ class HttpsTransport(object):
     (ADR-0173): the name lookup, the connection, the TLS handshake, the request, the headers,
     every body byte and the response's admission. Each blocking call is given only what is left
     of it, and the exchange runs in a worker the caller waits for only until it; then the
-    connection is shut down, the worker is given `CLEANUP_SECONDS` to end, and the request is
-    refused, however slowly the server was still sending. An abandoned exchange makes no
-    further connection or request."""
+    connection is shut down and the request is refused, however slowly the server was still
+    sending. Exceptional exits revoke the exchange and wait at most `CLEANUP_SECONDS` within
+    the same deadline for its cleanup receipt. A resolver thread may remain blocked; its
+    cancelled exchange cannot connect, perform TLS or send a request when lookup returns."""
 
     def __init__(self, context=None):
         self.context = context if context is not None else ssl.create_default_context()
@@ -112,19 +132,34 @@ class HttpsTransport(object):
         exchange = _Exchange(url, headers, limit, deadline, self.context)
         worker = threading.Thread(target=exchange.run, name="af-perf-collector-request")
         worker.daemon = True
-        worker.start()
-        worker.join(max(0.0, deadline - time.monotonic()))
-        if exchange.abort():
-            worker.join(CLEANUP_SECONDS)
-            raise TransportError("a response did not complete within its %s-second bound%s"
-                                 % (seconds_text(timeout), "" if not worker.is_alive()
-                                    else "; its exchange was abandoned"))
-        if exchange.error is not None:
-            raise exchange.error
-        if exchange.finished_at > deadline:
-            raise TransportError("a response completed after its %s-second bound"
-                                 % seconds_text(timeout))
-        return exchange.response
+        try:
+            worker.start()
+            # An interrupted Thread.join can mark a still-running thread stopped on some
+            # Python versions. Only the worker's own resource-cleanup receipt is authoritative.
+            if not exchange.done.wait(max(0.0, deadline - time.monotonic())):
+                raise TransportError("a response did not complete within its %s-second bound"
+                                     % seconds_text(timeout))
+            if exchange.error is not None:
+                raise exchange.error
+            if exchange.finished_at > deadline:
+                raise TransportError("a response completed after its %s-second bound"
+                                     % seconds_text(timeout))
+            return exchange.response
+        except BaseException as error:
+            # Includes the collection Budget's BaseException interruption at any wait or
+            # admission boundary. Revoke network authority before terminal accounting.
+            try:
+                exchange.abort()
+                exchange.done.wait(min(CLEANUP_SECONDS, max(0.0, deadline - time.monotonic())))
+            except BaseException as cleanup_error:
+                if not exchange.done.is_set() or not exchange.finished:
+                    _uncertain(cleanup_error)
+                raise
+            if not exchange.done.is_set() or not exchange.finished:
+                _uncertain(error)
+            raise
+        finally:
+            exchange.abort()
 
 
 class _Aborted(Exception):
@@ -139,40 +174,47 @@ class _Exchange(object):
         self.deadline, self.context = deadline, context
         self.lock = threading.Lock()
         self.aborted = self.finished = False
+        self.done = threading.Event()
         self.sock = None
         self.response = self.error = None
         self.finished_at = None
 
     def abort(self):
-        """Stop an unfinished exchange: its socket is shut down, so a blocked call returns.
-        Whether it was unfinished."""
+        """Revoke further network operations and shut down/close the published socket.
+        This does not claim a blocked resolver thread has stopped. Return whether unfinished.
+        """
         with self.lock:
-            if self.finished:
-                return False
             self.aborted = True
             sock = self.sock
-        if sock is not None:
-            try:
-                # The socket's own shutdown, never the TLS layer's, which another thread holds.
-                socket.socket.shutdown(sock, socket.SHUT_RDWR)
-            except OSError:
-                pass
-        return True
+            if sock is not None:
+                try:
+                    # Bypass TLS locks. Shutdown also wakes an HTTPResponse's makefile read;
+                    # closing alone leaves that duplicate reference to the descriptor alive.
+                    socket.socket.shutdown(sock, socket.SHUT_RDWR)
+                except OSError:
+                    pass
+                sock.close()
+            return not self.finished
 
     def run(self):
         try:
             self.response = self._exchange()
         except _Aborted:
             pass
-        except (TransportError, OSError, http.client.HTTPException) as error:
+        except BaseException as error:
             self.error = error
         finally:
-            with self.lock:
-                self.finished = True
-                self.finished_at = time.monotonic()
-                sock, self.sock = self.sock, None
-            if sock is not None:
-                sock.close()
+            try:
+                with self.lock:
+                    sock, self.sock = self.sock, None
+                    if sock is not None:
+                        sock.close()
+                    self.finished_at = time.monotonic()
+                    self.finished = True
+            except BaseException as error:
+                self.error = error
+            finally:
+                self.done.set()
 
     def _hold(self, sock):
         """Make `sock` the one an abort shuts down, unless the exchange was abandoned."""
@@ -184,6 +226,9 @@ class _Exchange(object):
 
     def _left(self, sock=None):
         """What is left of the deadline, as the next blocking call's timeout on `sock`."""
+        with self.lock:
+            if self.aborted:
+                raise _Aborted()
         left = self.deadline - time.monotonic()
         if left <= 0:
             raise TransportError("a response did not complete within its bound")
@@ -198,6 +243,7 @@ class _Exchange(object):
         addresses = socket.getaddrinfo(host, port, 0, socket.SOCK_STREAM)
         failure = OSError("no address for the host")
         for family, kind, protocol, _, address in addresses:
+            self._left()
             raw = socket.socket(family, kind, protocol)
             self._hold(raw)
             try:
@@ -211,8 +257,15 @@ class _Exchange(object):
                 raw.close()
         else:
             raise failure
-        tls = self.context.wrap_socket(raw, server_hostname=host, do_handshake_on_connect=False)
-        self._hold(tls)
+        # Wrapping transfers the descriptor out of raw. Publish its replacement under the
+        # abort lock, with no handshake/I/O inside it, so abort never sees a detached socket
+        # while an unpublished TLS socket can still use the connection.
+        with self.lock:
+            if self.aborted:
+                raise _Aborted()
+            tls = self.context.wrap_socket(raw, server_hostname=host,
+                                           do_handshake_on_connect=False)
+            self.sock = tls
         self._left(tls)
         tls.do_handshake()
         connection = http.client.HTTPSConnection(host, port, context=self.context)
@@ -237,9 +290,11 @@ class _Exchange(object):
                 chunks.append(chunk)
             return Response(response.status, dict(response.getheaders()), b"".join(chunks))
         finally:
-            if response is not None:
-                response.close()
-            connection.close()
+            try:
+                if response is not None:
+                    response.close()
+            finally:
+                connection.close()
 
 
 class Collector(object):
@@ -295,8 +350,11 @@ class Collector(object):
         except TransportError:
             raise
         except (OSError, http.client.HTTPException) as error:
-            raise TransportError("the request to %s failed: %s" % (
+            failure = TransportError("the request to %s failed: %s" % (
                 "the API" if authorized else "signed storage", type(error).__name__))
+            if getattr(error, "cleanup_uncertain", False):
+                _uncertain(failure)
+            raise failure
 
     def _json(self, response, what):
         require(response.status == 200, "%s answered HTTP %d" % (what, response.status))
@@ -404,6 +462,22 @@ def read_transport(data, remaining=None):
     anything but the declared format refuses."""
     require(data[:4] == b"PK\x03\x04", "the artifact is not a ZIP container, so it is not the "
             "af.perf-transport/1 format; nothing was imported")
+
+    def admit(name):
+        require(name == TRANSPORT_FILE or name.startswith(BUNDLE_PREFIX)
+                or name.startswith(VIEWS_PREFIX),
+                "the artifact member %s is not part of the transport format" % name)
+    return _from_members(read_zip(data, remaining, admit))
+
+
+def read_zip(data, remaining=None, admit=None, bytes_max=ARTIFACT_BYTES_MAX):
+    """{member path: bytes} of one artifact's ZIP container, decompressed within every bound
+    (members, each member's and all members' bytes, the compression ratio) and, when given,
+    the collection's time (`remaining`), refusing encrypted, linked, special, duplicate,
+    absolute or traversing members; `admit(name)` refuses a member its format does not
+    hold. Shared by the archive's transport format and the telemetry collector (ADR-0215)."""
+    require(data[:4] == b"PK\x03\x04", "the artifact is not a ZIP container; nothing was "
+            "imported")
     try:
         container = zipfile.ZipFile(io.BytesIO(data))
         infos = container.infolist()
@@ -412,8 +486,8 @@ def read_transport(data, remaining=None):
     require(len(infos) <= ZIP_MEMBERS_MAX, "the artifact holds more than %d members"
             % ZIP_MEMBERS_MAX)
     declared = sum(info.file_size for info in infos)
-    require(declared <= ARTIFACT_BYTES_MAX, "the artifact declares %d decompressed bytes, more "
-            "than %d" % (declared, ARTIFACT_BYTES_MAX))
+    require(declared <= bytes_max, "the artifact declares %d decompressed bytes, more "
+            "than %d" % (declared, bytes_max))
     names = set()
     members = {}
     total = 0
@@ -433,9 +507,8 @@ def read_transport(data, remaining=None):
         require(info.file_size <= max(RATIO_FLOOR_BYTES, RATIO_MAX * info.compress_size),
                 "the artifact member %s decompresses beyond the %d:1 ratio bound"
                 % (name, RATIO_MAX))
-        require(name == TRANSPORT_FILE or name.startswith(BUNDLE_PREFIX)
-                or name.startswith(VIEWS_PREFIX),
-                "the artifact member %s is not part of the transport format" % name)
+        if admit is not None:
+            admit(name)
         chunks = []
         read = 0
         try:
@@ -448,7 +521,7 @@ def read_transport(data, remaining=None):
                         break
                     read += len(chunk)
                     total += len(chunk)
-                    require(read <= info.file_size and total <= ARTIFACT_BYTES_MAX,
+                    require(read <= info.file_size and total <= bytes_max,
                             "the artifact member %s decompresses beyond its declared size"
                             % name)
                     chunks.append(chunk)
@@ -457,7 +530,7 @@ def read_transport(data, remaining=None):
         require(read == info.file_size, "the artifact member %s is shorter than declared"
                 % name)
         members[name] = b"".join(chunks)
-    return _from_members(members)
+    return members
 
 
 def _from_members(members):

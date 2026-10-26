@@ -312,7 +312,7 @@ def _expand_list(text):
     return cpus
 
 
-def contained_host(docker, image, scratch_fs, environment, run_budget, clock):
+def contained_host(docker, image, scratch_fs, environment, run_budget, clock, before_probe=None):
     """(scratch root, CPUs, runtime identity) of a host that can run samples in `environment`,
     the contained Linux profile: the image pinned by digest, a Linux container runtime with
     cgroup v2, the dedicated scratch filesystem's bound verified by an enforcement fill, and the
@@ -342,6 +342,8 @@ def contained_host(docker, image, scratch_fs, environment, run_budget, clock):
     fill = "verifying the scratch filesystem's bound"
     started = clock()
     deadline = run_budget.until(fill, capability.FILL_SECONDS_MAX, started)
+    if before_probe is not None:
+        before_probe()
     record = capability.scratch_capability(scratch_fs, limit, verify_enforcement=True,
                                            host=capability.Host(clock=clock),
                                            deadline=deadline)
@@ -351,6 +353,11 @@ def contained_host(docker, image, scratch_fs, environment, run_budget, clock):
             raise run_budget.expired(fill, deadline - started)
         raise Unavailable("scratch_unverified", "no verified disk-bounded scratch: "
                           + "; ".join(record["capability"]["reasons"]))
+    from . import builds
+    try:
+        builds.refuse_implicit_volumes(docker, image, run_budget)
+    except builds.Unavailable as error:
+        raise Unavailable(error.reason, str(error))
     run_budget.seconds("reading the host's CPUs")
     online, siblings = _host_cpus()
     cpus, shared = supervise.choose_cpus(online, siblings, environment["logical_cpus"])
@@ -1465,10 +1472,10 @@ def _remove_work(path):
     shutil.rmtree(path, ignore_errors=True)
 
 
-def machine_lock(directory=None):
+def machine_lock(directory=None, register=None):
     """The machine's performance coordination lock (ADR-0169), or Unavailable."""
     try:
-        return hostlock.MachineLock(directory)
+        return hostlock.MachineLock(directory, register=register)
     except hostlock.Refused as refused:
         raise Unavailable(refused.reason, str(refused))
 

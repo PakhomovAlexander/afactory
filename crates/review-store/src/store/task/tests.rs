@@ -7,6 +7,7 @@ mod owned;
 mod planning;
 mod recording;
 mod recovery;
+mod renewal_race;
 mod report;
 mod reservation;
 mod retry;
@@ -720,23 +721,31 @@ fn released_lease_allows_immediate_handoff_and_fences_every_old_capability() {
 
 #[test]
 fn pending_attempt_must_be_settled_or_released_before_writer_handoff() {
-    let mut f = Fixture::new(false).with_execution_graph();
-    let lease = f.open();
-    f.propose(&lease);
-    f.store
-        .admit_task_plan(&f.cas, &lease, &f.authority)
-        .unwrap();
-    f.record_execution_inputs(&lease);
-    let context = f.cas.put_json(&json!({"context":"fixture"})).unwrap();
-    let attempt = f
-        .store
-        .reserve_and_bind_task_attempt(&f.cas, &lease, "root.nodes.write", &context, &f.authority)
-        .unwrap();
-    assert!(f.store.release_task_lease(&f.cas, &lease).is_err());
-    f.store
-        .release_task_attempt(&f.cas, &lease, &attempt, "Not started")
-        .unwrap();
-    f.store.release_task_lease(&f.cas, &lease).unwrap();
+    test_clock::with_time(1_000_000, |_| {
+        let mut f = Fixture::new(false).with_execution_graph();
+        let lease = f.open();
+        f.propose(&lease);
+        f.store
+            .admit_task_plan(&f.cas, &lease, &f.authority)
+            .unwrap();
+        f.record_execution_inputs(&lease);
+        let context = f.cas.put_json(&json!({"context":"fixture"})).unwrap();
+        let attempt = f
+            .store
+            .reserve_and_bind_task_attempt(
+                &f.cas,
+                &lease,
+                "root.nodes.write",
+                &context,
+                &f.authority,
+            )
+            .unwrap();
+        assert!(f.store.release_task_lease(&f.cas, &lease).is_err());
+        f.store
+            .release_task_attempt(&f.cas, &lease, &attempt, "Not started")
+            .unwrap();
+        f.store.release_task_lease(&f.cas, &lease).unwrap();
+    });
 }
 
 #[test]
@@ -890,74 +899,8 @@ fn dispatch_guard_rechecks_approval_waiting_and_host_revocation_after_admission(
 
 #[test]
 fn shared_execution_replays_reserved_attempts_and_publishes_outputs_once() {
-    use review_core::task::execution::*;
-    let mut f = Fixture::new(false).with_execution_graph();
-    let lease = f.open();
-    f.propose(&lease);
-    f.store
-        .admit_task_plan(&f.cas, &lease, &f.authority)
-        .unwrap();
-    let invocation_id = f.record_execution_inputs(&lease);
-    let context_id = f
-        .cas
-        .put_json(&json!({"context":"exact fixture inputs"}))
-        .unwrap();
-    let attempt = f
-        .store
-        .reserve_and_bind_task_attempt(
-            &f.cas,
-            &lease,
-            "root.nodes.write",
-            &context_id,
-            &f.authority,
-        )
-        .unwrap();
-    assert_eq!(f.state().execution.unwrap().budget.reserved_tokens(), 10);
-    f.store = EventStore::open(&f.path).unwrap();
-    f.store
-        .start_task_attempt(&f.cas, &lease, &attempt, &f.authority)
-        .unwrap();
-    let output_id = f.execution_output(&invocation_id, attempt.id());
-    let settlement = TaskExecutionRecordV1::Settled {
-        attempt_id: attempt.id().into(),
-        charged_tokens: 7,
-        result: TaskAttemptResultV1::Succeeded {
-            output_id: output_id.clone(),
-        },
-        raw_artifact_ids: vec![],
-        usage_id: None,
-        unknown_usage: None,
-    };
-    f.store
-        .settle_task_attempt(&f.cas, &lease, settlement.clone(), &f.authority)
-        .unwrap();
-    let sequence = f.state().next_sequence;
-    f.store
-        .settle_task_attempt(&f.cas, &lease, settlement, &f.authority)
-        .unwrap();
-    assert_eq!(f.state().next_sequence, sequence);
-    f.store
-        .publish_task_output(&f.cas, &lease, &output_id, Some(attempt.id()), &f.authority)
-        .unwrap();
-    let sequence = f.state().next_sequence;
-    f.store = EventStore::open(&f.path).unwrap();
-    f.store
-        .publish_task_output(&f.cas, &lease, &output_id, Some(attempt.id()), &f.authority)
-        .unwrap();
-    let state = f.state();
-    assert_eq!(state.next_sequence, sequence);
-    let execution = state.execution.unwrap();
-    assert_eq!(execution.budget.committed_tokens(), 7);
-    assert_eq!(execution.budget.reserved_tokens(), 0);
-    assert_eq!(execution.budget.begun_attempts(), 1);
-    assert_eq!(execution.outputs["root.nodes.write"].0, output_id);
-    assert!(execution.pending_attempts().is_empty());
-}
-
-#[test]
-fn output_publication_rechecks_authority_after_domain_validation_including_replay() {
-    use review_core::task::execution::*;
-    for replay in [false, true] {
+    test_clock::with_time(1_000_000, |_| {
+        use review_core::task::execution::*;
         let mut f = Fixture::new(false).with_execution_graph();
         let lease = f.open();
         f.propose(&lease);
@@ -965,7 +908,10 @@ fn output_publication_rechecks_authority_after_domain_validation_including_repla
             .admit_task_plan(&f.cas, &lease, &f.authority)
             .unwrap();
         let invocation_id = f.record_execution_inputs(&lease);
-        let context_id = f.cas.put_json(&json!({"context":"fixture"})).unwrap();
+        let context_id = f
+            .cas
+            .put_json(&json!({"context":"exact fixture inputs"}))
+            .unwrap();
         let attempt = f
             .store
             .reserve_and_bind_task_attempt(
@@ -976,67 +922,150 @@ fn output_publication_rechecks_authority_after_domain_validation_including_repla
                 &f.authority,
             )
             .unwrap();
+        assert_eq!(f.state().execution.unwrap().budget.reserved_tokens(), 10);
+        f.store = EventStore::open(&f.path).unwrap();
         f.store
             .start_task_attempt(&f.cas, &lease, &attempt, &f.authority)
             .unwrap();
         let output_id = f.execution_output(&invocation_id, attempt.id());
+        let settlement = TaskExecutionRecordV1::Settled {
+            attempt_id: attempt.id().into(),
+            charged_tokens: 7,
+            result: TaskAttemptResultV1::Succeeded {
+                output_id: output_id.clone(),
+            },
+            raw_artifact_ids: vec![],
+            usage_id: None,
+            unknown_usage: None,
+        };
         f.store
-            .settle_task_attempt(
-                &f.cas,
-                &lease,
-                TaskExecutionRecordV1::Settled {
-                    attempt_id: attempt.id().into(),
-                    charged_tokens: 7,
-                    result: TaskAttemptResultV1::Succeeded {
-                        output_id: output_id.clone(),
-                    },
-                    raw_artifact_ids: vec![],
-                    usage_id: None,
-                    unknown_usage: None,
-                },
-                &f.authority,
-            )
+            .settle_task_attempt(&f.cas, &lease, settlement.clone(), &f.authority)
             .unwrap();
-        if replay {
-            f.store
-                .publish_task_output(&f.cas, &lease, &output_id, Some(attempt.id()), &f.authority)
-                .unwrap();
-        }
-        let graph_id = &f.plan.compiled_graph_id;
-        let hex = graph_id.strip_prefix("sha256:").unwrap_or(graph_id);
-        let path = f
-            ._dir
-            .path()
-            .join("cas/objects")
-            .join(&hex[..2])
-            .join(&hex[2..]);
-        let bytes = std::fs::read(&path).unwrap();
-        let run_id = task_run_id(&f.revision.task_id).unwrap();
-        let events = f.store.replay(&run_id).unwrap().len();
-        f.authority.corrupt_during_output = Some(path.clone());
-        assert!(
-            f.store
-                .publish_task_output(&f.cas, &lease, &output_id, Some(attempt.id()), &f.authority)
-                .is_err()
-        );
-        assert_eq!(f.store.replay(&run_id).unwrap().len(), events);
-        std::fs::write(path, bytes).unwrap();
-        f.authority.corrupt_during_output = None;
-        let execution = f.state().execution.unwrap();
-        assert_eq!(execution.budget.committed_tokens(), 7);
-        assert_eq!(execution.budget.begun_attempts(), 1);
+        let sequence = f.state().next_sequence;
+        f.store
+            .settle_task_attempt(&f.cas, &lease, settlement, &f.authority)
+            .unwrap();
+        assert_eq!(f.state().next_sequence, sequence);
         f.store
             .publish_task_output(&f.cas, &lease, &output_id, Some(attempt.id()), &f.authority)
             .unwrap();
-        assert_eq!(
-            f.state().execution.unwrap().outputs["root.nodes.write"].0,
-            output_id
-        );
-    }
+        let sequence = f.state().next_sequence;
+        f.store = EventStore::open(&f.path).unwrap();
+        f.store
+            .publish_task_output(&f.cas, &lease, &output_id, Some(attempt.id()), &f.authority)
+            .unwrap();
+        let state = f.state();
+        assert_eq!(state.next_sequence, sequence);
+        let execution = state.execution.unwrap();
+        assert_eq!(execution.budget.committed_tokens(), 7);
+        assert_eq!(execution.budget.reserved_tokens(), 0);
+        assert_eq!(execution.budget.begun_attempts(), 1);
+        assert_eq!(execution.outputs["root.nodes.write"].0, output_id);
+        assert!(execution.pending_attempts().is_empty());
+    });
+}
+
+#[test]
+fn output_publication_rechecks_authority_after_domain_validation_including_replay() {
+    test_clock::with_time(1_000_000, |_| {
+        use review_core::task::execution::*;
+        for replay in [false, true] {
+            let mut f = Fixture::new(false).with_execution_graph();
+            let lease = f.open();
+            f.propose(&lease);
+            f.store
+                .admit_task_plan(&f.cas, &lease, &f.authority)
+                .unwrap();
+            let invocation_id = f.record_execution_inputs(&lease);
+            let context_id = f.cas.put_json(&json!({"context":"fixture"})).unwrap();
+            let attempt = f
+                .store
+                .reserve_and_bind_task_attempt(
+                    &f.cas,
+                    &lease,
+                    "root.nodes.write",
+                    &context_id,
+                    &f.authority,
+                )
+                .unwrap();
+            f.store
+                .start_task_attempt(&f.cas, &lease, &attempt, &f.authority)
+                .unwrap();
+            let output_id = f.execution_output(&invocation_id, attempt.id());
+            f.store
+                .settle_task_attempt(
+                    &f.cas,
+                    &lease,
+                    TaskExecutionRecordV1::Settled {
+                        attempt_id: attempt.id().into(),
+                        charged_tokens: 7,
+                        result: TaskAttemptResultV1::Succeeded {
+                            output_id: output_id.clone(),
+                        },
+                        raw_artifact_ids: vec![],
+                        usage_id: None,
+                        unknown_usage: None,
+                    },
+                    &f.authority,
+                )
+                .unwrap();
+            if replay {
+                f.store
+                    .publish_task_output(
+                        &f.cas,
+                        &lease,
+                        &output_id,
+                        Some(attempt.id()),
+                        &f.authority,
+                    )
+                    .unwrap();
+            }
+            let graph_id = &f.plan.compiled_graph_id;
+            let hex = graph_id.strip_prefix("sha256:").unwrap_or(graph_id);
+            let path = f
+                ._dir
+                .path()
+                .join("cas/objects")
+                .join(&hex[..2])
+                .join(&hex[2..]);
+            let bytes = std::fs::read(&path).unwrap();
+            let run_id = task_run_id(&f.revision.task_id).unwrap();
+            let events = f.store.replay(&run_id).unwrap().len();
+            f.authority.corrupt_during_output = Some(path.clone());
+            assert!(
+                f.store
+                    .publish_task_output(
+                        &f.cas,
+                        &lease,
+                        &output_id,
+                        Some(attempt.id()),
+                        &f.authority
+                    )
+                    .is_err()
+            );
+            assert_eq!(f.store.replay(&run_id).unwrap().len(), events);
+            std::fs::write(path, bytes).unwrap();
+            f.authority.corrupt_during_output = None;
+            let execution = f.state().execution.unwrap();
+            assert_eq!(execution.budget.committed_tokens(), 7);
+            assert_eq!(execution.budget.begun_attempts(), 1);
+            f.store
+                .publish_task_output(&f.cas, &lease, &output_id, Some(attempt.id()), &f.authority)
+                .unwrap();
+            assert_eq!(
+                f.state().execution.unwrap().outputs["root.nodes.write"].0,
+                output_id
+            );
+        }
+    });
 }
 
 #[test]
 fn rejected_task_output_keeps_its_charge_and_cannot_feed_downstream_nodes() {
+    test_clock::with_time(1_000_000, |clock| check_rejected_output_dispatch(clock, -1));
+}
+
+pub(super) fn check_rejected_output_dispatch(clock: &std::cell::Cell<u64>, offset: i64) {
     use review_core::task::execution::*;
     let mut f = Fixture::new(false).with_execution_graph();
     let lease = f.open();
@@ -1059,9 +1088,9 @@ fn rejected_task_output_keeps_its_charge_and_cannot_feed_downstream_nodes() {
             &f.authority,
         )
         .unwrap();
-    f.store
-        .start_task_attempt(&f.cas, &lease, &attempt, &f.authority)
-        .unwrap();
+    if !dispatch_fixture_at_offset(&mut f, &lease, &attempt, clock, offset) {
+        return;
+    }
     let output_id = f.execution_output(&invocation_id, attempt.id());
     f.authority.output_allowed = false;
     assert!(
@@ -1098,318 +1127,19 @@ fn rejected_task_output_keeps_its_charge_and_cannot_feed_downstream_nodes() {
 
 #[test]
 fn crash_after_successful_settlement_reuses_the_selected_result_under_a_new_writer() {
-    use review_core::task::execution::*;
-    let mut f = Fixture::new(false).with_execution_graph();
-    let lease = f
-        .store
-        .open_task(&f.cas, &f.revision_id, "writer-1", 10000)
-        .unwrap();
-    f.propose(&lease);
-    f.store
-        .admit_task_plan(&f.cas, &lease, &f.authority)
-        .unwrap();
-    let invocation = f.record_execution_inputs(&lease);
-    let context = f.cas.put_json(&json!({"exact":"context"})).unwrap();
-    let attempt = f
-        .store
-        .reserve_and_bind_task_attempt(&f.cas, &lease, "root.nodes.write", &context, &f.authority)
-        .unwrap();
-    f.store
-        .start_task_attempt(&f.cas, &lease, &attempt, &f.authority)
-        .unwrap();
-    let output = f.execution_output(&invocation, attempt.id());
-    f.store
-        .settle_task_attempt(
-            &f.cas,
-            &lease,
-            TaskExecutionRecordV1::Settled {
-                attempt_id: attempt.id().into(),
-                charged_tokens: 7,
-                result: TaskAttemptResultV1::Succeeded {
-                    output_id: output.clone(),
-                },
-                raw_artifact_ids: vec![],
-                usage_id: None,
-                unknown_usage: None,
-            },
-            &f.authority,
-        )
-        .unwrap();
-    f.store = EventStore::open(&f.path).unwrap();
-    assert_eq!(
-        f.state()
-            .execution
-            .unwrap()
-            .reusable_output("root.nodes.write"),
-        Some((output.clone(), attempt.id().into()))
-    );
-    assert!(
-        f.store
-            .reserve_and_bind_task_attempt(
-                &f.cas,
-                &lease,
-                "root.nodes.write",
-                &context,
-                &f.authority
-            )
-            .is_err()
-    );
-    let time = f.state().lease_until + 1;
-    f.store
-        .append_task_transition(
-            &f.cas,
-            "task-1",
-            TaskTransitionV1 {
-                writer: "writer-2".into(),
-                epoch: 2,
-                now_unix_ms: time,
-                change: TaskChangeV1::LeaseTaken {
-                    lease_until_unix_ms: time + 1000,
-                },
-            },
-        )
-        .unwrap();
-    let new = TaskLease {
-        task_id: "task-1".into(),
-        writer: "writer-2".into(),
-        epoch: 2,
-    };
-    let record = f
-        .cas
-        .put_artifact(
-            TASK_EXECUTION_RECORD_V5,
-            producer(),
-            vec![output.clone()],
-            None,
-            serde_json::to_value(TaskExecutionRecordV1::Published {
-                output_id: output.clone(),
-                attempt_id: Some(attempt.id().into()),
-            })
-            .unwrap(),
-        )
-        .unwrap()
-        .0;
-    f.store
-        .task_change(
-            &f.cas,
-            &new,
-            TaskChangeV1::ExecutionRecorded { record_id: record },
-            time,
-        )
-        .unwrap();
-    f.store = EventStore::open(&f.path).unwrap();
-    let execution = f.state().execution.unwrap();
-    assert_eq!(execution.outputs["root.nodes.write"].0, output);
-    assert_eq!(execution.budget.begun_attempts(), 1);
-    assert_eq!(execution.budget.committed_tokens(), 7);
-}
-
-/// Started work whose writer's lease expired before any usage was reported settles at zero
-/// with its usage unknown (ADR-0143); unstarted work is released. Neither leaves a charge.
-#[test]
-fn writer_recovery_settles_unreported_started_work_as_unknown_and_releases_unstarted_work() {
-    for started in [false, true] {
+    test_clock::with_time(1_000_000, |_| {
+        use review_core::task::execution::*;
         let mut f = Fixture::new(false).with_execution_graph();
-        let lease = f.open();
-        f.propose(&lease);
-        f.store
-            .admit_task_plan(&f.cas, &lease, &f.authority)
-            .unwrap();
-        f.record_execution_inputs(&lease);
-        let context_id = f
-            .cas
-            .put_json(&json!({"context":"exact fixture inputs"}))
-            .unwrap();
-        let attempt = f
+        let lease = f
             .store
-            .reserve_and_bind_task_attempt(
-                &f.cas,
-                &lease,
-                "root.nodes.write",
-                &context_id,
-                &f.authority,
-            )
+            .open_task(&f.cas, &f.revision_id, "writer-1", 10000)
             .unwrap();
-        if started {
-            f.store
-                .start_task_attempt(&f.cas, &lease, &attempt, &f.authority)
-                .unwrap();
-        }
-        let old = f.state();
-        let time = old.lease_until + 1;
-        f.store
-            .append_task_transition(
-                &f.cas,
-                &lease.task_id,
-                TaskTransitionV1 {
-                    writer: "writer-2".into(),
-                    epoch: 2,
-                    now_unix_ms: time,
-                    change: TaskChangeV1::LeaseTaken {
-                        lease_until_unix_ms: time + 10000,
-                    },
-                },
-            )
-            .unwrap();
-        let new = TaskLease {
-            task_id: lease.task_id.clone(),
-            writer: "writer-2".into(),
-            epoch: 2,
-        };
-        f.store
-            .recover_task_attempts_at(&f.cas, &new, time)
-            .unwrap();
-        f.store = EventStore::open(&f.path).unwrap();
-        let execution = f.state().execution.unwrap();
-        assert!(execution.pending_attempts().is_empty());
-        assert_eq!(execution.budget.reserved_tokens(), 0);
-        assert_eq!(execution.budget.committed_tokens(), 0);
-        // The Attempt still counts as begun, but abandoned it counts against no Attempt limit
-        // (ADR-0209).
-        assert_eq!(execution.budget.begun_attempts(), u64::from(started));
-        assert_eq!(execution.budget.chargeable_attempts(), 0);
-        assert!(!execution.outputs.contains_key("root.nodes.write"));
-        let accounting = execution.attempt_accounting();
-        assert_eq!(accounting.len(), 1);
-        assert_eq!(accounting[0].charged_tokens, 0);
-        assert_eq!(
-            accounting[0].unknown_usage,
-            started.then_some(review_core::task::usage::TaskUnknownUsageCauseV1::LeaseExpired)
-        );
-        assert_eq!(
-            matches!(
-                accounting[0].result,
-                Some(review_core::task::execution::TaskAttemptResultV1::Abandoned { .. })
-            ),
-            started
-        );
-    }
-}
-
-#[test]
-fn late_usage_is_charged_after_task_finish_without_reopening_its_result() {
-    use review_core::task::execution::*;
-    let mut f = Fixture::new(false).with_execution_graph();
-    let lease = f.open();
-    f.propose(&lease);
-    f.store
-        .admit_task_plan(&f.cas, &lease, &f.authority)
-        .unwrap();
-    f.record_execution_inputs(&lease);
-    let diagnostic = f
-        .cas
-        .put_json(&json!({"reason":"runner disappeared"}))
-        .unwrap();
-    let attempt = f
-        .store
-        .reserve_and_bind_task_attempt(
-            &f.cas,
-            &lease,
-            "root.nodes.write",
-            &diagnostic,
-            &f.authority,
-        )
-        .unwrap();
-    f.store
-        .start_task_attempt(&f.cas, &lease, &attempt, &f.authority)
-        .unwrap();
-    f.store
-        .settle_task_attempt(
-            &f.cas,
-            &lease,
-            TaskExecutionRecordV1::Settled {
-                attempt_id: attempt.id().into(),
-                charged_tokens: 10,
-                result: TaskAttemptResultV1::Abandoned {
-                    diagnostic_id: diagnostic,
-                },
-                raw_artifact_ids: vec![],
-                usage_id: None,
-                unknown_usage: None,
-            },
-            &f.authority,
-        )
-        .unwrap();
-    let result = TaskResultV1 {
-        task_revision_id: f.revision_id.clone(),
-        execution: task::TaskExecutionV1::Exhausted,
-        acceptance: TaskAcceptanceV1::Unsatisfied,
-        domain_conclusion: "missing output".into(),
-        outputs: BTreeMap::new(),
-        evidence: BTreeSet::new(),
-        missing_obligations: BTreeSet::from(["checked".into()]),
-    };
-    let result_id = f
-        .cas
-        .put_artifact(
-            task::TASK_RESULT_V1,
-            producer(),
-            vec![f.revision_id.clone()],
-            None,
-            serde_json::to_value(result).unwrap(),
-        )
-        .unwrap()
-        .0;
-    f.store
-        .task_change(
-            &f.cas,
-            &lease,
-            TaskChangeV1::Finished {
-                result_id: result_id.clone(),
-            },
-            now().unwrap(),
-        )
-        .unwrap();
-    let usage_id = f.cas.put_json(&json!({"chargeable_tokens":17})).unwrap();
-    let observation = TaskExecutionRecordV1::UsageObserved {
-        attempt_id: attempt.id().into(),
-        charged_tokens: 17,
-        usage_id,
-        raw_artifact_ids: vec![],
-    };
-    f.store
-        .observe_task_usage(&f.cas, &lease, observation.clone())
-        .unwrap();
-    f.store
-        .observe_task_usage(&f.cas, &lease, observation)
-        .unwrap();
-    f.store = EventStore::open(&f.path).unwrap();
-    let state = f.state();
-    assert_eq!(state.phase, TaskPhaseV1::Finished { result_id });
-    assert_eq!(
-        f.store.task_lease_state(&lease).unwrap(),
-        state.lease_until_unix_ms()
-    );
-    let execution = state.execution.unwrap();
-    assert_eq!(execution.budget.committed_tokens(), 17);
-    assert!(execution.budget.breached());
-    assert!(!execution.outputs.contains_key("root.nodes.write"));
-    assert!(
-        f.store
-            .start_task_attempt(&f.cas, &lease, &attempt, &f.authority)
-            .is_err()
-    );
-}
-
-#[test]
-fn warm_and_cold_replay_reject_missing_or_corrupt_execution_evidence() {
-    use review_core::task::execution::*;
-    for succeeded in [false, true] {
-        let mut f = Fixture::new(false).with_execution_graph();
-        let lease = f.open();
         f.propose(&lease);
         f.store
             .admit_task_plan(&f.cas, &lease, &f.authority)
             .unwrap();
-        let invocation_id = f.record_execution_inputs(&lease);
-        let context = f.cas.put_json(&json!({"context":"exact inputs"})).unwrap();
-        let raw = f.cas.put(b"raw worker response").unwrap();
-        let usage = f.cas.put_json(&json!({"chargeable_tokens":7})).unwrap();
-        let diagnostic = f.cas.put_json(&json!({"reason":"worker failed"})).unwrap();
-        let feedback = f
-            .cas
-            .put_json(&json!({"feedback":"retry exact input"}))
-            .unwrap();
+        let invocation = f.record_execution_inputs(&lease);
+        let context = f.cas.put_json(&json!({"exact":"context"})).unwrap();
         let attempt = f
             .store
             .reserve_and_bind_task_attempt(
@@ -1423,17 +1153,7 @@ fn warm_and_cold_replay_reject_missing_or_corrupt_execution_evidence() {
         f.store
             .start_task_attempt(&f.cas, &lease, &attempt, &f.authority)
             .unwrap();
-        let output_id = f.execution_output(&invocation_id, attempt.id());
-        let result = if succeeded {
-            TaskAttemptResultV1::Succeeded {
-                output_id: output_id.clone(),
-            }
-        } else {
-            TaskAttemptResultV1::Failed {
-                diagnostic_id: diagnostic.clone(),
-                feedback_id: Some(feedback.clone()),
-            }
-        };
+        let output = f.execution_output(&invocation, attempt.id());
         f.store
             .settle_task_attempt(
                 &f.cas,
@@ -1441,113 +1161,442 @@ fn warm_and_cold_replay_reject_missing_or_corrupt_execution_evidence() {
                 TaskExecutionRecordV1::Settled {
                     attempt_id: attempt.id().into(),
                     charged_tokens: 7,
-                    result,
-                    raw_artifact_ids: vec![raw.clone()],
-                    usage_id: Some(usage.clone()),
+                    result: TaskAttemptResultV1::Succeeded {
+                        output_id: output.clone(),
+                    },
+                    raw_artifact_ids: vec![],
+                    usage_id: None,
                     unknown_usage: None,
                 },
                 &f.authority,
             )
             .unwrap();
-        if succeeded {
-            f.store
-                .publish_task_output(&f.cas, &lease, &output_id, Some(attempt.id()), &f.authority)
-                .unwrap();
-        } else {
-            // A finished failure still needs its original diagnostics and accounting evidence.
-            let result = TaskResultV1 {
-                task_revision_id: f.revision_id.clone(),
-                execution: task::TaskExecutionV1::Exhausted,
-                acceptance: TaskAcceptanceV1::Unsatisfied,
-                domain_conclusion: "missing output".into(),
-                outputs: BTreeMap::new(),
-                evidence: BTreeSet::new(),
-                missing_obligations: BTreeSet::from(["checked".into()]),
-            };
-            let result_id = f
-                .cas
-                .put_artifact(
-                    task::TASK_RESULT_V1,
-                    producer(),
-                    vec![f.revision_id.clone()],
-                    None,
-                    serde_json::to_value(result).unwrap(),
-                )
+        f.store = EventStore::open(&f.path).unwrap();
+        assert_eq!(
+            f.state()
+                .execution
                 .unwrap()
-                .0;
+                .reusable_output("root.nodes.write"),
+            Some((output.clone(), attempt.id().into()))
+        );
+        assert!(
             f.store
-                .task_change(
+                .reserve_and_bind_task_attempt(
                     &f.cas,
                     &lease,
-                    TaskChangeV1::Finished { result_id },
-                    now().unwrap(),
+                    "root.nodes.write",
+                    &context,
+                    &f.authority
+                )
+                .is_err()
+        );
+        let time = f.state().lease_until + 1;
+        f.store
+            .append_task_transition(
+                &f.cas,
+                "task-1",
+                TaskTransitionV1 {
+                    writer: "writer-2".into(),
+                    epoch: 2,
+                    now_unix_ms: time,
+                    change: TaskChangeV1::LeaseTaken {
+                        lease_until_unix_ms: time + 1000,
+                    },
+                },
+            )
+            .unwrap();
+        let new = TaskLease {
+            task_id: "task-1".into(),
+            writer: "writer-2".into(),
+            epoch: 2,
+        };
+        let record = f
+            .cas
+            .put_artifact(
+                TASK_EXECUTION_RECORD_V5,
+                producer(),
+                vec![output.clone()],
+                None,
+                serde_json::to_value(TaskExecutionRecordV1::Published {
+                    output_id: output.clone(),
+                    attempt_id: Some(attempt.id().into()),
+                })
+                .unwrap(),
+            )
+            .unwrap()
+            .0;
+        f.store
+            .task_change(
+                &f.cas,
+                &new,
+                TaskChangeV1::ExecutionRecorded { record_id: record },
+                time,
+            )
+            .unwrap();
+        f.store = EventStore::open(&f.path).unwrap();
+        let execution = f.state().execution.unwrap();
+        assert_eq!(execution.outputs["root.nodes.write"].0, output);
+        assert_eq!(execution.budget.begun_attempts(), 1);
+        assert_eq!(execution.budget.committed_tokens(), 7);
+    });
+}
+
+/// Started work whose writer's lease expired before any usage was reported settles at zero
+/// with its usage unknown (ADR-0143); unstarted work is released. Neither leaves a charge.
+#[test]
+fn writer_recovery_settles_unreported_started_work_as_unknown_and_releases_unstarted_work() {
+    test_clock::with_time(1_000_000, |_| {
+        for started in [false, true] {
+            let mut f = Fixture::new(false).with_execution_graph();
+            let lease = f.open();
+            f.propose(&lease);
+            f.store
+                .admit_task_plan(&f.cas, &lease, &f.authority)
+                .unwrap();
+            f.record_execution_inputs(&lease);
+            let context_id = f
+                .cas
+                .put_json(&json!({"context":"exact fixture inputs"}))
+                .unwrap();
+            let attempt = f
+                .store
+                .reserve_and_bind_task_attempt(
+                    &f.cas,
+                    &lease,
+                    "root.nodes.write",
+                    &context_id,
+                    &f.authority,
                 )
                 .unwrap();
-        }
-        let mut targets = vec![raw, usage, context, invocation_id];
-        if succeeded {
-            targets.push(output_id.clone());
-        } else {
-            targets.extend([diagnostic, feedback]);
-        }
-        for event in f.store.replay(&task_run_id("task-1").unwrap()).unwrap() {
-            let transition: TaskTransitionV1 = serde_json::from_value(event.payload).unwrap();
-            if let TaskChangeV1::ExecutionRecorded { record_id } = transition.change {
-                targets.push(record_id);
+            if started {
+                f.store
+                    .start_task_attempt(&f.cas, &lease, &attempt, &f.authority)
+                    .unwrap();
             }
+            let old = f.state();
+            let time = old.lease_until + 1;
+            f.store
+                .append_task_transition(
+                    &f.cas,
+                    &lease.task_id,
+                    TaskTransitionV1 {
+                        writer: "writer-2".into(),
+                        epoch: 2,
+                        now_unix_ms: time,
+                        change: TaskChangeV1::LeaseTaken {
+                            lease_until_unix_ms: time + 10000,
+                        },
+                    },
+                )
+                .unwrap();
+            let new = TaskLease {
+                task_id: lease.task_id.clone(),
+                writer: "writer-2".into(),
+                epoch: 2,
+            };
+            f.store
+                .recover_task_attempts_at(&f.cas, &new, time)
+                .unwrap();
+            f.store = EventStore::open(&f.path).unwrap();
+            let execution = f.state().execution.unwrap();
+            assert!(execution.pending_attempts().is_empty());
+            assert_eq!(execution.budget.reserved_tokens(), 0);
+            assert_eq!(execution.budget.committed_tokens(), 0);
+            // The Attempt still counts as begun, but abandoned it counts against no Attempt limit
+            // (ADR-0209).
+            assert_eq!(execution.budget.begun_attempts(), u64::from(started));
+            assert_eq!(execution.budget.chargeable_attempts(), 0);
+            assert!(!execution.outputs.contains_key("root.nodes.write"));
+            let accounting = execution.attempt_accounting();
+            assert_eq!(accounting.len(), 1);
+            assert_eq!(accounting[0].charged_tokens, 0);
+            assert_eq!(
+                accounting[0].unknown_usage,
+                started.then_some(review_core::task::usage::TaskUnknownUsageCauseV1::LeaseExpired)
+            );
+            assert_eq!(
+                matches!(
+                    accounting[0].result,
+                    Some(review_core::task::execution::TaskAttemptResultV1::Abandoned { .. })
+                ),
+                started
+            );
         }
-        let healthy = f.state(); // Warm the exact prefix, including all settled evidence.
-        let sequence = healthy.next_sequence;
+    });
+}
+
+#[test]
+fn late_usage_is_charged_after_task_finish_without_reopening_its_result() {
+    test_clock::with_time(1_000_000, |_| {
+        use review_core::task::execution::*;
+        let mut f = Fixture::new(false).with_execution_graph();
+        let lease = f.open();
+        f.propose(&lease);
+        f.store
+            .admit_task_plan(&f.cas, &lease, &f.authority)
+            .unwrap();
+        f.record_execution_inputs(&lease);
+        let diagnostic = f
+            .cas
+            .put_json(&json!({"reason":"runner disappeared"}))
+            .unwrap();
+        let attempt = f
+            .store
+            .reserve_and_bind_task_attempt(
+                &f.cas,
+                &lease,
+                "root.nodes.write",
+                &diagnostic,
+                &f.authority,
+            )
+            .unwrap();
+        f.store
+            .start_task_attempt(&f.cas, &lease, &attempt, &f.authority)
+            .unwrap();
+        f.store
+            .settle_task_attempt(
+                &f.cas,
+                &lease,
+                TaskExecutionRecordV1::Settled {
+                    attempt_id: attempt.id().into(),
+                    charged_tokens: 10,
+                    result: TaskAttemptResultV1::Abandoned {
+                        diagnostic_id: diagnostic,
+                    },
+                    raw_artifact_ids: vec![],
+                    usage_id: None,
+                    unknown_usage: None,
+                },
+                &f.authority,
+            )
+            .unwrap();
+        let result = TaskResultV1 {
+            task_revision_id: f.revision_id.clone(),
+            execution: task::TaskExecutionV1::Exhausted,
+            acceptance: TaskAcceptanceV1::Unsatisfied,
+            domain_conclusion: "missing output".into(),
+            outputs: BTreeMap::new(),
+            evidence: BTreeSet::new(),
+            missing_obligations: BTreeSet::from(["checked".into()]),
+        };
+        let result_id = f
+            .cas
+            .put_artifact(
+                task::TASK_RESULT_V1,
+                producer(),
+                vec![f.revision_id.clone()],
+                None,
+                serde_json::to_value(result).unwrap(),
+            )
+            .unwrap()
+            .0;
+        f.store
+            .task_change(
+                &f.cas,
+                &lease,
+                TaskChangeV1::Finished {
+                    result_id: result_id.clone(),
+                },
+                now().unwrap(),
+            )
+            .unwrap();
+        let usage_id = f.cas.put_json(&json!({"chargeable_tokens":17})).unwrap();
+        let observation = TaskExecutionRecordV1::UsageObserved {
+            attempt_id: attempt.id().into(),
+            charged_tokens: 17,
+            usage_id,
+            raw_artifact_ids: vec![],
+        };
+        f.store
+            .observe_task_usage(&f.cas, &lease, observation.clone())
+            .unwrap();
+        f.store
+            .observe_task_usage(&f.cas, &lease, observation)
+            .unwrap();
+        f.store = EventStore::open(&f.path).unwrap();
+        let state = f.state();
+        assert_eq!(state.phase, TaskPhaseV1::Finished { result_id });
         assert_eq!(
-            healthy
-                .execution
-                .as_ref()
-                .unwrap()
-                .budget
-                .committed_tokens(),
-            7
+            f.store.task_lease_state(&lease).unwrap(),
+            state.lease_until_unix_ms()
         );
-        for id in targets {
-            let hex = id.strip_prefix("sha256:").unwrap();
-            let path = f
-                ._dir
-                .path()
-                .join("cas/objects")
-                .join(&hex[..2])
-                .join(&hex[2..]);
-            let bytes = std::fs::read(&path).unwrap();
-            for missing in [false, true] {
-                if missing {
-                    std::fs::remove_file(&path).unwrap();
-                } else {
-                    std::fs::write(&path, b"corrupt evidence").unwrap();
+        let execution = state.execution.unwrap();
+        assert_eq!(execution.budget.committed_tokens(), 17);
+        assert!(execution.budget.breached());
+        assert!(!execution.outputs.contains_key("root.nodes.write"));
+        assert!(
+            f.store
+                .start_task_attempt(&f.cas, &lease, &attempt, &f.authority)
+                .is_err()
+        );
+    });
+}
+
+#[test]
+fn warm_and_cold_replay_reject_missing_or_corrupt_execution_evidence() {
+    test_clock::with_time(1_000_000, |_| {
+        use review_core::task::execution::*;
+        for succeeded in [false, true] {
+            let mut f = Fixture::new(false).with_execution_graph();
+            let lease = f.open();
+            f.propose(&lease);
+            f.store
+                .admit_task_plan(&f.cas, &lease, &f.authority)
+                .unwrap();
+            let invocation_id = f.record_execution_inputs(&lease);
+            let context = f.cas.put_json(&json!({"context":"exact inputs"})).unwrap();
+            let raw = f.cas.put(b"raw worker response").unwrap();
+            let usage = f.cas.put_json(&json!({"chargeable_tokens":7})).unwrap();
+            let diagnostic = f.cas.put_json(&json!({"reason":"worker failed"})).unwrap();
+            let feedback = f
+                .cas
+                .put_json(&json!({"feedback":"retry exact input"}))
+                .unwrap();
+            let attempt = f
+                .store
+                .reserve_and_bind_task_attempt(
+                    &f.cas,
+                    &lease,
+                    "root.nodes.write",
+                    &context,
+                    &f.authority,
+                )
+                .unwrap();
+            f.store
+                .start_task_attempt(&f.cas, &lease, &attempt, &f.authority)
+                .unwrap();
+            let output_id = f.execution_output(&invocation_id, attempt.id());
+            let result = if succeeded {
+                TaskAttemptResultV1::Succeeded {
+                    output_id: output_id.clone(),
                 }
-                assert!(
-                    f.store.task_projection(&f.cas, "task-1").is_err(),
-                    "warm accepted {id}, missing={missing}"
-                );
-                let cold = EventStore::open_read_only(&f.path).unwrap();
-                assert!(
-                    cold.task_projection(&f.cas, "task-1").is_err(),
-                    "cold accepted {id}, missing={missing}"
-                );
-                std::fs::write(&path, &bytes).unwrap();
-                let restored = f.state();
-                assert_eq!(restored.next_sequence, sequence);
-                assert_eq!(restored.phase, healthy.phase);
-                let execution = restored.execution.unwrap();
-                assert_eq!(execution.budget.committed_tokens(), 7);
-                assert_eq!(execution.budget.begun_attempts(), 1);
-                assert_eq!(
-                    execution.outputs.contains_key("root.nodes.write"),
-                    succeeded
-                );
-                if succeeded {
-                    assert_eq!(execution.outputs["root.nodes.write"].0, output_id);
+            } else {
+                TaskAttemptResultV1::Failed {
+                    diagnostic_id: diagnostic.clone(),
+                    feedback_id: Some(feedback.clone()),
+                }
+            };
+            f.store
+                .settle_task_attempt(
+                    &f.cas,
+                    &lease,
+                    TaskExecutionRecordV1::Settled {
+                        attempt_id: attempt.id().into(),
+                        charged_tokens: 7,
+                        result,
+                        raw_artifact_ids: vec![raw.clone()],
+                        usage_id: Some(usage.clone()),
+                        unknown_usage: None,
+                    },
+                    &f.authority,
+                )
+                .unwrap();
+            if succeeded {
+                f.store
+                    .publish_task_output(
+                        &f.cas,
+                        &lease,
+                        &output_id,
+                        Some(attempt.id()),
+                        &f.authority,
+                    )
+                    .unwrap();
+            } else {
+                // A finished failure still needs its original diagnostics and accounting evidence.
+                let result = TaskResultV1 {
+                    task_revision_id: f.revision_id.clone(),
+                    execution: task::TaskExecutionV1::Exhausted,
+                    acceptance: TaskAcceptanceV1::Unsatisfied,
+                    domain_conclusion: "missing output".into(),
+                    outputs: BTreeMap::new(),
+                    evidence: BTreeSet::new(),
+                    missing_obligations: BTreeSet::from(["checked".into()]),
+                };
+                let result_id = f
+                    .cas
+                    .put_artifact(
+                        task::TASK_RESULT_V1,
+                        producer(),
+                        vec![f.revision_id.clone()],
+                        None,
+                        serde_json::to_value(result).unwrap(),
+                    )
+                    .unwrap()
+                    .0;
+                f.store
+                    .task_change(
+                        &f.cas,
+                        &lease,
+                        TaskChangeV1::Finished { result_id },
+                        now().unwrap(),
+                    )
+                    .unwrap();
+            }
+            let mut targets = vec![raw, usage, context, invocation_id];
+            if succeeded {
+                targets.push(output_id.clone());
+            } else {
+                targets.extend([diagnostic, feedback]);
+            }
+            for event in f.store.replay(&task_run_id("task-1").unwrap()).unwrap() {
+                let transition: TaskTransitionV1 = serde_json::from_value(event.payload).unwrap();
+                if let TaskChangeV1::ExecutionRecorded { record_id } = transition.change {
+                    targets.push(record_id);
+                }
+            }
+            let healthy = f.state(); // Warm the exact prefix, including all settled evidence.
+            let sequence = healthy.next_sequence;
+            assert_eq!(
+                healthy
+                    .execution
+                    .as_ref()
+                    .unwrap()
+                    .budget
+                    .committed_tokens(),
+                7
+            );
+            for id in targets {
+                let hex = id.strip_prefix("sha256:").unwrap();
+                let path = f
+                    ._dir
+                    .path()
+                    .join("cas/objects")
+                    .join(&hex[..2])
+                    .join(&hex[2..]);
+                let bytes = std::fs::read(&path).unwrap();
+                for missing in [false, true] {
+                    if missing {
+                        std::fs::remove_file(&path).unwrap();
+                    } else {
+                        std::fs::write(&path, b"corrupt evidence").unwrap();
+                    }
+                    assert!(
+                        f.store.task_projection(&f.cas, "task-1").is_err(),
+                        "warm accepted {id}, missing={missing}"
+                    );
+                    let cold = EventStore::open_read_only(&f.path).unwrap();
+                    assert!(
+                        cold.task_projection(&f.cas, "task-1").is_err(),
+                        "cold accepted {id}, missing={missing}"
+                    );
+                    std::fs::write(&path, &bytes).unwrap();
+                    let restored = f.state();
+                    assert_eq!(restored.next_sequence, sequence);
+                    assert_eq!(restored.phase, healthy.phase);
+                    let execution = restored.execution.unwrap();
+                    assert_eq!(execution.budget.committed_tokens(), 7);
+                    assert_eq!(execution.budget.begun_attempts(), 1);
+                    assert_eq!(
+                        execution.outputs.contains_key("root.nodes.write"),
+                        succeeded
+                    );
+                    if succeeded {
+                        assert_eq!(execution.outputs["root.nodes.write"].0, output_id);
+                    }
                 }
             }
         }
-    }
+    });
 }
 
 #[test]
@@ -1633,36 +1682,38 @@ fn authenticated_revocation_is_idempotent_and_refuses_changed_or_unapproved_deci
 
 #[test]
 fn context_binding_checks_before_and_after_callback_without_a_third_projection() {
-    let mut f = Fixture::new(false).with_execution_graph();
-    let lease = f.open();
-    f.propose(&lease);
-    f.store
-        .admit_task_plan(&f.cas, &lease, &f.authority)
-        .unwrap();
-    PROJECTION_CALLS.with(|calls| calls.set(0));
-    f.record_execution_inputs(&lease);
-    // Two invocation records (one each), plus output validation before/after its callback.
-    assert_eq!(PROJECTION_CALLS.with(|calls| calls.get()), 4);
-    let context = f.cas.put(b"exact context").unwrap();
-    PROJECTION_CALLS.with(|calls| calls.set(0));
-    let reserved = f
-        .store
-        .reserve_task_attempt(&f.cas, &lease, "root.nodes.write", &f.authority)
-        .unwrap();
-    assert_eq!(PROJECTION_CALLS.with(|calls| calls.get()), 1);
-    PROJECTION_CALLS.with(|calls| calls.set(0));
-    let prepared = f
-        .store
-        .bind_task_attempt_context(&f.cas, &lease, &reserved, &context, &f.authority)
-        .unwrap();
-    assert_eq!(PROJECTION_CALLS.with(|calls| calls.get()), 2);
-    PROJECTION_CALLS.with(|calls| calls.set(0));
-    f.store
-        .start_task_attempt(&f.cas, &lease, &prepared, &f.authority)
-        .unwrap();
-    assert_eq!(PROJECTION_CALLS.with(|calls| calls.get()), 1);
-    let state = f.state();
-    assert_eq!(state.execution.unwrap().budget.begun_attempts(), 1);
+    test_clock::with_time(1_000_000, |_| {
+        let mut f = Fixture::new(false).with_execution_graph();
+        let lease = f.open();
+        f.propose(&lease);
+        f.store
+            .admit_task_plan(&f.cas, &lease, &f.authority)
+            .unwrap();
+        PROJECTION_CALLS.with(|calls| calls.set(0));
+        f.record_execution_inputs(&lease);
+        // Two invocation records (one each), plus output validation before/after its callback.
+        assert_eq!(PROJECTION_CALLS.with(|calls| calls.get()), 4);
+        let context = f.cas.put(b"exact context").unwrap();
+        PROJECTION_CALLS.with(|calls| calls.set(0));
+        let reserved = f
+            .store
+            .reserve_task_attempt(&f.cas, &lease, "root.nodes.write", &f.authority)
+            .unwrap();
+        assert_eq!(PROJECTION_CALLS.with(|calls| calls.get()), 1);
+        PROJECTION_CALLS.with(|calls| calls.set(0));
+        let prepared = f
+            .store
+            .bind_task_attempt_context(&f.cas, &lease, &reserved, &context, &f.authority)
+            .unwrap();
+        assert_eq!(PROJECTION_CALLS.with(|calls| calls.get()), 2);
+        PROJECTION_CALLS.with(|calls| calls.set(0));
+        f.store
+            .start_task_attempt(&f.cas, &lease, &prepared, &f.authority)
+            .unwrap();
+        assert_eq!(PROJECTION_CALLS.with(|calls| calls.get()), 1);
+        let state = f.state();
+        assert_eq!(state.execution.unwrap().budget.begun_attempts(), 1);
+    });
 }
 
 #[test]
@@ -1685,101 +1736,174 @@ fn review_replay_reuses_only_one_operation_and_refreshes_an_appended_prefix() {
 
 #[test]
 fn native_usage_classification_keeps_exact_attempt_context_and_charge_guards() {
-    use review_core::task::execution::{TaskAttemptResultV1, TaskExecutionRecordV1};
-    use review_core::task::usage::{TaskTokenUsageV3, TaskUsageObservationV1};
-    for case in [
-        "valid",
-        "duplicate",
-        "producer",
-        "context",
-        "floor",
-        "incomplete",
-    ] {
-        let mut f = Fixture::new(false).with_execution_graph();
-        let lease = f.open();
-        f.propose(&lease);
-        f.store
-            .admit_task_plan(&f.cas, &lease, &f.authority)
-            .unwrap();
-        f.record_execution_inputs(&lease);
-        let context = f.cas.put(b"usage context").unwrap();
-        let attempt = f
-            .store
-            .reserve_and_bind_task_attempt(
+    test_clock::with_time(1_000_000, |_| {
+        use review_core::task::execution::{TaskAttemptResultV1, TaskExecutionRecordV1};
+        use review_core::task::usage::{TaskTokenUsageV3, TaskUsageObservationV1};
+        for case in [
+            "valid",
+            "duplicate",
+            "producer",
+            "context",
+            "floor",
+            "incomplete",
+        ] {
+            let mut f = Fixture::new(false).with_execution_graph();
+            let lease = f.open();
+            f.propose(&lease);
+            f.store
+                .admit_task_plan(&f.cas, &lease, &f.authority)
+                .unwrap();
+            f.record_execution_inputs(&lease);
+            let context = f.cas.put(b"usage context").unwrap();
+            let attempt = f
+                .store
+                .reserve_and_bind_task_attempt(
+                    &f.cas,
+                    &lease,
+                    "root.nodes.write",
+                    &context,
+                    &f.authority,
+                )
+                .unwrap();
+            f.store
+                .start_task_attempt(&f.cas, &lease, &attempt, &f.authority)
+                .unwrap();
+            let before = f.store.len(&task_run_id(lease.task_id()).unwrap()).unwrap();
+            let raw = f
+                .cas
+                .put(&vec![
+                    b'x';
+                    if case == "valid" {
+                        9 * 1024 * 1024
+                    } else {
+                        1024
+                    }
+                ])
+                .unwrap();
+            let producer = Producer::Attempt {
+                run_id: task_run_id(lease.task_id()).unwrap(),
+                node_id: if case == "producer" {
+                    "other".into()
+                } else {
+                    "root.nodes.write".into()
+                },
+                attempt_id: attempt.id().into(),
+            };
+            let observed = TaskUsageObservationV1 {
+                reported_usage: Some(TaskTokenUsageV3::charge_only(7)),
+                charge_complete: case != "incomplete",
+            };
+            let id = execution::usage_observation::capture_task_usage_observation(
                 &f.cas,
-                &lease,
-                "root.nodes.write",
-                &context,
-                &f.authority,
+                producer,
+                if case == "context" { &raw } else { &context },
+                &observed,
             )
             .unwrap();
-        f.store
-            .start_task_attempt(&f.cas, &lease, &attempt, &f.authority)
-            .unwrap();
-        let before = f.store.len(&task_run_id(lease.task_id()).unwrap()).unwrap();
-        let raw = f
-            .cas
-            .put(&vec![
-                b'x';
-                if case == "valid" {
-                    9 * 1024 * 1024
-                } else {
-                    1024
-                }
-            ])
-            .unwrap();
-        let producer = Producer::Attempt {
-            run_id: task_run_id(lease.task_id()).unwrap(),
-            node_id: if case == "producer" {
-                "other".into()
-            } else {
-                "root.nodes.write".into()
-            },
-            attempt_id: attempt.id().into(),
-        };
-        let observed = TaskUsageObservationV1 {
-            reported_usage: Some(TaskTokenUsageV3::charge_only(7)),
-            charge_complete: case != "incomplete",
-        };
-        let id = execution::usage_observation::capture_task_usage_observation(
-            &f.cas,
-            producer,
-            if case == "context" { &raw } else { &context },
-            &observed,
-        )
-        .unwrap();
-        let mut evidence = vec![raw.clone(), id.clone()];
-        if case == "duplicate" {
-            evidence.push(id);
-        }
-        let charge = if case == "floor" { 6 } else { 7 };
-        PROJECTION_CALLS.with(|calls| calls.set(0));
-        let result = f.store.settle_task_attempt(
-            &f.cas,
-            &lease,
-            TaskExecutionRecordV1::Settled {
-                attempt_id: attempt.id().into(),
-                charged_tokens: charge,
-                result: TaskAttemptResultV1::Failed {
-                    diagnostic_id: raw,
-                    feedback_id: None,
+            let mut evidence = vec![raw.clone(), id.clone()];
+            if case == "duplicate" {
+                evidence.push(id);
+            }
+            let charge = if case == "floor" { 6 } else { 7 };
+            PROJECTION_CALLS.with(|calls| calls.set(0));
+            let result = f.store.settle_task_attempt(
+                &f.cas,
+                &lease,
+                TaskExecutionRecordV1::Settled {
+                    attempt_id: attempt.id().into(),
+                    charged_tokens: charge,
+                    result: TaskAttemptResultV1::Failed {
+                        diagnostic_id: raw,
+                        feedback_id: None,
+                    },
+                    raw_artifact_ids: evidence,
+                    usage_id: None,
+                    unknown_usage: None,
                 },
-                raw_artifact_ids: evidence,
-                usage_id: None,
-                unknown_usage: None,
-            },
-            &f.authority,
-        );
-        assert_eq!(PROJECTION_CALLS.with(|calls| calls.get()), 1);
-        assert_eq!(result.is_ok(), case == "valid", "{case}: {result:?}");
-        assert_eq!(
-            f.store.len(&task_run_id(lease.task_id()).unwrap()).unwrap(),
-            before + u64::from(case == "valid")
-        );
+                &f.authority,
+            );
+            assert_eq!(PROJECTION_CALLS.with(|calls| calls.get()), 1);
+            assert_eq!(result.is_ok(), case == "valid", "{case}: {result:?}");
+            assert_eq!(
+                f.store.len(&task_run_id(lease.task_id()).unwrap()).unwrap(),
+                before + u64::from(case == "valid")
+            );
+            f.store = EventStore::open(&f.path).unwrap();
+            assert_eq!(
+                f.state().execution.unwrap().budget.committed_tokens(),
+                if case == "valid" { 7 } else { 0 }
+            );
+        }
+    });
+}
+
+/// Exercise the same two formerly flaky fixture paths at the actual Store dispatch boundary.
+/// Context/CAS preparation and reopen still happen, under their original 1,000 ms allowance.
+fn dispatch_fixture_at_offset(
+    f: &mut Fixture,
+    lease: &TaskLease,
+    attempt: &execution::PreparedTaskAttempt,
+    clock: &std::cell::Cell<u64>,
+    offset: i64,
+) -> bool {
+    let deadline = attempt.reservation().deadline_unix_ms;
+    assert_eq!(deadline, clock.get() + 1_000);
+    assert_eq!(attempt.reservation().tokens, 10);
+    f.store = EventStore::open(&f.path).unwrap();
+    let run = task_run_id(lease.task_id()).unwrap();
+    let prefix = f.store.replay(&run).unwrap();
+    let state = f.state();
+    let limits = state.revision.limits.clone();
+    let lease_until = state.lease_until;
+    clock.set(deadline.checked_add_signed(offset).unwrap());
+    assert!(clock.get() < lease_until);
+    assert!(clock.get() < limits.deadline_unix_ms);
+    let started = f
+        .store
+        .start_task_attempt(&f.cas, lease, attempt, &f.authority);
+    if offset < 0 {
+        started.unwrap();
+        let accounting = f.state().execution.unwrap().attempt_accounting();
+        assert_eq!(accounting[0].started_unix_ms, Some(clock.get()));
+        assert_eq!(accounting[0].reservation, *attempt.reservation());
+        true
+    } else {
+        assert!(matches!(started, Err(StoreError::Conflict(message))
+        if message == format!(
+                    "Task reservation for node root.nodes.write is not dispatchable: \
+                     its Attempt deadline passed: now {} ms >= deadline {deadline} ms",
+                    clock.get()
+                )));
         f.store = EventStore::open(&f.path).unwrap();
-        assert_eq!(
-            f.state().execution.unwrap().budget.committed_tokens(),
-            if case == "valid" { 7 } else { 0 }
-        );
+        assert_eq!(f.store.replay(&run).unwrap(), prefix);
+        let state = f.state();
+        assert_eq!(state.revision.limits, limits);
+        assert_eq!(state.lease_until, lease_until);
+        let execution = state.execution.unwrap();
+        assert_eq!(execution.budget.committed_tokens(), 0);
+        assert_eq!(execution.budget.reserved_tokens(), 10);
+        assert_eq!(execution.budget.begun_attempts(), 0);
+        f.store
+            .release_task_attempt(&f.cas, lease, attempt, "fixture expired before dispatch")
+            .unwrap();
+        f.store = EventStore::open(&f.path).unwrap();
+        let execution = f.state().execution.unwrap();
+        assert_eq!(execution.budget.committed_tokens(), 0);
+        assert_eq!(execution.budget.reserved_tokens(), 0);
+        assert_eq!(execution.budget.begun_attempts(), 0);
+        assert!(execution.pending_attempts().is_empty());
+        false
+    }
+}
+
+#[test]
+fn short_attempt_fixture_paths_refuse_expired_dispatch_without_spend() {
+    for offset in [0, 1] {
+        test_clock::with_time(1_000_000, |clock| {
+            check_rejected_output_dispatch(clock, offset)
+        });
+        test_clock::with_time(1_000_000, |clock| {
+            retry::check_retry_policy_dispatch(clock, offset)
+        });
     }
 }

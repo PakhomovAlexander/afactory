@@ -3,7 +3,7 @@
 `report --run DIR --output OUT` recomputes the run's verdict from its retained evidence
 (`compare.evaluate`: every bundle rehashed, every planned slot matched) and writes, below a new
 OUT, `report.html` (self-contained, `perflab.render`), the matching `report.json`
-(`af.perf-report/2`, ADR-0177), the recomputed `verdict.json`, the compact GitHub job-summary table
+(`af.perf-report/3`, ADR-0177, ADR-0214), the recomputed `verdict.json`, the compact GitHub job-summary table
 `summary.md` and `evidence/`, verified copies of the run's bundle members that the page links
 as downloads. Nothing is added, dropped, retried or reclassified: the report shows the
 verdict's classifications, its exact rational bounds and every planned slot as a raw point,
@@ -36,7 +36,7 @@ from fractions import Fraction
 import os
 
 from . import (bundle, compare, contracts, diagnostics, limits, phasetrace, render,
-               reproduce, schedule, svgsafe)
+               reproduce, schedule, svgsafe, telemetrydiag)
 from .values import ContractError, document_bytes, require, sha256_bytes
 
 REPORT_HTML = "report.html"
@@ -45,6 +45,9 @@ VERDICT_JSON = "verdict.json"
 SUMMARY_MD = "summary.md"
 EVIDENCE = "evidence"
 DIAGNOSTICS = "diagnostics"
+TELEMETRY_UNAVAILABLE = ("no linked diagnostic child run recorded this case's telemetry: a "
+                         "child run selects it explicitly (cli.py profile ... --telemetry spans, "
+                         "ADR-0214); only CLI cases that run a kernel run record telemetry")
 PROFILE_UNAVAILABLE = ("no linked diagnostic child run covers this case: CPU profiles and "
                        "phase traces are separate diagnostic child runs (cli.py profile --plan "
                        "run.json --case ID, ADR-0174) that never change this verdict; link one "
@@ -258,7 +261,8 @@ def _case_extras(plan, verdict, children=()):
                                     "warmup_pairs": case["warmup_pairs"]},
                     "profile": _case_diagnostics(entry["instance_id"], "cpu_profile",
                                                  children),
-                    "trace": _case_diagnostics(entry["instance_id"], "trace", children)})
+                    "trace": _case_diagnostics(entry["instance_id"], "trace", children),
+                    "telemetry": _case_telemetry(entry["instance_id"], children)})
     return out
 
 
@@ -290,6 +294,7 @@ class Child(object):
                 "profiles_sha256": self.profiles_sha256,
                 "cases": [item["instance_id"] for item in doc["selection"]["cases"]],
                 "retained_scratch": doc["execution"]["retained_scratch"],
+                "telemetry_level": doc["telemetry"]["level"],
                 "page": self.path(PAGE), "directory": self.directory}
 
 
@@ -329,7 +334,7 @@ def admit_child(source, plan):
             "%s: its frozen child plan is not the one its profiles name" % label)
     _consistent(label, plan, child_plan, doc)
     artifacts = []
-    for entry in doc["captures"] + doc["traces"] + doc["counters"]:
+    for entry in doc["captures"] + doc["traces"] + doc["counters"] + doc["telemetry"]["captures"]:
         artifacts.extend(entry["artifacts"])
     for entry in doc["renders"]:
         artifacts.extend((entry["original"], entry["sanitized"]))
@@ -407,9 +412,14 @@ def _consistent(label, plan, child_plan, doc):
     require(len(selected) == len(set(selected)) and set(selected) == set(planned),
             "%s: its profiles select %s, not the cases its frozen child plan froze (%s)"
             % (label, ", ".join(selected) or "none", ", ".join(sorted(planned)) or "none"))
-    for entry in doc["captures"] + doc["renders"] + doc["traces"] + doc["counters"]:
+    for entry in (doc["captures"] + doc["renders"] + doc["traces"] + doc["counters"]
+                  + doc["telemetry"]["captures"]):
         require(entry["instance_id"] in planned, "%s: holds evidence of %s, which its frozen "
                 "child plan did not select" % (label, entry["instance_id"]))
+    for entry in doc["telemetry"]["captures"]:
+        require(entry["source_sha"] == child_resolved[entry["side"] + "_sha"],
+                "%s: its %s telemetry capture of %s names another source than its frozen "
+                "child plan's" % (label, entry["side"], entry["instance_id"]))
 
 
 # The fields of a frozen case that a diagnostic child plans for itself (ADR-0179): its own pair
@@ -476,6 +486,23 @@ def _admit_views(source, label, doc, hashes):
                     phasetrace.async_count(trace), region_spans, coverage),
                 "%s: its profiles claim other spans or coverage than its trace" % where)
         traces.append(trace)
+    for entry in doc["telemetry"]["captures"]:
+        if entry["omission"] is not None:
+            continue
+        where = "%s: the %s telemetry capture of %s" % (label, entry["side"],
+                                                        entry["instance_id"])
+        named = dict((artifact["path"].rsplit("/", 1)[-1], artifact["path"])
+                     for artifact in entry["artifacts"])
+        documents = dict((kind, member(named[kind + ".json"]))
+                         for kind in telemetrydiag.DOCUMENT_KINDS)
+        try:
+            derived = telemetrydiag.capture(documents, entry["run"]["task_id"])
+            telemetrydiag.check_capture(entry, derived)
+        except ContractError as error:
+            raise ContractError("%s: %s" % (where, error))
+        require(member(named[telemetrydiag.PERFETTO]) == telemetrydiag.perfetto(
+            documents["show"], "%s %s" % (entry["instance_id"], entry["side"])),
+            "%s: its perfetto.json is not the export of its show.json" % where)
     require(member(PAGE) == diagnostics.page(doc, traces),
             "%s: its %s is not the page the trusted renderer draws from its admitted evidence, "
             "so it is not linked" % (label, PAGE))
@@ -578,6 +605,63 @@ def _case_diagnostics(instance_id, kind, children):
     return {"state": state, "reason": reason, "items": items[:64], "omissions": omissions[:64]}
 
 
+def _case_telemetry(instance_id, children):
+    """A case's telemetry state from the linked children that selected a telemetry level and
+    this case: each capture's verified documents, Perfetto export and timeline, its partial
+    reasons, and every telemetry omission (ADR-0214). Never a verdict input."""
+    covering = [child for child in children if child.doc["telemetry"]["level"] is not None
+                and instance_id in [item["instance_id"]
+                                    for item in child.doc["selection"]["cases"]]]
+    if not covering:
+        return {"state": "unavailable", "reason": TELEMETRY_UNAVAILABLE, "items": [],
+                "omissions": []}
+    items, omissions, partial = [], [], False
+    for child in covering:
+        doc, run_id = child.doc, child.doc["run_id"]
+        for item in doc["omissions"]:
+            if item["kind"] == "telemetry" and item["instance_id"] in (None, instance_id):
+                omissions.append({"child_run_id": run_id, "side": item["side"],
+                                  "reason": item["reason"], "detail": item["detail"]})
+        for entry in doc["telemetry"]["captures"]:
+            if entry["instance_id"] != instance_id:
+                continue
+            if entry["omission"] is not None:
+                omissions.append({"child_run_id": run_id, "side": entry["side"],
+                                  "reason": entry["omission"]["reason"],
+                                  "detail": entry["omission"]["detail"]})
+                continue
+            evidence = entry["evidence"]
+            partial = partial or evidence["state"] != "complete"
+            note = "level %s%s, %s%s; %d spans, %d executions; never a verdict sample" % (
+                entry["level"], " (perturbing)" if entry["level"] == "content" else "",
+                evidence["state"], (" (%s)" % ", ".join(evidence["reasons"])
+                                    if evidence["reasons"] else ""),
+                entry["spans"], len(entry["executions"]))
+            for artifact in entry["artifacts"]:
+                name = artifact["path"].rsplit("/", 1)[-1]
+                if name in ("show.json", telemetrydiag.PERFETTO):
+                    items.append({"child_run_id": run_id, "side": entry["side"],
+                                  "kind": "telemetry" if name == "show.json"
+                                  else "telemetry_perfetto",
+                                  "path": child.path(artifact["path"]),
+                                  "sha256": artifact["sha256"], "note": note})
+            items.append({"child_run_id": run_id, "side": entry["side"], "kind": "timeline",
+                          "path": child.path(PAGE), "sha256": child.hashes[PAGE],
+                          "note": note})
+    if not items:
+        state = "omitted"
+    elif omissions or partial:
+        state = "partial"
+    else:
+        state = "available"
+    reason = {"omitted": "the linked child runs selected this case and recorded why it holds "
+                         "no telemetry capture",
+              "partial": "the linked child runs captured part of this case's telemetry; see "
+                         "the omissions and evidence states",
+              "available": "verified telemetry documents of the linked child runs"}[state]
+    return {"state": state, "reason": reason, "items": items[:64], "omissions": omissions[:64]}
+
+
 def _shards(evaluation):
     out = []
     for evidence in evaluation.evidence:
@@ -597,7 +681,7 @@ def _shards(evaluation):
 
 
 def build(evaluation, downloads, children=()):
-    """The `af.perf-report/2` document of an evaluated run and its linked child runs."""
+    """The `af.perf-report/3` document of an evaluated run and its linked child runs."""
     plan, verdict = evaluation.plan, evaluation.verdict
     doc = {"schema": contracts.REPORT_SCHEMA, "run_id": plan["run_id"],
            "plan_digest": plan["plan_digest"], "comparison": "same_host_paired",
@@ -992,19 +1076,21 @@ def html_bytes(doc, downloads_present=True):
         render.paragraph("Diagnostics are separate child runs linked to this one; they never "
                          "change its verdict. Color in a difference flamegraph is the change in "
                          "each stack's share of CPU samples, not an absolute time saved."),
-        render.table(("Case", "Profile", "Trace", "Omissions"),
+        render.table(("Case", "Profile", "Trace", "Telemetry", "Omissions"),
                      [(item["instance_id"], _diagnostic_cell(item["profile"]),
-                       _diagnostic_cell(item["trace"]),
+                       _diagnostic_cell(item["trace"]), _diagnostic_cell(item["telemetry"]),
                        "; ".join("%s %s: %s: %s" % (entry["child_run_id"],
                                                     entry["side"] or "both sides",
                                                     entry["reason"], entry["detail"])
                                  for entry in item["profile"]["omissions"]
-                                 + item["trace"]["omissions"]) or "none")
+                                 + item["trace"]["omissions"]
+                                 + item["telemetry"]["omissions"]) or "none")
                       for item in doc["cases"]], searchable=True),
-        render.table(("Child run", "Recipe", "Mode", "Cases", "Kept scratch", "Detailed view",
-                      "Bundle"),
+        render.table(("Child run", "Recipe", "Mode", "Telemetry", "Cases", "Kept scratch",
+                      "Detailed view", "Bundle"),
                      [(child["run_id"], "%s (%s)" % (child["recipe_id"], child["kind"]),
-                       child["mode"], ", ".join(child["cases"]) or "none",
+                       child["mode"], child["telemetry_level"] or "none",
+                       ", ".join(child["cases"]) or "none",
                        child["retained_scratch"],
                        render.Markup(render.link(child["page"], "diagnostic page")),
                        render.code(child["bundle_sha256"]))

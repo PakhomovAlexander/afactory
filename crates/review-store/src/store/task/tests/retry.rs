@@ -33,35 +33,41 @@ fn refuse_both(f: &mut Fixture, lease: &TaskLease, context: &str, message: &str)
 
 #[test]
 fn pending_invocation_cannot_reserve_another_attempt_through_either_api() {
-    let (mut f, lease, _, context) = running();
-    let reserved = f
-        .store
-        .reserve_task_attempt(&f.cas, &lease, "root.nodes.write", &f.authority)
-        .unwrap();
-    f.store = EventStore::open(&f.path).unwrap();
-    refuse_both(&mut f, &lease, &context, "pending Attempt");
-    assert_eq!(f.state().execution.unwrap().budget.reserved_tokens(), 10);
-    f.store
-        .release_reserved_task_attempt(&f.cas, &lease, &reserved, "never dispatched")
-        .unwrap();
-    assert!(
-        f.store
+    test_clock::with_time(1_000_000, |_| {
+        let (mut f, lease, _, context) = running();
+        let reserved = f
+            .store
             .reserve_task_attempt(&f.cas, &lease, "root.nodes.write", &f.authority)
-            .is_ok()
-    );
+            .unwrap();
+        f.store = EventStore::open(&f.path).unwrap();
+        refuse_both(&mut f, &lease, &context, "pending Attempt");
+        assert_eq!(f.state().execution.unwrap().budget.reserved_tokens(), 10);
+        f.store
+            .release_reserved_task_attempt(&f.cas, &lease, &reserved, "never dispatched")
+            .unwrap();
+        assert!(
+            f.store
+                .reserve_task_attempt(&f.cas, &lease, "root.nodes.write", &f.authority)
+                .is_ok()
+        );
+    });
 }
 
 #[test]
 fn captured_retry_policy_checks_durable_failures_before_any_new_reservation() {
+    test_clock::with_time(1_000_000, |clock| check_retry_policy_dispatch(clock, -1));
+}
+
+pub(super) fn check_retry_policy_dispatch(clock: &std::cell::Cell<u64>, offset: i64) {
     let (mut f, lease, _, context) = running();
     f.authority.retry_allowed = false;
     let attempt = f
         .store
         .reserve_and_bind_task_attempt(&f.cas, &lease, "root.nodes.write", &context, &f.authority)
         .unwrap();
-    f.store
-        .start_task_attempt(&f.cas, &lease, &attempt, &f.authority)
-        .unwrap();
+    if !dispatch_fixture_at_offset(&mut f, &lease, &attempt, clock, offset) {
+        return;
+    }
     let diagnostic_id = f
         .cas
         .put_json(&json!({"failure":"nonretryable fixture transport"}))
@@ -94,38 +100,46 @@ fn captured_retry_policy_checks_durable_failures_before_any_new_reservation() {
 
 #[test]
 fn selected_work_recovers_publication_instead_of_reserving_another_paid_attempt() {
-    let (mut f, lease, invocation, context) = running();
-    let attempt = f
-        .store
-        .reserve_and_bind_task_attempt(&f.cas, &lease, "root.nodes.write", &context, &f.authority)
-        .unwrap();
-    f.store
-        .start_task_attempt(&f.cas, &lease, &attempt, &f.authority)
-        .unwrap();
-    let output_id = f.execution_output(&invocation, attempt.id());
-    f.store
-        .settle_task_attempt(
-            &f.cas,
-            &lease,
-            TaskExecutionRecordV1::Settled {
-                attempt_id: attempt.id().into(),
-                charged_tokens: 7,
-                result: TaskAttemptResultV1::Succeeded {
-                    output_id: output_id.clone(),
+    test_clock::with_time(1_000_000, |_| {
+        let (mut f, lease, invocation, context) = running();
+        let attempt = f
+            .store
+            .reserve_and_bind_task_attempt(
+                &f.cas,
+                &lease,
+                "root.nodes.write",
+                &context,
+                &f.authority,
+            )
+            .unwrap();
+        f.store
+            .start_task_attempt(&f.cas, &lease, &attempt, &f.authority)
+            .unwrap();
+        let output_id = f.execution_output(&invocation, attempt.id());
+        f.store
+            .settle_task_attempt(
+                &f.cas,
+                &lease,
+                TaskExecutionRecordV1::Settled {
+                    attempt_id: attempt.id().into(),
+                    charged_tokens: 7,
+                    result: TaskAttemptResultV1::Succeeded {
+                        output_id: output_id.clone(),
+                    },
+                    raw_artifact_ids: vec![],
+                    usage_id: None,
+                    unknown_usage: None,
                 },
-                raw_artifact_ids: vec![],
-                usage_id: None,
-                unknown_usage: None,
-            },
-            &f.authority,
-        )
-        .unwrap();
-    f.store = EventStore::open(&f.path).unwrap();
-    refuse_both(&mut f, &lease, &context, "recover its publication");
-    f.store
-        .publish_task_output(&f.cas, &lease, &output_id, Some(attempt.id()), &f.authority)
-        .unwrap();
-    let budget = f.state().execution.unwrap().budget;
-    assert_eq!(budget.committed_tokens(), 7);
-    assert_eq!(budget.begun_attempts(), 1);
+                &f.authority,
+            )
+            .unwrap();
+        f.store = EventStore::open(&f.path).unwrap();
+        refuse_both(&mut f, &lease, &context, "recover its publication");
+        f.store
+            .publish_task_output(&f.cas, &lease, &output_id, Some(attempt.id()), &f.authority)
+            .unwrap();
+        let budget = f.state().execution.unwrap().budget;
+        assert_eq!(budget.committed_tokens(), 7);
+        assert_eq!(budget.begun_attempts(), 1);
+    });
 }

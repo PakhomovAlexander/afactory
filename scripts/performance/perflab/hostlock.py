@@ -23,6 +23,8 @@ import fcntl
 import os
 import stat
 
+from .budget import defer_alarm
+
 MACHINE_LOCK_DIRECTORY = "/tmp"
 MACHINE_LOCK_NAME = "af-perf-machine.lock"
 LOCK_MODE = 0o644
@@ -63,18 +65,23 @@ class MachineLock(object):
     """The held machine lock. `directory` is a seam for the laboratory's own tests; production
     always uses the system's `/tmp`, which must be root-owned."""
 
-    def __init__(self, directory=None):
+    def __init__(self, directory=None, register=None):
+        self.fd = None
+        # Register even an interrupted constructor before acquisition can start.
+        if register is not None:
+            register(self)
         system_owned = directory is None
         directory = os.path.realpath(directory or MACHINE_LOCK_DIRECTORY)
         _check_directory(directory, system_owned)
         self.path = os.path.join(directory, MACHINE_LOCK_NAME)
         flags = os.O_RDONLY | os.O_CREAT | os.O_NOFOLLOW | os.O_NONBLOCK
         try:
-            self.fd = os.open(self.path, flags, LOCK_MODE)
-        except OSError as error:
-            raise Refused("coordination_unavailable", "cannot open the machine lock %s: %s"
-                          % (self.path, error.strerror or error))
-        try:
+            try:
+                with defer_alarm():
+                    self.fd = os.open(self.path, flags, LOCK_MODE)
+            except OSError as error:
+                raise Refused("coordination_unavailable", "cannot open the machine lock %s: %s"
+                              % (self.path, error.strerror or error))
             self._check_file()
             try:
                 fcntl.flock(self.fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
@@ -96,10 +103,10 @@ class MachineLock(object):
             if (named.st_dev, named.st_ino) != (held.st_dev, held.st_ino):
                 raise Refused("coordination_unavailable", "%s no longer names the locked file"
                               % self.path)
+            self.owner_uid = held.st_uid
         except BaseException:
-            os.close(self.fd)
+            self.release()
             raise
-        self.owner_uid = held.st_uid
 
     def _check_file(self):
         info = os.fstat(self.fd)
@@ -119,13 +126,11 @@ class MachineLock(object):
 
     def release(self):
         """Release the lock; the file stays for the next holder."""
-        if self.fd is None:
-            return
-        try:
-            fcntl.flock(self.fd, fcntl.LOCK_UN)
-        finally:
-            os.close(self.fd)
-            self.fd = None
+        with defer_alarm():
+            if self.fd is not None:
+                # Closing our independent description releases its flock too.
+                fd, self.fd = self.fd, None
+                os.close(fd)
 
     def __enter__(self):
         return self

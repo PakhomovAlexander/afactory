@@ -129,11 +129,25 @@ class Git:
     def blob(self, obj):
         return self.blobs([obj])[obj]
 
-    def blobs(self, objects):
+    def blobs(self, objects, bytes_max=None):
         """Read many blobs through one `git cat-file --batch`."""
         wanted = sorted(set(objects))
         if not wanted:
             return {}
+        if bytes_max is not None:
+            sizes = self._run(["cat-file", "--batch-check"],
+                              stdin=("\n".join(wanted) + "\n").encode("ascii")).stdout
+            total = 0
+            lines = sizes.decode("ascii").splitlines()
+            require(len(lines) == len(wanted), "git cat-file returned incomplete sizes")
+            for obj, line in zip(wanted, lines):
+                fields = line.split()
+                require(len(fields) == 3 and fields[:2] == [obj, "blob"],
+                        "git cat-file returned an unexpected size object")
+                size = int(fields[2])
+                require(0 <= size <= MAX_BLOB_BYTES, "a protected file exceeds 16 MiB")
+                total += size
+                require(total <= bytes_max, "the authority exceeds its byte bound")
         out = self._run(["cat-file", "--batch"],
                         stdin=("\n".join(wanted) + "\n").encode("ascii")).stdout
         found = {}

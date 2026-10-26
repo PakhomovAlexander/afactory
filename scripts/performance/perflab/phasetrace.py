@@ -8,6 +8,7 @@ of each phase's intervals, never a sum: overlapping or nested spans of a phase n
 twice, and phases are never added together into a process total. The offline timeline is part of
 the diagnostic page, drawn as SVG by the laboratory's own renderer.
 """
+from fractions import Fraction
 import json
 
 from . import contracts, render
@@ -100,6 +101,33 @@ def phase_summary(doc):
         rows.append({"phase": phase, "spans": len(intervals), "covered_ns": union_ns(intervals),
                      "longest_ns": max(end - start for start, end in intervals)})
     return rows
+
+
+def region_breakdown(doc, region="probe_region", depth=2, share=Fraction(1, 100)):
+    """Lines naming, below each `region` span, its descendants to `depth` levels in start
+    order with their start offset and duration, those of at least `share` of the region only:
+    where a measured region's time went, never a sum across phases."""
+    children = {}
+    for span in doc["spans"]:
+        children.setdefault(span["parent"], []).append(span)
+    lines = []
+
+    def walk(span, level, base, whole):
+        for child in children.get(span["id"], ()):
+            length = child["end_ns"] - child["start_ns"]
+            if whole and Fraction(length, whole) >= share:
+                lines.append("  %s%-22s +%10.3f ms  %10.3f ms  %5.1f%%" % (
+                    "  " * level, child["phase"], (child["start_ns"] - base) / 1e6,
+                    length / 1e6, 100.0 * length / whole))
+            if level + 1 < depth:
+                walk(child, level + 1, base, whole)
+
+    for span in doc["spans"]:
+        if span["phase"] == region:
+            whole = span["end_ns"] - span["start_ns"]
+            lines.append("region %s #%d: %.3f ms" % (region, span["id"], whole / 1e6))
+            walk(span, 0, span["start_ns"], whole)
+    return lines
 
 
 def async_count(doc):

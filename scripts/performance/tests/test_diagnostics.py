@@ -1051,11 +1051,24 @@ class Counters(TempDir):
                                                                   codesign=self.path("none"))
         self.assertEqual((available, reason), (False, "samply_flags_missing"))
         self.assertIn("--save-only", detail)
-        # The host's /bin/ls may resolve outside the protected path.
-        available, reason, _, _ = counters.samply_capability(boss, full,
-                                                             "/System/af-protected-fixture", env, 10,
-                                                             codesign=self.path("none"))
-        self.assertEqual((available, reason), (False, "protected_executable"))
+        # Model macOS canonical paths, independent of the verifier's system symlinks
+        # (on Linux /bin/ls can resolve outside every macOS protected prefix).
+        protected_paths = ("/System/Library/af-fixture", "/usr/bin/af-fixture",
+                           "/usr/sbin/af-fixture", "/usr/libexec/af-fixture",
+                           "/bin/af-fixture", "/sbin/af-fixture")
+        link = self.path("protected-link")
+        os.symlink(protected_paths[0], link)
+        for requested, resolved in ([(path, path) for path in protected_paths]
+                                    + [(link, protected_paths[0])]):
+            with self.subTest(requested=requested, resolved=resolved):
+                with mock.patch.object(counters.os.path, "realpath",
+                                       return_value=resolved) as realpath:
+                    available, reason, detail, version = counters.samply_capability(
+                        boss, full, requested, env, 10, codesign=self.path("none"))
+                realpath.assert_called_once_with(requested)
+                self.assertEqual((available, reason), (False, "protected_executable"))
+                self.assertIn(resolved, detail)
+                self.assertEqual(version, "samply 0.0.fake")
         resolve = os.path.realpath
         for real in ("/usr/lib/cargo/bin/coreutils", "/usr/lib/cargo/bin/coreutils/ls"):
             # Only the target resolves to the multicall binary; every other path is itself.
@@ -1104,7 +1117,7 @@ class ChildRunBase(TempDir):
 
     def profile(self, recipe, cases, tools, probe_config, parent_probes=None, duration_ms=300,
                 registry=None, af_config=None, parent_af_config=None, contained=None,
-                prior_bytes=0, work_removed=True, run_id="child_run"):
+                prior_bytes=0, work_removed=True, run_id="child_run", telemetry=None):
         plan = self.child(recipe, cases, duration_ms, run_id)
         output = self.path("child")
         os.makedirs(output)
@@ -1171,7 +1184,7 @@ class ChildRunBase(TempDir):
             budget, lambda instance: ["python3", "scripts/performance/cli.py", "profile",
                                       "--case", instance or "-"], "sha256:" + "d" * 64, "linux",
             supervisor=boss, execution=execution, cli=cli, afs=afs, parent_afs=parent_afs,
-            work=work)
+            work=work, telemetry=telemetry)
         doc = profile.run()
         diagnostics.finish(output, doc, profile.trace_docs, budget)
         reread = contracts.read_file(os.path.join(output, diagnostics.PROFILES_FILE), "profiles")
@@ -1681,6 +1694,181 @@ class UncertainCleanup(ChildRunBase):
         profile.work = self.path("work")
         profile.retained = []
         return profile
+
+    def test_internal_supervisor_exceptions_retain_decoder_and_renderer_work(self):
+        from tests.supervision_faults import fault
+        for mode in ("trusted_local", "linux_container"):
+            for target in ("decoder", "renderer"):
+                for failure, callback in ((OSError, False), (ContractError, False),
+                                          (RuntimeError, True), (KeyboardInterrupt, True)):
+                    with self.subTest(mode=mode, target=target, failure=failure, callback=callback):
+                        perf = fakes.perf(self.path("perf"),
+                                          phase_file=self.path("probe-bin", "phase"))
+                        tools = diagnostics.configured_tools(perf=perf,
+                            inferno_bin=fakes.inferno(self.path("inferno")))
+                        place = None
+                        if mode == "linux_container":
+                            root = self.path("scratch-fs")
+                            os.mkdir(root, 0o700)
+                            place = dict(scratch_root=root, docker=fakes.docker(self.path("docker")))
+                        def match(request):
+                            argv = request["argv"]
+                            return ((target == "decoder" and "script" in argv)
+                                    or (target == "renderer" and any(
+                                        os.path.basename(arg) == "inferno-diff-folded" for arg in argv)
+                                        and "--version" not in argv))
+                        actual_run, actual_remove = diagnostics.Profile.run, diagnostics.admission.remove_tree
+                        removals = []
+                        def run(profile):
+                            os.makedirs(os.path.join(profile.output, diagnostics.WORK_DIR), exist_ok=True)
+                            return actual_run(profile)
+                        def remove(path, *args, **kwargs):
+                            if state["faults"]: removals.append(path)
+                            return actual_remove(path, *args, **kwargs)
+                        with fault(match, failure, mode == "linux_container", callback=callback) as state, \
+                                mock.patch.object(diagnostics.Profile, "run", run), \
+                                mock.patch.object(diagnostics.admission, "remove_tree", remove):
+                            doc, output = self.profile("linux_gnu_cpu_profile", [SMALL, VALIDATE],
+                                tools, {}, contained=place, work_removed=False)
+                        profile = self.profile_object
+                        self.assertEqual(len(state["faults"]), 1)
+                        self.assertEqual(len(state["popen"]), 1)
+                        self.assertTrue(match(state["requests"][-1]), "no later launch")
+                        self.assertEqual(removals, [])
+                        self.assertTrue(os.path.isdir(profile.work))
+                        self.assertTrue(os.path.isdir(os.path.join(output, diagnostics.WORK_DIR)))
+                        self.assertTrue(profile.retained)
+                        self.assertIn(profile.work, profile.unsafe_staging)
+                        if profile.stage: self.assertTrue(os.path.isdir(profile.stage))
+                        if target == "decoder":
+                            self.assertTrue(all(item["omission"]["reason"] == "cleanup_uncertain"
+                                                for item in doc["captures"]))
+                            self.assertTrue(all(item["artifacts"] == [] for item in doc["captures"]))
+                        else:
+                            self.assertTrue(any(item["reason"] == "cleanup_uncertain"
+                                                for item in doc["omissions"]))
+                        self.assertFalse(os.path.exists(os.path.join(output, "manifest.json")))
+                        with self.assertRaises(perfcapture.CaptureError): profile.collect("unsafe")
+                        with self.assertRaises(perfcapture.CaptureError):
+                            profile.tool_run(["/bin/true"], 1, 1, self.tmp)
+                        if mode == "linux_container": self.assertTrue(state["removals"])
+                        for directory in ("child", "probe-bin", "supervisor", "perf", "inferno",
+                                          "scratch-fs", "docker"):
+                            path = self.path(directory)
+                            if os.path.isdir(path): shutil.rmtree(path)
+
+    def test_proven_decoder_prelaunch_refusal_allows_next_side_and_final_cleanup(self):
+        from tests.supervision_faults import fault
+        for mode in ("trusted_local", "linux_container"):
+            with self.subTest(mode=mode):
+                perf = fakes.perf(self.path("perf"), phase_file=self.path("probe-bin", "phase"))
+                tools = diagnostics.configured_tools(perf=perf)
+                place = None
+                if mode == "linux_container":
+                    root = self.path("scratch-fs")
+                    os.mkdir(root, 0o700)
+                    place = dict(scratch_root=root, docker=fakes.docker(self.path("docker")))
+                with fault(lambda request: "script" in request["argv"], prelaunch=True) as state:
+                    doc, output = self.profile("linux_gnu_cpu_profile", [SMALL], tools, {},
+                                               contained=place)
+                self.assertEqual(len(state["faults"]), 2, "the candidate side remains usable")
+                self.assertEqual(state["popen"], [])
+                self.assertEqual(state["removals"], [])
+                self.assertEqual(self.profile_object.retained, [])
+                self.assertTrue(os.path.exists(os.path.join(output, "manifest.json")))
+                self.assertTrue(all(item["omission"]["reason"] != "cleanup_uncertain"
+                                    for item in doc["captures"]))
+                for directory in ("child", "probe-bin", "supervisor", "perf", "scratch-fs", "docker"):
+                    path = self.path(directory)
+                    if os.path.isdir(path): shutil.rmtree(path)
+
+    def test_decoder_and_renderer_uncertainty_and_exceptions_retain_all_staging(self):
+        # Profile.run -> perf_capture -> analyse -> tool_output -> tool_run, and
+        # Profile.run -> render -> Renderer.run -> tool_output -> tool_run.
+        # These calls have no Namespace; the recording's Namespace is already released.
+        from perflab import budget as deadlines
+        for mode in ("trusted_local", "linux_container"):
+            for target in ("decoder", "renderer"):
+                for failure in (None, OSError, RuntimeError, KeyboardInterrupt,
+                                deadlines.Interrupted):
+                    with self.subTest(mode=mode, target=target, failure=failure):
+                        perf = fakes.perf(self.path("perf"),
+                                          phase_file=self.path("probe-bin", "phase"))
+                        tools = diagnostics.configured_tools(perf=perf,
+                            inferno_bin=fakes.inferno(self.path("inferno")))
+                        place = None
+                        if mode == "linux_container":
+                            root = self.path("scratch-fs")
+                            os.mkdir(root, 0o700)
+                            place = dict(scratch_root=root, docker=fakes.docker(self.path("docker")))
+                        actual = toolrun.run
+                        actual_run = diagnostics.Profile.run
+                        launched, unsafe, removals = [], [], []
+                        real_remove = diagnostics.admission.remove_tree
+                        def run_profile(profile):
+                            # Materialized authority work is separate from contained work.
+                            path = os.path.join(profile.output, diagnostics.WORK_DIR)
+                            os.makedirs(path, exist_ok=True)
+                            with open(os.path.join(path, "authority-work"), "wb") as stream:
+                                stream.write(b"retain all work roots")
+                            return actual_run(profile)
+                        def remove(path, *args, **kwargs):
+                            if unsafe: removals.append(path)
+                            return real_remove(path, *args, **kwargs)
+                        def tool(*args, **kwargs):
+                            result = actual(*args, **kwargs)
+                            argv = args[1]
+                            launched.append(list(argv))
+                            match = ((target == "decoder" and len(argv) > 1 and argv[1] == "script")
+                                     or (target == "renderer" and os.path.basename(argv[0])
+                                         == "inferno-diff-folded" and "--version" not in argv))
+                            if match:
+                                self.assertFalse(unsafe, "no second tool may launch")
+                                path = kwargs["stdout_path"]
+                                self.assertTrue(read(path), "actual tool wrote its output")
+                                unsafe.append(path)
+                                if failure is not None:
+                                    raise failure("after possible tool launch")
+                                result.uncertain = True
+                            return result
+                        with mock.patch.object(toolrun, "run", tool), \
+                                mock.patch.object(diagnostics.Profile, "run", run_profile), \
+                                mock.patch.object(diagnostics.admission, "remove_tree", remove):
+                            doc, output = self.profile("linux_gnu_cpu_profile", [SMALL, VALIDATE],
+                                tools, {}, contained=place, work_removed=False)
+                        profile = self.profile_object
+                        self.assertEqual(len(unsafe), 1)
+                        self.assertTrue(read(unsafe[0]), "unsafe output must remain untouched")
+                        self.assertEqual(removals, [], "nothing is deleted after uncertainty")
+                        self.assertTrue(os.path.isdir(profile.work))
+                        if profile.stage:
+                            self.assertTrue(os.path.isdir(profile.stage))
+                            relative = os.path.relpath(unsafe[0], profile.stage)
+                            self.assertFalse(os.path.exists(os.path.join(output, relative)),
+                                             "unsafe output was collected into evidence")
+                        self.assertIn(os.path.dirname(unsafe[0]), profile.unsafe_staging)
+                        self.assertEqual(profile.retained, [os.path.dirname(unsafe[0])])
+                        if target == "decoder":
+                            self.assertEqual(launched[-1][1], "script")
+                            self.assertTrue(all(item["omission"]["reason"] == "cleanup_uncertain"
+                                                for item in doc["captures"]))
+                            self.assertTrue(all(item["artifacts"] == [] for item in doc["captures"]))
+                        else:
+                            self.assertEqual(os.path.basename(launched[-1][0]), "inferno-diff-folded")
+                            self.assertTrue(any(item["reason"] == "cleanup_uncertain"
+                                                for item in doc["omissions"]))
+                        self.assertEqual(doc["execution"]["retained_scratch"], 1)
+                        self.assertFalse(os.path.exists(os.path.join(output, "manifest.json")),
+                                         "uncertain staging cannot become an admitted bundle")
+                        with self.assertRaises(perfcapture.CaptureError):
+                            profile.tool_run(["/bin/true"], 1, 1, self.tmp)
+                        with self.assertRaises(perfcapture.CaptureError):
+                            profile.collect("unsafe")
+                        # Only test-owned recovery after all product retention assertions.
+                        for directory in ("child", "probe-bin", "supervisor", "perf", "inferno",
+                                          "scratch-fs", "docker"):
+                            path = self.path(directory)
+                            if os.path.isdir(path): shutil.rmtree(path)
 
     def test_an_uncertain_release_keeps_the_namespace_and_its_data(self):
         profile = self.bare()

@@ -7,11 +7,51 @@ deadline less a reserve kept for cleanup and the terminal record, and is not sta
 is left. A step the deadline ended is reported as the deadline's, never as the step's own
 failure; a later incomplete verdict is not what bounds it.
 """
-from .values import ContractError
+from contextlib import contextmanager
+import signal
+import threading
+
+from .values import ContractError, require
+
+
+class Interrupted(BaseException):
+    """An absolute deadline interruption, never swallowed as a per-item refusal."""
 
 
 class Expired(ContractError):
     """The run's deadline left a step no time, or ended it."""
+
+
+@contextmanager
+def defer_alarm():
+    """Defer the deadline signal only across descriptor ownership transfer/close.
+
+    No waits, flock, traversal or cleanup work belongs here. Python runs signal handlers
+    on the main thread even when another, unmasked resolver thread receives SIGALRM.
+    Latch at the Python handler boundary, then deliver immediately after ownership is
+    recorded/released. Neither the absolute timer nor the caller's mask is changed.
+    """
+    if threading.current_thread() is not threading.main_thread():
+        # Python cannot interrupt descriptor publication on this thread with a handler.
+        yield
+        return
+    previous = signal.getsignal(signal.SIGALRM)
+    pending = []
+
+    def latch(signum, frame):
+        if not pending:
+            pending.append((signum, frame))
+
+    signal.signal(signal.SIGALRM, latch)
+    try:
+        yield
+    finally:
+        signal.signal(signal.SIGALRM, previous)
+        if pending:
+            if callable(previous):
+                previous(*pending[0])
+            elif previous == signal.SIG_DFL:
+                signal.raise_signal(signal.SIGALRM)
 
 
 class Budget(object):
@@ -52,3 +92,31 @@ class Budget(object):
         return Expired("the run's total deadline ended %s after %.3f s, %d s before the "
                        "deadline, which is kept for cleanup and the terminal record"
                        % (step, seconds, self.reserve))
+
+    @contextmanager
+    def enforce(self, step):
+        """Interrupt synchronous trusted collection work at this budget's absolute limit.
+
+        Unix main-thread only, with no existing interval timer. No worker, credential
+        transfer, alternate code loader or process ownership boundary is introduced. Git
+        receives this same Budget for its own subprocess timeout/kill/wait path.
+        """
+        require(threading.current_thread() is threading.main_thread()
+                and hasattr(signal, "setitimer"),
+                "bounded collection needs a Unix main thread with setitimer")
+        require(signal.getitimer(signal.ITIMER_REAL) == (0.0, 0.0),
+                "bounded collection cannot replace another owner's interval timer")
+        seconds = self.seconds(step)
+        previous = signal.getsignal(signal.SIGALRM)
+
+        def interrupt(signum, frame):
+            raise Interrupted(str(self.expired(step, seconds)))
+
+        signal.signal(signal.SIGALRM, interrupt)
+        try:
+            signal.setitimer(signal.ITIMER_REAL, seconds)
+            yield
+            self.seconds(step)
+        finally:
+            signal.setitimer(signal.ITIMER_REAL, 0)
+            signal.signal(signal.SIGALRM, previous)

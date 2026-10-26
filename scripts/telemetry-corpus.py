@@ -22,8 +22,8 @@ the index's size after it. Each is measured warm (every file read once before) a
 platform lets this process drop the page cache (Linux as root, macOS as root through `purge`),
 cold; otherwise the report says warm-only and why. The bounds of design §12 — 2 s fresh, 200 ms
 unchanged, 200 ms `show` — are checked on the warm figures; the cold ones are reported beside
-them. Prints a Markdown table, or with `--json` the `af/telemetry-read-latency@1` document
-(`schemas/telemetry-read-latency-v1.json`). Exit status: 0 within every bound, 3 when a warm
+them. Prints a Markdown table, or with `--json` the `af/telemetry-read-latency@2` document
+(`schemas/telemetry-read-latency-v2.json`). Exit status: 0 within every bound, 3 when a warm
 figure is over its bound, 1 when the corpus cannot be generated or measured.
 """
 import argparse
@@ -45,7 +45,7 @@ import sys
 import tempfile
 import time
 
-SCHEMA = 'af/telemetry-read-latency@1'
+SCHEMA = 'af/telemetry-read-latency@2'
 REPOSITORY = Path(__file__).resolve().parent.parent
 FULL_RUNS = 10000
 DEFAULT_SEED = 20261021
@@ -127,6 +127,19 @@ class Layout:
         started_ms = self.start_ns(execution) // 1_000_000
         pid = 20000 + execution % 40000
         return f'{started_ms}-{pid}-{sha(f"corpus-segment:{self.seed}:{execution}")[:8]}'
+
+
+def expected_counts(seed, runs):
+    """Index facts required by this generator, independent of any reader's output."""
+    layout = Layout(seed, runs)
+    return {'executions': layout.executions, 'segments': layout.executions,
+            'blob_files': layout.blobs,
+            'spans': layout.executions * SPANS_PER_EXECUTION,
+            'events': layout.executions * EVENTS_PER_EXECUTION,
+            'blobs': layout.blobs, 'shared_blobs': layout.shared,
+            'blob_occurrences': sum(len(layout.blob_segments(i)) for i in range(layout.blobs)),
+            'blob_bytes': sum(layout.blob_size(i) for i in range(layout.blobs)),
+            'content_index': True, 'content_indexed': layout.blobs}
 
 
 _POOL = {}
@@ -540,7 +553,7 @@ def corpus_facts(corpus):
             'segment_stored_bytes': sum(path.stat().st_size for path in segments),
             'blob_files': len(blobs),
             'blob_stored_bytes': sum(path.stat().st_size for path in blobs),
-            'content_index': has_fts and indexed > 0}, run_id
+            'content_index': has_fts, 'content_indexed': indexed}, run_id
 
 
 def measure(args):

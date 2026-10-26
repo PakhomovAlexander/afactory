@@ -276,6 +276,38 @@ class Judge(TempDir):
 
 
 class Coverage(TempDir):
+    def test_golden_command_rederives_changed_registry_and_rejects_a_forged_seed(self):
+        suite_path = copied_suite(self)
+        with open(suite_path, encoding="utf-8") as stream:
+            text = stream.read()
+        # The coverage identities stay the same; their reference bytes and hashes change.
+        old = "serialized_envelope_bytes = 1900000"
+        self.assertEqual(text.count(old), 1)
+        with open(suite_path, "w", encoding="utf-8") as stream:
+            stream.write(text.replace(old, "serialized_envelope_bytes = 1900002"))
+        argv = [sys.executable, "-I", CLI, "golden", "--suite", suite_path]
+        stale = subprocess.run(argv, cwd=ROOT, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+        self.assertEqual(stale.returncode, 1, stale.stderr)
+        self.assertIn(b"is not what perflab.reference derives", stale.stderr)
+        generated = subprocess.run(argv + ["--write"], cwd=ROOT, stdout=subprocess.PIPE,
+                                   stderr=subprocess.PIPE)
+        self.assertEqual(generated.returncode, 0, generated.stderr)
+        doc, golden = oracle.load(suite_path)
+        self.assertEqual(golden, reference.golden_document(doc))
+        seed = next(entry for entry in golden["seeds"]
+                    if entry["instance_id"] == "authority_seed__package_issue_255_medium")
+        seed["fixture_digest"] = "sha256:" + "0" * 64
+        seed["semantic"]["packages"]["perf/author"]["artifact_id"] = seed["fixture_digest"]
+        seed["digest"] = reference.content_id(reference.canonical(seed["semantic"]))
+        with open(self.path("golden", "native.json"), "wb") as stream:
+            stream.write(contracts.write_bytes(golden, "golden"))
+        oracle.check_coverage(doc, golden)
+        with self.assertRaisesRegex(ContractError, "is not what perflab.reference derives"):
+            oracle.load(suite_path)
+        forged = subprocess.run(argv, cwd=ROOT, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+        self.assertEqual(forged.returncode, 1, forged.stderr)
+        self.assertIn(b"is not what perflab.reference derives", forged.stderr)
+
     def test_golden_must_match_the_registry_identity_and_constants(self):
         doc, golden = loaded()
         changed = copy.deepcopy(golden)

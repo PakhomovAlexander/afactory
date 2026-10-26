@@ -1,11 +1,11 @@
-"""The laboratory's latest-stable Python checks gate a required check, and fail it when they do not
+"""The laboratory's Python latest-stable Python checks gate a required check, and fail it when they do not
 succeed.
 
 The repository's required checks name `validation / lint` and `validation / check
-(ubuntu-latest)` (`.af/code-policy.toml`); the `performance-python` job is not one of them.
+(ubuntu-latest)` (`.af/code-policy.toml`); the `performance-python` matrix is not one of them.
 These tests read `.github/workflows/validate.yml` as text (the standard library has no YAML
-reader) and require that the required `lint` job depends on the job, runs whatever its
-outcome, and first executes a guard that fails unless the job succeeded. The guard's own
+reader) and require that the required `lint` job depends on the matrix, runs whatever its
+outcome, and first executes a guard that fails unless the matrix succeeded. The guard's own
 shell is extracted and run for every result GitHub reports for a dependency.
 """
 import os

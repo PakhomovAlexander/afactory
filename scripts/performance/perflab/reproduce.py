@@ -167,6 +167,8 @@ def profile(options, plan, recipe_tools, mode, selection, instance_id=None):
             argv += ["--build-image", options.build_image]
     if options.parent_build:
         argv += ["--parent-build", "{parent_build}"]
+    if getattr(options, "telemetry", None):
+        argv += ["--telemetry", options.telemetry]
     flags = {"perf": ["--perf", "{perf}"],
              "inferno_flamegraph": ["--inferno-bin", "{inferno_bin}"],
              "samply": ["--samply", "{samply}"], "valgrind": ["--valgrind-bin", "{valgrind_bin}"]}

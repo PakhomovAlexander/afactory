@@ -57,7 +57,7 @@ from fractions import Fraction
 
 from . import (admission, builds, bundle, clicases, contracts, counters, diagcontracts,
                flamegraph, hostlock, oracle, perfcapture, phasetrace, render, reproduce, seeds,
-               stats, supervise, toolrun, tomlfile)
+               stats, supervise, telemetrydiag, toolrun, tomlfile)
 from . import budget as deadlines
 from . import limits
 from .values import (ContractError, canonical_bytes, format_decimal, format_rational,
@@ -72,7 +72,10 @@ WORK_DIR = ".work"
 SCRIPT_BYTES_MAX = 64 * 1024 * 1024
 # A seed writer's bound, the same as a shard's (ADR-0170), within the diagnostic deadline.
 SEED_WRITER_SECONDS = limits.SAMPLE_TIMEOUT_SECONDS_MAX
-OMISSION_KIND = {"cpu_profile": "cpu_profile", "trace": "trace", "counters": "counter"}
+OMISSION_KIND = {"cpu_profile": "cpu_profile", "trace": "trace", "counters": "counter",
+                 "telemetry": "telemetry"}
+# The environment variable that selects a telemetry capture's level (docs/telemetry.md).
+TELEMETRY_LEVEL = "AF_TELEMETRY__LEVEL"
 TRACE_BYTES_MAX = 16 * 1024 * 1024
 # The part of the byte cap kept for the administrative record: profiles.json, the page and the
 # bundle manifest, written after the last evidence (ADR-0175).
@@ -405,7 +408,7 @@ class Profile(object):
                  selection, cases, authority_doc, golden, probes, parent_probes, tools,
                  budget, reproduction, builds_sha256=None, host_os=None, omissions=(),
                  clock=time.monotonic, supervisor=None, execution=None, cli=None, afs=None,
-                 parent_afs=None, work=None):
+                 parent_afs=None, work=None, telemetry=None):
         self.output = output
         self.parent_plan = parent_plan
         self.plan = plan
@@ -438,6 +441,9 @@ class Profile(object):
                                "scratch_bound": "not_enforced_in_trusted_local_mode",
                                "container": None}, **(execution or {}))
         self.captures, self.renders, self.traces, self.counters = [], [], [], []
+        # The explicitly selected telemetry level and each telemetry capture (ADR-0214).
+        self.telemetry_level = telemetry
+        self.telemetry = []
         # Each trace entry's validated document, for the page's timeline; None when omitted.
         self.trace_docs = []
         # Scratch whose removal was not confirmed: kept, and so is the work directory.
@@ -498,6 +504,7 @@ class Profile(object):
         directory, into the evidence: enumerated as confined, bounded directories and regular
         files and read as enumerated (`admission.copy_into`), then removed from the stage. Its
         bytes were already counted while staged. Nothing to do in trusted local mode."""
+        self.halted("collecting " + relative)
         if not self.contained():
             return
         source = os.path.join(self.stage, relative)
@@ -545,6 +552,7 @@ class Profile(object):
         trusted directory `root`: reached without following a symlink, refused when it is
         anything but a regular file or its logical size is over `limit`, and read within its
         size and the diagnostic deadline (ADR-0175)."""
+        self.halted("admitting " + what)
         fd, info = admission.open_confined(root, relative, what)
         try:
             if info.st_size > limit:
@@ -562,6 +570,8 @@ class Profile(object):
 
     def artifacts(self, relative):
         """The admitted files of one evidence directory, each hashed within its size."""
+        if self.retained:
+            return []
         directory = os.path.join(self.output, relative)
         bounds = admission.Bounds(EVIDENCE_ENTRIES_MAX, EVIDENCE_DEPTH_MAX,
                                   self.budget.bytes_limit, self.budget.bytes_limit)
@@ -579,12 +589,37 @@ class Profile(object):
         self.halted(os.path.basename(argv[0]))
         if stdout_path is not None:
             writes = tuple(writes) + (os.path.dirname(stdout_path),)
-        return toolrun.run(self.supervisor, argv, env or TOOL_ENV, timeout, cap, stdin=stdin,
+        binds = self.binds(tuple(reads) + (argv[0],), writes)
+        # This shared boundary also owns tools without a Namespace (decoders, renderers,
+        # build-id readers). Until a result confirms cleanup, every writable path stays.
+        result = LAUNCHING
+        error = None
+        try:
+            result = toolrun.run(self.supervisor, argv, env or TOOL_ENV, timeout, cap, stdin=stdin,
                            cwd=cwd, deadline=self.budget.deadline, clock=self.clock,
                            stdout_path=stdout_path, file_bytes=file_bytes,
                            watch=self.over_room,
-                           binds=self.binds(tuple(reads) + (argv[0],), writes), setup=setup,
+                           binds=binds, setup=setup,
                            patterns=patterns, selectors=selectors)
+        except BaseException as failure:
+            error = failure
+        if _uncertain(result):
+            recovery = (cwd, self.work, self.stage, os.path.join(self.output, WORK_DIR))
+            if setup is not None:
+                recovery += (setup[2],)
+            paths = sorted(set(os.path.abspath(path) for path in recovery + tuple(writes)
+                               if path))
+            self.unsafe_staging = sorted(set(getattr(self, "unsafe_staging", ())).union(paths))
+            retained = os.path.abspath(cwd or self.work)
+            if retained not in self.retained:
+                self.retained.append(retained)
+            detail = "tool cleanup unconfirmed; retained recovery paths: " + ", ".join(paths)
+            if error is not None:
+                detail += "; %s: %s" % (type(error).__name__, error)
+            raise perfcapture.CaptureError("cleanup_uncertain", detail[:4096]) from error
+        if error is not None:
+            raise error
+        return result
 
     def over_room(self):
         """While a step runs: why the evidence, all its files together, is over its room, or
@@ -644,8 +679,10 @@ class Profile(object):
         are kept for the operator, its handles closed and nothing of it removed, and the run
         stops launching (`halted`). Only a confirmed end lets the namespace be removed, and a
         removal that is not confirmed keeps what is left the same way."""
-        if uncertain:
-            self.retained.append(namespace.keep())
+        if uncertain or self.retained or getattr(namespace, "reader_uncertain", False):
+            path = namespace.keep()
+            if path not in self.retained:
+                self.retained.append(path)
             raise perfcapture.CaptureError(
                 "cleanup_uncertain", ("a process the run started may still be live, so its "
                                       "scratch %s was kept for recovery and nothing more of "
@@ -659,7 +696,7 @@ class Profile(object):
     def halted(self, what):
         """Refuse to start `what` once scratch was kept for recovery: a process of an earlier
         execution may still be live, so the run uses nothing more of its work."""
-        if self.retained:
+        if getattr(self, "retained", ()):
             raise perfcapture.CaptureError(
                 "cleanup_uncertain", ("%s was not started: scratch kept for recovery (%s) may "
                                       "still be reached by a live process"
@@ -1327,7 +1364,7 @@ class Profile(object):
         return environment
 
     def cli_run(self, side, case, binary, wrap=None, writes=(), file_bytes=None, trace=False,
-                what="the CLI command"):
+                what="the CLI command", telemetry=None, after=None):
         """One supervised execution of the case's command by the AF `binary` of `side`, in a new
         private namespace that is its HOME, XDG directories and TMPDIR, after the command's
         declared fixture setup; its seed, if it reads one, is that side's own, admitted and
@@ -1336,7 +1373,9 @@ class Profile(object):
         oracle (`clicases.judge`) judges it before anything of the run is used; a lifecycle the
         containment refuses, an unconfirmed cleanup, a timeout or outputs over their room fail
         it first. Returns (Result, the supervised child's wall time in ms as a decimal, the
-        admitted trace bytes or None)."""
+        admitted trace bytes or None). With `telemetry`, the command records at that level
+        (ADR-0214), and `after(namespace, environment)` runs once its oracle passed, in the same
+        namespace before it is removed."""
         entry = self.cli_entry(side, case)
         namespace = self.namespace()
         result = staged = room = None
@@ -1346,6 +1385,8 @@ class Profile(object):
             values = {"af": binary, "probe": probe or "", "scratch": scratch,
                       "package_version": self.cli.versions[side]}
             environment = self.cli_environment(case, scratch)
+            if telemetry is not None:
+                environment[TELEMETRY_LEVEL] = telemetry
             if trace:
                 staged, room = self.trace_stage(namespace)
                 environment[TRACE_OUTPUT] = staged
@@ -1387,10 +1428,13 @@ class Profile(object):
                                                % (what, why))
             wall = format_decimal(Fraction(int(reply["timing"]["child_wall_ns"]), 1000000))
             exported = self.exported_trace(staged, room) if trace else None
+            if after is not None:
+                after(namespace, environment)
             return result, wall, exported
         finally:
             try:
-                self.discard_trace(staged, result)
+                self.discard_trace(staged, LAUNCHING if getattr(
+                    namespace, "reader_uncertain", False) else result)
             finally:
                 self.release(namespace, _uncertain(result))
 
@@ -1444,7 +1488,7 @@ class Profile(object):
         process may reach stays with its kept scratch; one that left the evidence over its room
         is kept and counted where it is (moved from a contained stage into the evidence, so the
         run's cleanup of its work does not erase it), never deleted to report nothing."""
-        if staged is None or _uncertain(result):
+        if staged is None or self.retained or _uncertain(result):
             return
         directory = os.path.dirname(staged)
         if not os.path.lexists(directory):
@@ -1458,6 +1502,7 @@ class Profile(object):
     def unstage(self, directory):
         """Remove one execution's staged trace directory and the stage root once it is empty;
         a removal that is not confirmed is the run's cleanup failure."""
+        self.halted("removing " + directory)
         problems = admission.remove_tree(directory) if os.path.lexists(directory) else []
         if problems:
             raise perfcapture.CaptureError("cleanup_uncertain", "; ".join(problems)[:4096])
@@ -1473,6 +1518,121 @@ class Profile(object):
                                          what="the traced command" if trace
                                          else "the untraced command")
         return None, wall, exported
+
+    # Telemetry captures (ADR-0214) --------------------------------------------------------
+
+    def telemetry_case(self, case):
+        """One telemetry-recorded execution of an eligible CLI case per side, read back through
+        that side's own `af telemetry` documents; every other case is an omission that names
+        the supported matrix. Never a verdict sample, and never instead of the recipe's own
+        evidence."""
+        reason = telemetrydiag.eligibility(case)
+        if reason is not None:
+            self.omit("telemetry", case, None, reason[0], reason[1], reproduce=False)
+            return
+        if not self.cli_ready(case, "telemetry"):
+            return
+        if self.supervisor is None:
+            self.omit("telemetry", case, None, "no_supervisor", "the build has no verified "
+                      "authority supervisor to run anything under")
+            return
+        expected = None
+        for rule in self.cli_entry(diagcontracts.SIDES[0], case)["rules"]:
+            if rule["kind"] == "json_equals" and rule["path"] == "task_id":
+                expected = rule["value"]
+        for side in diagcontracts.SIDES:
+            relative = "telemetry/%s/%s" % (case["instance_id"], side)
+            binary, binary_sha256 = self.afs[side]
+            entry = {"instance_id": case["instance_id"], "side": side,
+                     "subject": "cli_process", "level": self.telemetry_level,
+                     "source_sha": self.plan["resolved"][side + "_sha"],
+                     "binary_sha256": binary_sha256, "command_wall_ms": None, "run": None,
+                     "af": None, "executions": [], "evidence": None, "spans": 0, "phases": [],
+                     "timeline": {"spans": [], "omitted": 0}, "artifacts": [],
+                     "omission": None}
+            documents = {}
+            try:
+                self.budget.check("a telemetry capture of " + case["instance_id"])
+                self.directory(relative)
+
+                def read_back(namespace, environment, binary=binary, relative=relative,
+                              documents=documents):
+                    self.telemetry_documents(binary, namespace, environment, relative,
+                                             documents)
+
+                _, wall, _ = self.cli_run(side, case, binary, telemetry=self.telemetry_level,
+                                          after=read_back,
+                                          what="the telemetry-recorded command")
+                entry["command_wall_ms"] = wall
+                derived = telemetrydiag.capture(documents, expected)
+                self.write(relative + "/" + telemetrydiag.PERFETTO, telemetrydiag.perfetto(
+                    documents["show"], "%s %s" % (case["instance_id"], side)))
+                entry.update(derived)
+            except (perfcapture.CaptureError, Exhausted) as error:
+                entry["omission"] = {"reason": error.reason, "detail": error.detail[:4096]}
+            except ContractError as error:
+                entry["omission"] = {"reason": "telemetry_unreadable",
+                                     "detail": str(error)[:4096]}
+            except OSError as error:
+                entry["omission"] = {"reason": "driver_error", "detail": str(error)[:4096]}
+            if entry["omission"] is not None:
+                entry.update(run=None, af=None, executions=[], evidence=None, spans=0,
+                             phases=[], timeline={"spans": [], "omitted": 0})
+            if os.path.isdir(os.path.join(self.output, relative)):
+                try:
+                    entry["artifacts"] = self.artifacts(relative)
+                except (ContractError, OSError) as error:
+                    entry["artifacts"] = []
+                    if entry["omission"] is None:
+                        entry["omission"] = {"reason": "telemetry_unadmitted",
+                                             "detail": str(error)[:4096]}
+                        entry.update(run=None, af=None, executions=[], evidence=None, spans=0,
+                                     phases=[], timeline={"spans": [], "omitted": 0})
+            self.telemetry.append(entry)
+
+    def telemetry_documents(self, binary, namespace, environment, relative, documents):
+        """Each of the side's own `af telemetry` readers in the recording's namespace, its stdout
+        a new evidence file bounded while it is written and admitted before it is read; the
+        bytes of each document, by kind, into `documents`. Show and config name the one run the
+        runs document lists, and any reader that fails stops the capture."""
+        run = None
+        for kind in telemetrydiag.DOCUMENT_KINDS:
+            if kind in ("show", "config") and run is None:
+                runs = telemetrydiag.read("runs", documents["runs"], relative + "/runs.json")
+                run = telemetrydiag.select_run(runs, None)
+            target = "%s/%s.json" % (relative, kind)
+            room = min(self.budget.room(), telemetrydiag.DOCUMENT_BYTES_MAX)
+            if room < 1:
+                raise Exhausted("profile_bytes_exhausted", "no evidence room is left for "
+                                + target)
+            path = self.produced(target)
+            argv = telemetrydiag.read_argv(binary, kind, run)
+            # The namespace owner outlives all readers. Mark the launch before calling
+            # the supervisor: an exception after launch has no confirmed cleanup receipt.
+            # A later result must never erase uncertainty from any earlier reader.
+            prior = getattr(namespace, "reader_uncertain", False)
+            if prior:
+                raise perfcapture.CaptureError("cleanup_uncertain",
+                                               "an earlier telemetry reader may still be live")
+            result = LAUNCHING
+            namespace.reader_uncertain = True
+            try:
+                result = self.tool_run(argv, telemetrydiag.READ_SECONDS, 4096, namespace.path,
+                                       env=environment, stdout_path=path, file_bytes=room,
+                                       reads=(binary,), writes=(namespace.path,))
+            finally:
+                namespace.reader_uncertain = prior or _uncertain(result)
+            if namespace.reader_uncertain:
+                raise perfcapture.CaptureError("cleanup_uncertain",
+                                               "af telemetry %s cleanup is uncertain" % kind)
+            if result.exceeded is not None:
+                raise Exhausted(OVER_ROOM, "%s: %s" % (target, result.exceeded))
+            if result.failure() is not None:
+                raise perfcapture.CaptureError("telemetry_read_failed", "af telemetry %s: %s"
+                                               % (kind, result.failure()))
+            self.settle(target)
+            self.collect(target)
+            documents[kind] = self.admitted(self.output, target, room, target)
 
     def write_cli_seed(self, side, seed_id, case):
         """The side's CLI seed `seed_id`, written once by its own writer: `setup.sh` runs the
@@ -1737,38 +1897,9 @@ class Profile(object):
     def run(self):
         kind = self.recipe["kind"]
         for case in self.cases:
-            if case["kind"] != "library" and not self.cli_ready(case, kind):
-                continue
-            missing = [side for side in diagcontracts.SIDES if side not in self.probes]
-            if missing and case["kind"] == "library":
-                self.omit("build", case, None, "no_diagnostic_build", "the %s side has no "
-                          "diagnostic probe binary" % ", ".join(missing))
-                continue
-            if self.supervisor is None:
-                self.omit(OMISSION_KIND[kind], case, None, "no_supervisor", "the build has no "
-                          "verified authority supervisor to run anything under")
-                continue
-            try:
-                self.budget.check(case["instance_id"])
-            except Exhausted as error:
-                self.omit(OMISSION_KIND[kind], case, None, error.reason, error.detail)
-                continue
-            if kind == "cpu_profile" and "samply" in self.recipe["tools"]:
-                if self.tool("samply") is None:
-                    self.omit("samply", case, None, "samply_unavailable",
-                              self.tools["samply"][0]["detail"])
-                else:
-                    self.samply_case(case)
-            elif kind == "cpu_profile":
-                if self.tool("perf") is None:
-                    self.omit("cpu_profile", case, None, "perf_unavailable",
-                              self.tools["perf"][0]["detail"])
-                else:
-                    self.perf_case(case)
-            elif kind == "trace":
-                self.trace_case(case)
-            else:
-                self.counter_case(case)
+            self.case_run(case, kind)
+            if self.telemetry_level is not None:
+                self.telemetry_case(case)
         for work in (self.work, os.path.join(self.output, WORK_DIR)):
             if os.path.isdir(work) and not self.retained:
                 # Only this run's own work directories: its seeds, FIFOs, staged outputs and
@@ -1777,6 +1908,41 @@ class Profile(object):
                 if problems:
                     self.retained.append(work)
         return self.document()
+
+    def case_run(self, case, kind):
+        """The recipe kind's evidence of one selected case, or its omissions."""
+        if case["kind"] != "library" and not self.cli_ready(case, kind):
+            return
+        missing = [side for side in diagcontracts.SIDES if side not in self.probes]
+        if missing and case["kind"] == "library":
+            self.omit("build", case, None, "no_diagnostic_build", "the %s side has no "
+                      "diagnostic probe binary" % ", ".join(missing))
+            return
+        if self.supervisor is None:
+            self.omit(OMISSION_KIND[kind], case, None, "no_supervisor", "the build has no "
+                      "verified authority supervisor to run anything under")
+            return
+        try:
+            self.budget.check(case["instance_id"])
+        except Exhausted as error:
+            self.omit(OMISSION_KIND[kind], case, None, error.reason, error.detail)
+            return
+        if kind == "cpu_profile" and "samply" in self.recipe["tools"]:
+            if self.tool("samply") is None:
+                self.omit("samply", case, None, "samply_unavailable",
+                          self.tools["samply"][0]["detail"])
+            else:
+                self.samply_case(case)
+        elif kind == "cpu_profile":
+            if self.tool("perf") is None:
+                self.omit("cpu_profile", case, None, "perf_unavailable",
+                          self.tools["perf"][0]["detail"])
+            else:
+                self.perf_case(case)
+        elif kind == "trace":
+            self.trace_case(case)
+        else:
+            self.counter_case(case)
 
     def cli_ready(self, case, kind):
         """Whether a CLI case can be diagnosed here; otherwise its omission is recorded with
@@ -1836,7 +2002,11 @@ class Profile(object):
                 "retained_scratch": len(self.retained)}),
             "tools": [entry[0] for _, entry in sorted(self.tools.items())],
             "captures": self.captures, "renders": self.renders, "traces": self.traces,
-            "counters": self.counters, "omissions": self.omissions[:256],
+            "counters": self.counters,
+            "telemetry": {"level": self.telemetry_level,
+                          "perturbing": self.telemetry_level == "content",
+                          "verdict_effect": "none", "captures": self.telemetry},
+            "omissions": self.omissions[:256],
         }
         return diagcontracts.validate_profiles(doc)
 
@@ -1978,6 +2148,7 @@ def page(doc, traces):
         [(item["instance_id"], item["side"], item["tool"], item["metric"], item["scope"],
           item["value"], item["interpretation"], (item["omission"] or {}).get("reason", ""))
          for item in doc["counters"]])))
+    sections.append(telemetrydiag.section(doc["telemetry"]))
     sections.append(render.section("Omissions", render.table(
         ("kind", "case", "side", "reason", "detail", "reproduction"),
         [(item["kind"], item["instance_id"] or "", item["side"] or "", item["reason"],
@@ -1999,6 +2170,10 @@ def finish(output, doc, traces, budget=None):
         stream.write(data)
     with open(os.path.join(output, PAGE_FILE), "xb") as stream:
         stream.write(html)
+    if doc["execution"]["retained_scratch"]:
+        # The administrative refusal remains readable. A bundle manifest would read and
+        # admit files a possibly live local tool can still write (local output is staging).
+        return None
     limit = budget.bytes_limit if budget is not None else limits.DIAGNOSTIC_BYTES_MAX
     return bundle.write_manifest(output, limit, skip=(WORK_DIR,))
 
@@ -2054,6 +2229,9 @@ class Options(object):
         self.zigbuild_bin = None
         self.build_image = None
         self.host_os = None
+        # The explicitly selected telemetry level of each eligible CLI case's telemetry capture
+        # (`spans` or `content`), or None for none (ADR-0214).
+        self.telemetry = None
         for key, value in values.items():
             require(hasattr(self, key), "unknown profile option " + key)
             setattr(self, key, value)
@@ -2126,6 +2304,8 @@ def run_profile(git, options, authority_factory=None):
                         limits.DIAGNOSTIC_SECONDS_MAX)
     explicit(options.total_minutes, "--total-minutes", 1, limits.DIAGNOSTIC_RUN_MINUTES_MAX)
     explicit(options.max_cases, "--max-cases", 1, limits.DIAGNOSTIC_CASES_MAX)
+    require(options.telemetry in (None,) + telemetrydiag.LEVELS,
+            "--telemetry: one of " + ", ".join(telemetrydiag.LEVELS))
     parent, _ = _read(options.plan, "run")
     require(parent["scope"] != "diagnostic", "--plan: a diagnostic's parent is a comparison")
     mode, declared = check_mode(parent, options.mode, options.host_os)
@@ -2139,6 +2319,9 @@ def run_profile(git, options, authority_factory=None):
     require(options.recipe in registry["recipes"], "--recipe: one of " + ", ".join(
         sorted(registry["recipes"])))
     entry = registry["recipes"][options.recipe]
+    require(options.telemetry is None or entry["kind"] in ("cpu_profile", "trace"),
+            "--telemetry: captured beside CPU profiles or phase traces; recipe %s is a %s "
+            "recipe" % (options.recipe, entry["kind"]))
     base = suite.doc["recipes"][entry["base_recipe"]]
     require(base["target"] == parent["profile"]["recipe"]["target"]
             and base["os"] == parent["profile"]["recipe"]["os"],
@@ -2318,15 +2501,18 @@ def _run_locked(git, options, authority_factory, parent, plan, registry, raw, en
     profile = Profile(output, parent, plan, registry, sha256_bytes(raw), options.recipe,
                       selection, cases, doc, golden, probes, parent_probes, tools, budget,
                       reproduction, builds_sha, host, omissions, supervisor=supervised,
-                      execution=execution, cli=cli, afs=afs, parent_afs=parent_afs, work=work)
+                      execution=execution, cli=cli, afs=afs, parent_afs=parent_afs, work=work,
+                      telemetry=options.telemetry)
     result = profile.run()
     finish(output, result, profile.trace_docs, budget)
     actionable = [item for item in result["omissions"] if item["reproduction"] is not None]
-    message = "%d captures, %d flamegraphs, %d traces, %d counters, %d omissions" % (
-        len(result["captures"]), len(result["renders"]), len(result["traces"]),
-        len(result["counters"]), len(result["omissions"]))
+    message = "%d captures, %d flamegraphs, %d traces, %d counters, %d telemetry captures, %d " \
+        "omissions" % (len(result["captures"]), len(result["renders"]), len(result["traces"]),
+                       len(result["counters"]), len(result["telemetry"]["captures"]),
+                       len(result["omissions"]))
     if profile.retained:
         # A process the run started may still be live: the operator recovers what was kept.
-        message += "; scratch kept for recovery: " + ", ".join(profile.retained)
+        paths = sorted(set(profile.retained + list(getattr(profile, "unsafe_staging", ()))))
+        message += "; scratch kept for recovery: " + ", ".join(paths)
     return (4 if actionable or profile.retained else 0), os.path.join(output, PROFILES_FILE), \
         message

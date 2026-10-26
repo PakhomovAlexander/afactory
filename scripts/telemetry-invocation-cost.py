@@ -53,7 +53,9 @@ sys.dont_write_bytecode = True
 _SPEC = importlib.util.spec_from_file_location('telemetry_overhead',
                                                REPOSITORY / 'scripts' / 'telemetry-overhead.py')
 overhead = importlib.util.module_from_spec(_SPEC)
-_SPEC.loader.exec_module(overhead)
+# Execute the retained source bytes, never a bytecode cache outside authority identity.
+_OVERHEAD_PATH = REPOSITORY / 'scripts' / 'telemetry-overhead.py'
+exec(compile(_OVERHEAD_PATH.read_bytes(), str(_OVERHEAD_PATH), 'exec'), overhead.__dict__)
 BenchError = overhead.BenchError
 
 SCHEMA = 'af/telemetry-invocation-cost@1'

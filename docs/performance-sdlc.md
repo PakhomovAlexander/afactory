@@ -23,6 +23,12 @@ alternatives. Use a separate diagnostic child run for CPU profiles and phase tra
 instrumentation overhead must not enter the timing verdict. Promote a successful experiment
 through a normal PR and the full comparison.
 
+Telemetry's own cost is measured beside the comparison by the advisory `Performance telemetry`
+workflow on pull requests, nightly, on publication and on dispatch, and a diagnostic child can
+record its CLI cases' telemetry with `--telemetry spans`; neither touches the verdict
+([`performance-telemetry.md`](performance-telemetry.md)). That workflow measures only in
+containers of the image `AF_PERF_GNU_BUILD_IMAGE` pins and plans nothing without it.
+
 ## The no-perf label
 
 A pull request to `main` labeled exactly `no-perf` is not measured: no plan, build or shard runs,
@@ -95,6 +101,14 @@ listings, retries failed imports, pins calibration runs, applies retention, and 
 `history/history.html` and `history/archive-status.json`. For a longer catch-up, explicitly
 increase `--lookback-days` up to 89; expired transport cannot be recovered by retrying.
 
+Telemetry experiment results have their own lane, never this archive: `cli.py
+telemetry-collect --config FILE` keeps each `perf-telemetry-*` result verified under its exact
+measurement authority in a separate, locked and bounded history root. Its example configuration
+and systemd units are in `scripts/performance/service/`, for a future always-on Linux host; none
+is installed ([`performance-telemetry.md`](performance-telemetry.md)). This collector behaves as
+before (its bounded ZIP reading is now shared with that lane), and the deployed one stays pinned
+to the frozen cohort's control.
+
 A local Mac service collects while awake. Its exit status and logs, plus archive health, must
 be monitored; after a long outage inspect the scan before transport expiry. For unattended
 operation, move the same service and archive to an always-on host with persistent storage.
@@ -114,3 +128,30 @@ selected with `actions/setup-python` using `python-version: '3.x'` and `check-la
 Tomli/tomllib parity is mandatory. The required `lint` check fails when this job fails, is
 cancelled or is skipped. The other validation jobs use the same Python selection before
 executing Python or Make commands ([ADR-0197](adr/0197-validate-on-one-latest-stable-python.md)).
+
+## GA source integration checks
+
+The integrated producer retains GA's 60,000 ms production lease, exact current suite/goldens,
+Task continuation and gate retry/reporting alongside the lab's diagnostic and containment
+contracts ([ADR-0221](adr/0221-integrate-the-performance-lab-with-ga-and-control-short-attempt-fixtures.md)).
+The two reported Store dispatch failures use a separate 1,000 ms Attempt allowance. Their
+fixtures now control Store time locally; no production deadline or allowance is extended.
+Reproduce the repair and its neighboring expiry/accounting cases from the repository root:
+
+```sh
+cargo test --locked --workspace --lib store::task::
+PYTHONDONTWRITEBYTECODE=1 python3 -B scripts/nextest-gate.py --repeat 20 \
+  --locked --workspace --lib --profile ci --test-threads 4 \
+  -E 'test(rejected_task_output_keeps_its_charge) or test(captured_retry_policy_checks_durable_failures) or test(short_attempt_fixture_paths) or test(real_store_dispatch_deadline_boundary) or test(renewal_race)'
+PYTHONDONTWRITEBYTECODE=1 python3 -B scripts/performance/schemas.py
+PYTHONDONTWRITEBYTECODE=1 python3 -B scripts/performance/cli.py harness-digest --check
+```
+
+Use synthetic HOME/XDG directories and the pinned Rust 1.88 toolchain for AF checks. Repeat
+mode stops on any failure and never substitutes an isolated retry for a successful repetition.
+The ordinary native gate retains its separate failed-test isolation policy and reports flakes.
+Regenerate protected inventory/staged policy with `harness-digest --write` after protected
+edits; `.af/` authority is unchanged by this integration. Full native verification and independent
+reviews run on sealed source. Follow the [dispatcher runbook](performance-cohort-dispatch.md)
+only after acceptance and exact commit; the retained old cohort is unchanged, and this source
+integration declares no replacement cohort or deployment.
