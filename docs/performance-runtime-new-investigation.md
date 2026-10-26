@@ -4,9 +4,29 @@ The native case `authority_runtime_new` times the first `TaskRuntime::new` of a 
 at both issue #255 package sizes, with a fresh valid lease
 ([`fixtures/performance/suite.toml`](../fixtures/performance/suite.toml)). This note separates
 what was observed from what is hypothesized, gives the commands that reproduce every figure,
-and names what was not measured. It claims no speedup: no optimization was made. The decision
+and names what was not measured. It claims no speedup. The original investigation made no
+optimization; the 2026-10-26 experiment below retains no runtime change. The decision
 to retain the entry point is
 [ADR-0214](adr/0214-integrate-telemetry-into-the-performance-lab-as-diagnostics-and-advisory-experiments.md).
+
+## Current status (2026-10-26)
+
+The proposed same-lock reuse of the second projection was tested and rejected under the
+instruction to stop if it cannot preserve freshness. That projection precedes authority
+callbacks inside `checked_task_current`. Removing the final projection loses its subsequent
+artifact-integrity check: a deterministic test that corrupts the revision after real captured
+compiler validation passes on the unchanged runtime, but fails because the proposed reuse
+accepts startup. The Store mutex does not freeze CAS files or other SQLite connections.
+The experiment restored both production files byte-for-byte; #255 remains unresolved.
+[ADR-0226](adr/0226-refuse-startup-projection-reuse-across-authority-callbacks.md) records the
+rejected option and preserved contract. The [verification note](performance-evidence/runtime-new-20261026/verification.md)
+separates supplied prior Claw attribution from new focused behavioral checks, records exact
+commands/results and retains the temporary experiment's source. No candidate profile or matched
+uninstrumented comparison was run here, and no numerical speedup is claimed. Those coordinator
+checks remain separate acceptance-to-rollout evidence if a future optimization is justified.
+
+The observations and hypotheses below retain their original historical context; in particular,
+none of the original laptop traces was rerun during this attempt.
 
 ## Observed facts
 
