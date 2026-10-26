@@ -462,7 +462,17 @@ pub fn private_af() -> &'static Path {
 /// Install the binary under test at `path`: a hard link to [`private_af`], or where the
 /// filesystem refuses one, a copy a child process makes.
 pub fn install_private_af(path: &Path) {
-    if std::fs::hard_link(private_af(), path).is_err() {
+    install_private_af_with_link(path, |source, destination| {
+        std::fs::hard_link(source, destination)
+    });
+}
+
+// Keep the fallback exercisable even when the test machine has only one filesystem.
+fn install_private_af_with_link(
+    path: &Path,
+    link: impl FnOnce(&Path, &Path) -> std::io::Result<()>,
+) {
+    if link(private_af(), path).is_err() {
         copy_by_a_child(private_af(), path);
     }
 }
@@ -635,12 +645,13 @@ mod tests {
         }
     }
 
-    /// The binary under test is copied once per process: every install links that one copy,
-    /// which holds exactly the built bytes, keeps its mode and starts.
+    /// The binary under test is copied once per process: same-filesystem installs link that
+    /// one copy, which holds exactly the built bytes, keeps its mode and starts.
     #[test]
     fn the_binary_under_test_is_copied_once_per_process() {
         use std::os::unix::fs::{MetadataExt, PermissionsExt};
-        let directory = tempfile::tempdir().unwrap();
+        // TMPDIR may be a different mount from cargo's target (issue #349).
+        let directory = tempfile::tempdir_in(private_af().parent().unwrap()).unwrap();
         let (first, second) = (directory.path().join("one"), directory.path().join("two"));
         install_private_af(&first);
         install_private_af(&second);
@@ -650,17 +661,75 @@ mod tests {
             let metadata = std::fs::metadata(installed).unwrap();
             assert_eq!((metadata.dev(), metadata.ino()), (copy.dev(), copy.ino()));
             assert_eq!(metadata.permissions().mode() & 0o111, 0o111);
+            assert_installed_binary(installed);
+            eprintln!(
+                "hard-link install: private=({},{}) installed=({},{})",
+                copy.dev(),
+                copy.ino(),
+                metadata.dev(),
+                metadata.ino()
+            );
         }
+        let held = std::fs::metadata(af_binary()).unwrap();
         assert_ne!(
-            copy.ino(),
-            std::fs::metadata(af_binary()).unwrap().ino(),
+            (copy.dev(), copy.ino()),
+            (held.dev(), held.ino()),
             "the private copy is not the file cargo built"
         );
+    }
+
+    /// Force the supported link-refusal route on every platform, through the same installer
+    /// and intentional child copy as a real cross-device destination.
+    #[test]
+    fn the_binary_under_test_is_copied_when_a_hard_link_is_refused() {
+        use std::os::unix::fs::MetadataExt;
+        let directory = tempfile::tempdir_in(private_af().parent().unwrap()).unwrap();
+        let installed = directory.path().join("af");
+        let mut attempted = false;
+        install_private_af_with_link(&installed, |source, destination| {
+            assert_eq!(source, private_af());
+            assert_eq!(destination, installed);
+            attempted = true;
+            Err(std::io::Error::from(std::io::ErrorKind::CrossesDevices))
+        });
+        assert!(attempted, "the installer must attempt the refused link");
+        let copy = std::fs::metadata(&installed).unwrap();
+        for source in [private_af(), af_binary()] {
+            let metadata = std::fs::metadata(source).unwrap();
+            assert_ne!(
+                (copy.dev(), copy.ino()),
+                (metadata.dev(), metadata.ino()),
+                "the fallback copy is isolated from {}",
+                source.display()
+            );
+            eprintln!(
+                "forced CrossesDevices fallback: source=({},{}) installed=({},{})",
+                metadata.dev(),
+                metadata.ino(),
+                copy.dev(),
+                copy.ino()
+            );
+        }
+        assert_installed_binary(&installed);
+    }
+
+    fn assert_installed_binary(installed: &Path) {
+        use std::os::unix::fs::PermissionsExt;
         assert_eq!(
-            std::fs::read(&first).unwrap(),
+            std::fs::read(installed).unwrap(),
             std::fs::read(af_binary()).unwrap()
         );
-        let output = Command::new(&first).arg("--version").output().unwrap();
+        let mode = |path| std::fs::metadata(path).unwrap().permissions().mode() & 0o7777;
+        assert_eq!(mode(installed), mode(private_af()));
+        assert_eq!(mode(installed), mode(af_binary()));
+        assert_eq!(mode(installed) & 0o111, 0o111);
+        let output = Command::new(installed)
+            .envs(private_home_env())
+            .env("AF_SELF_OFFLINE", "1")
+            .arg("--version")
+            .output()
+            .unwrap();
         assert!(output.status.success(), "{}", err(&output));
+        assert_eq!(out(&output).trim(), format!("af {VERSION}"));
     }
 }
