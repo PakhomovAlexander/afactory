@@ -24,6 +24,16 @@ additional 6,000 ms baseline sleep improves by the unchanged ten-percent thresho
 Three 7,500 ms validations consume 22,500 ms within the unchanged 30,000 ms probe sample
 timeout. These constructed receipts are arithmetic regression coverage, not measurements.
 
+Export three homogeneous `af.perf-kernel-receipts/3` documents: `missing-inputs` with
+`slowdown_ms = 0`, `improve` with `slowdown_ms = 7500`, and `refusal` with
+`slowdown_ms = 1500`. The last contains all six tampered candidates and all three
+malformed-report/refusal Tasks. Assert this exact ordered partition and retain every
+Task's complete receipt. Each document passes the unchanged schema and laboratory reader
+before export, using `receipts-<pid>-<phase>.json` filenames in
+`AF_PERF_KERNEL_RECEIPTS`. A fast regression checks membership, retained payloads, filenames
+and both validators, and refuses missing, extra or reordered Tasks. The former single
+7,500 ms document mislabeled the other source phases.
+
 The staged policy stays byte-identical. Real builds and timing, three repetitions, Worker
 budgets, protected guard, golden oracle, tampered assertions and production behavior stay
 unchanged. The implementation Worker runs formatting and the fast regression; the separate

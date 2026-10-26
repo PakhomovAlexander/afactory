@@ -453,25 +453,24 @@ impl Consumer {
         }));
     }
 
-    /// The receipts document, checked against its published schema and by the laboratory's
-    /// own reader; written below `$AF_PERF_KERNEL_RECEIPTS` when it names a directory.
+    /// Each homogeneous source phase is checked against the schema and laboratory reader.
     fn export(&self, digest: &str) {
-        let document = json!({
-            "schema": "af.perf-kernel-receipts/3",
-            "harness_digest": digest,
-            "instance": INSTANCE,
-            "measure": MEASURE,
-            "objective": OBJECTIVE,
-            "slowdown_ms": SLOW_MS,
-            "tasks": self.receipts,
-        });
+        let directory = std::env::var_os("AF_PERF_KERNEL_RECEIPTS").map(PathBuf::from);
+        for (phase, document) in receipt_documents(digest, &self.receipts) {
+            self.export_document(phase, &document, directory.as_deref());
+        }
+    }
+
+    fn export_document(&self, phase: &str, document: &Value, directory: Option<&Path>) {
         schemas::valid(
             &schemas::validator("performance-kernel-receipts-v3.json"),
-            &document,
+            document,
         );
-        let checked = self.root.join("receipts.json");
-        std::fs::write(&checked, serde_json::to_vec_pretty(&document).unwrap()).unwrap();
+        let filename = format!("receipts-{}-{phase}.json", std::process::id());
+        let checked = self.root.join(&filename);
+        std::fs::write(&checked, serde_json::to_vec_pretty(document).unwrap()).unwrap();
         let read = Command::new("python3")
+            .env("PYTHONDONTWRITEBYTECODE", "1")
             .args([
                 "-B",
                 "-c",
@@ -484,19 +483,152 @@ impl Consumer {
             .unwrap();
         assert!(
             read.status.success(),
-            "the laboratory refuses the receipts: {}",
+            "the laboratory refuses the {phase} receipts: {}",
             String::from_utf8_lossy(&read.stderr)
         );
-        let Some(directory) = std::env::var_os("AF_PERF_KERNEL_RECEIPTS") else {
+        let Some(directory) = directory else {
             return;
         };
-        let directory = PathBuf::from(directory);
-        std::fs::create_dir_all(&directory).unwrap();
-        std::fs::copy(
-            &checked,
-            directory.join(format!("receipts-{}.json", std::process::id())),
+        std::fs::create_dir_all(directory).unwrap();
+        std::fs::copy(&checked, directory.join(filename)).unwrap();
+    }
+}
+
+/// Exact Task membership is part of the fixture: additions, omissions or reordering must
+/// update this partition explicitly rather than inherit another source revision's slowdown.
+fn receipt_documents(digest: &str, receipts: &[Value]) -> Vec<(&'static str, Value)> {
+    let phases: [(&str, u64, &[&str]); 3] = [
+        ("missing-inputs", 0, &["missing-inputs"]),
+        ("improve", SLOW_MS, &["improve"]),
+        (
+            "refusal",
+            REFUSAL_SLOW_MS,
+            &[
+                "timing-boundary",
+                "golden-fixture",
+                "build-inputs",
+                "case-variant-build-inputs",
+                "symlink-to-file",
+                "bytecode",
+                "wrong-unit",
+                "undeclared-key",
+                "refused-case",
+            ],
+        ),
+    ];
+    let actual: Vec<_> = receipts
+        .iter()
+        .map(|task| task["task_id"].as_str().unwrap())
+        .collect();
+    let expected: Vec<_> = phases
+        .iter()
+        .flat_map(|(_, _, tasks)| tasks.iter().copied())
+        .collect();
+    assert_eq!(actual, expected, "receipt source-phase partition changed");
+    let mut offset = 0;
+    phases
+        .into_iter()
+        .map(|(phase, slowdown_ms, tasks)| {
+            let end = offset + tasks.len();
+            let document = json!({
+                "schema": "af.perf-kernel-receipts/3",
+                "harness_digest": digest,
+                "instance": INSTANCE,
+                "measure": MEASURE,
+                "objective": OBJECTIVE,
+                "slowdown_ms": slowdown_ms,
+                "tasks": receipts[offset..end],
+            });
+            offset = end;
+            (phase, document)
+        })
+        .collect()
+}
+
+#[test]
+fn receipts_partition_preserves_every_task_and_labels_each_source_phase() {
+    let fixture: Value = serde_json::from_slice(
+        &std::fs::read(
+            workspace().join("fixtures/performance/schema/kernel-receipts/valid-fixture.json"),
         )
-        .unwrap();
+        .unwrap(),
+    )
+    .unwrap();
+    let ids = [
+        "missing-inputs",
+        "improve",
+        "timing-boundary",
+        "golden-fixture",
+        "build-inputs",
+        "case-variant-build-inputs",
+        "symlink-to-file",
+        "bytecode",
+        "wrong-unit",
+        "undeclared-key",
+        "refused-case",
+    ];
+    // Reuse a valid public Task receipt; only its scenario label differs in this fast test.
+    let receipts: Vec<_> = ids
+        .iter()
+        .map(|id| {
+            let mut task = fixture["tasks"][0].clone();
+            task["task_id"] = json!(id);
+            task
+        })
+        .collect();
+    let documents = receipt_documents(fixture["harness_digest"].as_str().unwrap(), &receipts);
+    assert_eq!(
+        documents
+            .iter()
+            .map(|(phase, doc)| (
+                *phase,
+                doc["slowdown_ms"].as_u64().unwrap(),
+                doc["tasks"].as_array().unwrap().len()
+            ))
+            .collect::<Vec<_>>(),
+        vec![
+            ("missing-inputs", 0, 1),
+            ("improve", 7500, 1),
+            ("refusal", 1500, 9)
+        ]
+    );
+    let retained: Vec<_> = documents
+        .iter()
+        .flat_map(|(_, doc)| doc["tasks"].as_array().unwrap().clone())
+        .collect();
+    assert_eq!(retained, receipts);
+    let root = tempfile::tempdir().unwrap();
+    let consumer = Consumer {
+        root: root.path().to_owned(),
+        repo: root.path().join("unused-repo"),
+        state: root.path().join("unused-state"),
+        markers: root.path().join("unused-markers"),
+        receipts: receipts.clone(),
+        _root: root,
+    };
+    let exported = consumer.root.join("exported");
+    for (phase, document) in &documents {
+        consumer.export_document(phase, document, Some(&exported));
+        let filename = format!("receipts-{}-{phase}.json", std::process::id());
+        let saved: Value =
+            serde_json::from_slice(&std::fs::read(exported.join(filename)).unwrap()).unwrap();
+        assert_eq!(&saved, document);
+    }
+    assert_eq!(std::fs::read_dir(&exported).unwrap().count(), 3);
+    for altered in [
+        receipts[..10].to_vec(),
+        {
+            let mut tasks = receipts.clone();
+            tasks.swap(0, 1);
+            tasks
+        },
+        {
+            let mut tasks = receipts.clone();
+            tasks.push(receipts[0].clone());
+            tasks
+        },
+    ] {
+        assert!(std::panic::catch_unwind(|| receipt_documents("unused", &altered)).is_err());
     }
 }
 
