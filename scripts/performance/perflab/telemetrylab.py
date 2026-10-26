@@ -737,13 +737,26 @@ def contained_environment(registry, config):
             "network": "disabled", "cpu_quota": "none"}
 
 
-def _executor(settings, registry, config, budget):
+class _Preparation:
+    """Invocation-local evidence, never inferred from the type of a refusal.
+
+    Unknown/injected setup is conservative. Only the built-in read-only preparation
+    establishes no work; entering a host enforcement probe withdraws that evidence.
+    """
+    no_work = False
+
+    def may_work(self):
+        self.no_work = False
+
+
+def _executor(settings, registry, config, budget, preparation):
     """(executor, the directory every execution's state lives below)."""
     if settings.executor is not None:
         work = os.path.abspath(settings.work or settings.output + ".work")
         if settings.executor.mode == "linux_container":
             work = settings.executor.directory
         return settings.executor, work
+    preparation.no_work = True
     if settings.mode == "trusted_local":
         return (telemetryexec.TrustedLocal(settings.python, settings.clock),
                 os.path.abspath(settings.work or settings.output + ".work"))
@@ -754,12 +767,19 @@ def _executor(settings, registry, config, budget):
             "user (uid %d), so the run can verify and remove what they wrote" % os.geteuid())
     environment = contained_environment(registry, config)
     try:
+        if settings.image_identity is not None:
+            preparation.may_work()
         image = (settings.image_identity(settings.docker, settings.image)
                  if settings.image_identity else builds.BuildImage(settings.docker, settings.image,
                                                                    budget=budget))
-        check = settings.contained_host or runner.contained_host
-        scratch_root, cpus, runtime = check(settings.docker, settings.image, settings.scratch_fs,
-                                            environment, budget, settings.clock)
+        args = (settings.docker, settings.image, settings.scratch_fs,
+                environment, budget, settings.clock)
+        if settings.contained_host is not None:
+            preparation.may_work()
+            scratch_root, cpus, runtime = settings.contained_host(*args)
+        else:
+            scratch_root, cpus, runtime = runner.contained_host(
+                *args, before_probe=preparation.may_work)
     except (builds.Unavailable, runner.Unavailable) as refused:
         raise Unavailable(refused.reason, str(refused))
     except deadlines.Expired as expired:
@@ -821,14 +841,25 @@ def run(settings):
             raise Unavailable(refused.reason, str(refused))
         if settings.scratch_owner is not None:
             _sync(budget, "fencing telemetry work", settings.scratch_owner.prepare_work)
-        executor, work = _sync(budget, "preparing telemetry executor",
-                               _executor, settings, registry, config, budget)
+        preparation = _Preparation()
+        executor, work = None, settings.scratch_fs or settings.work or settings.output + ".work"
         try:
+            executor, work = _sync(budget, "preparing telemetry executor",
+                                   _executor, settings, registry, config, budget, preparation)
+            # From here controller setup can write even before the first candidate launch.
+            preparation.may_work()
             return _run_locked(settings, root, registry, registry_sha, config, mode, sources,
                                binaries, builds_doc, digest, files, output, deadline, executor,
                                work)
         except BaseException as error:
-            _uncertain(settings, executor)
+            if executor is not None:
+                _uncertain(settings, executor)
+            if preparation.no_work and settings.scratch_owner is not None:
+                try:
+                    _sync(deadlines.Budget(deadline, settings.clock, 0),
+                          "settling unused telemetry work", settings.scratch_owner.work_cleaned)
+                except BaseException as settlement:
+                    error.add_note("Unused work fence settlement unconfirmed: %s" % settlement)
             recovery = "Recovery work: %s" % work
             if settings.scratch_owner is not None:
                 recovery += "; ownership: %s; mount: %s" % (
@@ -846,11 +877,12 @@ def run(settings):
                     _write_new(os.path.join(output, "failure.txt"),
                         ("Telemetry did not complete: %s\n%s\n" %
                          (str(error)[:2048], recovery)).encode())
-            try:
-                _sync(terminal, "withdrawing interrupted terminal publication", rollback)
-            except BaseException:
-                # Rollback cannot replace the original failure or start a new allowance.
-                pass
+            if executor is not None:
+                try:
+                    _sync(terminal, "withdrawing interrupted terminal publication", rollback)
+                except BaseException:
+                    # Rollback cannot replace the original failure or start a new allowance.
+                    pass
             raise
     finally:
         for lock in locks:

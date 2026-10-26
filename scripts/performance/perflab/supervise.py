@@ -219,22 +219,76 @@ def launch(launcher, request_doc, deadline=None, clock=time.monotonic,
         raise SupervisorFailure("no byte room is left for anything this request writes; "
                                 "nothing was launched", launched=False)
     launched_ns = time.monotonic_ns()
+    process = None
     try:
-        process = subprocess.Popen(launcher, stdin=subprocess.PIPE, stdout=subprocess.PIPE,
-                                   stderr=subprocess.PIPE, env=LAUNCH_ENVIRONMENT,
-                                   preexec_fn=(None if file_bytes is None
-                                               else _file_size_limit(file_bytes)))
-    except OSError as error:
-        raise SupervisorFailure("cannot start the supervisor: %s" % error, launched=False)
-    if started is not None:
-        started(process)
+        try:
+            process = subprocess.Popen(launcher, stdin=subprocess.PIPE, stdout=subprocess.PIPE,
+                                       stderr=subprocess.PIPE, env=LAUNCH_ENVIRONMENT,
+                                       preexec_fn=(None if file_bytes is None
+                                                   else _file_size_limit(file_bytes)))
+        except OSError as error:
+            raise SupervisorFailure("cannot start the supervisor: %s" % error,
+                                    launched=False) from error
+        until = None if deadline is None else deadline - after
+        reply = _launched_reply(process, data, request_doc, seconds, reserve, bound,
+                                by_deadline, launched_ns, started, removal_seconds, until, clock)
+    except BaseException as error:
+        if process is None and isinstance(error, SupervisorFailure):
+            raise  # Popen's proven refusal; no launch ownership was transferred.
+        # Popen transferred ownership. A callback or pipe error says nothing about the
+        # sample's end. Use the same cancellation protocol, within the original deadline,
+        # and accept only a valid supervisor reply as local cleanup evidence.
+        supervised = None
+        until = None if deadline is None else deadline - after
+        try:
+            if process is None:
+                raise ContractError("Popen did not transfer a process handle")
+            out, err, replied = _cancel(process, reserve, until, clock)
+            if replied and process.returncode == 0:
+                result, child_out, child_err = read_reply(out, request_doc)
+                supervised = Supervised(result, child_out, child_err,
+                    time.monotonic_ns() - launched_ns, err[-STDERR_MAX:])
+        except BaseException as cleanup:
+            error.add_note("Supervisor cancellation unconfirmed: %s" % cleanup)
+            if not isinstance(cleanup, Exception):
+                cleanup.__cause__ = error
+                _exceptional_failure(SupervisorFailure(
+                    "supervisor cancellation interrupted after launch: %s; %s" % (error, cleanup),
+                    uncertain=True), cleanup)
+        failure = SupervisorFailure("supervisor launch ownership failed: %s" % error,
+                                    uncertain=(supervised is None or
+                                               not cleanup_confirmed(supervised.result)),
+                                    supervised=supervised)
+        _exceptional_failure(failure, error)
+    if isinstance(reply, SupervisorFailure):
+        raise reply
+    return reply
+
+
+def _exceptional_failure(failure, cause):
+    """Keep cancellation/unwind types for synchronous callers, with typed ownership.
+
+    Running transports that same evidence out of its thread; ordinary exceptions become
+    SupervisorFailure with their original cause, never an unqualified launch error.
+    """
+    if not isinstance(cause, Exception):
+        cause.supervisor_failure = failure
+        raise cause
+    raise failure from cause
+
+
+def _launched_reply(process, data, request_doc, seconds, reserve, bound, by_deadline,
+                    launched_ns, started, removal_seconds, until, clock):
+    """Read and validate a launched supervisor; launch owns every exceptional exit."""
     cancelled = None
     try:
+        if started is not None:
+            started(process)
         stdout, stderr = process.communicate(data, timeout=seconds)
     except subprocess.TimeoutExpired:
         cancelled = ("the supervisor did not reply within %.3f s, %s, so its sample was "
                      "cancelled through it" % (seconds, bound))
-        stdout, stderr, replied = _cancel(process, reserve)
+        stdout, stderr, replied = _cancel(process, reserve, until, clock)
         if not replied:
             cancelled += "; it gave no reply within %.3f s and was killed" % reserve
     host_wall_ns = time.monotonic_ns() - launched_ns
@@ -264,8 +318,8 @@ def launch(launcher, request_doc, deadline=None, clock=time.monotonic,
                          or process.returncode == -signal.SIGTERM)
     if uncertain and removal_seconds is None:
         detail += "; no reply confirms that its sample ended"
-    raise SupervisorFailure(detail, deadline=by_deadline and cancelled is not None,
-                            uncertain=uncertain, supervised=supervised)
+    return SupervisorFailure(detail, deadline=by_deadline and cancelled is not None,
+                             uncertain=uncertain, supervised=supervised)
 
 
 def _file_size_limit(file_bytes):
@@ -278,25 +332,28 @@ def _file_size_limit(file_bytes):
     return limit
 
 
-def _cancel(process, reserve):
+def _cancel(process, reserve, deadline=None, clock=time.monotonic):
     """Send the supervisor SIGTERM and wait `reserve` for its reply; kill it when none comes.
     Returns (stdout, stderr, replied)."""
     try:
         process.send_signal(signal.SIGTERM)
     except OSError:
         pass
+    def left(seconds):
+        return max(0, min(seconds, deadline - clock())) if deadline is not None else seconds
+
     try:
-        stdout, stderr = process.communicate(timeout=reserve)
+        stdout, stderr = process.communicate(timeout=left(reserve))
         return stdout, stderr, True
     except subprocess.TimeoutExpired:
         pass
     process.kill()
     try:
-        stdout, stderr = process.communicate(timeout=KILL_DRAIN_SECONDS)
+        stdout, stderr = process.communicate(timeout=left(KILL_DRAIN_SECONDS))
     except subprocess.TimeoutExpired:
         for stream in (process.stdout, process.stderr):
             stream.close()
-        process.wait()
+        process.wait(timeout=left(KILL_DRAIN_SECONDS))
         stdout, stderr = b"", b""
     return stdout, stderr, False
 
@@ -637,28 +694,41 @@ def run_contained(docker, name, image, environment, supervisor, binaries, scratc
     require(request_doc["containment"] == "pid_namespace"
             and request_doc["scratch"] == SCRATCH,
             "a contained sample uses pid_namespace containment and the mounted scratch")
-    inventory = prepare_scratch(scratch_root, uid, gid, extra)
-    sample = os.path.join(scratch_root, SAMPLE_DIRECTORY)
-    argv = container_argv(docker, name, image, environment, supervisor, binaries, sample, uid,
-                          gid, cpus, readonly, seed_output, binds, file_bytes)
+    try:
+        inventory = prepare_scratch(scratch_root, uid, gid, extra)
+        sample = os.path.join(scratch_root, SAMPLE_DIRECTORY)
+        argv = container_argv(docker, name, image, environment, supervisor, binaries, sample, uid,
+                              gid, cpus, readonly, seed_output, binds, file_bytes)
+    except (OSError, ContractError) as error:
+        raise SupervisorFailure(str(error), launched=False) from error
     # This is the container's one removal, however the launch ends (ADR-0173).
-    removal = None
     try:
         supervised = launch(argv, request_doc, deadline=deadline, clock=clock,
                             removal_seconds=REMOVAL_SECONDS, started=started)
-    except SupervisorFailure as failure:
-        if not failure.launched:
+    except BaseException as failure:
+        evidence = getattr(failure, "supervisor_failure", failure)
+        if isinstance(evidence, SupervisorFailure) and not evidence.launched:
             # No `docker run` was started, so there is no container to remove.
-            removal = "container %s was never created" % name
             raise
-        removal = remove_container(docker, name, deadline, clock)
-        # A confirmed removal ends every process in the container; anything else may be live.
-        raise SupervisorFailure("%s; %s" % (failure, removal), deadline=failure.deadline,
-                                uncertain=not removal.endswith(" removed"),
-                                supervised=failure.supervised)
-    finally:
-        if removal is None:
+        try:
             removal = remove_container(docker, name, deadline, clock)
+        except BaseException as cleanup:
+            removal = "container %s removal unconfirmed: %s" % (name, cleanup)
+            if not isinstance(cleanup, Exception):
+                cleanup.__cause__ = failure
+                _exceptional_failure(SupervisorFailure("%s; %s" % (failure, removal),
+                    uncertain=True, supervised=getattr(evidence, "supervised", None)), cleanup)
+        # A confirmed removal ends every process in the container; anything else may be live.
+        _exceptional_failure(SupervisorFailure("%s; %s" % (failure, removal),
+                                deadline=getattr(evidence, "deadline", False),
+                                uncertain=not removal.endswith(" removed"),
+                                supervised=getattr(evidence, "supervised", None)), failure)
+    try:
+        removal = remove_container(docker, name, deadline, clock)
+    except BaseException as cleanup:
+        _exceptional_failure(SupervisorFailure(
+            "container %s removal unconfirmed: %s" % (name, cleanup),
+            uncertain=True, supervised=supervised), cleanup)
     removed = removal.endswith(" removed")
     child = supervised.result["timing"]["child_wall_ns"]
     overhead = supervised.host_wall_ns - int(child) if child is not None else None

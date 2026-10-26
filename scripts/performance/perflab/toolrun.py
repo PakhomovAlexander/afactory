@@ -114,9 +114,12 @@ class Contained(Supervisor):
         from . import builds
         from .budget import Budget
         # The same image admission as shard/diagnostic preflight, also for direct users.
-        builds.refuse_implicit_volumes(self.docker, self.image, Budget(
-            deadline if deadline is not None else clock() + supervise.HOST_MARGIN_SECONDS,
-            clock, supervise.REMOVAL_SECONDS if deadline is not None else 0))
+        try:
+            builds.refuse_implicit_volumes(self.docker, self.image, Budget(
+                deadline if deadline is not None else clock() + supervise.HOST_MARGIN_SECONDS,
+                clock, supervise.REMOVAL_SECONDS if deadline is not None else 0))
+        except (OSError, ContractError) as error:
+            raise supervise.SupervisorFailure(str(error), launched=False) from error
         self.requests += 1
         name = "af-perf-diag-%s-%d-%s" % (self.label[-12:], self.requests,
                                           os.urandom(4).hex())
@@ -271,8 +274,14 @@ class Running(object):
                 binds))
         except supervise.SupervisorFailure as failure:
             self._outcome = ("failure", failure)
-        except (ContractError, OSError) as error:
-            self._outcome = ("error", error)
+        except BaseException as error:
+            # An opaque adapter's ordinary exception is not proof of no launch. Built-in
+            # supervisors supply typed pre-launch refusals and post-launch settlement.
+            failure = getattr(error, "supervisor_failure", None)
+            if failure is None:
+                failure = supervise.SupervisorFailure(str(error), uncertain=True)
+                failure.__cause__ = error
+            self._outcome = ("failure", failure)
 
     def _started_process(self, process):
         with self._lock:
@@ -312,8 +321,6 @@ def _result(argv, outcome, deadline, clock, started, cancelled):
     elapsed_ms = int(max(now - started, 0) * 1000)
     late = deadline is not None and now > deadline
     kind, value = outcome
-    if kind == "error":
-        return Result(argv, elapsed_ms=elapsed_ms, launch_error=str(value), late=late)
     if kind == "failure":
         supervised = value.supervised
         result = Result(argv, elapsed_ms=elapsed_ms, uncertain=value.uncertain,

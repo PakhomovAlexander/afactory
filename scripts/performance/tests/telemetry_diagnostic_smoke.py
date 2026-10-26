@@ -114,6 +114,8 @@ sys.stdout.buffer.write((Path(DOCS) / (kind + '.json')).read_bytes())
     profile.execution = {"mode": "linux_container"}
     profile.output, profile.stage = str(output), str(stage)
     profile.retained = []
+    profile.work = str(work)
+    profile.unsafe_staging = []
     profile.clock = time.monotonic
     profile.budget = diagnostics.Budget({"total_minutes": 2, "profile_bytes": 8 << 20,
         "builds": 1, "tool_seconds": 30, "tool_output_bytes": 1 << 20}, str(output))

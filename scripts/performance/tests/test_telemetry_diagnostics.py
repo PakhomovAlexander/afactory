@@ -547,6 +547,63 @@ class TelemetryChildRuns(ChildRunBase):
                     for directory in ("child", "probe-bin", "supervisor", "af-bin", "scratch-fs"):
                         shutil.rmtree(self.path(directory))
 
+    def test_each_reader_loses_pipe_evidence_below_running_and_retains_its_namespace(self):
+        from tests.supervision_faults import fault
+        from perflab import toolrun
+        for mode in ("trusted_local", "linux_container"):
+            for kind in telemetrydiag.DOCUMENT_KINDS:
+                with self.subTest(mode=mode, kind=kind):
+                    def match(request):
+                        argv = request["argv"]
+                        return "telemetry" in argv and argv[argv.index("telemetry") + 1] == kind
+                    real_remove = diagnostics.admission.remove_tree
+                    actual_run = diagnostics.Profile.run
+                    actual_readers = diagnostics.Profile.telemetry_documents
+                    removals = []
+                    def run(profile):
+                        os.makedirs(os.path.join(profile.output, diagnostics.WORK_DIR), exist_ok=True)
+                        return actual_run(profile)
+                    def readers(profile, *args):
+                        # Task recording still requires containment. Exercise the local
+                        # reader adapter only with these trusted fixture executables.
+                        if mode == "trusted_local":
+                            profile.supervisor = toolrun.Supervisor(profile.supervisor.path,
+                                cancel_margin=0, grace_ms=100)
+                        return actual_readers(profile, *args)
+                    def remove(path, *args, **kwargs):
+                        if state["faults"]: removals.append(path)
+                        return real_remove(path, *args, **kwargs)
+                    with fault(match, contained=mode == "linux_container") as state, \
+                            mock.patch.object(diagnostics.admission, "remove_tree", remove), \
+                            mock.patch.object(diagnostics.Profile, "run", run), \
+                            mock.patch.object(diagnostics.Profile, "telemetry_documents", readers):
+                        doc, output = self.profile("linux_gnu_trace", [TASK_RUN, SMALL], {}, {},
+                            af_config={"telemetry_docs": self.docs},
+                            contained=self.place(),
+                            telemetry="spans", work_removed=False)
+                    profile = self.profile_object
+                    self.assertEqual(len(state["faults"]), 1)
+                    self.assertEqual(len(state["popen"]), 1)
+                    self.assertTrue(match(state["requests"][-1]), "no second launch")
+                    self.assertTrue(os.path.isdir(profile.work))
+                    self.assertTrue(profile.retained)
+                    self.assertEqual(profile.retained, [state["faults"][0]["cwd"]])
+                    self.assertEqual(removals, [], "no final or namespace deletion")
+                    stage = profile.stage or output
+                    staged = os.path.join(stage, "telemetry", TASK_RUN, "baseline", kind + ".json")
+                    self.assertTrue(read(staged), "written unadmitted evidence remains")
+                    for entry in doc["telemetry"]["captures"]:
+                        self.assertEqual(entry["omission"]["reason"], "cleanup_uncertain")
+                        self.assertIsNone(entry["evidence"])
+                        self.assertEqual(entry["artifacts"], [])
+                    self.assertFalse(os.path.exists(os.path.join(output, bundle.MANIFEST)))
+                    if mode == "linux_container":
+                        self.assertTrue(os.path.isdir(profile.stage))
+                        self.assertTrue(state["removals"])
+                    for directory in ("child", "probe-bin", "supervisor", "af-bin", "scratch-fs"):
+                        path = self.path(directory)
+                        if os.path.isdir(path): shutil.rmtree(path)
+
     def test_successful_readers_share_the_recording_until_one_final_release(self):
         release = diagnostics.Profile.release
         readers = []

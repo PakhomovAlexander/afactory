@@ -17,7 +17,7 @@ import string
 import time
 from unittest import mock
 
-from perflab import budget, contracts, hostprep, telemetryexec, telemetrylab
+from perflab import builds, budget, capability, contracts, hostprep, telemetryexec, telemetrylab
 from perflab.values import ContractError
 from tests import telemetry_fixtures as fx
 from tests import test_workflow as workflow
@@ -263,6 +263,130 @@ class WorkflowCleanup(ContainedBase):
         self.retained()
         self.assertNotEqual(self.invoke("telemetry-run"), 0)
         self.assertIn("unsettled launch", self.stderr.getvalue())
+
+    def real_preparation(self, settings):
+        settings.executor = None
+        settings.mode = "linux_container"
+        settings.image = "sha256:" + "0" * 64
+
+    def image_inspection(self, available):
+        def inspect(argv, *args, **kwargs):
+            self.assertEqual(argv[1:3], ["image", "inspect"])
+            with self.owner_state() as doc:
+                self.assertTrue(doc["filesystem_pending"], "inspection must follow fencing")
+            return type("Reply", (), {"returncode": 0 if available else 1,
+                "stdout": (b'"sha256:' + b'0' * 64 + b'"\t"linux"\t"amd64"\t[]\t[]'),
+                "stderr": b"image unavailable"})()
+        return inspect
+
+    @contextlib.contextmanager
+    def owner_state(self):
+        # Read the actual durable record while its controller holds the owner lock.
+        yield json.loads(Path(self.owner_path, "state.json").read_bytes())
+
+    def test_fenced_image_and_inert_host_refusals_allow_next_controller_and_workflow_cleanup(self):
+        for boundary in ("image", "host"):
+            with self.subTest(boundary=boundary):
+                with mock.patch.object(builds, "_run", self.image_inspection(boundary == "host")), \
+                        mock.patch.object(capability, "docker_info", return_value={
+                            "unavailable": "runtime unavailable"}), \
+                        mock.patch.object(capability, "scratch_capability") as probe:
+                    self.assertEqual(self.measure(self.real_preparation), cli.EXIT_UNAVAILABLE)
+                    probe.assert_not_called()
+                with self.owner() as owner:
+                    self.assertEqual(owner.doc["launches"], 0)
+                    self.assertFalse(owner.doc["filesystem_pending"])
+                    owner.available()  # A new controller can acquire the real persisted owner.
+                self.assertEqual(self.executor.names, 0)
+                self.assertFalse(Path(self.tmp, "telemetry-result").exists())
+        # The next actual controller runs normally; the workflow's cleanup then admits it.
+        os.rmdir(self.run_dir)
+        os.rmdir(self.executor.directory)
+        self.assertEqual(self.measure(), cli.EXIT_UNAVAILABLE)
+        self.assertEqual(self.executor.names, 4)
+        self.assertEqual(self.invoke("ci-scratch", cleanup=True), 0)
+
+    def test_fenced_safe_image_refusal_admits_real_ci_scratch_without_candidate_launch(self):
+        with mock.patch.object(builds, "_run", self.image_inspection(False)):
+            self.assertEqual(self.measure(self.real_preparation), cli.EXIT_UNAVAILABLE)
+        self.assertEqual(self.executor.names, 0)
+        self.assertEqual(self.invoke("ci-scratch", cleanup=True), 0)
+        self.assertFalse(os.path.exists(self.image))
+
+    def test_mutating_probe_and_opaque_preparation_interruptions_keep_persisted_fence(self):
+        for boundary in ("probe", "image_hook", "host_hook", "executor"):
+            with self.subTest(boundary=boundary):
+                failure = {"probe": OSError("partially mutating probe"),
+                           "image_hook": telemetrylab.Unavailable("refused", "opaque image hook"),
+                           "host_hook": KeyboardInterrupt("preparation interrupted"),
+                           "executor": RuntimeError("opaque executor preparation")}[boundary]
+                def mutate(*args, **kwargs):
+                    Path(self.mount, "preparation-data").write_bytes(b"possibly still owned")
+                    raise failure
+                def configure(settings):
+                    self.real_preparation(settings)
+                    if boundary == "image_hook": settings.image_identity = mutate
+                    if boundary == "host_hook": settings.contained_host = mutate
+                with mock.patch.object(builds, "_run", self.image_inspection(True)), \
+                        mock.patch.object(capability, "docker_info", return_value={
+                            "unavailable": None, "identity": "linux fixture cgroup2"}), \
+                        mock.patch.object(capability, "scratch_capability", mutate), \
+                        (mock.patch.object(telemetrylab, "_executor", mutate)
+                         if boundary == "executor" else contextlib.nullcontext()):
+                    if isinstance(failure, (KeyboardInterrupt, RuntimeError)):
+                        with self.assertRaises(type(failure)):
+                            self.measure(configure)
+                    else:
+                        self.assertEqual(self.measure(configure),
+                            cli.EXIT_INVALID if isinstance(failure, OSError) else cli.EXIT_UNAVAILABLE)
+                with self.owner() as owner:
+                    self.assertTrue(owner.doc["filesystem_pending"])
+                    self.assertEqual(owner.doc["launches"], 0)
+                    with self.assertRaises(ContractError): owner.available()
+                self.retained()
+                self.assertEqual(self.executor.names, 0)
+                self.assertEqual(Path(self.mount, "preparation-data").read_bytes(),
+                                 b"possibly still owned")
+                # Test-owned recovery, never product compensation.
+                with self.owner() as owner:
+                    owner.doc["filesystem_pending"] = False
+                    owner._write()
+
+    def test_failed_or_expired_unused_fence_settlement_is_bounded_and_conservative(self):
+        for boundary in ("error", "stall", "expired"):
+            with self.subTest(boundary=boundary):
+                offset = [0.0]
+                actual_sync = telemetrylab._sync
+                calls = []
+                def sync(allowance, step, function, *args, **kwargs):
+                    if step == "settling unused telemetry work":
+                        offset[0] = allowance.deadline - time.monotonic() + (
+                            .01 if boundary == "expired" else -.08)
+                    return actual_sync(allowance, step, function, *args, **kwargs)
+                actual_write = hostprep.TelemetryOwner._write
+                def write(owner):
+                    if not owner.doc["filesystem_pending"]:
+                        calls.append(time.monotonic())
+                        if boundary == "error": raise OSError("settlement write failed")
+                        time.sleep(30)
+                    return actual_write(owner)
+                def configure(settings):
+                    self.real_preparation(settings)
+                    settings.clock = lambda: time.monotonic() + offset[0]
+                start = time.monotonic()
+                with mock.patch.object(builds, "_run", self.image_inspection(False)), \
+                        mock.patch.object(telemetrylab, "_sync", sync), \
+                        mock.patch.object(hostprep.TelemetryOwner, "_write", write):
+                    self.assertEqual(self.measure(configure), cli.EXIT_UNAVAILABLE)
+                self.assertLess(time.monotonic() - start, 1)
+                self.assertEqual(len(calls), 0 if boundary == "expired" else 1)
+                self.assertEqual(self.executor.names, 0)
+                with self.owner() as owner:
+                    self.assertTrue(owner.doc["filesystem_pending"])
+                self.retained()
+                with self.owner() as owner:
+                    owner.doc["filesystem_pending"] = False  # Test-owned recovery.
+                    owner._write()
 
     def test_workflow_cli_stopped_runs_allow_cleanup_after_result_publication(self):
         os.rmdir(self.run_dir)

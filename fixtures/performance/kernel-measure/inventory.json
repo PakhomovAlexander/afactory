@@ -2462,8 +2462,8 @@
   },
   {
    "path": "scripts/performance/perflab/runner.py",
-   "sha256": "sha256:0bf9813ac0744f312db6249fa5331cde774be1e96ac18a8c2d82f0ff41dbb973",
-   "size": 80902
+   "sha256": "sha256:16eca32ab1d38b1934d8168d9018f6704aacf1f47d61b8e6079e419d7fb46ed2",
+   "size": 80977
   },
   {
    "path": "scripts/performance/perflab/schedule.py",
@@ -2497,8 +2497,8 @@
   },
   {
    "path": "scripts/performance/perflab/supervise.py",
-   "sha256": "sha256:746c6379533401a57d262c4b8f74d0894183650788e37f60ac80c92afc0f3b4a",
-   "size": 39606
+   "sha256": "sha256:27a9dda9827f0affecc099bf6012b84b6c08907dcade4d212464bb9d70f8a7e9",
+   "size": 43572
   },
   {
    "path": "scripts/performance/perflab/svgsafe.py",
@@ -2532,8 +2532,8 @@
   },
   {
    "path": "scripts/performance/perflab/telemetrylab.py",
-   "sha256": "sha256:79e8594eb84ac20d9eb5b4d6ccff46957e6d332460533eb491ea51b8d14016a9",
-   "size": 128580
+   "sha256": "sha256:3785e276e9421cbc29b7a7a1564f5110671226e107a2684174da763e328abdda",
+   "size": 130022
   },
   {
    "path": "scripts/performance/perflab/tomlfile.py",
@@ -2542,8 +2542,8 @@
   },
   {
    "path": "scripts/performance/perflab/toolrun.py",
-   "sha256": "sha256:57094578a61190d67b6b8183c3cdd50f72dc35b73e46fcf47a1c54d99d47ccb6",
-   "size": 20090
+   "sha256": "sha256:d93d840a586d380c92a3f40a45a9981f51e3104c76a584d11bf55c429a3f5aa7",
+   "size": 20529
   },
   {
    "path": "scripts/performance/perflab/transport.py",
@@ -2621,6 +2621,11 @@
    "size": 15961
   },
   {
+   "path": "scripts/performance/tests/supervision_faults.py",
+   "sha256": "sha256:b0baf66df861d3cd96ec1d36aadf0951ed4f016a9c96f9fbd9ee77acf48402fd",
+   "size": 2747
+  },
+  {
    "path": "scripts/performance/tests/support.py",
    "sha256": "sha256:0d82b8d74a97df1c38372e2a79c60c5291cca85c3d62612cc3227c7a2aa6b926",
    "size": 17427
@@ -2632,8 +2637,8 @@
   },
   {
    "path": "scripts/performance/tests/telemetry_diagnostic_smoke.py",
-   "sha256": "sha256:86c6a3a5e5b62d478b43b7ac29ef264a7d45feae4b13bfcb029b8087a4448b78",
-   "size": 9743
+   "sha256": "sha256:bf382c32e0612b2a5fd3dc0b25d04f26eeff7b9fb065afd381d26d3a192e10fc",
+   "size": 9804
   },
   {
    "path": "scripts/performance/tests/telemetry_fixtures.py",
@@ -2707,8 +2712,8 @@
   },
   {
    "path": "scripts/performance/tests/test_diagnostics.py",
-   "sha256": "sha256:dbc9d191f128d1e7f7dac18a4e1b2e59aac45664edd68cb97fe70971bdd5e10c",
-   "size": 126306
+   "sha256": "sha256:7377b208be5679d89272c50c1d797fe1dd249c1dde80168b81951f675f8091ad",
+   "size": 132478
   },
   {
    "path": "scripts/performance/tests/test_evidence_tools.py",
@@ -2802,8 +2807,8 @@
   },
   {
    "path": "scripts/performance/tests/test_supervise.py",
-   "sha256": "sha256:baebf0b32f03531211d4566943819d6c0ee617dc132ce29ad266a45b1c36c5cb",
-   "size": 56340
+   "sha256": "sha256:010a97fb6473c320d7cf0f63b55ce8d00e49ba88c8ca6e10401f90aafa278cd5",
+   "size": 61997
   },
   {
    "path": "scripts/performance/tests/test_telemetry_admission_cost.py",
@@ -2817,8 +2822,8 @@
   },
   {
    "path": "scripts/performance/tests/test_telemetry_cleanup.py",
-   "sha256": "sha256:55752285d4ce75ab80128f9e7171b00c89b354495b06362f33be45232bd719e0",
-   "size": 29337
+   "sha256": "sha256:0e7757f80945ec516ee9fbc84a895642c12d7f223a9f61c5c3b6fbe44b9074a4",
+   "size": 36809
   },
   {
    "path": "scripts/performance/tests/test_telemetry_collect.py",
@@ -2832,8 +2837,8 @@
   },
   {
    "path": "scripts/performance/tests/test_telemetry_diagnostics.py",
-   "sha256": "sha256:86fb0d06c7e5a76ca0b28dc331187c3de274a9d17852da89562083d86c90b207",
-   "size": 45210
+   "sha256": "sha256:61fcd0ce50647ac8afdc1ae7f2149c2b24cee17f253224aa378a71d086667f43",
+   "size": 49058
   },
   {
    "path": "scripts/performance/tests/test_telemetry_exec.py",
@@ -2896,7 +2901,7 @@
    "size": 6777
   }
  ],
- "harness_digest": "sha256:c9903d1e149985cb4a43064d9d2f274236b9bd36b7d0c2ef7c29dccb04163399",
+ "harness_digest": "sha256:e534554da5c9ac7a5c80ebade5a10445b7cde8220a23a3d242b7ef34dfabd2c5",
  "inner_metric": "pending",
  "inner_metric_reason": "the inner wall_ms metric is recorded in every Measurement but no staged objective selects it until the guard's real kernel integration and tampered-candidate tests are accepted on the sealed source and a reviewed human change installs and selects it",
  "objective_metric": "elapsed_ms",

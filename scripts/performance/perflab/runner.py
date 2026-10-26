@@ -312,7 +312,7 @@ def _expand_list(text):
     return cpus
 
 
-def contained_host(docker, image, scratch_fs, environment, run_budget, clock):
+def contained_host(docker, image, scratch_fs, environment, run_budget, clock, before_probe=None):
     """(scratch root, CPUs, runtime identity) of a host that can run samples in `environment`,
     the contained Linux profile: the image pinned by digest, a Linux container runtime with
     cgroup v2, the dedicated scratch filesystem's bound verified by an enforcement fill, and the
@@ -342,6 +342,8 @@ def contained_host(docker, image, scratch_fs, environment, run_budget, clock):
     fill = "verifying the scratch filesystem's bound"
     started = clock()
     deadline = run_budget.until(fill, capability.FILL_SECONDS_MAX, started)
+    if before_probe is not None:
+        before_probe()
     record = capability.scratch_capability(scratch_fs, limit, verify_enforcement=True,
                                            host=capability.Host(clock=clock),
                                            deadline=deadline)

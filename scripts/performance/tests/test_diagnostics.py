@@ -1695,6 +1695,93 @@ class UncertainCleanup(ChildRunBase):
         profile.retained = []
         return profile
 
+    def test_internal_supervisor_exceptions_retain_decoder_and_renderer_work(self):
+        from tests.supervision_faults import fault
+        for mode in ("trusted_local", "linux_container"):
+            for target in ("decoder", "renderer"):
+                for failure, callback in ((OSError, False), (ContractError, False),
+                                          (RuntimeError, True), (KeyboardInterrupt, True)):
+                    with self.subTest(mode=mode, target=target, failure=failure, callback=callback):
+                        perf = fakes.perf(self.path("perf"),
+                                          phase_file=self.path("probe-bin", "phase"))
+                        tools = diagnostics.configured_tools(perf=perf,
+                            inferno_bin=fakes.inferno(self.path("inferno")))
+                        place = None
+                        if mode == "linux_container":
+                            root = self.path("scratch-fs")
+                            os.mkdir(root, 0o700)
+                            place = dict(scratch_root=root, docker=fakes.docker(self.path("docker")))
+                        def match(request):
+                            argv = request["argv"]
+                            return ((target == "decoder" and "script" in argv)
+                                    or (target == "renderer" and any(
+                                        os.path.basename(arg) == "inferno-diff-folded" for arg in argv)
+                                        and "--version" not in argv))
+                        actual_run, actual_remove = diagnostics.Profile.run, diagnostics.admission.remove_tree
+                        removals = []
+                        def run(profile):
+                            os.makedirs(os.path.join(profile.output, diagnostics.WORK_DIR), exist_ok=True)
+                            return actual_run(profile)
+                        def remove(path, *args, **kwargs):
+                            if state["faults"]: removals.append(path)
+                            return actual_remove(path, *args, **kwargs)
+                        with fault(match, failure, mode == "linux_container", callback=callback) as state, \
+                                mock.patch.object(diagnostics.Profile, "run", run), \
+                                mock.patch.object(diagnostics.admission, "remove_tree", remove):
+                            doc, output = self.profile("linux_gnu_cpu_profile", [SMALL, VALIDATE],
+                                tools, {}, contained=place, work_removed=False)
+                        profile = self.profile_object
+                        self.assertEqual(len(state["faults"]), 1)
+                        self.assertEqual(len(state["popen"]), 1)
+                        self.assertTrue(match(state["requests"][-1]), "no later launch")
+                        self.assertEqual(removals, [])
+                        self.assertTrue(os.path.isdir(profile.work))
+                        self.assertTrue(os.path.isdir(os.path.join(output, diagnostics.WORK_DIR)))
+                        self.assertTrue(profile.retained)
+                        self.assertIn(profile.work, profile.unsafe_staging)
+                        if profile.stage: self.assertTrue(os.path.isdir(profile.stage))
+                        if target == "decoder":
+                            self.assertTrue(all(item["omission"]["reason"] == "cleanup_uncertain"
+                                                for item in doc["captures"]))
+                            self.assertTrue(all(item["artifacts"] == [] for item in doc["captures"]))
+                        else:
+                            self.assertTrue(any(item["reason"] == "cleanup_uncertain"
+                                                for item in doc["omissions"]))
+                        self.assertFalse(os.path.exists(os.path.join(output, "manifest.json")))
+                        with self.assertRaises(perfcapture.CaptureError): profile.collect("unsafe")
+                        with self.assertRaises(perfcapture.CaptureError):
+                            profile.tool_run(["/bin/true"], 1, 1, self.tmp)
+                        if mode == "linux_container": self.assertTrue(state["removals"])
+                        for directory in ("child", "probe-bin", "supervisor", "perf", "inferno",
+                                          "scratch-fs", "docker"):
+                            path = self.path(directory)
+                            if os.path.isdir(path): shutil.rmtree(path)
+
+    def test_proven_decoder_prelaunch_refusal_allows_next_side_and_final_cleanup(self):
+        from tests.supervision_faults import fault
+        for mode in ("trusted_local", "linux_container"):
+            with self.subTest(mode=mode):
+                perf = fakes.perf(self.path("perf"), phase_file=self.path("probe-bin", "phase"))
+                tools = diagnostics.configured_tools(perf=perf)
+                place = None
+                if mode == "linux_container":
+                    root = self.path("scratch-fs")
+                    os.mkdir(root, 0o700)
+                    place = dict(scratch_root=root, docker=fakes.docker(self.path("docker")))
+                with fault(lambda request: "script" in request["argv"], prelaunch=True) as state:
+                    doc, output = self.profile("linux_gnu_cpu_profile", [SMALL], tools, {},
+                                               contained=place)
+                self.assertEqual(len(state["faults"]), 2, "the candidate side remains usable")
+                self.assertEqual(state["popen"], [])
+                self.assertEqual(state["removals"], [])
+                self.assertEqual(self.profile_object.retained, [])
+                self.assertTrue(os.path.exists(os.path.join(output, "manifest.json")))
+                self.assertTrue(all(item["omission"]["reason"] != "cleanup_uncertain"
+                                    for item in doc["captures"]))
+                for directory in ("child", "probe-bin", "supervisor", "perf", "scratch-fs", "docker"):
+                    path = self.path(directory)
+                    if os.path.isdir(path): shutil.rmtree(path)
+
     def test_decoder_and_renderer_uncertainty_and_exceptions_retain_all_staging(self):
         # Profile.run -> perf_capture -> analyse -> tool_output -> tool_run, and
         # Profile.run -> render -> Renderer.run -> tool_output -> tool_run.

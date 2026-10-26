@@ -207,9 +207,14 @@ Every execution goes through one executor (`perflab/telemetryexec.py`, ADR-0215)
   confirmed removal and scratch inventory checks settle it. Uncertainty stops later launches.
   The workflow's unconditional final cleanup uses this ownership record, independently of
   any result JSON. Before executor setup, `filesystem_pending` is durably set for the entire
-  work lifetime. Only confirmed removal of the final work root clears it. A `stopped`
+  work lifetime. Confirmed removal of the final work root clears it. A preparation refusal
+  may also settle it when the built-in path proves no work began: image inspection and
+  read-only runtime checks precede the host enforcement probe. Entering that probe, any
+  injected preparation hook or executor, or controller work withdraws this evidence.
+  Settlement uses the original absolute deadline before releasing the machine lock; failure
+  or expiry retains recovery authority without retrying the write. A `stopped`
   container never clears this fence; failed reads, writes, replacement or sync leave cleanup
-  ineligible. Failure handlers perform no compensating ownership I/O. Owner admission,
+  ineligible. Other failure handlers perform no compensating ownership I/O. Owner admission,
   transitions and terminal settlement share the original absolute deadline and reserve.
   Only `ready` or `stopped` ownership with no pending filesystem work permits unmount
   and image removal. Pending work or launches, a live controller, missing/corrupt/foreign evidence
@@ -617,3 +622,14 @@ readers use the native supervisor and shared sample containment: IPC and daemon 
 implicit image volumes refused before launch. The mandatory hosted Docker smoke exercises this
 reader route beside the eight build and six measurement cases; local unit tests are not a live
 Docker result. See [ADR-0222](adr/0222-fence-filesystem-cleanup-and-bound-telemetry-admission-through-publication.md).
+
+Shared supervision owns exceptions after `Popen`, including pipe and start-callback failures.
+It attempts the existing bounded cancellation protocol; local cleanup requires a valid reply.
+Contained cleanup requires confirmed removal even when launch raised an ordinary exception.
+Typed ownership evidence survives the tool runner, including cancellation unwinds. An opaque
+executor exception is uncertain; only proven pre-launch refusal is a safe launch error.
+Profile retains namespaces, decoder/renderer staging and both work roots on uncertainty and
+admits no bundle or later launch. The smoke fixture supplies the same required work ownership
+fields as a real Profile; its ready/`docker ps` assertion and ten-second observation stay intact.
+Hosted run 40267246869 job 121392212426 failed that observation after eight build and five
+measurement cases; its cause remains unproven. Fresh hosted CI and live Docker remain required.
