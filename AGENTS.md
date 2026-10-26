@@ -27,17 +27,14 @@ review corpora belong in consuming repositories, not here.
   directory's figure, bar and share; the same check renders the block again from the pull
   request's commits and refuses a description whose block is missing or differs
   ([ADR-0195](docs/adr/0195-state-the-lines-a-pull-request-adds-per-directory-and-check-them.md)).
-- A pull request labeled exactly `no-perf` is not measured by the `Performance` workflow; its
-  `Performance check` reports the exemption, not a pass. When opening or updating a pull
-  request, inspect its entire diff and apply `no-perf` only when every change is prose (an
-  ADR, a runbook, a change note) or a similarly clear non-executable edit that no build, test,
-  benchmark, af runtime input or embedded file reads, and say in the description why it has no
-  runtime impact. Small or easy code is not automatically safe: code of any size, dependencies
-  and build settings, the performance harness, fixtures and benchmarks, CI and performance
-  policy, `.af/` and anything mixed or uncertain keep the measurement. Re-evaluate on every
-  update and remove a `no-perf` that no longer holds
-  ([ADR-0196](docs/adr/0196-skip-pull-request-measurements-only-for-an-explicit-no-perf-label.md),
-  [the guidance](docs/performance-sdlc.md#the-no-perf-label)).
+- PR validation uses the reviewed functional/e2e/uix/perf catalog and label selection in
+  [the test-class design](docs/test-classes.md). `no-perf` excludes both perf validation and
+  the separate Performance measurement; exclusions are reported as NOT RUN or exempt, never
+  as measured passes. Inspect the entire diff when choosing coverage and explain the choice
+  in the PR description. Re-evaluate labels on updates. Local `make check` remains full;
+  release selections are bound to exact SHA/version tags. This operator policy supersedes
+  ADR-0196's prose-only recommendation; the kernel's remote-gate `no_perf_paths` authority
+  remains prose-only and unchanged ([ADR-0213](docs/adr/0213-select-validation-classes-and-bind-release-profiles-to-tags.md)).
 - Product rebranding must not rename `review.kernel/*` artifact types, persisted events, or
   established Review Kernel domain terms until a separate accepted migration ADR supersedes this
   rule. Releases are cut only through `make release` and the release workflow; a lock pins the

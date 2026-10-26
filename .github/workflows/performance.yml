@@ -7,8 +7,8 @@
 # measured. Read-only permissions, no secrets, every action pinned to a commit. A published
 # release is measured through performance-release.yml (ADR-0180), whose read-only handoff
 # claims it first and then calls this workflow with only the claim's artifact name. A pull
-# request labeled exactly `no-perf` is not measured at all; its stable check reports that
-# exemption, and every other trigger ignores the label (ADR-0196).
+# request whose resolved plan excludes perf is not measured; the stable check reports an
+# exemption. Other triggers retain their measurement policy (ADR-0213).
 name: Performance
 # A calibration member's run is named for its cohort's digest and its member before any job
 # starts, so the complete run history binds each member's original dispatch however its
@@ -108,8 +108,8 @@ env:
 
 jobs:
   # The pull request's own opt-out, decided before any plan, build or matrix exists. Only an
-  # exact `no-perf` label on the event's pull request, on its first run attempt, exempts it: a
-  # rerun reads the event as it was, so it measures. No checkout, no candidate code.
+  # resolved perf exclusion exempts it. A rerun preserves the event selection.
+  # Only the trusted base checkout runs the resolver; candidate code never executes here.
   scope:
     name: scope
     runs-on: ubuntu-latest
@@ -117,25 +117,31 @@ jobs:
     outputs:
       exempt: ${{ steps.label.outputs.exempt }}
     steps:
-      - name: Read the no-perf label of the pull request
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.event.pull_request.base.sha || github.sha }}
+          path: scope-control
+          persist-credentials: false
+      - name: Read the no-perf label and the shared class selection from trusted control
         id: label
         env:
           EVENT_NAME: ${{ github.event_name }}
           RELEASE_CLAIM: ${{ inputs.release_claim }}
+          CONTROL_ROOT: ${{ github.workspace }}/scope-control
         run: |
           set -eu
-          exempt=false
-          if [ "$EVENT_NAME" = pull_request ] && [ -z "${RELEASE_CLAIM:-}" ] && [ "$GITHUB_RUN_ATTEMPT" = 1 ]; then
-            exempt="$(python3 -I -c 'import json, sys
-          labels = json.load(open(sys.argv[1], encoding="utf-8"))["pull_request"]["labels"]
-          print("true" if any(label["name"] == "no-perf" for label in labels) else "false")' "$GITHUB_EVENT_PATH")"
+          if [ -f "$CONTROL_ROOT/scripts/test-classes.py" ]; then
+            python3 "$CONTROL_ROOT/scripts/test-classes.py" measurement-scope \
+              --event-name "$EVENT_NAME" --event "$GITHUB_EVENT_PATH" \
+              --release-claim "${RELEASE_CLAIM:-}" --github-output "$GITHUB_OUTPUT"
+          else
+            # Rollout: a base preceding the resolver retains conservative measurement.
+            exempt=false
+            if [ "$EVENT_NAME" = pull_request ] && [ -z "${RELEASE_CLAIM:-}" ]; then
+              exempt="$(python3 -I -c 'import json,sys; print(str(any(x["name"] == "no-perf" for x in json.load(open(sys.argv[1]))["pull_request"]["labels"])).lower())' "$GITHUB_EVENT_PATH")"
+            fi
+            echo "exempt=$exempt" >> "$GITHUB_OUTPUT"
           fi
-          case "$exempt" in
-            true) echo "Performance: pull request labeled no-perf; nothing is measured." >> "$GITHUB_STEP_SUMMARY" ;;
-            false) ;;
-            *) echo "unreadable pull request labels: $exempt" >&2; exit 1 ;;
-          esac
-          echo "exempt=$exempt" >> "$GITHUB_OUTPUT"
 
   plan:
     name: plan
@@ -358,18 +364,17 @@ jobs:
         run: |
           set -eu
           test "$EVENT_NAME" = pull_request
-          test "$GITHUB_RUN_ATTEMPT" = 1
           {
-            echo "### Performance check: exempt (label no-perf), not measured"
+            echo "### Performance check: exempt (perf class NOT RUN), not measured"
             echo
-            echo "This pull request carries the exact label no-perf: no comparison was planned, built or measured, and no performance claim is made. Remove the label to measure it."
+            echo "The resolved PR plan excludes perf (default fast profile, a partial test allowlist or no-perf): no comparison was planned, built or measured, and no performance claim is made. Select test:perf or release:full to measure it."
           } | tee -a "$GITHUB_STEP_SUMMARY"
           {
-            echo 'report_label=EXEMPT (no-perf; not measured)'
+            echo 'report_label=EXEMPT (perf class NOT RUN; not measured)'
             echo 'report_summary<<AF_PERFORMANCE_EXEMPT'
-            echo '## Performance report: EXEMPT (no-perf; not measured)'
+            echo '## Performance report: EXEMPT (perf class NOT RUN; not measured)'
             echo
-            echo 'This pull request carries the exact label no-perf: no comparison was planned, built or measured, and no performance claim is made. Remove the label to measure it.'
+            echo 'The resolved PR plan excludes perf (default fast profile, a partial test allowlist or no-perf): no comparison was planned, built or measured, and no performance claim is made. Select test:perf or release:full to measure it.'
             echo 'AF_PERFORMANCE_EXEMPT'
           } >> "$GITHUB_OUTPUT"
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1

@@ -19,23 +19,23 @@ prereqs:
 TEST_RUNNER ?= nextest
 TEST_THREADS ?= $(shell python3 -c 'import os; print(max(4, (os.cpu_count() or 4) // 2))')
 CI_STEP = python3 scripts/ci-step.py
+BASE_EVIDENCE = $(if $(AF_GATE_NEXTEST_RUN),$(AF_GATE_NEXTEST_RUN)/base-evidence,target/base-evidence)
 
 # Run unprivileged: preflight proves a chmod-sealed source rejects writes.
 # Root/CAP_DAC_OVERRIDE bypass that seal and intentionally fail the precondition.
-check: preflight-check fmt lint test release-check
+check: preflight-check fmt lint test perf-feature-tests release-check
 
 fmt:
 	$(CI_STEP) --stage lint fmt cargo fmt --all -- --check
 
 # The default-off diagnostic features (ADR-0174) and the calibration loop (ADR-0181) are compiled
 # and linted as the laboratory's diagnostic and calibration builds use them, and the trace
-# recorder's and the loop's feature-on tests run; no product build or test above enables them.
+# recorder's and the loop's feature-on tests run through perf-feature-tests (full gate) or the
+# selected perf class; no ordinary product build enables them.
 # The calibration builds of the probe and of `af` are built and executed too (ADR-0182).
 lint:
 	$(CI_STEP) --stage lint lint cargo clippy --all-targets --locked -- -D warnings
 	$(CI_STEP) --stage lint lint-diagnostic-features cargo clippy --locked -p review-pipeline -p af --example perf-probe --bin af --features review-pipeline/perf-trace,review-pipeline/perf-control,review-pipeline/perf-calibration,af/perf-trace,af/perf-control,af/perf-calibration -- -D warnings
-	$(CI_STEP) --stage tests test-perf-trace cargo test --locked -p review-core --features perf-trace,perf-calibration --lib perf_
-	$(CI_STEP) --stage tests test-perf-calibration cargo test --locked -p review-pipeline --features perf-calibration --test perf_probe calibration_build
 
 test:
 ifeq ($(TEST_RUNNER),nextest)
@@ -51,7 +51,7 @@ endif
 # Open the release PR for VERSION (bump + CHANGELOG section). Merging it is the release: the
 # workflow tags, checks, builds, signs, and publishes. COMPAT states authority compatibility.
 release:
-	scripts/release.sh "$(VERSION)" --compat "$(COMPAT)"
+	scripts/release.sh "$(VERSION)" --compat "$(COMPAT)" --profile "$(or $(PROFILE),full)"
 
 # Run the tests NEXTEST_FILTER selects NEXTEST_REPEAT times in a row under the gate's scheduling,
 # stopping at the first run that fails and never rerunning anything: the proof that a flake is
@@ -83,9 +83,9 @@ telemetry-gate:
 # Exercise release selection and tag races against disposable local Git remotes, and keep
 # this repository's own .af/af.lock on the newest release (ADR-0138).
 release-check:
-	$(CI_STEP) --stage release release-resolution python3 scripts/test-release-resolve.py
+	$(CI_STEP) --stage release release-resolution python3 scripts/test-class-python.py test-release-resolve.py "$(BASE_EVIDENCE)/test-release-resolve.py.xml"
 	$(CI_STEP) --stage release changelog-notes python3 scripts/changelog-notes.py --check
-	$(CI_STEP) --stage release af-pin-tests python3 scripts/test-af-pin.py
+	$(CI_STEP) --stage release af-pin-tests python3 scripts/test-class-python.py test-af-pin.py "$(BASE_EVIDENCE)/test-af-pin.py.xml"
 	$(CI_STEP) --stage release af-pin python3 scripts/af-pin.py --check
 
 # Offline advisory orchestration checks against the native inspection fixture, the pull
@@ -101,6 +101,40 @@ preflight-check:
 	$(CI_STEP) --stage preflight provider-auth-host python3 scripts/test-provider-auth-host.py
 	$(CI_STEP) --stage preflight pr-report python3 scripts/test-check-pr-report.py
 	$(CI_STEP) --stage preflight pr-lines python3 scripts/test-pr-lines.py
+	$(CI_STEP) --stage preflight test-classes python3 scripts/test-class-python.py test-test-classes.py "$(BASE_EVIDENCE)/test-test-classes.py.xml"
+	$(CI_STEP) --stage preflight test-catalog python3 scripts/test-classes.py audit
 	$(CI_STEP) --stage preflight performance-lab python3 scripts/test-performance.py
 	$(CI_STEP) --stage preflight performance-schemas python3 scripts/performance/schemas.py
 	$(CI_STEP) --stage preflight --fix 'python3 -I scripts/performance/cli.py harness-digest --write' performance-kernel-harness python3 scripts/performance/cli.py harness-digest --check
+
+# Shared selective entry points. Full `check` above remains the AF gate default. Labels are
+# JSON data in a file; no Make/shell expansion of label strings is permitted.
+.PHONY: base-check check-fast check-full check-classes test-plan perf-feature-tests
+TEST_PLAN ?= target/test-classes/plan.json
+TEST_LABEL_FILE ?=
+base-check: release-check
+	$(CI_STEP) --stage preflight test-classes python3 scripts/test-class-python.py test-test-classes.py "$(BASE_EVIDENCE)/test-test-classes.py.xml"
+	$(CI_STEP) --stage preflight test-catalog python3 scripts/test-classes.py audit
+
+perf-feature-tests:
+	$(CI_STEP) --stage tests test-perf-trace cargo test --locked -p review-core --features perf-trace,perf-calibration --lib perf_
+	$(CI_STEP) --stage tests test-perf-calibration cargo test --locked -p review-pipeline --features perf-calibration --test perf_probe calibration_build
+
+
+test-plan:
+	python3 scripts/test-classes.py plan --context local $(if $(TEST_LABEL_FILE),--event "$(TEST_LABEL_FILE)",) --output "$(TEST_PLAN)"
+
+check-fast:
+	python3 scripts/test-classes.py plan --context local --label release:fast --output "$(TEST_PLAN)"
+	$(MAKE) check-classes
+
+check-full:
+	python3 scripts/test-classes.py plan --context local --label release:full --output "$(TEST_PLAN)"
+	$(MAKE) check-classes
+
+check-classes: base-check fmt lint
+	python3 scripts/test-classes.py execute --plan "$(TEST_PLAN)" --threads $(TEST_THREADS)
+
+.PHONY: test-labels
+test-labels:
+	python3 scripts/test-labels.py $(if $(filter 1,$(APPLY)),--apply,)

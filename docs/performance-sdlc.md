@@ -25,34 +25,24 @@ through a normal PR and the full comparison.
 
 ## The no-perf label
 
-A pull request to `main` labeled exactly `no-perf` is not measured: no plan, build or shard runs,
-and `Performance check` reports `exempt (label no-perf), not measured`, which is an exemption and
-never a measured or qualified result. Adding the label cancels a running measurement; removing
-it measures again. Only the exact lowercase name counts, only on the run's first attempt (a
-rerun measures), and pushes to `main`, the nightly schedule, dispatches, calibration and release
-handoffs ignore it
-([ADR-0196](adr/0196-skip-pull-request-measurements-only-for-an-explicit-no-perf-label.md)).
-Ordinary correctness checks, including the laboratory's own unit and schema tests in
-`validate.yml` and `make check`, run whatever the label says.
+PR validation and measurement share the selection in [the test-class design](test-classes.md).
+The PR default is functional + e2e + uix; perf is opt-in. `no-perf` excludes both performance
+validation and the separate measurement workflow. `test:perf` opts into perf as an explicit
+allowlist; `release:full` or all four positive labels select the complete union. Conflicting,
+unknown reserved or empty selections fail. A perf exclusion is reported as **EXEMPT (perf class
+NOT RUN; not measured)**, never a measured pass. Label changes cancel older PR measurements.
+Reruns preserve the event selection. Push, schedule, dispatch and published-release handoffs
+retain their prior measurement policy and ignore PR exclusions.
 
-Agents opening or updating an ordinary Afactory pull request apply it conservatively:
-
-1. Inspect the entire diff against the base, not the latest commit or the task's intent.
-2. Label only when every changed file is prose — an ADR, a runbook, a design note, a change note
-   — or a similarly clear non-executable edit that no build, test, benchmark, af runtime input
-   or embedded file reads. Markdown is not prose by its extension: a crate's `README.md` can be
-   compiled in, and `.af/` prompts are runtime inputs.
-3. Keep the measurement for code of any size, however small or easy; dependencies, lock files
-   and build settings; the performance harness, fixtures, golden data and benchmarks; CI
-   workflows and performance policy; `.af/`; and every mixed or uncertain change.
-4. Say in the pull request description why the change has no runtime impact.
-5. Re-evaluate on every update, and remove a `no-perf` the new diff no longer justifies.
-
-A change to the laboratory, its workflows or its policy is never labeled: it is exactly what the
-measurement has to see. Reviewers check the label against the diff like any other claim. Remote
-Check gate pull requests target `af-gate/**` bases and are never measured here; the label af
-puts on them for its operators' `no_perf_paths` is described in
+Inspect the entire diff when choosing coverage, explain the decision in the PR description,
+and re-evaluate it on updates. ADR-0213 explicitly supersedes the older prose-only recommendation
+for ordinary repository PR labels. The kernel's Remote Check `no_perf_paths` mapping remains
+prose-only and unchanged; those gate PRs are never measured here. See
 [Remote Checks](task-execution/remote-checks.md#3-give-this-machine-a-push-target).
+Local `make check` remains full. Selected perf validation requires the lab's latest-stable-Python
+and schema parity checks; excluded perf is visible as NOT RUN. Release publication requires its
+bound validation union and packaged-binary smoke. Post-publication measurement remains asynchronous
+and advisory, including after full releases.
 
 ## Infrastructure rollout
 
@@ -109,8 +99,9 @@ instead of claiming native AF acceptance.
 
 ## Python validation
 
-`validate.yml` runs the laboratory tests and schema parity once on the latest stable Python,
-selected with `actions/setup-python` using `python-version: '3.x'` and `check-latest: true`.
-Tomli/tomllib parity is mandatory. The required `lint` check fails when this job fails, is
-cancelled or is skipped. The other validation jobs use the same Python selection before
-executing Python or Make commands ([ADR-0197](adr/0197-validate-on-one-latest-stable-python.md)).
+`validate.yml` runs selected perf laboratory tests and schema parity once per selected platform on
+latest stable Python, using `python-version: '3.x'`, `check-latest: true`, and mandatory Tomli/tomllib
+parity. Stable lint/check aggregators require all selected class receipts, failing for missing,
+cancelled or skipped selected work. Every validation job uses the same Python selection before
+Python or Make commands. ADR-0213 replaces ADR-0197's unconditional lab dependency with this explicit
+selection; full validation still requires the complete lab.
