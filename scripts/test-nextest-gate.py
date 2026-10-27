@@ -145,7 +145,9 @@ def main():
         # Use the actual Makefile test recipe; other gate stages do not apply to
         # this miniature crate. The production check target is not modified.
         makefile = (ROOT / 'Makefile').read_text()
-        recipe = makefile[makefile.index('test:'):makefile.index('# Open the release PR')]
+        # `test` depends on `test-build` (the build receipt the kernel's phase monitor waits for),
+        # so the slice starts at that target.
+        recipe = makefile[makefile.index('test-build:'):makefile.index('# Open the release PR')]
         (repo / 'Makefile').write_text(NL.join([
             'TEST_RUNNER = nextest', 'TEST_THREADS = 4',
             'CI_STEP = python3 scripts/ci-step.py', 'check: test', recipe]))
