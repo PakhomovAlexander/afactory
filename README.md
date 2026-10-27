@@ -32,8 +32,9 @@ your change --> your checks -+                            +--> verdict and findi
 - **The pipeline is shared like code.** af reads `.af/` only from a commit and pins every Worker
   and its own release by digest, so the whole team runs the same review and a change to it is a
   diff you review.
-- **Agents can drive it.** Most commands print one JSON document with `--json`, exit codes are
-  stable, and a Task's state names the next command: see [For agents](#for-agents).
+- **Agents can drive it.** A command whose `--help` lists `--json` prints one JSON document with
+  it, exit codes are stable, and a Task's state names the next command: see
+  [For agents](#for-agents).
 
 **Status:** public alpha. A release reads only the state and configuration it writes itself, so
 finish or discard running Campaigns and Tasks before you upgrade. Each release's entry in
@@ -127,6 +128,19 @@ pipeline's convergence policy is met or its Round limit is reached
 ([ADR-0037](docs/adr/0037-default-campaigns-to-one-round-light-review.md)). `af help concepts`
 explains Task, Worker, Attempt, Snapshot and the other words in two sentences each.
 
+### Findings that look alike
+
+Two reviewers may report the same line with different titles or severities. They stay two
+Findings: a Finding's identity comes from its first Report, never from its path or title, and af
+never merges claims that only look alike
+([ADR-0006](docs/adr/0006-finding-identity-is-path-independent.md)); a later Report joins a
+Finding only through an explicit relation, such as its reviewer corroborating that Finding's ID.
+When you judge two to be one defect, list them with `af review ledger --campaign NAME`, then,
+after the Round closes, run `af review group --campaign NAME FROM INTO`. Both IDs, every Report
+and each Report's own verification stay; the ledger lists one Finding under INTO with the higher
+severity, `af review show --campaign NAME FROM` shows the group, and
+`af review ungroup --campaign NAME FROM INTO` undoes it.
+
 ### Updating and removing
 
 ```sh
@@ -217,12 +231,18 @@ Rules for a coding agent, or a script, that drives af for someone:
 - **Plan first.** `af review plan …` and `af task plan --file …` are token-free. A review plan
   needs no login; a Task plan with model Workers checks that their Providers are logged in.
   Show the plan before anything spends.
-- **Read JSON, not prose.** Most commands take `--json` and print one document on stdout, with
-  progress on stderr; `af review report` and `af review campaigns` take `--format json`, and a
-  command's `--help` names its output flags. Branch on the document's `schema`: most refusals
-  are `af/error@1`, while `af provider` commands and a refused Task plan print their own
-  documents (`af help json`). `af telemetry tail --json` prints one object per line, and
-  `af config show --json` a document with no `schema`.
+- **Read JSON, not prose.** A command whose `--help` lists `--json` prints one document on stdout
+  under it, with progress on stderr, except `af telemetry tail --json`: it streams JSON Lines,
+  one `af/telemetry-tail@1` object per line. A tail that fails with an error, such as a segment
+  it cannot read, even after records, ends the stream with one `af/error@1` line carrying its
+  exit code, so tell each line by its `schema`. A run two Stores record is no such error: shared
+  when tail starts or by a second Store that appears while it follows, tail exits 2 with no
+  further line on stdout and names both Stores for `--store` on stderr, so check the exit code
+  too. `af review report` takes `--format json` instead, and `af review campaigns` either flag
+  for the same document. Some commands, such as `af review ledger` and `af review show`, print
+  text only. Branch on the document's `schema`: most refusals are `af/error@1`, while
+  `af provider` commands and a refused Task plan print their own documents (`af help json`), and
+  `af config show --json` prints a document with no `schema`.
 - **Branch on the exit code.** `af review run` exits 0 pass, 3 fail, 4 incomplete. A foreground
   `af task run` exits 0 verified, 3 changes requested, 4 cancelled, exhausted or waiting for a
   person, 5 gate failed, 6 Provider failed, 7 expired. With `--detach`, 0 only means the run

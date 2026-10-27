@@ -344,21 +344,33 @@ fn json_guidance_names_telemetry_tail_as_the_one_json_lines_stream() {
     let readme = workspace_file("README.md");
     let agents = collapsed(
         readme
-            .split("### Agents and CI\n")
+            .split("## For agents\n")
             .nth(1)
             .unwrap()
-            .split("\n### ")
+            .split("\n## ")
             .next()
             .unwrap(),
     );
     assert!(
         agents.contains(
-            "A command whose `--help` lists `--json` prints one versioned document under it, \
-             except `af telemetry tail --json`: it streams JSON Lines, one \
+            "A command whose `--help` lists `--json` prints one document on stdout under it, with \
+             progress on stderr, except `af telemetry tail --json`: it streams JSON Lines, one \
              `af/telemetry-tail@1` object per line"
         ),
         "{agents}"
     );
+    // The flags the README names for the commands that print JSON another way are the ones their
+    // `--help` lists, and no surface promises `--json` to most commands.
+    assert!(
+        agents.contains(
+            "`af review report` takes `--format json` instead, and `af review campaigns` either \
+             flag for the same document"
+        ),
+        "{agents}"
+    );
+    assert!(help(&["review", "campaigns", "--help"]).contains("--json"));
+    assert!(!help(&["review", "report", "--help"]).contains("--json"));
+    assert!(!collapsed(&readme).contains("Most commands"), "README.md");
     assert!(
         agents.contains(
             "A tail that fails with an error, such as a segment it cannot read, even after \

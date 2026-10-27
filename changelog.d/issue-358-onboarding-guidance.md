@@ -1,7 +1,9 @@
 - Make the first-run guidance truthful (issue #358). The installer's next steps and `af --help`
   recommend `af provider detect --apply`, as the README does, and its fish, bash and zsh PATH
   lines quote the bin directory as `af doctor` does, so a space, `$`, backtick, quote or `\` in it
-  stays one literal path when the line is pasted. Beside a registered
+  stays one literal path when the line is pasted; a bin directory no PATH entry can hold, with a
+  `:` or a control character, gets no line to paste but one that says to set `XDG_BIN_HOME` to
+  another directory and install again, a control character never printed. Beside a registered
   Provider that works, `af doctor` lists unregistered contexts as optional (`logged in` or `logged out` only
   where its status probe already asked, else `not probed`) instead of a warning whose
   `detect --apply` fix cannot clear it, and probes nothing more

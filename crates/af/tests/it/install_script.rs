@@ -450,6 +450,87 @@ fn install_sh_bash_and_zsh_path_lines_keep_the_directory_literal() {
     }
 }
 
+/// Issue #358: no PATH entry holds a bin directory with a `:` or a control character, as `af
+/// doctor` judges it, so the install ends with no command for any shell: one line that says so
+/// and to choose another `XDG_BIN_HOME`, the directory shown only when it has no control
+/// character. A `:` is judged before PATH is asked, so a PATH that spells the directory across two
+/// entries does not hide it. Nothing printed is run.
+#[test]
+fn install_sh_gives_no_path_line_for_a_bin_directory_no_path_entry_can_hold() {
+    let Some(host) = install_host() else {
+        return;
+    };
+    let installer = Installer::new();
+    let sandbox = &installer.sandbox;
+    sandbox.publish_for("0.8.2", host);
+    write(
+        &sandbox.release_dir("0.8.2").join("SHA256SUMS.minisig"),
+        "signature\n",
+    );
+    let no_command = |lines: &[String]| {
+        for line in lines {
+            assert!(
+                !line.contains("export PATH")
+                    && !line.contains("fish_add_path")
+                    && !line.contains(" to PATH"),
+                "{lines:#?}"
+            );
+        }
+    };
+    let shells = ["/bin/bash", "/usr/bin/zsh", "/usr/bin/fish", "/bin/ksh"];
+
+    // A `:`: the directory is shown, with the fix, and no shell gets a command.
+    let colon = sandbox.path("af:bin");
+    let colon_env = colon.to_str().unwrap();
+    let refusal = format!(
+        "  no PATH entry can hold {colon_env}, which has a `:`: set XDG_BIN_HOME to a directory \
+         without one, then install again"
+    );
+    let mut spelled = std::env::split_paths(&installer.with_minisign).collect::<Vec<_>>();
+    spelled.push(sandbox.path("af"));
+    spelled.push(PathBuf::from("bin"));
+    let spelled = std::env::join_paths(spelled).unwrap();
+    assert!(
+        format!(":{}:", spelled.to_str().unwrap()).contains(&format!(":{colon_env}:")),
+        "PATH spells the directory across two entries"
+    );
+    for path in [&installer.with_minisign, &spelled] {
+        for shell in shells {
+            let install = installer.run(path, &[("SHELL", shell), ("XDG_BIN_HOME", colon_env)]);
+            assert!(install.status.success(), "{}", err(&install));
+            let lines = ending(&install);
+            assert_eq!(lines.len(), 6, "{shell}: {lines:#?}");
+            assert_eq!(lines[5], refusal, "{shell}: {lines:#?}");
+            no_command(&lines);
+        }
+    }
+
+    // A newline, a tab, an ESC and a C1 CSI: the directory is never printed, so no raw control
+    // reaches the terminal and the ending keeps its lines.
+    let refusal = "  no PATH entry can hold the bin directory, which has a control character: set \
+                   XDG_BIN_HOME to a directory without one, then install again";
+    for control in ["\n", "\t", "\u{1b}[31m", "\u{9b}31m"] {
+        let dir = sandbox.path(&format!("af{control}bin"));
+        let dir_env = dir.to_str().unwrap();
+        for shell in shells {
+            let install = installer.run(
+                &installer.with_minisign,
+                &[("SHELL", shell), ("XDG_BIN_HOME", dir_env)],
+            );
+            assert!(install.status.success(), "{}", err(&install));
+            let lines = ending(&install);
+            assert_eq!(lines.len(), 6, "{control:?} {shell}: {lines:#?}");
+            assert_eq!(lines[5], refusal, "{control:?} {shell}: {lines:#?}");
+            no_command(&lines);
+            assert!(
+                !out(&install).chars().any(|c| c.is_control() && c != '\n'),
+                "{control:?} {shell}: {:?}",
+                out(&install)
+            );
+        }
+    }
+}
+
 #[test]
 fn install_sh_installs_the_newest_pre_release_on_the_rc_channel() {
     let Some(host) = install_host() else {
