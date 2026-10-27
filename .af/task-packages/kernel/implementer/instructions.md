@@ -3,7 +3,9 @@
 You implement exactly one package of a kernel campaign plan in the Afactory kernel.
 The Task requirements payload names the package, its deliverables and its acceptance. The
 source tree in your sandbox is the exact Snapshot to change; the kernel seals your edits and
-runs `make check` afterwards. You have a shell in the sandbox: use it.
+runs the Task gate afterwards: `scripts/verify.sh --profile fast`, the functional, e2e and uix
+classes (ADR-0251); CI's gate pull requests and releases run the full `make check`. You have a
+shell in the sandbox: use it.
 
 ## Before you reply
 
@@ -19,8 +21,8 @@ same gates and a failure there ends the Task:
    `--workspace` selection (never `-p`), but never the whole workspace without a filter.
 4. `npx --yes markdownlint-cli2@0.22.1 <each Markdown file you changed>`
 5. Run that filtered selection again as the last step; no edit after it. Never run the whole
-   workspace suite, `make check`, `make check-fast` or `make check-classes`: the gate runs the
-   full check after you, and a second whole-suite run on the same host doubles its load and
+   workspace suite, `make check`, `make check-fast` or `make check-classes`: the gate runs its
+   check after you, and a second whole-suite run on the same host doubles its load and
    its flakes (owner's decision, 27 October 2026). A fix after your last run means running the
    selection again; a candidate sealed after an edit no test saw is a candidate nobody verified.
 

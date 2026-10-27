@@ -114,7 +114,8 @@ preflight-check:
 perf-python-tests: test
 	$(CI_STEP) --stage tests performance-lab python3 scripts/test-performance.py
 
-# Shared selective entry points. Full `check` above remains the AF gate default. Labels are
+# Shared selective entry points. Full `check` above is what CI's gate pull requests, releases
+# and `make check` run; the Task gate runs `scripts/verify.sh --profile fast` (ADR-0251). Labels are
 # JSON data in a file; no Make/shell expansion of label strings is permitted.
 .PHONY: base-check check-fast check-full check-classes test-plan perf-feature-tests perf-kernel-measure
 TEST_PLAN ?= target/test-classes/plan.json

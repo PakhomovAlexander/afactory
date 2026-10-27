@@ -33,8 +33,9 @@ Where Linux and macOS differ, split on `target_os`.
 ## Before every pull request
 
 For a code Task, the implementer runs a filtered nextest selection through `--profile ci`
-for the tests it touched and repeats that selection after its last edit. The Task gate owns
-the full suite. Before a pull request, run the full local check:
+for the tests it touched and repeats that selection after its last edit. The Task gate runs
+the fast profile (functional, e2e, uix; ADR-0251); CI's gate pull requests and releases run
+the full check. Before a pull request, run the full local check:
 
 ```sh
 make check
