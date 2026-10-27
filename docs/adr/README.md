@@ -423,3 +423,5 @@ future readers need.
   producer](0225-declare-the-replacement-hosted-cohort-from-the-accepted-producer.md)
 - [0240 — Distinguish host-denied Provider probes from incompatible
   CLIs](0240-distinguish-host-denied-provider-probes.md)
+- [0241 — Install an agent entry point from the help
+  page](0241-install-an-agent-entry-point-from-the-help-page.md)

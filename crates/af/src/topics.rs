@@ -230,6 +230,52 @@ once they read the Store: the state they print is data, not their outcome.",
 /// different things (ADR-0211).
 const AGENTS: &str = include_str!("../../../docs/agents.md");
 
+const SNIPPET_START: &str = "<!-- af-agent-snippet:start -->\n";
+const SNIPPET_END: &str = "<!-- af-agent-snippet:end -->";
+
+/// The repository pointer is extracted from the help page, so help and installed files share
+/// exactly one source. The inner markers are also the replacement boundary in AGENTS.md.
+pub(crate) fn agent_snippet() -> &'static str {
+    AGENTS
+        .split_once(SNIPPET_START)
+        .expect("agents page has snippet start")
+        .1
+        .split_once(SNIPPET_END)
+        .expect("agents page has snippet end")
+        .0
+}
+
+pub(crate) fn agent_skill() -> String {
+    let body = format!(
+        "---\nname: af\ndescription: Drive Afactory from a coding agent.\n---\n\n# Afactory\n\n{}\nRun `af help agents` for the full loop.\n",
+        agent_snippet()
+    );
+    generated_agent_skill(&body)
+}
+
+pub(crate) fn generated_agent_skill(body: &str) -> String {
+    use sha2::{Digest, Sha256};
+    let digest = Sha256::digest(body.as_bytes());
+    let digest: String = digest.iter().map(|byte| format!("{byte:02x}")).collect();
+    format!("<!-- af-generated-skill:sha256:{digest} -->\n{body}")
+}
+
+pub(crate) fn is_generated_agent_skill(text: &str) -> bool {
+    use sha2::{Digest, Sha256};
+    let Some((marker, body)) = text.split_once('\n') else {
+        return false;
+    };
+    let Some(expected) = marker
+        .strip_prefix("<!-- af-generated-skill:sha256:")
+        .and_then(|marker| marker.strip_suffix(" -->"))
+    else {
+        return false;
+    };
+    let digest = Sha256::digest(body.as_bytes());
+    let digest: String = digest.iter().map(|byte| format!("{byte:02x}")).collect();
+    expected.len() == 64 && expected == digest
+}
+
 /// What the same table says about a captured Snapshot, and the one knob over it.
 const UNDECLARED: &str = "\
 `af task plan` and `af task start` classify the Snapshot they captured against that table and

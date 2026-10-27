@@ -68,7 +68,7 @@ on a token budget, and never publishes: `af review` folds what reviewers find in
 `af task` turns a Task file into a verified change you deliver to a new local worktree.
 
 Start here (`af help start` explains each step):
-  1. af provider detect           find the claude/codex logins on this machine and register them
+  1. af provider detect           preview claude/codex logins; --apply registers them
   2. af onboard                   in a repository: preview `.af/` (token-free); --apply writes it
   3. git add .af && git commit    review that authority, then commit it
   4. af review plan --policy-rev HEAD --base HEAD --uncommitted
@@ -476,6 +476,16 @@ document, each check with its `fix` and `hint`.",
         after_long_help = "Examples:\n  af doctor\n  af doctor --repo ../other-checkout   # needs: a checkout at ../other-checkout\n  af doctor --json | jq '.checks[] | select(.status != \"ok\")'"
     )]
     Doctor(MachineDoctorArgs),
+    /// Preview or install the af agent pointer and skills in a Git repository
+    #[command(
+        display_order = 8,
+        subcommand_required = true,
+        arg_required_else_help = true
+    )]
+    Setup {
+        #[command(subcommand)]
+        command: SetupCommand,
+    },
     /// Explain a topic or a command; `af help` lists every topic
     #[command(
         display_order = 7,
@@ -489,6 +499,25 @@ equals `af review run --help`.",
         /// A topic name or a command path
         #[arg(value_name = "TOPIC|COMMAND")]
         words: Vec<String>,
+        /// Print only the AGENTS.md pointer (agents topic only)
+        #[arg(long)]
+        snippet: bool,
+    },
+}
+
+#[derive(Debug, Subcommand)]
+pub(crate) enum SetupCommand {
+    /// Preview the af agent pointer and skills; write them only with --write
+    #[command(
+        long_about = "Preview the AGENTS.md pointer and both af skills in this Git repository.\n\n--write appends or updates only the marked af block in AGENTS.md and writes .claude/skills/af/SKILL.md and .agents/skills/af/SKILL.md. A foreign skill is refused. No file is written by default."
+    )]
+    Agents {
+        /// Git repository to update [default: .]
+        #[arg(long, value_name = "DIR", default_value = ".")]
+        repo: PathBuf,
+        /// Write the previewed files
+        #[arg(long)]
+        write: bool,
     },
 }
 

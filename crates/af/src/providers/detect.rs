@@ -2382,6 +2382,7 @@ fn print_closing(rows: &[Row], applied: bool, code: i32, binaries: &[Binary], ho
             .filter(|row| row.suggested.action == "register")
             .count();
         let summary = match waiting {
+            0 if rows.is_empty() => "No login was found to register.".to_string(),
             0 => "every authenticated login found here is registered".to_string(),
             1 => "1 login is not registered: run af provider detect --apply to register it with \
                   the ID above, or copy a line"

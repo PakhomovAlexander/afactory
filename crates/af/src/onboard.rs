@@ -739,6 +739,7 @@ fn build_bundle(
         providers: Vec::new(),
         next_steps: vec![
             format!("Review this plan, then run `{apply_command}`."),
+            "Separately preview the agent entry point with `af setup agents`; install only with `af setup agents --write`.".into(),
             "Review and commit the generated `.af/` diff on the trusted base branch.".into(),
             "Run `af onboard` again to validate authority and print the operating workflow.".into(),
         ],
