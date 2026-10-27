@@ -45,7 +45,7 @@ def capture(sha, version):
                 tc.validate_source_pr(source, sha, version)
                 labels = tc.event_labels({'pull_request': pr})
                 # Validate even when the eventual match count proves ambiguous.
-                tc.resolve(labels, 'release', sha, version)
+                tc.resolve(labels, 'release_pr', sha, version)
                 matches.append((source, labels))
         if len(rows) < 100:
             break
@@ -61,7 +61,8 @@ def prepare(sha, version, output):
         raise ValueError('release policy checkout SHA mismatch')
     source, labels = capture(sha, version)
     binding = {'schema': tc.BINDING, 'sha': sha, 'version': version,
-               'source_pr': source, 'plan': tc.resolve(labels, 'release', sha, version)}
+               'source_pr': source,
+               'plan': tc.resolve(labels, 'release_pr' if source is not None else 'release', sha, version)}
     tc.release_plan(json.dumps(binding), sha, version)
     tc.write(output, binding)
 

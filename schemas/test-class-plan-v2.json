@@ -1,5 +1,5 @@
 {
-  "$id": "urn:af:schema:test-class-plan:1",
+  "$id": "urn:af:schema:test-class-plan:2",
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "additionalProperties": false,
   "properties": {
@@ -115,6 +115,7 @@
       "enum": [
         "pr",
         "gate",
+        "release_pr",
         "local",
         "release"
       ]
@@ -134,7 +135,7 @@
       ]
     },
     "schema": {
-      "const": "af.test-plan/1"
+      "const": "af.test-plan/2"
     },
     "selected": {
       "items": {
