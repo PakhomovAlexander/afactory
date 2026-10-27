@@ -6,6 +6,7 @@ import itertools
 import json
 import os
 import shutil
+import stat
 from pathlib import Path
 import subprocess
 import sys
@@ -553,7 +554,9 @@ class SealedEvidence(unittest.TestCase):
             scripts = root / 'scripts'
             for name in ('test-class-python.py', 'changelog-notes.py', 'af-pin.py',
                          'performance/schemas.py', 'performance/cli.py'):
-                (scripts / name).write_text('pass\n')
+                path = scripts / name
+                path.chmod(stat.S_IMODE(path.stat().st_mode) | stat.S_IWUSR)
+                path.write_text('pass\n')
             tools = root / 'bin'
             tools.mkdir()
             (tools / 'python3').symlink_to(sys.executable)
