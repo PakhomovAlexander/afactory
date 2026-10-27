@@ -249,7 +249,6 @@ its affected plan approval and retains the original execution allowance and all 
 
 ### Performance laboratory
 
-
 **Performance Executor**:
 The operator controller that selects independent local VM compute or GitHub Actions from a
 closed configuration. Local compute calls the existing laboratory with installed committed
@@ -268,7 +267,6 @@ The durable sibling of the fixed performance machine lock, created before shared
 settled only after confirmed cleanup and terminal evidence. Controller loss or uncertain owned
 descendants retain it across users/workspaces. Every compute process sees the same lock inode;
 private temporary namespaces cannot supply independent performance slots.
-
 
 **Performance Case**:
 A reviewed entry of `fixtures/performance/suite.toml`: one workload with its independent oracle,

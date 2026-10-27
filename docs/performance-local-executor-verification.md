@@ -2,7 +2,7 @@
 
 Recorded 2026-10-27 in the AF implementation sandbox, using Python 3.14.4. The unchanged
 Rust pin is 1.88.0. This note records implementation checks; it is not VM measurement evidence.
-The narrow CI repair below records the latest focused checks and protected inventory.
+The repair sections below record the latest focused checks and protected inventory.
 
 ## Original feature focused command
 
@@ -150,3 +150,52 @@ or GitHub change was performed in this repair Worker. Unit results do not establ
 external proofs, independent acceptance, calibration qualification or speedup. The coordinator
 owns fresh real Docker CI and deployment/Claw runs after the enclosing Task accepts the complete
 feature. Hosted backends, historical cohorts, contracts, limits and statistical minima remain.
+
+## Narrow native validation repair (2026-10-27)
+
+This patch starts from `e27cd335342f406b11d6f8af701b539af51f6eee` and preserves both earlier
+CI fixes and their recorded 73-test result above. It removes only the three surplus Markdown
+blank lines reported at original `CONTEXT.md` lines 252/272 and
+`docs/design/continuous-performance.md` line 1027, preserving all prose.
+
+The fixture-only `state(pid)` reader now treats exactly `ProcessLookupError` alongside
+`FileNotFoundError` as absence when a process disappears during its procfs read. The new
+deterministic regression injects both exceptions into `Path.read_bytes`, requires absence,
+and requires the identical `PermissionError` and unrelated `OSError(EIO)` instances to
+propagate. Production `gate-owner.py`, all existing assertions, cleanup/ownership logic,
+timeouts, quotas, retry policy, Makefile and gate selection are unchanged. This repairs an
+observation race; it does not establish a cleanup repair.
+
+Focused commands with Python 3.14.4:
+
+```sh
+python3 -I -B scripts/test-gate-owner.py StateObservation -v
+python3 -I -B scripts/test-gate-owner.py -v
+```
+
+**PASS:** regression, 1 test in 0.002 seconds, exit 0; complete module, all 13 existing tests
+plus the regression, **14 tests in 15.041 seconds, exit 0**, with no skips.
+
+Pinned Markdown check on all three changed Markdown files:
+
+```sh
+npx --cache /tmp/af-validation-markdown-npm --offline --yes markdownlint-cli2@0.22.1 CONTEXT.md docs/design/continuous-performance.md docs/performance-local-executor-verification.md
+```
+
+**PASS:** markdownlint-cli2 0.22.1 / markdownlint 0.40.0, 3 files, 0 errors, exit 0.
+The sandbox's default cache initially returned `ENOTCACHED`; a fetch attempt returned
+`EAI_AGAIN`. The passing offline command uses a temporary writable copy of the public native
+npm dependency cache. No formatter rule or exclusion changed. All four changed paths return
+false from the unchanged `kernelguard.RULES['protected']` predicate, so no protected inventory
+regeneration is needed; the generator and recorded inventory remain unchanged.
+
+The preceding native Task was **not accepted** (`gate_failed/check_failed`): source Snapshot
+`4016f950d0633359226016d7450feeb3e20cf45c52d3d462723c7d92e4a7150b`, check receipt
+`a854482424e7f9fb5d5dad6b860ecfe5186e0c254b13feccb5bc088181e708dc`. No reviewer ran because
+checks failed. The enclosing pipeline must run the unchanged full kernel/Markdown gates,
+independent Terra bug review, Astra correctness review and Astra evaluation through
+`codex-personal` on the **complete main-to-final feature**, using explicit main base
+`8c0ca71a1df2b73ed7c1d0ba9686a6ec1ddf47b1`. These remain acceptance requirements, not passes
+claimed by this Worker. No full suite ran here. The coordinator owns actual Docker CI, final
+publication and authentic VM execution after native acceptance; deployment, calibration
+qualification and speedup remain unclaimed. Follow-ups #378/#382/#380 remain separate.
