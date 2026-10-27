@@ -41,7 +41,7 @@ const MAX_REFUSAL_CHARS: usize = 1024;
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct TaskCheckReportV1 {
-    /// The `af/TaskCheckReceipt@1` these checks' results are recorded in.
+    /// The `af/TaskCheckReceipt@2` these checks' results are recorded in.
     pub receipt_id: String,
     /// One entry per local check that started, by check name.
     pub checks: BTreeMap<String, TaskCheckRunV1>,

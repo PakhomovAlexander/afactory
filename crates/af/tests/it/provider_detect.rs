@@ -1074,7 +1074,7 @@ fn exit_codes_follow_the_documented_table() {
             let output = machine.af(&json);
             assert_eq!(code(&output), 2, "{json:?}");
             let document: Value = serde_json::from_str(out(&output).trim()).unwrap();
-            assert_eq!(document["schema"], "af/error@1", "{document}");
+            assert_eq!(document["schema"], "af/error@2", "{document}");
             assert_eq!(document["exit_code"], 2);
             assert!(err(&output).contains("try: af provider detect --help"));
         }
@@ -1196,7 +1196,7 @@ fn setup_creates_a_missing_auth_directory_only_with_login() {
     let refused = machine.af(&json);
     assert_eq!(code(&refused), 1);
     let document: Value = serde_json::from_str(out(&refused).trim()).unwrap();
-    assert_eq!(document["schema"], "af/error@1");
+    assert_eq!(document["schema"], "af/error@2");
     assert!(!fresh.exists());
 
     // With `--login` the directory is created for the login, which this pipe never starts.
@@ -1398,7 +1398,7 @@ fn apply_leaves_a_login_whose_cli_is_off_path_unregistered_with_the_path_fix() {
 
 /// C3 item 11: a registry that cannot be read is unknown, never empty: every row's registration
 /// says so, the note is in every output (the empty scan's included), and `--apply` refuses with
-/// exit 1 and one `af/error@1` document.
+/// exit 1 and one `af/error@2` document.
 #[test]
 fn an_unreadable_registry_is_unknown_and_refuses_apply() {
     let machine = Machine::new();
@@ -1440,7 +1440,7 @@ fn an_unreadable_registry_is_unknown_and_refuses_apply() {
     let refused = machine.af(&["provider", "detect", "--apply", "--json"]);
     assert_eq!(code(&refused), 1, "{}", err(&refused));
     let error: Value = serde_json::from_str(out(&refused).trim()).unwrap();
-    assert_eq!(error["schema"], "af/error@1");
+    assert_eq!(error["schema"], "af/error@2");
     assert_eq!(error["exit_code"], 1);
     assert!(
         error["error"]

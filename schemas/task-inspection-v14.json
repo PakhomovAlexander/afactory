@@ -1,7 +1,7 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "$id": "urn:af:schema:task-inspection:13",
-  "title": "Task inspection af/task-inspection@13",
+  "$id": "urn:af:schema:task-inspection:14",
+  "title": "Task inspection af/task-inspection@14",
   "$comment": "The one read-only projection of a common Task. Sections beyond the required core appear only when the Task recorded them: owned children, Review handoffs and Integration phases, measured Attempt walls with their runtime evidence, experiments and adoption observations. History, execution, report and handoff entries keep their exact artifact types and payloads. The Store validates cross-artifact identities, histories, selected results and cumulative accounting; a JSON schema cannot authenticate CAS or recompute a history. These records grant no admission or dispatch authority. Explain adds graph and plan together. Version 12 adds the `state` every rendering prints, the `gate` summary of the last check receipt with its check reports and gate retries, and the `failures` of the last run report (`af help task-states`). Version 13 adds `continues`, the Task and review round a continued Task was planned from (ADR-0212).",
   "type": "object",
   "additionalProperties": false,
@@ -21,7 +21,7 @@
   ],
   "properties": {
     "schema": {
-      "const": "af/task-inspection@13"
+      "const": "af/task-inspection@14"
     },
     "task_id": {
       "$ref": "urn:af:schema:task-contracts:1#/$defs/name"
@@ -34,7 +34,7 @@
     },
     "state": {
       "description": "The state `af task list`, `show`, `report` and `run` print for this Task.",
-      "$ref": "urn:af:schema:task-state:1#/$defs/state"
+      "$ref": "urn:af:schema:task-state:2#/$defs/state"
     },
     "clock": {
       "description": "The Task's wall clock, which starts at its first plan admission (`af task run`), not at planning: the wall it has from then, when it started, and the deadline it has since; both null before the first run. The plan's own `limits.deadline_unix_ms` is the deadline recorded at planning.",
@@ -580,6 +580,30 @@
         }
       }
     },
+    "attempt_wall_ends": {
+      "description": "Each Attempt a Worker's Attempt wall ended, in log order (ADR-0253): the af/TaskAttemptWallEnd@1 its settlement keeps among its raw evidence and, for a source-writing Worker, the af/TaskPartialCandidate@1 its tree was sealed as. Never an output: no seal, check, review, acceptance or delivery reads one. Absent when there is none.",
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "artifact_id",
+          "record"
+        ],
+        "properties": {
+          "artifact_id": {
+            "$ref": "urn:af:schema:task-contracts:1#/$defs/digest"
+          },
+          "record": {
+            "$ref": "urn:af:schema:task-attempt-wall-end:1"
+          },
+          "partial_candidate": {
+            "$ref": "urn:af:schema:task-partial-candidate:1"
+          }
+        }
+      }
+    },
     "run_reports": {
       "type": "array",
       "items": {
@@ -674,6 +698,108 @@
       "type": "array",
       "items": {
         "$ref": "urn:af:schema:task-review-round:1"
+      }
+    },
+    "slots": {
+      "description": "Each Worker slot of the recorded plan beside its binding and its Attempt wall, in the order `af task plan` lists them (ADR-0253): the slot, its captured Worker package, a model binding's Provider, model and effort or a command Worker, and the longest `wall_ms_per_attempt` the compiled graph gives a node the slot runs as, null for a slot no node runs. Present with `plan` and `graph` (`af task plan`, `start`, `explain` and `run --from` without --execute).",
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "slot",
+          "worker",
+          "execution",
+          "attempt_wall_ms"
+        ],
+        "properties": {
+          "slot": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 4096
+          },
+          "worker": {
+            "anyOf": [
+              {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 256
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "execution": {
+            "enum": [
+              "model",
+              "command",
+              null
+            ]
+          },
+          "provider": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 128
+          },
+          "model": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 256
+          },
+          "effort": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 128
+          },
+          "attempt_wall_ms": {
+            "anyOf": [
+              {
+                "type": "integer",
+                "minimum": 1,
+                "maximum": 9007199254740991
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
+        },
+        "if": {
+          "properties": {
+            "execution": {
+              "const": "model"
+            }
+          }
+        },
+        "then": {
+          "required": [
+            "provider",
+            "model",
+            "effort"
+          ]
+        },
+        "else": {
+          "not": {
+            "anyOf": [
+              {
+                "required": [
+                  "provider"
+                ]
+              },
+              {
+                "required": [
+                  "model"
+                ]
+              },
+              {
+                "required": [
+                  "effort"
+                ]
+              }
+            ]
+          }
+        }
       }
     },
     "graph": {
@@ -1145,41 +1271,80 @@
       "$ref": "urn:af:schema:task-input-bindings:1"
     },
     "continues": {
-      "description": "What a continued Task continues (ADR-0212): the Task and review round it was planned from with `af task run NEW --from TASK` or a Task file's `continue` table, that Task's result, the reviewed candidate Snapshot this Task reads as its source, and the af/TaskReviewFindings@1 artifact its implementer receives with the number of findings it holds. Absent for a Task that continues nothing; provenance, never authority.",
-      "type": "object",
-      "additionalProperties": false,
-      "required": [
-        "task_id",
-        "round",
-        "result_id",
-        "snapshot_id",
-        "findings_id",
-        "findings"
-      ],
-      "properties": {
-        "task_id": {
-          "$ref": "urn:af:schema:task-contracts:1#/$defs/name"
+      "description": "What a continued Task continues (ADR-0212): the Task and review round it was planned from with `af task run NEW --from TASK` or a Task file's `continue` table, that Task's result, the reviewed candidate Snapshot this Task reads as its source, and the af/TaskReviewFindings@1 artifact its implementer receives with the number of findings it holds. Absent for a Task that continues nothing; provenance, never authority. A Task planned from a Task that recorded no review round continues the partial tree an Attempt wall left (ADR-0253): it names the continued Task, the node and Attempt its wall stopped, the af/TaskAttemptWallEnd@1 record its provenance keeps, the af/TaskPartialCandidate@1 and the Snapshot of the tree this Task reads; no findings travel with it.",
+      "oneOf": [
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "task_id",
+            "round",
+            "result_id",
+            "snapshot_id",
+            "findings_id",
+            "findings"
+          ],
+          "properties": {
+            "task_id": {
+              "$ref": "urn:af:schema:task-contracts:1#/$defs/name"
+            },
+            "round": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 16
+            },
+            "result_id": {
+              "$ref": "urn:af:schema:task-contracts:1#/$defs/digest"
+            },
+            "snapshot_id": {
+              "$ref": "urn:af:schema:task-contracts:1#/$defs/digest"
+            },
+            "findings_id": {
+              "$ref": "urn:af:schema:task-contracts:1#/$defs/digest"
+            },
+            "findings": {
+              "type": "integer",
+              "minimum": 0,
+              "maximum": 512
+            }
+          }
         },
-        "round": {
-          "type": "integer",
-          "minimum": 1,
-          "maximum": 16
-        },
-        "result_id": {
-          "$ref": "urn:af:schema:task-contracts:1#/$defs/digest"
-        },
-        "snapshot_id": {
-          "$ref": "urn:af:schema:task-contracts:1#/$defs/digest"
-        },
-        "findings_id": {
-          "$ref": "urn:af:schema:task-contracts:1#/$defs/digest"
-        },
-        "findings": {
-          "type": "integer",
-          "minimum": 0,
-          "maximum": 512
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "task_id",
+            "node",
+            "attempt_id",
+            "wall_end_id",
+            "partial_candidate_id",
+            "snapshot_id"
+          ],
+          "properties": {
+            "task_id": {
+              "$ref": "urn:af:schema:task-contracts:1#/$defs/name"
+            },
+            "node": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 4096
+            },
+            "attempt_id": {
+              "type": "string",
+              "pattern": "^[A-Za-z0-9]{26}$"
+            },
+            "wall_end_id": {
+              "$ref": "urn:af:schema:task-contracts:1#/$defs/digest"
+            },
+            "partial_candidate_id": {
+              "$ref": "urn:af:schema:task-contracts:1#/$defs/digest"
+            },
+            "snapshot_id": {
+              "$ref": "urn:af:schema:task-contracts:1#/$defs/digest"
+            }
+          }
         }
-      }
+      ]
     },
     "gate": {
       "description": "The last check receipt the Task recorded, summarized: its status and the failing and flaky tests its runners named, as `af task list --json` carries them; and the gate's evidence `af task show` prints beside it (ADR-0205): each check node's latest `af/TaskCheckReport@1` and every `af task run --retry-gate` that ran a failed gate again on the same candidate. Absent before a check recorded one.",
@@ -1190,7 +1355,7 @@
       "type": "array",
       "minItems": 1,
       "items": {
-        "$ref": "urn:af:schema:task-state:1#/$defs/failure"
+        "$ref": "urn:af:schema:task-state:2#/$defs/failure"
       }
     }
   },
@@ -1205,13 +1370,13 @@
       ],
       "properties": {
         "status": {
-          "$ref": "urn:af:schema:task-state:1#/$defs/gate/properties/status"
+          "$ref": "urn:af:schema:task-state:2#/$defs/gate/properties/status"
         },
         "failed_tests": {
-          "$ref": "urn:af:schema:task-state:1#/$defs/gate/properties/failed_tests"
+          "$ref": "urn:af:schema:task-state:2#/$defs/gate/properties/failed_tests"
         },
         "flaky": {
-          "$ref": "urn:af:schema:task-state:1#/$defs/gate/properties/flaky"
+          "$ref": "urn:af:schema:task-state:2#/$defs/gate/properties/flaky"
         },
         "check_reports": {
           "description": "Each check node's latest `af/TaskCheckReport@1`, the report of its latest settled Attempt, by node ID: the host's load and CPUs, the steps by stage with the one that stopped the check and its fix, and the flaky tests and those that failed twice. Absent when no check recorded one.",

@@ -262,7 +262,12 @@ fn the_pane_reads_the_show_document_with_the_plan_and_its_graph() {
         let show = task_execution::inspection_document(&state, task_id, false);
         let show = show.unwrap().unwrap();
         let object = explained.as_object_mut().unwrap();
-        assert!(object.remove("graph").is_some() && object.remove("plan").is_some());
+        // The plan's members: its graph, the plan and each slot's Attempt wall (ADR-0253).
+        assert!(
+            object.remove("graph").is_some()
+                && object.remove("plan").is_some()
+                && object.remove("slots").is_some()
+        );
         assert_eq!(explained, show);
     }
     // A Task the Store does not hold, and a directory with no Store, are no document.

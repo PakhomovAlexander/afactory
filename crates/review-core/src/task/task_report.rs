@@ -1,4 +1,4 @@
-//! What `af task report` prints (ADR-0142), as one `af/task-report@2` document: what recorded Tasks cost and how they ran, read from
+//! What `af task report` prints (ADR-0142), as one `af/task-report@3` document: what recorded Tasks cost and how they ran, read from
 //! the Store and never estimated. A figure the Store does not record is absent, never zero.
 //!
 //! The document names a Provider only by its kind, model and effort. It has no field for a
@@ -10,7 +10,7 @@ use serde::{Deserialize, Serialize};
 use super::usage::{DecimalU128, TaskUnknownUsageCauseV1};
 use super::{is_name, is_package_name, require, safe_number};
 
-pub const TASK_REPORT_V2: &str = "af/task-report@2";
+pub const TASK_REPORT_V3: &str = "af/task-report@3";
 
 /// The first line of the Markdown block a pull request description carries.
 pub const TASK_REPORT_BEGIN: &str = "<!-- af-task-report:v1 -->";
@@ -45,7 +45,7 @@ const PRIVATE_SEGMENTS: [&str; 8] = [
 /// side of the `/` a name of a home, auth or state directory. Anything else, including any
 /// value with an `@` such as an email address, may be a path, a URL or an account and is
 /// reported as [`TASK_REPORT_UNKNOWN_MODEL`].
-/// `schemas/task-report-v2.json` states the same rule as the model's pattern, and
+/// `schemas/task-report-v3.json` states the same rule as the model's pattern, and
 /// [`TASK_REPORT_MODEL_CASES`] is the table both are held to.
 pub fn is_model_identity(model: &str) -> bool {
     let bytes = model.as_bytes();
@@ -132,13 +132,13 @@ pub const TASK_REPORT_MODEL_CASES: [(&str, bool); 51] = [
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
-pub struct TaskReportV2 {
-    /// Always [`TASK_REPORT_V2`].
+pub struct TaskReportV3 {
+    /// Always [`TASK_REPORT_V3`].
     pub schema: String,
     /// Each distinct pipeline the reported Tasks' current plans run, in first-use order.
     pub pipelines: Vec<TaskReportPipelineV1>,
     /// One entry per requested Task, in the order the command named them.
-    pub tasks: Vec<TaskReportEntryV2>,
+    pub tasks: Vec<TaskReportEntryV3>,
     pub totals: TaskReportTotalsV1,
 }
 
@@ -219,7 +219,7 @@ pub struct TaskReportFindingsV1 {
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
-pub struct TaskReportEntryV2 {
+pub struct TaskReportEntryV3 {
     /// The Task's 1-based position in the report: its row of the round table.
     pub round: u64,
     pub task_id: String,
@@ -330,6 +330,8 @@ pub enum TaskReportFailureClassV1 {
     OutputAdmissionRejected,
     ContextRejected,
     CompilerRejected,
+    /// The Attempt wall ended the Attempt (ADR-0253), whatever its Worker's failure said.
+    AttemptWall,
     Abandoned,
     Unclassified,
 }
@@ -343,6 +345,7 @@ impl TaskReportFailureClassV1 {
             Self::OutputAdmissionRejected => "output_admission_rejected",
             Self::ContextRejected => "context_rejected",
             Self::CompilerRejected => "compiler_rejected",
+            Self::AttemptWall => "attempt_wall",
             Self::Abandoned => "abandoned",
             Self::Unclassified => "unclassified",
         }
@@ -476,7 +479,7 @@ pub struct TaskReportTotalsV1 {
 
 impl TaskReportTotalsV1 {
     /// The totals of `tasks`, exactly: a sum that would overflow is refused.
-    pub fn of(tasks: &[TaskReportEntryV2]) -> Result<Self, String> {
+    pub fn of(tasks: &[TaskReportEntryV3]) -> Result<Self, String> {
         fn sum(values: impl Iterator<Item = Option<u64>>) -> Result<Option<u64>, String> {
             let mut total = Some(0u64);
             for value in values {
@@ -521,18 +524,18 @@ impl TaskReportTotalsV1 {
     }
 }
 
-impl TaskReportV2 {
+impl TaskReportV3 {
     /// The report over `tasks` in this order, each numbered by its position, with the distinct
     /// `pipelines` their plans run in first-use order.
     pub fn new(
         pipelines: Vec<TaskReportPipelineV1>,
-        mut tasks: Vec<TaskReportEntryV2>,
+        mut tasks: Vec<TaskReportEntryV3>,
     ) -> Result<Self, String> {
         for (index, task) in tasks.iter_mut().enumerate() {
             task.round = u64::try_from(index + 1).map_err(|e| e.to_string())?;
         }
         let report = Self {
-            schema: TASK_REPORT_V2.into(),
+            schema: TASK_REPORT_V3.into(),
             pipelines,
             totals: TaskReportTotalsV1::of(&tasks)?,
             tasks,
@@ -543,7 +546,7 @@ impl TaskReportV2 {
 
     pub fn validate(&self) -> Result<(), String> {
         require(
-            self.schema == TASK_REPORT_V2,
+            self.schema == TASK_REPORT_V3,
             "Task report needs its schema",
         )?;
         require(
@@ -681,7 +684,7 @@ impl TaskReportFindingsV1 {
     }
 }
 
-impl TaskReportEntryV2 {
+impl TaskReportEntryV3 {
     /// Its Attempts whose usage is unknown: those its Attempts record, or for a collected Task
     /// the count its tombstone retained.
     pub fn unknown_usage(&self) -> u64 {
@@ -883,12 +886,12 @@ mod tests {
     }
 
     /// The report over `tasks`, which all run `fixture/plain@1.0.0`.
-    fn with_tasks(tasks: Vec<TaskReportEntryV2>) -> Result<TaskReportV2, String> {
-        TaskReportV2::new(vec![plain()], tasks)
+    fn with_tasks(tasks: Vec<TaskReportEntryV3>) -> Result<TaskReportV3, String> {
+        TaskReportV3::new(vec![plain()], tasks)
     }
 
-    fn entry(task_id: &str, attempts: Option<(u64, u64)>) -> TaskReportEntryV2 {
-        TaskReportEntryV2 {
+    fn entry(task_id: &str, attempts: Option<(u64, u64)>) -> TaskReportEntryV3 {
+        TaskReportEntryV3 {
             round: 0,
             task_id: task_id.into(),
             kind: "implement".into(),
@@ -995,35 +998,35 @@ mod tests {
         renumbered.tasks[1].round = 1;
         assert!(renumbered.validate().is_err(), "a round is a position");
         assert!(
-            TaskReportV2::new(vec![], vec![entry("a", None)]).is_err(),
+            TaskReportV3::new(vec![], vec![entry("a", None)]).is_err(),
             "a Task's pipeline is listed"
         );
         assert!(
-            TaskReportV2::new(vec![plain(), plain()], vec![entry("a", None)]).is_err(),
+            TaskReportV3::new(vec![plain(), plain()], vec![entry("a", None)]).is_err(),
             "a pipeline is listed once"
         );
         let mut other = plain();
         other.name = "fixture/other".into();
         assert!(
-            TaskReportV2::new(vec![plain(), other.clone()], vec![entry("a", None)]).is_err(),
+            TaskReportV3::new(vec![plain(), other.clone()], vec![entry("a", None)]).is_err(),
             "a listed pipeline is used"
         );
         let mut second = entry("b", None);
         second.pipeline = Some("fixture/other@1.0.0".into());
         assert!(
-            TaskReportV2::new(
+            TaskReportV3::new(
                 vec![other.clone(), plain()],
                 vec![entry("a", None), second.clone()]
             )
             .is_err(),
             "pipelines are in first-use order"
         );
-        TaskReportV2::new(vec![plain(), other], vec![entry("a", None), second]).unwrap();
+        TaskReportV3::new(vec![plain(), other], vec![entry("a", None), second]).unwrap();
 
         let step = |edit: &dyn Fn(&mut TaskReportPipelineV1)| {
             let mut pipeline = plain();
             edit(&mut pipeline);
-            TaskReportV2::new(vec![pipeline], vec![entry("a", None)])
+            TaskReportV3::new(vec![pipeline], vec![entry("a", None)])
         };
         assert!(step(&|p| p.steps[1].stage = 3).is_err(), "a skipped stage");
         assert!(

@@ -54,7 +54,7 @@ fn json_output(output: Output, status: i32) -> Value {
 
 fn refused(output: Output, label: &str) {
     let error = json_output(output, 1);
-    assert_eq!(error["schema"], "af/error@1", "{label}");
+    assert_eq!(error["schema"], "af/error@2", "{label}");
     assert!(!error["error"].as_str().unwrap().is_empty(), "{label}");
 }
 
@@ -136,7 +136,7 @@ fn task_file_and_catalog_schemas_match_real_fixtures_and_cli_refusals() {
         planned["selection"]["assessment"]["decision"]["kind"],
         "selected"
     );
-    valid(&validator("task-inspection-v13.json"), &planned);
+    valid(&validator("task-inspection-v14.json"), &planned);
     let cases = [
         ("/schema", json!("af.task-file/2")),
         ("/task_id", json!("bad/task")),
@@ -244,7 +244,7 @@ fn compiled_task_schema_matches_real_graph_and_closed_rust_variants() {
         cli(&repo, &state, &["task", "plan", "--file", "ticket.json"]),
         0,
     );
-    valid(&validator("task-inspection-v13.json"), &inspection);
+    valid(&validator("task-inspection-v14.json"), &inspection);
     let schema = validator("compiled-task-v1.json");
     let graph = &inspection["graph"];
     valid(&schema, graph);
@@ -322,14 +322,14 @@ fn compiled_task_schema_matches_real_graph_and_closed_rust_variants() {
 fn inspection_and_list_schemas_preserve_actual_output_and_exact_record_types() {
     let directory = tempfile::tempdir().unwrap();
     let (repo, state) = task_cli::fixture_named(directory.path(), "pagination");
-    let inspection_schema = validator("task-inspection-v13.json");
-    let list_schema = validator("task-list-entry-v3.json");
+    let inspection_schema = validator("task-inspection-v14.json");
+    let list_schema = validator("task-list-entry-v4.json");
     let planned = json_output(
         cli(&repo, &state, &["task", "plan", "--file", "ticket.json"]),
         0,
     );
     valid(&inspection_schema, &planned);
-    assert_eq!(planned["schema"], "af/task-inspection@13");
+    assert_eq!(planned["schema"], "af/task-inspection@14");
     let exact = json_output(
         cli(
             &repo,
@@ -368,7 +368,7 @@ fn inspection_and_list_schemas_preserve_actual_output_and_exact_record_types() {
         0,
     );
     valid(&inspection_schema, &finished);
-    assert_eq!(finished["schema"], "af/task-inspection@13");
+    assert_eq!(finished["schema"], "af/task-inspection@14");
     assert!(
         !finished["runtime_observations"]
             .as_array()

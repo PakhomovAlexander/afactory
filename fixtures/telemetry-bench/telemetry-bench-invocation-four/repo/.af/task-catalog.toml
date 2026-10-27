@@ -3,22 +3,22 @@ code_policy = ".af/code-policy.toml"
 
 [packages."bench/alpha"]
 version = "1.0.0"
-digest = "sha256:f1a11b66606686e54ecb065bb4b6f57c93927b4ee802682f66001aa14b531f7c"
+digest = "sha256:713990521128510f9ee726079e977ebf8193106e603b6db534aeceba0e18cb1d"
 path = ".af/task-packages/bench/alpha"
 
 [packages."bench/beta"]
 version = "1.0.0"
-digest = "sha256:084c6136bcf6ce8231a9eb0b30eb7f68d43b31b90072c37b410f6ab8303417d5"
+digest = "sha256:86e1d35a4c8495df32fb78c18f10f17665a67943d78ce5c9bb4cf825ceacf7f5"
 path = ".af/task-packages/bench/beta"
 
 [packages."bench/gamma"]
 version = "1.0.0"
-digest = "sha256:7c3954ee5a0fdbfbb30fa661637421078e2ef779a0b7936e2450afb87905d479"
+digest = "sha256:b903031497aa84aaf3cb84751be6356b41fdaffc6f02330cbe3fd15516378ba5"
 path = ".af/task-packages/bench/gamma"
 
 [packages."bench/delta"]
 version = "1.0.0"
-digest = "sha256:5dd86245f98436dafa93cc62e2938f024603d37c7b8d0ae733c380e1318d30b6"
+digest = "sha256:5fc6f053339f434b1b3a1d098b43bca9d2c7269f4efce88877354359b58971ab"
 path = ".af/task-packages/bench/delta"
 
 [packages."bench/invocation"]

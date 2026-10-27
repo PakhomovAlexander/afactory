@@ -1,7 +1,7 @@
 //! `af task findings` (ADR-0211): the review findings of a Task's last (or Nth) review round,
 //! per reviewer — each with its severity, confidence, title, location, the quoted evidence and
 //! the proposed fix — then the evaluator's verdict and its reason. Text is grouped by severity;
-//! `--json` prints one `af/task-findings@1` document. Read-only: it reads what `af task report`
+//! `--json` prints one `af/task-findings@2` document. Read-only: it reads what `af task report`
 //! reads, the Task's recorded rounds, their Finding Sets and reviewer results, and the verdict
 //! the Task log recorded after the round, from the Store.
 
@@ -172,7 +172,7 @@ fn evaluation(
     verdict(cas, &node, &id).map(Some)
 }
 
-pub(super) fn document(opened: &OpenedTask, wanted: Option<u64>) -> Result<TaskFindingsV1, String> {
+pub(super) fn document(opened: &OpenedTask, wanted: Option<u64>) -> Result<TaskFindingsV2, String> {
     let task = &opened.task;
     let id = &task.task_id;
     let (_, view) = opened.view()?;
@@ -239,8 +239,8 @@ pub(super) fn document(opened: &OpenedTask, wanted: Option<u64>) -> Result<TaskF
             }
         }
     };
-    let document = TaskFindingsV1 {
-        schema: TASK_FINDINGS_V1.into(),
+    let document = TaskFindingsV2 {
+        schema: TASK_FINDINGS_V2.into(),
         task_id: id.clone(),
         state: view.state,
         rounds: count,
@@ -278,7 +278,7 @@ fn counted(counts: &TaskFindingCountsV1) -> String {
 
 /// The text: the round and its reviewers, the findings grouped by severity (blocker first),
 /// the evaluator's verdict, and the next command last.
-pub(super) fn lines(document: &TaskFindingsV1) -> Vec<String> {
+pub(super) fn lines(document: &TaskFindingsV2) -> Vec<String> {
     let id = &document.task_id;
     let mut lines = Vec::new();
     let conclusion = |conclusion| {
@@ -439,8 +439,8 @@ mod tests {
             evidence: "A negative offset slices from the end.".into(),
             fix: Some("Raise ValueError.".into()),
         };
-        let document = TaskFindingsV1 {
-            schema: TASK_FINDINGS_V1.into(),
+        let document = TaskFindingsV2 {
+            schema: TASK_FINDINGS_V2.into(),
             task_id: "t".into(),
             state: TaskStateV1::ended(TaskStatePhaseV1::Finished, TaskOutcomeV1::Verified, None),
             rounds: 1,

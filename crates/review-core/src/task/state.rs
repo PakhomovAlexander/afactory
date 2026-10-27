@@ -148,18 +148,24 @@ pub enum TaskCauseV1 {
     ProviderNetwork,
     ProviderCapacity,
     ProviderTimeout,
+    /// The Provider's machine environment failed af, not the model or the login: its CLI
+    /// could not start or serve its protocol, or its identity probes proved nothing within
+    /// their bounded retries (ADR-0208, ADR-0253).
+    ProviderEnvironment,
     IdentityChanged,
     IdentityUnverified,
     ModelRefused,
     WriterLost,
     Deadline,
     Budget,
+    /// A Worker's Attempt reached its Attempt wall before it answered (ADR-0253).
+    AttemptWall,
     Collected,
     HostCancelled,
 }
 
 impl TaskCauseV1 {
-    pub const ALL: [Self; 17] = [
+    pub const ALL: [Self; 19] = [
         Self::ReviewerFindings,
         Self::EvaluatorRejected,
         Self::CheckFailed,
@@ -169,12 +175,14 @@ impl TaskCauseV1 {
         Self::ProviderNetwork,
         Self::ProviderCapacity,
         Self::ProviderTimeout,
+        Self::ProviderEnvironment,
         Self::IdentityChanged,
         Self::IdentityUnverified,
         Self::ModelRefused,
         Self::WriterLost,
         Self::Deadline,
         Self::Budget,
+        Self::AttemptWall,
         Self::Collected,
         Self::HostCancelled,
     ];
@@ -190,12 +198,14 @@ impl TaskCauseV1 {
             Self::ProviderNetwork => "provider_network",
             Self::ProviderCapacity => "provider_capacity",
             Self::ProviderTimeout => "provider_timeout",
+            Self::ProviderEnvironment => "provider_environment",
             Self::IdentityChanged => "identity_changed",
             Self::IdentityUnverified => "identity_unverified",
             Self::ModelRefused => "model_refused",
             Self::WriterLost => "writer_lost",
             Self::Deadline => "deadline",
             Self::Budget => "budget",
+            Self::AttemptWall => "attempt_wall",
             Self::Collected => "collected",
             Self::HostCancelled => "host_cancelled",
         }
@@ -213,12 +223,13 @@ impl TaskCauseV1 {
             | Self::ProviderNetwork
             | Self::ProviderCapacity
             | Self::ProviderTimeout
+            | Self::ProviderEnvironment
             | Self::IdentityChanged
             | Self::IdentityUnverified
             | Self::ModelRefused => TaskOutcomeV1::ProviderFailed,
             Self::WriterLost | Self::HostCancelled => TaskOutcomeV1::Cancelled,
             Self::Deadline => TaskOutcomeV1::Expired,
-            Self::Budget => TaskOutcomeV1::Exhausted,
+            Self::Budget | Self::AttemptWall => TaskOutcomeV1::Exhausted,
             Self::Collected => return None,
         })
     }
@@ -227,12 +238,14 @@ impl TaskCauseV1 {
         match self {
             Self::ReviewerFindings => "the review recorded findings at or above its gate",
             Self::EvaluatorRejected => "the independent evaluator did not accept the result",
-            Self::CheckFailed => "a required check ran and failed",
+            Self::CheckFailed => {
+                "a required check ran and failed, or the kernel stopped it at its wall"
+            }
             Self::CheckFlakyThenFailed => {
                 "a required check failed; some of its tests were flaky before"
             }
             Self::PreflightFailed => {
-                "a required check stopped before its tests ran, or never started"
+                "a required check stopped at a step before its tests, or never started"
             }
             Self::MalformedReply => {
                 "a Worker's process failed or its reply broke its output contract"
@@ -242,6 +255,9 @@ impl TaskCauseV1 {
                 "the Provider's model was at capacity or its rate limit was reached"
             }
             Self::ProviderTimeout => "a Worker or Provider call ran out of its Attempt time",
+            Self::ProviderEnvironment => {
+                "the Provider's environment on this machine failed, not the model or the login"
+            }
             Self::IdentityChanged => {
                 "the Provider answered as another account, model or policy than the plan bound"
             }
@@ -252,6 +268,9 @@ impl TaskCauseV1 {
             Self::WriterLost => "the writer lost its lease before the Task finished",
             Self::Deadline => "the Task's wall clock ran out",
             Self::Budget => "a token, Attempt or verification-reserve limit ran out",
+            Self::AttemptWall => {
+                "a Worker reached its Attempt wall; a source-writing Worker's edits are kept"
+            }
             Self::Collected => "the Task was collected; only its summary remains",
             Self::HostCancelled => "the run was interrupted (Ctrl-C or a signal)",
         }
@@ -259,11 +278,15 @@ impl TaskCauseV1 {
 
     /// The cause af's own words in a recorded diagnostic name, if any: a pure reading of the
     /// text, used only where no typed record says more. The order matters: a Provider timeout
-    /// names its own deadline, and the Task's deadline is only the Task's.
+    /// names its own deadline, and the Task's deadline is only the Task's; an account that
+    /// answered as another is a change, and a probe that proved nothing on a failing
+    /// environment (`(environment)`) is the environment's failure, never the login's.
     pub fn of_diagnostic(text: &str) -> Option<Self> {
         let lower = text.to_ascii_lowercase();
         let has = |needles: &[&str]| needles.iter().any(|needle| lower.contains(needle));
-        if has(&[
+        if has(&["reached its attempt wall"]) {
+            Some(Self::AttemptWall)
+        } else if has(&[
             "model_refused",
             "model_switched",
             "model_unavailable",
@@ -275,8 +298,11 @@ impl TaskCauseV1 {
             "changed its exact account",
             "answered as another",
             "identity is no longer current",
+            "differs from the one captured",
         ]) {
             Some(Self::IdentityChanged)
+        } else if has(&["(environment)", "provider environment failure"]) {
+            Some(Self::ProviderEnvironment)
         } else if has(&[
             "authentication",
             "not logged in",
@@ -731,6 +757,30 @@ flaky: a::b, c::d
             (
                 "Task node root.nodes.x exhausted its Attempt limit",
                 TaskCauseV1::Budget,
+            ),
+            // ADR-0253: the Attempt wall is its own cause, before the timeout words it carries.
+            (
+                "implementer reached its Attempt wall of 30 min after 30 min; its edits are kept \
+                 as partial candidate sha256:…; implementer did not answer within 1800000ms",
+                TaskCauseV1::AttemptWall,
+            ),
+            // An exhausted identity re-probe is the environment's failure, not the login's.
+            (
+                "identity recheck: probe timed out 3× (up to 30 s each); the account was not \
+                 verified as changed: the Provider's environment failed, not the model or the \
+                 login (environment); run the Task again with `af task run`",
+                TaskCauseV1::ProviderEnvironment,
+            ),
+            (
+                "Provider environment failure, not a model or credential failure: claude \
+                 cannot start",
+                TaskCauseV1::ProviderEnvironment,
+            ),
+            // Another account is still the change it is.
+            (
+                "identity recheck: the Claude account differs from the one captured at plan: \
+                 run `af task plan` again",
+                TaskCauseV1::IdentityChanged,
             ),
         ] {
             assert_eq!(TaskCauseV1::of_diagnostic(text), Some(cause), "{text}");

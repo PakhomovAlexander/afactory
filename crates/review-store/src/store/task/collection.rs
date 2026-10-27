@@ -355,6 +355,15 @@ impl EventStore {
             for row in rows {
                 runs.insert(row?);
             }
+            // A wall end is kept before anything else of its Attempt is published (ADR-0253):
+            // a lost writer's Task may have nothing else that names it or its partial tree.
+            let mut ends = self
+                .conn
+                .prepare("SELECT DISTINCT run_id FROM attempt_wall_end ORDER BY run_id")?;
+            let rows = ends.query_map([], |row| row.get::<_, String>(0))?;
+            for row in rows {
+                runs.insert(row?);
+            }
         }
         let mut edges: Vec<Option<Vec<usize>>> = vec![None; objects.len()];
         let mut seen = vec![0_u32; objects.len()];
@@ -389,6 +398,13 @@ impl EventStore {
                     let (usage, observation) = row?;
                     spelled(&usage, &mut roots);
                     spelled(&observation, &mut roots);
+                }
+                let mut ends = self
+                    .conn
+                    .prepare("SELECT wall_end_id FROM attempt_wall_end WHERE run_id=?1")?;
+                let rows = ends.query_map([&run_id], |row| row.get::<_, String>(0))?;
+                for row in rows {
+                    spelled(&row?, &mut roots);
                 }
             }
             stamp += 1;

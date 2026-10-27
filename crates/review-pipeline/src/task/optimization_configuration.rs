@@ -1257,6 +1257,33 @@ impl super::host::TaskEnvironment for OptimizationEnvironment {
             .finish(cas, input, signature, attempt, sandbox, outputs)
     }
 
+    /// The source environment's partial tree (ADR-0253), after the same preparation `finish`
+    /// undoes: a materialized cache is removed first, and a measurement fixture or a data-only
+    /// optimizer Worker keeps nothing.
+    fn retain_partial(
+        &self,
+        cas: &Cas,
+        input: &review_core::task::execution::TaskInvocationV1,
+        signature: &review_graph::task::OperatorSignature,
+        attempt: &review_store::store::task::execution::PreparedTaskAttempt,
+        sandbox: review_sandbox::Sandbox,
+    ) -> Result<Option<String>, String> {
+        if !input.inputs.contains_key("source") || input.inputs.contains_key("fixture") {
+            return Ok(None);
+        }
+        if self
+            .prepared_caches
+            .lock()
+            .expect("optimization caches")
+            .get(&input.node)
+            .is_some_and(|prepared| prepared.snapshot.is_some())
+        {
+            review_sandbox::remove_materialized_caches(&sandbox)?;
+        }
+        self.source
+            .retain_partial(cas, input, signature, attempt, sandbox)
+    }
+
     fn runtime_evidence(
         &self,
         cas: &Cas,

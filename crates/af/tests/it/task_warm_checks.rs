@@ -295,7 +295,7 @@ fn start_with(fixture: &Fixture, extra: &[(&str, &Path)], task_id: &str, expecte
     );
     assert_eq!(code, expected, "{stderr}\n{stdout}");
     let outcome: Value = serde_json::from_str(stdout.trim()).unwrap();
-    schemas::valid(&schemas::validator("task-inspection-v13.json"), &outcome);
+    schemas::valid(&schemas::validator("task-inspection-v14.json"), &outcome);
     outcome
 }
 
@@ -2226,7 +2226,7 @@ fn show_checks(fixture: &Fixture, task_id: &str) -> (String, Value) {
     );
     let document: Value =
         serde_json::from_str(stdout.trim()).unwrap_or_else(|_| panic!("{stderr}"));
-    schemas::valid(&schemas::validator("task-checks-v2.json"), &document);
+    schemas::valid(&schemas::validator("task-checks-v3.json"), &document);
     (text, document)
 }
 

@@ -107,13 +107,15 @@ TRACE_STAGE = ".trace-stage"
 class CliAuthority(object):
     """What a CLI case's diagnostics read from the plan's authority: its CLI registry
     (`fixtures/performance/cli.toml`), the materialized fixture directory with `setup.sh`, each
-    side's own package version from its Cargo.lock and the adapter chosen for it (ADR-0168)."""
+    side's own package version from its Cargo.lock and the adapter chosen for it (ADR-0168),
+    and each side's check-receipt generation from its source (ADR-0255)."""
 
-    def __init__(self, doc, fixtures, versions, adapters):
+    def __init__(self, doc, fixtures, versions, adapters, receipts=None):
         self.doc = doc
         self.fixtures = fixtures
         self.versions = versions
         self.adapters = adapters
+        self.receipts = receipts or {}
 
 
 def cli_region_phase(case):
@@ -1438,8 +1440,9 @@ class Profile(object):
                                cli_seed=entry["seed"])
             elif entry["setup"] != "none":
                 setup = (["/bin/sh", os.path.join(self.cli.fixtures, "setup.sh"),
-                          entry["setup"], scratch, binary, probe or "-", "-"], environment,
-                         scratch, CLI_SETUP_SECONDS)
+                          entry["setup"], scratch, binary, probe or "-",
+                          clicases.setup_argument(entry, self.cli.receipts, side, "-")],
+                         environment, scratch, CLI_SETUP_SECONDS)
             argv = [clicases.expand(text, values) for text in entry["argv"]]
             if wrap is not None:
                 argv = wrap(argv)
@@ -2540,7 +2543,8 @@ def _run_locked(git, options, authority_factory, parent, plan, registry, raw, en
                 adapter_id, adapter = clicases.choose_adapter(authority.cli, version)
                 if adapter_id is not None:
                     adapters[side] = (adapter_id, adapter)
-            cli = CliAuthority(authority.cli, authority.fixtures, versions, adapters)
+            cli = CliAuthority(authority.cli, authority.fixtures, versions, adapters,
+                               clicases.side_receipts(git, plan))
     else:
         made = authority_factory(plan)
         doc, golden = made[0], made[1]

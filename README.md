@@ -220,7 +220,7 @@ Rules for a coding agent, or a script, that drives af for someone:
 - **Read JSON, not prose.** Most commands take `--json` and print one document on stdout, with
   progress on stderr; `af review report` and `af review campaigns` take `--format json`, and a
   command's `--help` names its output flags. Branch on the document's `schema`: most refusals
-  are `af/error@1`, while `af provider` commands and a refused Task plan print their own
+  are `af/error@2`, while `af provider` commands and a refused Task plan print their own
   documents (`af help json`). `af telemetry tail --json` prints one object per line, and
   `af config show --json` a document with no `schema`.
 - **Branch on the exit code.** `af review run` exits 0 pass, 3 fail, 4 incomplete. A foreground

@@ -492,6 +492,7 @@ impl WorkerModelAdapter for ClaudeTaskAdapter {
                 transient,
                 events: Vec::new(),
                 refusal_category,
+                environment: native_failure == Some(NativeFailureKind::Environment),
             },
         };
         if capture.started {

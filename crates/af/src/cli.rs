@@ -300,7 +300,7 @@ fits `max_bytes`. `af project brief` prints the exact bytes a plan would bind, t
 Never: writes inside a checkout, commits, pushes, or removes a Store. Results go to stdout \
 (`--json` prints `af/project@1`, `af/project-workspaces@1`, `af/ProjectSurvey@2`, \
 `af/project-history@2` or `af/project-brief-preview@1`); warnings go to stderr. Exit codes: 0 success, 1 failure (the message \
-names the next action; `af/error@1` under --json), 2 usage error.",
+names the next action; `af/error@2` under --json), 2 usage error.",
         after_long_help = "Examples:\n  \
 af project show\n  \
 af project refresh\n  \
@@ -450,7 +450,10 @@ a step to take first. A fix is offered only when running it can clear the check:
 command fixes, or whose command a file that does not load would stop (an `.af/` file, the machine \
 config.toml, the Provider registry), has only a hint, naming the file and the parse error's line. \
 The PATH fix is the line for the shell $SHELL names, the directory quoted so nothing in it is \
-expanded.\n\n\
+expanded; while the default link does not exist it installs first, on PATH or not, and a line \
+wider than the terminal is cut where that shell joins it again, so it runs as printed. `af \
+onboard` only previews, and `af provider detect --apply` registers only a login it finds, an \
+auth directory with a login marker: neither is offered as a fix that cannot clear its check.\n\n\
   binary     the running af, its version, install receipt and how it was verified, the default link\n\
   path       the default link's directory on PATH, and whether `af` on PATH is that link\n\
   shell      completions and man pages for $SHELL\n\
@@ -1861,7 +1864,7 @@ the time since the run started and the tokens charged so far, and every 5 minute
 back. stderr's last line is always the Task's state and the next command: `Task ID: \
 phase/outcome/cause; next: COMMAND` (`af help task-states`).\n\n--detach starts the same run \
 in the background and returns once it holds the Task and its plan is admitted, printing its pid \
-and its log, `runs/<TASK_ID>-<N>.log` in the Task Store (`af/task-detached@2` under --json); a \
+and its log, `runs/<TASK_ID>-<N>.log` in the Task Store (`af/task-detached@3` under --json); a \
 run not admitted within 2 minutes exits 4 with `admitted: false`, and `af task status` is next. \
 The run has no terminal, survives the shell that started it, and is the same process a \
 foreground run is; `af task wait`, `af task status` and `af task cancel` follow it. Every run \
@@ -1869,9 +1872,11 @@ records its process in the Store, `runs/<TASK_ID>-<N>.json`, before it takes the
 --from TASK plans NEW_ID as a new Task that continues the finished Task TASK from its reviewed \
 candidate (ADR-0212): the candidate Snapshot of its last review round (--round N for another) is \
 the new source, that round's reviewer findings and evaluator verdict are the implementer's \
-`findings` input, --goal FILE replaces the goal, and TASK's Task file is the rest. Without \
---execute it prints the plan for --confirm-plan, as `af task plan` does; --from runs in the \
-foreground and cannot be combined with --detach.\n\nResuming: a run that stopped \
+`findings` input, --goal FILE replaces the goal, and TASK's Task file is the rest. A TASK that \
+recorded no review round, but whose implementer its Attempt wall stopped \
+(`exhausted/attempt_wall`), continues from the partial tree the kernel kept of it (ADR-0253), \
+without findings. Without --execute it prints the plan for --confirm-plan, as `af task plan` \
+does; --from runs in the foreground and cannot be combined with --detach.\n\nResuming: a run that stopped \
 before the Task finished (Ctrl-C, SIGTERM, a closed lid, a killed process, a lost writer lease) \
 resumes with `af task run TASK_ID`. It waits for a dead run's lease to expire (at most 60 s), \
 and its first line says what it does: the interrupted node's Attempt is settled as abandoned, \
@@ -1958,7 +1963,7 @@ af task run NEW_ID --from TASK_ID   # needs: a finished reviewed Task TASK_ID\n 
     /// Block until a Task settles, then exit with its exit code
     #[command(
         long_about = "Block until a Task settles — no writer holds it and no run of this host \
-is starting — then print its status line (`af/task-status@1` under --json) and exit with the \
+is starting — then print its status line (`af/task-status@2` under --json) and exit with the \
 Task's exit code: its outcome's (`af help exit-codes`), 4 for a Task that waits for a person. \
 With --timeout S it gives up after S seconds, prints the status so far and exits 124. A \
 planned Task with no run in progress is refused (exit 1): there is nothing to wait for.\n\n\
@@ -1982,7 +1987,7 @@ af task wait TASK_ID --timeout 600 --json   # needs: a running Task"
 (phase/outcome/cause, `af help task-states`), the node whose Attempt runs, the time since its \
 clock started, the tokens charged so far, the run that holds it (run number, pid and host) and \
 who cancelled it, then the next command on its own line, within 100 columns (the terminal's \
-width when narrower) and broken only between arguments. --json prints one `af/task-status@1` \
+width when narrower) and broken only between arguments. --json prints one `af/task-status@2` \
 document. Exits 0: the state is data.",
         after_long_help = "Examples:\n  \
 af task status TASK_ID   # needs: a Task\n  \
@@ -2003,7 +2008,7 @@ writer: only that recorded pid is signalled (SIGTERM, and once more after 60 s),
 process found by its name. A writer on another host is refused with its pid and host.\n\n\
 The request is recorded first, with who asked (`runs/<TASK_ID>-<N>.cancel.json`), so the Task \
 shows `abandoned/cancelled/host_cancelled` and `af task show` names the requester. The Task \
-stays resumable: `af task run TASK_ID` continues it. --json prints one `af/task-cancelled@1` \
+stays resumable: `af task run TASK_ID` continues it. --json prints one `af/task-cancelled@2` \
 document. A Task no writer holds is refused (exit 1).",
         after_long_help = "Examples:\n  \
 af task cancel TASK_ID   # needs: a running Task\n  \
@@ -2023,7 +2028,7 @@ quoted evidence and the reviewer's proposed fix, grouped by severity; then the e
 verdict on that round, the one the Task log recorded after it, with its reason, and the next \
 command. A round whose reduce step did not run shows each \
 reviewer's reports as recorded, not gathered. A Task that recorded no review round says so, \
-with the state it reached.\n\n--json prints one `af/task-findings@1` document. Exits 0 once \
+with the state it reached.\n\n--json prints one `af/task-findings@2` document. Exits 0 once \
 it read the Store.\n\nNever: dispatches a Worker, contacts a Provider or writes the Store.",
         after_long_help = "Examples:\n  \
 af task findings TASK_ID   # needs: a reviewed Task\n  \
@@ -2264,8 +2269,9 @@ it ended, its Plan, warm checks, failed nodes with their first error line and th
 of their whole diagnostic and stderr, and as the last line the one command to run next.\n\n\
 --checks prints the gate's last check receipt instead: each check's status, duration, warm or \
 cold, its warm layer (key, lock, source groups, build and test phases, an eviction and its \
-cause), the step that stopped it, its failing and flaky tests and the last 40 lines of its \
-stderr; with --json, one `af/task-checks@2` document.",
+cause), the step that stopped it, the wall the kernel stopped it at (`stopped at its 90 min wall \
+after 88 min`, and what to do next) or `never started`, its failing and flaky tests and the \
+last 40 lines of its stderr; with --json, one `af/task-checks@3` document.",
         after_long_help = "Examples:\n  af task show pagination-cli   # needs: Task pagination-cli\n  \
 af task show pagination-cli --checks   # needs: Task pagination-cli\n  \
 af task show pagination-cli --json   # needs: Task pagination-cli"
@@ -2288,7 +2294,7 @@ findings by severity, tokens and active time, and a Total row; then per round it
 time, failed Attempts and per node the Worker, Attempts, tokens, elapsed time and check \
 results.\n\nThe default output is one Markdown block, ready to paste into a pull request \
 description, between these two lines:\n\n  <!-- af-task-report:v1 -->\n  \
-<!-- /af-task-report -->\n\n--json prints one `af/task-report@2` document instead. Tasks \
+<!-- /af-task-report -->\n\n--json prints one `af/task-report@3` document instead. Tasks \
 appear in the order given, numbered as rounds. Active time is the sum of the Task's runs, the \
 writer leases that started an Attempt or recorded a gate retry (`af task run --retry-gate`), so \
 waiting between runs is not counted; wall time runs \

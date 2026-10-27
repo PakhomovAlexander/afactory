@@ -16,9 +16,12 @@ A reviewed Task continued from its candidate, for
   files are listed to the Worker by digest.
 
 The `fixture/bugs` reviewer and the `fixture/evaluator` also assert what every Worker that judges a
-change without writing it gets: the tree before the change, read-only, at `../base`, and
-`../diff-subject.json` (`af/diff-subject@1`) listing each changed path with its content digest on
-each side. An Attempt that finds either missing, wrong or writable fails, and the Task with it.
+change without writing it gets: the tree before the change, read-only, at `../base`, and, on the
+optional `diff_subject` input their contracts declare, the kernel's `af/DiffSubject@1` artifact
+whose `af/diff-subject@1` document lists each changed path with its content digest on each side
+([ADR-0254](../../../docs/adr/0254-name-the-tree-of-a-workers-rules-and-deliver-the-diff-subject-as-a-typed-input.md)).
+Nothing else is written beside the tree. An Attempt that finds either missing, wrong or writable
+fails, and the Task with it.
 
 This repository is `bound-inputs` with the optional `findings` input on `fixture/implementation`
 and `fixture/implementer`, a reviewer that asks for `NOTES.md` and the base assertions, so the

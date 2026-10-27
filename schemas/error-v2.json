@@ -1,8 +1,8 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "$id": "urn:af:schema:error:1",
-  "title": "The error document af/error@1",
-  "$comment": "What every af command prints on stdout under --json when it fails, instead of its result (`af help json`): the command, the error sentence stderr also prints, and the process's exit code. A usage error clap finds is one too, exit 2. A refusal af classifies adds `cause`, `next_action`, the one af command to run next with the selectors the command was given (null when there is none), and `details`, the facts behind the cause: for `recovery_exhausted` the node, how often it was abandoned (`count`, of which `writer_lost` lost their writer and `host_cancelled` were interrupted) and its recovery `allowance`; for `refresh_refused` the selection `decision`; for `task_file_invalid` the `file`, the `field` and its `value`; for `input_unreadable` the `file` and what it is (`what`).",
+  "$id": "urn:af:schema:error:2",
+  "title": "The error document af/error@2",
+  "$comment": "What every af command prints on stdout under --json when it fails, instead of its result (`af help json`): the command, the error sentence stderr also prints, and the process's exit code. A usage error clap finds is one too, exit 2. A refusal af classifies adds `cause`, `next_action`, the one af command to run next with the selectors the command was given (null when there is none, or when no pasted line carries it: a word with a control character, or past 4096 characters), and `details`, the facts behind the cause: for `recovery_exhausted` the node, how often it was abandoned (`count`, of which `writer_lost` lost their writer and `host_cancelled` were interrupted) and its recovery `allowance`; for `refresh_refused` the selection `decision`; for `task_file_invalid` the `file`, the `field` and its `value`; for `input_unreadable` the `file` and what it is (`what`); for `interrupted`, a command SIGINT or SIGTERM stopped (exit 130 or 143), the `signal` and the `task` it was running (null when it ran none), with `next_action` the command that resumes or continues it. Version 2 adds the `interrupted` cause (ADR-0256); af/error@1 is no longer printed.",
   "type": "object",
   "additionalProperties": false,
   "required": [
@@ -24,7 +24,7 @@
   },
   "properties": {
     "schema": {
-      "const": "af/error@1"
+      "const": "af/error@2"
     },
     "command": {
       "type": "string",
@@ -45,7 +45,8 @@
         "recovery_exhausted",
         "refresh_refused",
         "task_file_invalid",
-        "input_unreadable"
+        "input_unreadable",
+        "interrupted"
       ]
     },
     "next_action": {
@@ -252,6 +253,58 @@
               "what": {
                 "type": "string",
                 "minLength": 1
+              }
+            }
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "required": [
+          "cause"
+        ],
+        "properties": {
+          "cause": {
+            "const": "interrupted"
+          }
+        }
+      },
+      "then": {
+        "required": [
+          "details"
+        ],
+        "properties": {
+          "exit_code": {
+            "enum": [
+              130,
+              143
+            ]
+          },
+          "details": {
+            "additionalProperties": false,
+            "required": [
+              "signal",
+              "task"
+            ],
+            "properties": {
+              "signal": {
+                "enum": [
+                  "SIGINT",
+                  "SIGTERM"
+                ]
+              },
+              "task": {
+                "anyOf": [
+                  {
+                    "type": "string",
+                    "minLength": 1,
+                    "maxLength": 4096
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
               }
             }
           }

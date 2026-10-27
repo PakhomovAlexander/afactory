@@ -265,7 +265,7 @@ fn usage(json: bool, message: &str) -> Result<i32, String> {
         println!(
             "{}",
             serde_json::json!({
-                "schema": "af/error@1",
+                "schema": "af/error@2",
                 "command": "af provider detect",
                 "error": message,
                 "exit_code": 2,
@@ -334,7 +334,7 @@ pub fn run(options: DetectOptions) -> Result<i32, String> {
         }
     };
     // `--apply` chooses IDs and registers against the registry: one that cannot be read refuses
-    // it before anything is scanned (exit 1; `af/error@1` under `--json`).
+    // it before anything is scanned (exit 1; `af/error@2` under `--json`).
     if options.apply
         && let Some(error) = &registry_unknown
     {
@@ -880,6 +880,66 @@ pub(super) fn names_only_scan() -> Vec<PathBuf> {
         }
     }
     found
+}
+
+/// The logins `af provider detect --apply` would register now, each with its kind: the scan
+/// it runs without `--all`, every marked directory probed by an available CLI of its kind, kept
+/// only where the login is authenticated, its directory safe and unregistered, and its CLI on
+/// `PATH` (`--apply` skips one found only off it). A marker alone is no login, and a logged-out
+/// or CLI-less directory registers nothing; only what this returns can clear a check that
+/// offers `af provider detect --apply` (#331 D5). A registry that cannot be read is taken as
+/// naming nothing: `--apply` then refuses until it is corrected, which the caller says.
+pub(super) fn registrable_logins() -> Vec<(PathBuf, ProviderKind)> {
+    let specs = match registry_path() {
+        Ok(Some(path)) => ensure_no_registry_transaction(&path)
+            .and_then(|()| {
+                read_registry(&path).and_then(|text| {
+                    text.map(|text| parse_registry(&text, &path))
+                        .transpose()
+                        .map(Option::unwrap_or_default)
+                })
+            })
+            .unwrap_or_default(),
+        Ok(None) | Err(_) => Vec::new(),
+    };
+    let home = home_dir();
+    let kinds = [ProviderKind::Claude, ProviderKind::Codex];
+    let mut ignored = Vec::new();
+    let mut candidates = Vec::new();
+    for kind in kinds {
+        for (path, source) in scanned_dirs(kind, home.as_deref(), &mut ignored) {
+            candidates.push(candidate(kind, path, source, None));
+        }
+    }
+    let mut candidates = deduplicate(candidates);
+    for candidate in &mut candidates {
+        candidate.registered_as = specs
+            .iter()
+            .find(|spec| {
+                spec.kind == candidate.kind
+                    && spec.auth_dir.as_deref() == candidate.canonical.as_deref()
+            })
+            .map(|spec| spec.id.clone());
+    }
+    let binaries: Vec<Binary> = kinds
+        .iter()
+        .filter_map(|kind| find_binary(*kind, home.as_deref()))
+        .collect();
+    if binaries.is_empty() || candidates.is_empty() {
+        return Vec::new();
+    }
+    let (binaries, mut rows) = probe_all(binaries, candidates, false, &AtomicBool::new(false));
+    let ids: BTreeSet<String> = specs.iter().map(|spec| spec.id.clone()).collect();
+    suggest(&mut rows, &binaries, &ids, false, home.as_deref());
+    rows.into_iter()
+        .filter(|row| {
+            row.auth == Auth::Authenticated
+                && row.candidate.safety.is_ok()
+                && row.candidate.registered_as.is_none()
+                && row.suggested.action == "register"
+        })
+        .filter_map(|row| Some((row.candidate.canonical?, row.candidate.kind)))
+        .collect()
 }
 
 /// The install directories of the fixed list, in order, for one kind.

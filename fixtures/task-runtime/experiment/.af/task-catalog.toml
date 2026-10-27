@@ -8,12 +8,12 @@ path = ".af/task-packages/fixture/experiment"
 
 [packages."fixture/experiment-evaluator"]
 version = "1.0.0"
-digest = "sha256:c78c0ea5f141ec62817082a3aca6d14a6f2fe3ab2dbe3f1d93ad18d74c7f6b75"
+digest = "sha256:0acd7a816602944757043b2aad0745a404dde2bcfb97b6fbce814a371465b3b9"
 path = ".af/task-packages/fixture/experiment-evaluator"
 
 [packages."fixture/experiment-trial"]
 version = "1.0.0"
-digest = "sha256:8de5257f3aa28bc1b1b107a9188a125683df190a11454bbba3f2515966fedc58"
+digest = "sha256:dd261b59d640076f0af6f60968c8d4f456f459133ca3e186f0c74a65b2c2e802"
 path = ".af/task-packages/fixture/experiment-trial"
 
 [packages."fixture/implementer"]

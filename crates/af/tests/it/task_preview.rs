@@ -56,7 +56,7 @@ fn start_previews_then_exact_confirmation_runs_and_finished_replay_spends_nothin
     let refused = cli(&repo, &state, &["task", "run", "pagination-cli", "--json"]);
     assert_eq!(refused.status.code(), Some(1));
     let error: Value = serde_json::from_slice(&refused.stdout).expect("Exactly one JSON error");
-    assert_eq!(error["schema"], "af/error@1");
+    assert_eq!(error["schema"], "af/error@2");
     assert!(String::from_utf8_lossy(&refused.stderr).contains("--confirm-plan"));
     let stale = format!("sha256:{}", "0".repeat(64));
     let refused = cli(

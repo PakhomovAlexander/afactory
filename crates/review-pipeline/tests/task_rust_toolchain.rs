@@ -461,7 +461,7 @@ fn run_code_task_domain_fixture(mapping: Option<PathBuf>, cold: bool, review_wra
     use review_core::task::EXECUTION_PLAN_V1;
     use review_core::task::pipeline::{PipelineDefinitionV1, ReceiptOutcomeV1};
     use review_core::task::plan::IndependencePolicyV1;
-    use review_core::task::verification::{TASK_CHECK_RECEIPT_V1, TaskCheckReceiptV1};
+    use review_core::task::verification::{TASK_CHECK_RECEIPT_V2, TaskCheckReceiptV2};
     use review_core::task::{TASK_REVISION_V1, TaskRevisionV1};
     use review_pipeline::task::TaskRuntime;
     use review_pipeline::task::code::{CodeTaskDomain, CodeTaskPolicy, code_signatures};
@@ -549,7 +549,7 @@ fn run_code_task_domain_fixture(mapping: Option<PathBuf>, cold: bool, review_wra
     let pipeline: PipelineDefinitionV1 = serde_json::from_value(json!({
         "schema":"af.pipeline/1","name":"fixture/toolchain","version":"1.0.0",
         "contract":{"inputs":{"source":port(SOURCE_TREE_V1,json!({"kind":"unbound"}),vec![])},
-            "outputs":{"receipt":port(TASK_CHECK_RECEIPT_V1,json!({"kind":"same_as","input":"source"}),vec!["checked"])}},
+            "outputs":{"receipt":port(TASK_CHECK_RECEIPT_V2,json!({"kind":"same_as","input":"source"}),vec!["checked"])}},
         "accepts":{"kinds":["implement"],"required_facts":{}},"slots":{},
         "nodes":[{"id":"check","operator":{"op":"check","checks":["first","second"]},"inputs":{"source":{"kind":"input","port":"source"}}}],
         "outputs":{"receipt":{"kind":"node","node":"check","port":"result"}},
@@ -563,8 +563,8 @@ fn run_code_task_domain_fixture(mapping: Option<PathBuf>, cold: bool, review_wra
         + 120_000;
     let task: TaskRevisionV1 = serde_json::from_value(json!({
         "task_id":"toolchain-domain","revision":1,"kind":"implement","goal":"Verify private toolchains through captured CodeTaskDomain",
-        "inputs":{"source":source},"required_outputs":{"receipt":{"artifact_type":TASK_CHECK_RECEIPT_V1,"cardinality":"one"}},
-        "acceptance":{"checked":{"evidence_type":TASK_CHECK_RECEIPT_V1,"verifier_policy":policy_id}},
+        "inputs":{"source":source},"required_outputs":{"receipt":{"artifact_type":TASK_CHECK_RECEIPT_V2,"cardinality":"one"}},
+        "acceptance":{"checked":{"evidence_type":TASK_CHECK_RECEIPT_V2,"verifier_policy":policy_id}},
         "provenance":{"adapter_id":origin,"input_artifact_ids":source.artifact_ids},
         "authority":{"policy_id":policy_id,"allowed_effects":["execute-checks"],"data_destinations":[]},
         "limits":{"tokens":1000,"max_attempts":2,"deadline_unix_ms":deadline,"verification":{"tokens":200,"attempts":1,"wall_ms":20_000}},
@@ -674,7 +674,7 @@ fn run_code_task_domain_fixture(mapping: Option<PathBuf>, cold: bool, review_wra
         .outputs
         .get("root.nodes.check")
         .expect("real check domain must publish its receipt");
-    let receipt: TaskCheckReceiptV1 = serde_json::from_value(
+    let receipt: TaskCheckReceiptV2 = serde_json::from_value(
         cas.get_artifact(&output.outputs["result"].artifact_ids[0])
             .unwrap()
             .payload,

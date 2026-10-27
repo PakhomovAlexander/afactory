@@ -122,7 +122,7 @@ socket or a device file in the tree stops the seal with its path; af never opens
 
 Beside its receipt, a warm check node records `af/TaskCheckLayer@1`
 ([schema](../../schemas/task-check-layer-v1.json)). `af task show ID --checks` prints it under
-each check, and `--json` carries it as `layer` in `af/task-checks@2`:
+each check, and `--json` carries it as `layer` in `af/task-checks@3`:
 
 ```text
 check kernel: passed (exit 0) in 2342000 ms, cargo_target warm 12.0 GiB

@@ -5,7 +5,7 @@ code_policy = ".af/code-policy.toml"
 # still pins every digest from the copied tree before it commits, as `task_input_bindings.rs` does for `bound-inputs`.
 [packages."fixture/evaluator"]
 version = "1.0.0"
-digest = "sha256:a54961152ee0e267c42fea39bb2bbbdac7812a2d505d9ccffd4d5f305f980202"
+digest = "sha256:4a1d03705b92bb7dda61a95f4ccdf2c03bfbac7a0f950cf6230f237c98f1ca4e"
 path = ".af/task-packages/fixture/evaluator"
 
 [packages."fixture/exposing"]

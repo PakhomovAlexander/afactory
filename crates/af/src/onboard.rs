@@ -1572,6 +1572,260 @@ fn parse_existing(repo: &Path) -> Result<ExistingAuthority, String> {
     })
 }
 
+/// Where onboarding's reader stops on a committed `.af/`: the file, the line its TOML error
+/// names (syntax or type), and why.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct AuthorityStop {
+    pub(crate) file: PathBuf,
+    pub(crate) line: Option<usize>,
+    pub(crate) message: String,
+    /// The reader stopped because `file` no longer matches the pin `.af/af.lock` holds for it
+    /// (or the lock pins what is not there): restoring it, or re-pinning it with `af onboard
+    /// --refresh-lock` when it changed on purpose, is what clears it.
+    pub(crate) repin: bool,
+}
+
+/// Where [`inspect_existing`] stops on `repo`'s `.af/`, found by taking its own steps in its own
+/// order: the project file, the pipeline it selects and the lock, each parsed as its type; the
+/// lock's pins; the selected pipeline's pin; its Worker packages through the one
+/// [`Registry`] reader, each package's pin verified before its `reviewer.toml` is parsed as a
+/// typed manifest; then each other pipeline a route or the oversized policy can select. The
+/// stop names the file the failing step read, with the line a TOML error (syntax or type)
+/// names, and only ever a path below `.af/`: a package is found by its validated name, never by
+/// the pipeline's string as a path. `None` when the reader does not stop, or stops on a file it
+/// cannot name.
+pub(crate) fn authority_stop(repo: &Path) -> Option<AuthorityStop> {
+    let af = repo.join(".af");
+    let stop = authority_steps(repo, &af).err()?;
+    // Nothing outside `.af/` is ever named.
+    let inside = stop.file.starts_with(&af)
+        && !stop
+            .file
+            .components()
+            .any(|part| matches!(part, std::path::Component::ParentDir));
+    inside.then_some(stop)
+}
+
+/// The steps of [`authority_stop`]: `Err` with the first one that stops.
+fn authority_steps(repo: &Path, af: &Path) -> Result<(), AuthorityStop> {
+    let stop = |file: &Path, line, message: &str, repin| AuthorityStop {
+        file: file.to_path_buf(),
+        line,
+        message: message.lines().next().unwrap_or_default().trim().to_owned(),
+        repin,
+    };
+    // The line a TOML error names, read by the type's own deserializer, so a typed error
+    // (`version = "one"`) is located as well as a syntax error.
+    type Located = Option<(Option<usize>, String)>;
+    fn located<T: serde::de::DeserializeOwned>(text: &str) -> Located {
+        let error = toml::from_str::<T>(text).err()?;
+        let start = error.span().map(|span| span.start.min(text.len()));
+        let line = start.map(|start| text[..start].matches('\n').count() + 1);
+        Some((line, error.message().to_owned()))
+    }
+    let typed = |path: &Path,
+                 parse: &dyn Fn(&str) -> Result<(), String>,
+                 locate: &dyn Fn(&str) -> Located|
+     -> Result<String, AuthorityStop> {
+        let text =
+            read_authority_text(path).map_err(|message| stop(path, None, &message, false))?;
+        parse(&text).map_err(|message| match locate(&text) {
+            Some((line, located)) => stop(path, line, &located, false),
+            None => stop(path, None, &message, false),
+        })?;
+        Ok(text)
+    };
+    let project_path = af.join("af.toml");
+    let project_text = typed(
+        &project_path,
+        &|text| crate::project::ProjectFile::parse(text).map(drop),
+        &located::<crate::project::ProjectFile>,
+    )?;
+    let project = crate::project::ProjectFile::parse(&project_text)
+        .map_err(|message| stop(&project_path, None, &message, false))?;
+    let selected = project.review_pipeline().to_string();
+    let pipeline_path = repo.join(crate::project::pipeline_path_for(&selected));
+    let pipeline = |path: &Path| {
+        typed(
+            path,
+            &|text| {
+                Definition::from_toml(text)
+                    .map(drop)
+                    .map_err(|e| e.to_string())
+            },
+            &located::<Definition>,
+        )
+    };
+    let pipeline_text = pipeline(&pipeline_path)?;
+    let lock_path = af.join("af.lock");
+    let lock_text = typed(
+        &lock_path,
+        &|text| {
+            Lockfile::from_toml(text)
+                .map(drop)
+                .map_err(|e| e.to_string())
+        },
+        &located::<Lockfile>,
+    )?;
+    let lock = Lockfile::from_toml(&lock_text)
+        .map_err(|error| stop(&lock_path, None, &error.to_string(), false))?;
+    validate_no_stale_pins(repo, &lock)
+        .map_err(|message| stop(&lock_path, None, &message, true))?;
+    crate::project::check_lock_af_version(&lock, ".af/af.lock")
+        .map_err(|message| stop(&lock_path, None, &message, true))?;
+    let registry = Registry::new(af.join("workers"));
+    let load = |path: &Path, name: &str, text: &str| -> Result<(), AuthorityStop> {
+        validate_pipeline_pin(&lock, name, text.as_bytes())
+            .map_err(|message| stop(path, None, &message, true))?;
+        let definition = Definition::from_toml(text)
+            .map_err(|error| stop(path, None, &error.to_string(), false))?;
+        let packages: Vec<String> = definition
+            .nodes
+            .iter()
+            .filter_map(|node| node.package.clone())
+            .collect();
+        match definition.load_with(&lock, &registry) {
+            Ok(_) => Ok(()),
+            Err(review_config::ConfigError::Lock(error)) => {
+                Err(package_stop(af, path, &packages, &error))
+            }
+            Err(error) => Err(stop(path, None, &error.to_string(), false)),
+        }
+    };
+    load(&pipeline_path, &selected, &pipeline_text)?;
+    for candidate in project.pipeline_candidates() {
+        if candidate == selected {
+            continue;
+        }
+        let path = repo.join(crate::project::pipeline_path_for(&candidate));
+        // The reader checks a route target's pin before it parses it.
+        let text =
+            read_authority_text(&path).map_err(|message| stop(&path, None, &message, false))?;
+        validate_pipeline_pin(&lock, &candidate, text.as_bytes())
+            .map_err(|message| stop(&path, None, &message, true))?;
+        pipeline(&path)?;
+        load(&path, &candidate, &text)?;
+    }
+    Ok(())
+}
+
+/// The file a Worker package refusal of [`Lockfile`] resolution names, below `.af/workers/`
+/// only: the package by its validated name, a file of it by the path the [`Registry`] reader
+/// refused, or `pipeline` for a package name no registry holds. A package that no longer
+/// matches its pin names its directory, or its manifest with the line when that does not parse
+/// either, so the fix names both steps.
+fn package_stop(
+    af: &Path,
+    pipeline: &Path,
+    packages: &[String],
+    error: &review_config::lock::LockError,
+) -> AuthorityStop {
+    use review_config::lock::LockError;
+    let message = error.to_string();
+    let stop = |file: PathBuf, line, repin| AuthorityStop {
+        file,
+        line,
+        message: message.lines().next().unwrap_or_default().trim().to_owned(),
+        repin,
+    };
+    // Only a name the reader's own `locate` accepts is joined to the registry root.
+    let package = |name: &str| {
+        (!name.is_empty()
+            && name.bytes().enumerate().all(|(index, byte)| {
+                byte.is_ascii_alphanumeric() || (index > 0 && matches!(byte, b'-' | b'_'))
+            }))
+        .then(|| af.join("workers").join(name))
+    };
+    let manifest_line = |root: &Path| {
+        let path = root.join("reviewer.toml");
+        let text = read_authority_text(&path).ok()?;
+        let error = toml::from_str::<review_config::lock::PackageManifest>(&text).err()?;
+        let start = error.span().map(|span| span.start.min(text.len()));
+        let line = start.map(|start| text[..start].matches('\n').count() + 1);
+        Some((path, line, error.message().to_owned()))
+    };
+    match error {
+        LockError::DigestMismatch { name, .. } => match package(name) {
+            Some(root) => match manifest_line(&root) {
+                // Changed and malformed: the manifest's own error first, then the pin.
+                Some((file, line, parse)) => AuthorityStop {
+                    message: parse,
+                    ..stop(file, line, true)
+                },
+                None => stop(root, None, true),
+            },
+            None => stop(pipeline.to_path_buf(), None, false),
+        },
+        // The pipeline names a package the lock does not pin: a name to correct there (one
+        // that is no package name at all included), or a package to pin.
+        LockError::NotLocked { .. } => stop(pipeline.to_path_buf(), None, false),
+        LockError::VersionMismatch { .. } => stop(af.join("af.lock"), None, true),
+        LockError::MalformedDigest { .. } | LockError::Floating { .. } => {
+            stop(af.join("af.lock"), None, false)
+        }
+        LockError::InvalidName { .. } => stop(pipeline.to_path_buf(), None, false),
+        LockError::NotFound { name, .. } => stop(
+            package(name).unwrap_or_else(|| pipeline.to_path_buf()),
+            None,
+            false,
+        ),
+        LockError::Symlink { name, path }
+        | LockError::UnsupportedFileType { name, path }
+        | LockError::UnsupportedPath { name, path } => {
+            let root = package(name);
+            match root {
+                Some(root) if path.starts_with(&root) => stop(path.clone(), None, false),
+                Some(root) => stop(root, None, false),
+                None => stop(pipeline.to_path_buf(), None, false),
+            }
+        }
+        LockError::MissingManifest { name, .. } | LockError::UnsupportedSubject { name, .. } => {
+            match package(name) {
+                Some(root) => stop(root.join("reviewer.toml"), None, false),
+                None => stop(pipeline.to_path_buf(), None, false),
+            }
+        }
+        LockError::NameMismatch { requested, .. } => match package(requested) {
+            Some(root) => stop(root.join("reviewer.toml"), None, false),
+            None => stop(pipeline.to_path_buf(), None, false),
+        },
+        // A manifest the typed reader refused: the first package, in the pipeline's order,
+        // whose `reviewer.toml` the message names, at the line its typed parse names.
+        LockError::Parse(_) => {
+            let named = packages
+                .iter()
+                .find(|name| message.contains(&format!("reviewer.toml for `{name}`")));
+            match named.and_then(|name| package(name)) {
+                Some(root) => match manifest_line(&root) {
+                    Some((file, line, parse)) => AuthorityStop {
+                        message: parse,
+                        ..stop(file, line, false)
+                    },
+                    None => stop(root.join("reviewer.toml"), None, false),
+                },
+                None => stop(pipeline.to_path_buf(), None, false),
+            }
+        }
+        // A package the bounded walk refused, too large or unreadable: onboarding stopped
+        // reading that package, which editing the pipeline cannot change.
+        LockError::TooLarge { name, at, .. } => match package(name) {
+            Some(root)
+                if Path::new(at)
+                    .components()
+                    .all(|part| matches!(part, std::path::Component::Normal(_))) =>
+            {
+                stop(root.join(at), None, false)
+            }
+            Some(root) => stop(root, None, false),
+            None => stop(pipeline.to_path_buf(), None, false),
+        },
+        LockError::Io { path, .. } if path.starts_with(af.join("workers")) => {
+            stop(path.clone(), None, false)
+        }
+        _ => stop(pipeline.to_path_buf(), None, false),
+    }
+}
+
 fn selected_pipeline(text: &str) -> Result<String, String> {
     Ok(crate::project::ProjectFile::parse(text)?
         .review_pipeline()
@@ -1978,5 +2232,43 @@ mod tests {
         definition.budgets.as_mut().unwrap().run = 600_000;
         let error = validate_budget_arithmetic(&definition).unwrap_err();
         assert!(error.contains("requires 600002"), "{error}");
+    }
+
+    /// #331 UX close-out: a selected Worker package the bounded reader refuses, too large or
+    /// unreadable, stops onboarding at that package, so doctor names the package's file, never
+    /// the pipeline whose correction could not clear it; an unsafe `at` names the package root.
+    #[test]
+    fn a_package_too_large_or_unreadable_is_named_at_the_package() {
+        use review_config::lock::LockError;
+        let af = std::path::Path::new("/r/.af");
+        let pipeline = af.join("pipelines/review.toml");
+        let packages = vec!["bugs".to_owned()];
+        let too_large = |at: &str| LockError::TooLarge {
+            name: "bugs".into(),
+            root: af.join("workers/bugs"),
+            at: at.into(),
+            files: 1,
+            bytes: 1,
+            file_bytes: 1,
+        };
+        let stop = super::package_stop(af, &pipeline, &packages, &too_large("prompts/big.md"));
+        assert_eq!(stop.file, af.join("workers/bugs/prompts/big.md"));
+        let stop = super::package_stop(af, &pipeline, &packages, &too_large("../escape"));
+        assert_eq!(stop.file, af.join("workers/bugs"));
+        let unreadable = LockError::Io {
+            path: af.join("workers/bugs/reviewer.toml"),
+            error: "Permission denied".into(),
+        };
+        let stop = super::package_stop(af, &pipeline, &packages, &unreadable);
+        assert_eq!(stop.file, af.join("workers/bugs/reviewer.toml"));
+        // An I/O failure outside the packages is the pipeline's, as before.
+        let elsewhere = LockError::Io {
+            path: std::path::PathBuf::from("/elsewhere"),
+            error: "Permission denied".into(),
+        };
+        assert_eq!(
+            super::package_stop(af, &pipeline, &packages, &elsewhere).file,
+            pipeline
+        );
     }
 }

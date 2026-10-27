@@ -30,21 +30,48 @@ pub(crate) fn bytes(bytes: u64) -> String {
 /// else `COLUMNS` as clap reads it for `--help`, else 100; never more than 100, the width help
 /// pages are held to.
 pub(crate) fn width() -> usize {
-    use std::io::IsTerminal;
-    let terminal = std::io::stdout()
-        .is_terminal()
-        .then(|| rustix::termios::tcgetwinsize(std::io::stdout()).ok())
-        .flatten()
-        .map(|size| usize::from(size.ws_col));
     let columns = || {
         std::env::var("COLUMNS")
             .ok()
             .and_then(|value| value.parse::<usize>().ok())
     };
-    match terminal.filter(|&columns| columns > 0).or_else(columns) {
+    held(terminal_columns(std::io::stdout()).or_else(columns))
+}
+
+/// The columns of the terminal `stream` is, when it is one and says.
+fn terminal_columns<S: std::io::IsTerminal + rustix::fd::AsFd>(stream: S) -> Option<usize> {
+    stream
+        .is_terminal()
+        .then(|| rustix::termios::tcgetwinsize(&stream).ok())
+        .flatten()
+        .map(|size| usize::from(size.ws_col))
+        .filter(|&columns| columns > 0)
+}
+
+/// `columns` held to the widths human text is laid out for: 40 to 100, 100 when unknown.
+fn held(columns: Option<usize>) -> usize {
+    match columns {
         Some(columns) if columns >= 40 => columns.min(100),
         Some(columns) if columns > 0 => 40,
         _ => 100,
+    }
+}
+
+/// `line`, ending in a command (`next: af task run t --state DIR`), as a terminal shows it: on
+/// stdout, or stderr when `stderr`, that is a terminal, fitted to its own width (at least 40
+/// columns, never held to 100) by [`fit_command`];
+/// unchanged on a stream that is no terminal, whose reader takes the line whole (a script reads
+/// the run log's last line, `af help agents`).
+pub(crate) fn fit_on_terminal(line: &str, stderr: bool) -> String {
+    let columns = if stderr {
+        terminal_columns(std::io::stderr())
+    } else {
+        terminal_columns(std::io::stdout())
+    };
+    // The terminal's own width, however wide: a line that fits it is never broken.
+    match columns {
+        Some(columns) => fit_command(line, columns.max(40)),
+        None => line.to_owned(),
     }
 }
 
@@ -97,9 +124,14 @@ pub(crate) fn wrap(text: &str, width: usize, indent: usize) -> String {
 
 /// `line`, a label and an `af` command (`next:    af review run --policy-rev HEAD ...`), kept
 /// within `width` columns: unchanged when it fits, else continued with ` \` between the
-/// command's arguments, each continuation indented four columns past the command's start, so a
-/// copied command runs as printed. A line without an `af` command, or one whose quoting a shell
-/// would not read, is returned unchanged.
+/// command's arguments, each continuation indented four columns past the command's start (four
+/// columns in all where that start is past half the width), so a copied command runs as
+/// printed. An argument wider than any line, such as a long `--state` path or the program's own
+/// path, is cut into quoted pieces joined by a backslash and a newline, which a shell removes,
+/// so the pieces read as the one argument; each piece after the first starts its line. A label
+/// too wide to leave the command room beside it (`Task ID: STATE; next:` with a long Task ID)
+/// is wrapped at its spaces first, a word wider than a line cut at the width. A line without an
+/// `af` command, or one whose quoting a shell would not read, is returned unchanged.
 pub(crate) fn fit_command(line: &str, width: usize) -> String {
     if line.chars().count() <= width {
         return line.to_owned();
@@ -112,28 +144,157 @@ pub(crate) fn fit_command(line: &str, width: usize) -> String {
     let Some(start) = start else {
         return line.to_owned();
     };
+    fit_at(line, start, width)
+}
+
+/// The columns a command keeps beside its label: a label wider than `width` less these is
+/// wrapped onto lines of its own.
+const COMMAND_ROOM: usize = 16;
+
+/// [`fit_command`] for a line whose command starts at byte `start`, whatever its program: the
+/// path of an `af` binary, say. Its words must be plain arguments, no shell operator. No line it
+/// returns is wider than `width` (at least 40): not the label, not the first word, not a
+/// continuation.
+pub(crate) fn fit_at(line: &str, start: usize, width: usize) -> String {
+    if line.chars().count() <= width {
+        return line.to_owned();
+    }
     let Ok(words) = shell_words::split(&line[start..]) else {
         return line.to_owned();
     };
-    let indent = " ".repeat(line[..start].chars().count() + 4);
+    fit_words(&line[..start], &words, width, &|word| {
+        shell_words::quote(word).into_owned()
+    })
+}
+
+/// [`fit_at`] for a command already split into its `words`, each written by `quote` (sh's
+/// quoting, or fish's for a program path fish reads): after `label`, unchanged when it fits.
+pub(crate) fn fit_words(
+    label: &str,
+    words: &[String],
+    width: usize,
+    quote: &dyn Fn(&str) -> String,
+) -> String {
+    let count = |text: &str| text.chars().count();
+    let line = format!(
+        "{label}{}",
+        words
+            .iter()
+            .map(|word| quote(word))
+            .collect::<Vec<_>>()
+            .join(" ")
+    );
+    if count(&line) <= width {
+        return line;
+    }
     let mut lines: Vec<String> = Vec::new();
-    let mut current = line[..start].to_owned();
-    let mut first = true;
-    for word in words {
-        let word = shell_words::quote(&word).into_owned();
-        if !first && current.chars().count() + 1 + word.chars().count() + 2 > width {
-            lines.push(format!("{current} \\"));
-            current = format!("{indent}{word}");
+    let mut current = if count(label) + COMMAND_ROOM <= width {
+        label.to_owned()
+    } else {
+        // The label's own lines, its last one kept for the command when there is room on it.
+        let mut rows = cut_rows(&wrap(label.trim_end(), width, 0), width);
+        let gap = &label[label.trim_end().len()..];
+        let last = rows.pop().unwrap_or_default();
+        lines.extend(rows);
+        if count(&last) + count(gap) + COMMAND_ROOM <= width {
+            format!("{last}{gap}")
         } else {
-            if !first {
+            lines.push(last);
+            String::new()
+        }
+    };
+    let indent = if count(&current) + 4 <= width / 2 {
+        " ".repeat(count(&current) + 4)
+    } else {
+        " ".repeat(4)
+    };
+    let margin = indent.chars().count();
+    // Whether `current` holds no word of the command yet.
+    let mut fresh = true;
+    for raw in words {
+        let word = quote(raw);
+        let space = usize::from(!fresh);
+        if count(&current) + space + count(&word) + 2 <= width {
+            if !fresh {
                 current.push(' ');
             }
             current.push_str(&word);
+            fresh = false;
+            continue;
         }
-        first = false;
+        if !fresh {
+            lines.push(format!("{current} \\"));
+            current = indent.clone();
+            if margin + count(&word) + 2 <= width {
+                current.push_str(&word);
+                continue;
+            }
+        }
+        // Wider than any line, the program's path included: in pieces, the first after what
+        // the line holds, every other at the start of its own line.
+        let mut pieces = pieces(
+            raw,
+            width.saturating_sub(count(&current) + 2),
+            width.saturating_sub(2),
+            quote,
+        );
+        let last = pieces.pop().unwrap_or_default();
+        for piece in pieces {
+            lines.push(format!("{current}{piece}\\"));
+            current.clear();
+        }
+        current.push_str(&last);
+        fresh = false;
     }
     lines.push(current);
     lines.join("\n")
+}
+
+/// Each line of `text` within `width` columns: a line wider than that, one word too long for
+/// any line, is cut at the width.
+fn cut_rows(text: &str, width: usize) -> Vec<String> {
+    let mut rows = Vec::new();
+    for line in text.lines() {
+        let chars: Vec<char> = line.chars().collect();
+        if chars.is_empty() {
+            rows.push(String::new());
+        }
+        for chunk in chars.chunks(width.max(1)) {
+            rows.push(chunk.iter().collect());
+        }
+    }
+    rows
+}
+
+/// `word` as pieces, each quoted by `quote`, whose concatenation a shell reads as `word`: the
+/// first at most `first` columns, every other at most `rest`, each cut after a `/` in its second
+/// half where it has one, so a path breaks between its directories.
+pub(crate) fn pieces(
+    word: &str,
+    first: usize,
+    rest: usize,
+    quote: &dyn Fn(&str) -> String,
+) -> Vec<String> {
+    let quoted = |chars: &[char]| quote(&chars.iter().collect::<String>());
+    let chars: Vec<char> = word.chars().collect();
+    let mut pieces = Vec::new();
+    let mut start = 0;
+    while start < chars.len() {
+        let room = if pieces.is_empty() { first } else { rest }.max(8);
+        let mut end = start + 1;
+        while end < chars.len() && quoted(&chars[start..=end]).chars().count() <= room {
+            end += 1;
+        }
+        if end < chars.len()
+            && let Some(slash) = chars[start..end].iter().rposition(|c| *c == '/')
+            && slash + 1 > (end - start) / 2
+        {
+            end = start + slash + 1;
+        }
+        pieces.push(quoted(&chars[start..end]));
+        start = end;
+    }
+    pieces
 }
 
 /// The UTC offset in seconds and the zone's abbreviation at `unix_seconds`, from the zone
@@ -352,6 +513,147 @@ mod tests {
             assert_eq!(words, shell_words::split(&line[9..]).unwrap());
         }
         assert_eq!(fit_command(&"x".repeat(120), 80), "x".repeat(120));
+    }
+
+    /// #331 item 11: a Store selector wider than any line, a long `--state` path with a space
+    /// and a quote in it, no longer leaves an over-wide `next:` line. It is cut into quoted
+    /// pieces joined by a backslash and a newline; a shell reads the lines as the one command.
+    #[test]
+    fn a_selector_wider_than_a_line_is_cut_into_pieces_a_shell_joins() {
+        let state = format!(
+            "/private/var/folders/xy/T/.tmpAbC/{}/it's a state",
+            "a-long-directory-name/".repeat(4)
+        );
+        let words = [
+            "af",
+            "task",
+            "run",
+            "pagination-cli",
+            "--state",
+            &state,
+            "--repo",
+            "repo",
+        ];
+        let line = format!("next: {}", shell_words::join(words));
+        for width in [100, 80, 60, 40] {
+            let fitted = fit_command(&line, width);
+            assert!(
+                fitted.lines().all(|row| row.chars().count() <= width),
+                "{width}\n{fitted}"
+            );
+            // The selector's flag stays on a line that fits, and its value is never left whole
+            // on a line of its own wider than the terminal.
+            assert!(fitted.lines().count() > 2, "{fitted}");
+            let joined = fitted.replace("\\\n", "");
+            let read = shell_words::split(joined.trim_start_matches("next:")).unwrap();
+            assert_eq!(read, words, "{width}\n{fitted}");
+            // A POSIX shell, given the printed lines, receives exactly those words.
+            let script = format!("printf '%s\\n' {}", fitted.trim_start_matches("next: af "));
+            let printed = std::process::Command::new("/bin/sh")
+                .args(["-c", &script])
+                .output()
+                .unwrap();
+            assert!(printed.status.success(), "{script}");
+            assert_eq!(
+                String::from_utf8(printed.stdout).unwrap(),
+                words[1..]
+                    .iter()
+                    .map(|word| format!("{word}\n"))
+                    .collect::<String>(),
+                "{width}\n{fitted}"
+            );
+        }
+        // Without a terminal on stdout a line is left whole for the script that reads it.
+        use std::io::IsTerminal as _;
+        if !std::io::stdout().is_terminal() {
+            assert_eq!(fit_on_terminal(&line, false), line);
+        }
+    }
+
+    /// The words a POSIX shell receives from `command`, the printed lines as pasted.
+    fn sh_words(command: &str) -> Vec<String> {
+        let printed = std::process::Command::new("/bin/sh")
+            .args(["-c", &format!("printf '%s\\n' {command}")])
+            .output()
+            .unwrap();
+        assert!(printed.status.success(), "{command}");
+        String::from_utf8(printed.stdout)
+            .unwrap()
+            .lines()
+            .map(str::to_owned)
+            .collect()
+    }
+
+    /// #331 D6 and item 11: no line `fit_at` returns is wider than the terminal. A program path
+    /// wider than a line (an `af` run by its absolute path) is cut like any argument; a label
+    /// that leaves the command no room (the run log's `Task ID: STATE; next:` with a long Task
+    /// ID) is wrapped first; a continuation is never indented past half the width. Each still
+    /// reads, pasted into a shell, as the words it was.
+    #[test]
+    fn no_fitted_line_is_wider_than_the_terminal_label_and_program_included() {
+        let program = format!(
+            "/private/var/folders/f9/{}debug/af",
+            "a-long-dir/".repeat(12)
+        );
+        let install = [program.as_str(), "self", "install", "0.14.0"];
+        let id = "t".repeat(128);
+        let state = format!("/tmp/{}state", "long-state-selector-".repeat(6));
+        let deliver = [
+            "af",
+            "task",
+            "deliver",
+            id.as_str(),
+            "--branch",
+            "af/pagination-cli",
+            "--state",
+            state.as_str(),
+        ];
+        let cases = [
+            (
+                format!("                 fix: {}", shell_words::join(install)),
+                "                 fix: ".len(),
+                install.to_vec(),
+            ),
+            (
+                format!(
+                    "Task {id}: finished/gate_failed/check_failed; next: {}",
+                    shell_words::join(deliver)
+                ),
+                format!("Task {id}: finished/gate_failed/check_failed; next: ").len(),
+                deliver.to_vec(),
+            ),
+            (
+                format!(
+                    "Task pagination-cli: finished/gate_failed/check_failed; next: {}",
+                    shell_words::join(deliver)
+                ),
+                "Task pagination-cli: finished/gate_failed/check_failed; next: ".len(),
+                deliver.to_vec(),
+            ),
+        ];
+        for (line, start, words) in cases {
+            for width in [40, 60, 80, 100] {
+                let fitted = fit_at(&line, start, width);
+                for row in fitted.lines() {
+                    assert!(row.chars().count() <= width, "{width}: {row:?}\n{fitted}");
+                }
+                for row in fitted.lines().skip(1) {
+                    let indent = row.len() - row.trim_start().len();
+                    assert!(indent <= width / 2, "{width}: {row:?}\n{fitted}");
+                }
+                // The command, from where it starts, is the words it was.
+                let marker = if words[0] == "af" {
+                    "af task "
+                } else {
+                    "/private/"
+                };
+                let at = fitted
+                    .find(marker)
+                    .unwrap_or_else(|| panic!("{width}\n{fitted}"));
+                let command = &fitted[at..];
+                assert_eq!(sh_words(command), words, "{width}\n{fitted}");
+            }
+        }
     }
 
     #[test]

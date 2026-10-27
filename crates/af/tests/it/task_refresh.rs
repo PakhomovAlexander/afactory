@@ -550,7 +550,7 @@ fn explicit_relative_refresh_source_uses_the_callers_directory() {
 /// A refresh whose new source no Pipeline can run now (here its Workers' `python3` is not on
 /// PATH) is recorded, exits 4 (the Task waits for a person) and says why on stderr: the
 /// refusal's sentence with the candidate's reason, before the state line. Under `--json` the
-/// one `af/error@1` document carries the same sentence, the decision and the next command.
+/// one `af/error@2` document carries the same sentence, the decision and the next command.
 #[test]
 fn a_refresh_refused_by_an_unavailable_pipeline_says_why() {
     let root = tempfile::tempdir().unwrap();
@@ -596,10 +596,10 @@ fn a_refresh_refused_by_an_unavailable_pipeline_says_why() {
     let json = refresh("v3", true);
     assert_eq!(json.status.code(), Some(4));
     let document: Value = serde_json::from_slice(&json.stdout).unwrap();
-    crate::schemas::valid(&crate::schemas::validator("error-v1.json"), &document);
+    crate::schemas::valid(&crate::schemas::validator("error-v2.json"), &document);
     assert_eq!(
         document,
-        json!({"schema": "af/error@1", "command": "af task", "error": why, "exit_code": 4,
+        json!({"schema": "af/error@2", "command": "af task", "error": why, "exit_code": 4,
             "cause": "refresh_refused", "next_action": next,
             "details": {"decision": "unavailable"}})
     );

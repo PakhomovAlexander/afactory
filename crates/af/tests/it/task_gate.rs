@@ -330,7 +330,7 @@ fn a_failed_gate_is_retried_on_the_same_candidate_and_continues_into_review() {
     );
     let before = fixture.show_json("gate-retry");
     crate::schemas::valid(
-        &crate::schemas::validator("task-inspection-v13.json"),
+        &crate::schemas::validator("task-inspection-v14.json"),
         &before,
     );
     assert_eq!(before["result"]["domain_conclusion"], "changes_requested");
@@ -407,7 +407,7 @@ fn a_failed_gate_is_retried_on_the_same_candidate_and_continues_into_review() {
     assert!(!stdout.contains("--retry-gate"), "{stdout}");
     let after = fixture.show_json("gate-retry");
     crate::schemas::valid(
-        &crate::schemas::validator("task-inspection-v13.json"),
+        &crate::schemas::validator("task-inspection-v14.json"),
         &after,
     );
     assert_eq!(after["result"]["domain_conclusion"], "verified");
@@ -436,7 +436,7 @@ fn a_failed_gate_is_retried_on_the_same_candidate_and_continues_into_review() {
     );
     assert!(after.get("unknown_usage_attempts").is_none(), "{after}");
 
-    let receipts = artifacts(&cas, &fixture.state, "af/TaskCheckReceipt@1");
+    let receipts = artifacts(&cas, &fixture.state, "af/TaskCheckReceipt@2");
     assert_eq!(receipts.len(), 2, "{receipts:?}");
     let outcomes: std::collections::BTreeSet<_> = receipts
         .iter()
@@ -551,7 +551,7 @@ fn a_retried_gate_continues_into_the_review_it_skipped() {
     let rounds = after["review_rounds"].as_array().unwrap();
     assert_eq!(rounds.len(), 1, "{after:#}");
     assert_eq!(rounds[0]["outcome"], "passed", "{after:#}");
-    let receipts = artifacts(&fixture.cas(), &fixture.state, "af/TaskCheckReceipt@1");
+    let receipts = artifacts(&fixture.cas(), &fixture.state, "af/TaskCheckReceipt@2");
     assert_eq!(receipts.len(), 2, "{receipts:?}");
     assert_eq!(receipts[0]["snapshot_id"], receipts[1]["snapshot_id"]);
 }
@@ -862,4 +862,185 @@ fn a_failed_gate_beside_a_failed_paid_node_is_not_retried() {
             );
         }
     }
+}
+
+/// A check that runs past its wall is killed there, and it says so everywhere (ADR-0255): the
+/// receipt (`af/TaskCheckReceipt@2`) records `stopped` with the cause `wall`, the two-second
+/// per-check wall the gate ran under and how long it ran; the Task ends `check_failed`, never
+/// `preflight_failed`; and `af task show` (`why:`), `af task show --checks` (text and
+/// `af/task-checks@3`), `af task report` (the row's detail) and the run's stderr each say `check
+/// pagination stopped at its 2 s wall after …` with what to do next, while none says `never
+/// started`.
+#[test]
+fn a_check_killed_at_its_wall_says_so_and_never_reads_as_never_started() {
+    let directory = tempfile::tempdir().unwrap();
+    let fixture = gate_edited(
+        directory.path(),
+        "pagination",
+        "gate-wall",
+        true,
+        false,
+        &|repo| {
+            // A per-check wall of two seconds under the load-safe check Attempt wall: the
+            // check starts whatever preparation costs, and only its own wall can end it.
+            let path = repo.join(".af/code-policy.toml");
+            let mut policy: toml::Value =
+                toml::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
+            policy
+                .as_table_mut()
+                .unwrap()
+                .insert("check_process_wall_ms".into(), toml::Value::Integer(2_000));
+            std::fs::write(&path, toml::to_string(&policy).unwrap()).unwrap();
+        },
+    );
+    // The gate waits while this file exists, a minute at most: far past its wall.
+    std::fs::write(fixture.root.join("hang-check"), b"").unwrap();
+    let wall = "check pagination stopped at its 2 s wall after ";
+    let next = "make the check faster, or raise its wall in .af/code-policy.toml \
+                (check_wall_ms, check_process_wall_ms or [warm] build_wall_ms) and plan the \
+                Task again";
+    let (code, stdout, stderr) = fixture.af(&[
+        "task",
+        "start",
+        "--execute",
+        "--file",
+        fixture.ticket.to_str().unwrap(),
+        "--json",
+    ]);
+    assert_eq!(
+        code, 5,
+        "a stopped check fails the gate\n{stderr}\n{stdout}"
+    );
+    let named = |text: &str| {
+        text.lines()
+            .any(|line| line.contains(wall) && line.contains(next))
+    };
+    assert!(named(&stderr), "the run's stderr names the wall: {stderr}");
+    assert!(!stderr.contains("never started"), "{stderr}");
+    assert!(!stderr.contains("preflight"), "{stderr}");
+
+    // The receipt records the stop, typed.
+    let receipts = artifacts(&fixture.cas(), &fixture.state, "af/TaskCheckReceipt@2");
+    let [receipt] = receipts.as_slice() else {
+        panic!("one receipt: {receipts:?}");
+    };
+    crate::schemas::valid(
+        &crate::schemas::validator("task-check-receipt-v2.json"),
+        receipt,
+    );
+    let stop = &receipt["stopped"]["pagination"];
+    assert_eq!(stop["cause"], "wall", "{receipt:#}");
+    assert_eq!(stop["wall_ms"], 2_000, "{receipt:#}");
+    let elapsed = stop["elapsed_ms"].as_u64().unwrap();
+    assert!(elapsed >= 1_900, "it ran until its wall: {receipt:#}");
+    assert!(receipt.get("acceptance").is_none(), "{receipt:#}");
+    assert!(
+        artifacts(&fixture.cas(), &fixture.state, "af/TaskCheckReceipt@1").is_empty(),
+        "the retired receipt version is never written"
+    );
+
+    // `af task show`: the state is check_failed, and `why:` names the wall.
+    let (code, shown, stderr) = fixture.af(&["task", "show", "gate-wall"]);
+    assert_eq!(code, 0, "{stderr}\n{shown}");
+    assert_eq!(
+        shown.lines().next(),
+        Some("Task gate-wall: finished/gate_failed/check_failed"),
+        "{shown}"
+    );
+    assert!(
+        shown
+            .lines()
+            .any(|line| line.starts_with(&format!("why: {wall}")) && line.contains(next)),
+        "{shown}"
+    );
+    assert!(named(&shown), "{shown}");
+    assert!(!shown.contains("never started"), "{shown}");
+    assert!(!shown.contains("preflight"), "{shown}");
+
+    // `af task show --checks`, in text and as `af/task-checks@3`.
+    let (code, checks, stderr) = fixture.af(&["task", "show", "gate-wall", "--checks"]);
+    assert_eq!(code, 0, "{stderr}\n{checks}");
+    assert!(
+        checks
+            .lines()
+            .any(|line| line.starts_with("check pagination: not_run, stopped at its 2 s wall")),
+        "{checks}"
+    );
+    assert!(
+        checks.lines().any(|line| line == format!("  next: {next}")),
+        "{checks}"
+    );
+    assert!(!checks.contains("never started"), "{checks}");
+    let (code, document, stderr) = fixture.af(&["task", "show", "gate-wall", "--checks", "--json"]);
+    assert_eq!(code, 0, "{stderr}\n{document}");
+    let document: Value = serde_json::from_str(document.trim()).unwrap();
+    crate::schemas::valid(&crate::schemas::validator("task-checks-v3.json"), &document);
+    assert_eq!(document["schema"], "af/task-checks@3");
+    assert_eq!(document["state"]["cause"], "check_failed");
+    assert_eq!(document["receipt"]["checks"][0]["stop"], *stop);
+
+    // `af task report`: the row's detail, in text and in `--json`.
+    let (code, report, stderr) = fixture.af(&["task", "report", "gate-wall"]);
+    assert_eq!(code, 0, "{stderr}\n{report}");
+    assert!(report.contains(wall) && report.contains(next), "{report}");
+    assert!(!report.contains("never started"), "{report}");
+    let (code, report, stderr) = fixture.af(&["task", "report", "gate-wall", "--json"]);
+    assert_eq!(code, 0, "{stderr}\n{report}");
+    let report: Value = serde_json::from_str(report.trim()).unwrap();
+    let detail = report["tasks"][0]["detail"].as_str().unwrap();
+    assert!(
+        detail.starts_with(wall) && detail.ends_with(next),
+        "{detail}"
+    );
+}
+
+/// A package that still declares the receipt before ADR-0255 is refused by that name when the
+/// plan compiles, with the rename and re-pin that fix it, and nothing runs; `af catalog digest`
+/// still prints its pin, which is its bytes.
+#[test]
+fn a_package_that_declares_the_retired_receipt_is_refused_by_name() {
+    let directory = tempfile::tempdir().unwrap();
+    let fixture = gate_edited(
+        directory.path(),
+        "pagination",
+        "gate-retired",
+        true,
+        false,
+        &|repo| {
+            let path = repo.join(".af/task-packages/fixture/evaluator/worker.toml");
+            let text = std::fs::read_to_string(&path).unwrap();
+            assert!(text.contains("af/TaskCheckReceipt@2"));
+            std::fs::write(
+                &path,
+                text.replace("af/TaskCheckReceipt@2", "af/TaskCheckReceipt@1"),
+            )
+            .unwrap();
+        },
+    );
+    let (code, stdout, stderr) = fixture.start();
+    assert_ne!(code, 0, "{stderr}\n{stdout}");
+    assert!(
+        stderr.contains(
+            "af/TaskCheckReceipt@1 is the check receipt before ADR-0255, which this release \
+             neither writes nor reads; declare af/TaskCheckReceipt@2 instead and re-pin the \
+             package with `af catalog digest`"
+        ),
+        "{stderr}"
+    );
+    assert!(
+        artifacts(&fixture.cas(), &fixture.state, "af/TaskCheckReceipt@2").is_empty()
+            && artifacts(&fixture.cas(), &fixture.state, "af/TaskCheckReceipt@1").is_empty(),
+        "no check ran"
+    );
+    // `af catalog digest` takes no `--state`, so it is asked without the helper's.
+    let output = crate::common::af()
+        .current_dir(&fixture.repo)
+        .args(["catalog", "digest", ".af/task-packages/fixture/evaluator"])
+        .output()
+        .unwrap();
+    assert!(output.status.success(), "{output:?}");
+    assert!(
+        String::from_utf8_lossy(&output.stdout).starts_with("sha256:"),
+        "{output:?}"
+    );
 }

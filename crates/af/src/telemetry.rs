@@ -63,7 +63,7 @@ pub(super) fn refused(command: &str, json: bool, refusal: &str) -> i32 {
         println!(
             "{}",
             serde_json::json!({
-                "schema": "af/error@1",
+                "schema": "af/error@2",
                 "command": command,
                 "error": refusal,
                 "exit_code": 2,

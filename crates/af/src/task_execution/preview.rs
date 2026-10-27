@@ -125,6 +125,153 @@ fn binding(plan: &ExecutionPlanV1, slot: &str) -> String {
         .map(|b| execution_label(&b.execution))
         .unwrap_or_else(|| "binding unavailable (inspect JSON)".into())
 }
+/// The slots an optimization experiment node runs as its baseline and candidate arms, each
+/// qualified in the node's Pipeline scope as the experiment runtime qualifies them.
+fn experiment_slots(graph: &CompiledTask) -> Vec<String> {
+    let mut slots = Vec::new();
+    for (id, node) in &graph.nodes {
+        let CompiledOperator::Primitive {
+            operator:
+                TaskOperatorV1::OptimizationExperiment {
+                    baseline_slot,
+                    candidate_slot,
+                },
+            ..
+        } = &node.operator
+        else {
+            continue;
+        };
+        let scope = id.split_once(".nodes.").map(|(scope, _)| scope);
+        for slot in [baseline_slot, candidate_slot] {
+            let qualified = match scope {
+                Some(scope) if !graph.slots.contains_key(slot) => format!("{scope}.slots.{slot}"),
+                _ => slot.clone(),
+            };
+            if !slots.contains(&qualified) {
+                slots.push(qualified);
+            }
+        }
+    }
+    slots
+}
+/// The Attempt wall of a Worker slot: the longest `wall_ms_per_attempt` of the nodes its Worker
+/// runs as, as the compiled graph's allowances captured it, and for an optimization experiment's
+/// baseline or candidate arm the Attempt wall its captured Worker package declares, the wall
+/// every arm's Attempt runs under. `None` for a slot no node runs.
+pub(super) fn slot_wall(
+    cas: &Cas,
+    plan: &ExecutionPlanV1,
+    graph: &CompiledTask,
+    slot: &str,
+) -> Option<u64> {
+    let arm = experiment_slots(graph)
+        .iter()
+        .any(|arm| arm == slot)
+        .then(|| plan.bindings.get(slot))
+        .flatten()
+        .and_then(|binding| {
+            review_config::task::catalog::TaskPlanCompiler::captured_worker_package(
+                cas,
+                &binding.package_artifact_id,
+            )
+            .ok()
+        })
+        .and_then(|package| package.worker.signature.attempt)
+        .map(|attempt| attempt.wall_ms)
+        .filter(|wall| *wall > 0);
+    graph
+        .nodes
+        .iter()
+        .filter(|(_, node)| worker(node) == Some(slot))
+        .filter_map(|(id, _)| graph.allowances.get(id))
+        .map(|allowance| allowance.wall_ms_per_attempt)
+        .chain(arm)
+        .max()
+}
+/// A slot's binding and its Attempt wall, as the plan preview prints them side by side.
+fn binding_and_wall(cas: &Cas, plan: &ExecutionPlanV1, graph: &CompiledTask, slot: &str) -> String {
+    match slot_wall(cas, plan, graph, slot) {
+        Some(wall) => format!(
+            "{}, Attempt wall {}",
+            binding(plan, slot),
+            super::state::duration_words(wall)
+        ),
+        None => binding(plan, slot),
+    }
+}
+/// The slots the plan summary lists, and how many it folds: every slot a node runs, each with
+/// its Attempt wall however many there are, then bound slots no node runs up to eight lines in
+/// all. `slots` pairs each slot, in preview order, with whether a node runs it.
+fn listed_slots(slots: Vec<(String, bool)>) -> (Vec<String>, usize) {
+    let (runs, idle): (Vec<_>, Vec<_>) = slots.into_iter().partition(|(_, runs)| *runs);
+    let shown = 8usize.saturating_sub(runs.len()).min(idle.len());
+    let folded = idle.len() - shown;
+    let listed = runs
+        .into_iter()
+        .chain(idle.into_iter().take(shown))
+        .map(|(slot, _)| slot)
+        .collect();
+    (listed, folded)
+}
+/// Every Worker slot of the plan, in the order the preview lists them: the slots of nodes in
+/// graph order, an optimization experiment's arms, then every other bound slot.
+fn ordered_slots(plan: &ExecutionPlanV1, graph: &CompiledTask) -> Vec<String> {
+    let mut slots: Vec<String> = Vec::new();
+    let mut push = |slot: &str| {
+        if !slots.iter().any(|known| known == slot) {
+            slots.push(slot.to_owned());
+        }
+    };
+    for id in &graph.order {
+        if let Some(slot) = graph.nodes.get(id).and_then(worker) {
+            push(slot);
+        }
+    }
+    for slot in experiment_slots(graph) {
+        push(&slot);
+    }
+    for slot in plan.bindings.keys() {
+        push(slot);
+    }
+    slots
+}
+/// Each Worker slot of the plan with its binding and its Attempt wall, the `slots` member of
+/// the plan's `--json` document (ADR-0253), in the order the preview lists them.
+pub(super) fn slots_value(
+    cas: &Cas,
+    plan: &ExecutionPlanV1,
+    graph: &CompiledTask,
+) -> serde_json::Value {
+    let slots = ordered_slots(plan, graph);
+    serde_json::Value::Array(
+        slots
+            .into_iter()
+            .map(|slot| {
+                let mut row = json!({
+                    "slot": slot,
+                    "worker": graph.slots.get(&slot).map(|s| s.worker.clone()),
+                    "attempt_wall_ms": slot_wall(cas, plan, graph, &slot),
+                });
+                match plan.bindings.get(&slot).map(|b| &b.execution) {
+                    Some(WorkerExecutionV1::Model {
+                        provider,
+                        model,
+                        effort,
+                        ..
+                    }) => {
+                        row["execution"] = json!("model");
+                        row["provider"] = json!(provider);
+                        row["model"] = json!(model);
+                        row["effort"] = json!(effort);
+                    }
+                    Some(WorkerExecutionV1::Command {}) => row["execution"] = json!("command"),
+                    None => row["execution"] = json!(null),
+                }
+                row
+            })
+            .collect(),
+    )
+}
 /// A slot's Worker package and binding, as the browser's status line names a highlighted row.
 fn slot_binding(plan: &ExecutionPlanV1, graph: &CompiledTask, slot: &str) -> String {
     let name = text(slot.strip_prefix("root.slots.").unwrap_or(slot));
@@ -153,10 +300,17 @@ fn compact_visible(node: &CompiledNode) -> bool {
     )
 }
 
-fn node_label(id: &str, node: &CompiledNode, plan: &ExecutionPlanV1) -> String {
+fn node_label(
+    cas: &Cas,
+    id: &str,
+    node: &CompiledNode,
+    plan: &ExecutionPlanV1,
+    graph: &CompiledTask,
+) -> String {
     let name = id.rsplit('.').next().unwrap_or(id);
+    // A Worker's binding beside its Attempt wall, as the summary lists it (ADR-0253).
     let detail = if let Some(slot) = worker(node) {
-        binding(plan, slot)
+        binding_and_wall(cas, plan, graph, slot)
     } else {
         match &node.operator {
             CompiledOperator::ProviderAdmission { .. } => "Provider admission (budgeted)".into(),
@@ -189,6 +343,22 @@ fn node_label(id: &str, node: &CompiledNode, plan: &ExecutionPlanV1) -> String {
                 ),
                 TaskOperatorV1::Compare { objective } => {
                     format!("compare: {}", text(objective))
+                }
+                // Each arm's Worker with the Attempt wall its every Attempt runs under.
+                TaskOperatorV1::OptimizationExperiment { .. } => {
+                    let scope = id.split_once(".nodes.").map(|(scope, _)| scope);
+                    let arms = experiment_slots(graph)
+                        .into_iter()
+                        .filter(|slot| scope.is_none_or(|scope| slot.starts_with(scope)))
+                        .map(|slot| {
+                            format!(
+                                "{}: {}",
+                                slot.rsplit('.').next().unwrap_or(&slot),
+                                binding_and_wall(cas, plan, graph, &slot)
+                            )
+                        })
+                        .collect::<Vec<_>>();
+                    format!("optimization experiment ({})", arms.join("; "))
                 }
                 _ => serde_json::to_value(operator).expect("operator serializes")["op"]
                     .as_str()
@@ -301,7 +471,10 @@ fn tree_rows(
             }
             line(
                 out,
-                &format!("{prefix}{branch}{}", node_label(id, &graph.nodes[id], plan)),
+                &format!(
+                    "{prefix}{branch}{}",
+                    node_label(cas, id, &graph.nodes[id], plan, graph)
+                ),
             );
         }
     }
@@ -521,36 +694,30 @@ fn render_marked(
                 ),
             );
         }
-        let mut slots = Vec::new();
-        for id in &graph.order {
-            if let Some(slot) = worker(&graph.nodes[id])
-                && !slots.contains(&slot)
-            {
-                slots.push(slot);
-            }
-        }
-        for slot in plan.bindings.keys() {
-            if !slots.contains(&slot.as_str()) {
-                slots.push(slot);
-            }
-        }
-        for slot in slots.into_iter().take(8) {
+        // Each slot's Attempt wall beside its model: how long one Attempt may take (ADR-0253).
+        // Every slot a node runs is listed with its wall; only bound slots no node runs fold.
+        let slots = ordered_slots(plan, graph)
+            .into_iter()
+            .map(|slot| {
+                let runs = slot_wall(cas, plan, graph, &slot).is_some();
+                (slot, runs)
+            })
+            .collect();
+        let (listed, folded) = listed_slots(slots);
+        for slot in &listed {
             line(
                 &mut out,
                 &format!(
                     "  {}: {}",
                     slot.strip_prefix("root.slots.").unwrap_or(slot),
-                    binding(plan, slot)
+                    binding_and_wall(cas, plan, graph, slot)
                 ),
             );
         }
-        if plan.bindings.len() > 8 {
+        if folded > 0 {
             line(
                 &mut out,
-                &format!(
-                    "  ... {} more bindings; use --tree or --json",
-                    plan.bindings.len() - 8
-                ),
+                &format!("  ... {folded} more bindings; use --tree or --json"),
             );
         }
     }
@@ -707,6 +874,35 @@ pub(super) fn current_marked(
 #[cfg(test)]
 mod tests {
     use super::*;
+    /// Every slot a node runs is listed with its Attempt wall, a ninth one included; only bound
+    /// slots no node runs fold behind `use --tree or --json` (ADR-0253).
+    #[test]
+    fn every_executable_slot_is_listed_and_only_idle_bindings_fold() {
+        let slot = |n: usize, runs: bool| (format!("root.slots.w{n}"), runs);
+        let nine: Vec<_> = (1..=9).map(|n| slot(n, true)).collect();
+        let (listed, folded) = listed_slots(nine);
+        assert_eq!(listed.len(), 9);
+        assert_eq!(listed.last().map(String::as_str), Some("root.slots.w9"));
+        assert_eq!(folded, 0);
+        let mut mixed: Vec<_> = (1..=3).map(|n| slot(n, true)).collect();
+        mixed.extend((4..=10).map(|n| slot(n, false)));
+        let (listed, folded) = listed_slots(mixed);
+        assert_eq!(listed.len(), 8);
+        assert!(
+            listed[..3]
+                .iter()
+                .all(|s| ["w1", "w2", "w3"].iter().any(|w| s.ends_with(w)))
+        );
+        assert_eq!(folded, 2);
+        let mut runs_last: Vec<_> = (1..=9).map(|n| slot(n, false)).collect();
+        runs_last.push(slot(10, true));
+        let (listed, folded) = listed_slots(runs_last);
+        assert_eq!(
+            listed[0], "root.slots.w10",
+            "a running slot is never folded"
+        );
+        assert_eq!((listed.len(), folded), (8, 2));
+    }
     #[test]
     fn model_display_uses_the_effective_model_effort_and_account() {
         let execution = WorkerExecutionV1::Model {

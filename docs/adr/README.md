@@ -451,3 +451,11 @@ future readers need.
   profile](0251-run-the-task-gate-on-the-fast-validation-profile.md)
 - [0252 — Keep the kernel experiment measurement out of every
   gate](0252-keep-the-kernel-experiment-measurement-out-of-every-gate.md)
+- [0253 — Seal the implementer's tree when its Attempt wall ends
+  it](0253-seal-the-implementers-tree-when-its-attempt-wall-ends-it.md)
+- [0254 — Name the tree of a Worker's rules, and deliver the Diff Subject as a typed
+  input](0254-name-the-tree-of-a-workers-rules-and-deliver-the-diff-subject-as-a-typed-input.md)
+- [0255 — Say a check stopped at its wall, and carry typed acceptance in the check
+  receipt](0255-say-a-check-stopped-at-its-wall-and-carry-typed-acceptance-in-the-check-receipt.md)
+- [0256 — Carry the recovery of an interrupted command as a typed
+  field](0256-carry-the-recovery-of-an-interrupted-command-as-a-typed-field.md)

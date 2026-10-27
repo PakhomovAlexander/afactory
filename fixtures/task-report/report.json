@@ -1,5 +1,5 @@
 {
-  "schema": "af/task-report@2",
+  "schema": "af/task-report@3",
   "pipelines": [
     {
       "name": "fixture/implementation",

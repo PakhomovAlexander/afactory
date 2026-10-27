@@ -502,7 +502,7 @@ fn telemetry_search_only_at_content() {
         );
         assert_eq!(json.status.code(), Some(2));
         let document: Value = serde_json::from_slice(&json.stdout).unwrap();
-        assert_eq!(document["schema"], "af/error@1");
+        assert_eq!(document["schema"], "af/error@2");
     }
     // `content_index = false` refuses as well.
     let off = machine.af(

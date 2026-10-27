@@ -1,5 +1,5 @@
 //! `af task report` (ADR-0142): what recorded Tasks cost and how they ran, as one Markdown block
-//! for a pull request description or one `af/task-report@2` document.
+//! for a pull request description or one `af/task-report@3` document.
 //!
 //! Read-only. It reads what `af task show` and `af task list` read — the Task's projection,
 //! execution records, review rounds, attempt walls and the event times of its log — opens the
@@ -18,13 +18,13 @@ use review_core::task::runtime::{
 };
 use review_core::task::task_report::*;
 use review_core::task::usage::{DecimalU128, TaskUnknownUsageCauseV1};
-use review_core::task::verification::{TASK_CHECK_RECEIPT_V1, TaskCheckReceiptV1};
+use review_core::task::verification::{TASK_CHECK_RECEIPT_V2, TaskCheckReceiptV2};
 use review_graph::task::{CompiledNode, CompiledOperator, ReviewOperation};
 use review_store::store::task::execution::TaskAttemptAccounting;
 
 /// The report over `task_ids`, in the order given, from the Store under `state`. An ID the
 /// Store does not hold, or one named twice, is an error that names it.
-pub(crate) fn read(state: &Path, task_ids: &[String]) -> Result<TaskReportV2, String> {
+pub(crate) fn read(state: &Path, task_ids: &[String]) -> Result<TaskReportV3, String> {
     let mut seen = BTreeSet::new();
     for id in task_ids {
         if !seen.insert(id.as_str()) {
@@ -49,7 +49,7 @@ pub(crate) fn read(state: &Path, task_ids: &[String]) -> Result<TaskReportV2, St
         }
         tasks.push(task);
     }
-    TaskReportV2::new(pipelines, tasks)
+    TaskReportV3::new(pipelines, tasks)
 }
 
 /// The warnings `af task report` prints on stderr before its report: two Tasks whose sealed
@@ -129,14 +129,14 @@ fn entry(
     store: &EventStore,
     state_dir: &Path,
     id: &str,
-) -> Result<(TaskReportEntryV2, Option<TaskReportPipelineV1>), String> {
+) -> Result<(TaskReportEntryV3, Option<TaskReportPipelineV1>), String> {
     let not_found = || task_not_found(state_dir, id);
     let run_id = review_store::store::task::task_run_id(id).map_err(|_| not_found())?;
     // A collected Task keeps its retained summary and its event times; its records are gone.
     if let Some(collected) = store.collected_task(id).map_err(|e| e.to_string())? {
         let times = event_times(None, store, &run_id)?.ok_or_else(not_found)?;
         let summary = &collected.collected;
-        let task = TaskReportEntryV2 {
+        let task = TaskReportEntryV3 {
             round: 0,
             task_id: summary.task_id.clone(),
             kind: summary.kind.clone(),
@@ -219,7 +219,7 @@ fn entry(
     } else {
         None
     };
-    let task = TaskReportEntryV2 {
+    let task = TaskReportEntryV3 {
         round: 0,
         task_id: state.task_id.clone(),
         kind: state.revision.kind.clone(),
@@ -246,21 +246,30 @@ fn entry(
 }
 
 /// The detail a report row prints beside the state: the state's own summary, then, for a
-/// continued Task, the Task and round it continues (ADR-0212), so a chain of continuations reads
-/// as one in the report.
+/// continued Task, the Task and round it continues (ADR-0212), or the Task whose partial tree it
+/// continues (ADR-0253), so a chain of continuations reads as one in the report.
 fn report_detail(
     cas: &Cas,
     state: &TaskProjection,
     view: &state::TaskView,
 ) -> Result<Option<String>, String> {
     let summary = state::report_summary(view).map(|detail| preview::text(&detail));
-    let lineage = super::continuation::recorded(cas, &state.revision)?.map(|(_, record)| {
+    let reviewed = super::continuation::recorded(cas, &state.revision)?.map(|(_, record)| {
         format!(
             "continues {} round {}",
             preview::text(&record.continues.task_id),
             record.continues.round
         )
     });
+    // A partial tree an Attempt wall left (ADR-0253).
+    let partial =
+        super::continuation::recorded_partial(cas, &state.revision)?.map(|(_, end, _)| {
+            format!(
+                "continues {} from its partial tree",
+                preview::text(&end.task_id)
+            )
+        });
+    let lineage = reviewed.or(partial);
     Ok(match (summary, lineage) {
         (Some(summary), Some(lineage)) => Some(format!("{summary}; {lineage}")),
         (summary, lineage) => summary.or(lineage),
@@ -941,12 +950,19 @@ fn tally_attempts(
     ))
 }
 
-/// Why a settled Attempt failed, by its typed retry feedback; `None` when it did not fail or
-/// has not settled.
+/// Why a settled Attempt failed: `attempt_wall` when its wall ended it (ADR-0253), whatever
+/// retry feedback its Worker's failure produced (a timed-out model reads as a Provider failure
+/// to the re-ask); otherwise by its typed retry feedback. `None` when it did not fail or has not
+/// settled.
 fn failure_class(
     cas: &Cas,
     attempt: &TaskAttemptAccounting,
 ) -> Result<Option<TaskReportFailureClassV1>, String> {
+    if matches!(attempt.result, Some(TaskAttemptResultV1::Failed { .. }))
+        && super::state::wall_end(cas, attempt).is_some()
+    {
+        return Ok(Some(TaskReportFailureClassV1::AttemptWall));
+    }
     Ok(match &attempt.result {
         Some(TaskAttemptResultV1::Failed {
             feedback_id: Some(id),
@@ -972,7 +988,7 @@ fn checks(cas: &Cas, attempt: &TaskAttemptAccounting) -> Result<Vec<TaskReportCh
     let receipts = output
         .outputs
         .values()
-        .filter(|port| port.artifact_type == TASK_CHECK_RECEIPT_V1)
+        .filter(|port| port.artifact_type == TASK_CHECK_RECEIPT_V2)
         .flat_map(|port| port.artifact_ids.iter());
     let mut spans = BTreeMap::new();
     for id in &attempt.raw_artifact_ids {
@@ -994,7 +1010,7 @@ fn checks(cas: &Cas, attempt: &TaskAttemptAccounting) -> Result<Vec<TaskReportCh
     }
     let mut checks = Vec::new();
     for id in receipts {
-        let receipt: TaskCheckReceiptV1 = artifact(cas, id, TASK_CHECK_RECEIPT_V1)?;
+        let receipt: TaskCheckReceiptV2 = artifact(cas, id, TASK_CHECK_RECEIPT_V2)?;
         for (name, result_id) in &receipt.checks {
             let result = cas.get_json(result_id).map_err(|e| e.to_string())?;
             let status = match result["status"].as_str() {
@@ -1102,7 +1118,7 @@ fn report_model(model: &str) -> String {
 /// totals row, and each round's node breakdown in a collapsed `<details>` element. Every
 /// recorded value is sanitized display text, so recorded data can neither break the table nor
 /// carry markup.
-pub(crate) fn markdown(report: &TaskReportV2) -> String {
+pub(crate) fn markdown(report: &TaskReportV3) -> String {
     let mut out = String::new();
     let mut line = |text: &str| {
         out.push_str(text);
@@ -1124,10 +1140,17 @@ pub(crate) fn markdown(report: &TaskReportV2) -> String {
     line(&raw_row(TASK_REPORT_COLUMNS.iter().map(|c| c.to_string())));
     line("| ---: | --- | --- | --- | ---: | ---: |");
     for task in &report.tasks {
-        let outcome = match &task.detail {
+        let mut outcome = match &task.detail {
             Some(detail) => format!("{}: {detail}", task.state.label()),
             None => task.state.label(),
         };
+        // An Attempt wall's edits are continued by a new Task: the report says how, as `af task
+        // show` does (ADR-0253).
+        if task.state.cause == Some(review_core::task::state::TaskCauseV1::AttemptWall)
+            && let Some(next) = &task.state.next_action
+        {
+            outcome.push_str(&format!("; next: {next}"));
+        }
         line(&raw_row([
             task.round.to_string(),
             cell(&task.task_id),
@@ -1261,7 +1284,7 @@ fn pipeline_line(pipeline: &TaskReportPipelineV1) -> String {
 /// set, `gate failed` when a check failed and the review did not run, `not run` when it has not
 /// run, `—` for a Task without a review and `unknown` for a collected one; then
 /// `; N reviewer(s) failed` when a reviewer's Attempt failed.
-fn findings_cell(task: &TaskReportEntryV2) -> String {
+fn findings_cell(task: &TaskReportEntryV3) -> String {
     let Some(findings) = &task.findings else {
         return if task.collected { UNKNOWN } else { "—" }.into();
     };
@@ -1305,7 +1328,7 @@ fn findings_cell(task: &TaskReportEntryV2) -> String {
 }
 
 /// The round's `<summary>` after `Round N · `: its Task, runs, wall time and failed Attempts.
-fn details_summary(task: &TaskReportEntryV2) -> String {
+fn details_summary(task: &TaskReportEntryV3) -> String {
     let mut summary = format!(
         "{}: {} {}, {} wall",
         task.task_id,

@@ -2017,12 +2017,12 @@ fn history_survey_and_refresh_refuse_a_mismatched_event_and_history_an_older_one
     // An older event no longer describing its record: the history refuses it, in text and in
     // JSON, so no mismatched event is printed; the newest Survey is still read.
     mismatch_refs_digest(&machine, sequences[0]);
-    // Under --json the refusal is the `af/error@1` document, never a history.
+    // Under --json the refusal is the `af/error@2` document, never a history.
     let refused = |args: &[&str], sequence: i64| {
         let (stdout, stderr) = machine.expect(&repo, &[], args, 1);
         let said = if args.contains(&"--json") {
             let error: Value = serde_json::from_str(&stdout).unwrap();
-            assert_eq!(error["schema"], "af/error@1", "{args:?}: {stdout}");
+            assert_eq!(error["schema"], "af/error@2", "{args:?}: {stdout}");
             error["error"].as_str().unwrap().to_string()
         } else {
             assert!(stdout.is_empty(), "{args:?}: {stdout}");
@@ -2467,9 +2467,9 @@ fn section_is_text_only_and_json_prints_the_complete_record() {
         &["project", "survey", "--section", "tree", "--json"],
         2,
     );
-    // Under --json the usage error is the one `af/error@1` document, exit 2.
+    // Under --json the usage error is the one `af/error@2` document, exit 2.
     let refused: serde_json::Value = serde_json::from_str(stdout.trim()).unwrap();
-    assert_eq!(refused["schema"], "af/error@1", "{stdout}");
+    assert_eq!(refused["schema"], "af/error@2", "{stdout}");
     assert_eq!(refused["exit_code"], 2, "{stdout}");
     assert!(stderr.contains("cannot be used with"), "{stderr}");
     let (json, _) = machine.expect(&repo, &[], &["project", "survey", "--json"], 0);
@@ -2685,13 +2685,13 @@ fn survey_object(machine: &Machine, survey_id: &str) -> PathBuf {
     object
 }
 
-/// What `af` said refusing `args` with exit 1: stderr, or under `--json` the `af/error@1`
+/// What `af` said refusing `args` with exit 1: stderr, or under `--json` the `af/error@2`
 /// document's error, the only thing on stdout.
 fn refusal(machine: &Machine, repo: &Path, env: &[(&str, &str)], args: &[&str]) -> String {
     let (stdout, stderr) = machine.expect(repo, env, args, 1);
     if args.contains(&"--json") {
         let error: Value = serde_json::from_str(&stdout).unwrap();
-        assert_eq!(error["schema"], "af/error@1", "{args:?}: {stdout}");
+        assert_eq!(error["schema"], "af/error@2", "{args:?}: {stdout}");
         error["error"].as_str().unwrap().to_string()
     } else {
         assert!(stdout.is_empty(), "{args:?}: {stdout}");
@@ -3240,10 +3240,13 @@ fn forced_refreshes_at_one_cutoff_differ_only_in_the_chain_and_a_partial_one_in_
     assert!(stopped.get("commit").is_none() && stopped.get("path").is_none());
 }
 
-/// Kills the processes it holds when the test ends, a panicking one included.
+/// Kills the processes it holds when the test ends, a panicking one included. A parked git is
+/// not this test's child: it is recorded when its ID is read, never signalled, and ends by
+/// itself once the af that started it is gone; one still running is reported (issue #331
+/// item 7).
 struct Reaped {
     children: Vec<std::process::Child>,
-    pids: Vec<String>,
+    pids: crate::common::recorded::Leftovers,
 }
 
 impl Drop for Reaped {
@@ -3252,9 +3255,7 @@ impl Drop for Reaped {
             let _ = child.kill();
             let _ = child.wait();
         }
-        for pid in &self.pids {
-            let _ = Command::new("kill").args(["-9", pid]).status();
-        }
+        drop(std::mem::take(&mut self.pids));
     }
 }
 
@@ -3273,14 +3274,14 @@ fn a_spill_a_killed_refresh_left_is_swept_by_the_next_while_a_live_refreshs_is_k
     let complete = machine.json(&repo, &[], &["project", "survey", "--json"]);
     assert_eq!(complete["completeness"], "complete");
     // A refresh whose manifest runs are spilled parks its merge's `cat-file --batch`: the git
-    // writes its pid under the af that started it and sleeps.
+    // writes its pid under the af that started it and waits while that af runs.
     let bin = fake_git(
         &machine,
         "spill-bin",
         &format!(
             "for argument in \"$@\"; do\n  if [ \"$argument\" = --batch ] && \
              ls -d '{}'/af-tree-digest-$PPID-* >/dev/null 2>&1; then\n    \
-             echo $$ > '{}'/$PPID\n    exec sleep 120\n  fi\ndone",
+             echo $$ > '{}'/$PPID\n    exec python3 -I -c 'import os,sys,time\nparent=int(sys.argv[1])\nend=time.monotonic()+120\nwhile os.getppid()==parent and time.monotonic()<end: time.sleep(0.05)' $PPID\n  fi\ndone",
             scratch.display(),
             parked.display()
         ),
@@ -3299,7 +3300,7 @@ fn a_spill_a_killed_refresh_left_is_swept_by_the_next_while_a_live_refreshs_is_k
     };
     let mut reaped = Reaped {
         children: Vec::new(),
-        pids: Vec::new(),
+        pids: crate::common::recorded::Leftovers::default(),
     };
     // Start a refresh that spills and parks; its af's pid and its parked git's.
     let mut park = || -> (u32, String) {
@@ -3335,7 +3336,9 @@ fn a_spill_a_killed_refresh_left_is_swept_by_the_next_while_a_live_refreshs_is_k
         }
         std::thread::sleep(std::time::Duration::from_millis(50));
         let git = std::fs::read_to_string(&marker).unwrap().trim().to_string();
-        reaped.pids.push(git.clone());
+        reaped.pids.0.push(crate::common::recorded::Recorded::live(
+            git.parse().unwrap(),
+        ));
         (pid, git)
     };
     let (live, _) = park();
@@ -3346,10 +3349,15 @@ fn a_spill_a_killed_refresh_left_is_swept_by_the_next_while_a_live_refreshs_is_k
     let mut child = reaped.children.pop().unwrap();
     child.kill().unwrap();
     child.wait().unwrap();
-    Command::new("kill")
-        .args(["-9", &killed_git])
-        .status()
-        .unwrap();
+    assert!(
+        reaped
+            .pids
+            .0
+            .last()
+            .unwrap()
+            .ended_within(std::time::Duration::from_secs(60)),
+        "the parked git {killed_git} did not end once its af was gone"
+    );
     assert_eq!(spills(killed).len(), 1, "a killed refresh leaves its spill");
 
     // The next refresh sweeps it before it decides to reuse the complete Survey, which it

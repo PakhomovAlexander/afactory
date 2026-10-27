@@ -15,7 +15,7 @@ default per checkout). `af help task-states` lists every state a Task can be in.
 ## 1. Plan
 
 `af task plan --file TASK_FILE --json` captures the Task file and the checkout and compiles the
-plan without running anything: one `af/task-inspection@13` document whose `plan_id` is the
+plan without running anything: one `af/task-inspection@14` document whose `plan_id` is the
 plan to confirm and whose `state.next_action` is the command that runs it. A plan that does
 not fit its limits is refused with `af/task-selection@3`, whose `next_action` is the `--fit`
 command that plans with the smallest limits that fit.
@@ -23,7 +23,7 @@ command that plans with the smallest limits that fit.
 ## 2. Run, or run in the background
 
 `af task run TASK_ID --confirm-plan PLAN_ID --json` runs exactly that plan and prints the
-finished Task as `af/task-inspection@13`. While it waits it prints on stderr one line per node
+finished Task as `af/task-inspection@14`. While it waits it prints on stderr one line per node
 that starts or finishes, with the time since the run started and the tokens charged so far
 (`af task run: implement finished (2 min elapsed, 41k tokens so far)`), and every 5 minutes a
 heartbeat (`af task run: implement running 23 min, 412k tokens, host load 11.2`); `--quiet`
@@ -31,15 +31,15 @@ keeps them back.
 
 An agent that must not hold a terminal for the whole run detaches it:
 `af task run TASK_ID --confirm-plan PLAN_ID --detach --json` returns once the run holds the
-Task, with one `af/task-detached@2` document naming its pid, its host and its log, a file under
+Task, with one `af/task-detached@3` document naming its pid, its host and its log, a file under
 the Store's `runs/` directory, and `admitted: true`. A run not admitted within 2 minutes is not
 claimed to run: exit 4, `admitted: false` and `next_action` `af task status TASK_ID`. The run
 survives the shell that started it. Then
 `af task wait TASK_ID --json` blocks until the Task settles and exits with its exit code
 (`--timeout S` gives up with exit 124), and `af task status TASK_ID --json` answers at once;
-both print `af/task-status@1`: the state, the node that runs, the time since the Task's clock
+both print `af/task-status@2`: the state, the node that runs, the time since the Task's clock
 started and the tokens so far. `af task cancel TASK_ID --json` stops the run and its Worker
-processes, recording who asked, and prints `af/task-cancelled@1`; the Task stays resumable with
+processes, recording who asked, and prints `af/task-cancelled@2`; the Task stays resumable with
 `af task run TASK_ID`.
 
 ## 3. Read how it ended
@@ -50,13 +50,14 @@ command to run next. The exit code says the same to a script: 0 verified, 3 chan
 stderr's last line is always `Task TASK_ID: phase/outcome/cause; next: COMMAND`. Branch on
 `state.outcome` and run `state.next_action`; never parse the prose. `next_action` carries the
 `--repo`, `--state` or `--workspace` the command was given, so it runs as printed. A refusal
-under `--json` is one `af/error@1` document with the same exit code; one af classifies, such as a
+under `--json` is one `af/error@2` document with the same exit code; one af classifies, such as a
 node past its recovery allowance, also carries `cause`, `next_action` and `details`
-(`af help json`).
+(`af help json`). A run SIGINT or SIGTERM stopped is one too, exit 130 or 143, `cause`
+`interrupted`, and its `next_action` continues it.
 
 ## 4. Read the findings
 
-`af task findings TASK_ID --json` prints the last review round as one `af/task-findings@1`
+`af task findings TASK_ID --json` prints the last review round as one `af/task-findings@2`
 document: per reviewer, each finding with its severity, confidence, title, file and line, the
 quoted evidence and the proposed fix, the round's counts by severity, and the evaluator's
 verdict on that round with its reason. `--round N` reads an earlier round, with its own
@@ -113,4 +114,4 @@ default). When the script cannot print its block, nothing is printed and the com
 naming `--base REF`; a block it prints incomplete, without its end marker or its title, is
 refused the same way, naming what is missing. `gh pr create --body-file body.md` takes it
 unchanged. `af task report TASK_ID... --json` prints the same figures as one
-`af/task-report@2` document.
+`af/task-report@3` document.

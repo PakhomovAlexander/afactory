@@ -11,6 +11,9 @@ pub use encoding::{DecodedTaskExecutionRecord, read_execution_record};
 
 use review_attempt::task_budget::{TaskBudget, TaskReservation};
 use review_attempt::{AttemptId, AttemptLedger, ExactReceipt, Selection};
+use review_core::task::diff_subject::{
+    DIFF_SUBJECT_OPERATION, DIFF_SUBJECT_PORT, DIFF_SUBJECT_V1, DiffSubjectV1,
+};
 use review_core::task::execution::*;
 use review_graph::task::{CompiledOperator, CompiledTask, condition_input};
 
@@ -728,7 +731,12 @@ impl TaskExecutionProjection {
             .collect()
     }
 
-    fn verify_invocation(&self, cas: &Cas, input: &TaskInvocationV1) -> Result<(), StoreError> {
+    fn verify_invocation(
+        &self,
+        cas: &Cas,
+        task_id: &str,
+        input: &TaskInvocationV1,
+    ) -> Result<(), StoreError> {
         self.check_owned_open(&input.node)?;
         let resolved = self.resolve_node(&input.node)?;
         if let Some(expected) = resolved.expected_inputs {
@@ -757,7 +765,15 @@ impl TaskExecutionProjection {
                 return Err(conflict("Required Task input has no admitted producer"));
             }
         }
-        if input.inputs != expected {
+        // A judging Worker's Diff Subject has no graph producer: the kernel builds it for this
+        // node from its source (ADR-0254). Admitted only on the port the node's contract
+        // declares, as one artifact of the kernel's own operation for this node of this Task,
+        // about the Snapshot the node's source names; the pipeline checks its content.
+        let mut graph_inputs = input.inputs.clone();
+        if let Some(subject) = graph_inputs.remove(DIFF_SUBJECT_PORT) {
+            verify_diff_subject(cas, task_id, input, node, expected.get("source"), &subject)?;
+        }
+        if graph_inputs != expected {
             return Err(conflict(
                 "Invocation does not match the exact admitted graph inputs",
             ));
@@ -1081,7 +1097,7 @@ impl TaskProjection {
                 if execution.invocations.contains_key(&input.node) {
                     return Err(conflict("Task invocation is duplicated"));
                 }
-                execution.verify_invocation(cas, &input)?;
+                execution.verify_invocation(cas, &self.task_id, &input)?;
                 execution.verify_owned_invocation_id(&input.node, invocation_id)?;
                 execution
                     .invocations
@@ -1415,11 +1431,49 @@ impl TaskProjection {
     }
 }
 
+/// The `af/TaskAttemptWallEnd@1` a lost writer kept for one of its Attempts (ADR-0253): it
+/// must be that Attempt's own record, produced by it, naming its Task, node and Attempt.
+fn recorded_wall_end(
+    cas: &Cas,
+    task_id: &str,
+    attempt_id: &str,
+    attempt: &RecordedAttempt,
+    wall_end_id: &str,
+) -> Result<review_core::task::attempt_wall::TaskAttemptWallEndV1, StoreError> {
+    use review_core::task::attempt_wall::{TASK_ATTEMPT_WALL_END_V1, TaskAttemptWallEndV1};
+    let envelope = cas
+        .get_optional_artifact(wall_end_id)
+        .map_err(|error| StoreError::Artifact(error.to_string()))?
+        .ok_or_else(|| conflict("A recorded Attempt wall end is not in the CAS"))?;
+    let producer = review_core::Producer::Attempt {
+        run_id: task_run_id(task_id)?,
+        node_id: attempt.reservation.node.clone(),
+        attempt_id: attempt_id.into(),
+    };
+    if envelope.artifact_type != TASK_ATTEMPT_WALL_END_V1 || envelope.producer != producer {
+        return Err(conflict(
+            "A recorded Attempt wall end is not that Attempt's own record",
+        ));
+    }
+    let end: TaskAttemptWallEndV1 = serde_json::from_value(envelope.payload)?;
+    end.validate().map_err(conflict)?;
+    if end.task_id != task_id
+        || end.attempt_id != attempt_id
+        || end.node != attempt.reservation.node
+    {
+        return Err(conflict(
+            "A recorded Attempt wall end names another Task, node or Attempt",
+        ));
+    }
+    Ok(end)
+}
+
 impl EventStore {
     /// Recover a previous writer's pending work before new dispatch. Started work is settled
     /// as abandoned by a lost writer and charged its observed usage, or zero with its usage
-    /// unknown (ADR-0143, ADR-0209); only a durable prepare with no start record may release
-    /// its credit.
+    /// unknown (ADR-0143, ADR-0209), unless its writer kept the wall end of an Attempt its wall
+    /// ended: that one settles failed at its wall with the wall end and its partial tree
+    /// (ADR-0253). Only a durable prepare with no start record may release its credit.
     pub fn recover_task_attempts(
         &mut self,
         cas: &Cas,
@@ -1523,6 +1577,19 @@ impl EventStore {
                         .map_err(|error| StoreError::Artifact(error.to_string()))
                     })
                     .transpose()?;
+                // An Attempt its wall ended keeps its wall end before settlement; its successor
+                // settles it failed at its wall, as its writer would have, with the wall end and
+                // the partial tree it names, and spends no recovery allowance (ADR-0253).
+                let wall_end = self
+                    .task_attempt_wall_end(&task_run_id(&lease.task_id)?, id)?
+                    .map(|wall_end_id| {
+                        recorded_wall_end(cas, &lease.task_id, id, attempt, &wall_end_id)
+                            .map(|end| (wall_end_id, end))
+                    })
+                    .transpose()?;
+                let incomplete_floor = observation
+                    .as_ref()
+                    .is_some_and(|o| !o.charge_complete && o.reported_usage.is_some());
                 let raw_artifact_ids = observation
                     .map(|observation| {
                         usage_observation::capture_task_usage_observation(
@@ -1541,18 +1608,57 @@ impl EventStore {
                     })
                     .transpose()?
                     .into_iter()
-                    .collect();
-                TaskExecutionRecordV1::Settled {
-                    attempt_id: id.clone(),
-                    // What the Provider reported before the loss, never the reservation; the
-                    // reservation is released by the settlement (ADR-0209).
-                    charged_tokens: if reported { observed } else { 0 },
-                    result: TaskAttemptResultV1::Abandoned { diagnostic_id },
-                    raw_artifact_ids,
-                    usage_id,
-                    unknown_usage: (!reported).then_some(task::usage::TaskUnknownUsageV1 {
-                        cause: task::usage::TaskUnknownUsageCauseV1::LeaseExpired,
-                    }),
+                    .collect::<Vec<_>>();
+                let unknown_usage = (!reported).then_some(task::usage::TaskUnknownUsageV1 {
+                    cause: task::usage::TaskUnknownUsageCauseV1::LeaseExpired,
+                });
+                match wall_end {
+                    Some((wall_end_id, end)) => {
+                        let diagnostic_id = cas
+                            .put_json(&json!({
+                                "schema": "af.task-diagnostic/1",
+                                "error": format!(
+                                    "Attempt {id} of {} reached its Attempt wall of {} ms after \
+                                     {} ms; its writer was lost before it settled the Attempt",
+                                    end.node, end.wall_ms, end.elapsed_ms
+                                ),
+                                "cause": "attempt_wall",
+                            }))
+                            .map_err(|e| StoreError::Artifact(e.to_string()))?;
+                        // Charged as every failed Attempt is: what was reported, and the
+                        // reservation its incomplete counters keep (ADR-0143).
+                        let floor = if incomplete_floor {
+                            u128::from(attempt.reservation.tokens)
+                        } else {
+                            0
+                        };
+                        TaskExecutionRecordV1::Settled {
+                            attempt_id: id.clone(),
+                            charged_tokens: if reported { observed.max(floor) } else { 0 },
+                            result: TaskAttemptResultV1::Failed {
+                                diagnostic_id,
+                                feedback_id: None,
+                            },
+                            raw_artifact_ids: end
+                                .partial_candidate_id
+                                .into_iter()
+                                .chain([wall_end_id])
+                                .chain(raw_artifact_ids)
+                                .collect(),
+                            usage_id,
+                            unknown_usage,
+                        }
+                    }
+                    None => TaskExecutionRecordV1::Settled {
+                        attempt_id: id.clone(),
+                        // What the Provider reported before the loss, never the reservation;
+                        // the reservation is released by the settlement (ADR-0209).
+                        charged_tokens: if reported { observed } else { 0 },
+                        result: TaskAttemptResultV1::Abandoned { diagnostic_id },
+                        raw_artifact_ids,
+                        usage_id,
+                        unknown_usage,
+                    },
                 }
             } else {
                 TaskExecutionRecordV1::Released {
@@ -2144,4 +2250,55 @@ impl TaskExecutionProjection {
         };
         self.check_integration_node(&node)
     }
+}
+
+/// The `diff_subject` port of `input` (ADR-0254): declared by the node's contract, one
+/// `af/DiffSubject@1` the kernel's `diff-subject@1` operation produced for this node of this
+/// Task, whose document describes the Snapshot the node's `source` names.
+fn verify_diff_subject(
+    cas: &Cas,
+    task_id: &str,
+    input: &TaskInvocationV1,
+    node: &review_graph::task::CompiledNode,
+    source: Option<&review_core::task::ArtifactInputV1>,
+    subject: &review_core::task::ArtifactInputV1,
+) -> Result<(), StoreError> {
+    let refused = || conflict("Invocation carries a Diff Subject the kernel did not build for it");
+    let declared = node
+        .contract
+        .inputs
+        .get(DIFF_SUBJECT_PORT)
+        .is_some_and(|port| port.artifact_type == DIFF_SUBJECT_V1);
+    let snapshot = source.and_then(|source| source.snapshot_id.as_deref());
+    if !declared
+        || snapshot.is_none()
+        || subject.validate().is_err()
+        || subject.artifact_type != DIFF_SUBJECT_V1
+        || subject.artifact_ids.len() != 1
+        || subject.snapshot_id.as_deref() != snapshot
+    {
+        return Err(refused());
+    }
+    let value: ArtifactEnvelope = serde_json::from_value(
+        cas.get_json(&subject.artifact_ids[0])
+            .map_err(|_| refused())?,
+    )
+    .map_err(|_| refused())?;
+    validate_envelope(&value).map_err(|_| refused())?;
+    let built = value.producer
+        == (review_core::Producer::KernelOperation {
+            run_id: task_run_id(task_id)?,
+            node_id: Some(input.node.clone()),
+            operation_id: DIFF_SUBJECT_OPERATION.into(),
+        });
+    let document: DiffSubjectV1 = serde_json::from_value(value.payload).map_err(|_| refused())?;
+    if !built
+        || value.artifact_type != DIFF_SUBJECT_V1
+        || value.subject_snapshot_id.as_deref() != snapshot
+        || document.validate().is_err()
+        || Some(document.snapshot_id.as_str()) != snapshot
+    {
+        return Err(refused());
+    }
+    Ok(())
 }

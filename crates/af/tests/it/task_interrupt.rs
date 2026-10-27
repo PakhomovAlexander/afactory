@@ -37,19 +37,6 @@ impl Drop for ChildGuard {
     }
 }
 
-/// Kills a leftover Worker group if the test fails before af stopped it.
-struct GroupGuard(Vec<u32>);
-impl Drop for GroupGuard {
-    fn drop(&mut self) {
-        for pid in &self.0 {
-            let _ = nix::sys::signal::killpg(
-                nix::unistd::Pid::from_raw(i32::try_from(*pid).unwrap()),
-                nix::sys::signal::Signal::SIGKILL,
-            );
-        }
-    }
-}
-
 pub(crate) fn commit_fixture(repo: &Path) {
     let path = repo.join(".af/task-catalog.toml");
     let mut catalog: toml::Value =
@@ -93,7 +80,7 @@ pub(crate) fn long_running_implementer(repo: &Path, ready: &Path, resume: &Path)
             .replace('\'', "\\'")
     };
     let hold = format!(
-        "{marker}import os,subprocess\nif not os.path.exists('{resume}'):\n    child=subprocess.Popen(['/bin/sleep','60'])\n    open('{ready}.tmp','w').write('%d %d' % (os.getpid(), child.pid))\n    os.rename('{ready}.tmp','{ready}')\n    child.wait()\n",
+        "{marker}import os,subprocess,time\nif not os.path.exists('{resume}'):\n    child=subprocess.Popen(['/bin/sleep','60'])\n    open('{ready}.tmp','w').write('%d %d' % (os.getpid(), child.pid))\n    os.rename('{ready}.tmp','{ready}')\n    parent=os.getppid()\n    while child.poll() is None:\n        if os.getppid()!=parent:\n            child.kill();child.wait();sys.exit(1)\n        time.sleep(0.05)\n",
         resume = quote(resume),
         ready = quote(ready),
     );
@@ -182,6 +169,10 @@ fn interrupt_running_af(
     signals: &[Signal],
     args: &[&str],
 ) -> std::process::Output {
+    // Reports a Worker still running if the test fails before af stopped it; it is af's child,
+    // never signalled here, and ends by itself once af is gone (issue #331 item 7). Declared
+    // first, so af, which this test holds, is killed before it watches.
+    let mut leftovers = crate::common::recorded::Leftovers::default();
     let mut af = ChildGuard(Some(
         crate::common::af()
             .current_dir(repo)
@@ -215,7 +206,9 @@ fn interrupt_running_af(
         assert!(Instant::now() < until, "Worker readiness deadline");
         std::thread::sleep(Duration::from_millis(10));
     };
-    let _groups = GroupGuard(vec![pids[0]]);
+    leftovers.0.extend(crate::common::recorded::Recorded::now(
+        i32::try_from(pids[0]).unwrap(),
+    ));
     assert!(
         pids.iter().all(|pid| alive(*pid)),
         "observe the Worker and its child before the interrupt"
@@ -271,8 +264,24 @@ fn sigint_stops_the_worker_group_records_a_cancelled_attempt_and_the_task_resume
     assert!(stderr.contains(&format!("af task run {TASK}")), "{stderr}");
     let document: serde_json::Value = serde_json::from_slice(&out.stdout)
         .unwrap_or_else(|_| panic!("not JSON: {}", String::from_utf8_lossy(&out.stdout)));
-    assert_eq!(document["schema"], "af/error@1");
+    crate::schemas::valid(&crate::schemas::validator("error-v2.json"), &document);
+    assert_eq!(document["schema"], "af/error@2");
     assert_eq!(document["exit_code"], 130);
+    // #331 item 10: the recovery is a field a script runs, with the Store selector it was given.
+    assert_eq!(document["cause"], "interrupted", "{document}");
+    assert_eq!(
+        document["next_action"],
+        format!(
+            "af task run {TASK} --state {}",
+            shell_words::quote(&state.display().to_string())
+        ),
+        "{document}"
+    );
+    assert_eq!(
+        document["details"],
+        serde_json::json!({"signal": "SIGINT", "task": TASK}),
+        "{document}"
+    );
 
     let cas = Cas::open_existing(state.join("cas")).unwrap();
     {

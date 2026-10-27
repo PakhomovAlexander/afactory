@@ -9,7 +9,7 @@ use review_core::task::execution::{TaskInvocationV1, TaskOutputV1};
 use review_core::task::pipeline::*;
 use review_core::task::plan::ExecutionPlanV1;
 use review_core::task::review::*;
-use review_core::task::verification::TASK_CHECK_RECEIPT_V1;
+use review_core::task::verification::TASK_CHECK_RECEIPT_V2;
 use review_core::task::*;
 use review_core::{DemandRequirement, PortCardinality, Producer, Severity, SubjectV1};
 use review_graph::task::{CompiledOperator, CompiledTask, OperatorSignature};
@@ -145,7 +145,7 @@ pub fn review_signatures(
             "subject".into(),
             port(TASK_REVIEW_SUBJECT_V2, same(), false),
         ),
-        ("checks".into(), port(TASK_CHECK_RECEIPT_V1, same(), true)),
+        ("checks".into(), port(TASK_CHECK_RECEIPT_V2, same(), true)),
     ]);
     for name in policy.reviewers.keys() {
         inputs.insert(name.clone(), port(RESULT_TYPE, same(), true));

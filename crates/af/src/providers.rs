@@ -527,6 +527,10 @@ pub(crate) struct RegistryRead {
     /// The auth directories found on this machine that no registry entry names, by
     /// [`unregistered_dirs`]: what status, doctor and onboarding list as found but not registered.
     pub(crate) unregistered: Vec<PathBuf>,
+    /// The logins `af provider detect --apply` would register, each with its kind
+    /// ([`registrable_logins`]): the only case `af doctor` offers it as a fix (#331 D5). Probing
+    /// runs the CLIs, so only doctor fills it; [`read_registry_entries`] leaves it empty.
+    pub(crate) registrable: Vec<(PathBuf, &'static str)>,
 }
 
 /// The auth directories a names-only scan finds (the selector variables', the CLIs' defaults and
@@ -582,7 +586,18 @@ pub(crate) fn read_registry_entries() -> RegistryRead {
         registered,
         candidates,
         unregistered,
+        registrable: Vec::new(),
     }
+}
+
+/// The logins `af provider detect --apply` would register now, each with its kind: an
+/// authenticated login, probed by an available CLI of its kind on `PATH`, in a safe directory
+/// no registry entry names. A login marker alone is not one (#331 D5).
+pub(crate) fn registrable_logins() -> Vec<(PathBuf, &'static str)> {
+    detect::registrable_logins()
+        .into_iter()
+        .map(|(dir, kind)| (dir, kind.name()))
+        .collect()
 }
 
 /// Every Provider's status as `af provider status` probes it, token-free, without the usage

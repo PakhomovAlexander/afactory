@@ -159,7 +159,10 @@ impl ProviderTaskDomain<'_> {
             .usage
             .as_ref()
             .map(|usage| usage.chargeable_tokens.get());
-        let notes = std::mem::take(&mut returned.notes);
+        let mut notes = std::mem::take(&mut returned.notes);
+        // An environment failure is its own closed class, never an account change (ADR-0253).
+        notes.environment |= returned.native_failure
+            == Some(review_runner::native_failure::NativeFailureKind::Environment);
         let outputs = (|| {
             let message = returned.message?;
             if message.len() > 64

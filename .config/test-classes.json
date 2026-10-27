@@ -132,6 +132,7 @@
       "store_release": "e2e",
       "task_acceptance": "e2e",
       "task_agent_loop": "e2e",
+      "task_attempt_wall": "e2e",
       "task_catalog": "e2e",
       "task_cli": "e2e",
       "task_cli_fixture": "e2e",
@@ -162,6 +163,7 @@
       "task_research_chain": "e2e",
       "task_selection": "e2e",
       "task_starters": "e2e",
+      "task_structured_acceptance": "e2e",
       "task_warm_checks": "e2e",
       "telemetry": "e2e",
       "telemetry_bench": "perf",
@@ -305,6 +307,7 @@
     "test-prereqs.py": "functional",
     "test-provider-auth-host.py": "functional",
     "test-release-resolve.py": "functional",
+    "test-stress-proof.py": "e2e",
     "test-task-preflight.py": "functional",
     "test-test-classes.py": "functional",
     "test-test-time-report.py": "functional"

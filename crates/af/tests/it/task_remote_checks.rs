@@ -451,7 +451,7 @@ fn a_finished_remote_check_task_closes_its_gate_pull_request_and_deletes_its_bra
     fixture.map("");
     let done = run_remote_task(&fixture, TASK);
     crate::schemas::valid(
-        &crate::schemas::validator("task-inspection-v13.json"),
+        &crate::schemas::validator("task-inspection-v14.json"),
         &done,
     );
     let [cleanup] = done["gate_cleanups"].as_array().unwrap().as_slice() else {
@@ -923,6 +923,9 @@ fn the_staged_remote_twins_differ_only_where_they_run_kernel_and_plan_on_this_re
         once,
         "a second install changes nothing"
     );
+    // The committed packages name the receipt this release no longer reads; the copy takes
+    // ADR-0255's migration.
+    task_cli::migrate_check_receipt(&repo, &[".af"], &[".af/task-catalog.toml"]);
     git(&repo, &["init", "-q", "-b", "main"]);
     git(&repo, &["add", "-A"]);
     git(&repo, &["commit", "-qm", "remote twins"]);

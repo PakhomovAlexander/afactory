@@ -341,6 +341,9 @@ fn interrupted_fix_verification_resumes_same_continuation_and_charges_the_lost_a
     commit_fixture(&repo);
     let (code, plan) = run(&repo, &state, &["task", "plan", "--file", "ticket.json"]);
     assert_eq!(code, 0, "{plan:#}");
+    // The interrupted run's own words, for a run that ends before the observation does: on a
+    // loaded host that is the host's refusal (a full disk, say), never a silent early exit.
+    let said = directory.path().join("interrupted-run.stderr");
     let mut child = crate::common::af()
         .current_dir(&repo)
         .args([
@@ -353,7 +356,7 @@ fn interrupted_fix_verification_resumes_same_continuation_and_charges_the_lost_a
         ])
         .arg(&state)
         .stdout(std::process::Stdio::null())
-        .stderr(std::process::Stdio::null())
+        .stderr(std::fs::File::create(&said).unwrap())
         .spawn()
         .unwrap();
     let cas = review_store::Cas::open_existing(state.join("cas")).unwrap();
@@ -407,12 +410,13 @@ fn interrupted_fix_verification_resumes_same_continuation_and_charges_the_lost_a
             let _ = child.wait();
             let projection = store.task_projection(&cas, "repair-cli").unwrap().unwrap();
             panic!(
-                "No started fix-verifier Attempt before the admitted Task deadline: phase={:?}, attempts={}",
+                "No started fix-verifier Attempt before the admitted Task deadline: phase={:?}, attempts={}; the run said: {}",
                 projection.phase,
                 projection
                     .execution
                     .as_ref()
-                    .map_or(0, |e| e.budget.begun_attempts())
+                    .map_or(0, |e| e.budget.begun_attempts()),
+                std::fs::read_to_string(&said).unwrap_or_default()
             );
         }
         std::thread::sleep(Duration::from_millis(10));

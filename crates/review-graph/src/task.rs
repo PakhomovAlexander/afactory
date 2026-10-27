@@ -4,6 +4,7 @@
 use std::collections::{BTreeMap, BTreeSet};
 
 use review_attempt::task_budget::{NodeAllowance, OwnedNodeAllowance, TaskBudget};
+use review_core::task::diff_subject::{DIFF_SUBJECT_PORT, DIFF_SUBJECT_V1};
 use review_core::task::pipeline::{
     PipelineContractV1, PipelineDefinitionV1, PipelinePortV1, PortAffinityV1, ReceiptOutcomeV1,
     TaskOperatorV1, ValueRefV1, WorkerSlotV1,
@@ -1034,6 +1035,16 @@ struct Compiler<'a> {
     resource_refusals: Vec<String>,
 }
 
+/// Refuse a contract that declares a port of a type this release neither writes nor reads, by
+/// its name: the check receipt before ADR-0255. A package that still declares it is captured and
+/// pinned by its bytes, and refused here, when a plan or a catalog test compiles it.
+fn refuse_retired_ports(contract: &PipelineContractV1) -> Result<(), String> {
+    for port in contract.inputs.values().chain(contract.outputs.values()) {
+        review_core::task::verification::refuse_retired_receipt(&port.artifact_type)?;
+    }
+    Ok(())
+}
+
 pub fn compile_task(
     task: &TaskRevisionV1,
     root: &str,
@@ -1087,6 +1098,7 @@ fn compile_structure_mode(
         .get(root)
         .ok_or("Root Pipeline is not installed")?;
     definition.validate()?;
+    refuse_retired_ports(&definition.contract)?;
     if !definition.accepts.kinds.contains(&task.kind)
         || definition
             .accepts
@@ -1264,7 +1276,42 @@ fn compile_structure_mode(
     compiler.graph.coverage = coverage;
     compiler.graph.order = compiler.graph.scheduler_plan()?.order;
     compiler.graph.schema = compiler.graph.expected_schema().into();
+    require_acceptance_evaluator(&compiler.graph, root)?;
     Ok((compiler.graph, compiler.resource_refusals))
+}
+
+/// Refuse a Task whose acceptance items no evaluator would be handed (ADR-0255): a bound
+/// `af/TaskAcceptance@1` root input must reach a `verify` Worker node as that node's own
+/// input. Declaring the root port alone delivers the items to nobody, so a pass could not
+/// have judged them.
+fn require_acceptance_evaluator(graph: &CompiledTask, root: &str) -> Result<(), String> {
+    use review_core::task::acceptance::TASK_ACCEPTANCE_V1;
+    for (name, input) in &graph.inputs {
+        if input.artifact_type != TASK_ACCEPTANCE_V1 {
+            continue;
+        }
+        let delivered = graph.nodes.values().any(|node| {
+            matches!(
+                node.operator,
+                CompiledOperator::Primitive {
+                    operator: TaskOperatorV1::Verify { .. },
+                    ..
+                }
+            ) && node
+                .inputs
+                .values()
+                .any(|address| address.node == "root.inputs" && &address.port == name)
+        });
+        if !delivered {
+            return Err(format!(
+                "acceptance: Pipeline {root} declares the `{name}` input but hands it to no \
+                 `verify` evaluator node, so no evaluator could judge the items by their IDs; \
+                 bind `{name}` as an input of the Pipeline's `verify` node, or drop `acceptance` \
+                 from the Task file and state it in the goal"
+            ));
+        }
+    }
+    Ok(())
 }
 
 type Boundary = (BTreeMap<String, Address>, BTreeMap<String, Address>);
@@ -1599,6 +1646,20 @@ impl Compiler<'_> {
             .ok_or_else(|| format!("Pipeline {name} is not installed"))?
             .clone();
         definition.validate()?;
+        if definition
+            .contract
+            .inputs
+            .values()
+            .chain(definition.contract.outputs.values())
+            .any(|port| port.artifact_type == DIFF_SUBJECT_V1)
+        {
+            return Err(format!(
+                "Pipeline {name} declares a {DIFF_SUBJECT_V1} port; the kernel builds the Diff \
+                 Subject for each judging Worker, so no Pipeline takes or returns one"
+            ));
+        }
+        refuse_retired_ports(&definition.contract)
+            .map_err(|error| format!("Pipeline {name}: {error}"))?;
         self.stack.push(name.into());
         for (port_name, port) in &definition.contract.inputs {
             match inputs.get(port_name) {
@@ -1938,6 +1999,8 @@ impl Compiler<'_> {
                                 .ok_or_else(|| format!("Unsupported {signature_name}"))?,
                         };
                         signature.contract.validate()?;
+                        refuse_retired_ports(&signature.contract)
+                            .map_err(|error| format!("{signature_name}: {error}"))?;
                         if signature
                             .contract
                             .inputs
@@ -1985,6 +2048,7 @@ impl Compiler<'_> {
                         {
                             return Err(format!("Task authority does not permit {signature_name}"));
                         }
+                        diff_subject_port(&qualified, &operator, signature, &bound)?;
                         for (port_name, port) in &signature.contract.inputs {
                             match bound.get(port_name) {
                                 Some(source) => {
@@ -2335,6 +2399,71 @@ fn operator_name(operator: &TaskOperatorV1) -> Result<&'static str, String> {
         TaskOperatorV1::Compare { .. } => Ok("compare"),
         _ => Err("Operator requires package expansion".into()),
     }
+}
+
+/// The Diff Subject a judging Worker reads (ADR-0254) is the kernel's: only a Worker that reads
+/// its `source` without writing it declares it, on its optional `diff_subject` port with
+/// `same_as source` affinity, and no Pipeline binds it, because the kernel builds it from the
+/// node's source and the base it materializes, and checks it before dispatch. No operator returns
+/// one.
+fn diff_subject_port(
+    qualified: &str,
+    operator: &TaskOperatorV1,
+    signature: &OperatorSignature,
+    bound: &BTreeMap<String, Address>,
+) -> Result<(), String> {
+    if signature
+        .contract
+        .outputs
+        .values()
+        .any(|port| port.artifact_type == DIFF_SUBJECT_V1)
+    {
+        return Err(format!(
+            "{qualified} returns a {DIFF_SUBJECT_V1}; only the kernel builds a Diff Subject"
+        ));
+    }
+    for (name, port) in &signature.contract.inputs {
+        // The name is the kernel's: invocation admission reads every `diff_subject` input as
+        // the Diff Subject, so a port of another type under it would plan and then never run.
+        if name == DIFF_SUBJECT_PORT && port.artifact_type != DIFF_SUBJECT_V1 {
+            return Err(format!(
+                "{qualified} declares `{DIFF_SUBJECT_PORT}` as {}; that input name is the \
+                 kernel's Diff Subject, so it takes only {DIFF_SUBJECT_V1}; rename the port",
+                port.artifact_type
+            ));
+        }
+        if port.artifact_type != DIFF_SUBJECT_V1 {
+            continue;
+        }
+        let judges = matches!(
+            operator,
+            TaskOperatorV1::Worker { .. }
+                | TaskOperatorV1::Verify { .. }
+                | TaskOperatorV1::FixVerify { .. }
+        ) && !signature.effects.contains("write-source")
+            && signature.contract.inputs.contains_key("source");
+        if !judges
+            || name != DIFF_SUBJECT_PORT
+            || !port.optional
+            || port.cardinality != review_core::PortCardinality::One
+            || port.affinity
+                != (PortAffinityV1::SameAs {
+                    input: "source".into(),
+                })
+        {
+            return Err(format!(
+                "{qualified} declares {DIFF_SUBJECT_V1} on `{name}`; only a Worker that reads its \
+                 `source` without writing it takes the Diff Subject, on its optional \
+                 `{DIFF_SUBJECT_PORT}` port of cardinality one and `same_as source` affinity"
+            ));
+        }
+        if bound.contains_key(name) {
+            return Err(format!(
+                "{qualified} binds `{name}`, which the kernel supplies; remove the binding"
+            ));
+        }
+    }
+    Ok(())
 }
 
 pub fn condition_input(index: usize) -> String {

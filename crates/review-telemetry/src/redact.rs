@@ -1196,14 +1196,22 @@ impl WorkerRequestPositions {
 /// its schema under `schemas/` types as identities (digests, and the retry feedback's Attempt
 /// id); `*` is any member of a map or element of an array. Admission validated each payload
 /// against that schema before the request was composed; a position not listed here is judged.
-pub const KERNEL_PAYLOAD_IDENTITIES: [(&str, &[&str]); 11] = [
+pub const KERNEL_PAYLOAD_IDENTITIES: [(&str, &[&str]); 12] = [
     // source-tree-v1.json
     ("af/SourceTree@1", &["snapshot_id"]),
-    // task-check-receipt-v1.json
+    // task-check-receipt-v2.json (ADR-0255)
     (
-        "af/TaskCheckReceipt@1",
-        &["plan_id", "snapshot_id", "policy_id", "checks/*"],
+        "af/TaskCheckReceipt@2",
+        &[
+            "plan_id",
+            "snapshot_id",
+            "policy_id",
+            "checks/*",
+            "acceptance/record_id",
+        ],
     ),
+    // task-acceptance-v1.json (ADR-0255): no identity position
+    ("af/TaskAcceptance@1", &[]),
     // task-retry-feedback-v1.json
     (
         "af/TaskRetryFeedback@1",
@@ -1389,7 +1397,7 @@ mod tests {
         let mut request = json!({
             "instructions": format!("use {digest}"),
             "inputs": {
-                "receipt": [{"artifact_id": digest, "artifact_type": "af/TaskCheckReceipt@1",
+                "receipt": [{"artifact_id": digest, "artifact_type": "af/TaskCheckReceipt@2",
                     "snapshot_id": digest,
                     "payload": {"snapshot_id": digest, "checks": {"syntax": digest},
                                 "note": digest, "plan_id": "password=violet"}}],

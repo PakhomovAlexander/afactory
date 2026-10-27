@@ -1,8 +1,8 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "$id": "urn:af:schema:task-report:2",
-  "title": "af/task-report@2",
-  "description": "What `af task report --json` prints (ADR-0142): what recorded Tasks cost and how they ran, read from one Store and never estimated. A figure the Store does not record is absent, never zero or null. Tasks appear in the order the command named them, each numbered by its position (its round), and `pipelines` lists the distinct pipelines their current plans run, in first-use order. A Worker is named only by Provider kind, model and effort: every object is closed, so no Provider registry label or principal, path, credential, prompt or Worker output can appear. Totals are the sums of the Tasks' figures; a sum is absent when any Task does not record its part.",
+  "$id": "urn:af:schema:task-report:3",
+  "title": "af/task-report@3",
+  "description": "What `af task report --json` prints (ADR-0142): what recorded Tasks cost and how they ran, read from one Store and never estimated. A figure the Store does not record is absent, never zero or null. Tasks appear in the order the command named them, each numbered by its position (its round), and `pipelines` lists the distinct pipelines their current plans run, in first-use order. A Worker is named only by Provider kind, model and effort: every object is closed, so no Provider registry label or principal, path, credential, prompt or Worker output can appear. Totals are the sums of the Tasks' figures; a sum is absent when any Task does not record its part. Version 3: its Task state is task-state version 2, whose causes add `provider_environment` (provider_failed) and `attempt_wall` (exhausted) (ADR-0253); the previous version is neither printed nor read.",
   "type": "object",
   "additionalProperties": false,
   "required": [
@@ -13,7 +13,7 @@
   ],
   "properties": {
     "schema": {
-      "const": "af/task-report@2"
+      "const": "af/task-report@3"
     },
     "pipelines": {
       "description": "Each distinct pipeline the Tasks' current plans run, in the order a Task first names it. Two entries share a `name@version` only when the Tasks' plans bind it differently.",
@@ -272,7 +272,7 @@
         },
         "state": {
           "description": "The state `af task show`, `af task list` and `af task run` print for the Task (`af help task-states`).",
-          "$ref": "urn:af:schema:task-state:1#/$defs/state"
+          "$ref": "urn:af:schema:task-state:2#/$defs/state"
         },
         "detail": {
           "description": "Why a Task that did not verify ended as it did, in one line: the failed check and its failing tests, or the failed node and its first error line. Absent for a verified, unfinished or collected Task.",
@@ -483,7 +483,7 @@
       ],
       "properties": {
         "class": {
-          "description": "The failed Attempt's typed retry feedback code; `abandoned` for an Attempt recovery settled; `unclassified` for a failure that recorded no feedback.",
+          "description": "The failed Attempt's typed retry feedback code; `attempt_wall` for an Attempt its wall ended, whatever feedback its Worker's failure produced (ADR-0253); `abandoned` for an Attempt recovery settled; `unclassified` for a failure that recorded no feedback.",
           "enum": [
             "provider_failure",
             "process_failure",
@@ -491,6 +491,7 @@
             "output_admission_rejected",
             "context_rejected",
             "compiler_rejected",
+            "attempt_wall",
             "abandoned",
             "unclassified"
           ]

@@ -150,7 +150,7 @@ fn plan(repo: &Path, extra: &[&str], json: bool) -> Output {
     af(repo, &args)
 }
 
-/// The refusal, as text on stderr and as the one `af/error@1` document `--json` prints.
+/// The refusal, as text on stderr and as the one `af/error@2` document `--json` prints.
 fn refused(repo: &Path, extra: &[&str], expected: &str) {
     let text = plan(repo, extra, false);
     assert_eq!(text.status.code(), Some(1), "{}", err(&text));
@@ -159,7 +159,7 @@ fn refused(repo: &Path, extra: &[&str], expected: &str) {
     assert_eq!(json.status.code(), Some(1), "{}", err(&json));
     let document: Value = serde_json::from_slice(&json.stdout)
         .unwrap_or_else(|_| panic!("not one document: {}", out(&json)));
-    assert_eq!(document["schema"], "af/error@1");
+    assert_eq!(document["schema"], "af/error@2");
     assert!(
         document["error"].as_str().unwrap().contains(expected),
         "{document}"

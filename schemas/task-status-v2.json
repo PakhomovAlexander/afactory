@@ -1,7 +1,7 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "$id": "urn:af:schema:task-status:1",
-  "title": "Task status af/task-status@1",
+  "$id": "urn:af:schema:task-status:2",
+  "title": "Task status af/task-status@2",
   "$comment": "What `af task status ID --json` and `af task wait ID --json` print (ADR-0211): the Task's state, the node whose Attempt runs now, the time since the Task's clock started (to now while it runs, to its last event once it stopped), the tokens charged so far, the run process whose writer took the Task's last lease (the newest one recorded when no record names that writer), and the cancel request that stopped the Task's last lease. Read-only.",
   "type": "object",
   "additionalProperties": false,
@@ -17,13 +17,13 @@
   ],
   "properties": {
     "schema": {
-      "const": "af/task-status@1"
+      "const": "af/task-status@2"
     },
     "task_id": {
       "$ref": "urn:af:schema:task-contracts:1#/$defs/name"
     },
     "state": {
-      "$ref": "urn:af:schema:task-state:1#/$defs/state"
+      "$ref": "urn:af:schema:task-state:2#/$defs/state"
     },
     "node": {
       "anyOf": [

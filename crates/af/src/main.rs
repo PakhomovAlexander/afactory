@@ -1232,7 +1232,7 @@ fn main() {
         Err(error) => {
             drop(startup);
             perf_trace::finish();
-            // Under --json a usage error is the one `af/error@1` document `af help json`
+            // Under --json a usage error is the one `af/error@2` document `af help json`
             // promises, beside clap's own message on stderr and with its exit code.
             if let Some(document) = error_document::usage(&argv, &error) {
                 println!("{document}");
@@ -2110,30 +2110,50 @@ fn exit_interrupted(
     error: Option<String>,
 ) -> ! {
     let code = interrupt::exit_code(signal);
+    let task = interrupt::noted_task();
     // The same next command `af task show --json` names: `af task run ID` only while the
     // interrupted node has a recovery left (ADR-0209). Either carries the Store selectors this
     // command was given.
-    let resume = match (interrupt::noted_task(), interrupt::noted_next()) {
-        (Some(id), Some(next)) => format!(
-            "a node of Task {id} used up its recovery allowance, so `af task run {id}` cannot \
-             continue it; start it again with `{next}` (the Task file it was started from)"
+    let (resume, next_action) = match (&task, interrupt::noted_next()) {
+        (Some(id), Some(next)) => (
+            format!(
+                "a node of Task {id} used up its recovery allowance, so `af task run {id}` \
+                 cannot continue it; start it again with `{next}` (the Task file it was started \
+                 from)"
+            ),
+            Some(next),
         ),
-        (Some(id), None) => format!(
-            "resume it with `{}`, which dispatches the interrupted node again without using \
-             one of its Attempts",
-            task_execution::with_selectors(&format!("af task run {id}"))
+        (Some(id), None) => {
+            let run = task_execution::with_selectors(&format!("af task run {id}"));
+            (
+                format!(
+                    "resume it with `{run}`, which dispatches the interrupted node again without \
+                     using one of its Attempts"
+                ),
+                Some(run),
+            )
+        }
+        (None, _) => (
+            "run the same command again to resume it".to_owned(),
+            same_command(argv),
         ),
-        (None, _) => "run the same command again to resume it".into(),
     };
-    let message = if argv.get(1).is_some_and(|s| s == "provider")
-        && argv.get(2).is_some_and(|s| s == "auth")
-    {
-        format!(
-            "interrupted by {signal}; native login stopped. Inspect the non-secret recovery status; a new login requires a fresh private host permission"
+    let login =
+        argv.get(1).is_some_and(|s| s == "provider") && argv.get(2).is_some_and(|s| s == "auth");
+    let next_action = next_action.filter(|command| error_document::pasteable(command));
+    let (message, next_action) = if login {
+        (
+            format!(
+                "interrupted by {signal}; native login stopped. Inspect the non-secret recovery status; a new login requires a fresh private host permission"
+            ),
+            login_status(argv),
         )
     } else {
-        format!(
-            "interrupted by {signal}; its Worker processes were stopped and the Task was not finished. To continue, {resume}"
+        (
+            format!(
+                "interrupted by {signal}; its Worker processes were stopped and the Task was not finished. To continue, {resume}"
+            ),
+            next_action,
         )
     };
     if let Some(error) = error {
@@ -2141,18 +2161,56 @@ fn exit_interrupted(
             eprintln!("{prefix}: {}", terminal_lines(&error));
         }
         if argv.iter().skip(1).any(|word| word == "--json") {
-            let document = serde_json::json!({
-                "schema": "af/error@1",
-                "command": prefix,
-                "error": message,
-                "exit_code": code,
-            });
+            // The recovery a script runs is a field, not only prose (`af help json`).
+            let mut detail = error_document::Detail::new(error_document::Cause::Interrupted)
+                .with("signal", signal.as_str())
+                .with("task", task.clone());
+            detail.next_action = next_action;
+            let document = error_document::document(prefix, &message, code, Some(&detail));
             println!("{document}");
         }
     }
     eprintln!("{prefix}: {}", terminal_lines(&message));
     let _ = std::io::stdout().flush();
     interrupt::exit(signal);
+}
+
+/// The `af provider auth status` command for the login an interrupted `af provider auth begin`
+/// started: its ID, kind and auth directory, as given.
+fn login_status(argv: &[String]) -> Option<String> {
+    use clap::Parser as _;
+    let parsed = cli::Af::try_parse_from(argv).ok()?;
+    let Some(cli::Command::Provider {
+        command:
+            cli::ProviderCommand::Auth {
+                command:
+                    cli::ProviderAuthCommand::Begin {
+                        id, kind, auth_dir, ..
+                    },
+            },
+    }) = parsed.command
+    else {
+        return None;
+    };
+    let auth_dir = auth_dir.to_str()?;
+    let command = format!(
+        "af provider auth status {} --kind {} --auth-dir {}",
+        shell_words::quote(&id),
+        provider_kind(kind),
+        shell_words::quote(auth_dir)
+    );
+    error_document::pasteable(&command).then_some(command)
+}
+
+/// `argv` again as one pasteable `af` command, its words quoted as typed; `None` when a word
+/// holds a control character, which no pasted line carries.
+fn same_command(argv: &[String]) -> Option<String> {
+    let words = argv.get(1..).unwrap_or_default();
+    if words.is_empty() {
+        return None;
+    }
+    Some(format!("af {}", shell_words::join(words)))
+        .filter(|command| error_document::pasteable(command))
 }
 
 /// Every `af provider` command returns its own documented exit code.
@@ -5015,8 +5073,55 @@ fn run(options: &Options) -> Result<RunVerdict, String> {
 #[cfg(test)]
 mod terminal_text_tests {
     use super::{
-        CampaignProposal, markdown_line, one_line, proposal_line, terminal_lines, terminal_text,
+        CampaignProposal, login_status, markdown_line, one_line, proposal_line, same_command,
+        terminal_lines, terminal_text,
     };
+
+    /// #331 item 10: the `next_action` of an interrupted command that ran no Task is that same
+    /// command, quoted as typed; an interrupted `af provider auth begin` names the status of the
+    /// same login. Each parses with the CLI; a word no pasted line carries gives none.
+    #[test]
+    fn an_interrupted_command_names_the_command_that_continues_it() {
+        use clap::Parser as _;
+        let argv = |words: &[&str]| {
+            words
+                .iter()
+                .map(|word| (*word).to_owned())
+                .collect::<Vec<_>>()
+        };
+        let again = same_command(&argv(&[
+            "/opt/af/bin/af",
+            "review",
+            "run",
+            "--state",
+            "a b",
+        ]));
+        assert_eq!(again.as_deref(), Some("af review run --state 'a b'"));
+        assert_eq!(same_command(&argv(&["af", "review", "run", "x\ny"])), None);
+        assert_eq!(same_command(&argv(&["af"])), None);
+        let begin = argv(&[
+            "af",
+            "provider",
+            "auth",
+            "begin",
+            "--kind",
+            "claude",
+            "--auth-dir",
+            "/h/c d",
+            "--host-read-fd",
+            "3",
+            "--host-write-fd",
+            "4",
+            "claude-main",
+        ]);
+        let status = login_status(&begin).unwrap();
+        assert_eq!(
+            status,
+            "af provider auth status claude-main --kind claude --auth-dir '/h/c d'"
+        );
+        crate::cli::Af::try_parse_from(shell_words::split(&status).unwrap()).unwrap();
+        assert_eq!(login_status(&argv(&["af", "task", "run", "t"])), None);
+    }
 
     /// A message af composed keeps its own line breaks; every line of it is shown through
     /// `terminal_text`, so a value interpolated into it sends no control character (audit C3).

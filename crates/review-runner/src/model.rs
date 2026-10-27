@@ -79,6 +79,12 @@ impl std::error::Error for RunnerError {}
 /// The words of a timeout after the Worker's name.
 const TIMED_OUT: &str = "did not answer within";
 
+/// Whether a Worker failure `message` says this layer killed the Worker at its deadline
+/// (`… did not answer within 500ms and was killed`), wherever an adapter wrapped it.
+pub fn names_timed_out(message: &str) -> bool {
+    message.contains(&format!(" {TIMED_OUT} ")) && message.contains("ms and was killed")
+}
+
 /// A Worker failure `message` that names the Worker of a Task slot: a timeout this layer
 /// reported for `reviewer`, Review's own Worker, names `worker` instead (`implementer did not
 /// answer within …`). Every other message is returned unchanged.
@@ -327,6 +333,17 @@ mod tests {
         }
         .to_string();
         assert_eq!(super::name_timed_out_worker(&failed, "implementer"), failed);
+        assert!(super::names_timed_out(&format!(
+            "Claude Worker ended ({timed_out})"
+        )));
+        assert!(super::names_timed_out(&super::name_timed_out_worker(
+            &timed_out.to_string(),
+            "implementer"
+        )));
+        assert!(!super::names_timed_out(&failed));
+        assert!(!super::names_timed_out(
+            "Provider network request failed: request timed out"
+        ));
     }
 
     /// A stream the output cap truncated ends where its drain read, not where the kept prefix
