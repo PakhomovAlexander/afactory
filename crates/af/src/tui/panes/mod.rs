@@ -100,9 +100,9 @@ pub(crate) trait Pane {
     /// repository's Store included), shows `busy` while it runs and collects it in `poll`, so
     /// the browser opens before any Store is read (ADR-0240). What stays on the caller's
     /// thread is small and bounded, one file or one directory each: the scope's files under
-    /// `.af/`, the layer directories, the Store registry `stores.toml`, the metadata of
-    /// `.af/provider-registry` (Settings), `providers.toml` and the names-only listing of the
-    /// Provider auth directories (Providers, before its probe starts on a thread), and the
+    /// `.af/`, the layer directories, the Store registry `stores.toml`, whether the Provider
+    /// registry file exists (Settings), that file and the names-only listing of the Provider
+    /// auth directories (Providers, before its probe starts on a thread), and the
     /// Pipelines pane's read of `HEAD` through git, milliseconds on a local repository.
     fn load(&mut self, scope: &Scope) -> Result<(), String>;
 

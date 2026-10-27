@@ -34,9 +34,9 @@ pane's read discovers them on its thread, first, and the load resolves none of t
 Workers pane, which lists no Worker in that scope, names no Store there either. What a load
 still does on the calling thread is small and bounded, one file or one directory each: it
 resolves the project scope's own Store, reads the Store registry `stores.toml` and
-canonicalises its paths, reads `.af/` and the layer directories, checks the metadata of
-`.af/provider-registry` (Settings), reads `providers.toml` and lists the Provider auth
-directories by name (Providers, before its probe starts on a thread), and, in the Pipelines
+canonicalises its paths, reads `.af/` and the layer directories, checks that the Provider
+registry file exists (Settings), reads that file and lists the Provider auth directories by
+name (Providers, before its probe starts on a thread), and, in the Pipelines
 pane, reads `HEAD` through git as before this change, milliseconds on a local repository.
 
 The Tasks and Campaigns panes deliver one message per Store (per source), in target order, and
