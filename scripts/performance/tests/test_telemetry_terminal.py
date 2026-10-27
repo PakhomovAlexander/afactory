@@ -174,7 +174,11 @@ class Terminal(TempDir):
                 remove_tree = telemetrylab.shutil.rmtree
                 def final_remove(path, *args, **kwargs):
                     if path == settings.output + ".work":
-                        offset[0] = 240 * 60 - (1.2 if operation == "publication" else .2)
+                        # Advance to the declared remaining time, independent of setup
+                        # duration. Adding a fixed offset also charged setup a second time
+                        # and could expire before the cleanup/publication being tested.
+                        remaining = 1.2 if operation == "publication" else .2
+                        offset[0] = settings.started + 240 * 60 - remaining - time.monotonic()
                     return remove_owned(path, *args, **kwargs)
                 def stalled_remove(path, *args, **kwargs):
                     if path == settings.output + ".work":
@@ -186,7 +190,7 @@ class Terminal(TempDir):
                 patch = (mock.patch.object(telemetrylab.shutil, "rmtree", stalled_remove)
                          if operation == "cleanup" else
                          mock.patch.object(telemetrylab.bundle, "write_manifest", stalled_manifest))
-                start = time.monotonic()
+                start = settings.started = time.monotonic()
                 with mock.patch.object(telemetrylab, "_remove_owned", final_remove), patch, \
                         self.assertRaises((budget.Expired, budget.Interrupted)):
                     telemetrylab.run(settings)

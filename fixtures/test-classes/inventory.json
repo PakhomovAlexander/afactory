@@ -1,0 +1,47 @@
+{
+  "rust-suites": {
+    "af::it": {
+      "status": "listed",
+      "testcases": {
+        "cli_surface::usage_errors_name_only_the_failing_command": {
+          "filter-match": {
+            "status": "matches"
+          },
+          "ignored": false,
+          "kind": "test"
+        },
+        "perf_kernel_measure::guarded_kernel_experiments_measure_one_judged_sample_and_refuse_every_tampered_harness": {
+          "filter-match": {
+            "status": "matches"
+          },
+          "ignored": false,
+          "kind": "test"
+        }
+      }
+    },
+    "review-core::schema_parity": {
+      "status": "listed",
+      "testcases": {
+        "a_gate_cleanup_is_one_closed_transition_referencing_no_artifact": {
+          "filter-match": {
+            "status": "matches"
+          },
+          "ignored": false,
+          "kind": "test"
+        }
+      }
+    },
+    "review-process::cancellation": {
+      "status": "listed",
+      "testcases": {
+        "cancellation_before_spawn_cannot_execute_the_command": {
+          "filter-match": {
+            "status": "matches"
+          },
+          "ignored": false,
+          "kind": "test"
+        }
+      }
+    }
+  }
+}

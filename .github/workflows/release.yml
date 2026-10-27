@@ -8,7 +8,7 @@
 #
 # A manually pushed vX.Y.Z tag takes the same path from the tag onward.
 # Builds run alongside validation; publish joins both required branches.
-# Nothing is published unless `make check` passed on the tagged commit on both operating systems and every archive
+# Nothing is published unless the bound selected validation passed on the tagged commit on both operating systems and every archive
 # onboarded and planned a fresh repository; nothing is published unsigned.
 name: Release
 
@@ -33,10 +33,12 @@ jobs:
     runs-on: ubuntu-latest
     permissions:
       contents: write # to create the tag on a release commit
+      pull-requests: read # capture labels of the exact merged release PR once
     outputs:
       tag: ${{ steps.resolve.outputs.tag }}
       version: ${{ steps.resolve.outputs.version }}
       prerelease: ${{ steps.resolve.outputs.prerelease }}
+      test_plan: ${{ steps.resolve.outputs.test_plan }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -44,7 +46,16 @@ jobs:
           fetch-depth: 2 # eligibility compares the first-parent workspace version
       - name: Decide whether this commit is a release, and tag it
         id: resolve
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
         run: bash scripts/resolve-release.sh
+      - name: Retain immutable release test selection
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: release-test-selection-${{ github.run_attempt }}
+          path: target/release-tests/
+          if-no-files-found: error
 
   # This also provides ordinary main CI when resolve finds no new release.
   # github.sha is the exact commit just tagged by resolve (or the pushed tag commit).
@@ -53,6 +64,7 @@ jobs:
     uses: ./.github/workflows/validate.yml
     with:
       release: ${{ needs.resolve.outputs.tag != '' }}
+      test_plan: ${{ needs.resolve.outputs.test_plan }}
 
   build:
     name: build ${{ matrix.target }}
@@ -224,6 +236,23 @@ jobs:
           [[ -s notes.md ]] || { echo "CHANGELOG.md has no section for $version"; exit 1; }
           grep -qi "authority compatibility" notes.md || { echo "the $version section must state authority compatibility"; exit 1; }
           cat notes.md
+      - name: State the validation scope in release notes
+        env:
+          TEST_PLAN: ${{ needs.resolve.outputs.test_plan }}
+          EVIDENCE_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}/attempts/${{ github.run_attempt }}
+        run: |
+          python3 - <<'PYNOTES'
+          import json, os
+          p = json.loads(os.environ['TEST_PLAN'])
+          with open('notes.md', 'a') as f:
+              f.write('\n### Validation scope\n\n')
+              f.write(f"Profile: **{p['profile']}**; version `{p['version']}`; exact SHA `{p['sha']}`.\n\n")
+              for c, row in p['classes'].items():
+                  f.write(f"- {c}: {row['state']} ({row['reason']})\n")
+              f.write('\nAll selected Linux/macOS class gates and mandatory binary/archive/signature/architecture smoke passed. ')
+              f.write('A fast/custom release does not claim full tests. Published-release measurement is asynchronous, not awaited.\n\n')
+              f.write('[Validation plan, per-class JUnit and step evidence](' + os.environ['EVIDENCE_URL'] + ')\n')
+          PYNOTES
       - name: Publish
         env:
           GH_TOKEN: ${{ github.token }}

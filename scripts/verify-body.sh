@@ -28,9 +28,18 @@ mkdir -p "$target_dir/nextest-reports"
 # the nextest store and, unless the caller chose a file, every make check step's timing.
 run_dir="$(mktemp -d "$target_dir/nextest-reports/run-XXXXXXXX")"
 export AF_CI_METRICS="${AF_CI_METRICS:-$run_dir/ci-metrics.jsonl}"
+# Selection is explicit caller data. No arguments keep the complete AF gate.
+check_args=(check)
+if [[ "$#" -gt 0 ]]; then
+  if [[ "$#" -ne 2 || "$1" != --test-plan || ! -f "$2" ]]; then
+    echo 'usage: scripts/verify.sh [--test-plan PLAN.json]' >&2
+    exit 2
+  fi
+  check_args=(check-classes "TEST_PLAN=$2")
+fi
 status=0
 AF_WORKSPACE_ROOT="$PWD" CARGO_TARGET_DIR="$target_dir" AF_GATE_NEXTEST_TARGET="$target_dir" \
-  AF_GATE_NEXTEST_RUN="$run_dir" make check || status=$?
+  AF_GATE_NEXTEST_RUN="$run_dir" make "${check_args[@]}" || status=$?
 # The gate output ends with where its test time went. The report never changes the status.
 echo "gate step timings: $AF_CI_METRICS"
 junit="$run_dir/store/ci/junit.xml"

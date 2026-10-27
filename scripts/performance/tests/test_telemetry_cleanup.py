@@ -14,6 +14,7 @@ import shlex
 import shutil
 import signal
 import string
+import sys
 import time
 from unittest import mock
 
@@ -52,7 +53,9 @@ class WorkflowCleanup(ContainedBase):
                     else: path.unlink()
             return result
 
-        real_host = hostprep.Host(run=run, statvfs=self.host.statvfs)
+        # Model the Linux runner just as we model its mount commands; the real
+        # host platform refusal is covered separately by HostedScratch.
+        real_host = hostprep.Host(run=run, statvfs=self.host.statvfs, system="linux")
         self.patch = mock.patch.object(hostprep, "Host", return_value=real_host)
         self.patch.start()
         self.addCleanup(self.patch.stop)
@@ -104,7 +107,7 @@ class WorkflowCleanup(ContainedBase):
     def owner(self):
         return hostprep.TelemetryOwner(self.owner_path, self.mount)
 
-    def run_execution(self, owner, command=("/bin/true",), label="x"):
+    def run_execution(self, owner, command=(sys.executable, "-I", "-c", "pass"), label="x"):
         self.executor.owner = owner
         return self.executor.run(execution(self, command, cwd=self.run_dir, label=label))
 

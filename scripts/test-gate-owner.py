@@ -474,13 +474,13 @@ sys.exit(owner.main())
 class Fallback(unittest.TestCase):
     def test_only_unreaped_owned_pids_are_signalled_and_leader_is_reserved(self):
         owner = load_owner()
-        with mock.patch.object(owner.os, 'waitid', side_effect=ChildProcessError), \
+        with mock.patch.object(owner.os, 'waitid', side_effect=ChildProcessError, create=True), \
                 mock.patch.object(owner.os, 'kill') as kill:
             with self.assertRaises(ChildProcessError):
                 owner.send_child(1234, signal.SIGTERM)
             kill.assert_not_called()
         calls = mock.Mock()
-        with mock.patch.object(owner.os, 'waitid', calls.waitid), \
+        with mock.patch.object(owner.os, 'waitid', calls.waitid, create=True), \
                 mock.patch.object(owner.os, 'kill', calls.kill):
             calls.waitid.return_value = None  # A live unreaped child also pins its PID.
             owner.send_child(1234, signal.SIGKILL)

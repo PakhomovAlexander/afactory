@@ -155,8 +155,10 @@ writers, without constructing a multiprocessing Pool or semaphore. This is untim
 the timed reader measurements and their bounds are unchanged. Other generator callers retain
 parallel workers when they request more than one job.
 
-`validate.yml` runs `telemetry_runtime_smoke.py` with actual release AF built in the pinned GNU
-image. It reproduces the former 4 GiB concurrent fixture failure from public Task state, then
+`validate.yml` runs `telemetry_runtime_smoke.py` when perf is selected, with actual release AF
+built in the pinned GNU image. Full selections require it in both stable validation aggregates;
+fast selections without perf explicitly skip it as NOT RUN. Failed, cancelled, missing or skipped
+selected smoke jobs fail aggregation. It reproduces the former 4 GiB concurrent fixture failure from public Task state, then
 uses the registry's 16 GiB PR capacity for one smoke pair of every overhead/invocation case and
 the three reads of a 10-run corpus, through the same contained executor with `--ipc none`.
 The test has an eight-minute total deadline, confirms execution and filesystem cleanup, and
