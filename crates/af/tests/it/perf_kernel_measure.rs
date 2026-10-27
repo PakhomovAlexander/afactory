@@ -1,6 +1,7 @@
 //! Guarded kernel performance experiments (ADR-0185) through the real kernel. A consumer
-//! repository holds this workspace's tracked tree with the fixture authority of
-//! `fixtures/task-runtime/experiment` in its `.af/` (never this repository's own), and the staged
+//! repository holds this workspace's crate sources and complete protected harness with the
+//! fixture authority of `fixtures/task-runtime/experiment` in its `.af/` (never this
+//! repository's own), and the staged
 //! `fixtures/performance/kernel-measure/code-policy-measures.toml` installed into it verbatim,
 //! as its README describes. Every Task below runs `af task start --execute`: the kernel measures
 //! the source and the implementer's sealed candidate with the staged literal bootstrap, which
@@ -38,8 +39,10 @@ const STAGED: &str = "fixtures/performance/kernel-measure/code-policy-measures.t
 const CANONICAL: &str = "crates/review-store/src/canonical.rs";
 const VALIDATE: &str =
     "pub fn validate_envelope(envelope: &review_core::ArtifactEnvelope) -> Result<(), String> {\n";
-/// The controlled slowdown of the disposable baseline revision, inside the timed operation.
-const SLOW_MS: u64 = 1500;
+/// The controlled slowdown of the successful comparison's disposable baseline revision.
+const SLOW_MS: u64 = 7500;
+/// Refusal scenarios need only a small slowdown; they do not prove improvement.
+const REFUSAL_SLOW_MS: u64 = 1500;
 const EVALUATE: &str = "root.nodes.trial.nodes.evaluate";
 const REFUSED: &str = "refused before any candidate import or build";
 
@@ -114,6 +117,94 @@ fn workspace_files(root: &Path) -> Vec<String> {
     out
 }
 
+/// Only the inputs of the real probe build and the complete protected instrument. Copying the
+/// whole repository also made every five-second Worker materialize unrelated documentation,
+/// release assets and other CLI fixtures; a judging Worker materializes them twice, for its
+/// source and its base. The release runner left only 742 ms to start the evaluator. Keep all
+/// crate files and every inventory entry, including build inputs outside the usual source
+/// directories. The unchanged literal bootstrap checks the resulting closure.
+fn consumer_file(path: &str, protected: &std::collections::BTreeSet<&str>) -> bool {
+    path != ".af"
+        && !path.starts_with(".af/")
+        && (path.starts_with("crates/")
+            || path.starts_with("scripts/performance/")
+            || path.starts_with("fixtures/performance/")
+            || protected.contains(path))
+}
+
+#[test]
+fn guarded_consumer_keeps_the_complete_instrument_and_crates_without_repository_growth() {
+    let consumer = Consumer::new();
+    let workspace = workspace();
+    let inventory: Value = serde_json::from_slice(
+        &std::fs::read(workspace.join("fixtures/performance/kernel-measure/inventory.json"))
+            .unwrap(),
+    )
+    .unwrap();
+    for entry in inventory["files"].as_array().unwrap() {
+        let path = entry["path"].as_str().unwrap();
+        assert_eq!(
+            std::fs::read(consumer.repo.join(path)).unwrap(),
+            std::fs::read(workspace.join(path)).unwrap(),
+            "the consumer keeps the exact protected file {path}"
+        );
+    }
+    for path in workspace_files(&workspace)
+        .into_iter()
+        .filter(|path| path.starts_with("crates/"))
+    {
+        assert_eq!(
+            std::fs::read(consumer.repo.join(&path)).unwrap(),
+            std::fs::read(workspace.join(&path)).unwrap(),
+            "the real probe builds with the workspace's crate file {path}"
+        );
+    }
+    assert_eq!(
+        std::fs::read(consumer.repo.join(STAGED)).unwrap(),
+        std::fs::read(workspace.join(STAGED)).unwrap()
+    );
+    for path in [
+        "docs/adr/README.md",
+        "brand/README.md",
+        ".github/workflows/release.yml",
+        "fixtures/task-runtime/experiment/.af/task-catalog.toml",
+    ] {
+        assert!(workspace.join(path).is_file(), "fixture input {path}");
+        assert!(!consumer.repo.join(path).exists(), "unrelated input {path}");
+    }
+    // Inventory membership, rather than an allowlist of today's directory names, retains a
+    // protected build input anywhere. Unrelated repository growth adds no Worker setup work.
+    let protected =
+        std::collections::BTreeSet::from(["other/build.rs", "other/.cargo/config.toml"]);
+    for path in &protected {
+        assert!(consumer_file(path, &protected));
+    }
+    for index in 0..2000 {
+        assert!(!consumer_file(&format!("docs/adr/{index}.md"), &protected));
+        assert!(!consumer_file(
+            &format!("fixtures/task-runtime/other/{index}.json"),
+            &protected
+        ));
+    }
+    let evaluator: toml::Value = toml::from_str(
+        &std::fs::read_to_string(
+            consumer
+                .repo
+                .join(".af/task-packages/fixture/experiment-evaluator/worker.toml"),
+        )
+        .unwrap(),
+    )
+    .unwrap();
+    assert_eq!(
+        evaluator["signature"]["attempt"]["wall_ms"].as_integer(),
+        Some(5000)
+    );
+    assert_eq!(
+        evaluator["signature"]["effects"][0].as_str(),
+        Some("read-source")
+    );
+}
+
 struct Consumer {
     _root: tempfile::TempDir,
     root: PathBuf,
@@ -124,15 +215,26 @@ struct Consumer {
 }
 
 impl Consumer {
-    /// The consumer repository: the workspace's files without its own `.af/`, the experiment
-    /// fixture's authority with the staged measures installed, committed.
+    /// The consumer repository: the probe's real crate sources and protected harness, plus the
+    /// experiment fixture's authority with the staged measures installed, committed.
     fn new() -> Self {
         let directory = tempfile::tempdir().unwrap();
         let root = directory.path().canonicalize().unwrap();
         let workspace = workspace();
         let repo = root.join("repo");
+        let inventory: Value = serde_json::from_slice(
+            &std::fs::read(workspace.join("fixtures/performance/kernel-measure/inventory.json"))
+                .unwrap(),
+        )
+        .unwrap();
+        let protected = inventory["files"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|entry| entry["path"].as_str().unwrap())
+            .collect();
         for path in workspace_files(&workspace) {
-            if path == ".af" || path.starts_with(".af/") {
+            if !consumer_file(&path, &protected) {
                 continue;
             }
             let target = repo.join(&path);
@@ -351,25 +453,24 @@ impl Consumer {
         }));
     }
 
-    /// The receipts document, checked against its published schema and by the laboratory's
-    /// own reader; written below `$AF_PERF_KERNEL_RECEIPTS` when it names a directory.
+    /// Each homogeneous source phase is checked against the schema and laboratory reader.
     fn export(&self, digest: &str) {
-        let document = json!({
-            "schema": "af.perf-kernel-receipts/3",
-            "harness_digest": digest,
-            "instance": INSTANCE,
-            "measure": MEASURE,
-            "objective": OBJECTIVE,
-            "slowdown_ms": SLOW_MS,
-            "tasks": self.receipts,
-        });
+        let directory = std::env::var_os("AF_PERF_KERNEL_RECEIPTS").map(PathBuf::from);
+        for (phase, document) in receipt_documents(digest, &self.receipts) {
+            self.export_document(phase, &document, directory.as_deref());
+        }
+    }
+
+    fn export_document(&self, phase: &str, document: &Value, directory: Option<&Path>) {
         schemas::valid(
             &schemas::validator("performance-kernel-receipts-v3.json"),
-            &document,
+            document,
         );
-        let checked = self.root.join("receipts.json");
-        std::fs::write(&checked, serde_json::to_vec_pretty(&document).unwrap()).unwrap();
+        let filename = format!("receipts-{}-{phase}.json", std::process::id());
+        let checked = self.root.join(&filename);
+        std::fs::write(&checked, serde_json::to_vec_pretty(document).unwrap()).unwrap();
         let read = Command::new("python3")
+            .env("PYTHONDONTWRITEBYTECODE", "1")
             .args([
                 "-B",
                 "-c",
@@ -382,19 +483,152 @@ impl Consumer {
             .unwrap();
         assert!(
             read.status.success(),
-            "the laboratory refuses the receipts: {}",
+            "the laboratory refuses the {phase} receipts: {}",
             String::from_utf8_lossy(&read.stderr)
         );
-        let Some(directory) = std::env::var_os("AF_PERF_KERNEL_RECEIPTS") else {
+        let Some(directory) = directory else {
             return;
         };
-        let directory = PathBuf::from(directory);
-        std::fs::create_dir_all(&directory).unwrap();
-        std::fs::copy(
-            &checked,
-            directory.join(format!("receipts-{}.json", std::process::id())),
+        std::fs::create_dir_all(directory).unwrap();
+        std::fs::copy(&checked, directory.join(filename)).unwrap();
+    }
+}
+
+/// Exact Task membership is part of the fixture: additions, omissions or reordering must
+/// update this partition explicitly rather than inherit another source revision's slowdown.
+fn receipt_documents(digest: &str, receipts: &[Value]) -> Vec<(&'static str, Value)> {
+    let phases: [(&str, u64, &[&str]); 3] = [
+        ("missing-inputs", 0, &["missing-inputs"]),
+        ("improve", SLOW_MS, &["improve"]),
+        (
+            "refusal",
+            REFUSAL_SLOW_MS,
+            &[
+                "timing-boundary",
+                "golden-fixture",
+                "build-inputs",
+                "case-variant-build-inputs",
+                "symlink-to-file",
+                "bytecode",
+                "wrong-unit",
+                "undeclared-key",
+                "refused-case",
+            ],
+        ),
+    ];
+    let actual: Vec<_> = receipts
+        .iter()
+        .map(|task| task["task_id"].as_str().unwrap())
+        .collect();
+    let expected: Vec<_> = phases
+        .iter()
+        .flat_map(|(_, _, tasks)| tasks.iter().copied())
+        .collect();
+    assert_eq!(actual, expected, "receipt source-phase partition changed");
+    let mut offset = 0;
+    phases
+        .into_iter()
+        .map(|(phase, slowdown_ms, tasks)| {
+            let end = offset + tasks.len();
+            let document = json!({
+                "schema": "af.perf-kernel-receipts/3",
+                "harness_digest": digest,
+                "instance": INSTANCE,
+                "measure": MEASURE,
+                "objective": OBJECTIVE,
+                "slowdown_ms": slowdown_ms,
+                "tasks": receipts[offset..end],
+            });
+            offset = end;
+            (phase, document)
+        })
+        .collect()
+}
+
+#[test]
+fn receipts_partition_preserves_every_task_and_labels_each_source_phase() {
+    let fixture: Value = serde_json::from_slice(
+        &std::fs::read(
+            workspace().join("fixtures/performance/schema/kernel-receipts/valid-fixture.json"),
         )
-        .unwrap();
+        .unwrap(),
+    )
+    .unwrap();
+    let ids = [
+        "missing-inputs",
+        "improve",
+        "timing-boundary",
+        "golden-fixture",
+        "build-inputs",
+        "case-variant-build-inputs",
+        "symlink-to-file",
+        "bytecode",
+        "wrong-unit",
+        "undeclared-key",
+        "refused-case",
+    ];
+    // Reuse a valid public Task receipt; only its scenario label differs in this fast test.
+    let receipts: Vec<_> = ids
+        .iter()
+        .map(|id| {
+            let mut task = fixture["tasks"][0].clone();
+            task["task_id"] = json!(id);
+            task
+        })
+        .collect();
+    let documents = receipt_documents(fixture["harness_digest"].as_str().unwrap(), &receipts);
+    assert_eq!(
+        documents
+            .iter()
+            .map(|(phase, doc)| (
+                *phase,
+                doc["slowdown_ms"].as_u64().unwrap(),
+                doc["tasks"].as_array().unwrap().len()
+            ))
+            .collect::<Vec<_>>(),
+        vec![
+            ("missing-inputs", 0, 1),
+            ("improve", 7500, 1),
+            ("refusal", 1500, 9)
+        ]
+    );
+    let retained: Vec<_> = documents
+        .iter()
+        .flat_map(|(_, doc)| doc["tasks"].as_array().unwrap().clone())
+        .collect();
+    assert_eq!(retained, receipts);
+    let root = tempfile::tempdir().unwrap();
+    let consumer = Consumer {
+        root: root.path().to_owned(),
+        repo: root.path().join("unused-repo"),
+        state: root.path().join("unused-state"),
+        markers: root.path().join("unused-markers"),
+        receipts: receipts.clone(),
+        _root: root,
+    };
+    let exported = consumer.root.join("exported");
+    for (phase, document) in &documents {
+        consumer.export_document(phase, document, Some(&exported));
+        let filename = format!("receipts-{}-{phase}.json", std::process::id());
+        let saved: Value =
+            serde_json::from_slice(&std::fs::read(exported.join(filename)).unwrap()).unwrap();
+        assert_eq!(&saved, document);
+    }
+    assert_eq!(std::fs::read_dir(&exported).unwrap().count(), 3);
+    for altered in [
+        receipts[..10].to_vec(),
+        {
+            let mut tasks = receipts.clone();
+            tasks.swap(0, 1);
+            tasks
+        },
+        {
+            let mut tasks = receipts.clone();
+            tasks.push(receipts[0].clone());
+            tasks
+        },
+    ] {
+        assert!(std::panic::catch_unwind(|| receipt_documents("unused", &altered)).is_err());
     }
 }
 
@@ -904,6 +1138,88 @@ fn base64(bytes: &[u8]) -> String {
     out
 }
 
+/// Constructed elapsed receipts, not new measurements or a product speed claim. The old
+/// pair was observed under load; credit only one extra sleep although setup validates too.
+#[test]
+fn guarded_improvement_margin_covers_observed_load_within_sample_timeout() {
+    use review_core::task::measurement::{MeasurementRunV1, summarize};
+
+    let staged: toml::Value =
+        toml::from_str(&std::fs::read_to_string(workspace().join(STAGED)).unwrap()).unwrap();
+    let objective: MeasureObjectiveV1 = staged["objectives"][OBJECTIVE].clone().try_into().unwrap();
+    assert_eq!(objective.metric, "elapsed_ms");
+    assert_eq!(objective.min_repetitions, 3);
+    assert_eq!(
+        serde_json::to_value(&objective).unwrap()["min_improvement_ratio"],
+        "0.1"
+    );
+    let measure = &staged["measures"][MEASURE];
+    assert_eq!(measure["repetitions"].as_integer(), Some(3));
+    let id = format!("sha256:{}", "a".repeat(64));
+    let constructed = |elapsed_ms: u64| {
+        let runs: Vec<MeasurementRunV1> = (0..3)
+            .map(|_| {
+                serde_json::from_value(json!({
+                    "started_unix_ms": 1, "elapsed_ms": elapsed_ms, "exit_code": 0,
+                    "stdout_id": id, "stderr_id": id,
+                    "metrics": {"wall_ms": {"value": "1", "unit": "ms"}}
+                }))
+                .unwrap()
+            })
+            .collect();
+        let mut receipt: MeasurementV1 = serde_json::from_value(json!({
+            "plan_id": id, "policy_id": id, "snapshot_id": id, "command_id": id,
+            "measure": MEASURE, "warm": false, "repetitions": 3,
+            "wall_ms": measure["wall_ms"].as_integer().unwrap(),
+            "metrics": {"wall_ms": "ms"}, "outcome": "passed", "runs": runs,
+            "summary": {}
+        }))
+        .unwrap();
+        receipt.summary = summarize(&receipt.metrics, &receipt.runs).unwrap();
+        receipt
+    };
+    let compare = |baseline_ms, candidate_ms| {
+        compare_measurements(
+            &id,
+            &id,
+            (&id, &constructed(baseline_ms)),
+            (&id, &constructed(candidate_ms)),
+            ComparisonObjective {
+                name: OBJECTIVE,
+                objective: &objective,
+            },
+        )
+        .unwrap()
+    };
+    assert_eq!(
+        compare(8148, 10790).metrics["elapsed_ms"]
+            .conclusion
+            .as_str(),
+        "regressed"
+    );
+    let extra_sleep_ms = SLOW_MS - REFUSAL_SLOW_MS;
+    assert_eq!(extra_sleep_ms, 6000);
+    assert_eq!(
+        compare(8148 + extra_sleep_ms, 10790).metrics["elapsed_ms"]
+            .conclusion
+            .as_str(),
+        "improved"
+    );
+
+    let suite: toml::Value = toml::from_str(
+        &std::fs::read_to_string(workspace().join("fixtures/performance/suite.toml")).unwrap(),
+    )
+    .unwrap();
+    let timeout_ms = suite["cases"]["canonical_validate_small"]["sample_timeout_seconds"]
+        .as_integer()
+        .unwrap() as u64
+        * 1000;
+    assert_eq!(timeout_ms, 30_000);
+    // Two setup validations and one timed validation share the one probe sample timeout.
+    assert_eq!(3 * SLOW_MS, 22_500);
+    assert!(3 * SLOW_MS < timeout_ms);
+}
+
 #[test]
 fn guarded_kernel_experiments_measure_one_judged_sample_and_refuse_every_tampered_harness() {
     let mut consumer = Consumer::new();
@@ -952,7 +1268,7 @@ fn guarded_kernel_experiments_measure_one_judged_sample_and_refuse_every_tampere
         &warm_cargo_home(&consumer.root),
     );
 
-    // The disposable slow product revision every later Task measures as its source.
+    // The disposable slow product revision for the successful comparison only.
     consumer.commit(
         &[(
             CANONICAL,
@@ -1056,6 +1372,17 @@ fn guarded_kernel_experiments_measure_one_judged_sample_and_refuse_every_tampere
 
     // 3. Tampered candidates: each removes the slowdown too, so only the guard keeps it from an
     // improved receipt, and each leaves an owned marker if any of its code ran.
+    // These scenarios do not need the positive comparison's larger timing margin.
+    let sleep =
+        format!("    std::thread::sleep(std::time::Duration::from_millis({REFUSAL_SLOW_MS}));\n");
+    consumer.commit(
+        &[(
+            CANONICAL,
+            canonical.replace(VALIDATE, &format!("{VALIDATE}{sleep}")),
+        )],
+        "disposable smaller slowdown for refusal scenarios",
+    );
+    let unslow = json!({"replace": [sleep, ""]});
     let golden =
         std::fs::read_to_string(workspace.join("fixtures/performance/golden/native.json")).unwrap();
     let entry: Value = serde_json::from_str::<Value>(&golden).unwrap()["entries"]

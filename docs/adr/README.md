@@ -421,3 +421,7 @@ future readers need.
   links](0224-bind-diagnostic-symbol-archives-and-avoid-perf-cache-links.md)
 - [0225 — Declare the replacement hosted cohort from the accepted
   producer](0225-declare-the-replacement-hosted-cohort-from-the-accepted-producer.md)
+- [0227 — Bound guarded experiment consumers to build and instrument
+  inputs](0227-bound-guarded-experiment-consumers-to-build-and-instrument-inputs.md)
+- [0228 — Give the guarded improvement fixture a controlled timing
+  margin](0228-give-the-guarded-improvement-fixture-a-controlled-timing-margin.md)

@@ -21,7 +21,11 @@ may hold only `.md`, `.toml` and `.json` data.
   integration run on its source before sealing, for that source's harness digest. Its stream IDs
   name a Store that no longer exists. It is evidence only, read by no code, and the current
   reader refuses its version. The integration now exports `af.perf-kernel-receipts/3` to
-  `$AF_PERF_KERNEL_RECEIPTS`. That export holds every Task's typed result, each output's
+  `$AF_PERF_KERNEL_RECEIPTS` as three homogeneous v3 documents named
+  `receipts-<pid>-missing-inputs.json` (0 ms), `receipts-<pid>-improve.json` (7,500 ms),
+  and `receipts-<pid>-refusal.json` (1,500 ms). The last retains all six tampered and
+  all three malformed-report/refusal Tasks. The fixture asserts the exact phase partition;
+  every document passes both validators. Together these exports hold every Task's typed result, each output's
   complete envelope and every repetition's public stdout and stderr, whole up to 64 KiB, else
   the first and last 32 KiB. It is checked against `schemas/performance-kernel-receipts-v3.json`
   and the laboratory's reader, which recomputes each envelope's content and artifact IDs with
