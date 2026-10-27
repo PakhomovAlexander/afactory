@@ -407,9 +407,10 @@ Examples:
   af help nonsense   # exit 2";
 
 const JSON: &str = "\
-stdout is the result, stderr is progress. With --json a reading command prints exactly one JSON
-document on stdout — no banner, no trailing text — so `af … --json | jq` always works. `af review
-report` takes --format json instead, and `af review ledger` and `af review show` print text only.
+stdout is the result, stderr is progress. A command whose --help lists --json prints exactly one
+JSON document on stdout under it — no banner, no trailing text — so `af … --json | jq` always
+works. `af review report` takes --format json instead. Not every command has a JSON form: `af
+review ledger`, `af review show` and `af config paths`, for example, print text only.
 Errors under --json are one af/error@1 document on stdout (schemas/error-v1.json) with the same
 exit code: `command`, `error` (the sentence stderr prints) and `exit_code`. A usage error is one
 too, exit 2, with clap's message; `--help` and `--version` are not errors. A refusal af

@@ -6,6 +6,7 @@
   ([ADR-0206](../docs/adr/0206-detect-provider-logins-and-register-them-through-add.md)); a
   registered Provider whose CLI is missing or incompatible is no longer told to log in.
   `af review campaigns --json` prints the `--format json` document, and the two together are a
-  usage error. The README scopes its `--json` claim and, with `af review group --help`, explains
-  that Findings that look alike stay apart until an operator groups them
+  usage error. The README and `af help json` claim `--json` only for commands whose `--help` lists
+  it, and the README, with `af review group --help`, explains that Findings that look alike stay
+  apart until an operator groups them
   ([ADR-0006](../docs/adr/0006-finding-identity-is-path-independent.md)).

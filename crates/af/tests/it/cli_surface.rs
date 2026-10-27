@@ -1855,7 +1855,8 @@ fn review_campaigns_json_is_the_format_json_document() {
     // canonicalized (a macOS `/var/folders` temporary root reads `/private/var/folders`), on the
     // sentence's line where it fits in 100 columns, else on a line of its own, and as the
     // `--state` of the command that starts a Campaign there. Controls: this root (short when
-    // `TMPDIR` is), one wider than a line, one with spaces, and one reached through a symlink.
+    // `TMPDIR` is), one wider than a line, one with spaces, one reached through a symlink, and
+    // on Unix ones holding a tab, a newline and a terminal escape sequence.
     let base = std::fs::canonicalize(dir.path()).unwrap();
     let long = Path::new("x".repeat(120).as_str()).join("campaigns");
     let spaced = Path::new("with  spaces").join("campaigns");
@@ -1874,14 +1875,24 @@ fn review_campaigns_json_is_the_format_json_document() {
             dir.path().join("alias").join("campaigns"),
             base.join("real").join("campaigns"),
         ));
+        for name in ["tab\there", "new\nline", "red\u{1b}[31mtext"] {
+            let control = Path::new(name).join("campaigns");
+            std::fs::create_dir_all(dir.path().join(name)).unwrap();
+            controls.push((dir.path().join(&control), base.join(&control)));
+        }
     }
     for (requested, resolved) in &controls {
         let root = requested.to_str().unwrap();
-        let shown = resolved.to_str().unwrap();
-        assert!(!shown.chars().any(char::is_control), "{shown:?}");
+        // Text output shows every control character as a visible `\u{…}` escape, so a root
+        // with a tab or a newline (a `TMPDIR` may hold one) cannot forge a line.
+        let shown = terminal_safe(resolved.to_str().unwrap());
         let listed = listing(root, &[]);
         assert_eq!(listed.status.code(), Some(0), "{}", err(&listed));
         let text = out(&listed);
+        assert!(
+            !text.chars().any(|c| c.is_control() && c != '\n'),
+            "{text:?}"
+        );
         assert_eq!(text, out(&listing(root, &["--format", "text"])));
         let lines: Vec<&str> = text.lines().collect();
         let head = format!("No Campaigns under {shown}; start one there with");
@@ -1903,19 +1914,26 @@ fn review_campaigns_json_is_the_format_json_document() {
             .collect::<Vec<_>>()
             .join(" ");
         let state = resolved.join("NAME");
+        let state = state.to_str().unwrap();
+        let words = shell_words::split(&command).unwrap();
         assert_eq!(
-            shell_words::split(&command).unwrap(),
-            [
-                "af",
-                "review",
-                "run",
-                "--campaign",
-                "NAME",
-                "--state",
-                state.to_str().unwrap()
-            ],
+            words[..6],
+            ["af", "review", "run", "--campaign", "NAME", "--state"],
             "{text}"
         );
+        assert_eq!(words.len(), 7, "{text}");
+        if !state.chars().any(char::is_control) {
+            // The command pastes into a shell as the one that starts a Campaign there.
+            assert_eq!(words[6], state, "{text}");
+        } else if shell_words::quote(state) != state {
+            // A root the shell must quote (a tab or a newline is one) keeps its quotes, and
+            // the escapes inside them, so the command shows the root as the sentence does.
+            assert_eq!(words[6], terminal_safe(state), "{text}");
+            assert_eq!(command, shell_words::join(&words), "{text}");
+        }
+        // A root whose only unusual characters are controls the shell need not quote (a lone
+        // BEL in a `TMPDIR`) is held to the checks above: the sentence shows it exactly, and no
+        // raw control reaches the command.
         let document: serde_json::Value =
             serde_json::from_slice(&listing(root, &["--json"]).stdout).unwrap();
         assert_eq!(document["campaigns"], serde_json::json!([]), "{document}");
@@ -1950,4 +1968,19 @@ fn review_campaigns_json_is_the_format_json_document() {
     let help = out(&af(&["review", "campaigns", "--help"]));
     assert!(help.contains("--json"), "{help}");
     assert!(help.contains("af review campaigns --json"), "{help}");
+}
+
+/// `value` as af's text output shows it: every control character (C0, DEL and C1) as a visible
+/// `\u{…}` escape, everything else unchanged.
+fn terminal_safe(value: &str) -> String {
+    value
+        .chars()
+        .map(|c| {
+            if c.is_control() {
+                format!("\\u{{{:x}}}", u32::from(c))
+            } else {
+                c.to_string()
+            }
+        })
+        .collect()
 }
