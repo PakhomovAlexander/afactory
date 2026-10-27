@@ -70,11 +70,8 @@ path = "junit.xml"
 #   heartbeat lease. It passed alone in 19.385 s but took 27.888 s in the full gate and
 #   exhausted resources at repair verification. Preserve those budgets and execute it with
 #   the suite's threads held, alongside heavy starter repair (ADR-0203).
-# - guarded_kernel_experiments_measure_one_judged_sample_and_refuse_every_tampered_harness: the
-#   kernel compares the measured command's real elapsed_ms, building included, and requires a
-#   10% improvement of the candidate over a baseline slowed by 1.5 s inside the timed operation;
-#   each repetition's release build and sample share the host with whatever else runs. It passed
-#   in the predecessor's full gate in 452 s beside other tests (ADR-0185, ADR-0186).
+# The guarded kernel measurement is manual (`make perf-kernel-measure`).
+# Its refusal half runs in the ordinary perf class without exclusivity (ADR-0252).
 [[profile.default.overrides]]
 filter = '''
 test(/::identity_rechecks_cancel_an_inflight_status_process$/)
@@ -88,7 +85,6 @@ test(/::identity_rechecks_cancel_an_inflight_status_process$/)
 | test(/::heavy_review_cannot_erase_rediscovered_claims$/)
 | test(/::heavy_starter_repair_uses_current_evidence$/)
 | test(/::targeted_starter_repair_uses_current_evidence$/)
-| test(/::guarded_kernel_experiments_measure_one_judged_sample_and_refuse_every_tampered_harness$/)
 | test(/concurrent_short_commands_complete_within_their_real_time_bounds$/)
 '''
 threads-required = "num-test-threads"

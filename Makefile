@@ -115,13 +115,18 @@ perf-python-tests: test
 
 # Shared selective entry points. Full `check` above remains the AF gate default. Labels are
 # JSON data in a file; no Make/shell expansion of label strings is permitted.
-.PHONY: base-check check-fast check-full check-classes test-plan perf-feature-tests
+.PHONY: base-check check-fast check-full check-classes test-plan perf-feature-tests perf-kernel-measure
 TEST_PLAN ?= target/test-classes/plan.json
 TEST_LABEL_FILE ?=
 base-check: release-check
 	$(CI_STEP) --stage preflight gate-owner python3 scripts/test-class-python.py test-gate-owner.py "$(BASE_EVIDENCE)/test-gate-owner.py.xml"
 	$(CI_STEP) --stage preflight test-classes python3 scripts/test-class-python.py test-test-classes.py "$(BASE_EVIDENCE)/test-test-classes.py.xml"
 	$(CI_STEP) --stage preflight test-catalog python3 scripts/test-classes.py audit
+
+# Run before a PR changing scripts/performance/, crates/review-pipeline/examples/perf-probe/,
+# crates/review-pipeline/build.rs, the experiment runtime, or kernel receipts (ADR-0252).
+perf-kernel-measure:
+	$(CI_STEP) --stage tests perf-kernel-measure cargo nextest run --workspace --locked --profile ci --run-ignored only -E 'test(=perf_kernel_measure::guarded_kernel_experiments_measure_one_judged_sample)'
 
 perf-feature-tests:
 	$(CI_STEP) --stage tests test-perf-trace cargo test --locked -p review-core --features perf-trace,perf-calibration --lib perf_

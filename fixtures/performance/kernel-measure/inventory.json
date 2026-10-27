@@ -2772,8 +2772,8 @@
   },
   {
    "path": "scripts/performance/tests/test_kernelguard.py",
-   "sha256": "sha256:19aba73e661487612e2e5ed60ba2bcbdb816bb8aa41017417e26c5965a9fd105",
-   "size": 62128
+   "sha256": "sha256:377898e7b8e4427815dcf3923d54ac51dba47814dae7258bb89a635dcc67b04b",
+   "size": 62259
   },
   {
    "path": "scripts/performance/tests/test_oracle.py",
@@ -2941,7 +2941,7 @@
    "size": 6777
   }
  ],
- "harness_digest": "sha256:da98f84a33696749be2538efeb2199348f9e73ce3c888c35859c7bccd3ac2610",
+ "harness_digest": "sha256:d539a745518aaab9f22cc21769c3cc47842f6311c7fba9af29295d4121c0bae6",
  "inner_metric": "pending",
  "inner_metric_reason": "the inner wall_ms metric is recorded in every Measurement but no staged objective selects it until the guard's real kernel integration and tampered-candidate tests are accepted on the sealed source and a reviewed human change installs and selects it",
  "objective_metric": "elapsed_ms",

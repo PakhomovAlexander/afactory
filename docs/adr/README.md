@@ -437,3 +437,5 @@ future readers need.
   class](0233-select-real-af-runtime-smoke-with-the-perf-class.md)
 - [0234 — Reconcile validation classes with bounded upstream for
   CI](0234-reconcile-validation-classes-with-bounded-upstream-for-ci.md)
+- [0252 — Keep the kernel experiment measurement out of every
+  gate](0252-keep-the-kernel-experiment-measurement-out-of-every-gate.md)

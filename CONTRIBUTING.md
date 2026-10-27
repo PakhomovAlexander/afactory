@@ -328,6 +328,12 @@ Every integration module/binary and Python test script needs a reviewed entry in
 component default unless overridden. Tests of help/errors/navigation belong to uix; complete workflows
 belong to e2e even if they assert output. Keep nextest exclusive scheduling independent of class.
 
+The guarded kernel refusal test runs in the perf class. Its judged comparison is an ignored
+manual measurement: run `make perf-kernel-measure` before a pull request changing
+`scripts/performance/`, `crates/review-pipeline/examples/perf-probe/`,
+`crates/review-pipeline/build.rs`, the experiment runtime or kernel receipts
+([ADR-0252](docs/adr/0252-keep-the-kernel-experiment-measurement-out-of-every-gate.md)).
+
 `make release VERSION=X.Y.Z COMPAT='...' PROFILE=fast` opens a release PR with `release:fast`;
 the default PROFILE is full. Provision the ten canonical labels with `make test-labels` (dry-run),
 then explicitly `make test-labels APPLY=1`; no PR labels are assigned by that setup command.

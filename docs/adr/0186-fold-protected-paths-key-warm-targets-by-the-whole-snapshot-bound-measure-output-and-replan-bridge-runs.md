@@ -146,3 +146,8 @@ eligibility paragraph and a fifteen-column table.
   policy and selecting the inner metric also remain human actions.
 - **Not changed.** The 15-second lease, the 8-MiB envelope cap, the sample and build limits of
   design §14, every gate, timeout and budget, and advisory enforcement.
+
+**Amended by [ADR-0252](0252-keep-the-kernel-experiment-measurement-out-of-every-gate.md)
+(2026-10-27).** The guarded integration's judged comparison is now an
+ignored manual measurement run with `make perf-kernel-measure`; tampered-harness refusals remain
+in the perf gate. The measurement and guard contracts above are unchanged.

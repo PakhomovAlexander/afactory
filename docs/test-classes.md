@@ -17,7 +17,7 @@ modules/scripts and the actual nextest inventory, never from historical run tota
 | functional | Component and public contract correctness | Typed schemas, config admission, graph compilation |
 | e2e | Complete workflows, lifecycle, subprocesses and containment | Task delivery, Campaign rounds, process cancellation, live containers |
 | uix | CLI/TUI interaction, output, help, errors and navigation | `cli_surface`, `help_hygiene`, `task_file_errors`, `tui` |
-| perf | Measurement, the performance laboratory and expensive performance integration checks | `perf_kernel_measure`, `perf_probe`, optimizer and telemetry overhead tests |
+| perf | Measurement, the performance laboratory and expensive performance integration checks | `perf_kernel_measure` refusal checks, `perf_probe`, optimizer and telemetry overhead tests |
 
 `.config/test-classes.json` is the versioned, reviewable ownership catalog. Consolidated integration
 binaries list every top-level module explicitly, including fixture-only modules. Adding or removing
@@ -46,7 +46,10 @@ It partitions every identity once, including ignored tests, then generates bound
 from the audited inventory. Tests in each root module are grouped only when their selection agrees;
 other names stay exact. Explicit singleton overrides classify manual measurement tests as perf.
 Every ignored identity also records its manual/child/container policy; a new ignored test fails
-the audit until reviewed. Feature-on trace/calibration checks are additional perf build variants of the
+the audit until reviewed. The guarded kernel comparison is `manual-measurement`: run
+`make perf-kernel-measure` before a pull request that changes its protected harness, experiment
+runtime or kernel receipts ([ADR-0252](adr/0252-keep-the-kernel-experiment-measurement-out-of-every-gate.md)).
+Feature-on trace/calibration checks are additional perf build variants of the
 original lint checks, with distinct retained JUnit files. Default-off Rust builds remain unchanged.
 
 Exclusivity is orthogonal: `.config/nextest.toml` remains authoritative. Its real-time tests retain
