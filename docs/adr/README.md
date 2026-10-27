@@ -437,5 +437,13 @@ future readers need.
   class](0233-select-real-af-runtime-smoke-with-the-perf-class.md)
 - [0234 — Reconcile validation classes with bounded upstream for
   CI](0234-reconcile-validation-classes-with-bounded-upstream-for-ci.md)
-- [0235 — Execute performance experiments independently on a locked
-  VM](0235-execute-performance-experiments-independently-on-a-locked-vm.md)
+- [0235 — Prove release validation without
+  publication](0235-prove-release-validation-without-publication.md)
+- [0236 — Scope class builds to their
+  execution](0236-scope-class-builds-to-their-execution.md)
+- [0237 — Isolate telemetry stall boundaries and shortcut uniform
+  bootstrap](0237-isolate-telemetry-stall-boundaries-and-shortcut-uniform-bootstrap.md)
+- [0238 — Retain refused physical telemetry measurements in incomplete
+  results](0238-retain-refused-physical-telemetry-measurements-in-incomplete-results.md)
+- [0239 — Execute performance experiments independently on a locked
+  VM](0239-execute-performance-experiments-independently-on-a-locked-vm.md)

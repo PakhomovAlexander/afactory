@@ -999,7 +999,7 @@ may record its CLI cases at an explicitly selected telemetry level and read them
 the side's own `af telemetry` documents (`af.perf-profiles/6`, `af.perf-report/3`). The bench
 scripts of the telemetry design's §12 run as advisory telemetry experiments on a baseline and a
 candidate binary in their own workflow (`af.perf-telemetry-lab/1`,
-`af.perf-telemetry-result/1`, `af.perf-telemetry-history/1`). §13 of that design proposed
+`af.perf-telemetry-result/2`, `af.perf-telemetry-history/1`). §13 of that design proposed
 replacing `perf-trace`; this is narrower. The native probe installs no telemetry subscriber, and
 discovery, startup and state-read commands record none, so `perf-trace` keeps their phases
 ([`performance-telemetry.md`](../performance-telemetry.md)). Every execution of an experiment's
@@ -1024,7 +1024,7 @@ checked 2026-10-25, states “GitHub ignores case when comparing strings.” The
 workflow and scheduler stay unchanged; their executable test models platform equality on the
 original uppercase input. This local model is not a hosted dispatch or a calibration original.
 
-Independent VM execution (ADR-0235) adds `cli.py executor`, a bounded operator controller over
+Independent VM execution (ADR-0239) adds `cli.py executor`, a bounded operator controller over
 these same components. It freezes local sources, environment and workload before contained
 build/measurement, runs shards sequentially, keeps native reports/archives and retains original
 Git objects for offline admission. Local requests/claims/results have their own identities;

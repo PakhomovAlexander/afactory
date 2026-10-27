@@ -1,4 +1,4 @@
-"""Independent bounded performance execution and original journal (ADR-0235).
+"""Independent bounded performance execution and original journal (ADR-0239).
 
 Only installed control Python runs on the host. Git revisions are data; builds and samples
 use the existing contained laboratory. Transport is injected only in the Actions branch.

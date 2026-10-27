@@ -118,8 +118,15 @@ class BenchError(Exception):
 
 def bootstrap_interval(values, seed, label):
     """The 95% percentile-bootstrap interval of the median of `values`."""
-    rng = random.Random(f'{seed}:{label}')
     count = len(values)
+    # Every resample of identical observations has this same median. Preserve the
+    # ordinary even-count median arithmetic and rounding, including signed zero;
+    # mixed representations take the original seeded 10,000-resample path below.
+    if count and all(value == values[0] and repr(value) == repr(values[0])
+                     for value in values):
+        centre = round(statistics.median(values), 3)
+        return [centre, centre]
+    rng = random.Random(f'{seed}:{label}')
     medians = sorted(statistics.median([values[rng.randrange(count)] for _ in range(count)])
                      for _ in range(RESAMPLES))
     return [round(medians[int(RESAMPLES * 0.025)], 3),

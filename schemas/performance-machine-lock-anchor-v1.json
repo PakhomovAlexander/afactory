@@ -2,7 +2,7 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "urn:af:schema:performance-machine-lock-anchor:1",
   "title": "af.perf-machine-lock-anchor/1",
-  "description": "Independent performance executor: machine-lock-anchor (ADR-0235).",
+  "description": "Independent performance executor: machine-lock-anchor (ADR-0239).",
   "type": "object",
   "additionalProperties": false,
   "properties": {

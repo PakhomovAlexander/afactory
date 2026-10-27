@@ -1,4 +1,4 @@
-# ADR-0235: Execute performance experiments independently on a locked VM
+# ADR-0239: Execute performance experiments independently on a locked VM
 
 **Status:** proposed (2026-10-27).
 

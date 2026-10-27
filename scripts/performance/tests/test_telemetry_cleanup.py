@@ -637,28 +637,72 @@ class WorkflowCleanup(ContainedBase):
         self.assertFalse(Path(self.executor.directory).exists())
         self.assertEqual(self.invoke("ci-scratch", cleanup=True), 0)
 
-    def test_public_run_stalled_owner_fence_does_not_retry_after_expiry(self):
+    def assert_stalled_owner_fence(self, preparation_delay=0):
         os.rmdir(self.run_dir)
         os.rmdir(self.executor.directory)
         offset = [0.0]
         actual_sync, actual_write = telemetrylab._sync, hostprep.TelemetryOwner._write
-        writes = []
+        writes, interruptions, boundaries = [], [], []
+        selected = []
+        enforcement, active = [], []
+
+        @contextlib.contextmanager
+        def preparation(step):
+            self.assertEqual(step, "removing telemetry scratch")
+            self.assertFalse(enforcement, "production enforcement must enter once")
+            enforcement.append("enter")
+            active.append(True)
+            try:
+                yield  # The selected ownership write below arms the real timer.
+                self.fail("the stalled ownership write returned")
+            finally:
+                active.clear()
+                enforcement.append("exit")
+
         def sync(allowance, step, function, *args, **kwargs):
-            if step == "removing telemetry scratch":
-                offset[0] = allowance.deadline - time.monotonic() - .08
-            return actual_sync(allowance, step, function, *args, **kwargs)
+            if step != "removing telemetry scratch":
+                return actual_sync(allowance, step, function, *args, **kwargs)
+            self.assertFalse(selected, "cleanup must not retry")
+            boundaries.append(step)
+            selected.append((allowance, allowance.enforce))
+            # Real controller preparation and owner reads precede the measured write.
+            time.sleep(preparation_delay)
+            with mock.patch.object(allowance, "enforce", preparation):
+                return actual_sync(allowance, step, function, *args, **kwargs)
+
         def write(owner):
             if owner.doc["phase"] == "uncertain":
+                self.assertEqual((enforcement, active), (["enter"], [True]),
+                                 "production enforcement must precede the blocked ownership write")
+                enforcement.append("blocked")
+                self.assertEqual(len(selected), 1)
+                allowance, enforce = selected[0]
+                self.assertEqual(allowance.reserve, 0)
                 writes.append(time.monotonic())
-                time.sleep(30)
+                offset[0] = allowance.deadline - writes[0] - .08
+                try:
+                    with enforce("removing telemetry scratch"):
+                        self.assertGreater(signal.getitimer(signal.ITIMER_REAL)[0], 0)
+                        time.sleep(30)
+                        self.fail("the real deadline failed to interrupt ownership I/O")
+                except budget.Interrupted as error:
+                    interruptions.append(str(error))
+                    raise
             return actual_write(owner)
+
         start = time.monotonic()
         with mock.patch.object(telemetrylab, "_sync", sync), \
                 mock.patch.object(hostprep.TelemetryOwner, "_write", write):
             self.assertEqual(self.measure(lambda settings: setattr(settings, "clock",
                 lambda: time.monotonic() + offset[0])), cli.EXIT_UNAVAILABLE)
-        self.assertLess(time.monotonic() - start, 1)
+        elapsed = time.monotonic() - start
+        self.assertEqual(enforcement, ["enter", "blocked", "exit"])
+        self.assertFalse(active)
+        self.assertEqual(len(boundaries), 1, "cleanup boundary must be reached")
         self.assertEqual(len(writes), 1, "failure handlers must not retry ownership I/O")
+        self.assertLess(time.monotonic() - writes[0], 1)
+        self.assertEqual(len(interruptions), 1)
+        self.assertIn("total deadline ended removing telemetry scratch", interruptions[0])
         with self.owner() as owner:
             self.assertEqual(owner.doc["phase"], "stopped")
             self.assertTrue(owner.doc["filesystem_pending"])
@@ -669,36 +713,125 @@ class WorkflowCleanup(ContainedBase):
         self.retained()
         self.assertNotEqual(self.invoke("telemetry-run"), 0)
         self.assertIn("unsettled launch", self.stderr.getvalue())
+        return elapsed
+
+    def test_public_run_stalled_owner_fence_does_not_retry_after_expiry(self):
+        self.assert_stalled_owner_fence()
+
+    def test_slow_preparation_still_reaches_and_interrupts_public_run_owner_fence(self):
+        self.assertGreaterEqual(self.assert_stalled_owner_fence(preparation_delay=1.05), 1.05)
+
+    def assert_final_work_settlement_stall(self, boundary, preparation_delay=0):
+        entered, interruptions = [], []
+        enforcement, active = [], []
+        def clock():
+            return time.monotonic() - entered[0] if entered else 0.0
+        allowance = budget.Budget(.08, clock, 0)
+        enforce = allowance.enforce
+
+        @contextlib.contextmanager
+        def preparation(step):
+            self.assertEqual(step, "removing telemetry scratch")
+            self.assertFalse(entered)
+            self.assertFalse(enforcement, "production enforcement must enter once")
+            enforcement.append("enter")
+            active.append(True)
+            try:
+                yield  # Execute real fencing and deletion before the measured operation.
+                self.fail("the stalled settlement returned")
+            finally:
+                active.clear()
+                enforcement.append("exit")
+
+        def stall():
+            self.assertEqual((enforcement, active), (["enter"], [True]),
+                             "production enforcement must precede the blocked settlement I/O")
+            enforcement.append("blocked")
+            self.assertFalse(entered, "settlement I/O must not retry")
+            self.assertEqual(clock(), 0)
+            self.assertEqual((allowance.deadline, allowance.reserve), (.08, 0))
+            entered.append(time.monotonic())
+            try:
+                with enforce("removing telemetry scratch"):
+                    self.assertGreater(signal.getitimer(signal.ITIMER_REAL)[0], 0)
+                    time.sleep(30)
+                    self.fail("the real deadline failed to interrupt settlement I/O")
+            except budget.Interrupted as error:
+                interruptions.append(str(error))
+                raise
+
+        actual_remove = shutil.rmtree
+        def remove(*args, **kwargs):
+            time.sleep(preparation_delay)
+            return actual_remove(*args, **kwargs)
+
+        start = time.monotonic()
+        with self.owner() as owner:
+            owner.prepare_work()
+            self.executor.pending = False
+            self.assertEqual(self.run_execution(owner).cleanup, "confirmed")
+            original = owner.work_cleaned
+            def cleaned():
+                with mock.patch.object(owner, "_" + boundary, side_effect=stall):
+                    original()
+            state = {"problems": []}
+            with mock.patch.object(owner, "work_cleaned", cleaned), \
+                    mock.patch.object(allowance, "enforce", preparation), \
+                    mock.patch.object(telemetrylab.shutil, "rmtree", remove):
+                self.assertFalse(telemetrylab._remove_owned(self.executor.directory,
+                    type("Settings", (), {"scratch_owner": owner})(), self.executor,
+                    state, allowance, self.executor.directory))
+            elapsed = time.monotonic() - start
+            self.assertEqual(enforcement, ["enter", "blocked", "exit"])
+            self.assertFalse(active)
+            self.assertEqual(len(entered), 1, "settlement boundary must be reached")
+            self.assertLess(time.monotonic() - entered[0], 1)
+            self.assertEqual(len(interruptions), 1)
+            self.assertIn(interruptions[0], state["stopped"])
+            self.assertFalse(os.path.exists(self.executor.directory))
+            self.assertEqual(state["retained"], self.mount)
+            self.assertIn("directory removed", state["stopped"])
+            self.assertTrue(owner._read()["filesystem_pending"])
+        self.retained()
+        return elapsed
 
     def test_final_work_settlement_stall_retains_the_actual_mount_recovery_path(self):
-        for boundary in ("read", "write"):
-            with self.subTest(boundary=boundary):
-                with self.owner() as owner:
-                    owner.prepare_work()
-                    self.executor.pending = False
-                    self.assertEqual(self.run_execution(owner).cleanup, "confirmed")
-                    original = owner.work_cleaned
-                    def cleaned():
-                        with mock.patch.object(owner, "_" + boundary,
-                                               side_effect=lambda: time.sleep(30)):
-                            original()
-                    state = {"problems": []}
-                    start = time.monotonic()
-                    with mock.patch.object(owner, "work_cleaned", cleaned):
-                        self.assertFalse(telemetrylab._remove_owned(self.executor.directory,
-                            type("Settings", (), {"scratch_owner": owner})(), self.executor,
-                            state, budget.Budget(start + .08, time.monotonic, 0),
-                            self.executor.directory))
-                    self.assertLess(time.monotonic() - start, 1)
-                    self.assertFalse(os.path.exists(self.executor.directory))
-                    self.assertEqual(state["retained"], self.mount)
-                    self.assertIn("directory removed", state["stopped"])
-                    self.assertTrue(owner._read()["filesystem_pending"])
-                self.retained()
-                with self.owner() as owner:
-                    owner.doc["filesystem_pending"] = False  # Test-owned recovery only.
-                    owner._write()
-                os.makedirs(self.run_dir)
+        self.assert_final_work_settlement_stall("read")
+
+    def test_final_work_settlement_write_stall_retains_the_actual_mount_recovery_path(self):
+        self.assert_final_work_settlement_stall("write")
+
+    def test_slow_deletion_still_reaches_and_interrupts_final_work_settlement_read(self):
+        self.assertGreaterEqual(self.assert_final_work_settlement_stall("read", 1.05), 1.05)
+
+    def test_slow_deletion_still_reaches_and_interrupts_final_work_settlement_write(self):
+        self.assertGreaterEqual(self.assert_final_work_settlement_stall("write", 1.05), 1.05)
+
+    @contextlib.contextmanager
+    def bypass_cleanup_enforcement(self):
+        original = telemetrylab._sync
+        def bypass(allowance, step, function, *args, **kwargs):
+            if step == "removing telemetry scratch":
+                # Mutation control: remove only production's enforcement context.
+                return function(*args, **kwargs)
+            return original(allowance, step, function, *args, **kwargs)
+        with mock.patch.object(telemetrylab, "_sync", bypass):
+            yield
+
+    def test_owner_fence_fixture_refuses_bypassed_production_enforcement(self):
+        with self.assertRaisesRegex(AssertionError, "production enforcement must precede"):
+            with self.bypass_cleanup_enforcement():
+                self.assert_stalled_owner_fence()
+
+    def test_settlement_read_fixture_refuses_bypassed_production_enforcement(self):
+        with self.assertRaisesRegex(AssertionError, "production enforcement must precede"):
+            with self.bypass_cleanup_enforcement():
+                self.assert_final_work_settlement_stall("read")
+
+    def test_settlement_write_fixture_refuses_bypassed_production_enforcement(self):
+        with self.assertRaisesRegex(AssertionError, "production enforcement must precede"):
+            with self.bypass_cleanup_enforcement():
+                self.assert_final_work_settlement_stall("write")
 
     def test_controller_loss_before_launch_preserves_the_setup_fence(self):
         with self.owner() as owner:

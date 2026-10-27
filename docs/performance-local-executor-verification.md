@@ -233,7 +233,7 @@ all recorded IDs:
 Changed persisted shapes take configuration/state/result v2; obsolete v1 schemas/readers are
 removed and old receipts refuse. Request/cohort/readiness shapes and hosted declarations stay
 unchanged. New shipping/expiry golden fixtures pass schema/reader/writer parity. The operator
-guide, ADR-0235, domain design and change note document these repairs.
+guide, ADR-0239, domain design and change note document these repairs.
 
 Focused command, Python 3.14.4:
 
@@ -274,3 +274,94 @@ unchanged enclosing native/Markdown gates and independent judging own final vali
 coordinator owns accepted installation and authentic core/telemetry/lock evidence afterward.
 The earlier hosted core absolute deadline and all sample/statistical/resource minima remain
 unchanged. Separate #378/#382/#380 work remains outside this repair.
+
+## Exact-main integration (2026-10-27)
+
+This bounded integration preserves accepted candidate
+`a81be5d90cbdebc6a0311515c7cfdfe2257c61dd` (tree
+`8d70f9f6d6c145a7bcb28724875a52236b5ae572`) and integrates every upstream change from
+`8c0ca71a1df2b73ed7c1d0ba9686a6ec1ddf47b1` to exact main
+`2dce351a4b332f0e3cbbaf78aa586de2770637bb`. The latter is the whole-feature review base
+for this continuation. Earlier sections retain historical verification and review bases.
+
+Before reading the declared public bundle, `sha256sum` and `wc -c` confirmed SHA-256
+`3750e9c8afc6e733acc417288b82f3024821c7a48a11a3570b2711b6ad44bb3d` and 66870 bytes.
+A disposable object database received only source Git objects reachable from the two declared
+commits. `git bundle verify` confirmed the exact upstream ref and old-base prerequisite;
+`git merge-base` returned that prerequisite. All 2750 accepted source files matched their
+Git blob identities and executable modes before integration. No external source worktree was mutated.
+
+`git merge-tree --write-tree a81be5d90cbdebc6a0311515c7cfdfe2257c61dd 2dce351a4b332f0e3cbbaf78aa586de2770637bb`
+reported exactly the four declared content conflicts. Retain upstream ADRs 0235–0238 and move
+only the executor ADR, title and references to 0239. The schema fixture index has no shipped
+whole-index generator: its independently added expectation records were mechanically combined
+from the two exact parents, requiring equality for every shared record and uniqueness by path.
+All **399 entries** and every incoming telemetry refusal fixture remain; unchanged parity tests
+check complete fixture coverage, readers, writers, closed schemas and obsolete-version refusal.
+The existing schema generator regenerated only executor descriptions for the ADR renumbering.
+
+All **45 upstream changed paths outside the four conflicts and four automatic text merges**
+match exact main byte-for-byte and in executable mode, with the obsolete telemetry v1 schema
+absent. The four automatic merges (contracts, telemetry controller, cleanup tests and design)
+match Git's result exactly, apart from the executor ADR reference in the design. Upstream
+release proof, scoped builds, uniform bootstrap and telemetry result v2 coexist with executor
+configuration/state/result v2. No executable integration repair was necessary. The schema and
+protected inventory generators/bootstrap match both parents exactly; schema parity tests match
+the accepted feature exactly. The four accepted repairs remain covered, and the accepted minor
+musl reproduction-command omission remains a follow-up.
+
+Focused commands, Python 3.14.4:
+
+```sh
+python3 -I -B -c 'import sys,unittest; sys.path.insert(0,"scripts/performance"); unittest.main(module=None,argv=["unittest","tests.test_executor","tests.test_localcalibration","tests.test_contracts","tests.test_hostlock","tests.test_builds.ContainerBuild","tests.test_builds.FakeBuild.test_the_shipping_recipe_builds_through_exactly_its_pinned_cargo_zigbuild","tests.test_diagnostics.Command","tests.test_telemetry_measurements","tests.test_telemetry_lab","tests.test_telemetry_lock_handoff","tests.test_telemetry_build_bounds","tests.test_telemetry_cleanup","tests.test_telemetry_terminal"],verbosity=1)'
+python3 -I -B -c 'import sys,unittest; sys.path.insert(0,"scripts/performance"); unittest.main(module=None,argv=["unittest","tests.test_kernelguard.Bootstrap","tests.test_kernelguard.Staged","tests.test_kernelguard.Receipts.test_the_committed_fixtures_are_their_recipes"],verbosity=1)'
+python3 -I -B scripts/test-test-classes.py Selection Release ReleaseProof -v
+python3 -I -B scripts/test-test-classes.py Catalog SealedEvidence Metrics Gates -v
+python3 -I -B scripts/test-release-resolve.py -v
+python3 -I -B /tmp/af-integration-refusal.py
+```
+
+**PASS, all exit 0:** respectively **163 tests / 170.696 s**, **10 / 1.428 s**,
+**12 / 0.088 s**, **22 / 25.029 s**, **22 / 4.564 s**, **1 / 1.840 s**: 230 focused tests.
+The temporary refusal harness reused the accepted end-to-end local telemetry orchestration
+fixture with its real journal, native controller, verification, history and machine lease.
+Only its compute stand-in changed: candidate overhead supplied `drain.pairs[0].off_ms = -1`.
+It required executor completion with measurement status `partial`, separate
+`af.perf-executor-result/2` and `af.perf-telemetry-result/2`, exactly one retained
+`refused_document` with that field and reason `negative`, successful original/offline/history
+verification, and subsequent common-lock acquisition. The original unchanged success fixture
+also passed in the 163-test command. No Actions transport or authentic compute was used.
+An initial class-check command named nonexistent class `Policy`; its 22 real tests passed,
+and the corrected selections above passed. A temporary harness indentation typo was corrected
+before its passing run; neither issue changed product source or assertions.
+
+Generator and metadata commands, each **PASS, exit 0**:
+
+```sh
+python3 -B scripts/performance/schemas.py --write
+python3 -B scripts/performance/schemas.py
+python3 -I -B /tmp/af-integration-inventory.py
+python3 -B scripts/test-classes.py audit
+python3 -B scripts/changelog-notes.py --check
+```
+
+The inventory helper handled the sandbox's reserved empty `.git` by enumerating actual source
+with the unchanged bootstrap classification and copying the protected closure to a temporary
+root. It invoked unchanged `cli.py harness-digest --root COPY --write` and `--check`, copied
+back only generated staged policy/inventory, and required exact digest/path/size/hash equality
+between the actual sandbox closure, generated copy and literal bootstrap. The merged inventory
+has **632 protected files**,
+`sha256:0798e4a4794ac2904802054f5b4e296a9976f83473f9a3f11f45659c63500c1e`.
+No generator, `.af/` authority, deadline, budget, original, denominator or statistical rule was
+changed. Temporary merge objects/helpers stayed outside the source; no bundle was copied in.
+
+The full unchanged native kernel/Markdown gates and independent Terra/Astra judging remain
+with the enclosing pipeline; this Worker ran no `make check`, full test-performance or Rust
+suite. Coordinator-owned installation, real VM core/telemetry runs, cross-user lock proof,
+report export and backend activation remain unclaimed. Earlier hosted deadline failures and
+cleanup fences remain evidence. No external writes, deployment or publication occurred.
+
+Final source checks with `python3 -I -B /tmp/af-integration-final.py` passed, exit 0:
+Git whitespace checks against both parents, exact preservation of accepted executor behavior
+and regression tests, absence of obsolete v1 shapes, and complete executor ADR renumbering.
+The source contains no temporary integration helper, merge object database or input bundle.
