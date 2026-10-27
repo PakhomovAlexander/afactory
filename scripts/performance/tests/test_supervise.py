@@ -1064,13 +1064,131 @@ class ContainedSample(TempDir):
                                                  clock=lambda: now[0])
         self.assertEqual(calls, [("rm", 0.0, 10.0)])
         self.assertEqual(now[0], 10.0)
-        self.assertIn("container c removal unconfirmed", removal)
+        self.assertFalse(removal.confirmed)
+        self.assertIn("container c removal unconfirmed", removal.detail)
         del calls[:]
         with mock.patch.object(supervise.subprocess, "run", docker_call):
             removal = supervise.remove_container(self.docker, "c", deadline=5.0,
                                                  clock=lambda: now[0])
         self.assertEqual(calls, [])
-        self.assertIn("no time was left for its removal", removal)
+        self.assertFalse(removal.confirmed)
+        self.assertIn("no time was left for its removal", removal.detail)
+
+    def test_a_removal_text_never_confirms_it(self):
+        # Issue #388, the reviewer's reproduction: the launch lost its reply and the removal
+        # raised an exception whose text ends in "removed". The failure was certain and the
+        # caller removed what a live process could reach. An exception confirms nothing.
+        lost = supervise.SupervisorFailure("lost supervisor reply", uncertain=True)
+        with mock.patch.object(supervise, "launch", side_effect=lost), \
+                mock.patch.object(supervise, "remove_container",
+                                  side_effect=OSError("container was not removed")):
+            with self.assertRaises(supervise.SupervisorFailure) as caught:
+                self.run_one()
+        failure = caught.exception
+        self.assertEqual((failure.launched, failure.uncertain, failure.supervised),
+                         (True, True, None))
+        self.assertIn("lost supervisor reply; container af-perf-run-0-1 removal unconfirmed: "
+                      "container was not removed", str(failure))
+        # The same through the tool boundary diagnostics use: the result stays uncertain.
+        from perflab import toolrun
+        outcome = toolrun._result(["x"], ("failure", failure), None, time.monotonic,
+                                  time.monotonic(), False)
+        self.assertTrue(outcome.uncertain)
+        # An unconfirmed outcome worded as a removal is unconfirmed too, on both paths.
+        worded = supervise.Removal(False, "container af-perf-run-0-1 removed")
+        with mock.patch.object(supervise, "launch", side_effect=lost), \
+                mock.patch.object(supervise, "remove_container", return_value=worded):
+            with self.assertRaises(supervise.SupervisorFailure) as caught:
+                self.run_one()
+        self.assertTrue(caught.exception.uncertain)
+        with mock.patch.object(supervise, "remove_container", return_value=worded):
+            contained = self.run_one()
+        self.assertFalse(contained.removed)
+        self.assertEqual(contained.removal, worded.detail)
+
+    def test_a_confirmed_removal_in_other_words_is_confirmed(self):
+        removal = supervise.Removal(True, "the runtime lists no container af-perf-run-0-1")
+        lost = supervise.SupervisorFailure("lost supervisor reply", uncertain=True)
+        with mock.patch.object(supervise, "launch", side_effect=lost), \
+                mock.patch.object(supervise, "remove_container", return_value=removal):
+            with self.assertRaises(supervise.SupervisorFailure) as caught:
+                self.run_one()
+        self.assertEqual((caught.exception.launched, caught.exception.uncertain), (True, False))
+        self.assertIn("the runtime lists no container", str(caught.exception))
+        with mock.patch.object(supervise, "remove_container", return_value=removal):
+            contained = self.run_one()
+        self.assertTrue(contained.removed)
+        self.assertEqual(contained.removal, removal.detail)
+        with self.assertRaises(ContractError):
+            supervise.Removal("container c removed", "a text is not a confirmation")
+
+    def startup(self, now, delays):
+        """Popen whose start consumes `delays` (one per docker client) of the controlled clock;
+        the clients are the real stand-in, so each one's own run is real."""
+        real = subprocess.Popen
+        started = []
+
+        def popen(argv, *args, **kwargs):
+            if argv[0] == self.docker:
+                started.append((argv[1], now[0]))
+                now[0] += delays[len(started) - 1]
+            return real(argv, *args, **kwargs)
+        return popen, started
+
+    def test_a_confirmation_after_the_allowance_is_unconfirmed(self):
+        # Issue #403 item 4: a relative timeout does not count a client's startup, and nothing
+        # read the clock after the final `ps`, so a removal whose clients took 59.5 s and 0.6 s
+        # to start, with its allowance ending at 160, was confirmed at 160.1.
+        for delays, confirmed in (((59.5, 0.6), False), ((59.5, 0.5), True), ((0.5, 0.6), True)):
+            with self.subTest(delays=delays):
+                now = [100.0]
+                popen, started = self.startup(now, delays)
+                with mock.patch.object(supervise.subprocess, "Popen", popen):
+                    removal = supervise.remove_container(self.docker, "c", deadline=160.0,
+                                                         clock=lambda: now[0])
+                self.assertEqual([command for command, _ in started], ["rm", "ps"])
+                self.assertEqual(removal.confirmed, confirmed, removal.detail)
+                if confirmed:
+                    self.assertLessEqual(now[0], 160.0)
+                    self.assertEqual(removal.detail, "container c removed")
+                else:
+                    self.assertGreater(now[0], 160.0)
+                    self.assertEqual(removal.detail, "container c removal unconfirmed: confirming "
+                                     "it ended 0.100 s after its 60.000 s allowance")
+        # A failed launch whose removal is confirmed late is uncertain, never certain.
+        open(self.path("bin", "fail"), "w").close()
+        now = [0.0]
+        popen, started = self.startup(now, (0.0, 59.5, 0.6))
+        with mock.patch.object(supervise.subprocess, "Popen", popen):
+            with self.assertRaises(supervise.SupervisorFailure) as caught:
+                self.run_one(deadline=90.0, clock=lambda: now[0])
+        self.assertEqual([command for command, _ in started], ["run", "rm", "ps"])
+        self.assertTrue(caught.exception.uncertain)
+        self.assertIn("after its 60.000 s allowance", str(caught.exception))
+
+    def test_a_late_confirmation_in_real_time_is_unconfirmed(self):
+        # The real-time form: 0.2 s of allowance, and the confirming client's start takes
+        # 0.3 s. The stand-in is a shell script that lists nothing, so only time can refuse.
+        docker = self.path("bin", "quiet-docker")
+        with open(docker, "w") as stream:
+            stream.write("#!/bin/sh\nexit 0\n")
+        os.chmod(docker, 0o755)
+        real, started = subprocess.Popen, []
+
+        def popen(argv, *args, **kwargs):
+            if argv[0] == docker:
+                started.append(argv[1])
+                if argv[1] == "ps":
+                    time.sleep(0.3)
+            return real(argv, *args, **kwargs)
+        with mock.patch.object(supervise.subprocess, "Popen", popen):
+            removal = supervise.remove_container(docker, "c", deadline=time.monotonic() + 0.2)
+        self.assertEqual(started, ["rm", "ps"])
+        self.assertFalse(removal.confirmed, removal.detail)
+        self.assertIn("container c removal unconfirmed: confirming it ended", removal.detail)
+        with mock.patch.object(supervise.subprocess, "Popen", real):
+            removal = supervise.remove_container(docker, "c", deadline=time.monotonic() + 5.0)
+        self.assertEqual(removal, (True, "container c removed"))
 
     def test_a_trusted_local_request_is_never_run_in_a_container(self):
         order = probe_request(containment="process_group", scratch=None)

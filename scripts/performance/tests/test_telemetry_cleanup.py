@@ -4,6 +4,7 @@ Host mount commands and Docker are recorded stand-ins, not live containment evid
 No supplied result document participates in the cleanup decision.
 """
 import contextlib
+import errno
 import importlib.util
 import hashlib
 import io
@@ -416,6 +417,57 @@ class WorkflowCleanup(ContainedBase):
             with self.subTest(boundary=boundary):
                 self.assert_unused_fence_settlement(boundary)
 
+    def test_a_failed_settlement_sync_keeps_the_record_its_replacement_published(self):
+        # Issue #388: the unused-work settlement replaces state.json and only then syncs its
+        # directory. A failure before the replacement keeps the durable fence; one after it
+        # leaves the settled record, which this route publishes only once it proved that no
+        # work began, in place: no launch happened and nothing a candidate wrote is deleted.
+        for boundary in ("file_sync", "directory_sync"):
+            with self.subTest(boundary=boundary):
+                settling, replaced, failed = [False], [], []
+                actual_sync, actual_replace, actual_fsync = telemetrylab._sync, os.replace, os.fsync
+                def sync(allowance, step, function, *args, **kwargs):
+                    settling[0] = step == "settling unused telemetry work"
+                    try:
+                        return actual_sync(allowance, step, function, *args, **kwargs)
+                    finally:
+                        settling[0] = False
+                def replace(source, target, *args, **kwargs):
+                    if settling[0] and target == "state.json":
+                        replaced.append(kwargs["dst_dir_fd"])
+                    return actual_replace(source, target, *args, **kwargs)
+                def fsync(fd):
+                    if settling[0] and (fd in replaced if boundary == "directory_sync"
+                                        else not replaced and not failed):
+                        failed.append(fd)
+                        raise OSError(errno.EIO, "injected %s failure" % boundary)
+                    return actual_fsync(fd)
+                with mock.patch.object(builds, "_run", self.image_inspection(False)), \
+                        mock.patch.object(telemetrylab, "_sync", sync), \
+                        mock.patch.object(os, "replace", replace), \
+                        mock.patch.object(os, "fsync", fsync):
+                    self.assertEqual(self.measure(self.real_preparation), cli.EXIT_UNAVAILABLE)
+                self.assertEqual(len(failed), 1, "the injected sync failure was not reached")
+                self.assertEqual(replaced, [failed[0]] if boundary == "directory_sync" else [])
+                self.assertEqual(self.executor.names, 0)
+                with self.owner_state() as doc:
+                    self.assertEqual(doc["launches"], 0)
+                    self.assertEqual(doc["phase"], "ready")
+                    self.assertEqual(doc["filesystem_pending"], boundary == "file_sync")
+                if boundary == "file_sync":
+                    # Before the replacement: the durable fence stays and cleanup is refused.
+                    self.retained()
+                    with self.owner() as owner:
+                        with self.assertRaises(ContractError): owner.available()
+                        owner.doc["filesystem_pending"] = False  # Test-owned recovery.
+                        owner._write()
+                    continue
+                # After it: the published record admits the next controller and the cleanup.
+                with self.owner() as owner:
+                    owner.available()
+                self.assertEqual(self.invoke("ci-scratch", cleanup=True), 0)
+                self.assertFalse(os.path.exists(self.image))
+
     def test_slow_preparation_does_not_consume_unused_fence_settlement_measurement(self):
         for boundary in ("stall", "expired"):
             with self.subTest(boundary=boundary):
@@ -588,6 +640,48 @@ class WorkflowCleanup(ContainedBase):
                     # Explicit fixture recovery only, after verifying product refusal.
                     reopened.doc.update(phase="stopped", filesystem_pending=False)
                     reopened._write()
+
+    def test_a_failed_directory_sync_after_the_work_settlement_keeps_its_record(self):
+        # Issue #388, the deletion route: the final work root's removal is confirmed before its
+        # settlement is written. A directory sync failing after that replacement leaves the
+        # settled record; the controller itself launches nothing more.
+        Path(self.run_dir, "candidate-data").write_bytes(b"removed by the confirmed cleanup")
+        with self.owner() as owner:
+            owner.prepare_work()
+            self.assertEqual(self.run_execution(owner).cleanup, "confirmed")
+            self.executor.pending = False
+            clearing, failed = [], []
+            actual_fsync, actual_write = os.fsync, owner._write
+            def write():
+                # Only the settlement that clears the work fence meets the fault.
+                if not owner.doc["filesystem_pending"]:
+                    clearing.append(None)
+                return actual_write()
+            def fsync(fd):
+                if clearing and fd == owner.directory and not failed:
+                    failed.append(fd)
+                    raise OSError(errno.EIO, "injected directory sync failure")
+                return actual_fsync(fd)
+            state = {"problems": []}
+            start = time.monotonic()
+            with mock.patch.object(owner, "_write", write), \
+                    mock.patch.object(os, "fsync", fsync):
+                self.assertFalse(telemetrylab._remove_owned(self.executor.directory,
+                    type("Settings", (), {"scratch_owner": owner})(), self.executor, state,
+                    budget.Budget(start + 1, time.monotonic, 0), self.executor.directory))
+            self.assertEqual(len(failed), 1, "the injected sync failure was not reached")
+            self.assertEqual(state["cleanup"], "uncertain")
+            self.assertIn("(directory removed)", state["stopped"])
+            self.assertIn("injected directory sync failure", state["stopped"])
+            self.assertTrue(self.executor.pending, "this controller launches nothing more")
+            self.assertFalse(os.path.lexists(self.executor.directory))
+            with self.owner_state() as doc:
+                self.assertEqual((doc["phase"], doc["filesystem_pending"]), ("stopped", False))
+            before = len(self.calls())
+            self.assertEqual(self.run_execution(owner, label="refused").cleanup, "uncertain")
+            self.assertEqual(len(self.calls()), before)
+        self.assertEqual(self.invoke("ci-scratch", cleanup=True), 0)
+        self.assertFalse(os.path.exists(self.image))
 
     def test_exception_after_container_removal_preserves_work_and_original_failure(self):
         os.rmdir(self.run_dir)
