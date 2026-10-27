@@ -39,7 +39,11 @@ without migration or fallback.
 Retained paths spell complete schema property names, including digits such as `machine.load1`,
 and canonical bounded array indices. Offline resolution consumes the whole path, checks declared
 array bounds and reaches exactly one numeric schema node; partial name matches, undeclared keys
-and malformed paths cannot supply refusal authority. Before converting a bounded original numeric
+and malformed paths cannot supply refusal authority. Online numeric projection observes the same
+array bounds: excess entries cannot supply retained numeric evidence. The complete document still
+passes through ordinary schema admission, which refuses oversized arrays as `refused_document`
+without numeric evidence; no array is truncated into an admitted measurement. In-bound invalid
+values remain subject to numeric refusal. Before converting a bounded original numeric
 token to a float, admission inspects its mantissa's sign and nonzero digits without expanding
 exponents. A negative nonzero physical original is negative even if float conversion rounds it
 to signed zero; any other nonzero original that rounds to zero is unrepresentable. Legitimate

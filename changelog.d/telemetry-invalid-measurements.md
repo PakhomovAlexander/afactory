@@ -12,3 +12,8 @@ canonical bounded paths through the exact schema. Original nonzero tokens cannot
 silently to zero, including negative raw latencies and signed derived figures; signed zero
 remains valid. Regressions cover mixed/all-refused load results, original-byte drain/read
 underflow, masked samples, long exponents, schema parity and offline/upload tampering.
+Online numeric projection now respects the verifier's declared array bounds. Oversized arrays
+remain whole for schema admission and produce ordinary document refusals, preventing retained
+out-of-bound evidence from breaking offline verification or upload. Controller regressions cover
+oversized fixture/measurement arrays and nested intervals, mixed/all-refused results, and invalid
+values at the last legal index.

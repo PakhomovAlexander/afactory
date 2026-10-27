@@ -348,6 +348,11 @@ def _numeric_fields(doc, schema, definitions, path=""):
                                            path + ("." if path else "") + key)
     elif isinstance(doc, list) and "items" in schema:
         for index, value in enumerate(doc):
+            # Evidence must resolve through the same declared bounds offline. The
+            # complete document still goes through ordinary schema admission below;
+            # excess entries are never admitted by truncating selected samples.
+            if index >= schema.get("maxItems", 100000000):
+                break
             yield from _numeric_fields(value, schema["items"], definitions,
                                        "%s[%d]" % (path, index))
     else:

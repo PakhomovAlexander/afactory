@@ -13,6 +13,38 @@ from tests import telemetry_fixtures as fx
 from tests.support import TempDir, read
 
 
+# Schema-bounded arrays with numeric descendants, including a $ref and nested levels.
+BOUNDED_ARRAYS = (
+    ("overhead", ("fixtures",), 3, ("pairs", 0, "off", "wall_ms")),
+    ("read_latency", ("measurements",), 3, ("warm", "latency_ms")),
+    ("overhead", ("fixtures", 0, "interval_pct"), 2, ()),
+    ("overhead", ("drain", "interval_ms"), 2, ()),
+    ("invocation_cost", ("cases", 0, "levels", "off", "wall_interval_pct"), 2, ()),
+    ("invocation_cost", ("cases", 0, "levels", "spans", "wall_interval_pct"), 2, ()),
+)
+
+
+def change_bounded_array(doc, path, bound, suffix, oversized, invalid):
+    array = doc
+    for part in path:
+        array = array[part]
+    assert len(array) == bound
+    if oversized:
+        array.append(copy.deepcopy(array[-1]))
+    index = len(array) - 1
+    if invalid:
+        # Derived intervals allow signed finite values; exceed the token bound there.
+        value = -1 if suffix else -(10 ** 512)
+        parent, key = array, index
+        for part in suffix:
+            parent, key = parent[key], part
+        parent[key] = value
+    field = ""
+    for part in path + (index,) + suffix:
+        field += "[%d]" % part if isinstance(part, int) else ("." if field else "") + part
+    return field
+
+
 class NumericAdmission(TempDir):
     @classmethod
     def setUpClass(cls):
@@ -216,6 +248,26 @@ class NumericAdmission(TempDir):
             with self.subTest(path=path), self.assertRaises(ContractError):
                 telemetrylab.verify_measurement_refusal(run, self.registry)
 
+    def test_oversized_arrays_use_structural_refusal_without_out_of_bound_evidence(self):
+        for experiment, path, bound, suffix in BOUNDED_ARRAYS:
+            for invalid in (False, True):
+                doc = copy.deepcopy(self.documents[experiment])
+                field = change_bounded_array(doc, path, bound, suffix, True, invalid)
+                data = json.dumps(doc).encode()
+                with self.subTest(field=field, invalid=invalid):
+                    with self.assertRaises(ContractError) as caught:
+                        telemetrylab.read_document(experiment, data, "oversized", self.registry)
+                    self.assertNotIsInstance(caught.exception, telemetrylab.MeasurementRefusal)
+                    diagnostic = ("does not match exactly one alternative"
+                                  if path == ("drain", "interval_ms")
+                                  else "item count out of bounds")
+                    self.assertIn(diagnostic, str(caught.exception))
+            # The last legal index is still projected, with exact replayable evidence.
+            doc = copy.deepcopy(self.documents[experiment])
+            field = change_bounded_array(doc, path, bound, suffix, False, True)
+            self.refused(experiment, lambda d: d.update(doc), field,
+                         "negative" if suffix else "token_too_long")
+
     def test_signed_differences_percentages_and_intervals_are_valid(self):
         doc = copy.deepcopy(self.documents["overhead"])
         for fixture in doc["fixtures"]:
@@ -245,6 +297,54 @@ class ControllerRefusals(TempDir):
     def setUp(self):
         TempDir.setUp(self)
         self.binaries = fx.binaries(self)
+
+    def test_bounded_arrays_controller_to_offline_and_upload(self):
+        normal = fx.StandIn(self.binaries)
+        for case, (experiment, path, bound, suffix) in enumerate(BOUNDED_ARRAYS):
+            for oversized, invalid in ((True, True), (True, False), (False, True)):
+                for all_refused in (False, True):
+                    output = "bounds_%d_%d_%d_%d" % (case, oversized, invalid, all_refused)
+                    fields = []
+                    def bad(execution):
+                        outcome = normal.run(execution)
+                        doc = json.loads(outcome.stdout)
+                        fields.append(change_bounded_array(
+                            doc, path, bound, suffix, oversized, invalid))
+                        data = json.dumps(doc).encode()
+                        return telemetryexec.Outcome(0, data, len(data), b"", 0, 2000000)
+                    behavior = {(experiment, "baseline"): bad}
+                    if all_refused:
+                        behavior[(experiment, "candidate")] = bad
+                    with self.subTest(output=output):
+                        result = telemetrylab.run(fx.settings(self,
+                            fx.StandIn(self.binaries, behavior), output=output,
+                            experiments=[experiment], pairs=2, rounds=1))
+                        self.assertEqual(result["status"], "failed" if all_refused else "partial")
+                        self.assertEqual(result["execution"]["cleanup"], "confirmed")
+                        refused = [r for r in result["runs"] if r["status"] == "refused_document"]
+                        self.assertEqual(len(refused), 2 if all_refused else 1)
+                        for run in refused:
+                            self.assertIsNone(run["document"])
+                            self.assertIsNone(run["judgment"])
+                            if oversized:
+                                self.assertIsNone(run["measurement_refusal"])
+                                diagnostic = ("does not match exactly one alternative"
+                                              if path == ("drain", "interval_ms")
+                                              else "item count out of bounds")
+                                self.assertIn(diagnostic, run["detail"])
+                            else:
+                                evidence = run["measurement_refusal"]
+                                self.assertIn(evidence["field"], fields)
+                                self.assertEqual(evidence["reason"],
+                                                 "negative" if suffix else "token_too_long")
+                        self.assertEqual(sum(r["status"] == "ok" for r in result["runs"]),
+                                         0 if all_refused else 1)
+                        if all_refused:
+                            self.assertEqual(result["within"], [])
+                            self.assertEqual(result["comparisons"], [])
+                        self.assertEqual(telemetrylab.verify(self.path(output))[0], result)
+                        self.assertEqual(telemetrylab.admit_for_upload(self.path(output))[0],
+                                         "admitted")
 
     def test_load1_mixed_and_all_refused_results_publish_verify_and_upload(self):
         for all_refused in (False, True):
