@@ -136,6 +136,101 @@ fn register(repo: &Path, id: &str, kind: &str) {
     assert!(added.status.success(), "{}", err(&added));
 }
 
+/// The suggestion path runs before a sandbox exists. A same-size tracked edit forces ordinary
+/// `git status` to hash it and run the filter selected by the committed attributes file.
+#[test]
+fn selector_suggestions_do_not_run_checkout_git_programs() {
+    use std::os::unix::fs::PermissionsExt;
+
+    let root = tempfile::tempdir().unwrap();
+    let root = root.path().canonicalize().unwrap();
+    let repo = onboarded(&root);
+    std::fs::remove_file(repo.join("notes.md")).unwrap();
+    std::fs::write(
+        repo.join(".gitattributes"),
+        "victim.txt filter=evil diff=evil\n",
+    )
+    .unwrap();
+    std::fs::write(repo.join("victim.txt"), "before\n").unwrap();
+    git(&repo, &["add", ".gitattributes", "victim.txt"]);
+    git(&repo, &["commit", "-q", "-m", "hostile attributes"]);
+    register(&repo, "codex-main", "codex");
+    let clean = af(&repo, &["review", "plan", "--json"]);
+    assert_eq!(clean.status.code(), Some(1), "{}", err(&clean));
+    let clean_document: Value = serde_json::from_slice(&clean.stdout).unwrap();
+    assert_eq!(clean_document["cause"], "review_selectors_missing");
+    assert_eq!(clean_document["next_action"], Value::Null);
+
+    let marker = root.join("marker");
+    let script = root.join("evil.sh");
+    std::fs::write(
+        &script,
+        format!(
+            "#!/bin/sh\nprintf 'called:%s\\n' \"$*\" >> '{}'\ncat\n",
+            marker.display()
+        ),
+    )
+    .unwrap();
+    std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o755)).unwrap();
+    let script = script.to_str().unwrap();
+    for key in [
+        "filter.evil.clean",
+        "filter.evil.smudge",
+        "diff.evil.textconv",
+        "core.fsmonitor",
+    ] {
+        git(&repo, &["config", key, script]);
+    }
+    std::fs::write(repo.join("victim.txt"), "after!\n").unwrap();
+    assert!(
+        !marker.exists(),
+        "the fixture itself ran a configured program"
+    );
+
+    for args in [
+        &["review", "plan", "--json"][..],
+        &["review", "run", "--json"][..],
+    ] {
+        let refused = af(&repo, args);
+        assert_eq!(refused.status.code(), Some(1), "{}", err(&refused));
+        let document: Value = serde_json::from_slice(&refused.stdout).unwrap();
+        assert_eq!(document["cause"], "review_selectors_missing", "{document}");
+        assert!(
+            document["next_action"]
+                .as_str()
+                .unwrap()
+                .contains("--policy-rev HEAD --base HEAD --uncommitted"),
+            "{document}"
+        );
+        assert!(!marker.exists(), "{args:?} ran a checkout Git program");
+    }
+    let bare = af(&repo, &["review"]);
+    assert_eq!(bare.status.code(), Some(2), "{}", err(&bare));
+    assert!(
+        err(&bare).contains("--policy-rev HEAD --base HEAD --uncommitted"),
+        "{}",
+        err(&bare)
+    );
+    assert!(!marker.exists(), "bare review ran a checkout Git program");
+
+    let status = Command::new("git")
+        .arg("status")
+        .current_dir(&repo)
+        .output()
+        .unwrap();
+    assert!(status.status.success(), "{status:?}");
+    assert!(
+        marker.exists(),
+        "ordinary git status did not arm the fixture"
+    );
+    assert!(
+        std::fs::read_to_string(marker)
+            .unwrap()
+            .contains("called:\n"),
+        "ordinary git status did not run the clean filter"
+    );
+}
+
 #[test]
 fn review_plan_names_timeout_scope_beside_value() {
     let temp = tempfile::tempdir().unwrap();
