@@ -243,6 +243,9 @@ class HostBackstop(TempDir):
         self.assertIs(caught.exception, interruption)
         self.assertIs(interruption.__cause__, original)
         self.assertTrue(interruption.supervisor_failure.uncertain)
+        # Python 3.9 has no `add_note` (ADR-0162); the note is carried the same way there.
+        self.assertEqual(original.__notes__,
+                         ["Supervisor cancellation unconfirmed: cleanup deadline"])
 
     def slow(self, seconds):
         fake = fake_supervisor(self.path("fake-supervisor"))

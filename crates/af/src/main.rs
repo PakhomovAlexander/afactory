@@ -1653,7 +1653,7 @@ fn main() {
                 let document = error_document::document(prefix, &error, 1, detail.as_ref());
                 println!("{document}");
             }
-            eprintln!("{prefix}: {}", terminal_lines(&error));
+            eprintln!("{}", error_text(prefix, &error, detail.as_ref()));
             1
         }
     };
@@ -4484,6 +4484,23 @@ fn terminal_lines(message: &str) -> String {
         .map(terminal_text)
         .collect::<Vec<_>>()
         .join("\n")
+}
+
+/// `error` as stderr shows it after `prefix`. A refusal ending with the command its document
+/// names (`...; then run `af task plan --file F` again`, the `next_action`) is fitted to the
+/// terminal stderr is by [`human::fit_refusal`], so the command runs as printed; every other
+/// error, and every error on a stream that is no terminal, is printed whole.
+fn error_text(prefix: &str, error: &str, detail: Option<&error_document::Detail>) -> String {
+    detail
+        .and_then(|detail| detail.next_action.as_deref())
+        .filter(|next| error_document::pasteable(next))
+        .zip(human::stderr_columns())
+        .and_then(|(next, width)| {
+            let sentence = error.strip_suffix(&format!(" then run `{next}` again"))?;
+            let head = format!("{prefix}: {}", terminal_lines(sentence));
+            Some(human::fit_refusal(&head, next, width))
+        })
+        .unwrap_or_else(|| format!("{prefix}: {}", terminal_lines(error)))
 }
 
 fn run_report(event: &review_core::RunEvent) -> Result<RunReportPayloadV6, String> {

@@ -21,6 +21,18 @@ fn fixture(
     acceptance: Option<Value>,
     edit: &dyn Fn(&Path),
 ) -> (std::path::PathBuf, std::path::PathBuf, std::path::PathBuf) {
+    fixture_task(root, name, "ticket.json", "ticket.json", acceptance, edit)
+}
+
+/// [`fixture`] for the fixture's Task file `task`, saved as `saved` under `root`.
+fn fixture_task(
+    root: &Path,
+    name: &str,
+    task: &str,
+    saved: &str,
+    acceptance: Option<Value>,
+    edit: &dyn Fn(&Path),
+) -> (std::path::PathBuf, std::path::PathBuf, std::path::PathBuf) {
     let (repo, state) = task_cli::fixture_named(root, name);
     task_cli::load_safe_walls(&repo);
     edit(&repo);
@@ -48,7 +60,7 @@ fn fixture(
         assert!(output.status.success(), "{output:?}");
     }
     let mut ticket: Value =
-        serde_json::from_slice(&std::fs::read(repo.join("ticket.json")).unwrap()).unwrap();
+        serde_json::from_slice(&std::fs::read(repo.join(task)).unwrap()).unwrap();
     task_cli::load_safe_limits(&mut ticket["limits"]);
     match acceptance {
         Some(items) => ticket["acceptance"] = items,
@@ -56,7 +68,7 @@ fn fixture(
             ticket.as_object_mut().unwrap().remove("acceptance");
         }
     }
-    let file = root.join("ticket.json");
+    let file = root.join(saved);
     std::fs::write(&file, serde_json::to_vec_pretty(&ticket).unwrap()).unwrap();
     (repo, state, file)
 }
@@ -318,6 +330,131 @@ fn acceptance_is_refused_where_no_evaluator_could_judge_it() {
         assert_ne!(code, 0, "{acceptance}: {stdout}");
         assert!(stderr.contains(refusal), "{acceptance}: {stderr}");
     }
+}
+
+/// #331: a Review Task file with `acceptance`, refused as the UIX review ran it on 80- and
+/// 100-column terminals, keeps the command that plans the file again on a `next:` line of its
+/// own fitted to the terminal, which pasted as printed is the `--json` document's
+/// `next_action`; that document is the same one a terminal never saw.
+#[test]
+fn a_review_acceptance_refusal_s_next_command_fits_the_terminal() {
+    let root = tempfile::tempdir().unwrap();
+    // The review Pipeline declares the port, so the refusal is the domain's, not the port's.
+    let (_, state, _) = fixture_task(
+        root.path(),
+        "review",
+        "review.json",
+        "review acceptance.json",
+        Some(items()),
+        &|repo| {
+            let path = repo.join(".af/task-packages/fixture/review/pipeline.toml");
+            let text = std::fs::read_to_string(&path).unwrap();
+            let port = "[contract.inputs.acceptance]\nartifact_type = \"af/TaskAcceptance@1\"\n\
+                        cardinality = \"one\"\noptional = true\ncovers = []\n\n\
+                        [contract.inputs.acceptance.affinity]\nkind = \"unbound\"\n\n";
+            let first = "[contract.inputs.history]\n";
+            assert!(text.contains(first), "{text}");
+            std::fs::write(&path, text.replacen(first, &format!("{port}{first}"), 1)).unwrap();
+        },
+    );
+    let args = [
+        "task",
+        "start",
+        "--file",
+        "review acceptance.json",
+        "--repo",
+        "repo",
+        "--state",
+    ];
+    let output = crate::common::af()
+        .current_dir(root.path())
+        .args(args)
+        .arg(&state)
+        .arg("--json")
+        .output()
+        .unwrap();
+    assert_eq!(output.status.code(), Some(1), "{output:?}");
+    let document: Value = serde_json::from_slice(&output.stdout).unwrap();
+    crate::schemas::valid(&crate::schemas::validator("error-v2.json"), &document);
+    let next = document["next_action"].as_str().unwrap();
+    let error = document["error"].as_str().unwrap();
+    assert!(
+        error.starts_with(
+            "Task file review acceptance.json: acceptance: a Task of kind review is judged by a \
+             domain that does not judge acceptance items by their IDs"
+        ) && error.ends_with(&format!("; then run `{next}` again")),
+        "{document}"
+    );
+    assert!(next.chars().count() > 80, "{next}");
+    for columns in [80_u16, 100] {
+        let (code, text) = in_terminal(root.path(), &args, &state, columns);
+        assert_eq!(code, 1, "{text}");
+        assert!(
+            text.lines()
+                .all(|line| line.chars().count() <= usize::from(columns)),
+            "{columns}\n{text}"
+        );
+        let (sentence, command) = text
+            .split_once("\nnext: ")
+            .unwrap_or_else(|| panic!("{text}"));
+        assert_eq!(
+            sentence.split_whitespace().collect::<Vec<_>>().join(" "),
+            format!(
+                "af task: {} then run this command again:",
+                error
+                    .strip_suffix(&format!(" then run `{next}` again"))
+                    .unwrap()
+            ),
+            "{columns}"
+        );
+        assert_eq!(
+            shell_words::split(&command.trim_end().replace("\\\n", "")).unwrap(),
+            shell_words::split(next).unwrap(),
+            "{columns}\n{text}"
+        );
+    }
+}
+
+/// `af ARGS STATE` from `cwd` with every standard stream on a pseudo-terminal `columns` wide,
+/// as a person runs it: the exit code and what the terminal showed.
+fn in_terminal(cwd: &Path, args: &[&str], state: &Path, columns: u16) -> (u32, String) {
+    use portable_pty::{CommandBuilder, PtySize, native_pty_system};
+    use std::io::Read as _;
+
+    let pair = native_pty_system()
+        .openpty(PtySize {
+            rows: 60,
+            cols: columns,
+            pixel_width: 0,
+            pixel_height: 0,
+        })
+        .unwrap();
+    let mut command = CommandBuilder::new(crate::common::af_binary());
+    command.args(args);
+    command.arg(state);
+    command.cwd(cwd);
+    command.env_clear();
+    for (name, value) in crate::common::private_home_env() {
+        command.env(name, value);
+    }
+    command.env("PATH", std::env::var_os("PATH").unwrap_or_default());
+    command.env("AF_SELF_OFFLINE", "1");
+    command.env("GIT_CONFIG_GLOBAL", "/dev/null");
+    if let Some((name, value)) = crate::common::inherited_tmpdir() {
+        command.env(name, value);
+    }
+    let mut child = pair.slave.spawn_command(command).unwrap();
+    drop(pair.slave);
+    let mut reader = pair.master.try_clone_reader().unwrap();
+    let drained = std::thread::spawn(move || {
+        let mut bytes = Vec::new();
+        let _ = reader.read_to_end(&mut bytes);
+        bytes
+    });
+    let status = child.wait().unwrap();
+    drop(pair.master);
+    let text = String::from_utf8_lossy(&drained.join().unwrap()).replace("\r\n", "\n");
+    (status.exit_code(), text)
 }
 
 /// A Pipeline that declares the `acceptance` root port but hands it to no `verify` node delivers

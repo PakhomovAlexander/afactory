@@ -75,6 +75,34 @@ pub(crate) fn fit_on_terminal(line: &str, stderr: bool) -> String {
     }
 }
 
+/// The columns of the terminal stderr is, at least 40 and never held to 100, as
+/// [`fit_on_terminal`] fits; `None` on a stream that is no terminal, whose reader takes each line
+/// whole.
+pub(crate) fn stderr_columns() -> Option<usize> {
+    terminal_columns(std::io::stderr()).map(|columns| columns.max(40))
+}
+
+/// A refusal `head`, whose sentence ends `then run `NEXT` again` with `next` (its document's
+/// `next_action`) cut off, as a terminal `width` columns wide shows it: unchanged when the whole
+/// line fits; else the sentence wrapped at its spaces, ending `then run this command again:`,
+/// and the command on a `next:` line of its own fitted by [`fit_command`], so pasted as printed
+/// it runs (#331).
+pub(crate) fn fit_refusal(head: &str, next: &str, width: usize) -> String {
+    let whole = format!("{head} then run `{next}` again");
+    if !whole.contains('\n') && whole.chars().count() <= width {
+        return whole;
+    }
+    let sentence = format!("{head} then run this command again:")
+        .split('\n')
+        .map(|line| wrap(line, width, 0))
+        .collect::<Vec<_>>()
+        .join("\n");
+    format!(
+        "{sentence}\n{}",
+        fit_command(&format!("next: {next}"), width)
+    )
+}
+
 /// `text` wrapped at spaces to lines of at most `width` columns, every line after the first
 /// indented by `indent` spaces; a line that fits is returned as it is, its spacing kept. A span
 /// between backticks is one word, so a command named in prose is never split across lines; a
@@ -513,6 +541,38 @@ mod tests {
             assert_eq!(words, shell_words::split(&line[9..]).unwrap());
         }
         assert_eq!(fit_command(&"x".repeat(120), 80), "x".repeat(120));
+    }
+
+    /// #331: a Task-file refusal that ends naming its next command, the Review acceptance
+    /// refusal the UIX review printed as one 388-column line, keeps that command on a `next:`
+    /// line of its own fitted to 80 and 100 columns, which a shell reads as the command.
+    #[test]
+    fn a_refusal_s_next_command_fits_the_terminal() {
+        let head = "af task: Task file review acceptance.json: acceptance: a Task of kind review \
+                    is judged by a domain that does not judge acceptance items by their IDs, so \
+                    its evaluator could pass without meeting them; use `acceptance` with an \
+                    `implement` Task, or drop it and state the items in the goal;";
+        let next = "af task plan --file 'review acceptance.json' --repo review-repo --state \
+                    /private/var/folders/xy/T/.tmpAbC/a-long-directory-name/review-state";
+        assert_eq!(
+            fit_refusal("af task: short;", "af task plan --file f", 100),
+            "af task: short; then run `af task plan --file f` again"
+        );
+        for width in [80, 100] {
+            let fitted = fit_refusal(head, next, width);
+            assert!(
+                fitted.lines().all(|line| line.chars().count() <= width),
+                "{width}\n{fitted}"
+            );
+            let (sentence, command) = fitted.split_once("\nnext: ").unwrap();
+            assert_eq!(
+                sentence.split_whitespace().collect::<Vec<_>>().join(" "),
+                format!("{head} then run this command again:")
+            );
+            assert!(command.lines().count() > 1, "{width}\n{fitted}");
+            let words = shell_words::split(&command.replace("\\\n", "")).unwrap();
+            assert_eq!(words, shell_words::split(next).unwrap(), "{width}");
+        }
     }
 
     /// #331 item 11: a Store selector wider than any line, a long `--state` path with a space

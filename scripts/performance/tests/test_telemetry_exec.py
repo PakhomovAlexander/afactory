@@ -488,6 +488,28 @@ class AncestorSubreaper(TempDir):
         self.assertLess(elapsed, 20)
 
 
+def exited_unreaped(pid, bound=10):
+    """Return once our child `pid` has exited, leaving it unreaped for its own parent.
+
+    `os.waitid` is missing on macOS's Python 3.9 (ADR-0162): there the process state `Z`
+    observes the same thing, and a child can only read as a zombie while still unreaped.
+    """
+    if hasattr(os, "waitid"):
+        os.waitid(os.P_PID, pid, os.WEXITED | os.WNOWAIT)
+        return
+    until = time.monotonic() + bound
+    while True:
+        stat = subprocess.run(["ps", "-o", "stat=", "-p", str(pid)], stdout=subprocess.PIPE,
+                              universal_newlines=True, check=False).stdout.strip()
+        if stat.startswith("Z"):
+            return
+        if not stat:
+            raise AssertionError("child %d was reaped before its parent saw it end" % pid)
+        if time.monotonic() >= until:
+            raise TimeoutError("child %d did not exit within %ds" % (pid, bound))
+        time.sleep(0.01)
+
+
 class ContainerInit(TempDir):
     """The stand-in container's init, run here as `docker run` runs it."""
 
@@ -501,7 +523,7 @@ class ContainerInit(TempDir):
         open(stop, "w").close()
 
         def raced(pgid, sent):
-            os.waitid(os.P_PID, pgid, os.WEXITED | os.WNOWAIT)  # exited, still unreaped
+            exited_unreaped(pgid)
             raise ProcessLookupError(errno.ESRCH, "No such process")
 
         argv = ["init", str(read), stop, ended, sys.executable, "-I", "-c", "pass"]

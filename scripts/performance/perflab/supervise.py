@@ -32,7 +32,8 @@ import subprocess
 import time
 
 from . import contracts, limits
-from .values import ContractError, canonical_bytes, format_decimal, loads_strict, require
+from .values import (ContractError, add_note, canonical_bytes, format_decimal, loads_strict,
+                     require)
 
 HOST_MARGIN_SECONDS = 60
 # A cancelled supervisor forwards the signal to its sample, waits a cleanup grace, kills the
@@ -249,7 +250,7 @@ def launch(launcher, request_doc, deadline=None, clock=time.monotonic,
                 supervised = Supervised(result, child_out, child_err,
                     time.monotonic_ns() - launched_ns, err[-STDERR_MAX:])
         except BaseException as cleanup:
-            error.add_note("Supervisor cancellation unconfirmed: %s" % cleanup)
+            add_note(error, "Supervisor cancellation unconfirmed: %s" % cleanup)
             if not isinstance(cleanup, Exception):
                 cleanup.__cause__ = error
                 _exceptional_failure(SupervisorFailure(
