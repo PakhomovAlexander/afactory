@@ -421,6 +421,22 @@ future readers need.
   links](0224-bind-diagnostic-symbol-archives-and-avoid-perf-cache-links.md)
 - [0225 — Declare the replacement hosted cohort from the accepted
   producer](0225-declare-the-replacement-hosted-cohort-from-the-accepted-producer.md)
+- [0227 — Bound guarded experiment consumers to build and instrument
+  inputs](0227-bound-guarded-experiment-consumers-to-build-and-instrument-inputs.md)
+- [0228 — Give the guarded improvement fixture a controlled timing
+  margin](0228-give-the-guarded-improvement-fixture-a-controlled-timing-margin.md)
+- [0229 — Select validation classes and bind release profiles to
+  tags](0229-select-validation-classes-and-bind-release-profiles-to-tags.md)
+- [0230 — Canonicalize owned performance fixtures and model Linux setup
+  explicitly](0230-canonicalize-owned-performance-fixtures-and-model-linux-setup-explicitly.md)
+- [0231 — Run Python performance tests after the real
+  build](0231-run-python-performance-tests-after-the-real-build.md)
+- [0232 — Measure telemetry interruption from the selected fixture
+  boundary](0232-measure-telemetry-interruption-from-the-selected-fixture-boundary.md)
+- [0233 — Select real AF runtime smoke with the perf
+  class](0233-select-real-af-runtime-smoke-with-the-perf-class.md)
+- [0234 — Reconcile validation classes with bounded upstream for
+  CI](0234-reconcile-validation-classes-with-bounded-upstream-for-ci.md)
 - [0240 — Distinguish host-denied Provider probes from incompatible
   CLIs](0240-distinguish-host-denied-provider-probes.md)
 - [0241 — Install an agent entry point from the help

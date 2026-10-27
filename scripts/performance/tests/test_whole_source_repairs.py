@@ -1,5 +1,6 @@
 """Whole-source regressions. All latency figures are synthetic, never measurements."""
 import copy
+from contextlib import contextmanager
 import json
 import os
 from pathlib import Path
@@ -402,15 +403,55 @@ class Deadlines(TempDir):
                                                  tc.TOKEN, api_url=tc.API)
                     self.assertEqual(telemetrycollect.Cycle(self.config, api, gitrefs.Git(self.repo.path),
                                      time.time, tc.NOW).run()['status'], 'ok')
-                entered = []
+                # This fixture tests interruption at a particular boundary, not how
+                # fast Git expansion, installed verification and history admission run.
+                # Execute that preparation for real, outside the measured work interval.
+                # Other tests above retain the real whole-cycle preparation deadline.
+                runs, planned = tc.plan_fixtures(self, [tc.run_entry(1)], artifacts)
+                entered, interrupted = [], []
+                preparation_started = time.monotonic()
+
+                def clock():
+                    return time.monotonic() - entered[0] if entered else 0.0
+
+                api = tc.transport.Collector(tc.FakeApi(runs, planned), tc.REPOSITORY,
+                                             tc.TOKEN, api_url=tc.API, seconds=1.0, clock=clock)
+                limit = budget.Budget(api.deadline, api.clock, 0.4)
+                enforce = limit.enforce
+
+                @contextmanager
+                def collection_boundary(step):
+                    self.assertEqual(step, 'telemetry collection')
+                    self.assertFalse(entered)
+                    yield  # only the selected operation below arms the work timer
+                    self.fail('the stalled operation returned without interruption')
+
                 def stalled(*args, **kwargs):
-                    entered.append(True)
-                    time.sleep(30)
-                started = time.monotonic()
-                with mock.patch.object(owner, name, side_effect=stalled):
-                    doc = self.bounded_cycle(artifacts)
-                self.assertTrue(entered)
-                self.assertLess(time.monotonic() - started, 2.5)
+                    self.assertFalse(entered)
+                    self.assertEqual(clock(), 0.0)
+                    self.assertEqual(limit.deadline, 1.0)
+                    self.assertEqual(limit.reserve, 0.4)
+                    entered.append(time.monotonic())
+                    self.assertGreaterEqual(entered[0], preparation_started)
+                    try:
+                        with enforce('telemetry collection'):
+                            # A real SIGALRM must interrupt this blocked operation;
+                            # neither verification nor admission returns fake success.
+                            threading.Event().wait(30)
+                            self.fail('the real deadline failed to interrupt the operation')
+                    except budget.Interrupted as error:
+                        interrupted.append(str(error))
+                        raise
+
+                with mock.patch.object(limit, 'enforce', collection_boundary), \
+                        mock.patch.object(owner, name, side_effect=stalled):
+                    doc = telemetrycollect.Cycle(self.config, api, gitrefs.Git(self.repo.path),
+                                                 time.time, tc.NOW, budget=limit).run()
+                self.assertEqual(len(entered), 1)
+                self.assertEqual(len(interrupted), 1)
+                self.assertIn("total deadline ended telemetry collection", interrupted[0])
+                self.assertIn(interrupted[0], doc['detail'])
+                self.assertLess(time.monotonic() - entered[0], 2.5)
                 self.assert_incomplete(doc)
                 accepted = os.path.isdir(os.path.join(self.config['root'], 'results', 'tl_1_1'))
                 # history rendering follows atomic import: this is a fully verified result,

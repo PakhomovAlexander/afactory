@@ -74,7 +74,9 @@ def main():
         'tokens': None, 'billed_runner_minutes': None,
     }
     if path := os.getenv('AF_CI_METRICS'):
-        with Path(path).open('a') as stream:
+        metrics = Path(path)
+        metrics.parent.mkdir(parents=True, exist_ok=True)
+        with metrics.open('a') as stream:
             stream.write(json.dumps(record, sort_keys=True) + '\n')
     if summary := os.getenv('GITHUB_STEP_SUMMARY'):
         with Path(summary).open('a') as stream:

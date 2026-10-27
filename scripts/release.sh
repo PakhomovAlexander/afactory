@@ -19,8 +19,10 @@ version=""
 compat=""
 dry_run=0
 yes=0
+profile=full
 while [[ $# -gt 0 ]]; do
   case "$1" in
+    --profile) profile="${2:-}"; shift 2 ;;
     --compat) compat="${2:-}"; shift 2 ;;
     --compat=*) compat="${1#--compat=}"; shift ;;
     --dry-run) dry_run=1; shift ;;
@@ -31,11 +33,14 @@ while [[ $# -gt 0 ]]; do
   esac
 done
 [[ -n "$version" && -n "$compat" ]] || usage
+[[ "$profile" == fast || "$profile" == full ]] || { echo "release: profile must be fast or full" >&2; exit 2; }
 [[ "$version" =~ ^[0-9]+\.[0-9]+\.[0-9]+(-rc\.[0-9]+)?$ ]] || { echo "release: $version is not X.Y.Z or X.Y.Z-rc.N" >&2; exit 2; }
 
 root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd -P)"
 cd "$root"
 repo="$(gh repo view --json nameWithOwner -q .nameWithOwner)"
+# Verify the requested label before creating a branch, changing files or pushing.
+python3 scripts/test-labels.py --check "release:$profile" --repo "$repo"
 current="$(sed -n 's/^version = "\(.*\)"$/\1/p' Cargo.toml | head -1)"
 tag="v$version"
 
@@ -87,7 +92,7 @@ $compat
 $changes
 "
 
-echo "release: $current -> $version on $repo"
+echo "release: $current -> $version on $repo (validation profile: $profile)"
 echo
 echo "$section"
 # The change notes the merged pull requests left in changelog.d/; the release section ends with them.
@@ -138,6 +143,8 @@ if [[ "$yes" -ne 1 ]]; then
   [[ "$answer" == y || "$answer" == Y ]] || { echo "release: left on branch $branch, nothing pushed"; exit 0; }
 fi
 git push -q -u origin "$branch"
-gh pr create --repo "$repo" --base main --head "$branch" --title "release: $tag" --body "$section
+gh pr create --repo "$repo" --base main --head "$branch" --title "release: $tag" --label "release:$profile" --body "$section
 
-Merging this PR tags \`$tag\`; the release workflow checks the tagged commit on Linux and macOS, builds every target, onboards and plans a fresh repository with each binary, signs \`SHA256SUMS\`, and publishes the release."
+Validation profile: **$profile** (labels are frozen in the exact SHA/version-bound tag annotation when this PR merges). Packaged binary/archive/signature smoke always runs.
+
+Merging this PR tags \`$tag\`; the release workflow runs the selected classes on the tagged commit on Linux and macOS, builds every target, onboards and plans a fresh repository with each binary, signs \`SHA256SUMS\`, and publishes the release."
