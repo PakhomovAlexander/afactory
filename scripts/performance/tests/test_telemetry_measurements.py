@@ -121,6 +121,101 @@ class NumericAdmission(TempDir):
         with self.assertRaisesRegex(ContractError, "derived physical median"):
             telemetrylab.admit("overhead", doc, fx.expect("overhead"), self.registry)
 
+    def original(self, experiment, change, token, field, reason=None):
+        doc = copy.deepcopy(self.documents[experiment])
+        change(doc, "ORIGINAL_TOKEN")
+        data = json.dumps(doc).encode().replace(b'"ORIGINAL_TOKEN"', token.encode())
+        if reason is None:
+            return telemetrylab.read_document(experiment, data, "original", self.registry)
+        with self.assertRaises(telemetrylab.MeasurementRefusal) as caught:
+            telemetrylab.read_document(experiment, data, "original", self.registry)
+        self.assertEqual((caught.exception.field, caught.exception.reason), (field, reason))
+        evidence = telemetrylab.measurement_evidence(caught.exception, data)
+        self.assertEqual(evidence["token"], token)
+        self.assertEqual(evidence["token_bytes"], len(token))
+        self.assertEqual(evidence["token_sha256"], sha256_bytes(token.encode()))
+        run = {"experiment": experiment, "round": 0, "side": "baseline",
+               "measurement_refusal": evidence}
+        run["detail"] = telemetrylab.measurement_detail(run, evidence)
+        telemetrylab.verify_measurement_refusal(run, self.registry)
+        return run
+
+    def test_schema_declared_load1_names_round_trip_and_resolve_exactly(self):
+        for experiment in self.documents:
+            for token, reason in (("-0.5", "negative"), ("NaN", "nonfinite"),
+                                  ("1e999", "nonfinite")):
+                with self.subTest(experiment=experiment, token=token):
+                    run = self.original(experiment, lambda d, v: d["machine"].update(load1=v),
+                                        token, "machine.load1", reason)
+                    contracts.TELEMETRY_MEASUREMENT_REFUSAL.validate(
+                        run["measurement_refusal"], "test")
+                    for path in ("machine.load", "machine.load11", "machine.load1.extra",
+                                 "machine..load1", "machine.load1!", "machine.load1\n",
+                                 "machine[0].load1", "machine.load1[0]", "machine." + "a" * 256):
+                        forged = copy.deepcopy(run)
+                        forged["measurement_refusal"]["field"] = path
+                        forged["detail"] = telemetrylab.measurement_detail(
+                            forged, forged["measurement_refusal"])
+                        with self.subTest(path=path), self.assertRaises(ContractError):
+                            telemetrylab.verify_measurement_refusal(forged, self.registry)
+
+    def test_original_underflow_raw_samples_and_signed_derived_fields(self):
+        def cold_sample(doc, value):
+            doc["measurements"][1]["cold"] = copy.deepcopy(doc["measurements"][1]["warm"])
+            doc["measurements"][1]["cold"]["samples_ms"][0] = value
+        targets = [
+            ("overhead", "drain.pairs[0].off_ms",
+             lambda d, v: d["drain"]["pairs"][0].update(off_ms=v), True),
+            ("invocation_cost", "cases[0].levels.off.pairs[0].json.drain_ms",
+             lambda d, v: d["cases"][0]["levels"]["off"]["pairs"][0]["json"].update(
+                 drain_ms=v), True),
+            ("read_latency", "measurements[1].warm.latency_ms",
+             lambda d, v: d["measurements"][1]["warm"].update(latency_ms=v), True),
+            ("read_latency", "measurements[1].warm.samples_ms[0]",
+             lambda d, v: d["measurements"][1]["warm"]["samples_ms"].__setitem__(0, v), True),
+            ("read_latency", "measurements[1].cold.samples_ms[0]", cold_sample, True),
+            ("overhead", "drain.median_ms",
+             lambda d, v: d["drain"].update(median_ms=v), False),
+            ("overhead", "fixtures[0].median_pct",
+             lambda d, v: d["fixtures"][0].update(median_pct=v), False),
+            ("overhead", "fixtures[0].interval_pct[0]",
+             lambda d, v: d["fixtures"][0]["interval_pct"].__setitem__(0, v), False),
+        ]
+        for experiment, field, change, physical in targets:
+            for exponent in ("999", "9" * 480):
+                for sign in ("", "-"):
+                    token = sign + "1e-" + exponent
+                    reason = "negative" if physical and sign else "unrepresentable"
+                    with self.subTest(field=field, token=token):
+                        run = self.original(experiment, change, token, field, reason)
+                        # Rehashed token changes must still replay the exact reason.
+                        evidence = run["measurement_refusal"]
+                        evidence.update(token="-0.0", token_bytes=4,
+                                        token_sha256=sha256_bytes(b"-0.0"))
+                        run["detail"] = telemetrylab.measurement_detail(run, evidence)
+                        with self.assertRaises(ContractError):
+                            telemetrylab.verify_measurement_refusal(run, self.registry)
+            for token in ("0.0", "-0.0", "-0e-" + "9" * 480, "0e" + "9" * 480):
+                self.original(experiment, change, token, field)
+            if not physical:
+                self.original(experiment, change, "-0.125", field)
+
+    def test_array_refusal_paths_are_canonical_bounded_and_declared(self):
+        run = self.original("read_latency", lambda d, v: d["measurements"][1]["warm"][
+            "samples_ms"].__setitem__(0, v), "1e-999",
+            "measurements[1].warm.samples_ms[0]", "unrepresentable")
+        for path in ("measurements[01].warm.samples_ms[0]",
+                     "measurements[3].warm.samples_ms[0]",
+                     "measurements[999999999].warm.samples_ms[0]",
+                     "measurements[-1].warm.samples_ms[0]",
+                     "measurements[1]warm.samples_ms[0]",
+                     "measurements[1].warm.samples_ms[0]junk"):
+            evidence = run["measurement_refusal"]
+            evidence["field"] = path
+            run["detail"] = telemetrylab.measurement_detail(run, evidence)
+            with self.subTest(path=path), self.assertRaises(ContractError):
+                telemetrylab.verify_measurement_refusal(run, self.registry)
+
     def test_signed_differences_percentages_and_intervals_are_valid(self):
         doc = copy.deepcopy(self.documents["overhead"])
         for fixture in doc["fixtures"]:
@@ -150,6 +245,96 @@ class ControllerRefusals(TempDir):
     def setUp(self):
         TempDir.setUp(self)
         self.binaries = fx.binaries(self)
+
+    def test_load1_mixed_and_all_refused_results_publish_verify_and_upload(self):
+        for all_refused in (False, True):
+            output = "load1_all" if all_refused else "load1_mixed"
+            def bad(execution):
+                seed = int(execution.argv[execution.argv.index("--seed") + 1])
+                data = json.dumps(fx.overhead_doc(seed, 3)).encode().replace(
+                    b'"load1": 0.5', b'"load1": -1e999' if all_refused else b'"load1": -0.5')
+                return telemetryexec.Outcome(0, data, len(data), b"", 0, 2000000)
+            behavior = {("overhead", "baseline"): bad}
+            if all_refused:
+                behavior[("overhead", "candidate")] = bad
+            result = telemetrylab.run(fx.settings(self, fx.StandIn(self.binaries, behavior),
+                output=output, experiments=["overhead"], pairs=3, rounds=1))
+            self.assertEqual(result["status"], "failed" if all_refused else "partial")
+            self.assertEqual(result["execution"]["cleanup"], "confirmed")
+            refused = [r for r in result["runs"] if r["measurement_refusal"]]
+            self.assertEqual(len(refused), 2 if all_refused else 1)
+            for run in refused:
+                self.assertEqual(run["measurement_refusal"]["field"], "machine.load1")
+                self.assertEqual(run["measurement_refusal"]["token"],
+                                 "-1e999" if all_refused else "-0.5")
+            self.assertEqual(telemetrylab.verify(self.path(output))[0], result)
+            self.assertEqual(telemetrylab.admit_for_upload(self.path(output))[0], "admitted")
+            for path in ("machine.load11", "machine.load",
+                         "machine.os" if all_refused else "machine.cpus"):
+                forged = copy.deepcopy(result)
+                run = next(r for r in forged["runs"] if r["measurement_refusal"])
+                run["measurement_refusal"]["field"] = path
+                run["detail"] = telemetrylab.measurement_detail(run, run["measurement_refusal"])
+                # For the mixed result cpus resolves, but its integer contract refuses
+                # the fractional token for a different reason. os is never numeric.
+                fx.rewrite(self.path(output), forged)
+                with self.assertRaises(ContractError):
+                    telemetrylab.verify(self.path(output))
+                self.assertEqual(telemetrylab.admit_for_upload(self.path(output))[0], "refused")
+
+    def test_original_underflow_controller_and_rehashed_offline_tampering(self):
+        def bad(execution):
+            seed = int(execution.argv[execution.argv.index("--seed") + 1])
+            token = b"-1e-999" if self.binaries["baseline"] in execution.argv else b"1e-999"
+            data = json.dumps(fx.overhead_doc(seed, 3)).encode().replace(
+                b'"off_ms": 0.5', b'"off_ms": ' + token, 1)
+            return telemetryexec.Outcome(0, data, len(data), b"", 0, 2000000)
+        result = telemetrylab.run(fx.settings(self, fx.StandIn(self.binaries, {
+            ("overhead", side): bad for side in ("baseline", "candidate")}),
+            experiments=["overhead"], pairs=3, rounds=1))
+        self.assertEqual(result["status"], "failed")
+        self.assertEqual([r["measurement_refusal"]["reason"] for r in result["runs"]],
+                         ["negative", "unrepresentable"])
+        self.assertEqual(telemetrylab.verify(self.path("result"))[0], result)
+        self.assertEqual(telemetrylab.admit_for_upload(self.path("result"))[0], "admitted")
+        for token in ("-0.0", "0.0", "0.125"):
+            forged = copy.deepcopy(result)
+            run = forged["runs"][1]
+            run["measurement_refusal"].update(token=token, token_bytes=len(token),
+                                               token_sha256=sha256_bytes(token.encode()))
+            run["detail"] = telemetrylab.measurement_detail(run, run["measurement_refusal"])
+            fx.rewrite(self.path("result"), forged)
+            with self.assertRaises(ContractError):
+                telemetrylab.verify(self.path("result"))
+            self.assertEqual(telemetrylab.admit_for_upload(self.path("result"))[0], "refused")
+
+    def test_underflow_read_sample_mixed_result_verifies_and_uploads(self):
+        normal = fx.StandIn(self.binaries)
+        def bad(execution):
+            outcome = normal.run(execution)
+            doc = json.loads(outcome.stdout)
+            # One bad original among three positive samples: the median cannot mask it.
+            doc["measurements"][1]["warm"]["samples_ms"][0] = "ORIGINAL_TOKEN"
+            data = json.dumps(doc).encode().replace(b'"ORIGINAL_TOKEN"', b"1e-999")
+            return telemetryexec.Outcome(0, data, len(data), b"", 0, 2000000)
+        result = telemetrylab.run(fx.settings(self, fx.StandIn(self.binaries, {
+            ("read_latency", "baseline"): bad}), experiments=["read_latency"], rounds=1))
+        self.assertEqual(result["status"], "partial")
+        evidence = result["runs"][0]["measurement_refusal"]
+        self.assertEqual((evidence["field"], evidence["token"], evidence["reason"]),
+                         ("measurements[1].warm.samples_ms[0]", "1e-999", "unrepresentable"))
+        self.assertEqual(telemetrylab.verify(self.path("result"))[0], result)
+        self.assertEqual(telemetrylab.admit_for_upload(self.path("result"))[0], "admitted")
+        for field in ("measurements[1].warm.samples_ms[1].suffix",
+                      "measurements[3].warm.samples_ms[0]",
+                      "measurements[1].warm.samples_ms[0].suffix"):
+            forged = copy.deepcopy(result)
+            run = forged["runs"][0]
+            run["measurement_refusal"]["field"] = field
+            run["detail"] = telemetrylab.measurement_detail(run, run["measurement_refusal"])
+            with self.assertRaises(ContractError):
+                fx.rewrite(self.path("result"), forged)
+                telemetrylab.verify(self.path("result"))
 
     def test_mixed_runs_retain_originals_and_replay_through_upload_and_history(self):
         def negative(doc):

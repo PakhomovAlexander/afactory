@@ -7,3 +7,8 @@ verification replays retained refusals; upload and collection still require veri
 Older result shapes fail closed without fallback. Stand-in regressions cover admission,
 finalization, tampering and incomplete-result retention; the original hosted failure's field
 remains unknown.
+Refused paths retain complete numeric property names such as `machine.load1` and resolve only
+canonical bounded paths through the exact schema. Original nonzero tokens cannot underflow
+silently to zero, including negative raw latencies and signed derived figures; signed zero
+remains valid. Regressions cover mixed/all-refused load results, original-byte drain/read
+underflow, masked samples, long exponents, schema parity and offline/upload tampering.

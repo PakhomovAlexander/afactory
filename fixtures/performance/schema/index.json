@@ -2427,6 +2427,32 @@
       "valid": false,
       "error": "unknown",
       "shape": true
+    },
+    {
+      "path": "telemetry-result/valid-refused-load1.json",
+      "contract": "telemetry-result",
+      "valid": true
+    },
+    {
+      "path": "telemetry-result/invalid-refusal-leading-zero-index.json",
+      "contract": "telemetry-result",
+      "valid": false,
+      "error": "does not match",
+      "shape": true
+    },
+    {
+      "path": "telemetry-result/invalid-refusal-index-over-bound.json",
+      "contract": "telemetry-result",
+      "valid": false,
+      "error": "does not match",
+      "shape": true
+    },
+    {
+      "path": "telemetry-result/invalid-refusal-path-punctuation.json",
+      "contract": "telemetry-result",
+      "valid": false,
+      "error": "does not match",
+      "shape": true
     }
   ]
 }

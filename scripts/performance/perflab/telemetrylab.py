@@ -363,6 +363,10 @@ def _numeric_fields(doc, schema, definitions, path=""):
 def _numeric_reason(path, token, schema):
     if len(token) > 512:
         return "token_too_long"
+    # Inspect the bounded original mantissa before float parsing loses its sign/value
+    # through underflow. Never expand an exponent or construct an exact huge power.
+    mantissa = re.split("[eE]", token, maxsplit=1)[0]
+    nonzero = any(digit in "123456789" for digit in mantissa)
     value = json.loads(token)
     if isinstance(value, float) and not math.isfinite(value):
         return "nonfinite"
@@ -374,8 +378,10 @@ def _numeric_reason(path, token, schema):
     physical = re.search(r"(?:^|\.)(?:wall_ms|drain_ms|off_ms|spans_ms|latency_ms|"
                          r"peak_rss_bytes|index_bytes|stdout_bytes|segments|load1|"
                          r"samples_ms\[[0-9]+\])$", path)
-    if value < 0 and (physical or schema.get("minimum", -1) >= 0):
+    if token.startswith("-") and nonzero and (physical or schema.get("minimum", -1) >= 0):
         return "negative"
+    if nonzero and value == 0:
+        return "unrepresentable"
     if (path.endswith(".wall_ms") or schema.get("exclusiveMinimum") == 0) and value <= 0:
         return "not_positive"
     try:
@@ -415,6 +421,8 @@ def verify_measurement_refusal(run, registry, root=None):
     """Replay the bounded numeric projection. It has no document or judgment authority."""
     evidence = run["measurement_refusal"]
     path, token = evidence["field"], evidence["token"]
+    require(len(path) <= 256 and re.fullmatch(contracts.TELEMETRY_MEASUREMENT_PATH, path),
+            "measurement refusal: a bounded canonical field path")
     # Resolve schema paths directly without allocating candidate-sized arrays. A candidate
     # cannot smuggle arbitrary keys, names, text, or a signed figure into a raw-metric rule.
     schema = jsonsubset.load(registry["experiments"][run["experiment"]]["schema_file"], root).doc
@@ -429,10 +437,16 @@ def verify_measurement_refusal(run, registry, root=None):
             kinds = node.get("type", ())
             return [node] if "number" in kinds or "integer" in kinds else []
         part, rest = remaining[0], remaining[1:]
-        child = node.get("items") if part.startswith("[") else node.get("properties", {}).get(part)
+        if part.startswith("["):
+            index = int(part[1:-1])
+            if index >= node.get("maxItems", 100000000):
+                return []
+            child = node.get("items")
+        else:
+            child = node.get("properties", {}).get(part)
         return [] if child is None else resolve(child, rest)
 
-    parts = re.findall(r"[a-z_-]+|\[[0-9]+\]", path)
+    parts = re.findall(r"[a-z_][a-z0-9_-]*|\[[0-9]+\]", path)
     nodes = resolve(schema, parts)
     require(len(nodes) == 1, "measurement refusal: field is not a declared numeric field")
     require(evidence["document_bytes"] >= evidence["token_bytes"],

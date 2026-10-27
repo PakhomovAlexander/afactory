@@ -4292,10 +4292,12 @@ TELEMETRY_LOG = Obj(Field("path", REL_PATH), Field("sha256", DIGEST), Field("siz
                     Field("truncated", Bool()))
 # A sanitized projection, never an arbitrary refused document. The numeric token is kept
 # verbatim up to 512 bytes, with the complete token and document identities even at the cap.
+TELEMETRY_MEASUREMENT_PATH = (r"^[a-z_][a-z0-9_-]*(?:\[(?:0|[1-9][0-9]{0,7})\]|"
+                              r"\.[a-z_][a-z0-9_-]*)*$")
 TELEMETRY_MEASUREMENT_REFUSAL = Obj(
     Field("document_sha256", DIGEST), Field("document_bytes", Int(1, 16 * 1024 * 1024)),
     Field("field", Str(min_len=1, max_len=256,
-                       pattern=r"^[a-z_]+(?:\[[0-9]{1,8}\]|\.[a-z_-]+)*$")),
+                       pattern=TELEMETRY_MEASUREMENT_PATH)),
     Field("token", Str(min_len=1, max_len=512,
                        pattern=r"^(?:[-+0-9.eE]+|NaN|Infinity|-Infinity)$")),
     Field("token_bytes", Int(1, 16 * 1024 * 1024)), Field("token_sha256", DIGEST),

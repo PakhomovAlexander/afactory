@@ -36,6 +36,15 @@ Upload and history/collection retain their existing whole-bundle verification an
 screening. Writers, readers, schema and parity fixtures move together; version 1 fails closed,
 without migration or fallback.
 
+Retained paths spell complete schema property names, including digits such as `machine.load1`,
+and canonical bounded array indices. Offline resolution consumes the whole path, checks declared
+array bounds and reaches exactly one numeric schema node; partial name matches, undeclared keys
+and malformed paths cannot supply refusal authority. Before converting a bounded original numeric
+token to a float, admission inspects its mantissa's sign and nonzero digits without expanding
+exponents. A negative nonzero physical original is negative even if float conversion rounds it
+to signed zero; any other nonzero original that rounds to zero is unrepresentable. Legitimate
+signed zero and representable signed derived differences retain their existing contracts.
+
 ## Consequences
 
 Malformed telemetry measurements become diagnostic incomplete results instead of aborting all
