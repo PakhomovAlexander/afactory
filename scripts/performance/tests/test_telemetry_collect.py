@@ -447,6 +447,45 @@ class Collection(TempDir):
                                                                    "results"))
                           if name.startswith(".")], "no staging is left behind")
 
+    def test_partial_and_failed_measurements_are_collected_but_tampered_evidence_is_refused(self):
+        def negative(doc):
+            doc["drain"]["pairs"][0]["off_ms"] = -0.125
+
+        artifacts = {}
+        for run_id, sides in ((101, ("candidate",)), (102, ("baseline", "candidate"))):
+            executor = fx.StandIn(self.binaries, {
+                ("overhead", side): {"extra": negative} for side in sides})
+            with mock.patch.object(fx, "StandIn", return_value=executor):
+                path = self.result(run_id, rounds=1)
+            data = zipped(path)
+            artifacts[run_id] = [artifact_entry(run_id, run_id,
+                                               "perf-telemetry-%d-1" % run_id, data)]
+        doc, _ = self.cycle([run_entry(101), run_entry(102)], artifacts)
+        self.assertEqual(doc["status"], "ok", doc)
+        self.assertTrue(all(run["outcome"] == "collected" for run in doc["runs"]), doc)
+        history = contracts.read_file(os.path.join(self.config["root"], "history.json"),
+                                      "telemetry-history")
+        self.assertEqual({run["result_id"]: run["status"] for run in history["results"]},
+                         {"tl_101_1": "partial", "tl_102_1": "failed"})
+
+        executor = fx.StandIn(self.binaries, {
+            ("overhead", side): {"extra": negative} for side in ("baseline", "candidate")})
+        with mock.patch.object(fx, "StandIn", return_value=executor):
+            path = self.result(103, rounds=1)
+        result = telemetrylab.read_bundle(path)[0]
+        run = result["runs"][0]
+        run["measurement_refusal"].update(token="0.125", token_bytes=5,
+                                          token_sha256=sha256_bytes(b"0.125"))
+        run["detail"] = telemetrylab.measurement_detail(run, run["measurement_refusal"])
+        fx.rewrite(path, result)
+        data = zipped(path)
+        doc, _ = self.cycle([run_entry(103)], {
+            103: [artifact_entry(103, 103, "perf-telemetry-103-1", data)]})
+        self.assertEqual(doc["runs"][0]["outcome"], "refused", doc)
+        history = contracts.read_file(os.path.join(self.config["root"], "history.json"),
+                                      "telemetry-history")
+        self.assertEqual(len(history["results"]), 2)
+
     def test_an_authority_outside_the_trusted_refs_is_refused(self):
         # A result measured under a commit only a side branch holds is never verified as
         # trusted, even with this checkout's own authority files.

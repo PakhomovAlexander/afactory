@@ -439,3 +439,9 @@ future readers need.
   CI](0234-reconcile-validation-classes-with-bounded-upstream-for-ci.md)
 - [0235 — Prove release validation without
   publication](0235-prove-release-validation-without-publication.md)
+- [0236 — Scope class builds to their
+  execution](0236-scope-class-builds-to-their-execution.md)
+- [0237 — Isolate telemetry stall boundaries and shortcut uniform
+  bootstrap](0237-isolate-telemetry-stall-boundaries-and-shortcut-uniform-bootstrap.md)
+- [0238 — Retain refused physical telemetry measurements in incomplete
+  results](0238-retain-refused-physical-telemetry-measurements-in-incomplete-results.md)
