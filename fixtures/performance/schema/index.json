@@ -2389,6 +2389,44 @@
       "valid": false,
       "error": "retired ownership",
       "shape": false
+    },
+    {
+      "path": "telemetry-result/invalid-version.json",
+      "contract": "telemetry-result",
+      "valid": false,
+      "error": "expected af.perf-telemetry-result/2",
+      "shape": true
+    },
+    {
+      "path": "telemetry-result/valid-partial-refused-measurement.json",
+      "contract": "telemetry-result",
+      "valid": true
+    },
+    {
+      "path": "telemetry-result/valid-failed-refused-measurements.json",
+      "contract": "telemetry-result",
+      "valid": true
+    },
+    {
+      "path": "telemetry-result/invalid-refusal-on-success.json",
+      "contract": "telemetry-result",
+      "valid": false,
+      "error": "measurement refusal evidence belongs only",
+      "shape": false
+    },
+    {
+      "path": "telemetry-result/invalid-missing-measurement-refusal.json",
+      "contract": "telemetry-result",
+      "valid": false,
+      "error": "measurement_refusal",
+      "shape": true
+    },
+    {
+      "path": "telemetry-result/invalid-open-measurement-refusal.json",
+      "contract": "telemetry-result",
+      "valid": false,
+      "error": "unknown",
+      "shape": true
     }
   ]
 }

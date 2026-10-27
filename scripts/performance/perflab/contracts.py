@@ -4194,13 +4194,13 @@ def validate_enforcement(doc, where="enforcement.toml"):
 
 
 # Telemetry experiments (ADR-0214) ----------------------------------------------------------
-# af.perf-telemetry-lab/2 is fixtures/performance/telemetry.toml; af.perf-telemetry-result/1 one
+# af.perf-telemetry-lab/2 is fixtures/performance/telemetry.toml; af.perf-telemetry-result/2 one
 # experiment run of a baseline and a candidate binary on one host with this checkout's scripts
 # and fixtures; af.perf-telemetry-history/2 the compatible series across results. Advisory: no
 # verdict, sample or required check reads any of them.
 
 TELEMETRY_LAB_SCHEMA = "af.perf-telemetry-lab/2"
-TELEMETRY_RESULT_SCHEMA = "af.perf-telemetry-result/1"
+TELEMETRY_RESULT_SCHEMA = "af.perf-telemetry-result/2"
 TELEMETRY_HISTORY_SCHEMA = "af.perf-telemetry-history/2"
 # A separate immutable Actions planning artifact, emitted before any candidate execution.
 TELEMETRY_BINDING_SCHEMA = "af.perf-telemetry-binding/1"
@@ -4290,6 +4290,17 @@ TELEMETRY_FIGURES = ("overhead_median_pct", "overhead_upper_pct", "drain_median_
                      "index_bytes")
 TELEMETRY_LOG = Obj(Field("path", REL_PATH), Field("sha256", DIGEST), Field("size", COUNT),
                     Field("truncated", Bool()))
+# A sanitized projection, never an arbitrary refused document. The numeric token is kept
+# verbatim up to 512 bytes, with the complete token and document identities even at the cap.
+TELEMETRY_MEASUREMENT_REFUSAL = Obj(
+    Field("document_sha256", DIGEST), Field("document_bytes", Int(1, 16 * 1024 * 1024)),
+    Field("field", Str(min_len=1, max_len=256,
+                       pattern=r"^[a-z_]+(?:\[[0-9]{1,8}\]|\.[a-z_-]+)*$")),
+    Field("token", Str(min_len=1, max_len=512,
+                       pattern=r"^(?:[-+0-9.eE]+|NaN|Infinity|-Infinity)$")),
+    Field("token_bytes", Int(1, 16 * 1024 * 1024)), Field("token_sha256", DIGEST),
+    Field("reason", Str(enum=("nonfinite", "negative", "not_positive", "not_integer",
+                              "unrepresentable", "token_too_long"))))
 TELEMETRY_RUN = Obj(
     Field("experiment", Str(enum=TELEMETRY_EXPERIMENTS)),
     Field("round", Int(0, TELEMETRY_ROUNDS_MAX - 1)), Field("side", Str(enum=SIDES)),
@@ -4300,6 +4311,7 @@ TELEMETRY_RUN = Obj(
     Field("status", Str(enum=TELEMETRY_RUN_STATUSES)),
     Field("exit_code", Nullable(Int(-255, 255))), Field("wall_ms", Nullable(DECIMAL)),
     Field("document", Nullable(ARTIFACT)), Field("log", Nullable(TELEMETRY_LOG)),
+    Field("measurement_refusal", Nullable(TELEMETRY_MEASUREMENT_REFUSAL)),
     Field("judgment", Nullable(Obj(Field("verdict", Str(enum=TELEMETRY_VERDICTS)),
                                    Field("reasons", Arr(Str(max_len=512), 0, 64))))),
     Field("detail", TEXT))
@@ -4458,8 +4470,10 @@ def validate_telemetry_result(doc, where="result.json"):
         require(run["seed"] == configuration["seed"] + run["round"],
                 at + ".seed: the configuration's seed plus the round, the same for both sides")
         ok = run["status"] == "ok"
-        require(ok == (run["document"] is not None) and (ok <= (run["judgment"] is not None)),
+        require(ok == (run["document"] is not None) and ok == (run["judgment"] is not None),
                 at + ": exactly a run that succeeded holds its document and its judgment")
+        require(run["measurement_refusal"] is None or run["status"] == "refused_document",
+                at + ": measurement refusal evidence belongs only to a refused document")
         require(run["status"] != "not_run" or (run["exit_code"] is None
                                                and run["wall_ms"] is None),
                 at + ": a run that did not run has no exit or wall time")

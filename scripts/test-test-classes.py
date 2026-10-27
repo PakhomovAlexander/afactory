@@ -451,6 +451,147 @@ class SealedEvidence(unittest.TestCase):
                             self.assertEqual(python['command'], ['python3', 'scripts/test-performance.py'])
                             self.assertLess(records.index(build), records.index(python))
 
+    def test_selected_build_receipts_cover_all_variants_before_any_suite(self):
+        # Real native wrapper, Make graph, class runner and receipt writer; only Cargo
+        # and suite payloads are stand-ins. This also exercises hosted direct-class entry.
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            shutil.copy2(ROOT / 'Makefile', root / 'Makefile')
+            shutil.copytree(ROOT / 'scripts', root / 'scripts')
+            for directory in ('.config', 'schemas', '.github'):
+                shutil.copytree(ROOT / directory, root / directory)
+            scripts = root / 'scripts'
+            for name in ('test-class-python.py', 'changelog-notes.py', 'af-pin.py',
+                         'performance/schemas.py', 'performance/cli.py'):
+                (scripts / name).write_text('pass\n')
+            tools = root / 'bin'
+            tools.mkdir()
+            (tools / 'python3').symlink_to(sys.executable)
+            inventory = {'rust-suites': {
+                'review-core': {'testcases': {'functional': {'ignored': False},
+                                              'perf_trace::perf_case': {'ignored': False}}},
+                'review-process': {'testcases': {'e2e_case': {'ignored': False}}},
+                'af::it': {'testcases': {'cli_surface::uix_case': {'ignored': False}}},
+                'review-pipeline::perf_probe': {'testcases': {
+                    'calibration_build_case': {'ignored': False}}}}}
+            tc.write(root / 'inventory.json', inventory)
+            cargo = tools / 'cargo'
+            cargo.write_text(f'#!{sys.executable}\n' + r"""
+import json, os, pathlib, sys
+if sys.argv[1:3] == ['nextest', 'list']:
+    args = sys.argv[1:]
+    variant = ('trace' if 'review-core/perf-trace,review-core/perf-calibration' in args
+               else 'calibration' if '--features' in args else 'default')
+    report = pathlib.Path(os.environ['AF_CHECK_REPORT'])
+    records = [json.loads(line) for line in report.read_text().splitlines()]
+    with open(os.environ['BUILDS'], 'a') as stream:
+        stream.write(json.dumps({'variant': variant, 'records': records}) + '\n')
+    print(pathlib.Path('inventory.json').read_text())
+    print('compiler diagnostic', file=sys.stderr)
+    if os.environ['FAIL_VARIANT'] == variant:
+        sys.exit(19)
+""")
+            cargo.chmod(0o755)
+            (scripts / 'nextest-gate.py').write_text("""
+import os, pathlib, sys, xml.etree.ElementTree as ET
+args = sys.argv[1:]
+expression = args[args.index('-E') + 1]
+if '--features' in args:
+    cases = ([('review-core', 'perf_trace::perf_case')] if 'test(perf_)' in expression
+             else [('review-pipeline::perf_probe', 'calibration_build_case')])
+elif 'review-process' in expression:
+    cases = [('review-process', 'e2e_case')]
+elif 'af::it' in expression:
+    cases = [('af::it', 'cli_surface::uix_case')]
+elif 'functional' in expression:
+    cases = [('review-core', 'functional')]
+else:
+    cases = [('review-core', 'perf_trace::perf_case'),
+             ('review-pipeline::perf_probe', 'calibration_build_case')]
+root = ET.Element('testsuites')
+suite = ET.SubElement(root, 'testsuite')
+for binary, name in cases:
+    ET.SubElement(suite, 'testcase', classname=binary, name=name, time='0.01')
+path = (pathlib.Path(os.environ['AF_GATE_NEXTEST_RUN']) / 'store/ci/junit.xml'
+        if os.getenv('AF_GATE_NEXTEST_RUN') else pathlib.Path('target/nextest/ci/junit.xml'))
+path.parent.mkdir(parents=True, exist_ok=True)
+ET.ElementTree(root).write(path, encoding='unicode')
+""")
+            env = {k: v for k, v in os.environ.items()
+                   if not k.startswith(('AF_', 'GH_', 'GITHUB_', 'CARGO_', 'RUST', 'MAKE'))}
+            report, builds = root / 'check.jsonl', root / 'builds.jsonl'
+            env.update(PATH=str(tools) + os.pathsep + env['PATH'],
+                       AF_GATE_TARGET_DIR=str(root / 'output'), AF_CHECK_REPORT=str(report),
+                       BUILDS=str(builds))
+            full = list(tc.CLASSES)
+            scenarios = [('native', selected, selected[0], failed)
+                         for selected in (['functional'], ['perf'], full)
+                         for failed in (('none', 'default', 'trace', 'calibration')
+                                        if 'perf' in selected else ('none', 'default'))]
+            # Hosted jobs retain the full plan in receipts but compile only their class.
+            # A broken perf variant cannot block any hosted non-perf job.
+            scenarios += [('hosted', full, kind, failed) for kind in tc.CLASSES
+                          for failed in ('none', 'default', 'trace', 'calibration')]
+            for entry, selected, kind, failed in scenarios:
+                with self.subTest(entry=entry, selected=selected, kind=kind, failed=failed):
+                    report.unlink(missing_ok=True)
+                    builds.unlink(missing_ok=True)
+                    shutil.rmtree(root / 'output', ignore_errors=True)
+                    out = root / 'output/hosted'
+                    plan = tc.resolve(['test:' + c for c in selected])
+                    tc.write(root / 'plan.json', plan)
+                    env['FAIL_VARIANT'] = failed
+                    command = (['bash', 'scripts/verify.sh', '--test-plan', str(root / 'plan.json')]
+                               if entry == 'native' else [sys.executable, 'scripts/test-classes.py',
+                               'run', '--plan', str(root / 'plan.json'), '--class', kind,
+                               '--output', str(out)])
+                    result = subprocess.run(command, cwd=root, env=env, capture_output=True,
+                                            text=True, timeout=60)
+                    includes_perf = 'perf' in selected if entry == 'native' else kind == 'perf'
+                    required = ['default', 'trace', 'calibration'] if includes_perf else ['default']
+                    failed_required = failed in required
+                    self.assertEqual(result.returncode == 0, not failed_required,
+                                     result.stdout + result.stderr)
+                    records = [json.loads(line) for line in report.read_text().splitlines()]
+                    compiled = [json.loads(line) for line in builds.read_text().splitlines()]
+                    # At each compilation in the first class there is still no build
+                    # receipt, including when compiling its last feature variant.
+                    variants = required
+                    if failed_required:
+                        variants = variants[:variants.index(failed) + 1]
+                    self.assertEqual([r['variant'] for r in compiled[:len(variants)]], variants)
+                    for r in compiled[:len(variants)]:
+                        self.assertFalse(any(s['stage'] == 'build' for s in r['records']))
+                    build = next(r for r in records if r['label'] == 'class-build')
+                    self.assertEqual(build['stage'], 'build')
+                    if failed_required:
+                        self.assertNotEqual(build['exit_code'], 0)
+                        # execute's outer class interval records its failure too;
+                        # it must not hide a suite start or claim class success.
+                        test_steps = [r for r in records if r['stage'] == 'tests']
+                        self.assertTrue(all(r['label'] == 'class-' + selected[0]
+                                            and r['exit_code'] != 0 for r in test_steps))
+                        self.assertFalse(list((root / 'output').rglob('receipt.json')))
+                        self.assertFalse(any(r['stage'] == 'build' and r['exit_code'] == 0
+                                             for r in records))
+                        continue
+                    if entry == 'hosted':
+                        self.assertEqual([r['variant'] for r in compiled], required)
+                    self.assertEqual(build['exit_code'], 0)
+                    suites = [r for r in records if r['stage'] == 'tests']
+                    self.assertTrue(suites)
+                    self.assertTrue(all(records.index(r) > records.index(build) for r in suites))
+                    self.assertIn('compiler diagnostic', result.stderr)
+                    inventories = list((root / 'output').rglob('nextest-list.json'))
+                    self.assertTrue(inventories)
+                    self.assertTrue(all(tc.read(p) == inventory for p in inventories))
+                    receipts = list((root / 'output').rglob('receipt.json'))
+                    self.assertEqual(len(receipts), len(selected) if entry == 'native' else 1)
+                    for receipt in receipts:
+                        self.assertEqual(tc.read(receipt)['plan'], plan)
+                    for p in (root / 'output').rglob('feature-*-list.json'):
+                        self.assertEqual(tc.read(p), inventory)
+
     def test_fresh_base_workflow_entry_records_timing_without_a_target_directory(self):
         workflow = (ROOT / '.github/workflows/validate.yml').read_text()
         base = workflow.split('\n  base:\n', 1)[1].split('\n  classes:\n', 1)[0]
@@ -556,6 +697,21 @@ class SealedEvidence(unittest.TestCase):
 
 
 class Catalog(unittest.TestCase):
+    def test_build_scope_does_not_relax_plan_or_class_admission(self):
+        from unittest import mock
+
+        plan = tc.resolve(['test:functional'])
+        tampered = copy.deepcopy(plan)
+        tampered['selected'].append('perf')
+        with mock.patch.object(tc.subprocess, 'run') as cargo:
+            for value, kind, scope in ((plan, 'perf', 'class'), (plan, 'perf', 'plan'),
+                                       (tampered, 'functional', 'class'),
+                                       (tampered, 'functional', 'plan'),
+                                       (plan, 'functional', 'unknown')):
+                with self.subTest(kind=kind, scope=scope), self.assertRaises(ValueError):
+                    tc.build_inventory(value, kind, Path('unused'), scope)
+            cargo.assert_not_called()
+
     def test_gate_owner_is_always_on_and_precedes_selected_cargo_inventory(self):
         cat = tc.catalog()
         self.assertEqual(cat['scripts']['test-gate-owner.py'], 'functional')
@@ -564,7 +720,7 @@ class Catalog(unittest.TestCase):
                                                 'telemetry-runtime-smoke': 'perf'})
         source = (ROOT / 'scripts/test-classes.py').read_text()
         runner = source[source.index('def run_class('):source.index('def main(')]
-        self.assertLess(runner.index("'test-gate-owner.py'"), runner.index("['cargo', 'nextest', 'list'"))
+        self.assertLess(runner.index("'test-gate-owner.py'"), runner.index("'build-inventory'"))
         recipes = (ROOT / 'Makefile').read_text()
         self.assertIn('gate-owner python3 scripts/test-gate-owner.py', recipes.split('preflight-check:', 1)[1])
         self.assertIn('test-gate-owner.py', recipes.split('base-check: release-check', 1)[1])

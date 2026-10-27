@@ -21,6 +21,12 @@ CLASSES = ('functional', 'e2e', 'uix', 'perf')
 FAST = list(CLASSES[:3])
 SCHEMA = 'af.test-plan/1'
 BINDING = 'af.release-tests/1'
+PERF_VARIANTS = (
+    ('trace', 'review-core/perf-trace,review-core/perf-calibration',
+     'binary_id(=review-core) & test(perf_)'),
+    ('calibration', 'review-pipeline/perf-calibration',
+     'binary_id(=review-pipeline::perf_probe) & test(calibration_build)'),
+)
 
 
 def read(path):
@@ -559,7 +565,32 @@ def call(command, label, stage='tests'):
                     label, *command], check=True, cwd=ROOT)
 
 
-def run_class(plan, kind, out, threads):
+def build_inventory(plan, kind, out, build_scope):
+    """Compile the explicit execution scope before reporting successful build completion.
+
+    Native execution needs the entire plan before its first build receipt starts the test
+    allowance. Independent hosted jobs need only their own class's variants. Keep Cargo's
+    JSON stdout separate from ci-step's human output.
+    Children inherit the gate's process group and supervisor deadline as before.
+    """
+    validate_plan(plan)
+    if kind not in plan['selected']:
+        raise ValueError(f'{kind} is NOT RUN in this plan')
+    if build_scope not in ('class', 'plan'):
+        raise ValueError('unknown build scope')
+    selected = plan['selected'] if build_scope == 'plan' else [kind]
+    variants = [('nextest-list.json', [])]
+    if 'perf' in selected:
+        variants += [(f'feature-{label}-list.json', ['--features', features])
+                     for label, features, _ in PERF_VARIANTS]
+    for filename, arguments in variants:
+        with (out / filename).open('w') as stream:
+            subprocess.run(['cargo', 'nextest', 'list', '--workspace', '--locked',
+                            *arguments, '--message-format', 'json'],
+                           stdout=stream, check=True, cwd=ROOT)
+
+
+def run_class(plan, kind, out, threads, build_scope='class'):
     validate_plan(plan)
     audit_source()
     if kind not in plan['selected']:
@@ -572,9 +603,9 @@ def run_class(plan, kind, out, threads):
     call([sys.executable, 'scripts/test-class-python.py', 'test-gate-owner.py',
           str(out / 'test-gate-owner.py.xml')], 'gate-owner', 'preflight')
     # Every class audits the whole inventory, even if its own selection is small.
-    with (out / 'nextest-list.json').open('w') as stream:
-        subprocess.run(['cargo', 'nextest', 'list', '--workspace', '--locked', '--message-format', 'json'],
-                       stdout=stream, check=True, cwd=ROOT)
+    call([sys.executable, str(Path(__file__)), 'build-inventory',
+          '--plan', str(out / 'plan.json'), '--class', kind, '--build-scope', build_scope,
+          '--output', str(out)], 'class-build', 'build')
     entries = partition(read(out / 'nextest-list.json'))
     write(out / 'inventory.json', entries)
     expression = filterset(entries, [kind])
@@ -609,15 +640,7 @@ def run_class(plan, kind, out, threads):
             raise ValueError(f'{kind}: no runnable Rust tests')
         rust_run(['-E', expression], f'rust-{kind}', out / 'rust.xml', expected)
         if kind == 'perf':
-            for label, features, expression in [
-                    ('trace', 'review-core/perf-trace,review-core/perf-calibration',
-                     'binary_id(=review-core) & test(perf_)'),
-                    ('calibration', 'review-pipeline/perf-calibration',
-                     'binary_id(=review-pipeline::perf_probe) & test(calibration_build)')]:
-                with (out / f'feature-{label}-list.json').open('w') as stream:
-                    subprocess.run(['cargo', 'nextest', 'list', '--workspace', '--locked',
-                                    '--features', features, '--message-format', 'json'],
-                                   stdout=stream, check=True, cwd=ROOT)
+            for label, features, expression in PERF_VARIANTS:
                 feature_entries = partition(read(out / f'feature-{label}-list.json'))
                 binary, pattern = ('review-core', 'perf_') if label == 'trace' else (
                     'review-pipeline::perf_probe', 'calibration_build')
@@ -673,6 +696,12 @@ def main():
     run.add_argument('--class', dest='kind', choices=CLASSES, required=True)
     run.add_argument('--output', required=True)
     run.add_argument('--threads', type=int, default=max(4, (os.cpu_count() or 4) // 2))
+    run.add_argument('--build-scope', choices=('class', 'plan'), default='class')
+    build = sub.add_parser('build-inventory')
+    build.add_argument('--plan', required=True)
+    build.add_argument('--output', required=True)
+    build.add_argument('--class', dest='kind', choices=CLASSES, required=True)
+    build.add_argument('--build-scope', choices=('class', 'plan'), required=True)
     execute = sub.add_parser('execute')
     execute.add_argument('--plan', required=True)
     execute.add_argument('--threads', type=int, default=4)
@@ -731,7 +760,10 @@ def main():
     elif args.command == 'inventory':
         write(args.output, partition(read(args.path)))
     elif args.command == 'run':
-        run_class(read(args.plan), args.kind, Path(args.output).resolve(), args.threads)
+        run_class(read(args.plan), args.kind, Path(args.output).resolve(), args.threads,
+                  args.build_scope)
+    elif args.command == 'build-inventory':
+        build_inventory(read(args.plan), args.kind, Path(args.output), args.build_scope)
     elif args.command == 'execute':
         plan = validate_plan(read(args.plan))
         evidence_root = (Path(os.environ['AF_GATE_NEXTEST_RUN']) / 'classes'
@@ -739,7 +771,7 @@ def main():
         for kind in plan['selected']:
             call([sys.executable, str(Path(__file__)), 'run', '--plan', args.plan,
                   '--class', kind, '--output', str(evidence_root / kind),
-                  '--threads', str(args.threads)], 'class-' + kind)
+                  '--threads', str(args.threads), '--build-scope', 'plan'], 'class-' + kind)
             print(summary(read(evidence_root / kind / 'report.json')))
         if 'e2e' in plan['selected']:
             call(['make', 'review-kernel-container-probes'], 'container-probes')

@@ -202,6 +202,12 @@ contribute to the observed command envelope, with their cost reported separately
 `verify.sh` retains the native ownership wrapper; `verify-body.sh` owns the complete gate body.
 With no arguments it runs full `make check`; explicit `--test-plan PLAN.json` selects
 `check-classes`, keeping its evidence beneath the existing private gate output.
+Native `execute` explicitly passes `--build-scope plan`: every selected variant compiles before
+the first successful build-stage receipt. Independent hosted `run` defaults to
+`--build-scope class`: functional, e2e and uix compile the default workspace inventory only,
+while perf also compiles both feature variants before its build receipt. Both scopes retain
+the exact original plan and full inventory audit; a required build failure prevents suite
+execution and successful build/class receipts ([ADR-0236](adr/0236-scope-class-builds-to-their-execution.md)).
 Under a sealed native AF gate, base Python JUnit writes beneath
 `AF_GATE_NEXTEST_RUN/base-evidence`; ordinary writable checkouts use `target/base-evidence`. Policy
 tests use private temporary directories outside the source. A chmod-sealed, unprivileged regression

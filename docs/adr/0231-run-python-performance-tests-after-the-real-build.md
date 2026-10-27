@@ -1,6 +1,7 @@
 # ADR-0231: Run Python performance tests after the real build
 
-**Status:** accepted (2026-10-26)
+**Status:** accepted (2026-10-26); selected-class build scope refined by
+[ADR-0236](0236-scope-class-builds-to-their-execution.md).
 
 ## Context
 
@@ -38,3 +39,16 @@ Stand-in receipts are isolated fixture output, never gate completion evidence.
 The full laboratory suite consumes the existing test allowance after a real Rust build. A
 slow or failed suite can still fail the gate; no completed full run is inferred from focused
 policy tests. Independent gate, review and evaluation remain required on the sealed candidate.
+
+## Amendment (2026-10-27): selected native builds
+
+Selected `check-classes` gates record the inventory compilation through `ci-step.py` as
+`class-build`, `stage=build`. The recorded command captures nextest's JSON stdout in inventory
+files, leaving compiler diagnostics on stderr. Before reporting success it compiles the default
+workspace and, when the plan selects perf, both feature variants, even when another class runs
+first. Suites consume those inventories after the build receipt. A failed compilation stops
+before suite execution and cannot emit a successful build or class receipt. Hosted direct-class
+runs use the same path; the full native Make target retains its existing ordering. Process groups,
+external supervision and deadlines remain unchanged. Focused fixtures exercise the real wrapper,
+Make graph, class runner and receipt writer with stand-in compilation and suite payloads; they do
+not establish a complete native verification pass.
