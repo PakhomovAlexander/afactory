@@ -6,6 +6,7 @@ import itertools
 import json
 import os
 import shutil
+import stat
 from pathlib import Path
 import subprocess
 import sys
@@ -18,6 +19,14 @@ ROOT = Path(__file__).resolve().parent.parent
 spec = importlib.util.spec_from_file_location('testclasses', ROOT / 'scripts/test-classes.py')
 tc = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(tc)
+
+
+def user_writable(root):
+    # copy2/copytree keep a sealed source's read-only modes; a fixture that writes
+    # stand-ins into its copy needs the owner write bit back. Symlinks are not followed.
+    for path in [root, *(Path(d) / n for d, dirs, files in os.walk(root) for n in dirs + files)]:
+        if not path.is_symlink():
+            path.chmod(path.stat().st_mode | stat.S_IWUSR)
 
 
 class Selection(unittest.TestCase):
@@ -460,6 +469,7 @@ class SealedEvidence(unittest.TestCase):
             shutil.copytree(ROOT / 'scripts', root / 'scripts')
             for directory in ('.config', 'schemas', '.github'):
                 shutil.copytree(ROOT / directory, root / directory)
+            user_writable(root)
             scripts = root / 'scripts'
             for name in ('test-class-python.py', 'changelog-notes.py', 'af-pin.py',
                          'performance/schemas.py', 'performance/cli.py'):
