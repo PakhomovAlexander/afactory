@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """Exercise the real release resolver with local repositories; no GitHub side effects."""
 import os
+import copy
 import json
 from pathlib import Path
 import shutil
@@ -177,6 +178,51 @@ fi''')
             self.assertEqual(result.returncode, 0, result.stderr)
             self.assertEqual(json.loads(values['test_plan']), plan)
 
+    def test_unlabeled_merged_release_pr_keeps_fast_selection_after_tagging(self):
+        result, values = self.resolve(labels=[])
+        self.assertEqual(result.returncode, 0, result.stderr)
+        plan = json.loads(values['test_plan'])
+        self.assertEqual(plan['context'], 'release_pr')
+        self.assertEqual(plan['profile'], 'fast')
+        calls = self.api_log.read_text()
+        for ref_type in ('branch', 'tag'):
+            result, retry = self.resolve(ref_type, 'v1.0.1' if ref_type == 'tag' else 'main',
+                                         labels=['release:full'])
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertEqual(json.loads(retry['test_plan']), plan)
+        self.assertEqual(self.api_log.read_text(), calls)
+
+    def test_full_merged_release_pr_keeps_full_selection_after_tagging(self):
+        result, values = self.resolve(labels=['release:full'])
+        self.assertEqual(result.returncode, 0, result.stderr)
+        plan = json.loads(values['test_plan'])
+        self.assertEqual(plan['context'], 'release_pr')
+        self.assertEqual(plan['selected'], ['functional', 'e2e', 'uix', 'perf'])
+        calls = self.api_log.read_text()
+        for ref_type in ('branch', 'tag'):
+            result, retry = self.resolve(ref_type, 'v1.0.1' if ref_type == 'tag' else 'main',
+                                         labels=[])
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertEqual(json.loads(retry['test_plan']), plan)
+        self.assertEqual(self.api_log.read_text(), calls)
+
+    def test_prior_binding_version_on_matching_tag_fails_closed_without_api(self):
+        result, _ = self.resolve(labels=[])
+        self.assertEqual(result.returncode, 0, result.stderr)
+        tag = 'refs/tags/v1.0.1'
+        binding = json.loads(self.git('for-each-ref', '--format=%(contents)', tag))
+        binding['schema'] = 'af.release-tests/1'
+        binding['plan']['schema'] = 'af.test-plan/1'
+        self.git('push', 'origin', ':' + tag)
+        self.git('tag', '-d', 'v1.0.1')
+        self.git('tag', '-a', 'v1.0.1', '-m', json.dumps(binding))
+        self.git('push', 'origin', tag)
+        calls = self.api_log.read_text()
+        result, _ = self.resolve('tag', 'v1.0.1', pages='error')
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn('invalid release selection annotation', result.stderr)
+        self.assertEqual(self.api_log.read_text(), calls)
+
     def test_merge_commit_binds_the_merged_release_pr(self):
         self.git('branch', 'release/v1.0.1')
         self.git('checkout', '--detach', self.base)
@@ -210,7 +256,7 @@ fi''')
                          ['functional', 'e2e', 'uix', 'perf'])
         self.assertFalse(self.api_log.exists())
         self.git('tag', '-d', 'v1.0.1')
-        stale = {'schema': 'af.release-tests/1', 'sha': self.base, 'version': '1.0.0',
+        stale = {'schema': 'af.release-tests/2', 'sha': self.base, 'version': '1.0.0',
                  'source_pr': None, 'plan': {}}
         self.git('tag', '-a', 'v1.0.1', '-m', json.dumps(stale))
         self.git('remote', 'set-url', 'origin', str(self.root / 'empty.git'))
@@ -280,6 +326,37 @@ fi''')
             self.assertNotEqual(result.returncode, 0)
             self.assertEqual(self.git('tag', '--list'), '')
             self.assertEqual(self.git('ls-remote', '--tags', 'origin'), '')
+
+    def test_frozen_binding_refuses_sha_version_catalog_and_tag_target_mismatches(self):
+        result, _ = self.resolve(labels=['release:fast'])
+        self.assertEqual(result.returncode, 0, result.stderr)
+        original = json.loads(self.git('for-each-ref', '--format=%(contents)', 'refs/tags/v1.0.1'))
+        # Only disposable local repositories: keep the resolver's remote lookup empty so the
+        # production annotation reader, rather than tag-object race detection, judges each case.
+        empty = self.root / 'empty.git'
+        self.git('init', '--bare', str(empty))
+        self.git('remote', 'set-url', 'origin', str(empty))
+        for field, value, diagnostic in (
+                ('sha', self.base, 'SHA/version mismatch'),
+                ('version', '9.9.9', 'SHA/version mismatch'),
+                ('catalog_sha256', '0' * 64, 'resolver/catalog'),
+                ('tag_target', self.base, 'triggering commit')):
+            with self.subTest(field=field):
+                binding = copy.deepcopy(original)
+                target = self.release
+                if field == 'catalog_sha256':
+                    binding['plan'][field] = value
+                elif field == 'tag_target':
+                    target = value
+                else:
+                    binding[field] = value
+                self.git('tag', '-d', 'v1.0.1')
+                self.git('tag', '-a', 'v1.0.1', '-m', json.dumps(binding), target)
+                result, values = self.resolve('tag', 'v1.0.1', pages='error')
+                self.assertNotEqual(result.returncode, 0)
+                self.assertIn(diagnostic, result.stderr)
+                self.assertNotIn('test_plan', values)
+                self.assertEqual(self.git('--git-dir=' + str(empty), 'tag', '--list'), '')
 
     def test_lightweight_manual_tag_defaults_full(self):
         self.git('tag', 'v1.0.1')

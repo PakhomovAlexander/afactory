@@ -11,6 +11,10 @@ verification only under the exact measurement authority, and the durable history
 import copy
 import json
 import os
+import random
+import statistics
+import unittest
+from unittest import mock
 import shutil
 
 from perflab import contracts, telemetryexec, telemetrylab, tomlfile
@@ -571,3 +575,45 @@ class Registry(TempDir):
         self.assertEqual(first, telemetrylab.configuration(registry, "pr"))
         self.assertNotEqual(first["digest"],
                             telemetrylab.configuration(registry, "pr", pairs=4)["digest"])
+
+
+class BootstrapEquivalence(unittest.TestCase):
+    @staticmethod
+    def literal(values, seed, label):
+        # Independent copy of the original protocol: never lower its resample count.
+        rng = random.Random(f'{seed}:{label}')
+        count = len(values)
+        medians = sorted(statistics.median([values[rng.randrange(count)] for _ in range(count)])
+                         for _ in range(10000))
+        return [round(medians[250], 3), round(medians[9749], 3)]
+
+    def test_uniform_and_general_inputs_equal_the_literal_10000_resamples(self):
+        module = telemetrylab.script_module("scripts/telemetry-overhead.py")
+        self.assertEqual(module.RESAMPLES, 10000)
+        inputs = ([0.0], [-0.0], [0.0] * 20, [-0.0] * 20,
+                  [-1.23456] * 3, [2.34567] * 20, [7] * 4,
+                  [-4.5, 0.0, 1.25, 8.75], [0.0, -0.0, 0.0],
+                  [1, 1.0], [1.0001, 1.0002, 1.0003],
+                  [-9.0, -2.0, -2.0, 0.0, 3.0])
+        for values in inputs:
+            for seed, label in ((0, "zero"), (20261021, "drain"), (-17, "signed")):
+                with self.subTest(values=values, seed=seed, label=label):
+                    # JSON also observes the sign of zero and integer/float differences.
+                    self.assertEqual(json.dumps(module.bootstrap_interval(values, seed, label)),
+                                     json.dumps(self.literal(values, seed, label)))
+
+    def test_uniform_shortcut_avoids_resampling_but_general_input_keeps_the_protocol(self):
+        module = telemetrylab.script_module("scripts/telemetry-overhead.py")
+        original = module.random.Random
+        with mock.patch.object(module.random, "Random", wraps=original) as seeded:
+            self.assertEqual(module.bootstrap_interval([1.25] * 20, 123, "same"), [1.25, 1.25])
+            seeded.assert_not_called()
+        for values in ([0.0, 1.0], [0.0, -0.0], [1, 1.0]):
+            with self.subTest(values=values):
+                rng = original("123:general")
+                with mock.patch.object(rng, "randrange", wraps=rng.randrange) as draw, \
+                        mock.patch.object(module.random, "Random", return_value=rng) as seeded:
+                    result = module.bootstrap_interval(values, 123, "general")
+                seeded.assert_called_once_with("123:general")
+                self.assertEqual(draw.call_count, 10000 * len(values))
+                self.assertEqual(json.dumps(result), json.dumps(self.literal(values, 123, "general")))

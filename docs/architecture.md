@@ -309,7 +309,8 @@ outside `make check` because a missing daemon must be a hard failure there, neve
 disguised as success.
 
 This repository's local Task gate selects functional, e2e and uix through
-`scripts/verify.sh --profile fast`; CI gate pull requests and releases run full.
+`scripts/verify.sh --profile fast`, as every pull request does by default (ADR-0239); the full
+check remains in `make check`, main validation and unbound releases.
 
 The distinction is enforced, not documented. Pipeline format v3 requires an explicit `[gate]`
 Execution Binding. `provider = "container"` requires an OCI image pinned by digest and can

@@ -36,7 +36,7 @@ the existing assertions, measurement budgets, deadlines and repetition count.
 
 The measurement's own regression is caught by the manual run and by Performance workflows that
 measure releases, not by a pull request gate. The build-free baseline refusal paths remain in the
-perf gate; the measured candidate refusals run manually. The gate pull request and
+perf gate; the measured candidate refusals run manually. A `release:full` pull request and
 `make check-full` are expected to be about 16 to 19 minutes shorter, based on
 the observed runtime of the former combined test; this is an estimate, not a new measured result.
 No persisted or printed contract changes.

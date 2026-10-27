@@ -1,6 +1,7 @@
 schema = "af.code-task-policy/1"
 # The kernel's own Task gate runs the fast validation profile (functional, e2e, uix)
-# with a stable external target dir. CI gate pull requests and releases run the full check.
+# with a stable external target dir. Every pull request defaults to the same fast selection
+# (ADR-0239); `make check`, main validation and unbound releases run the full check.
 check_wall_ms = 5400000
 require_container = false
 

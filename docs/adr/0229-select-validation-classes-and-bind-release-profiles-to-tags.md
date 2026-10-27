@@ -1,6 +1,6 @@
 # ADR-0229: Select validation classes and bind release profiles to tags
 
-**Status:** accepted (2026-10-25)
+**Status:** accepted (2026-10-25); gate/release PR and release-preparation defaults superseded in part by [ADR-0239](0239-default-every-pull-request-to-fast-validation.md).
 
 ## Context
 

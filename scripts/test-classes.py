@@ -19,8 +19,14 @@ ROOT = Path(__file__).resolve().parent.parent
 CATALOG = ROOT / '.config/test-classes.json'
 CLASSES = ('functional', 'e2e', 'uix', 'perf')
 FAST = list(CLASSES[:3])
-SCHEMA = 'af.test-plan/1'
-BINDING = 'af.release-tests/1'
+SCHEMA = 'af.test-plan/2'
+BINDING = 'af.release-tests/2'
+PERF_VARIANTS = (
+    ('trace', 'review-core/perf-trace,review-core/perf-calibration',
+     'binary_id(=review-core) & test(perf_)'),
+    ('calibration', 'review-pipeline/perf-calibration',
+     'binary_id(=review-pipeline::perf_probe) & test(calibration_build)'),
+)
 
 
 def read(path):
@@ -61,7 +67,7 @@ def schema_documents():
                'ignored': mapping({'enum': ['live-container', 'namespace-child',
                                            'manual-measurement', 'subprocess-helper']})})
     plan = obj({'schema': {'const': SCHEMA}, 'profile': {'enum': ['full', 'fast', 'custom']},
-                'context': {'enum': ['pr', 'gate', 'local', 'release']}, 'sha': nullable, 'version': nullable,
+                'context': {'enum': ['pr', 'gate', 'release_pr', 'local', 'release']}, 'sha': nullable, 'version': nullable,
                 'labels': names, 'selected': {'type': 'array', 'items': kind,
                                              'minItems': 1, 'uniqueItems': True},
                 'catalog_sha256': {'type': 'string', 'pattern': '^[a-f0-9]{64}$'},
@@ -71,12 +77,13 @@ def schema_documents():
                    'source_pr': {'anyOf': [{'type': 'null'}, obj({'repository': text,
                        'number': {'type': 'integer', 'minimum': 1}, 'merge_commit_sha': text,
                        'base': text, 'head': text, 'merged_at': text})]}, 'plan': plan})
-    receipt = obj({'schema': {'const': 'af.test-class-receipt/1'}, 'plan': plan,
+    receipt = obj({'schema': {'const': 'af.test-class-receipt/2'}, 'plan': plan,
                    'platform': text, 'class': kind, 'status': {'const': 'success'}})
-    return {f'{name}-v1.json': {'$schema': 'https://json-schema.org/draft/2020-12/schema',
-                               '$id': f'urn:af:schema:{name}:1', **document}
-            for name, document in [('test-class-catalog', cat), ('test-class-plan', plan),
-                                   ('release-test-binding', binding), ('test-class-receipt', receipt)]}
+    return {f'{name}-v{version}.json': {'$schema': 'https://json-schema.org/draft/2020-12/schema',
+                                      '$id': f'urn:af:schema:{name}:{version}', **document}
+            for name, version, document in [('test-class-catalog', 1, cat), ('test-class-plan', 2, plan),
+                                            ('release-test-binding', 2, binding),
+                                            ('test-class-receipt', 2, receipt)]}
 
 
 def schema_parity(rewrite=False):
@@ -91,7 +98,7 @@ def schema_parity(rewrite=False):
 
 def resolve(labels=(), context='local', sha=None, version=None):
     """Positive labels replace defaults; negatives subtract. Contradictions never win."""
-    if context not in ('pr', 'gate', 'local', 'release'):
+    if context not in ('pr', 'gate', 'release_pr', 'local', 'release'):
         raise ValueError('unknown selection context')
     if not isinstance(labels, (list, tuple)) or not all(isinstance(x, str) for x in labels):
         raise ValueError('labels must be strings')
@@ -112,7 +119,7 @@ def resolve(labels=(), context='local', sha=None, version=None):
         raise ValueError('contradictory release profiles')
     if full and (negative or (positive and positive != set(CLASSES))):
         raise ValueError('release:full refuses exclusions or a partial allowlist')
-    defaults = list(CLASSES) if context != 'pr' else FAST
+    defaults = FAST if context in ('pr', 'gate', 'release_pr') else list(CLASSES)
     if fast:
         defaults = FAST
     if full:
@@ -151,7 +158,7 @@ def event_context(event):
     pr = event['pull_request']
     if pr.get('base', {}).get('ref', '').startswith('af-gate/'):
         return 'gate'
-    return 'release' if pr.get('head', {}).get('ref', '').startswith('release/v') else 'pr'
+    return 'release_pr' if pr.get('head', {}).get('ref', '').startswith('release/v') else 'pr'
 
 
 def check_release_pr(event):
@@ -166,7 +173,7 @@ def check_release_pr(event):
 
 def release_plan(annotation, sha, version):
     # A lightweight/manual tag or unrelated annotation carries no fast authority.
-    if BINDING not in annotation:
+    if 'af.release-tests/' not in annotation:
         return resolve([], 'release', sha, version)
     try:
         binding = json.loads(annotation.strip())
@@ -178,7 +185,8 @@ def release_plan(annotation, sha, version):
         raise ValueError('release selection SHA/version mismatch')
     validate_source_pr(binding['source_pr'], sha, version)
     plan = validate_plan(binding['plan'])
-    if plan['context'] != 'release' or plan['sha'] != sha or plan['version'] != version:
+    context = 'release_pr' if binding['source_pr'] is not None else 'release'
+    if plan['context'] != context or plan['sha'] != sha or plan['version'] != version:
         raise ValueError('release plan binding mismatch')
     if binding['source_pr'] is None and plan != resolve([], 'release', sha, version):
         raise ValueError('release labels require exact merged PR provenance')
@@ -326,7 +334,7 @@ def receipts(plan, directory, platforms):
     for path in Path(directory).rglob('receipt.json'):
         value = read(path)
         key = value['platform'], value['class']
-        if set(value) != {'schema', 'plan', 'platform', 'class', 'status'} or value['schema'] != 'af.test-class-receipt/1':
+        if set(value) != {'schema', 'plan', 'platform', 'class', 'status'} or value['schema'] != 'af.test-class-receipt/2':
             raise ValueError('unknown receipt shape')
         if key not in expected or key in observed or value['plan'] != plan or value['status'] != 'success':
             raise ValueError(f'invalid/duplicate class receipt: {path}')
@@ -358,13 +366,16 @@ def aggregate_metrics(plan, directory, platforms):
             outer = [r for r in records if r['label'] == 'class-' + kind]
             if len(outer) != 1 or outer[0]['exit_code'] != 0:
                 raise ValueError(f'missing/failed outer class metric: {kind}')
+            seconds = duration(outer[0]['elapsed_seconds'])
+            if seconds is None:
+                raise ValueError(f'missing outer class duration: {kind}')
             report_value = read(report_path)
             if report_value['plan'] != plan:
                 raise ValueError('metric report belongs to another plan')
             inventory_counts.update({c: r.get('inventory_count') for c, r in report_value['classes'].items()})
             row = report_value['classes'][kind]
-            classes[kind] = dict(row, state='RAN', command_seconds=outer[0]['elapsed_seconds'])
-            class_intervals.append(outer[0])
+            classes[kind] = dict(row, state='RAN', command_seconds=seconds)
+            class_intervals.append(dict(outer[0], elapsed_seconds=seconds))
         intervals = list(class_intervals)
         for name in ('base', 'container'):
             paths = list(Path(directory).glob(f'validation-{name}-{platform}-*/base-metrics.jsonl')) if name == 'base' else (
@@ -497,7 +508,7 @@ def report(plan, junit_paths, step_paths=(), inventory=None, provenance=None, re
             steps.append(step)
     for step in steps:
         # Class runner emits a single outer interval; inner steps are retained separately.
-        if step['label'].startswith('class-'):
+        if step['label'] in {'class-' + c for c in CLASSES}:
             kind = step['label'][6:]
             rows[kind]['step_seconds'] = duration(step['elapsed_seconds'])
     if inventory is not None:
@@ -559,7 +570,32 @@ def call(command, label, stage='tests'):
                     label, *command], check=True, cwd=ROOT)
 
 
-def run_class(plan, kind, out, threads):
+def build_inventory(plan, kind, out, build_scope):
+    """Compile the explicit execution scope before reporting successful build completion.
+
+    Native execution needs the entire plan before its first build receipt starts the test
+    allowance. Independent hosted jobs need only their own class's variants. Keep Cargo's
+    JSON stdout separate from ci-step's human output.
+    Children inherit the gate's process group and supervisor deadline as before.
+    """
+    validate_plan(plan)
+    if kind not in plan['selected']:
+        raise ValueError(f'{kind} is NOT RUN in this plan')
+    if build_scope not in ('class', 'plan'):
+        raise ValueError('unknown build scope')
+    selected = plan['selected'] if build_scope == 'plan' else [kind]
+    variants = [('nextest-list.json', [])]
+    if 'perf' in selected:
+        variants += [(f'feature-{label}-list.json', ['--features', features])
+                     for label, features, _ in PERF_VARIANTS]
+    for filename, arguments in variants:
+        with (out / filename).open('w') as stream:
+            subprocess.run(['cargo', 'nextest', 'list', '--workspace', '--locked',
+                            *arguments, '--message-format', 'json'],
+                           stdout=stream, check=True, cwd=ROOT)
+
+
+def run_class(plan, kind, out, threads, build_scope='class'):
     validate_plan(plan)
     audit_source()
     if kind not in plan['selected']:
@@ -572,9 +608,9 @@ def run_class(plan, kind, out, threads):
     call([sys.executable, 'scripts/test-class-python.py', 'test-gate-owner.py',
           str(out / 'test-gate-owner.py.xml')], 'gate-owner', 'preflight')
     # Every class audits the whole inventory, even if its own selection is small.
-    with (out / 'nextest-list.json').open('w') as stream:
-        subprocess.run(['cargo', 'nextest', 'list', '--workspace', '--locked', '--message-format', 'json'],
-                       stdout=stream, check=True, cwd=ROOT)
+    call([sys.executable, str(Path(__file__)), 'build-inventory',
+          '--plan', str(out / 'plan.json'), '--class', kind, '--build-scope', build_scope,
+          '--output', str(out)], 'class-build', 'build')
     entries = partition(read(out / 'nextest-list.json'))
     write(out / 'inventory.json', entries)
     expression = filterset(entries, [kind])
@@ -609,15 +645,7 @@ def run_class(plan, kind, out, threads):
             raise ValueError(f'{kind}: no runnable Rust tests')
         rust_run(['-E', expression], f'rust-{kind}', out / 'rust.xml', expected)
         if kind == 'perf':
-            for label, features, expression in [
-                    ('trace', 'review-core/perf-trace,review-core/perf-calibration',
-                     'binary_id(=review-core) & test(perf_)'),
-                    ('calibration', 'review-pipeline/perf-calibration',
-                     'binary_id(=review-pipeline::perf_probe) & test(calibration_build)')]:
-                with (out / f'feature-{label}-list.json').open('w') as stream:
-                    subprocess.run(['cargo', 'nextest', 'list', '--workspace', '--locked',
-                                    '--features', features, '--message-format', 'json'],
-                                   stdout=stream, check=True, cwd=ROOT)
+            for label, features, expression in PERF_VARIANTS:
                 feature_entries = partition(read(out / f'feature-{label}-list.json'))
                 binary, pattern = ('review-core', 'perf_') if label == 'trace' else (
                     'review-pipeline::perf_probe', 'calibration_build')
@@ -640,7 +668,7 @@ def run_class(plan, kind, out, threads):
                 stream.write(summary(result))
     if failure:
         raise failure
-    write(out / 'receipt.json', {'schema': 'af.test-class-receipt/1', 'plan': plan,
+    write(out / 'receipt.json', {'schema': 'af.test-class-receipt/2', 'plan': plan,
                                  'platform': os.getenv('RUNNER_OS', sys.platform),
                                  'class': kind, 'status': 'success'})
 
@@ -649,7 +677,7 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     sub = parser.add_subparsers(dest='command', required=True)
     plan = sub.add_parser('plan')
-    plan.add_argument('--context', choices=('pr', 'gate', 'local', 'release'), default='local')
+    plan.add_argument('--context', choices=('pr', 'gate', 'release_pr', 'local', 'release'), default='local')
     plan.add_argument('--label', action='append', default=[])
     plan.add_argument('--event')
     plan.add_argument('--bound')
@@ -673,6 +701,12 @@ def main():
     run.add_argument('--class', dest='kind', choices=CLASSES, required=True)
     run.add_argument('--output', required=True)
     run.add_argument('--threads', type=int, default=max(4, (os.cpu_count() or 4) // 2))
+    run.add_argument('--build-scope', choices=('class', 'plan'), default='class')
+    build = sub.add_parser('build-inventory')
+    build.add_argument('--plan', required=True)
+    build.add_argument('--output', required=True)
+    build.add_argument('--class', dest='kind', choices=CLASSES, required=True)
+    build.add_argument('--build-scope', choices=('class', 'plan'), required=True)
     execute = sub.add_parser('execute')
     execute.add_argument('--plan', required=True)
     execute.add_argument('--threads', type=int, default=4)
@@ -701,14 +735,16 @@ def main():
         labels = event_labels(read(args.event)) if args.event else args.label
         context = event_context(read(args.event)) if args.event and args.context == 'pr' else args.context
         version = args.version
-        if args.event and context == 'release':
+        if args.event and context == 'release_pr':
             version = read(args.event)['pull_request']['head']['ref'][len('release/v'):]
         value = validate_plan(json.loads(args.bound)) if args.bound else resolve(
             labels, context, args.sha, version)
         if args.event:
             check_release_pr(read(args.event))
-        if args.bound and (value['context'] != 'release' or value['sha'] != args.sha):
+        if args.bound and (value['context'] not in ('release', 'release_pr') or value['sha'] != args.sha):
             raise ValueError('bound release plan does not name this commit')
+        if args.bound and args.version is not None and value['version'] != args.version:
+            raise ValueError('bound release plan does not name this version')
         write(args.output, value)
         print(json.dumps(value, indent=2))
         if args.github_output:
@@ -731,7 +767,10 @@ def main():
     elif args.command == 'inventory':
         write(args.output, partition(read(args.path)))
     elif args.command == 'run':
-        run_class(read(args.plan), args.kind, Path(args.output).resolve(), args.threads)
+        run_class(read(args.plan), args.kind, Path(args.output).resolve(), args.threads,
+                  args.build_scope)
+    elif args.command == 'build-inventory':
+        build_inventory(read(args.plan), args.kind, Path(args.output), args.build_scope)
     elif args.command == 'execute':
         plan = validate_plan(read(args.plan))
         evidence_root = (Path(os.environ['AF_GATE_NEXTEST_RUN']) / 'classes'
@@ -739,7 +778,7 @@ def main():
         for kind in plan['selected']:
             call([sys.executable, str(Path(__file__)), 'run', '--plan', args.plan,
                   '--class', kind, '--output', str(evidence_root / kind),
-                  '--threads', str(args.threads)], 'class-' + kind)
+                  '--threads', str(args.threads), '--build-scope', 'plan'], 'class-' + kind)
             print(summary(read(evidence_root / kind / 'report.json')))
         if 'e2e' in plan['selected']:
             call(['make', 'review-kernel-container-probes'], 'container-probes')

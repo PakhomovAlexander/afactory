@@ -17,8 +17,10 @@ feature-on builds that dominate ordinary Task iteration. ADR-0229 already define
 This repository's local Task gate invokes `scripts/verify.sh --profile fast`. The wrapper
 resolves `release:fast` in the gate context, writes its plan in the private run directory and
 runs the shared `make test-build` step before `make check-classes` with that plan. The build
-receipt ends the build deadline before class tests begin. The full check continues in CI gate pull requests,
-`make check`, `make check-full` and releases. The perf class is covered by those full checks
+receipt ends the build deadline before class tests begin. The full check continues in `make check`,
+`make check-full`, main validation and unbound releases; every pull request, gate pull requests
+included, defaults to the same fast selection
+([ADR-0239](0239-default-every-pull-request-to-fast-validation.md)). The perf class is covered by those full checks
 and by the separate Performance measurement, never by the local Task gate. The existing
 `--test-plan` form remains available and a bare `verify.sh` still runs full `make check`.
 The check wall allowance, test threads, remote mapping and individual test assertions do not

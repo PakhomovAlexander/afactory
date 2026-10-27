@@ -34,8 +34,9 @@ Where Linux and macOS differ, split on `target_os`.
 
 For a code Task, the implementer runs a filtered nextest selection through `--profile ci`
 for the tests it touched and repeats that selection after its last edit. The Task gate runs
-the fast profile (functional, e2e, uix; ADR-0251); CI's gate pull requests and releases run
-the full check. Before a pull request, run the full local check:
+the fast profile (functional, e2e, uix; ADR-0251), and every pull request defaults to the same
+fast selection (ADR-0239); the full check remains in `make check`, main validation and unbound
+releases. Before a pull request, run the full local check:
 
 ```sh
 make check
@@ -283,7 +284,8 @@ Either is fine; the prefixes are used but not required. Domain terms keep their 
   comparison locally.
 - One topic per PR. Split unrelated fixes even when they are small.
 - Run full `make check` before the PR and say so in the PR template checklist. The local Task
-  gate runs the fast profile; CI gate pull requests and releases provide full validation.
+  gate and every pull request run the fast profile; `make check`, main validation and unbound
+  releases provide full validation.
 - A user-visible change adds its own note, `changelog.d/<topic>.md` (see
   [`changelog.d/README.md`](changelog.d/README.md)), and never edits `CHANGELOG.md`: a note per
   pull request means two open pull requests never conflict on the changelog. The release
@@ -315,14 +317,16 @@ Vulnerabilities go through private reporting, never a public issue: see `SECURIT
 
 `make check` remains full. The local Task gate uses `scripts/verify.sh --profile fast`,
 which records the shared `test-build` receipt before functional, e2e and uix class tests;
-CI gate pull requests and releases run full. For
+every pull request defaults to the same fast selection (ADR-0239), and the full check remains
+in `make check`, main validation and unbound releases. For
 selective development use `make check-fast` (functional, e2e, uix), `make check-full` (all four,
 including perf), or `make test-plan TEST_LABEL_FILE=event.json`
 then `make check-classes`. The JSON file has the GitHub event shape
 `{"pull_request":{"labels":[{"name":"test:functional"},{"name":"test:e2e"}]}}`.
 Selective e2e includes live containers and requires Docker. Fmt/lint and policy checks always run.
 
-Ordinary PRs default to functional + e2e + uix; AF gate PRs targeting `af-gate/**` default full. Any positive `test:functional`, `test:e2e`, `test:uix`, `test:perf`
+Every PR defaults to functional + e2e + uix, including AF gate and release PRs. Any positive
+`test:functional`, `test:e2e`, `test:uix`, `test:perf`
 labels replace that default with an explicit allowlist. `no-functional`, `no-e2e`, `no-uix`, `no-perf`
 exclude from defaults. Contradictions, unknown reserved labels and empty selections fail. Skipped
 classes are reported as NOT RUN. `no-perf` also exempts the separate Performance measurement workflow;
@@ -341,15 +345,16 @@ manual measurement: run `make perf-kernel-measure` before a pull request changin
 `crates/review-pipeline/build.rs`, the experiment runtime or kernel receipts
 ([ADR-0252](docs/adr/0252-keep-the-kernel-experiment-measurement-out-of-every-gate.md)).
 
-`make release VERSION=X.Y.Z COMPAT='...' PROFILE=fast` opens a release PR with `release:fast`;
-the default PROFILE is full. Provision the ten canonical labels with `make test-labels` (dry-run),
+`make release VERSION=X.Y.Z COMPAT='...'` opens a release PR with `release:fast` by default;
+`PROFILE=full` selects all classes. Provision the ten canonical labels with `make test-labels` (dry-run),
 then explicitly `make test-labels APPLY=1`; no PR labels are assigned by that setup command.
 Release preparation checks the profile label exists before changing source, committing or pushing.
 Changing release PR labels directly reruns selected CI; no policy file or metadata commit is required.
 When creating the absent tag, the resolver captures labels from the single exact merged release PR
 associated with that commit (matching SHA, main base and release/version head). It freezes the source
 PR provenance and plan in the annotated tag, bound to commit/version/catalog. First creation captures
-then-current labels; every later retry/tag run uses the annotation and ignores moving labels.
+then-current labels; an unlabeled matching release PR retains the fast default. Every later
+retry/tag run uses the annotation and ignores moving labels.
 `release:full` forces all classes and rejects partial/excluded
 selections. Direct unbound tags run full. All selected Linux/macOS gates and packaged binary, archive,
 architecture and signature smoke remain mandatory. Fast/custom release notes state their scope.

@@ -4,8 +4,8 @@ You implement exactly one package of a kernel campaign plan in the Afactory kern
 The Task requirements payload names the package, its deliverables and its acceptance. The
 source tree in your sandbox is the exact Snapshot to change; the kernel seals your edits and
 runs the Task gate afterwards: `scripts/verify.sh --profile fast`, the functional, e2e and uix
-classes (ADR-0251); CI's gate pull requests and releases run the full `make check`. You have a
-shell in the sandbox: use it.
+classes (ADR-0251); `make check`, main validation and unbound releases run the full check. You
+have a shell in the sandbox: use it.
 
 ## Before you reply
 

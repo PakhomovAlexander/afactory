@@ -7,8 +7,10 @@ always-full CI policy in ADR-0107, the unconditional latest-Python lab dependenc
 and the repository operator's prose-only recommendation for `no-perf` in ADR-0196. The AF kernel's
 remote gate label authority is unchanged. Local `make check` remains full. The repository's
 Task gate selects the fast profile (functional, e2e, uix) through
-`scripts/verify.sh --profile fast`; CI gate pull requests and releases run full
-([ADR-0251](adr/0251-run-the-task-gate-on-the-fast-validation-profile.md)).
+`scripts/verify.sh --profile fast`
+([ADR-0251](adr/0251-run-the-task-gate-on-the-fast-validation-profile.md)); every pull request
+defaults to the same fast selection (ADR-0239), and the full check remains in `make check`,
+main validation and unbound releases.
 
 ## Classes and catalog
 
@@ -89,8 +91,10 @@ Other labels have no selection effect. Both label addition and removal rerun val
 older PR runs through their existing concurrency group.
 
 1. Reject any `test:CLASS` with `no-CLASS`, and reject `release:fast` with `release:full`.
-2. Defaults are functional + e2e + uix for a PR; all four for local, ordinary main, AF gate PRs targeting `af-gate/**`, release PRs named
-   `release/vX.Y.Z`, and an unconfigured release. The event base ref selects the gate context, preserving the Remote Check full default. `release:fast` changes the default to functional + e2e + uix.
+2. Every PR defaults to functional + e2e + uix, including AF gate PRs targeting `af-gate/**`
+   and release PRs named `release/vX.Y.Z`. Local `make check`, ordinary main and releases
+   without a matching merged release PR run all four. A tagged release with a matching PR
+   inherits that PR's selection. `release:fast` explicitly selects the fast default.
 3. Any positive labels form an explicit allowlist replacing those defaults:
    `test:functional`, `test:e2e`, `test:uix`, `test:perf`. With no positive label, use the default.
 4. Subtract `no-functional`, `no-e2e`, `no-uix`, `no-perf`. An empty result fails.
@@ -100,7 +104,7 @@ older PR runs through their existing concurrency group.
 
 | Labels | PR selection | Profile |
 | --- | --- | --- |
-| none | functional, e2e, uix | fast |
+| none (any PR) | functional, e2e, uix | fast |
 | `test:functional`, `test:e2e` | functional, e2e | custom |
 | `test:perf` | perf only | custom |
 | `no-uix` | functional, e2e | custom |
@@ -124,8 +128,9 @@ An empty or invalid plan cannot form a self-approving green gate. Releases also 
 
 ## Release binding
 
-`make release VERSION=X.Y.Z COMPAT='...' PROFILE=fast` passes `--profile fast` to `release.sh`;
-omitting PROFILE uses full. The script applies `release:fast` or `release:full` to the release PR.
+`make release VERSION=X.Y.Z COMPAT='...'` passes `--profile fast` to `release.sh` by default;
+`PROFILE=full` opts into full validation. Calling `scripts/release.sh` without `--profile` also
+selects fast. The script applies `release:fast` or `release:full` to the release PR.
 Before any branch, source change, commit or push, it checks that the requested profile label exists
 and is readable. Provision the ten definitions explicitly (this Task never executes remote writes):
 
@@ -151,10 +156,11 @@ Only one merged PR may supply labels: its `merge_commit_sha` must equal the exac
 its base must be `main`, and its head must be `release/vVERSION`. This same test covers GitHub's
 merge, squash and fast-forward results; no ancestry guess or latest-unrelated-PR lookup grants
 selection authority. Unmerged PRs, wrong versions/branches/bases and other SHAs supply no labels.
-No match defaults full. Multiple exact matches, API errors, malformed responses, pagination overflow
+No match defaults full. An unlabeled matching release PR selects fast, just as its PR checks did.
+Multiple exact matches, API errors, malformed responses, pagination overflow
 and invalid label selections fail before creating/pushing a tag.
 
-Before pushing, the resolver freezes `af.release-tests/1` JSON in the annotated tag: exact SHA,
+Before pushing, the resolver freezes `af.release-tests/2` JSON in the annotated tag: exact SHA,
 version, source PR repository/number/merge SHA/base/head/merge time (or null), captured labels and
 complete resolved plan including catalog digest. The pushed remote tag object must equal the local
 object. Competing creators never force or replace a ref. Subsequent main retries and tag-triggered
@@ -163,6 +169,12 @@ wrong commit, moved local tag or tag/version mismatch fail closed. The same plan
 Labels are captured at first tag creation, not historically at the merge instant: a label change
 between merge and first creation affects that initial capture. Once the annotation exists, later
 label changes and even API outages cannot change its selection or block retries.
+
+Plans use `af.test-plan/2`, receipts use `af.test-class-receipt/2`, and tag bindings use
+`af.release-tests/2`. The `release_pr` context requires exact merged PR provenance in the binding;
+the `release` context without provenance requires the full unlabeled plan. The generated v2
+schemas and parity checks cover this added context. Earlier contract versions fail closed under
+ADR-0145 rather than being treated as unbound manual tags.
 
 A direct lightweight tag or manually annotated tag without this binding defaults full, regardless of
 associated PR labels or stale metadata files. Ordinary main commits also run full. A tag creation race
@@ -214,6 +226,12 @@ a gate-context `release:fast` plan into the private run directory, then runs `te
 `check-classes`.
 Explicit `--test-plan PLAN.json` selects `check-classes` as before, keeping its evidence
 beneath the existing private gate output.
+Native `execute` explicitly passes `--build-scope plan`: every selected variant compiles before
+the first successful build-stage receipt. Independent hosted `run` defaults to
+`--build-scope class`: functional, e2e and uix compile the default workspace inventory only,
+while perf also compiles both feature variants before its build receipt. Both scopes retain
+the exact original plan and full inventory audit; a required build failure prevents suite
+execution and successful build/class receipts ([ADR-0236](adr/0236-scope-class-builds-to-their-execution.md)).
 Under a sealed native AF gate, base Python JUnit writes beneath
 `AF_GATE_NEXTEST_RUN/base-evidence`; ordinary writable checkouts use `target/base-evidence`. Policy
 tests use private temporary directories outside the source. A chmod-sealed, unprivileged regression
@@ -279,3 +297,48 @@ of 334–490s. These source-run references are supplied task observations, not i
 artifacts in this checkout. No historical JUnit was supplied, so no measured before/after result or
 performance score is claimed. The commands above produce replay estimates when actual JUnit is
 available; the offline fixture tests exercise all four scenarios without inventing historical data.
+
+## Hosted release validation proof
+
+`Release validation proof` (`.github/workflows/release-validation-proof.yml`) exercises the
+existing reusable validator with `release: true`, without running the publishing workflow.
+It changes no production default. Dispatch it with the explicit `profile` choice `fast` or
+`full`; fast selects functional/e2e/uix and reports perf **NOT RUN**, while full selects all
+four classes. Both choices run the selected classes and mandatory base checks on Linux and
+macOS. The validator retains its live Linux container probes, selected perf companions,
+artifact admission and fail-closed aggregates.
+
+Before merge, the workflow accepts only `pull_request` events whose changed paths include
+this proof workflow itself, with exactly one explicit `release:fast` or `release:full` label.
+Other PR paths alone never trigger it. Other `test:*` and `no-*` labels still govern ordinary
+PR validation; they cannot reduce the proof's chosen profile. Conflicting profile labels fail.
+Label events reselect a proof plan from that event's labels; a retry uses the original event
+payload. To prove a different profile, change the label or dispatch a new run. No
+`pull_request_target`, credentials persisted by checkout, inherited secrets, write permission,
+release signing or publication job is used.
+
+The operator starts the live CI runs. After the workflow is available on the default branch,
+for example, use the Actions UI or dispatch each profile against the intended ref:
+
+```sh
+gh workflow run release-validation-proof.yml --ref BRANCH -f profile=fast
+gh workflow run release-validation-proof.yml --ref BRANCH -f profile=full
+```
+
+Inspect the proof summary and `release-validation-proof-ATTEMPT` artifact: `plan.json` binds
+the exact checked-out `github.sha` (the merge SHA on PR events), workspace version and catalog
+digest using the production class resolver. The proof refuses a different checkout SHA.
+`local-binding.log` and `local-binding-results.json` retain the existing real release resolver
+fixtures, including changed labels on retries, frozen tag SHA/version/catalog refusals and
+full fallback for manual/unbound tags. These fixtures use disposable local Git repositories,
+local bare remotes and a fixture `gh` API; simulated commits/tags never touch GitHub refs.
+Their timing is explicitly a **local binding simulation executed in CI**, not release
+publication. Scratch repositories are removed after each fixture.
+
+Require the proof result and reusable validation to succeed. Inspect the usual
+`validation-plan-ATTEMPT`, `validation-base-OS-ATTEMPT`, `validation-class-OS-CLASS-ATTEMPT`,
+container and aggregate summary artifacts for each selected platform/class; selected-class
+JUnit and step timings remain separate from base/build and companion costs. A skipped,
+failed or missing selected result is not a proof pass. Compare fast/full observations only
+for matching SHA/version/catalog and equivalent runner conditions. Omitted perf work is
+NOT RUN; this workflow provides no release publication timing or verified savings claim.

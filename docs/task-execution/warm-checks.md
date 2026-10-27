@@ -5,7 +5,8 @@ read-only Snapshot (the frozen source tree a Task works on); its results form th
 must pass. A code policy's `[warm]` table lets those checks reuse build directories that live on
 this machine between runs, so a check does not compile the whole workspace every time. This page
 is the operator's view of that warm layer. This repository's local Task gate runs the
-fast validation profile; CI gate pull requests and releases run the full check. The decisions are
+fast validation profile, as every pull request does by default (ADR-0239); `make check`, main
+validation and unbound releases run the full check. The decisions are
 [ADR-0131](../adr/0131-warm-task-checks-through-a-toolchain-keyed-bounded-cache.md) and
 [ADR-0207](../adr/0207-key-warm-check-layers-by-content-lock-them-split-the-build-deadline-and-seal-without-generated-files.md).
 

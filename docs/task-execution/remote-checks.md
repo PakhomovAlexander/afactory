@@ -41,8 +41,8 @@ required = ["validation / lint", "validation / check (ubuntu-latest)"]
   names from a real pull-request run: `gh run view <run-id> --json jobs --jq '.jobs[].name'`.
 
 For this repository, the local Task command selects functional, e2e and uix; its remote
-gate pull request runs the full CI selection. The remote result supplies full validation
-for that Snapshot. Declaring both forms records these distinct scopes in one check policy. A policy
+gate pull request runs CI's selection for that pull request, the same fast default unless a
+label selects more (ADR-0239). Declaring both forms records both scopes in one check policy. A policy
 without the table is captured byte for byte as before.
 
 ## 2. Choose it in a pipeline

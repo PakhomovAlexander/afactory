@@ -52,7 +52,7 @@ endif
 # Open the release PR for VERSION (bump + CHANGELOG section). Merging it is the release: the
 # workflow tags, checks, builds, signs, and publishes. COMPAT states authority compatibility.
 release:
-	scripts/release.sh "$(VERSION)" --compat "$(COMPAT)" --profile "$(or $(PROFILE),full)"
+	scripts/release.sh "$(VERSION)" --compat "$(COMPAT)" --profile "$(or $(PROFILE),fast)"
 
 # Run the tests NEXTEST_FILTER selects NEXTEST_REPEAT times in a row under the gate's scheduling,
 # stopping at the first run that fails and never rerunning anything: the proof that a flake is
@@ -114,8 +114,9 @@ preflight-check:
 perf-python-tests: test
 	$(CI_STEP) --stage tests performance-lab python3 scripts/test-performance.py
 
-# Shared selective entry points. Full `check` above is what CI's gate pull requests, releases
-# and `make check` run; the Task gate runs `scripts/verify.sh --profile fast` (ADR-0251). Labels are
+# Shared selective entry points. Full `check` above is what main validation, unbound releases
+# and `make check` run; the Task gate runs `scripts/verify.sh --profile fast` (ADR-0251) and
+# every pull request defaults to the same fast selection (ADR-0239). Labels are
 # JSON data in a file; no Make/shell expansion of label strings is permitted.
 .PHONY: base-check check-fast check-full check-classes test-plan perf-feature-tests perf-kernel-measure
 TEST_PLAN ?= target/test-classes/plan.json
