@@ -448,7 +448,8 @@ def project(base, *, script=True):
         shutil.copyfile(ROOT / 'scripts' / name, repo / 'scripts' / name)
     shutil.copyfile(ROOT / '.config/nextest.toml', repo / '.config/nextest.toml')
     makefile = (ROOT / 'Makefile').read_text()
-    start = makefile.index('\ntest:\n') + 1
+    # `test` depends on `test-build` (the build receipt the kernel's phase monitor waits for).
+    start = makefile.index('\ntest-build:\n') + 1
     recipe = makefile[start:makefile.index('# Open the release PR')]
     (repo / 'Makefile').write_text('\n'.join([
         'TEST_RUNNER = nextest', 'TEST_THREADS = 4', 'CI_STEP = python3 scripts/ci-step.py',
