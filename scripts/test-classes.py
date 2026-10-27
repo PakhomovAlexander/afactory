@@ -364,13 +364,16 @@ def aggregate_metrics(plan, directory, platforms):
             outer = [r for r in records if r['label'] == 'class-' + kind]
             if len(outer) != 1 or outer[0]['exit_code'] != 0:
                 raise ValueError(f'missing/failed outer class metric: {kind}')
+            seconds = duration(outer[0]['elapsed_seconds'])
+            if seconds is None:
+                raise ValueError(f'missing outer class duration: {kind}')
             report_value = read(report_path)
             if report_value['plan'] != plan:
                 raise ValueError('metric report belongs to another plan')
             inventory_counts.update({c: r.get('inventory_count') for c, r in report_value['classes'].items()})
             row = report_value['classes'][kind]
-            classes[kind] = dict(row, state='RAN', command_seconds=outer[0]['elapsed_seconds'])
-            class_intervals.append(outer[0])
+            classes[kind] = dict(row, state='RAN', command_seconds=seconds)
+            class_intervals.append(dict(outer[0], elapsed_seconds=seconds))
         intervals = list(class_intervals)
         for name in ('base', 'container'):
             paths = list(Path(directory).glob(f'validation-{name}-{platform}-*/base-metrics.jsonl')) if name == 'base' else (
@@ -503,7 +506,7 @@ def report(plan, junit_paths, step_paths=(), inventory=None, provenance=None, re
             steps.append(step)
     for step in steps:
         # Class runner emits a single outer interval; inner steps are retained separately.
-        if step['label'].startswith('class-'):
+        if step['label'] in {'class-' + c for c in CLASSES}:
             kind = step['label'][6:]
             rows[kind]['step_seconds'] = duration(step['elapsed_seconds'])
     if inventory is not None:

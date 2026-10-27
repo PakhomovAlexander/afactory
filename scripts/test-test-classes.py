@@ -854,6 +854,108 @@ class Gates(unittest.TestCase):
 
 
 class Metrics(unittest.TestCase):
+    def test_cli_report_and_aggregate_keep_build_evidence_out_of_class_totals(self):
+        plan = tc.resolve(['release:full'], 'pr')
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            tc.write(root / 'plan.json', plan)
+            tc.write(root / 'needs.json', Gates().good(plan))
+            env = dict(os.environ)
+            env.pop('GITHUB_STEP_SUMMARY', None)
+
+            def cli(*args):
+                return subprocess.run([sys.executable, str(ROOT / 'scripts/test-classes.py'),
+                                       *args], cwd=root, env=env, capture_output=True, text=True)
+
+            def metric(label, seconds, stage='tests'):
+                return {'schema': 'af.ci-step/1', 'stage': stage, 'label': label,
+                        'elapsed_seconds': seconds, 'exit_code': 0,
+                        'started_at': '2026-10-27T00:00:00+00:00'}
+
+            def steps(path, records):
+                path.write_text('\n'.join(map(json.dumps, records)) + '\n')
+
+            def report(path, output):
+                return cli('report', '--plan', 'plan.json', '--steps', str(path),
+                           '--source-run', 'synthetic-cli-regression', '--source-sha', 'none',
+                           '--output', str(output))
+
+            def aggregate():
+                return cli('aggregate', '--plan', 'plan.json', '--needs', 'needs.json',
+                           '--evidence', str(root / 'artifacts'), '--platforms', 'Linux')
+
+            combined = []
+            for kind, seconds in zip(tc.CLASSES, (5, 0, 7, 11)):
+                artifact = root / 'artifacts' / ('validation-class-Linux-' + kind)
+                evidence = artifact / 'class-evidence'
+                tc.write(evidence / 'receipt.json', {'schema': 'af.test-class-receipt/1',
+                         'plan': plan, 'platform': 'Linux', 'class': kind, 'status': 'success'})
+                path = artifact / 'class-metrics.jsonl'
+                output = evidence / 'report.json'
+                inner = [metric('class-build', 2, 'build'), metric('class-' + kind + '-inner', 1)]
+                # Hosted run reports before the outer wrapper has written its own receipt.
+                steps(path, inner)
+                result = report(path, output)
+                self.assertEqual(result.returncode, 0, result.stderr)
+                value = tc.read(output)
+                self.assertEqual(value['ci_steps'], inner)
+                self.assertIsNone(value['classes'][kind]['step_seconds'])
+                self.assertIsNone(value['class_runner_seconds'])
+                self.assertIsNone(value['parallel_class_critical_path_seconds'])
+                records = inner + [metric('class-' + kind, seconds)]
+                combined.extend(records)
+                steps(path, records)
+                result = report(path, output)
+                self.assertEqual(result.returncode, 0, result.stderr)
+                value = tc.read(output)
+                self.assertEqual(value['ci_steps'], records)
+                self.assertEqual(set(value['classes']), set(tc.CLASSES))
+                self.assertEqual(value['classes'][kind]['step_seconds'], seconds)
+                self.assertIsNone(value['class_runner_seconds'])  # Other selected jobs are absent.
+
+            steps(root / 'combined.jsonl', combined)
+            result = report(root / 'combined.jsonl', root / 'combined.json')
+            self.assertEqual(result.returncode, 0, result.stderr)
+            value = tc.read(root / 'combined.json')
+            self.assertEqual(value['ci_steps'], combined)
+            self.assertEqual(value['class_runner_seconds'], 23)
+            self.assertEqual(value['parallel_class_critical_path_seconds'], 11)
+
+            result = aggregate()
+            self.assertEqual(result.returncode, 0, result.stderr)
+            value = tc.read(root / 'target/test-classes/validation-metrics.json')['platforms']['Linux']
+            self.assertEqual(value['observed_runner_command_seconds'], 23)
+            self.assertEqual(value['parallel_class_critical_path_seconds'], 11)
+            self.assertEqual(value['observed_command_envelope_seconds'], 11)
+            self.assertEqual(value['classes']['e2e']['command_seconds'], 0)
+            self.assertEqual(value['classes']['e2e']['runner_cost_share'], 0)
+            self.assertAlmostEqual(value['classes']['functional']['runner_cost_share'], 5 / 23)
+
+            artifact = root / 'artifacts/validation-class-Linux-functional'
+            path = artifact / 'class-metrics.jsonl'
+            output = artifact / 'class-evidence/report.json'
+            inner = [metric('class-build', 2, 'build')]
+            for invalid in (-1, 'NaN', 'Infinity'):
+                with self.subTest(invalid=invalid):
+                    steps(path, inner + [metric('class-functional', invalid)])
+                    result = report(path, output)
+                    self.assertNotEqual(result.returncode, 0)
+                    self.assertIn('invalid duration', result.stderr)
+                    result = aggregate()
+                    self.assertNotEqual(result.returncode, 0)
+                    self.assertIn('invalid duration', result.stderr)
+            for records in (inner, inner + [metric('class-functional', 5)] * 2,
+                            inner + [dict(metric('class-functional', 5), exit_code=1)]):
+                steps(path, records)
+                result = aggregate()
+                self.assertNotEqual(result.returncode, 0)
+                self.assertIn('missing/failed outer class metric', result.stderr)
+            steps(path, inner + [metric('class-functional', 5)])
+            (artifact / 'class-evidence/receipt.json').unlink()
+            result = aggregate()
+            self.assertNotEqual(result.returncode, 0)
+            self.assertIn('missing class receipts', result.stderr)
+
     def test_perf_smoke_cost_is_separate_but_extends_observed_envelope(self):
         plan = tc.resolve(['test:perf'])
         with tempfile.TemporaryDirectory() as tmp:

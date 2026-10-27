@@ -42,3 +42,14 @@ compilation and suite stand-ins. It checks a full native plan, every hosted clas
 same full plan, required-variant failures and unrelated perf failures in hosted non-perf jobs.
 These fixtures do not establish a full native gate pass or hosted CI success. Publication and
 hosted CI remain operator actions; this Task runs focused checks only.
+
+## Amendment: recognize only canonical outer class intervals
+
+The build receipt retains its `class-build` label and timing evidence. Reports recognize only
+`class-functional`, `class-e2e`, `class-uix` and `class-perf` as outer class intervals; a shared
+`class-` prefix does not establish class membership. Inner steps remain in `ci_steps` without
+contributing again to class duration. Missing outer measurements remain unknown, and a measured
+zero remains zero. Aggregation continues to require exactly one successful outer interval and
+an exact successful receipt for every selected class/platform, and refuses missing, negative or
+non-finite outer durations. The focused CLI regression exercises report and aggregate together,
+including nested build evidence, zero, missing evidence and refused durations.
