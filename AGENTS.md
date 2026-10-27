@@ -31,7 +31,9 @@ review corpora belong in consuming repositories, not here.
   [the test-class design](docs/test-classes.md). `no-perf` excludes both perf validation and
   the separate Performance measurement; exclusions are reported as NOT RUN or exempt, never
   as measured passes. Inspect the entire diff when choosing coverage and explain the choice
-  in the PR description. Re-evaluate labels on updates. Local `make check` remains full;
+  in the PR description. Re-evaluate labels on updates. Local `make check` remains full; this
+  repository's Task gate runs `scripts/verify.sh --profile fast` (functional, e2e, uix), while
+  CI gate pull requests and releases run full;
   release selections are bound to exact SHA/version tags. This operator policy supersedes
   ADR-0196's prose-only recommendation; the kernel's remote-gate `no_perf_paths` authority
   remains prose-only and unchanged ([ADR-0229](docs/adr/0229-select-validation-classes-and-bind-release-profiles-to-tags.md)).

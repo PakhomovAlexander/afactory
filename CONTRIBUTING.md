@@ -43,6 +43,7 @@ make check
 That is `cargo fmt --all -- --check`, `cargo clippy --all-targets --locked -- -D warnings`,
 `cargo nextest run --profile ci` over every test binary, and the release-selection check
 (`scripts/test-release-resolve.py`), plus preflight and feature-on perf checks.
+This repository's Task gate runs `scripts/verify.sh --profile fast` (functional, e2e, uix).
 CI uses the selected classes described below; the default PR omits perf. A local pass alone
 does not establish the outcome of separate CI/container work.
 Clippy warnings are errors; fix them rather than allowing them.
@@ -280,7 +281,8 @@ Either is fine; the prefixes are used but not required. Domain terms keep their 
   `python3 scripts/check-pr-report.py --body FILE --diff origin/main HEAD` runs the same
   comparison locally.
 - One topic per PR. Split unrelated fixes even when they are small.
-- `make check` passes; say so in the PR template checklist.
+- Run full `make check` before the PR and say so in the PR template checklist. The local Task
+  gate runs the fast profile; CI gate pull requests and releases provide full validation.
 - A user-visible change adds its own note, `changelog.d/<topic>.md` (see
   [`changelog.d/README.md`](changelog.d/README.md)), and never edits `CHANGELOG.md`: a note per
   pull request means two open pull requests never conflict on the changelog. The release
@@ -310,8 +312,10 @@ Vulnerabilities go through private reporting, never a public issue: see `SECURIT
 
 ## Selecting validation classes
 
-`make check` remains the full AF gate. For selective development use `make check-fast` (functional,
-e2e, uix), `make check-full` (all four, including perf), or `make test-plan TEST_LABEL_FILE=event.json`
+`make check` remains full. The local Task gate uses `scripts/verify.sh --profile fast`,
+which resolves functional, e2e and uix; CI gate pull requests and releases run full. For
+selective development use `make check-fast` (functional, e2e, uix), `make check-full` (all four,
+including perf), or `make test-plan TEST_LABEL_FILE=event.json`
 then `make check-classes`. The JSON file has the GitHub event shape
 `{"pull_request":{"labels":[{"name":"test:functional"},{"name":"test:e2e"}]}}`.
 Selective e2e includes live containers and requires Docker. Fmt/lint and policy checks always run.

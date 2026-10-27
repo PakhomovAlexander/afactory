@@ -31,11 +31,18 @@ export AF_CI_METRICS="${AF_CI_METRICS:-$run_dir/ci-metrics.jsonl}"
 # Selection is explicit caller data. No arguments keep the complete AF gate.
 check_args=(check)
 if [[ "$#" -gt 0 ]]; then
-  if [[ "$#" -ne 2 || "$1" != --test-plan || ! -f "$2" ]]; then
-    echo 'usage: scripts/verify.sh [--test-plan PLAN.json]' >&2
+  if [[ "$#" -eq 2 && "$1" == --test-plan && -f "$2" ]]; then
+    check_args=(check-classes "TEST_PLAN=$2")
+  elif [[ "$#" -eq 2 && "$1" == --profile && "$2" == fast ]]; then
+    plan="$run_dir/test-plan.json"
+    python3 scripts/test-classes.py plan --context gate --label release:fast --output "$plan"
+    check_args=(check-classes "TEST_PLAN=$plan")
+  elif [[ "$#" -eq 2 && "$1" == --profile && "$2" == full ]]; then
+    check_args=(check)
+  else
+    echo 'usage: scripts/verify.sh [--profile fast|full | --test-plan PLAN.json]' >&2
     exit 2
   fi
-  check_args=(check-classes "TEST_PLAN=$2")
 fi
 status=0
 AF_WORKSPACE_ROOT="$PWD" CARGO_TARGET_DIR="$target_dir" AF_GATE_NEXTEST_TARGET="$target_dir" \

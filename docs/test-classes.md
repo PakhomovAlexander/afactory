@@ -1,11 +1,14 @@
 # Validation test classes
 
 This design governs repository development and release validation. It changes no kernel runtime,
-Task authority, individual assertion, deadline, or nextest exclusive scheduling rule.
+individual assertion, deadline, or nextest exclusive scheduling rule.
 [ADR-0229](adr/0229-select-validation-classes-and-bind-release-profiles-to-tags.md) supersedes the
 always-full CI policy in ADR-0107, the unconditional latest-Python lab dependency in ADR-0197,
 and the repository operator's prose-only recommendation for `no-perf` in ADR-0196. The AF kernel's
-remote gate label authority and `.af/` are unchanged. The required AF/local `make check` remains full.
+remote gate label authority is unchanged. Local `make check` remains full. The repository's
+Task gate selects the fast profile (functional, e2e, uix) through
+`scripts/verify.sh --profile fast`; CI gate pull requests and releases run full
+([ADR-0251](adr/0251-run-the-task-gate-on-the-fast-validation-profile.md)).
 
 ## Classes and catalog
 
@@ -204,8 +207,10 @@ command-level step evidence only; no invented passed testcase represents them. D
 build variants have distinct JUnit identities for reporting. Base, container and Linux perf smoke timings are separate artifacts. The perf smoke commands
 contribute to the observed command envelope, with their cost reported separately from class shares. The gate-owner preflight is mandatory in both the base check and each selected class runner.
 `verify.sh` retains the native ownership wrapper; `verify-body.sh` owns the complete gate body.
-With no arguments it runs full `make check`; explicit `--test-plan PLAN.json` selects
-`check-classes`, keeping its evidence beneath the existing private gate output.
+With no arguments or `--profile full` it runs full `make check`; `--profile fast` writes
+a gate-context `release:fast` plan into the private run directory and runs `check-classes`.
+Explicit `--test-plan PLAN.json` selects `check-classes` as before, keeping its evidence
+beneath the existing private gate output.
 Under a sealed native AF gate, base Python JUnit writes beneath
 `AF_GATE_NEXTEST_RUN/base-evidence`; ordinary writable checkouts use `target/base-evidence`. Policy
 tests use private temporary directories outside the source. A chmod-sealed, unprivileged regression
