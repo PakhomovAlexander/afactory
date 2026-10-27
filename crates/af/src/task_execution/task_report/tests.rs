@@ -103,6 +103,31 @@ fn verified() -> review_core::task::state::TaskStateV1 {
     TaskStateV1::ended(TaskStatePhaseV1::Finished, TaskOutcomeV1::Verified, None)
 }
 
+#[test]
+fn pr_body_receipt_precedes_pipeline_and_rounds_with_recorded_values() {
+    let mut task = entry("a", "gpt-6-sol");
+    task.attempts.as_mut().unwrap().unknown_usage = 1;
+    task.attempts.as_mut().unwrap().unknown_usage_causes = vec![TaskReportUnknownUsageV1 {
+        cause: review_core::task::usage::TaskUnknownUsageCauseV1::Unreported,
+        attempts: 1,
+    }];
+    task.nodes.as_mut().unwrap()[0].unknown_usage = 1;
+    let text = markdown_pr_body(&report(vec![task]), [Some(0); 3]);
+    assert!(text.find("#### Receipt").unwrap() < text.find("**fixture/plain@1.0.0**").unwrap());
+    assert!(text.find("**fixture/plain@1.0.0**").unwrap() < text.find("| Round |").unwrap());
+    assert!(text.contains("Outcome: finished/verified"), "{text}");
+    assert!(
+        text.contains("Checks: 1 passed, 0 failed, 0 skipped"),
+        "{text}"
+    );
+    assert!(text.contains("Tokens: 1,234 (+1 unknown)"), "{text}");
+    assert!(text.contains("Active time: 3.2s"), "{text}");
+    assert!(
+        text.contains("Unresolved findings: 0 blocker, 0 major, 0 minor"),
+        "{text}"
+    );
+}
+
 /// The state a round of the five below ended in, by the outcome its row names.
 fn state_of(task_id: &str, outcome: &str) -> review_core::task::state::TaskStateV1 {
     use review_core::task::state::*;

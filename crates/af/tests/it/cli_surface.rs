@@ -58,6 +58,23 @@ fn usage_errors_name_only_the_failing_command() {
 }
 
 #[test]
+fn report_json_and_format_are_mutually_exclusive() {
+    let output = af(&[
+        "review",
+        "report",
+        "--campaign",
+        "demo",
+        "--json",
+        "--format",
+        "md",
+    ]);
+    assert_eq!(output.status.code(), Some(2));
+    let document: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+    assert_eq!(document["schema"], "af/error@2");
+    assert!(document["error"].as_str().unwrap().contains("--format"));
+}
+
+#[test]
 fn help_topics_and_command_paths() {
     let layers = af(&["help", "layers"]);
     assert!(layers.status.success());
@@ -66,6 +83,14 @@ fn help_topics_and_command_paths() {
     let ledger = af(&["help", "review", "ledger"]);
     assert!(ledger.status.success());
     assert!(out(&ledger).contains("--campaign"), "{}", out(&ledger));
+    assert!(out(&ledger).contains("--json"), "{}", out(&ledger));
+    for command in ["show", "report", "plan"] {
+        let help = af(&["help", "review", command]);
+        assert!(help.status.success());
+        assert!(out(&help).contains("--json"), "{command}: {}", out(&help));
+    }
+    let plan = af(&["help", "review", "plan"]);
+    assert!(out(&plan).contains("--long"), "{}", out(&plan));
 
     let unknown = af(&["help", "nonsense"]);
     assert_eq!(unknown.status.code(), Some(2));
@@ -236,6 +261,9 @@ fn task_states_topic_and_the_state_flags_describe_the_commands() {
     }
     let json = out(&af(&["help", "json"]));
     for needle in [
+        "af/review-ledger@1",
+        "af/review-show@1",
+        "af/review-report@4",
         "af/task-inspection@13",
         "af/task-checks@2",
         "af/task-list@3",
@@ -1489,11 +1517,17 @@ fn the_agent_loop_verbs_and_the_agents_topic_describe_the_commands() {
         ),
         (
             &["task", "wait", "--help"],
-            &["--timeout <S>", "exits 124", "af/task-status@1"],
+            &[
+                "--timeout <S>",
+                "--bell",
+                "--notify",
+                "exits 124",
+                "af/task-status@2",
+            ],
         ),
         (
             &["task", "status", "--help"],
-            &["af/task-status@1", "without waiting"],
+            &["af/task-status@2", "without waiting"],
         ),
         (
             &["task", "run", "--help"],
@@ -1669,7 +1703,7 @@ fn the_agent_loop_verbs_and_the_agents_topic_describe_the_commands() {
         "af/task-findings@1",
         "af/task-diff@1",
         "af/task-materialized@1",
-        "af/task-status@1",
+        "af/task-status@2",
         "af/task-detached@2",
         "af/task-cancelled@1",
     ] {
@@ -1972,4 +2006,12 @@ fn task_report_help_describes_the_whole_lines_added_block() {
         "{report}"
     );
     assert!(!flat.contains("title first inside"), "{report}");
+}
+
+#[test]
+fn onboard_tasks_help_names_preview_and_additive_apply() {
+    let help = out(&af(&["onboard", "--help"]));
+    assert!(help.contains("--tasks"), "{help}");
+    assert!(help.contains("model-driven Tasks"), "{help}");
+    assert!(help.contains("adds only absent Task files"), "{help}");
 }

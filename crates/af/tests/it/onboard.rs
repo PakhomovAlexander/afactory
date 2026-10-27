@@ -96,6 +96,27 @@ fn preview_detects_gate_and_writes_nothing() {
 }
 
 #[test]
+fn default_preview_fits_one_screen_and_long_shows_topology() {
+    let root = tempfile::tempdir().unwrap();
+    let repo = repo(root.path());
+    std::fs::write(repo.join("Makefile"), "check:\n\t@true\n").unwrap();
+    let short = af(&repo, &[]);
+    assert!(short.status.success(), "{}", stderr(&short));
+    let text = stdout(&short);
+    assert!(
+        text.lines().count() <= 24,
+        "{} lines:\n{text}",
+        text.lines().count()
+    );
+    assert!(!text.contains("topology\n"), "{text}");
+    assert!(text.contains("--long lists each"), "{text}");
+    let long = af(&repo, &["--long"]);
+    assert!(long.status.success(), "{}", stderr(&long));
+    assert!(stdout(&long).contains("topology\n"));
+    assert!(stdout(&long).contains("  .af/README.md"));
+}
+
+#[test]
 fn preview_preserves_explicit_gate_quoting_in_the_printed_apply_command() {
     let root = tempfile::tempdir().unwrap();
     let repo = repo(root.path());
@@ -252,6 +273,12 @@ fn apply_creates_valid_authority_and_never_overwrites_it() {
     assert_eq!(report["status"], "created");
     assert!(repo.join(".af/README.md").is_file());
     let readme = std::fs::read_to_string(repo.join(".af/README.md")).unwrap();
+    assert!(
+        readme.find("## Quickstart for the owner").unwrap() < readme.find("## What runs").unwrap()
+    );
+    assert!(readme.contains("af review ledger --campaign pr-<number> --json"));
+    assert!(readme.contains("af review show --campaign pr-<number> FINDING_KEY --json"));
+    assert!(readme.contains("af review report --campaign pr-<number> --json"));
     assert!(readme.contains("## Worker data authorization"));
     assert!(readme.contains("should not ask for additional per-Worker"));
     assert!(readme.contains("Plain `af review run` is light"));
@@ -773,4 +800,517 @@ fn help_start_binds_the_review_as_the_preview_does() {
         "{text}"
     );
     assert!(!text.contains("claude-main --provider"), "{text}");
+}
+
+fn committed_repo(root: &Path) -> PathBuf {
+    let repo = root.join("task-repo");
+    std::fs::create_dir_all(&repo).unwrap();
+    for args in [
+        vec!["init", "-q"],
+        vec!["config", "user.name", "Task fixture"],
+        vec!["config", "user.email", "task@example.invalid"],
+    ] {
+        let output = std::process::Command::new("git")
+            .current_dir(&repo)
+            .args(args)
+            .output()
+            .unwrap();
+        assert!(output.status.success(), "{}", stderr(&output));
+    }
+    std::fs::write(repo.join("Makefile"), "check:\n\t@true\n").unwrap();
+    commit(&repo);
+    repo
+}
+
+fn commit(repo: &Path) {
+    for args in [vec!["add", "-A"], vec!["commit", "-qm", "authority"]] {
+        let output = std::process::Command::new("git")
+            .current_dir(repo)
+            .args(args)
+            .output()
+            .unwrap();
+        assert!(output.status.success(), "{}", stderr(&output));
+    }
+}
+
+fn task_onboard(repo: &Path, registry: &Path, args: &[&str]) -> Output {
+    crate::common::af()
+        .args(["onboard", "--repo", repo.to_str().unwrap(), "--tasks"])
+        .args(args)
+        .env("AF_PROVIDERS_FILE", registry)
+        .output()
+        .unwrap()
+}
+
+#[test]
+fn afactory_authority_plans_a_three_field_task_with_its_defaults() {
+    let root = tempfile::tempdir().unwrap();
+    let repo = committed_repo(root.path());
+    let source = std::env::var_os("AF_WORKSPACE_ROOT")
+        .map(PathBuf::from)
+        .unwrap_or_else(|| Path::new(env!("CARGO_MANIFEST_DIR")).join("../.."))
+        .join(".af");
+    let copied = std::process::Command::new("cp")
+        .args(["-R", source.to_str().unwrap(), repo.to_str().unwrap()])
+        .output()
+        .unwrap();
+    assert!(copied.status.success(), "{}", stderr(&copied));
+    let project: toml::Value =
+        toml::from_str(&std::fs::read_to_string(repo.join(".af/af.toml")).unwrap()).unwrap();
+    assert_eq!(
+        project["task"]["defaults"]["limits"]["tokens"].as_integer(),
+        Some(6_000_000)
+    );
+    assert_eq!(
+        project["task"]["defaults"]["limits"]["verification"]["tokens"].as_integer(),
+        Some(2_000_000)
+    );
+    assert_eq!(
+        project["task"]["defaults"]["limits"]["verification"]["attempts"].as_integer(),
+        Some(8)
+    );
+    assert_eq!(
+        project["task"]["defaults"]["limits"]["verification"]["wall_ms"].as_integer(),
+        Some(14_400_000)
+    );
+    commit(&repo);
+    let ticket = root.path().join("short.json");
+    std::fs::write(
+        &ticket,
+        r#"{"task_id":"short","kind":"implement","goal":"Improve the CLI"}"#,
+    )
+    .unwrap();
+    let providers = registry(
+        &root.path().join("providers"),
+        &[("codex-main", "codex"), ("claude-main", "claude")],
+    );
+    let bin = root.path().join("bin");
+    crate::fake_models::install(
+        "codex",
+        &bin,
+        &root.path().join("providers/auth-codex-main"),
+    );
+    crate::fake_models::install(
+        "claude",
+        &bin,
+        &root.path().join("providers/auth-claude-main"),
+    );
+    let path = std::env::join_paths(
+        std::iter::once(bin).chain(std::env::split_paths(&std::env::var_os("PATH").unwrap())),
+    )
+    .unwrap();
+    let planned = crate::common::af()
+        .current_dir(&repo)
+        .args([
+            "task",
+            "plan",
+            "--file",
+            ticket.to_str().unwrap(),
+            "--state",
+        ])
+        .arg(root.path().join("state"))
+        .env("AF_PROVIDERS_FILE", providers)
+        .env("USER", "fixture")
+        .env("PATH", path)
+        .output()
+        .unwrap();
+    assert!(
+        planned.status.success(),
+        "{}\n{}",
+        stdout(&planned),
+        stderr(&planned)
+    );
+    assert!(
+        stderr(&planned).contains("limits (tokens 6000000, max_attempts 16, wall_ms 28800000)")
+    );
+    assert!(
+        stdout(&planned).contains("kernel/implementation-reviewed"),
+        "{}",
+        stdout(&planned)
+    );
+}
+
+#[test]
+fn task_preview_and_new_bundle_have_exact_pins_and_plan_after_commit() {
+    let root = tempfile::tempdir().unwrap();
+    let repo = committed_repo(root.path());
+    let provider = registry(&root.path().join("provider"), &[("codex-main", "codex")]);
+    let preview = task_onboard(&repo, &provider, &["--json"]);
+    assert!(preview.status.success(), "{}", stderr(&preview));
+    let document: serde_json::Value = serde_json::from_slice(&preview.stdout).unwrap();
+    crate::schemas::valid(
+        &crate::schemas::validator("onboard-tasks-v1.json"),
+        &document,
+    );
+    assert_eq!(document["status"], "preview");
+    assert!(
+        document["files"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|path| path == ".af/task-catalog.toml")
+    );
+    assert!(!repo.join(".af").exists());
+
+    let none = registry(&root.path().join("none"), &[]);
+    let without_provider = task_onboard(&repo, &none, &["--json"]);
+    assert!(
+        without_provider.status.success(),
+        "{}",
+        stderr(&without_provider)
+    );
+    let without_provider: serde_json::Value =
+        serde_json::from_slice(&without_provider.stdout).unwrap();
+    assert!(
+        without_provider["next_steps"][0]
+            .as_str()
+            .unwrap()
+            .contains("af provider setup codex-main --kind codex --login")
+    );
+    assert!(!repo.join(".af").exists());
+
+    let applied = task_onboard(&repo, &provider, &["--apply", "--json"]);
+    assert!(applied.status.success(), "{}", stderr(&applied));
+    let created: serde_json::Value = serde_json::from_slice(&applied.stdout).unwrap();
+    crate::schemas::valid(
+        &crate::schemas::validator("onboard-tasks-v1.json"),
+        &created,
+    );
+    assert_eq!(created["status"], "created");
+    for path in document["files"].as_array().unwrap() {
+        assert!(repo.join(path.as_str().unwrap()).is_file(), "{path}");
+    }
+    let project = std::fs::read_to_string(repo.join(".af/af.toml")).unwrap();
+    assert!(project.ends_with(document["append_text"].as_str().unwrap()));
+    assert!(
+        std::fs::read_to_string(repo.join(".af/README.md"))
+            .unwrap()
+            .contains("## Model-driven Tasks")
+    );
+    let catalog: toml::Value =
+        toml::from_str(&std::fs::read_to_string(repo.join(".af/task-catalog.toml")).unwrap())
+            .unwrap();
+    crate::schemas::valid(
+        &crate::schemas::validator("task-catalog-v2.json"),
+        &serde_json::to_value(&catalog).unwrap(),
+    );
+    let policy: toml::Value =
+        toml::from_str(&std::fs::read_to_string(repo.join(".af/code-policy.toml")).unwrap())
+            .unwrap();
+    crate::schemas::valid(
+        &crate::schemas::validator("code-task-policy-v1.json"),
+        &serde_json::to_value(&policy).unwrap(),
+    );
+    for (name, pin) in catalog["packages"].as_table().unwrap() {
+        assert_eq!(
+            pin["digest"].as_str().unwrap(),
+            review_config::lock::package_digest(name, &repo.join(pin["path"].as_str().unwrap()))
+                .unwrap()
+        );
+    }
+    commit(&repo);
+    let ticket = root.path().join("ticket.json");
+    std::fs::write(
+        &ticket,
+        r#"{"task_id":"onboard-task","kind":"implement","goal":"Document the check command"}"#,
+    )
+    .unwrap();
+    let bin = root.path().join("bin");
+    let auth = root.path().join("provider/auth-codex-main");
+    crate::fake_models::install("codex", &bin, &auth);
+    let path = std::env::join_paths(
+        std::iter::once(bin).chain(std::env::split_paths(&std::env::var_os("PATH").unwrap())),
+    )
+    .unwrap();
+    let plan = crate::common::af()
+        .current_dir(&repo)
+        .args([
+            "task",
+            "plan",
+            "--file",
+            ticket.to_str().unwrap(),
+            "--json",
+            "--state",
+        ])
+        .arg(root.path().join("state"))
+        .env("AF_PROVIDERS_FILE", &provider)
+        .env("USER", "fixture")
+        .env("PATH", path)
+        .output()
+        .unwrap();
+    assert!(
+        plan.status.success(),
+        "{}\n{}",
+        stdout(&plan),
+        stderr(&plan)
+    );
+    assert!(
+        !auth.join("turns").exists(),
+        "planning must not dispatch a model"
+    );
+}
+
+#[test]
+fn additive_task_apply_preserves_review_bytes_and_refuses_conflicts() {
+    let root = tempfile::tempdir().unwrap();
+    let repo = committed_repo(root.path());
+    let provider = registry(&root.path().join("provider"), &[("codex-main", "codex")]);
+    let review = af(&repo, &["--apply"]);
+    assert!(review.status.success(), "{}", stderr(&review));
+    let project = std::fs::read(repo.join(".af/af.toml")).unwrap();
+    let lock = std::fs::read(repo.join(".af/af.lock")).unwrap();
+    let review_pipeline = std::fs::read(repo.join(".af/pipelines/review.toml")).unwrap();
+
+    std::fs::write(repo.join(".af/code-policy.toml"), "occupied\n").unwrap();
+    let refused = task_onboard(&repo, &provider, &["--apply"]);
+    assert!(!refused.status.success());
+    assert!(stderr(&refused).contains("code-policy.toml"));
+    assert!(!repo.join(".af/task-catalog.toml").exists());
+    assert_eq!(std::fs::read(repo.join(".af/af.toml")).unwrap(), project);
+    std::fs::remove_file(repo.join(".af/code-policy.toml")).unwrap();
+
+    std::fs::write(root.path().join("outside"), "outside").unwrap();
+    std::os::unix::fs::symlink(root.path().join("outside"), repo.join(".af/unrelated")).unwrap();
+    let refused = task_onboard(&repo, &provider, &["--apply"]);
+    assert!(!refused.status.success());
+    assert!(
+        stderr(&refused).contains(".af/unrelated"),
+        "{}",
+        stderr(&refused)
+    );
+    assert!(!repo.join(".af/task-catalog.toml").exists());
+    assert_eq!(std::fs::read(repo.join(".af/af.toml")).unwrap(), project);
+    std::fs::remove_file(repo.join(".af/unrelated")).unwrap();
+
+    let created = task_onboard(&repo, &provider, &["--apply"]);
+    assert!(created.status.success(), "{}", stderr(&created));
+    let appended = std::fs::read(repo.join(".af/af.toml")).unwrap();
+    assert!(appended.starts_with(&project));
+    assert_eq!(std::fs::read(repo.join(".af/af.lock")).unwrap(), lock);
+    assert_eq!(
+        std::fs::read(repo.join(".af/pipelines/review.toml")).unwrap(),
+        review_pipeline
+    );
+    let refused = task_onboard(&repo, &provider, &["--apply"]);
+    assert!(!refused.status.success());
+    assert!(stderr(&refused).contains("[task]"));
+    assert_eq!(std::fs::read(repo.join(".af/af.toml")).unwrap(), appended);
+
+    commit(&repo);
+    let ticket = root.path().join("existing-ticket.json");
+    std::fs::write(
+        &ticket,
+        r#"{"task_id":"existing-task","kind":"implement","goal":"Document the check command"}"#,
+    )
+    .unwrap();
+    let bin = root.path().join("bin");
+    crate::fake_models::install("codex", &bin, &root.path().join("provider/auth-codex-main"));
+    let path = std::env::join_paths(
+        std::iter::once(bin).chain(std::env::split_paths(&std::env::var_os("PATH").unwrap())),
+    )
+    .unwrap();
+    let plan = crate::common::af()
+        .current_dir(&repo)
+        .args([
+            "task",
+            "plan",
+            "--file",
+            ticket.to_str().unwrap(),
+            "--json",
+            "--state",
+        ])
+        .arg(root.path().join("existing-state"))
+        .env("AF_PROVIDERS_FILE", &provider)
+        .env("PATH", path)
+        .output()
+        .unwrap();
+    assert!(
+        plan.status.success(),
+        "{}\n{}",
+        stdout(&plan),
+        stderr(&plan)
+    );
+
+    let other = root.path().join("table-repo");
+    std::fs::create_dir_all(other.join(".git")).unwrap();
+    std::fs::create_dir_all(other.join(".af")).unwrap();
+    std::fs::write(other.join(".af/af.toml"), "version = 1\n[task]\n").unwrap();
+    std::fs::write(other.join("Makefile"), "check:\n\t@true\n").unwrap();
+    let refused = task_onboard(&other, &provider, &["--apply"]);
+    assert!(!refused.status.success());
+    assert!(stderr(&refused).contains("[task]"));
+    assert!(!other.join(".af/task-catalog.toml").exists());
+}
+
+#[test]
+fn task_onboarding_uses_a_registered_claude_kind_with_distinct_models() {
+    let root = tempfile::tempdir().unwrap();
+    let repo = committed_repo(root.path());
+    let provider = registry(&root.path().join("provider"), &[("claude-main", "claude")]);
+    let applied = task_onboard(&repo, &provider, &["--apply", "--json"]);
+    assert!(applied.status.success(), "{}", stderr(&applied));
+    let report: serde_json::Value = serde_json::from_slice(&applied.stdout).unwrap();
+    assert_eq!(report["provider_kind"], "claude");
+    let implementer =
+        std::fs::read_to_string(repo.join(".af/task-packages/onboard/implementer/worker.toml"))
+            .unwrap();
+    let reviewer =
+        std::fs::read_to_string(repo.join(".af/task-packages/onboard/bugs/worker.toml")).unwrap();
+    assert!(implementer.contains("model = \"claude-opus-5-5\""));
+    assert!(reviewer.contains("model = \"claude-sonnet-5-5\""));
+    commit(&repo);
+
+    let ticket = root.path().join("claude-ticket.json");
+    std::fs::write(
+        &ticket,
+        r#"{"task_id":"claude-task","kind":"implement","goal":"Document the check command"}"#,
+    )
+    .unwrap();
+    let bin = root.path().join("bin");
+    let auth = root.path().join("provider/auth-claude-main");
+    crate::fake_models::install("claude", &bin, &auth);
+    let path = std::env::join_paths(
+        std::iter::once(bin).chain(std::env::split_paths(&std::env::var_os("PATH").unwrap())),
+    )
+    .unwrap();
+    let plan = crate::common::af()
+        .current_dir(&repo)
+        .args([
+            "task",
+            "plan",
+            "--file",
+            ticket.to_str().unwrap(),
+            "--json",
+            "--state",
+        ])
+        .arg(root.path().join("state"))
+        .env("AF_PROVIDERS_FILE", &provider)
+        .env("USER", "fixture")
+        .env("PATH", path)
+        .output()
+        .unwrap();
+    assert!(
+        plan.status.success(),
+        "{}\n{}",
+        stdout(&plan),
+        stderr(&plan)
+    );
+    assert!(!auth.join("turns").exists());
+}
+
+#[test]
+fn task_onboarding_uses_both_registered_provider_aliases_in_mixed_profile() {
+    let root = tempfile::tempdir().unwrap();
+    let repo = committed_repo(root.path());
+    let provider = registry(
+        &root.path().join("provider"),
+        &[("claude-main", "claude"), ("codex-main", "codex")],
+    );
+    let applied = task_onboard(&repo, &provider, &["--apply", "--json"]);
+    assert!(applied.status.success(), "{}", stderr(&applied));
+    let report: serde_json::Value = serde_json::from_slice(&applied.stdout).unwrap();
+    crate::schemas::valid(&crate::schemas::validator("onboard-tasks-v1.json"), &report);
+    assert_eq!(report["provider_kind"], "mixed");
+    let catalog = std::fs::read_to_string(repo.join(".af/task-catalog.toml")).unwrap();
+    assert!(catalog.contains("\"onboard/implementer\" = \"claude-main\""));
+    assert!(catalog.contains("\"onboard/bugs\" = \"codex-main\""));
+    let implementer =
+        std::fs::read_to_string(repo.join(".af/task-packages/onboard/implementer/worker.toml"))
+            .unwrap();
+    let reviewer =
+        std::fs::read_to_string(repo.join(".af/task-packages/onboard/bugs/worker.toml")).unwrap();
+    assert!(implementer.contains("provider_kind = \"claude\""));
+    assert!(reviewer.contains("provider_kind = \"codex\""));
+}
+
+#[test]
+fn committed_onboard_task_runs_with_fake_model_workers() {
+    use std::os::unix::fs::PermissionsExt;
+
+    let root = tempfile::tempdir().unwrap();
+    let repo = committed_repo(root.path());
+    let provider = registry(&root.path().join("provider"), &[("codex-main", "codex")]);
+    let applied = task_onboard(&repo, &provider, &["--apply"]);
+    assert!(applied.status.success(), "{}", stderr(&applied));
+    commit(&repo);
+    let ticket = root.path().join("run-ticket.json");
+    std::fs::write(
+        &ticket,
+        r#"{"task_id":"onboard-run","kind":"implement","goal":"Add fixture.txt with the word done"}"#,
+    )
+    .unwrap();
+    let bin = root.path().join("bin");
+    let auth = root.path().join("provider/auth-codex-main");
+    crate::fake_models::install("codex", &bin, &auth);
+    let script = r#"#!/usr/bin/python3
+import json,os,shutil,sys
+home=os.environ['CODEX_HOME']
+if sys.argv[1:]==['--version']:
+ print('codex-cli 0.162.1'); sys.exit(0)
+if sys.argv[1:3]==['login','status']:
+ print('Logged in using ChatGPT'); sys.exit(0)
+if sys.argv[1:]==['app-server']:
+ for line in sys.stdin:
+  message=json.loads(line)
+  method=message.get('method')
+  if method=='initialize': answer={'id':message['id'],'result':{}}
+  elif method=='model/list':
+   shutil.copyfile(home+'/codex-models-cache.json',home+'/models_cache.json')
+   answer={'id':message['id'],'result':json.load(open(home+'/codex-model-list.json'))}
+  elif method=='account/read':
+   answer={'id':message['id'],'result':{'account':{'type':'chatgpt','email':'fixture@example.invalid'}}}
+  else: continue
+  print(json.dumps(answer),flush=True)
+ sys.exit(0)
+request=sys.stdin.read()
+if request==PROBE_INPUT:
+ message='OK'
+else:
+ r=json.loads(request)
+ if 'report' in r.get('output_schemas',{}):
+  open('fixture.txt','w').write('done\n')
+  outputs={'report':[{'summary':'Added fixture.txt'}]}
+ elif 'Goal evaluator' in str(r):
+  outputs={'result':[{'outcome':'passed','reason':'The fixture exists and the check passed.'}]}
+ else:
+  outputs={'result':[{'reports':[],'benchmark_demands':[],'dispositions':[]}]}
+ message=json.dumps({'schema':'af.worker-reply/1','outputs':outputs})
+ with open(home+'/turns','a') as f: f.write('worker\n')
+if '-o' in sys.argv:
+ open(sys.argv[sys.argv.index('-o')+1],'w').write(message)
+print(json.dumps({'type':'thread.started','thread_id':'synthetic-onboard'}))
+print(json.dumps({'type':'item.completed','item':{'type':'agent_message','text':message}}))
+print(json.dumps({'type':'turn.completed','usage':{'input_tokens':10,'cached_input_tokens':0,'output_tokens':2,'reasoning_output_tokens':0,'cache_write_input_tokens':0}}))
+"#;
+    let code = crate::provider_cli::with_help("codex", &crate::provider_cli::with_probe(script));
+    std::fs::write(bin.join("codex"), code).unwrap();
+    std::fs::set_permissions(bin.join("codex"), std::fs::Permissions::from_mode(0o755)).unwrap();
+    let path = std::env::join_paths(
+        std::iter::once(bin).chain(std::env::split_paths(&std::env::var_os("PATH").unwrap())),
+    )
+    .unwrap();
+    let run = crate::common::af()
+        .current_dir(&repo)
+        .args([
+            "task",
+            "start",
+            "--execute",
+            "--file",
+            ticket.to_str().unwrap(),
+            "--json",
+            "--state",
+        ])
+        .arg(root.path().join("state"))
+        .env("AF_PROVIDERS_FILE", &provider)
+        .env("USER", "fixture")
+        .env("PATH", path)
+        .output()
+        .unwrap();
+    assert!(run.status.success(), "{}\n{}", stdout(&run), stderr(&run));
+    let result: serde_json::Value = serde_json::from_slice(&run.stdout).unwrap();
+    assert_eq!(result["result"]["acceptance"], "satisfied", "{result:#}");
+    assert!(
+        auth.join("turns").exists(),
+        "the Task did not call a Worker"
+    );
 }

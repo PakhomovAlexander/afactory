@@ -48,6 +48,7 @@ pub(super) mod developer;
 pub(crate) mod domain;
 pub(super) mod export;
 pub(super) mod findings;
+mod gate_history;
 mod input_bindings;
 mod input_file;
 mod inspection;
@@ -612,9 +613,9 @@ fn capture_authority(
     let bytes = captured_file(cas, manifest, ".af/task-catalog.toml").map_err(|message| {
         if manifest.get(".af/task-catalog.toml").is_some() { return message; }
         crate::error_document::typed(
-            format!("{message}; review and commit a local catalog, then select that commit; af catalog init --repo .. --profile software --destination af-demo creates a starter"),
+            format!("{message}; if Task authority exists locally, review and commit it, then select that commit. Otherwise preview `af onboard --tasks` and apply it with `af onboard --tasks --apply`. For a deterministic starter beside this checkout, use `af catalog init --repo .. --profile software --destination af-demo`"),
             crate::error_document::Detail::new(crate::error_document::Cause::NoTaskCatalog)
-                .next("af catalog init --repo .. --profile software --destination af-demo")
+                .next("af onboard --tasks")
                 .with("path", ".af/task-catalog.toml")
                 .with("revision", "selected Authority Snapshot"),
         )
@@ -3976,6 +3977,11 @@ fn present_with_format(
         );
     } else if explain && state.plan_id.is_some() {
         print!("{}", preview::current(cas, &state, tree)?);
+        if undeclared.is_some()
+            && let Some(hint) = gate_history::last(cas, store, &state)
+        {
+            println!("last Gate here: {hint}");
+        }
     } else {
         for line in show_lines(
             cas,

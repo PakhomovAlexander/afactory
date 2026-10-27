@@ -1,6 +1,6 @@
 # Generate review authority with `af onboard`
 
-**Status:** accepted (2026-08-27)
+**Status:** accepted (2026-08-27); amended for Task authority by [ADR-0243](0243-add-task-authority-with-additive-onboarding.md).
 
 Release `v0.3.0` can execute and validate digest-pinned `.af/` review authority, but a new
 consuming repository still needs a maintainer to construct the pipeline, Worker packages, and

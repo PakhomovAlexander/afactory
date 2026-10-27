@@ -323,6 +323,30 @@ fn fixture(dir: &Path) -> (PathBuf, PathBuf, String) {
 }
 
 #[test]
+fn empty_ledger_json_has_the_same_schema_as_a_populated_ledger() {
+    let dir = tempfile::tempdir().unwrap();
+    let (repo, home, state) = fixture(dir.path());
+    std::fs::write(repo.join("src/main.rs"), "fn main() { /* bounded */ }\n").unwrap();
+    git(&repo, &home, &["commit", "-qam", "bound before review"]);
+    let (code, stdout, stderr) = af_light(
+        &repo,
+        &home,
+        &["run", "--campaign", "empty", "--state", &state],
+    );
+    assert_eq!(code, 0, "{stdout}\n{stderr}");
+    let (code, output, stderr) = af_light(
+        &repo,
+        &home,
+        &["ledger", "--campaign", "empty", "--state", &state, "--json"],
+    );
+    assert_eq!(code, 0, "{output}\n{stderr}");
+    let document: serde_json::Value = serde_json::from_str(&output).unwrap();
+    contracts::valid("review-ledger-v1.json", &document);
+    assert_eq!(document["findings"], serde_json::json!([]));
+    assert_eq!(document["demands"], serde_json::json!([]));
+}
+
+#[test]
 fn light_is_default_single_round_and_refuses_repeat_before_dispatch() {
     let dir = tempfile::tempdir().unwrap();
     let (repo, home, state) = fixture(dir.path());
@@ -583,6 +607,23 @@ fn required_demands_are_visible_in_run_ledger_and_json_output() {
     );
     assert!(ledger_err.contains("rejected"), "{ledger_err}");
     assert!(ledger_err.contains("wall "), "{ledger_err}");
+    let (code, ledger_json, error) = af(
+        &repo,
+        &home,
+        &[
+            "ledger",
+            "--campaign",
+            "demand-human",
+            "--state",
+            &state,
+            "--json",
+        ],
+    );
+    assert_eq!(code, 0, "{error}");
+    let ledger: serde_json::Value = serde_json::from_str(&ledger_json).unwrap();
+    contracts::valid("review-ledger-v1.json", &ledger);
+    assert_eq!(ledger["open_required_demands"], 1);
+    assert_eq!(ledger["demands"][0]["status"], "open");
 
     let json_state = dir.path().join("json-state");
     let json_state = json_state.to_string_lossy().into_owned();
@@ -1115,6 +1156,17 @@ fn a_campaign_converges_after_a_scoped_nonfixed_resolution() {
     assert!(stdout.contains("round    1"), "{stdout}");
     assert!(stdout.contains("Unbounded loop"), "{stdout}");
 
+    let (code, ledger_json, error) = af(
+        &repo,
+        &home,
+        &["ledger", "--campaign", "loop", "--state", &state, "--json"],
+    );
+    assert_eq!(code, 0, "{error}");
+    let ledger: serde_json::Value = serde_json::from_str(&ledger_json).unwrap();
+    contracts::valid("review-ledger-v1.json", &ledger);
+    assert_eq!(ledger["schema"], "af/review-ledger@1");
+    assert_eq!(ledger["findings"].as_array().unwrap().len(), 1);
+
     // The operator reads the ledger and takes the finding's key.
     let (code, ledger_out, _) = af(
         &repo,
@@ -1128,6 +1180,25 @@ fn a_campaign_converges_after_a_scoped_nonfixed_resolution() {
         .expect("the finding is in the ledger");
     assert!(row.contains("\tmajor\topen\t"), "{row}");
     let key = row.split('\t').next().unwrap().to_string();
+
+    let (code, show_json, error) = af(
+        &repo,
+        &home,
+        &[
+            "show",
+            "--campaign",
+            "loop",
+            "--state",
+            &state,
+            &key,
+            "--json",
+        ],
+    );
+    assert_eq!(code, 0, "{error}");
+    let shown: serde_json::Value = serde_json::from_str(&show_json).unwrap();
+    contracts::valid("review-show-v1.json", &shown);
+    assert_eq!(shown["finding"]["key"], key);
+    assert_eq!(shown["reports"].as_array().unwrap().len(), 1);
 
     let (code, long_out, long_err) = af(
         &repo,
@@ -1204,6 +1275,14 @@ fn a_campaign_converges_after_a_scoped_nonfixed_resolution() {
     assert_eq!(code, 0, "{report_json}\n{report_err}");
     let report: serde_json::Value = serde_json::from_str(&report_json).unwrap();
     contracts::valid("review-report-v4.json", &report);
+    let (code, shorthand, error) = af(
+        &repo,
+        &home,
+        &["report", "--campaign", "loop", "--state", &state, "--json"],
+    );
+    assert_eq!(code, 0, "{error}");
+    let shorthand: serde_json::Value = serde_json::from_str(&shorthand).unwrap();
+    assert_eq!(shorthand, report);
     assert_eq!(report["schema"], "af/review-report@4");
     assert_eq!(report["rounds"][0]["round"], 1);
     assert!(report.get("spend").is_none(), "{report_json}");

@@ -345,7 +345,43 @@ fn findings_print_each_reviewers_findings_by_severity_and_the_evaluators_verdict
     let root = tempfile::tempdir().unwrap();
     let (repo, state) = reviewed(root.path());
     task_gc::start(&repo, &state, "base.json");
+    let initial = expect(&af(&repo, &state, &["task", "status", "chain-base"]), 0);
+    assert!(!initial.contains("last Gate here:"), "{initial}");
     task_gc::start(&repo, &state, "gc-older.json");
+    let history = expect(&af(&repo, &state, &["task", "status", "gc-older"]), 0);
+    assert!(history.contains("last Gate here:"), "{history}");
+    let previous = document(
+        &af(&repo, &state, &["task", "report", "chain-base", "--json"]),
+        0,
+        Some("task-report-v2.json"),
+    );
+    let recorded_check = previous["tasks"][0]["nodes"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .flat_map(|node| node["checks"].as_array().unwrap())
+        .any(|check| {
+            let Some(ms) = check["elapsed_ms"].as_u64() else {
+                return false;
+            };
+            let seconds = ms.saturating_add(500) / 1_000;
+            let duration = match seconds {
+                0..60 => format!("{seconds} s"),
+                60..3_600 => format!("{} min", seconds / 60),
+                _ if seconds % 3_600 / 60 == 0 => format!("{} h", seconds / 3_600),
+                _ => format!("{} h {} min", seconds / 3_600, seconds % 3_600 / 60),
+            };
+            history.contains(&format!("{}: {duration}", check["name"].as_str().unwrap()))
+        });
+    assert!(
+        recorded_check,
+        "the hint must use a recorded check span: {history}"
+    );
+    let plan = expect(
+        &af(&repo, &state, &["task", "plan", "--file", "gc-newer.json"]),
+        0,
+    );
+    assert!(plan.contains("last Gate here:"), "{plan}");
 
     let text = expect(&af(&repo, &state, &["task", "findings", "chain-base"]), 0);
     let expected = "\
@@ -927,13 +963,22 @@ fn the_pr_body_is_the_template_with_both_blocks_and_the_checker_accepts_it() {
         0,
     );
     assert!(body.starts_with("## What\n"), "{body}");
-    let report = expect(
-        &af(&repo, &state, &["task", "report", "chain-base", "gc-older"]),
-        0,
-    );
+    let receipt = body.find("#### Receipt").unwrap();
+    let pipeline = body.find("**fixture/").unwrap();
+    let rounds = body.find("| Round |").unwrap();
+    assert!(receipt < pipeline && pipeline < rounds, "{body}");
+    for field in [
+        "Outcome:",
+        "Checks:",
+        "Unresolved findings:",
+        "Tokens:",
+        "Active time:",
+    ] {
+        assert!(body.contains(field), "{field}: {body}");
+    }
     assert!(
-        body.contains(&report),
-        "the report block, unchanged:\n{body}"
+        body.contains("Unresolved findings: 0 blocker, 1 major, 1 minor"),
+        "{body}"
     );
     assert!(
         body.contains("<!-- af-pr-lines:v1 -->\n**Lines added: "),
@@ -1214,7 +1259,7 @@ fn a_detached_run_is_followed_cancelled_and_resumed() {
     let held = document(
         &af(&repo, &state, &["task", "status", task, "--json"]),
         0,
-        Some("task-status-v1.json"),
+        Some("task-status-v2.json"),
     );
     assert_eq!(held["run"]["pid"], pid, "{held:#}");
     std::fs::remove_file(&refused_path).unwrap();
@@ -1224,7 +1269,7 @@ fn a_detached_run_is_followed_cancelled_and_resumed() {
     document(
         &af(&repo, &state, &["task", "status", task, "--json"]),
         0,
-        Some("task-status-v1.json"),
+        Some("task-status-v2.json"),
     );
     let waited = af(&repo, &state, &["task", "wait", task, "--timeout", "1"]);
     assert_eq!(waited.status.code(), Some(124), "{}", err(&waited));
@@ -1305,6 +1350,23 @@ fn a_detached_run_is_followed_cancelled_and_resumed() {
         Some(4),
         "a cancelled Task waits as cancelled"
     );
+    let notified = crate::common::af()
+        .current_dir(&repo)
+        .args(["task", "wait", task, "--notify", "--bell", "--state"])
+        .arg(&state)
+        .env("PATH", "/a-notifier-that-does-not-exist")
+        .output()
+        .unwrap();
+    assert_eq!(notified.status.code(), Some(4), "{}", err(&notified));
+    assert!(
+        err(&notified).contains("warning: notifier unavailable"),
+        "{}",
+        err(&notified)
+    );
+    assert!(
+        !err(&notified).contains('\u{7}'),
+        "a pipe is not a terminal"
+    );
 
     // A foreground run resumes it, with its progress on stderr and its state last.
     std::fs::write(&resume, b"").unwrap();
@@ -1358,9 +1420,26 @@ fn a_detached_run_is_followed_cancelled_and_resumed() {
     let settled = document(
         &af(&repo, &state, &["task", "wait", task, "--json"]),
         0,
-        Some("task-status-v1.json"),
+        Some("task-status-v2.json"),
     );
     assert_eq!(settled["state"]["outcome"], "verified");
+    let notified = crate::common::af()
+        .current_dir(&repo)
+        .args(["task", "wait", task, "--notify", "--bell", "--state"])
+        .arg(&state)
+        .env("PATH", "/a-notifier-that-does-not-exist")
+        .output()
+        .unwrap();
+    assert_eq!(notified.status.code(), Some(0), "{}", err(&notified));
+    assert!(
+        err(&notified).contains("warning: notifier unavailable"),
+        "{}",
+        err(&notified)
+    );
+    assert!(
+        !err(&notified).contains('\u{7}'),
+        "a pipe is not a terminal"
+    );
     assert_eq!(
         settled["run"]["run"], 2,
         "the resumed run is run 2: {settled:#}"

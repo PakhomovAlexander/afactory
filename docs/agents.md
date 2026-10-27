@@ -86,9 +86,14 @@ claimed to run: exit 4, `admitted: false` and `next_action` `af task status TASK
 survives the shell that started it. Then
 `af task wait TASK_ID --json` blocks until the Task settles and exits with its exit code
 (`--timeout S` gives up with exit 124), and `af task status TASK_ID --json` answers at once;
-both print `af/task-status@1`: the state, the node that runs, the time since the Task's clock
-started and the tokens so far. `af task cancel TASK_ID --json` stops the run and its Worker
-processes, recording who asked, and prints `af/task-cancelled@1`; the Task stays resumable with
+both print `af/task-status@2`: the state, the node that runs, the time since the Task's clock
+started, the tokens reserved, charged and remaining, and any unknown usage. When the Store has a
+check span from the same repository and code policy for a check in this plan, status and plan show
+its last recorded duration; with no such history they show no hint. `af task wait --bell` rings
+only on terminal stderr at completion. `--notify` requests an OS notification without changing
+the wait result if the notifier is unavailable. `af task cancel TASK_ID --json` stops the run and
+its Worker processes, recording who asked, and prints `af/task-cancelled@1`; the Task stays
+resumable with
 `af task run TASK_ID`.
 
 ## 3. Read how it ended
