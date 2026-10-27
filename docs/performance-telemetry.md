@@ -323,7 +323,7 @@ Every planned run is recorded once: `ok`, `failed`, `timeout`, `refused_document
 result is `complete` only when every run succeeded on a host observed the same at both ends,
 every cleanup was confirmed and nothing protected changed.
 
-`result/` holds `result.json` (`af.perf-telemetry-result/1`), every script's document under
+`result/` holds `result.json` (`af.perf-telemetry-result/2`), every script's document under
 `raw/<experiment>/round-<n>-<side>.json`, capped stderr under `logs/`, the offline
 `report.html`, the job summary `summary.md` and `manifest.json`. The result records:
 
@@ -341,6 +341,18 @@ every cleanup was confirmed and nothing protected changed.
   A round's figures are set side by side only when both documents' protocol (pairs, scale,
   seed, bounds), corpus and machine agree, on one host; anything else is `incompatible` or
   `missing` with its reason.
+
+Every physical duration, byte count and individual latency sample is validated before
+summarization and admission. Raw wall time must be positive; raw drain/read latency and byte
+counts must be nonnegative and representable. Numeric fields must be finite. Differences,
+percentages and their intervals retain their signed meaning. A refused measurement records
+`refused_document`, no admitted document or judgment, and `measurement_refusal`: the declared
+field path, original numeric token (at most 512 bytes), complete token size/digest, original
+document size/digest and a typed reason. No free-form candidate document text is published.
+The readable diagnostic names the experiment, round and side. Other runs continue under the
+same schedule: mixed results are `partial`, all-refused results are `failed`. Offline
+verification replays the numeric refusal under the exact authority and regenerates the report;
+upload and collection use that same verification. Version 1 results fail closed without fallback.
 
 ### Verification and history
 
