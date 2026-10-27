@@ -551,12 +551,14 @@ class SealedEvidence(unittest.TestCase):
             shutil.copytree(ROOT / 'scripts', root / 'scripts')
             for directory in ('.config', 'schemas', '.github'):
                 shutil.copytree(ROOT / directory, root / directory)
+            # AF snapshots are read-only; this disposable fixture rewrites copied files.
+            for path in root.rglob('*'):
+                if path.is_file() and not path.is_symlink():
+                    path.chmod(stat.S_IMODE(path.stat().st_mode) | stat.S_IWUSR)
             scripts = root / 'scripts'
             for name in ('test-class-python.py', 'changelog-notes.py', 'af-pin.py',
                          'performance/schemas.py', 'performance/cli.py'):
-                path = scripts / name
-                path.chmod(stat.S_IMODE(path.stat().st_mode) | stat.S_IWUSR)
-                path.write_text('pass\n')
+                (scripts / name).write_text('pass\n')
             tools = root / 'bin'
             tools.mkdir()
             (tools / 'python3').symlink_to(sys.executable)
