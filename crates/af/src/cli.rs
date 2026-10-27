@@ -202,7 +202,7 @@ See `af help providers` for the registry model and the order of first use."
         #[command(subcommand)]
         command: ProviderCommand,
     },
-    /// Generate or validate `.af/` review authority for a repository
+    /// Generate or validate `.af/` review and Task authority for a repository
     #[command(
         display_order = 2,
         long_about = "Set up a repository for af review: write the `.af/` policy a review runs \
@@ -217,12 +217,18 @@ its exact pins, the Worker packages, the graph and the Gates. --refresh-lock: ex
 the selected pipeline, every pipeline a route or the oversized policy names, and the Worker \
 packages they reference; it drops a pin whose `.af/workers/NAME` package or \
 `.af/pipelines/NAME.toml` file no longer exists.\n\n\
+With --tasks, preview the exact files and [task.defaults] text for model-driven Tasks; \
+--tasks --apply creates a combined bundle in a new repository or adds only absent Task files \
+and the absent table to an existing `.af/` directory. With --tasks, a registered Claude and Codex \
+use the mixed profile: Claude implements and Codex reviews; one registered kind is used for all \
+Workers. Review and commit the result before a Task can plan.\n\n\
 The command never calls a model, runs a Gate, reads credentials, creates Campaign state, fetches \
-a pull request, commits, pushes, comments, or overwrites an existing `.af/` directory. Notes for \
+a pull request, commits, pushes, comments, or overwrites existing authority files. Notes for \
 agents and automation close this page.",
         after_long_help = "Runner profiles:\n  mixed   correctness = Claude Opus 5.5/high; architecture = GPT-6 Sol/high\n  claude  both Workers = Claude Opus 5.5/high\n  codex   both Workers = GPT-6 Sol/high\nWithout --runner, onboarding picks claude or codex when only that Provider kind is registered on this machine (`af provider status`), and mixed otherwise; the `profile` line says which and why.\n\nThe preview's `providers` block names, for every model Worker, a registered Provider of its kind and the --provider binding to pass, or the command that registers one; it reads the registry without starting a Provider CLI unless --probe asks.\n\nGate discovery prefers `make check`, then `scripts/verify.sh`, Rust, Go, or a package-manager test script. If none is unambiguous, pass a trusted literal.\n\nExamples:\n  \
 af onboard\n  \
 # needs: a repository without .af/\n  af onboard --gate 'check=make check' --apply\n  \
+# needs: a repository with an acceptance Gate\n  af onboard --tasks\n  # needs: a repository with review authority and an acceptance Gate\n  af onboard --tasks --apply\n  \
 af onboard --runner mixed --apply   # needs: a repository without .af/\n  \
 af onboard --refresh-lock\n  \
 # needs: release 0.9.0; moves the pin to it\n  af onboard --refresh-lock --af 0.9.0\n\n\
@@ -1541,6 +1547,9 @@ pub(crate) struct OnboardArgs {
         help_heading = "Selector"
     )]
     pub(crate) repo: PathBuf,
+    /// Preview or add pinned model-driven Task authority (also includes review authority in a new repository)
+    #[arg(long, help_heading = "Generate", conflicts_with = "refresh_lock")]
+    pub(crate) tasks: bool,
     /// Runner profile for the generated Workers [default: the Provider kinds registered on
     /// this machine: claude, codex, or mixed for both or none]
     #[arg(long, value_enum, help_heading = "Generate")]

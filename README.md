@@ -211,6 +211,13 @@ README walks through the rest; [docs/tasks.md](docs/tasks.md) is the guide.
   workers/       Worker packages: <name>/reviewer.md (prompt) + reviewer.toml (manifest)
 ```
 
+For model-driven implementation Tasks, `af onboard --tasks` previews a pinned Task
+catalog, code policy, Worker packages and `[task.defaults]` without spending tokens.
+`af onboard --tasks --apply` creates review and Task authority together, or adds
+absent Task files to an existing review `.af/` and appends the defaults. It refuses an
+existing Task target or `[task]` table. Review and commit the resulting diff before
+`af task plan` can use it.
+
 Configuration merges built-in → `/etc/af` → `~/.config/af` → every `.af/af.toml` above the
 repository → `.af/af.toml` → `.af/af.local.toml` → `AF_<TABLE>__<KEY>`; `af config show --origin`
 names where each value came from. Provider bindings such as `claude-main` and `codex-main` live in

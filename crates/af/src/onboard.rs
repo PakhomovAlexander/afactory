@@ -17,6 +17,8 @@ use review_config::{
 use review_core::{PortCardinality, SnapshotAffinity, SubjectKind, contract};
 use serde::Serialize;
 
+mod tasks;
+
 const MAX_DISCOVERY_FILE_BYTES: u64 = 1024 * 1024;
 const PROFILE: &str = "multi-review@1";
 const PIPELINE_NAME: &str = "review";
@@ -158,6 +160,7 @@ impl Gate {
 #[derive(Debug, Clone)]
 struct Options {
     repo: PathBuf,
+    tasks: bool,
     /// `--runner`; without it a new bundle's profile follows the registered Provider kinds.
     runner: Option<RunnerProfile>,
     /// `--probe`: run the token-free Provider status probe for the providers block.
@@ -282,6 +285,9 @@ struct Bundle {
 
 pub(super) fn run_cli(args: crate::cli::OnboardArgs) -> Result<(), String> {
     let options = options_from_cli(args)?;
+    if options.tasks {
+        return tasks::run(&options);
+    }
     let report = execute(&options)?;
     if options.json {
         println!(
@@ -311,6 +317,7 @@ fn options_from_cli(args: crate::cli::OnboardArgs) -> Result<Options, String> {
     }
     let options = Options {
         repo: args.repo,
+        tasks: args.tasks,
         runner,
         probe: args.probe,
         gates,
@@ -331,6 +338,12 @@ fn options_from_cli(args: crate::cli::OnboardArgs) -> Result<Options, String> {
     }
     if options.apply && options.refresh_lock {
         return Err("--apply and --refresh-lock are mutually exclusive".to_string());
+    }
+    if options.tasks && options.probe {
+        return Err(
+            "--probe is for review onboarding; use `af provider status` to inspect Task Providers"
+                .into(),
+        );
     }
     if options.refresh_lock && !options.gates.is_empty() {
         return Err(

@@ -427,3 +427,5 @@ future readers need.
   page](0241-install-an-agent-entry-point-from-the-help-page.md)
 - [0242 — Classify first-run refusals and suggest only explicit trusted review
   commands](0242-classify-first-run-refusals.md)
+- [0243 — Add pinned Task authority through additive
+  onboarding](0243-add-task-authority-with-additive-onboarding.md)
