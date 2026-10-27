@@ -66,6 +66,7 @@
     "review-store cas::tests::bench_put_throughput": "perf"
   },
   "ignored": {
+    "af::it perf_kernel_measure::guarded_kernel_experiments_measure_one_judged_sample": "manual-measurement",
     "review-pipeline task::optimization_configuration::tests::one_of_many_cache_materializing_processes": "subprocess-helper",
     "review-pipeline::it task_campaign_review::host::domain::a_container_gate_executes_on_the_task_host": "live-container",
     "review-process sample::tests::a_failed_exit_observation_in_a_namespace_keeps_the_deadline": "namespace-child",
