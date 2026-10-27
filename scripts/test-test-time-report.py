@@ -439,7 +439,8 @@ def project(base, *, script=True):
     repo = base / 'repo'
     (repo / 'scripts').mkdir(parents=True)
     (repo / '.config').mkdir()
-    names = ['verify.sh', 'nextest-gate.py', 'ci-step.py'] + (['test-time-report.py'] * script)
+    names = ['verify.sh', 'verify-body.sh', 'gate-owner.py', 'nextest-gate.py',
+             'ci-step.py'] + (['test-time-report.py'] * script)
     for name in names:
         shutil.copyfile(ROOT / 'scripts' / name, repo / 'scripts' / name)
     shutil.copyfile(ROOT / '.config/nextest.toml', repo / '.config/nextest.toml')

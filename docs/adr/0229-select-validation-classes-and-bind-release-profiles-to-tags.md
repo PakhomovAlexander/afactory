@@ -1,4 +1,4 @@
-# ADR-0214: Select validation classes and bind release profiles to tags
+# ADR-0229: Select validation classes and bind release profiles to tags
 
 **Status:** accepted (2026-10-25)
 
@@ -24,7 +24,10 @@ Run selected classes in parallel OS/class jobs. The unchanged required `validati
 `validation / check (ubuntu-latest)` names aggregate selected results and exact plan receipts with
 fail-closed handling of missing, skipped, cancelled and failed work. Linux live containers belong to
 e2e. The selected perf class owns the Python laboratory on latest stable Python with required parser
-parity, feature-on tests and expensive performance integration checks. No assertion or deadline changes.
+parity, feature-on tests, expensive performance integration checks and the pinned-container
+telemetry build/measurement smoke. Smoke uses the resolver and must actually succeed in both
+stable aggregations; fast/no-perf reports it as NOT RUN. The separate advisory telemetry
+producer retains its event and source-binding semantics. No assertion or deadline changes.
 
 Release PR labels directly select validation, without a policy file or metadata commit. Check only
 branch/workspace version agreement on PR CI. On first creation of an absent version tag, read the
@@ -44,6 +47,9 @@ Release preparation checks the requested profile label before branch/source/comm
 Route native gate Python evidence beneath the existing writable `AF_GATE_NEXTEST_RUN` directory;
 ordinary CI/local checkouts retain `target/base-evidence`. Test fixtures use external temporary
 sources and prove the actual recording recipes work against an unprivileged chmod seal.
+Retain the native gate-owner wrapper and all its ownership regressions. Require its preflight
+in base checks and selected class runners; explicit native selection lives in verify-body.sh.
+Upstream ADR-0214 through ADR-0223 retain their identities and decisions.
 
 Use the same PR selection in the separate trusted-control Performance workflow: an excluded perf
 class is explicitly exempt, not measured. Label changes cancel earlier PR measurements. Measurement

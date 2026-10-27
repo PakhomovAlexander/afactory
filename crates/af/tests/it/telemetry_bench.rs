@@ -846,7 +846,7 @@ assert source() == before
 /// generations from one seed are byte-identical at a small scale, however many processes write
 /// them, and another seed differs; the generator writes only into an empty directory outside af's
 /// state root; af reads every segment it wrote, and the three measurements on it validate
-/// against `af/telemetry-read-latency@1`.
+/// against `af/telemetry-read-latency@2`.
 #[test]
 fn telemetry_corpus_is_deterministic() {
     let machine = Machine::new();
@@ -921,9 +921,9 @@ fn telemetry_corpus_is_deterministic() {
         text(&output)
     );
     let measured = document(&output);
-    let validator = schemas::validator("telemetry-read-latency-v1.json");
+    let validator = schemas::validator("telemetry-read-latency-v2.json");
     schemas::valid(&validator, &measured);
-    every_property_required(&schema_document("telemetry-read-latency-v1.json"));
+    every_property_required(&schema_document("telemetry-read-latency-v2.json"));
     let corpus = &measured["corpus"];
     for (field, expected) in [
         ("runs", 4),
@@ -935,6 +935,7 @@ fn telemetry_corpus_is_deterministic() {
         ("blob_files", 80),
         ("shared_blobs", 20),
         ("blob_occurrences", 100),
+        ("content_indexed", 80),
     ] {
         assert_eq!(corpus[field], expected, "{field}: {corpus}");
     }

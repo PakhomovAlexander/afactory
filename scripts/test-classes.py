@@ -36,7 +36,7 @@ def write(path, value):
 def catalog():
     value = read(CATALOG)
     if set(value) != {'schema', 'binaries', 'modules', 'overrides', 'scripts', 'utilities',
-                      'always_on_scripts', 'exact', 'ignored'} or value['schema'] != 'af.test-catalog/1':
+                      'always_on_scripts', 'exact', 'ignored', 'hosted_checks'} or value['schema'] != 'af.test-catalog/1':
         raise ValueError('unsupported test catalog')
     return value
 
@@ -57,7 +57,7 @@ def schema_documents():
     primary = mapping(kind)
     cat = obj({'schema': {'const': 'af.test-catalog/1'}, 'binaries': primary,
                'modules': mapping(primary), 'overrides': mapping(primary), 'scripts': primary,
-               'utilities': names, 'always_on_scripts': names, 'exact': primary,
+               'utilities': names, 'always_on_scripts': names, 'exact': primary, 'hosted_checks': primary,
                'ignored': mapping({'enum': ['live-container', 'namespace-child',
                                            'manual-measurement', 'subprocess-helper']})})
     plan = obj({'schema': {'const': SCHEMA}, 'profile': {'enum': ['full', 'fast', 'custom']},
@@ -293,7 +293,13 @@ def audit_source(cat=None):
     declared_scripts = set(cat['scripts']) | set(cat['utilities'])
     if actual_scripts != declared_scripts:
         raise ValueError(f'script catalog drift: {actual_scripts ^ declared_scripts}')
-    for mapping in [cat['binaries'], cat['scripts'], cat['exact'], *cat['modules'].values(),
+    if set(cat['scripts']) & set(cat['utilities']) or not set(cat['always_on_scripts']) <= set(cat['scripts']):
+        raise ValueError('script ownership overlaps or always-on script is unclassified')
+    workflow = (ROOT / '.github/workflows/validate.yml').read_text()
+    jobs = set(re.findall(r'^  ([A-Za-z0-9_-]+):$', workflow.split('\njobs:\n', 1)[1], re.M))
+    if jobs != {'resolve', 'base', 'classes', 'lint', 'check'} | set(cat['hosted_checks']):
+        raise ValueError('hosted validation job catalog drift')
+    for mapping in [cat['binaries'], cat['scripts'], cat['exact'], cat['hosted_checks'], *cat['modules'].values(),
                     *cat['overrides'].values()]:
         if set(mapping.values()) - set(CLASSES):
             raise ValueError('unknown class in catalog')
@@ -305,11 +311,10 @@ def aggregate(plan, needs):
     for job in ('resolve', 'base', 'classes'):
         if needs.get(job, {}).get('result') != 'success':
             raise ValueError(f'{job} did not succeed')
-    if 'e2e' in plan['selected']:
-        if needs.get('container-probes', {}).get('result') != 'success':
-            raise ValueError('selected container probes did not succeed')
-    elif needs.get('container-probes', {}).get('result') != 'skipped':
-        raise ValueError('unexpected container-probe state')
+    for job, kind in catalog()['hosted_checks'].items():
+        expected = 'success' if kind in plan['selected'] else 'skipped'
+        if needs.get(job, {}).get('result') != expected:
+            raise ValueError(f'{job} must be {expected} for this selection')
     output = needs['resolve'].get('outputs', {}).get('plan')
     if not output or json.loads(output) != plan:
         raise ValueError('resolver output missing or differs')
@@ -331,10 +336,10 @@ def receipts(plan, directory, platforms):
 
 
 def aggregate_metrics(plan, directory, platforms):
-    """Combine disjoint class jobs; base/container command intervals remain separate."""
+    """Combine disjoint class jobs; base/container/perf-smoke command intervals remain separate."""
     result = {'schema': 'af.test-validation-metrics/1', 'sha': plan['sha'], 'platforms': {},
               'note': 'Observed command envelope excludes resolver, runner setup and final aggregation. '
-                      'Runner seconds sum outer class commands only; base/container costs are separate. '
+                      'Runner seconds sum outer class commands only; base/container/perf-smoke costs are separate. '
                       'These are not billed minutes or wall savings.'}
     for platform in platforms:
         classes, class_intervals, separate, inventory_counts = {}, [], {}, {}
@@ -368,6 +373,15 @@ def aggregate_metrics(plan, directory, platforms):
             records = [json.loads(line) for path in paths for line in path.read_text().splitlines()]
             separate[name + '_command_seconds'] = sum(r['elapsed_seconds'] for r in records) if records else None
             intervals.extend(records)
+        smoke_paths = (list(Path(directory).glob('validation-telemetry-smoke-*/telemetry-smoke-metrics.jsonl'))
+                       + list(Path(directory).glob('validation-telemetry-runtime-smoke-*/telemetry-runtime-smoke-metrics.jsonl'))
+                       if platform == 'Linux' and 'perf' in plan['selected'] else [])
+        smoke_records = [json.loads(line) for path in smoke_paths for line in path.read_text().splitlines()]
+        separate['perf_smoke'] = {
+            'state': ('RAN' if smoke_records else 'NO EVIDENCE') if 'perf' in plan['selected'] and platform == 'Linux'
+                     else 'NOT RUN',
+            'command_seconds': sum(r['elapsed_seconds'] for r in smoke_records) if smoke_records else None}
+        intervals.extend(smoke_records)
         starts = [dt.datetime.fromisoformat(r['started_at']) for r in intervals]
         ends = [start + dt.timedelta(seconds=r['elapsed_seconds']) for start, r in zip(starts, intervals)]
         runner = sum(r['elapsed_seconds'] for r in class_intervals)
@@ -397,7 +411,9 @@ def aggregate_summary(value):
                   f'parallel class critical path {data["parallel_class_critical_path_seconds"]:.3f}s; '
                   f'class runner command cost {data["observed_runner_command_seconds"]:.3f}s.', '',
                   f'Base commands: {data["base_command_seconds"]}; '
-                  f'container commands: {data["container_command_seconds"]}.', '',
+                  f'container commands: {data["container_command_seconds"]}.',
+                  f'Perf smoke: {data["perf_smoke"]["state"]}; command seconds: '
+                  f'{data["perf_smoke"]["command_seconds"]}.', '',
                   '| Class | State | Executed | Passed | Failed | Skipped | Not run | Test seconds | Command seconds | Class runner share |',
                   '| --- | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |']
         for kind, row in data['classes'].items():
@@ -552,6 +568,9 @@ def run_class(plan, kind, out, threads):
     for path in [*out.glob('*.xml'), out / 'receipt.json', out / 'report.json']:
         path.unlink(missing_ok=True)
     write(out / 'plan.json', plan)
+    # Ownership is mandatory even for a single selected class, before any Cargo process.
+    call([sys.executable, 'scripts/test-class-python.py', 'test-gate-owner.py',
+          str(out / 'test-gate-owner.py.xml')], 'gate-owner', 'preflight')
     # Every class audits the whole inventory, even if its own selection is small.
     with (out / 'nextest-list.json').open('w') as stream:
         subprocess.run(['cargo', 'nextest', 'list', '--workspace', '--locked', '--message-format', 'json'],
@@ -561,7 +580,8 @@ def run_class(plan, kind, out, threads):
     expression = filterset(entries, [kind])
     failure = None
     def rust_run(arguments, label, destination, expected):
-        shared = ROOT / 'target/nextest/ci/junit.xml'
+        shared = (Path(os.environ['AF_GATE_NEXTEST_RUN']) / 'store/ci/junit.xml'
+                  if os.getenv('AF_GATE_NEXTEST_RUN') else ROOT / 'target/nextest/ci/junit.xml')
         shared.unlink(missing_ok=True)
         try:
             call([sys.executable, 'scripts/nextest-gate.py', '--workspace', '--locked',
@@ -696,6 +716,7 @@ def main():
                 stream.write('plan=' + json.dumps(value, separators=(',', ':')) + '\n')
                 stream.write('selected=' + json.dumps(value['selected']) + '\n')
                 stream.write('e2e=' + str('e2e' in value['selected']).lower() + '\n')
+                stream.write('perf=' + str('perf' in value['selected']).lower() + '\n')
     elif args.command == 'audit':
         audit_source()
     elif args.command == 'schemas':
@@ -713,10 +734,13 @@ def main():
         run_class(read(args.plan), args.kind, Path(args.output).resolve(), args.threads)
     elif args.command == 'execute':
         plan = validate_plan(read(args.plan))
+        evidence_root = (Path(os.environ['AF_GATE_NEXTEST_RUN']) / 'classes'
+                         if os.getenv('AF_GATE_NEXTEST_RUN') else ROOT / 'target/test-classes/local')
         for kind in plan['selected']:
             call([sys.executable, str(Path(__file__)), 'run', '--plan', args.plan,
-                  '--class', kind, '--output', f'target/test-classes/local/{kind}',
+                  '--class', kind, '--output', str(evidence_root / kind),
                   '--threads', str(args.threads)], 'class-' + kind)
+            print(summary(read(evidence_root / kind / 'report.json')))
         if 'e2e' in plan['selected']:
             call(['make', 'review-kernel-container-probes'], 'container-probes')
     elif args.command == 'release-plan':

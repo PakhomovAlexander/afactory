@@ -432,6 +432,14 @@ def _dispatch(git, event, comparisons, runner_label, settings):
                         "pr_head_sha": None, "build_image": None}})
 
     try:
+        if scope == "calibration":
+            dispatch_head = inputs.get("dispatch_head")
+            if not (isinstance(dispatch_head, str)
+                    and re.fullmatch(r"[0-9a-fA-F]{40}", dispatch_head)
+                    and dispatch_head.lower() == event.sha):
+                refused("source_mismatch", "calibration source-mismatch: dispatch_head must "
+                        "be the full SHA of this workflow run; non-member, no plan or measurement")
+                return
         require(scope in DISPATCH_SCOPES, "scope: one of " + ", ".join(DISPATCH_SCOPES))
         require(tier in ("quick", "nightly", "release"), "tier: quick, nightly or release")
         base = _dispatch_ref(git, inputs.get("base"), "base")

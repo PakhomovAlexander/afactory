@@ -23,7 +23,7 @@ BASE_EVIDENCE = $(if $(AF_GATE_NEXTEST_RUN),$(AF_GATE_NEXTEST_RUN)/base-evidence
 
 # Run unprivileged: preflight proves a chmod-sealed source rejects writes.
 # Root/CAP_DAC_OVERRIDE bypass that seal and intentionally fail the precondition.
-check: preflight-check fmt lint test perf-feature-tests release-check
+check: preflight-check fmt lint test perf-python-tests perf-feature-tests release-check
 
 fmt:
 	$(CI_STEP) --stage lint fmt cargo fmt --all -- --check
@@ -89,13 +89,13 @@ release-check:
 	$(CI_STEP) --stage release af-pin python3 scripts/af-pin.py --check
 
 # Offline advisory orchestration checks against the native inspection fixture, the pull
-# request description check against the `af task report` renderer's fixture (ADR-0142), and
-# the performance laboratory's deterministic contract, planning and verdict tests with its
-# schema parity (ADR-0162), and the guarded kernel experiments' protected-harness digest against
-# the staged policy and any installed guarded measure (ADR-0185); they never run a benchmark.
+# request description check against the `af task report` renderer's fixture (ADR-0142),
+# performance schema parity (ADR-0162), and the guarded kernel experiments' protected-harness
+# digest against the staged policy and any installed guarded measure (ADR-0185).
 preflight-check:
 	$(CI_STEP) --stage preflight task-preflight python3 scripts/test-task-preflight.py
 	$(CI_STEP) --stage preflight prereqs python3 scripts/test-prereqs.py
+	$(CI_STEP) --stage preflight gate-owner python3 scripts/test-gate-owner.py
 	$(CI_STEP) --stage preflight nextest-gate python3 scripts/test-nextest-gate.py
 	$(CI_STEP) --stage preflight test-time-report python3 scripts/test-test-time-report.py
 	$(CI_STEP) --stage preflight provider-auth-host python3 scripts/test-provider-auth-host.py
@@ -103,9 +103,15 @@ preflight-check:
 	$(CI_STEP) --stage preflight pr-lines python3 scripts/test-pr-lines.py
 	$(CI_STEP) --stage preflight test-classes python3 scripts/test-class-python.py test-test-classes.py "$(BASE_EVIDENCE)/test-test-classes.py.xml"
 	$(CI_STEP) --stage preflight test-catalog python3 scripts/test-classes.py audit
-	$(CI_STEP) --stage preflight performance-lab python3 scripts/test-performance.py
 	$(CI_STEP) --stage preflight performance-schemas python3 scripts/performance/schemas.py
 	$(CI_STEP) --stage preflight --fix 'python3 -I scripts/performance/cli.py harness-digest --write' performance-kernel-harness python3 scripts/performance/cli.py harness-digest --check
+
+# The laboratory suite executes tests, so it belongs after the real Rust build receipt,
+# under the test deadline (ADR-0231). Depending on test also enforces this with parallel make;
+# standalone make test retains its Rust-only behavior and both runner modes.
+.PHONY: perf-python-tests
+perf-python-tests: test
+	$(CI_STEP) --stage tests performance-lab python3 scripts/test-performance.py
 
 # Shared selective entry points. Full `check` above remains the AF gate default. Labels are
 # JSON data in a file; no Make/shell expansion of label strings is permitted.
@@ -113,6 +119,7 @@ preflight-check:
 TEST_PLAN ?= target/test-classes/plan.json
 TEST_LABEL_FILE ?=
 base-check: release-check
+	$(CI_STEP) --stage preflight gate-owner python3 scripts/test-class-python.py test-gate-owner.py "$(BASE_EVIDENCE)/test-gate-owner.py.xml"
 	$(CI_STEP) --stage preflight test-classes python3 scripts/test-class-python.py test-test-classes.py "$(BASE_EVIDENCE)/test-test-classes.py.xml"
 	$(CI_STEP) --stage preflight test-catalog python3 scripts/test-classes.py audit
 

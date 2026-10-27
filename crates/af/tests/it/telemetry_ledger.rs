@@ -1433,3 +1433,66 @@ fn telemetry_finding_carries_the_bound_model() {
     );
     assert_eq!(model("Misleading comment"), None);
 }
+
+/// Aggregate setup can take longer than the lease without holding any individual operation
+/// beyond it. The fixture renews between operations; expiry/takeover remain real below.
+#[test]
+fn slow_accounting_setup_renews_without_extending_the_lease_policy() {
+    let started = std::time::Instant::now();
+    let mut f = TaskFixture::with_setup_step(
+        tempfile::tempdir().unwrap(),
+        |_| {},
+        || {
+            std::thread::sleep(std::time::Duration::from_millis(600));
+        },
+    );
+    assert!(started.elapsed() > std::time::Duration::from_secs(3));
+    let old = f.lease.clone();
+    let attempt = f.start("write");
+    f.observe(&attempt, usage(Some(7), 7));
+    assert_eq!(f.kernel().1, 7);
+    f.take_over_and_recover();
+    assert_ne!(f.lease.epoch(), old.epoch());
+    assert!(f.store.renew_task_lease(&f.cas, &old, 3_000).is_err());
+    assert!(
+        f.store
+            .task_projection(&f.cas, &f.task_id)
+            .unwrap()
+            .unwrap()
+            .execution
+            .unwrap()
+            .pending_attempts()
+            .is_empty()
+    );
+    assert_eq!(
+        f.kernel().1,
+        7,
+        "recovery retains exactly the observed usage (ADR-0209)"
+    );
+    let cold = EventStore::open_read_only(f.directory.path().join("events.sqlite")).unwrap();
+    let execution = cold
+        .task_projection(&f.cas, &f.task_id)
+        .unwrap()
+        .unwrap()
+        .execution
+        .unwrap();
+    let accounting = execution.attempt_accounting();
+    let recovered = accounting
+        .iter()
+        .find(|row| row.attempt_id == attempt)
+        .unwrap();
+    assert_eq!(recovered.charged_tokens, 7);
+    assert_eq!(recovered.reservation.tokens, 10);
+    assert_eq!(recovered.unknown_usage, None);
+    assert_eq!(
+        recovered.abandoned,
+        Some(review_store::store::task::execution::TaskAbandonCause::WriterLost)
+    );
+    assert_eq!(execution.budget.committed_tokens(), 7);
+    assert_eq!(execution.budget.reserved_tokens(), 0);
+    assert_eq!(execution.budget.begun_attempts(), 1);
+    let recoveries = execution.recoveries();
+    assert_eq!(recoveries.len(), 1);
+    assert_eq!(recoveries[0].chargeable, 0);
+    assert_eq!(recoveries[0].writer_lost, 1);
+}

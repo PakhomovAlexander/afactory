@@ -158,6 +158,89 @@ class HostBackstop(TempDir):
                                  setup=(["/bin/sh", "-c", "exit 0"], {"PATH": "/usr/bin:/bin"},
                                         self.tmp, setup_ms))
 
+    def test_exception_after_popen_preserves_cause_and_only_valid_cleanup_evidence_settles(self):
+        request = self.request()
+        reply = fixture("supervisor-result/valid-trusted-local.json")
+        payload = json.dumps(reply).encode() + b"\n" + b"hello\n"
+        # A lost initial communication can still settle via a valid cancellation reply.
+        for confirmed in (True, False):
+            with self.subTest(confirmed=confirmed):
+                original = OSError("lost pipe after launch")
+                process = mock.Mock(returncode=0)
+                process.communicate.side_effect = [original, (payload, b"")] if confirmed else [
+                    original, OSError("lost cancellation reply")]
+                with mock.patch.object(supervise.subprocess, "Popen", return_value=process):
+                    with self.assertRaises(supervise.SupervisorFailure) as caught:
+                        supervise.launch(["stand-in"], request)
+                failure = caught.exception
+                self.assertTrue(failure.launched)
+                self.assertIs(failure.__cause__, original)
+                self.assertEqual(failure.uncertain, not confirmed)
+                process.send_signal.assert_called_once()
+
+    def test_callback_failure_is_owned_even_if_it_throws_a_typed_prelaunch_refusal(self):
+        request = self.request()
+        process = mock.Mock(returncode=None)
+        process.communicate.side_effect = OSError("no reply")
+        original = supervise.SupervisorFailure("callback refused", launched=False)
+        with mock.patch.object(supervise.subprocess, "Popen", return_value=process):
+            with self.assertRaises(supervise.SupervisorFailure) as caught:
+                supervise.launch(["stand-in"], request, started=mock.Mock(side_effect=original))
+        self.assertTrue(caught.exception.launched)
+        self.assertTrue(caught.exception.uncertain)
+        self.assertIs(caught.exception.__cause__, original)
+        process.send_signal.assert_called_once()
+
+    def test_cancellation_keeps_its_type_and_carries_typed_ownership_evidence(self):
+        from perflab.budget import Interrupted
+        for kind in (KeyboardInterrupt, Interrupted):
+            with self.subTest(kind=kind):
+                original = kind("cancelled after Popen")
+                process = mock.Mock(returncode=None)
+                process.communicate.side_effect = OSError("cancellation reply lost")
+                with mock.patch.object(supervise.subprocess, "Popen", return_value=process):
+                    with self.assertRaises(kind) as caught:
+                        supervise.launch(["stand-in"], self.request(),
+                                         started=mock.Mock(side_effect=original))
+                self.assertIs(caught.exception, original)
+                self.assertTrue(original.supervisor_failure.uncertain)
+                self.assertTrue(original.supervisor_failure.launched)
+                process.send_signal.assert_called_once()
+
+    def test_exceptional_cancellation_never_waits_past_the_original_deadline(self):
+        now = [0.0]
+        process = mock.Mock(returncode=None)
+        timeouts = []
+        def communicate(*args, **kwargs):
+            timeouts.append(kwargs["timeout"])
+            if len(timeouts) == 1:
+                now[0] = 19.98
+                raise OSError("pipe failed near deadline")
+            now[0] += kwargs["timeout"]
+            raise subprocess.TimeoutExpired("stand-in", kwargs["timeout"])
+        process.communicate.side_effect = communicate
+        process.wait.side_effect = subprocess.TimeoutExpired("stand-in", 0)
+        with mock.patch.object(supervise.subprocess, "Popen", return_value=process):
+            with self.assertRaises(supervise.SupervisorFailure) as caught:
+                supervise.launch(["stand-in"], self.request(), deadline=20,
+                                 clock=lambda: now[0], cancel_margin=0)
+        self.assertTrue(caught.exception.uncertain)
+        self.assertLessEqual(now[0], 20)
+        self.assertLess(timeouts[1], .021)
+        process.wait.assert_called_once_with(timeout=0)
+
+    def test_interruption_during_exceptional_cancellation_keeps_both_causes_and_ownership(self):
+        from perflab.budget import Interrupted
+        original, interruption = OSError("pipe failed"), Interrupted("cleanup deadline")
+        process = mock.Mock(returncode=None)
+        process.communicate.side_effect = [original, interruption]
+        with mock.patch.object(supervise.subprocess, "Popen", return_value=process):
+            with self.assertRaises(Interrupted) as caught:
+                supervise.launch(["stand-in"], self.request())
+        self.assertIs(caught.exception, interruption)
+        self.assertIs(interruption.__cause__, original)
+        self.assertTrue(interruption.supervisor_failure.uncertain)
+
     def slow(self, seconds):
         fake = fake_supervisor(self.path("fake-supervisor"))
         marker = self.path("launched")
@@ -199,7 +282,7 @@ class HostBackstop(TempDir):
         # finish its 110 s setup and 80 s publication.
         self.assertEqual(supervise.backstop_seconds(request, margin=60),
                          110 + 5 + 80 + 5 + 60)
-        alone = supervise.request(["/bin/true"], {}, self.tmp, "", 80000, 1, 1, grace_ms=5000)
+        alone = supervise.request([sys.executable, "-I", "-c", "pass"], {}, self.tmp, "", 80000, 1, 1, grace_ms=5000)
         self.assertEqual(supervise.backstop_seconds(alone, margin=60), 80 + 5 + 60)
 
     def test_a_setup_and_child_near_their_limits_are_never_cut_off(self):
@@ -817,6 +900,19 @@ class ContainedSample(TempDir):
     def calls(self):
         with open(self.path("bin", "calls")) as stream:
             return [json.loads(line) for line in stream]
+
+    def test_interrupted_removal_preserves_the_original_exception_and_uncertain_ownership(self):
+        from perflab.budget import Interrupted
+        original, interruption = OSError("launch pipe failed"), Interrupted("removal deadline")
+        with mock.patch.object(supervise, "launch", side_effect=original), \
+                mock.patch.object(supervise, "remove_container", side_effect=interruption) as remove:
+            with self.assertRaises(Interrupted) as caught:
+                self.run_one()
+        self.assertIs(caught.exception, interruption)
+        self.assertIs(interruption.__cause__, original)
+        self.assertTrue(interruption.supervisor_failure.uncertain)
+        self.assertTrue(interruption.supervisor_failure.launched)
+        remove.assert_called_once()
 
     def test_the_container_is_removed_and_its_limits_checked_after_the_sample(self):
         contained = self.run_one()

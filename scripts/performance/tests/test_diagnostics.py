@@ -10,8 +10,10 @@ the real supervisor's bounds over diagnostic tools are exercised by
 `crates/review-process/tests/diagnostic_tools.rs`.
 """
 import struct
+import lzma
 import json
 import os
+import random
 import shutil
 import subprocess
 import sys
@@ -69,6 +71,18 @@ class Registry(unittest.TestCase):
         self.assertTrue(recipe["instrumented"] and recipe["frame_pointers"]
                         and recipe["debug_symbols"])
         self.assertEqual(recipe["features"], ["perf-control"])
+        self.assertEqual(recipe["rustflags"], base["rustflags"] + [
+            "-Cdebuginfo=line-tables-only"])
+        self.assertEqual(base["rustflags"], [])
+        # Derivation must not mutate the base's list, including on a second planning pass.
+        self.assertEqual(diagcontracts.diagnostic_recipe(
+            loaded.doc, registry, "linux_gnu_cpu_profile"), recipe)
+        for recipe_id in registry["recipes"]:
+            if recipe_id == "linux_gnu_cpu_profile":
+                continue
+            other = diagcontracts.diagnostic_recipe(loaded.doc, registry, recipe_id)
+            self.assertEqual(other["rustflags"], loaded.doc["recipes"][
+                registry["recipes"][recipe_id]["base_recipe"]]["rustflags"])
         # The verdict recipe itself is untouched: uninstrumented, no symbols, no frame pointers.
         self.assertFalse(base["instrumented"] or base["frame_pointers"] or base["debug_symbols"])
         inferno = registry["tools"]["inferno_flamegraph"]
@@ -255,6 +269,104 @@ class Evidence(TempDir):
         with open(sparse, "wb") as stream:
             stream.truncate(1 << 20)
         self.assertEqual(budget.record(1)["bytes"]["evidence_used"], 3000 + (1 << 20))
+
+
+class Symbols(TempDir):
+    def profile(self):
+        profile = Evidence.profile(self)
+        profile.retained = []
+        profile.symbol_archives = {}
+        return profile
+
+    LIMITS = Evidence.LIMITS
+
+    def noise(self, size, seed):
+        source = random.Random(seed)
+        return bytes(source.getrandbits(8) for _ in range(size))
+
+    def executable(self, name, data):
+        path = self.path(name)
+        with open(path, "wb") as stream:
+            stream.write(data)
+        return path, sha256_bytes(data)
+
+    def test_shared_symbols_pay_once_even_when_another_copy_would_not_fit(self):
+        profile = self.profile()
+        binary = self.executable("probe", self.noise(1400, 1))
+        symbols = profile.symbols(binary, ["abcd"])
+        self.assertEqual(symbols["state"], "retained")
+        self.assertEqual(symbols["build_ids"], ["abcd"])
+        self.assertEqual(symbols["archive"], profile.artifacts("symbols")[0])
+        self.assertLess(profile.budget.room(), os.stat(binary[0]).st_size)
+        before = profile.budget.used_bytes()
+        self.assertEqual(profile.symbols(binary, ["abcd"])["state"], "retained")
+        self.assertEqual(profile.budget.used_bytes(), before)
+        archive = read(self.path("run", "symbols", binary[1][7:] + ".xz"))
+        self.assertEqual(lzma.decompress(archive), read(binary[0]))
+        self.assertEqual(profile.artifacts("symbols"), [{
+            "path": "symbols/" + binary[1][7:] + ".xz", "bytes": len(archive),
+            "sha256": sha256_bytes(archive)}])
+        self.assertEqual(before, len(archive))
+
+    def test_distinct_symbols_pay_separately_and_an_oversize_binary_stays_referenced(self):
+        profile = self.profile()
+        sizes = []
+        for name, data in (("baseline", self.noise(700, 1)),
+                           ("candidate", self.noise(800, 2))):
+            binary = self.executable(name, data)
+            self.assertEqual(profile.symbols(binary, [])["state"], "retained")
+            archive = read(self.path("run", "symbols", binary[1][7:] + ".xz"))
+            self.assertEqual(sha256_bytes(lzma.decompress(archive)), binary[1])
+            sizes.append(len(archive))
+        self.assertEqual(profile.budget.used_bytes(), sum(sizes))
+        large = self.executable("large", self.noise(1000, 3))
+        self.assertEqual(profile.symbols(large, [])["state"], "referenced")
+        self.assertEqual(profile.budget.used_bytes(), sum(sizes))
+        self.assertFalse(os.path.exists(self.path("run", "symbols", large[1][7:] + ".xz")))
+        usage = profile.budget.record(0)["bytes"]
+        self.assertEqual((usage["evidence_used"], usage["evidence_overage"]), (sum(sizes), 0))
+
+    def test_lossless_archives_fit_by_their_logical_size_and_have_no_timestamp(self):
+        profile = self.profile()
+        binary = self.executable("probe", b"symbols" * 10000)
+        self.assertGreater(os.stat(binary[0]).st_size, profile.budget.evidence_limit)
+        self.assertEqual(profile.symbols(binary, [])["state"], "retained")
+        archive = read(self.path("run", "symbols", binary[1][7:] + ".xz"))
+        self.assertTrue(archive.startswith(b"\xfd7zXZ\x00"))  # XZ has no timestamp or filename
+        self.assertEqual(lzma.decompress(archive), read(binary[0]))
+        self.assertEqual(profile.budget.used_bytes(), len(archive))
+        self.assertEqual(profile.symbol_archive(read(binary[0]), len(archive)), archive)
+        self.assertIsNone(profile.symbol_archive(read(binary[0]), len(archive) - 1))
+
+    def test_compression_keeps_the_absolute_deadline(self):
+        profile = self.profile()
+        now = [0]
+        def clock():
+            now[0] += 1
+            return now[0]
+        profile.clock = clock
+        profile.budget.deadline = 2
+        with self.assertRaisesRegex(ContractError, "deadline"):
+            profile.symbol_archive(b"symbols" * 10000, 2048)
+        self.assertEqual(profile.budget.used_bytes(), 0)
+
+    def test_symbol_bytes_must_match_the_profiled_hash_and_retained_files_are_admitted(self):
+        profile = self.profile()
+        binary = self.executable("probe", b"original symbols")
+        wrong = (binary[0], sha256_bytes(b"other bytes"))
+        with self.assertRaisesRegex(ContractError, "profiled executable hash changed"):
+            profile.symbols(wrong, [])
+        self.assertEqual(profile.budget.used_bytes(), 0)
+        profile.symbols(binary, [])
+        target = self.path("run", "symbols", binary[1][7:] + ".xz")
+        with open(target, "wb") as stream:
+            stream.write(b"changed symbols!")
+        with self.assertRaisesRegex(ContractError, "retained symbols changed"):
+            profile.symbols(binary, [])
+        os.unlink(target)
+        os.symlink(binary[0], target)
+        with self.assertRaisesRegex(ContractError, "symlink"):
+            profile.symbols(binary, [])
 
 
 class AggregateRoom(TempDir):
@@ -569,7 +681,7 @@ class BoundedTools(TempDir):
         missing = toolrun.run(boss, [self.path("absent")], {}, 5, 64, cwd=self.tmp)
         self.assertIn("cannot run", missing.failure())
         # No time beyond the supervisor's reserve: nothing launches, and it is no success.
-        past = toolrun.run(boss, ["/bin/true"], {}, 5, 64, cwd=self.tmp,
+        past = toolrun.run(boss, [sys.executable, "-I", "-c", "pass"], {}, 5, 64, cwd=self.tmp,
                            deadline=time.monotonic() + 0.5)
         self.assertFalse(past.ok)
         self.assertTrue(past.late)
@@ -592,7 +704,7 @@ class BoundedTools(TempDir):
                               cwd=self.tmp, stdout_path=self.path("out"), file_bytes=6000)
         self.assertTrue(written.ok, written.failure())
         self.assertEqual(os.path.getsize(self.path("out")), 5000)
-        again = toolrun.run(boss, ["/bin/true"], env, 10, 64, cwd=self.tmp,
+        again = toolrun.run(boss, [sys.executable, "-I", "-c", "pass"], env, 10, 64, cwd=self.tmp,
                             stdout_path=self.path("out"))
         self.assertIn("already exists", again.failure())
         bounded = toolrun.run(boss, ["/bin/sh", "-c", "yes | head -c 50000"], env, 10, 64,
@@ -1051,11 +1163,24 @@ class Counters(TempDir):
                                                                   codesign=self.path("none"))
         self.assertEqual((available, reason), (False, "samply_flags_missing"))
         self.assertIn("--save-only", detail)
-        # The host's /bin/ls may resolve outside the protected path.
-        available, reason, _, _ = counters.samply_capability(boss, full,
-                                                             "/System/af-protected-fixture", env, 10,
-                                                             codesign=self.path("none"))
-        self.assertEqual((available, reason), (False, "protected_executable"))
+        # Model macOS canonical paths, independent of the verifier's system symlinks
+        # (on Linux /bin/ls can resolve outside every macOS protected prefix).
+        protected_paths = ("/System/Library/af-fixture", "/usr/bin/af-fixture",
+                           "/usr/sbin/af-fixture", "/usr/libexec/af-fixture",
+                           "/bin/af-fixture", "/sbin/af-fixture")
+        link = self.path("protected-link")
+        os.symlink(protected_paths[0], link)
+        for requested, resolved in ([(path, path) for path in protected_paths]
+                                    + [(link, protected_paths[0])]):
+            with self.subTest(requested=requested, resolved=resolved):
+                with mock.patch.object(counters.os.path, "realpath",
+                                       return_value=resolved) as realpath:
+                    available, reason, detail, version = counters.samply_capability(
+                        boss, full, requested, env, 10, codesign=self.path("none"))
+                realpath.assert_called_once_with(requested)
+                self.assertEqual((available, reason), (False, "protected_executable"))
+                self.assertIn(resolved, detail)
+                self.assertEqual(version, "samply 0.0.fake")
         resolve = os.path.realpath
         for real in ("/usr/lib/cargo/bin/coreutils", "/usr/lib/cargo/bin/coreutils/ls"):
             # Only the target resolves to the multicall binary; every other path is itself.
@@ -1104,7 +1229,7 @@ class ChildRunBase(TempDir):
 
     def profile(self, recipe, cases, tools, probe_config, parent_probes=None, duration_ms=300,
                 registry=None, af_config=None, parent_af_config=None, contained=None,
-                prior_bytes=0, work_removed=True, run_id="child_run"):
+                prior_bytes=0, work_removed=True, run_id="child_run", telemetry=None, distinct_candidate=False):
         plan = self.child(recipe, cases, duration_ms, run_id)
         output = self.path("child")
         os.makedirs(output)
@@ -1124,6 +1249,11 @@ class ChildRunBase(TempDir):
         selection, chosen = diagnostics.select(self.parent, explicit=cases)
         probe = fakes.probe(self.path("probe-bin"), self.golden, **probe_config)
         probes = dict((side, (probe, sha256_bytes(read(probe)))) for side in diagcontracts.SIDES)
+        if distinct_candidate:
+            candidate = fakes.probe(self.path("candidate-probe"), self.golden, **probe_config)
+            with open(candidate, "ab") as stream:
+                stream.write(b"\n# distinct candidate executable\n")
+            probes["candidate"] = (candidate, sha256_bytes(read(candidate)))
         boss = supervisor(self.path("supervisor"))
         found = diagnostics.probe_tools(registry, tools, "linux",
                                         registry["recipes"][recipe]["tools"], boss,
@@ -1171,7 +1301,7 @@ class ChildRunBase(TempDir):
             budget, lambda instance: ["python3", "scripts/performance/cli.py", "profile",
                                       "--case", instance or "-"], "sha256:" + "d" * 64, "linux",
             supervisor=boss, execution=execution, cli=cli, afs=afs, parent_afs=parent_afs,
-            work=work)
+            work=work, telemetry=telemetry)
         doc = profile.run()
         diagnostics.finish(output, doc, profile.trace_docs, budget)
         reread = contracts.read_file(os.path.join(output, diagnostics.PROFILES_FILE), "profiles")
@@ -1682,6 +1812,181 @@ class UncertainCleanup(ChildRunBase):
         profile.retained = []
         return profile
 
+    def test_internal_supervisor_exceptions_retain_decoder_and_renderer_work(self):
+        from tests.supervision_faults import fault
+        for mode in ("trusted_local", "linux_container"):
+            for target in ("decoder", "renderer"):
+                for failure, callback in ((OSError, False), (ContractError, False),
+                                          (RuntimeError, True), (KeyboardInterrupt, True)):
+                    with self.subTest(mode=mode, target=target, failure=failure, callback=callback):
+                        perf = fakes.perf(self.path("perf"),
+                                          phase_file=self.path("probe-bin", "phase"))
+                        tools = diagnostics.configured_tools(perf=perf,
+                            inferno_bin=fakes.inferno(self.path("inferno")))
+                        place = None
+                        if mode == "linux_container":
+                            root = self.path("scratch-fs")
+                            os.mkdir(root, 0o700)
+                            place = dict(scratch_root=root, docker=fakes.docker(self.path("docker")))
+                        def match(request):
+                            argv = request["argv"]
+                            return ((target == "decoder" and "script" in argv)
+                                    or (target == "renderer" and any(
+                                        os.path.basename(arg) == "inferno-diff-folded" for arg in argv)
+                                        and "--version" not in argv))
+                        actual_run, actual_remove = diagnostics.Profile.run, diagnostics.admission.remove_tree
+                        removals = []
+                        def run(profile):
+                            os.makedirs(os.path.join(profile.output, diagnostics.WORK_DIR), exist_ok=True)
+                            return actual_run(profile)
+                        def remove(path, *args, **kwargs):
+                            if state["faults"]: removals.append(path)
+                            return actual_remove(path, *args, **kwargs)
+                        with fault(match, failure, mode == "linux_container", callback=callback) as state, \
+                                mock.patch.object(diagnostics.Profile, "run", run), \
+                                mock.patch.object(diagnostics.admission, "remove_tree", remove):
+                            doc, output = self.profile("linux_gnu_cpu_profile", [SMALL, VALIDATE],
+                                tools, {}, contained=place, work_removed=False)
+                        profile = self.profile_object
+                        self.assertEqual(len(state["faults"]), 1)
+                        self.assertEqual(len(state["popen"]), 1)
+                        self.assertTrue(match(state["requests"][-1]), "no later launch")
+                        self.assertEqual(removals, [])
+                        self.assertTrue(os.path.isdir(profile.work))
+                        self.assertTrue(os.path.isdir(os.path.join(output, diagnostics.WORK_DIR)))
+                        self.assertTrue(profile.retained)
+                        self.assertIn(profile.work, profile.unsafe_staging)
+                        if profile.stage: self.assertTrue(os.path.isdir(profile.stage))
+                        if target == "decoder":
+                            self.assertTrue(all(item["omission"]["reason"] == "cleanup_uncertain"
+                                                for item in doc["captures"]))
+                            self.assertTrue(all(item["artifacts"] == [] for item in doc["captures"]))
+                        else:
+                            self.assertTrue(any(item["reason"] == "cleanup_uncertain"
+                                                for item in doc["omissions"]))
+                        self.assertFalse(os.path.exists(os.path.join(output, "manifest.json")))
+                        with self.assertRaises(perfcapture.CaptureError): profile.collect("unsafe")
+                        with self.assertRaises(perfcapture.CaptureError):
+                            profile.tool_run([sys.executable, "-I", "-c", "pass"], 1, 1, self.tmp)
+                        if mode == "linux_container": self.assertTrue(state["removals"])
+                        for directory in ("child", "probe-bin", "supervisor", "perf", "inferno",
+                                          "scratch-fs", "docker"):
+                            path = self.path(directory)
+                            if os.path.isdir(path): shutil.rmtree(path)
+
+    def test_proven_decoder_prelaunch_refusal_allows_next_side_and_final_cleanup(self):
+        from tests.supervision_faults import fault
+        for mode in ("trusted_local", "linux_container"):
+            with self.subTest(mode=mode):
+                perf = fakes.perf(self.path("perf"), phase_file=self.path("probe-bin", "phase"))
+                tools = diagnostics.configured_tools(perf=perf)
+                place = None
+                if mode == "linux_container":
+                    root = self.path("scratch-fs")
+                    os.mkdir(root, 0o700)
+                    place = dict(scratch_root=root, docker=fakes.docker(self.path("docker")))
+                with fault(lambda request: "script" in request["argv"], prelaunch=True) as state:
+                    doc, output = self.profile("linux_gnu_cpu_profile", [SMALL], tools, {},
+                                               contained=place)
+                self.assertEqual(len(state["faults"]), 2, "the candidate side remains usable")
+                self.assertEqual(state["popen"], [])
+                self.assertEqual(state["removals"], [])
+                self.assertEqual(self.profile_object.retained, [])
+                self.assertTrue(os.path.exists(os.path.join(output, "manifest.json")))
+                self.assertTrue(all(item["omission"]["reason"] != "cleanup_uncertain"
+                                    for item in doc["captures"]))
+                for directory in ("child", "probe-bin", "supervisor", "perf", "scratch-fs", "docker"):
+                    path = self.path(directory)
+                    if os.path.isdir(path): shutil.rmtree(path)
+
+    def test_decoder_and_renderer_uncertainty_and_exceptions_retain_all_staging(self):
+        # Profile.run -> perf_capture -> analyse -> tool_output -> tool_run, and
+        # Profile.run -> render -> Renderer.run -> tool_output -> tool_run.
+        # These calls have no Namespace; the recording's Namespace is already released.
+        from perflab import budget as deadlines
+        for mode in ("trusted_local", "linux_container"):
+            for target in ("decoder", "renderer"):
+                for failure in (None, OSError, RuntimeError, KeyboardInterrupt,
+                                deadlines.Interrupted):
+                    with self.subTest(mode=mode, target=target, failure=failure):
+                        perf = fakes.perf(self.path("perf"),
+                                          phase_file=self.path("probe-bin", "phase"))
+                        tools = diagnostics.configured_tools(perf=perf,
+                            inferno_bin=fakes.inferno(self.path("inferno")))
+                        place = None
+                        if mode == "linux_container":
+                            root = self.path("scratch-fs")
+                            os.mkdir(root, 0o700)
+                            place = dict(scratch_root=root, docker=fakes.docker(self.path("docker")))
+                        actual = toolrun.run
+                        actual_run = diagnostics.Profile.run
+                        launched, unsafe, removals = [], [], []
+                        real_remove = diagnostics.admission.remove_tree
+                        def run_profile(profile):
+                            # Materialized authority work is separate from contained work.
+                            path = os.path.join(profile.output, diagnostics.WORK_DIR)
+                            os.makedirs(path, exist_ok=True)
+                            with open(os.path.join(path, "authority-work"), "wb") as stream:
+                                stream.write(b"retain all work roots")
+                            return actual_run(profile)
+                        def remove(path, *args, **kwargs):
+                            if unsafe: removals.append(path)
+                            return real_remove(path, *args, **kwargs)
+                        def tool(*args, **kwargs):
+                            result = actual(*args, **kwargs)
+                            argv = args[1]
+                            launched.append(list(argv))
+                            match = ((target == "decoder" and len(argv) > 1 and argv[1] == "script")
+                                     or (target == "renderer" and os.path.basename(argv[0])
+                                         == "inferno-diff-folded" and "--version" not in argv))
+                            if match:
+                                self.assertFalse(unsafe, "no second tool may launch")
+                                path = kwargs["stdout_path"]
+                                self.assertTrue(read(path), "actual tool wrote its output")
+                                unsafe.append(path)
+                                if failure is not None:
+                                    raise failure("after possible tool launch")
+                                result.uncertain = True
+                            return result
+                        with mock.patch.object(toolrun, "run", tool), \
+                                mock.patch.object(diagnostics.Profile, "run", run_profile), \
+                                mock.patch.object(diagnostics.admission, "remove_tree", remove):
+                            doc, output = self.profile("linux_gnu_cpu_profile", [SMALL, VALIDATE],
+                                tools, {}, contained=place, work_removed=False)
+                        profile = self.profile_object
+                        self.assertEqual(len(unsafe), 1)
+                        self.assertTrue(read(unsafe[0]), "unsafe output must remain untouched")
+                        self.assertEqual(removals, [], "nothing is deleted after uncertainty")
+                        self.assertTrue(os.path.isdir(profile.work))
+                        if profile.stage:
+                            self.assertTrue(os.path.isdir(profile.stage))
+                            relative = os.path.relpath(unsafe[0], profile.stage)
+                            self.assertFalse(os.path.exists(os.path.join(output, relative)),
+                                             "unsafe output was collected into evidence")
+                        self.assertIn(os.path.dirname(unsafe[0]), profile.unsafe_staging)
+                        self.assertEqual(profile.retained, [os.path.dirname(unsafe[0])])
+                        if target == "decoder":
+                            self.assertEqual(launched[-1][1], "script")
+                            self.assertTrue(all(item["omission"]["reason"] == "cleanup_uncertain"
+                                                for item in doc["captures"]))
+                            self.assertTrue(all(item["artifacts"] == [] for item in doc["captures"]))
+                        else:
+                            self.assertEqual(os.path.basename(launched[-1][0]), "inferno-diff-folded")
+                            self.assertTrue(any(item["reason"] == "cleanup_uncertain"
+                                                for item in doc["omissions"]))
+                        self.assertEqual(doc["execution"]["retained_scratch"], 1)
+                        self.assertFalse(os.path.exists(os.path.join(output, "manifest.json")),
+                                         "uncertain staging cannot become an admitted bundle")
+                        with self.assertRaises(perfcapture.CaptureError):
+                            profile.tool_run([sys.executable, "-I", "-c", "pass"], 1, 1, self.tmp)
+                        with self.assertRaises(perfcapture.CaptureError):
+                            profile.collect("unsafe")
+                        # Only test-owned recovery after all product retention assertions.
+                        for directory in ("child", "probe-bin", "supervisor", "perf", "inferno",
+                                          "scratch-fs", "docker"):
+                            path = self.path(directory)
+                            if os.path.isdir(path): shutil.rmtree(path)
+
     def test_an_uncertain_release_keeps_the_namespace_and_its_data(self):
         profile = self.bare()
         namespace = profile.namespace()
@@ -2006,3 +2311,92 @@ class Command(TempDir):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class PerfCache(ChildRunBase):
+    """The recorder fixture models perf's build-ID cache through real namespace cleanup."""
+
+    def capture(self, whole=False, legacy=False, hostile=False):
+        perf = fakes.perf(self.path("perf"), phase_file=self.path("probe-bin", "phase"),
+                          cache_links=True, hostile_cache_link=hostile)
+        tools = diagnostics.configured_tools(perf=perf, inferno_bin=fakes.inferno(
+            self.path("inferno")))
+        name = "whole_argv" if whole else "record_argv"
+        actual = getattr(perfcapture, name)
+        def argv(*args, **kwargs):
+            values = actual(*args, **kwargs)
+            return [value for value in values if value != "--no-buildid-cache"]
+        self.cleanup_details = []
+        original_release = diagnostics.Profile.release
+        def release(profile, *args, **kwargs):
+            try:
+                return original_release(profile, *args, **kwargs)
+            except perfcapture.CaptureError as error:
+                self.cleanup_details.append(error.detail)
+                raise
+        with mock.patch.object(perfcapture, name, argv if legacy else actual), \
+                mock.patch.object(diagnostics.Profile, "release", release):
+            doc, output = self.profile("linux_gnu_cpu_profile",
+                [DISCOVERY] if whole else [SMALL], tools, {},
+                af_config={} if whole else None, work_removed=not (legacy or hostile))
+        return doc, output
+
+    def test_probe_recording_keeps_ids_and_cleans_without_a_cache(self):
+        self.check_clean(False)
+
+    def test_whole_command_recording_keeps_ids_and_cleans_without_a_cache(self):
+        self.check_clean(True)
+
+    def check_clean(self, whole):
+        doc, output = self.capture(whole=whole)
+        self.assertEqual(doc["execution"]["retained_scratch"], 0)
+        self.assertTrue(os.path.isfile(os.path.join(output, "manifest.json")))
+        for capture in doc["captures"]:
+            self.assertIsNone(capture["omission"], capture)
+            self.assertTrue(capture["symbols"]["build_ids"])
+        for line in read(self.path("perf", "record-argv.jsonl")).splitlines():
+            argv = json.loads(line)
+            self.assertIn("--no-buildid-cache", argv)
+            self.assertNotIn("--no-buildid", argv)
+            self.assertEqual(argv[argv.index("-e") + 1], self.registry["capture"]["event"])
+        self.assertEqual(len(doc["renders"]), 4)
+
+    def test_probe_without_flag_reproduces_hard_link_cleanup_uncertainty(self):
+        self.check_refused(False, True, False)
+
+    def test_whole_command_without_flag_reproduces_hard_link_cleanup_uncertainty(self):
+        self.check_refused(True, True, False)
+
+    def test_a_hostile_recorder_hard_link_is_still_refused_with_the_flag(self):
+        self.check_refused(False, False, True)
+
+    def check_refused(self, whole, legacy, hostile):
+        doc, output = self.capture(whole, legacy, hostile)
+        self.assertEqual(doc["execution"]["retained_scratch"], 1)
+        self.assertFalse(os.path.exists(os.path.join(output, "manifest.json")))
+        self.assertTrue(all(item["omission"]["reason"] == "cleanup_uncertain"
+                            for item in doc["captures"]))
+        self.assertTrue(any("still has a link" in detail for detail in self.cleanup_details),
+                        self.cleanup_details)
+        self.assertIn("was not started", doc["captures"][1]["omission"]["detail"])
+        self.assertEqual(doc["renders"], [])
+        self.assertEqual(len(read(self.path("perf", "record-argv.jsonl")).splitlines()), 1)
+        # The external admitted executable remains intact. Only this test's scratch exists.
+        profiled = self.profile_object.afs if whole else self.profile_object.probes
+        path, digest = profiled["baseline"]
+        self.assertEqual(sha256_bytes(read(path)), digest)
+        self.assertTrue(os.path.isdir(self.profile_object.retained[0]))
+
+    def test_capability_probe_uses_the_same_cache_free_recording(self):
+        boss = supervisor(self.path("supervisor"))
+        perf = fakes.perf(self.path("perf"), cache_links=True)
+        os.mkdir(self.path("work"))
+        home = self.path("home")
+        os.mkdir(home)
+        result = perfcapture.probe_capability(boss, perf, "task-clock:u", 997,
+            self.path("work"), {"PATH": "/usr/bin:/bin", "HOME": home}, 20)
+        self.assertTrue(result[0], result)
+        self.assertFalse(os.path.exists(os.path.join(home, ".debug")))
+        argv = json.loads(read(self.path("perf", "record-argv.jsonl")))
+        self.assertIn("--no-buildid-cache", argv)
+        self.assertNotIn("--no-buildid", argv)

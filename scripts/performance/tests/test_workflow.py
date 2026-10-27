@@ -1,7 +1,4 @@
-"""Selected lab validation uses latest Python and gates stable checks through class receipts.
-
-Helpers below also extract workflow shell steps for execution against local fixtures.
-"""
+"""Selected laboratory validation gates stable checks; missing selected work fails closed."""
 import os
 import re
 import shutil
@@ -131,7 +128,9 @@ class RequiredPythonCompatibility(unittest.TestCase):
         self.assertIn('"validation / check (ubuntu-latest)"', policy)
         for name in ("lint", "check"):
             gate = self.jobs[name]
-            self.assertEqual(key(gate, "needs"), "[resolve, base, classes, container-probes]")
+            self.assertEqual(key(gate, "needs"),
+                             "[resolve, base, classes, container-probes, "
+                             "telemetry-build-smoke, telemetry-runtime-smoke]")
             self.assertEqual(key(gate, "if"), "always()")
             text = "\n".join(gate)
             self.assertIn("scripts/test-classes.py aggregate", text)
@@ -147,6 +146,28 @@ class RequiredPythonCompatibility(unittest.TestCase):
         self.assertIn('--event "$GITHUB_EVENT_PATH"', job)
         self.assertNotIn("github.event.pull_request.labels", job)
         self.assertNotIn("continue-on-error", job)
+
+    def test_telemetry_smoke_is_selected_perf_validation_with_original_containment(self):
+        job = self.jobs['telemetry-build-smoke']
+        self.assertEqual(key(job, 'needs'), 'resolve')
+        self.assertEqual(key(job, 'if'), "needs.resolve.outputs.perf == 'true'")
+        self.assertEqual(key(job, 'timeout-minutes'), '20')
+        self.assertIn('      perf: ${{ steps.plan.outputs.perf }}', self.jobs['resolve'])
+        joined = '\n'.join(job)
+        self.assertNotIn('continue-on-error', joined)
+        self.assertIn('ghcr.io/pakhomovalexander/afactory-perf-gnu@sha256:'
+                      '26b0c708b9cdffdeb4731da33161f148b419af3c9e656ae9dc51d318215ae8b2', joined)
+        smoke_steps = steps(job)
+        expected = [('Pull the pinned telemetry build image', '4'),
+                    ('Exercise offline builds', '15'),
+                    ('Exercise contained measurements', '4')]
+        for prefix, timeout in expected:
+            step = next(item for item in smoke_steps if prefix in item[0])
+            self.assertIn('        timeout-minutes: ' + timeout, step)
+        for script in ('telemetry_build_smoke.py', 'telemetry_measurement_smoke.py'):
+            self.assertIn('python -I -B scripts/performance/tests/' + script, joined)
+        self.assertIn("PYTHONDONTWRITEBYTECODE: '1'", joined)
+        self.assertIn('validation-telemetry-smoke-${{ github.run_attempt }}', joined)
 
     def test_every_action_stays_pinned_to_a_commit(self):
         for line in self.text.splitlines():

@@ -27,6 +27,7 @@ jobs:
       plan: ${{ steps.plan.outputs.plan }}
       selected: ${{ steps.plan.outputs.selected }}
       e2e: ${{ steps.plan.outputs.e2e }}
+      perf: ${{ steps.plan.outputs.perf }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -219,7 +220,7 @@ jobs:
 
   lint:
     name: lint
-    needs: [resolve, base, classes, container-probes]
+    needs: [resolve, base, classes, container-probes, telemetry-build-smoke, telemetry-runtime-smoke]
     if: always()
     runs-on: ubuntu-latest
     timeout-minutes: 10
@@ -260,7 +261,7 @@ jobs:
 
   check:
     name: check (${{ matrix.os }})
-    needs: [resolve, base, classes, container-probes]
+    needs: [resolve, base, classes, container-probes, telemetry-build-smoke, telemetry-runtime-smoke]
     if: always()
     strategy:
       fail-fast: false
@@ -302,3 +303,76 @@ jobs:
           name: validation-summary-check-${{ runner.os }}-${{ github.run_attempt }}
           path: target/test-classes/validation-metrics.json
           if-no-files-found: warn
+
+  telemetry-build-smoke:
+    env:
+      AF_CI_METRICS: target/telemetry-smoke-metrics.jsonl
+    needs: resolve
+    if: needs.resolve.outputs.perf == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
+        with:
+          python-version: '3.x'
+          check-latest: true
+      - name: Pull the pinned telemetry build image
+        timeout-minutes: 4
+        run: docker pull --quiet ghcr.io/pakhomovalexander/afactory-perf-gnu@sha256:26b0c708b9cdffdeb4731da33161f148b419af3c9e656ae9dc51d318215ae8b2
+      - name: Exercise offline builds, aggregate storage and hostile output admission
+        timeout-minutes: 15
+        run: python3 scripts/ci-step.py --stage tests telemetry-build-smoke python -I -B scripts/performance/tests/telemetry_build_smoke.py
+      - name: Exercise contained measurements, diagnostic readers, denied writes and owned cleanup
+        timeout-minutes: 4
+        env:
+          PYTHONDONTWRITEBYTECODE: '1'
+        run: python3 scripts/ci-step.py --stage tests telemetry-measurement-smoke python -I -B scripts/performance/tests/telemetry_measurement_smoke.py
+      - name: Retain perf smoke costs
+        if: always()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: validation-telemetry-smoke-${{ github.run_attempt }}
+          path: target/telemetry-smoke-metrics.jsonl
+          if-no-files-found: error
+
+  telemetry-runtime-smoke:
+    env:
+      AF_CI_METRICS: target/telemetry-runtime-smoke-metrics.jsonl
+    needs: resolve
+    if: needs.resolve.outputs.perf == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 95
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
+        with:
+          python-version: '3.x'
+          check-latest: true
+      - name: Pull the pinned GNU image for real AF setup coverage
+        timeout-minutes: 4
+        run: docker pull --quiet ghcr.io/pakhomovalexander/afactory-perf-gnu@sha256:26b0c708b9cdffdeb4731da33161f148b419af3c9e656ae9dc51d318215ae8b2
+      - name: Build actual release AF through the contained offline compiler
+        timeout-minutes: 81
+        run: |
+          python3 scripts/ci-step.py --stage tests telemetry-runtime-build python -I -B scripts/performance/cli.py telemetry-contained-build \
+            --source "$GITHUB_WORKSPACE" --source-sha "$GITHUB_SHA" \
+            --output "$RUNNER_TEMP/telemetry-runtime-build" \
+            --scratch-fs "$RUNNER_TEMP/telemetry-runtime-build-scratch" \
+            --image ghcr.io/pakhomovalexander/afactory-perf-gnu@sha256:26b0c708b9cdffdeb4731da33161f148b419af3c9e656ae9dc51d318215ae8b2
+      - name: Exercise real AF admission and all three contained telemetry paths
+        timeout-minutes: 9
+        run: |
+          python3 scripts/ci-step.py --stage tests telemetry-runtime-smoke python -I -B scripts/performance/tests/telemetry_runtime_smoke.py \
+            --af "$RUNNER_TEMP/telemetry-runtime-build/af" --work-parent "$RUNNER_TEMP"
+      - name: Retain real AF smoke costs
+        if: always()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: validation-telemetry-runtime-smoke-${{ github.run_attempt }}
+          path: target/telemetry-runtime-smoke-metrics.jsonl
+          if-no-files-found: error

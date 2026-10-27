@@ -2,7 +2,8 @@
   "always_on_scripts": [
     "test-test-classes.py",
     "test-release-resolve.py",
-    "test-af-pin.py"
+    "test-af-pin.py",
+    "test-gate-owner.py"
   ],
   "binaries": {
     "af::bin/af": "functional",
@@ -296,6 +297,7 @@
   "scripts": {
     "test-af-pin.py": "functional",
     "test-check-pr-report.py": "functional",
+    "test-gate-owner.py": "functional",
     "test-nextest-gate.py": "functional",
     "test-performance.py": "perf",
     "test-pr-lines.py": "functional",
@@ -311,5 +313,10 @@
     "test-time-report.py",
     "test-class-python.py",
     "test-labels.py"
-  ]
+  ],
+  "hosted_checks": {
+    "container-probes": "e2e",
+    "telemetry-build-smoke": "perf",
+    "telemetry-runtime-smoke": "perf"
+  }
 }

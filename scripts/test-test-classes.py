@@ -69,7 +69,7 @@ class Selection(unittest.TestCase):
             subprocess.run([sys.executable, str(ROOT / 'scripts/test-classes.py'), 'plan',
                             '--context', 'pr', '--event', str(event), '--output', str(output),
                             '--github-output', str(gh)], check=True, capture_output=True)
-            self.assertEqual(len(gh.read_text().splitlines()), 3)
+            self.assertEqual(len(gh.read_text().splitlines()), 4)
             self.assertFalse((ROOT / 'SHOULD_NOT_EXIST').exists())
 
 
@@ -222,6 +222,127 @@ class LabelSetup(unittest.TestCase):
 
 
 class SealedEvidence(unittest.TestCase):
+    def test_verify_wrapper_keeps_ownership_and_forwards_explicit_selection(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            scripts = root / 'scripts'
+            scripts.mkdir()
+            for name in ('verify.sh', 'verify-body.sh', 'gate-owner.py'):
+                shutil.copy2(ROOT / 'scripts' / name, scripts / name)
+            tools = root / 'bin'
+            tools.mkdir()
+            make = tools / 'make'
+            make.write_text(f'#!{sys.executable}\nimport json, os, pathlib, sys\n'
+                            'pathlib.Path(os.environ["CALLS"]).write_text(json.dumps({\n'
+                            '"args": sys.argv[1:], "run": os.environ["AF_GATE_NEXTEST_RUN"],\n'
+                            '"target": os.environ["AF_GATE_NEXTEST_TARGET"],\n'
+                            '"metrics": os.environ["AF_CI_METRICS"]}))\n'
+                            'sys.exit(int(os.environ["STATUS"]))\n')
+            make.chmod(0o755)
+            plan = root / 'selected plan.json'
+            tc.write(plan, tc.resolve(['test:uix']))
+            calls = root / 'calls.json'
+            env = {k: v for k, v in os.environ.items()
+                   if not k.startswith(('AF_', 'CARGO_', 'GH_', 'GITHUB_'))}
+            target = root / 'owned output'
+            env.update(PATH=str(tools) + os.pathsep + env['PATH'],
+                       AF_GATE_TARGET_DIR=str(target), CALLS=str(calls), STATUS='0')
+            for args, expected in [([], ['check']),
+                                   (['--test-plan', str(plan)], ['check-classes', f'TEST_PLAN={plan}'])]:
+                for status in (0, 23):
+                    env['STATUS'] = str(status)
+                    result = subprocess.run(['bash', str(scripts / 'verify.sh'), *args], cwd=root,
+                                            env=env, capture_output=True, text=True, timeout=10)
+                    self.assertEqual(result.returncode, status, result.stdout + result.stderr)
+                    observed = tc.read(calls)
+                    self.assertEqual(observed['args'], expected)
+                    self.assertEqual(observed['target'], str(target))
+                    self.assertEqual(Path(observed['run']).parent, target / 'nextest-reports')
+                    self.assertEqual(observed['metrics'], observed['run'] + '/ci-metrics.jsonl')
+            calls.unlink()
+            for args in (['--unknown'], ['--test-plan'], ['--test-plan', str(root / 'absent')]):
+                result = subprocess.run(['bash', str(scripts / 'verify.sh'), *args], cwd=root,
+                                        env=env, capture_output=True, timeout=10)
+                self.assertEqual(result.returncode, 2)
+                self.assertFalse(calls.exists())
+            self.assertFalse((root / 'target').exists())
+
+    def test_full_gate_build_precedes_python_tests_with_real_step_receipts(self):
+        # Keep the actual wrapper, Make graph and receipt writer. Only expensive payloads
+        # are stand-ins; never run a nested real gate from this preflight regression.
+        preflight = ['task-preflight', 'prereqs', 'gate-owner', 'nextest-gate',
+                     'test-time-report', 'provider-auth-host', 'pr-report', 'pr-lines',
+                     'test-classes', 'test-catalog', 'performance-schemas',
+                     'performance-kernel-harness']
+        lint = ['fmt', 'lint', 'lint-diagnostic-features']
+        tests = ['test', 'performance-lab', 'test-perf-trace', 'test-perf-calibration']
+        release = ['release-resolution', 'changelog-notes', 'af-pin-tests', 'af-pin']
+        expected = [(label, 'preflight') for label in preflight]
+        expected += [(label, 'lint') for label in lint] + [('test-build', 'build')]
+        expected += [(label, 'tests') for label in tests]
+        expected += [(label, 'release') for label in release]
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            scripts = root / 'scripts'
+            scripts.mkdir()
+            shutil.copy2(ROOT / 'Makefile', root / 'Makefile')
+            for name in ('verify.sh', 'verify-body.sh', 'gate-owner.py', 'ci-step.py'):
+                shutil.copy2(ROOT / 'scripts' / name, scripts / name)
+            # All command paths required by the full Make entry must exist in the fixture.
+            payloads = ['test-task-preflight.py', 'test-prereqs.py', 'test-gate-owner.py',
+                        'test-nextest-gate.py', 'test-test-time-report.py',
+                        'test-provider-auth-host.py', 'test-check-pr-report.py',
+                        'test-pr-lines.py', 'test-class-python.py', 'test-classes.py',
+                        'test-performance.py', 'performance/schemas.py', 'performance/cli.py',
+                        'nextest-gate.py', 'changelog-notes.py', 'af-pin.py']
+            for name in payloads:
+                path = scripts / name
+                path.parent.mkdir(exist_ok=True)
+                path.write_text('pass\n')
+            tools = root / 'bin'
+            tools.mkdir()
+            (tools / 'python3').symlink_to(sys.executable)
+            cargo = tools / 'cargo'
+            cargo.write_text(f'#!{sys.executable}\nimport os, sys\n'
+                             'sys.exit(int(os.environ["BUILD_STATUS"]) if '
+                             'sys.argv[1:] == ["test", "--locked", "--no-run"] else 0)\n')
+            cargo.chmod(0o755)
+            env = {k: v for k, v in os.environ.items()
+                   if not k.startswith(('AF_', 'GH_', 'GITHUB_', 'CARGO_', 'RUST', 'MAKE'))}
+            report = root / 'check.jsonl'
+            env.update(PATH=str(tools) + os.pathsep + env['PATH'],
+                       AF_GATE_TARGET_DIR=str(root / 'output'), AF_CHECK_REPORT=str(report))
+            for runner in ('nextest', 'cargo'):
+                for entry, status in (('check', 0), ('check', 19), ('test', 0)):
+                    with self.subTest(runner=runner, entry=entry, build_status=status):
+                        report.unlink(missing_ok=True)
+                        env.update(TEST_RUNNER=runner, BUILD_STATUS=str(status))
+                        command = (['bash', str(scripts / 'verify.sh')] if entry == 'check'
+                                   else ['make', 'test'])
+                        result = subprocess.run(command, cwd=root, env=env,
+                                                capture_output=True, text=True, timeout=20)
+                        self.assertEqual(result.returncode == 0, status == 0,
+                                         result.stdout + result.stderr)
+                        records = [json.loads(line) for line in report.read_text().splitlines()]
+                        wanted = (expected[:len(preflight) + len(lint) + 1] if status
+                                  else expected if entry == 'check'
+                                  else [('test-build', 'build'), ('test', 'tests')])
+                        self.assertEqual([(r['label'], r['stage']) for r in records], wanted)
+                        build = next(r for r in records if r['label'] == 'test-build')
+                        self.assertEqual(build['command'], ['cargo', 'test', '--locked', '--no-run'])
+                        self.assertEqual(build['exit_code'], status)
+                        if status:
+                            self.assertFalse(any(r['stage'] == 'tests' for r in records))
+                            continue
+                        self.assertTrue(all(r['exit_code'] == 0 for r in records))
+                        rust = next(r for r in records if r['label'] == 'test')
+                        self.assertEqual(rust['command'][:2], ['python3', 'scripts/nextest-gate.py']
+                                         if runner == 'nextest' else ['cargo', 'test'])
+                        if entry == 'check':
+                            python = next(r for r in records if r['label'] == 'performance-lab')
+                            self.assertEqual(python['command'], ['python3', 'scripts/test-performance.py'])
+                            self.assertLess(records.index(build), records.index(python))
+
     def test_fresh_base_workflow_entry_records_timing_without_a_target_directory(self):
         workflow = (ROOT / '.github/workflows/validate.yml').read_text()
         base = workflow.split('\n  base:\n', 1)[1].split('\n  classes:\n', 1)[0]
@@ -241,7 +362,7 @@ class SealedEvidence(unittest.TestCase):
             # Keep the real workflow/Make/timing entrypoints; stand in for the expensive payloads.
             sample = ('import unittest\nclass Case(unittest.TestCase):\n'
                       '    def test_recorded(self): self.assertTrue(True)\nunittest.main()\n')
-            for name in ('test-test-classes.py', 'test-release-resolve.py', 'test-af-pin.py'):
+            for name in ('test-test-classes.py', 'test-release-resolve.py', 'test-af-pin.py', 'test-gate-owner.py'):
                 (scripts / name).write_text(sample)
             for name in ('test-classes.py', 'changelog-notes.py', 'af-pin.py'):
                 (scripts / name).write_text('pass\n')
@@ -268,7 +389,7 @@ class SealedEvidence(unittest.TestCase):
             records = [json.loads(line) for line in (source / metrics_path).read_text().splitlines()]
             self.assertEqual([r['label'] for r in records], ['fmt', 'lint', 'lint-diagnostic-features',
                              'release-resolution', 'changelog-notes', 'af-pin-tests', 'af-pin',
-                             'test-classes', 'test-catalog', 'cli-smoke'])
+                             'gate-owner', 'test-classes', 'test-catalog', 'cli-smoke'])
             self.assertTrue(all(r['schema'] == 'af.ci-step/1' and r['exit_code'] == 0
                                 and r['elapsed_seconds'] >= 0 and r['started_at'] for r in records))
             self.assertEqual([json.loads(line)[0] for line in calls.read_text().splitlines()],
@@ -288,7 +409,7 @@ class SealedEvidence(unittest.TestCase):
             # Exercise all real Make recipes that invoke the recorder with tiny unittest inputs.
             sample = ('import unittest\nclass Case(unittest.TestCase):\n'
                       '    def test_recorded(self): self.assertTrue(True)\nunittest.main()\n')
-            for name in ('test-test-classes.py', 'test-release-resolve.py', 'test-af-pin.py'):
+            for name in ('test-test-classes.py', 'test-release-resolve.py', 'test-af-pin.py', 'test-gate-owner.py'):
                 (scripts / name).write_text(sample)
             for name in ('test-classes.py', 'changelog-notes.py', 'af-pin.py'):
                 (scripts / name).write_text('pass\n')
@@ -311,9 +432,9 @@ class SealedEvidence(unittest.TestCase):
                 result = subprocess.run(['make', 'base-check'], cwd=source, env=env,
                                         capture_output=True, text=True)
                 self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
-                self.assertEqual(len(list((output / 'base-evidence').glob('*.xml'))), 3)
+                self.assertEqual(len(list((output / 'base-evidence').glob('*.xml'))), 4)
                 records = [json.loads(line) for line in metrics.read_text().splitlines()]
-                self.assertEqual(len(records), 6)
+                self.assertEqual(len(records), 7)
                 self.assertTrue(all(r['exit_code'] == 0 for r in records))
                 after = {str(p.relative_to(source)): p.read_bytes() for p in source.rglob('*') if p.is_file()}
                 self.assertEqual(before, after)
@@ -327,6 +448,38 @@ class SealedEvidence(unittest.TestCase):
 
 
 class Catalog(unittest.TestCase):
+    def test_gate_owner_is_always_on_and_precedes_selected_cargo_inventory(self):
+        cat = tc.catalog()
+        self.assertEqual(cat['scripts']['test-gate-owner.py'], 'functional')
+        self.assertIn('test-gate-owner.py', cat['always_on_scripts'])
+        self.assertEqual(cat['hosted_checks'], {'container-probes': 'e2e', 'telemetry-build-smoke': 'perf',
+                                                'telemetry-runtime-smoke': 'perf'})
+        source = (ROOT / 'scripts/test-classes.py').read_text()
+        runner = source[source.index('def run_class('):source.index('def main(')]
+        self.assertLess(runner.index("'test-gate-owner.py'"), runner.index("['cargo', 'nextest', 'list'"))
+        recipes = (ROOT / 'Makefile').read_text()
+        self.assertIn('gate-owner python3 scripts/test-gate-owner.py', recipes.split('preflight-check:', 1)[1])
+        self.assertIn('test-gate-owner.py', recipes.split('base-check: release-check', 1)[1])
+        self.assertEqual((ROOT / 'scripts/verify.sh').read_text().splitlines()[-1],
+                         'exec python3 "$scripts_dir/gate-owner.py" bash "$scripts_dir/verify-body.sh" "$@"')
+
+    def test_unclassified_hosted_validation_job_refuses_audit(self):
+        from unittest import mock
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            workflow = root / '.github/workflows/validate.yml'
+            workflow.parent.mkdir(parents=True)
+            source = (ROOT / '.github/workflows/validate.yml').read_text()
+            cat = tc.catalog()
+            cat.update(scripts={}, utilities=[], always_on_scripts=[])
+            with mock.patch.object(tc, 'ROOT', root), mock.patch.object(tc, 'schema_parity'):
+                workflow.write_text(source)
+                tc.audit_source(cat)
+                workflow.write_text(source + '\n  unclassified-smoke:\n    runs-on: ubuntu-latest\n')
+                with self.assertRaisesRegex(ValueError, 'hosted validation job catalog drift'):
+                    tc.audit_source(cat)
+
     def test_source_and_representative_fixture_partition(self):
         tc.audit_source()
         fixture = tc.read(ROOT / 'fixtures/test-classes/inventory.json')
@@ -371,10 +524,12 @@ class Gates(unittest.TestCase):
     def good(self, plan):
         return {'resolve': {'result': 'success', 'outputs': {'plan': json.dumps(plan, separators=(',', ':'))}},
                 'base': {'result': 'success'}, 'classes': {'result': 'success'},
-                'container-probes': {'result': 'success' if 'e2e' in plan['selected'] else 'skipped'}}
+                'container-probes': {'result': 'success' if 'e2e' in plan['selected'] else 'skipped'},
+                'telemetry-build-smoke': {'result': 'success' if 'perf' in plan['selected'] else 'skipped'},
+                'telemetry-runtime-smoke': {'result': 'success' if 'perf' in plan['selected'] else 'skipped'}}
 
     def test_all_required_results_fail_closed(self):
-        plan = tc.resolve(context='pr')
+        plan = tc.resolve(['release:full'], 'pr')
         good = self.good(plan)
         tc.aggregate(plan, good)
         for key in good:
@@ -390,6 +545,27 @@ class Gates(unittest.TestCase):
             tc.aggregate(plan, bad)
         plan = tc.resolve(['test:perf'], 'pr')
         tc.aggregate(plan, self.good(plan))
+
+    def test_telemetry_smoke_requires_actual_success_only_when_perf_selected(self):
+        plans = [tc.resolve(labels, 'pr') for labels in
+                 ([], ['no-perf'], ['release:fast'], ['test:perf'], ['release:full'])]
+        plans += [tc.resolve(context=context) for context in ('local', 'gate', 'release')]
+        for plan in plans:
+            expected = 'success' if 'perf' in plan['selected'] else 'skipped'
+            for job in ('telemetry-build-smoke', 'telemetry-runtime-smoke'):
+                for state in ('success', 'skipped', 'failure', 'cancelled', ''):
+                    needs = self.good(plan)
+                    needs[job]['result'] = state
+                    with self.subTest(plan=plan, job=job, state=state):
+                        if state == expected:
+                            tc.aggregate(plan, needs)
+                        else:
+                            with self.assertRaises(ValueError):
+                                tc.aggregate(plan, needs)
+                needs = self.good(plan)
+                del needs[job]
+                with self.assertRaises(ValueError):
+                    tc.aggregate(plan, needs)
 
     def test_selected_platform_receipts_are_exact_and_complete(self):
         plan = tc.resolve(['test:uix'])
@@ -414,6 +590,32 @@ class Gates(unittest.TestCase):
 
 
 class Metrics(unittest.TestCase):
+    def test_perf_smoke_cost_is_separate_but_extends_observed_envelope(self):
+        plan = tc.resolve(['test:perf'])
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            artifact = root / 'validation-class-Linux-perf-1'
+            evidence = artifact / 'class-evidence'
+            tc.write(evidence / 'receipt.json', {'platform': 'Linux', 'class': 'perf'})
+            tc.write(evidence / 'report.json', {'plan': plan, 'classes': {'perf': {'passed': 1}}})
+            outer = {'label': 'class-perf', 'started_at': '2026-10-25T00:00:00+00:00',
+                     'elapsed_seconds': 5, 'exit_code': 0}
+            (artifact / 'class-metrics.jsonl').write_text(json.dumps(outer) + '\n')
+            smoke = root / 'validation-telemetry-smoke-1'
+            smoke.mkdir()
+            (smoke / 'telemetry-smoke-metrics.jsonl').write_text(json.dumps(dict(
+                outer, label='telemetry-measurement-smoke', elapsed_seconds=20)) + '\n')
+            runtime = root / 'validation-telemetry-runtime-smoke-1'
+            runtime.mkdir()
+            (runtime / 'telemetry-runtime-smoke-metrics.jsonl').write_text(json.dumps(dict(
+                outer, label='telemetry-runtime-smoke', elapsed_seconds=30)) + '\n')
+            value = tc.aggregate_metrics(plan, root, ['Linux'])['platforms']['Linux']
+            self.assertEqual(value['observed_runner_command_seconds'], 5)
+            self.assertEqual(value['classes']['perf']['runner_cost_share'], 1)
+            self.assertEqual(value['perf_smoke'], {'state': 'RAN', 'command_seconds': 50})
+            self.assertEqual(value['observed_command_envelope_seconds'], 30)
+            self.assertEqual(value['last_finishing_command'], 'telemetry-runtime-smoke')
+
     def test_aggregate_reports_parallel_envelope_and_disjoint_cost(self):
         plan = tc.resolve(['test:functional', 'test:uix'])
         with tempfile.TemporaryDirectory() as tmp:

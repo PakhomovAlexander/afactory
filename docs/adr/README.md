@@ -397,5 +397,43 @@ future readers need.
   base](0212-continue-a-task-from-its-reviewed-candidate-and-give-judging-workers-the-base.md)
 - [0213 — Isolate CLI usage tests from the repository release
   pin](0213-isolate-cli-usage-tests-from-the-repository-release-pin.md)
-- [0214 — Select validation classes and bind release profiles to
-  tags](0214-select-validation-classes-and-bind-release-profiles-to-tags.md)
+- [0214 — Integrate Telemetry into the performance laboratory as diagnostics and advisory
+  experiments](0214-integrate-telemetry-into-the-performance-lab-as-diagnostics-and-advisory-experiments.md)
+- [0215 — Contain telemetry experiments and collect only results verified under their
+  authority](0215-contain-telemetry-experiments-and-collect-only-results-verified-under-their-authority.md)
+- [0216 — Construct reference fixture bytes without per-byte Python
+  loops](0216-construct-reference-fixture-bytes-without-per-byte-python-loops.md)
+- [0217 — Bind calibration dispatch to the checked main source and separate group
+  arguments](0217-bind-calibration-dispatch-to-the-checked-main-source-and-separate-group-arguments.md)
+- [0218 — Reapply an accounting append once after only this writer's heartbeat
+  renewals](0218-reapply-an-accounting-append-once-after-only-this-writers-heartbeat-renewals.md)
+- [0219 — Own native gate children without leaving the enclosing process
+  group](0219-own-native-gate-children-without-leaving-the-enclosing-process-group.md)
+- [0220 — Control Store fixture time with a scoped thread
+  clock](0220-control-store-fixture-time-with-a-scoped-thread-clock.md)
+- [0221 — Integrate the Performance Lab with GA and control short Attempt
+  fixtures](0221-integrate-the-performance-lab-with-ga-and-control-short-attempt-fixtures.md)
+- [0222 — Fence filesystem cleanup and bound telemetry admission through
+  publication](0222-fence-filesystem-cleanup-and-bound-telemetry-admission-through-publication.md)
+- [0223 — Retain telemetry work authority before setup and register lock
+  ownership](0223-retain-telemetry-work-authority-before-setup-and-register-lock-ownership.md)
+- [0224 — Bind diagnostic symbol archives and avoid perf cache
+  links](0224-bind-diagnostic-symbol-archives-and-avoid-perf-cache-links.md)
+- [0225 — Declare the replacement hosted cohort from the accepted
+  producer](0225-declare-the-replacement-hosted-cohort-from-the-accepted-producer.md)
+- [0227 — Bound guarded experiment consumers to build and instrument
+  inputs](0227-bound-guarded-experiment-consumers-to-build-and-instrument-inputs.md)
+- [0228 — Give the guarded improvement fixture a controlled timing
+  margin](0228-give-the-guarded-improvement-fixture-a-controlled-timing-margin.md)
+- [0229 — Select validation classes and bind release profiles to
+  tags](0229-select-validation-classes-and-bind-release-profiles-to-tags.md)
+- [0230 — Canonicalize owned performance fixtures and model Linux setup
+  explicitly](0230-canonicalize-owned-performance-fixtures-and-model-linux-setup-explicitly.md)
+- [0231 — Run Python performance tests after the real
+  build](0231-run-python-performance-tests-after-the-real-build.md)
+- [0232 — Measure telemetry interruption from the selected fixture
+  boundary](0232-measure-telemetry-interruption-from-the-selected-fixture-boundary.md)
+- [0233 — Select real AF runtime smoke with the perf
+  class](0233-select-real-af-runtime-smoke-with-the-perf-class.md)
+- [0234 — Reconcile validation classes with bounded upstream for
+  CI](0234-reconcile-validation-classes-with-bounded-upstream-for-ci.md)

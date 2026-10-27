@@ -37,7 +37,9 @@ def replace_once(text, old, new):
 
 class TempDir(unittest.TestCase):
     def setUp(self):
-        self.tmp = tempfile.mkdtemp(prefix="af-perf-test-")
+        # Canonicalize only the root we just created. Admission must still reject
+        # symlinks introduced inside fixtures (and arbitrary caller paths).
+        self.tmp = os.path.realpath(tempfile.mkdtemp(prefix="af-perf-test-"))
         self.addCleanup(shutil.rmtree, self.tmp, True)
 
     def path(self, *parts):

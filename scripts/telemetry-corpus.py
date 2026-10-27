@@ -22,12 +22,12 @@ the index's size after it. Each is measured warm (every file read once before) a
 platform lets this process drop the page cache (Linux as root, macOS as root through `purge`),
 cold; otherwise the report says warm-only and why. The bounds of design §12 — 2 s fresh, 200 ms
 unchanged, 200 ms `show` — are checked on the warm figures; the cold ones are reported beside
-them. Prints a Markdown table, or with `--json` the `af/telemetry-read-latency@1` document
-(`schemas/telemetry-read-latency-v1.json`). Exit status: 0 within every bound, 3 when a warm
+them. Prints a Markdown table, or with `--json` the `af/telemetry-read-latency@2` document
+(`schemas/telemetry-read-latency-v2.json`). Exit status: 0 within every bound, 3 when a warm
 figure is over its bound, 1 when the corpus cannot be generated or measured.
 """
 import argparse
-from contextlib import contextmanager
+from contextlib import contextmanager, nullcontext
 import fcntl
 import gzip
 import hashlib
@@ -45,7 +45,7 @@ import sys
 import tempfile
 import time
 
-SCHEMA = 'af/telemetry-read-latency@1'
+SCHEMA = 'af/telemetry-read-latency@2'
 REPOSITORY = Path(__file__).resolve().parent.parent
 FULL_RUNS = 10000
 DEFAULT_SEED = 20261021
@@ -127,6 +127,19 @@ class Layout:
         started_ms = self.start_ns(execution) // 1_000_000
         pid = 20000 + execution % 40000
         return f'{started_ms}-{pid}-{sha(f"corpus-segment:{self.seed}:{execution}")[:8]}'
+
+
+def expected_counts(seed, runs):
+    """Index facts required by this generator, independent of any reader's output."""
+    layout = Layout(seed, runs)
+    return {'executions': layout.executions, 'segments': layout.executions,
+            'blob_files': layout.blobs,
+            'spans': layout.executions * SPANS_PER_EXECUTION,
+            'events': layout.executions * EVENTS_PER_EXECUTION,
+            'blobs': layout.blobs, 'shared_blobs': layout.shared,
+            'blob_occurrences': sum(len(layout.blob_segments(i)) for i in range(layout.blobs)),
+            'blob_bytes': sum(layout.blob_size(i) for i in range(layout.blobs)),
+            'content_index': True, 'content_indexed': layout.blobs}
 
 
 _POOL = {}
@@ -335,8 +348,16 @@ def generate(args):
     (out / 'v1' / 'blobs').mkdir(parents=True, exist_ok=True)
     started = time.monotonic()
     jobs = max(1, args.jobs)
-    with multiprocessing.get_context('spawn').Pool(jobs) as workers:
-        written = sorted(workers.imap_unordered(
+    # A real serial path needs neither a Pool nor SemLock (/dev/shm is absent under
+    # --ipc none). Keep the same writers, ordering and bytes as parallel preparation.
+    context = (nullcontext() if jobs == 1
+               else multiprocessing.get_context('spawn').Pool(jobs))
+    with context as workers:
+        def dispatch(writer, items, chunksize):
+            return (map(writer, items) if workers is None
+                    else workers.imap_unordered(writer, items, chunksize))
+
+        written = sorted(dispatch(
             write_blob, ((str(out), args.seed, args.runs, index)
                          for index in range(layout.blobs)), chunksize=256))
         table = [(digest, size, stored) for _, digest, size, stored in written]
@@ -344,7 +365,7 @@ def generate(args):
         for index in range(layout.blobs):
             for execution in layout.blob_segments(index):
                 per_segment[execution].append(index)
-        segments = sorted(workers.imap_unordered(
+        segments = sorted(dispatch(
             write_segment, ((str(out), args.seed, args.runs, execution,
                              [table[index] for index in per_segment[execution]])
                             for execution in range(layout.executions)), chunksize=16))
@@ -540,7 +561,7 @@ def corpus_facts(corpus):
             'segment_stored_bytes': sum(path.stat().st_size for path in segments),
             'blob_files': len(blobs),
             'blob_stored_bytes': sum(path.stat().st_size for path in blobs),
-            'content_index': has_fts and indexed > 0}, run_id
+            'content_index': has_fts, 'content_indexed': indexed}, run_id
 
 
 def measure(args):
@@ -642,7 +663,8 @@ def main(argv=None):
     make.add_argument('--out', required=True)
     make.add_argument('--seed', type=int, default=DEFAULT_SEED)
     make.add_argument('--runs', type=int, default=FULL_RUNS)
-    make.add_argument('--jobs', type=int, default=os.cpu_count() or 1)
+    make.add_argument('--jobs', type=int, default=os.cpu_count() or 1,
+                      help='preparation workers; 1 runs serially without multiprocessing IPC')
     read = commands.add_parser('measure', help='measure the three reads on a corpus')
     read.add_argument('--dir', required=True)
     read.add_argument('--af', default=str(REPOSITORY / 'target' / 'release' / 'af'))

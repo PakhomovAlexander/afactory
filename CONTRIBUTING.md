@@ -43,6 +43,18 @@ CI uses the selected classes described below; the default PR omits perf. A local
 does not establish the outcome of separate CI/container work.
 Clippy warnings are errors; fix them rather than allowing them.
 
+Full `make check` keeps lightweight policy, source-integrity, catalog/schema checks and lint
+before the Rust test build. `cargo test --locked --no-run` must succeed before `ci-step.py`
+emits its genuine `stage=build` receipt. The ordinary Rust suite then runs, followed by
+`perf-python-tests` (`scripts/test-performance.py`) with `stage=tests`, feature-on tests and
+release checks. The Python laboratory suite executes tests and belongs under the test deadline;
+putting it in preflight consumed the build allowance before Rust compilation even began.
+Neither allowance changes. Standalone `make test` still builds and runs only the Rust suite,
+with either nextest or `TEST_RUNNER=cargo`. Selected class execution retains its own ordering
+and timing evidence. The focused regression in `scripts/test-test-classes.py` exercises the
+native wrapper, real Make recipes and receipt writer with command stand-ins, including a
+failed build that prevents both Rust and Python test execution.
+
 The gate runs one test per process and schedules tests across every test binary at once
 ([ADR-0124](docs/adr/0124-run-tests-in-parallel-processes-and-link-them-once.md)).
 `TEST_THREADS` bounds how many run at a time: four on a four-core CI runner, half the cores on

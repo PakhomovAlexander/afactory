@@ -23,6 +23,12 @@ alternatives. Use a separate diagnostic child run for CPU profiles and phase tra
 instrumentation overhead must not enter the timing verdict. Promote a successful experiment
 through a normal PR and the full comparison.
 
+Telemetry's own cost is measured beside the comparison by the advisory `Performance telemetry`
+workflow on pull requests, nightly, on publication and on dispatch, and a diagnostic child can
+record its CLI cases' telemetry with `--telemetry spans`; neither touches the verdict
+([`performance-telemetry.md`](performance-telemetry.md)). That workflow measures only in
+containers of the image `AF_PERF_GNU_BUILD_IMAGE` pins and plans nothing without it.
+
 ## The no-perf label
 
 PR validation and measurement share the selection in [the test-class design](test-classes.md).
@@ -35,7 +41,7 @@ Reruns preserve the event selection. Push, schedule, dispatch and published-rele
 retain their prior measurement policy and ignore PR exclusions.
 
 Inspect the entire diff when choosing coverage, explain the decision in the PR description,
-and re-evaluate it on updates. ADR-0214 explicitly supersedes the older prose-only recommendation
+and re-evaluate it on updates. ADR-0229 explicitly supersedes the older prose-only recommendation
 for ordinary repository PR labels. The kernel's Remote Check `no_perf_paths` mapping remains
 prose-only and unchanged; those gate PRs are never measured here. See
 [Remote Checks](task-execution/remote-checks.md#3-give-this-machine-a-push-target).
@@ -85,9 +91,20 @@ listings, retries failed imports, pins calibration runs, applies retention, and 
 `history/history.html` and `history/archive-status.json`. For a longer catch-up, explicitly
 increase `--lookback-days` up to 89; expired transport cannot be recovered by retrying.
 
-A local Mac service collects while awake. Its exit status and logs, plus archive health, must
-be monitored; after a long outage inspect the scan before transport expiry. For unattended
-operation, move the same service and archive to an always-on host with persistent storage.
+Telemetry experiment results have their own lane, never this archive: `cli.py
+telemetry-collect --config FILE` keeps each `perf-telemetry-*` result verified under its exact
+measurement authority in a separate, locked and bounded history root. Its example configuration
+and systemd units are in `scripts/performance/service/`, for a future always-on Linux host; none
+is installed ([`performance-telemetry.md`](performance-telemetry.md)). This collector behaves as
+before (its bounded ZIP reading is now shared with that lane), and the deployed one stays pinned
+to the frozen cohort's control.
+
+Claw is the always-on Linux collection host; keep its existing hourly collector and
+`/var/lib/af-performance/archive` intact. Do not install a periodic collector on this Mac.
+Monitor service exit status/logs and the configured history root's `history.html` and
+`archive-status.json`; after an outage inspect the scan before transport expiry. Calibration
+scheduling uses the separate [dispatcher lane](performance-cohort-dispatch.md#claw-scheduling-and-retained-reports).
+This declaration does not install or enable either service.
 
 ## Scope of the retained demonstration
 
@@ -99,9 +116,38 @@ instead of claiming native AF acceptance.
 
 ## Python validation
 
-`validate.yml` runs selected perf laboratory tests and schema parity once per selected platform on
-latest stable Python, using `python-version: '3.x'`, `check-latest: true`, and mandatory Tomli/tomllib
-parity. Stable lint/check aggregators require all selected class receipts, failing for missing,
-cancelled or skipped selected work. Every validation job uses the same Python selection before
-Python or Make commands. ADR-0214 replaces ADR-0197's unconditional lab dependency with this explicit
-selection; full validation still requires the complete lab.
+`validate.yml` runs selected laboratory tests and schema parity once per platform in the perf
+class, on latest stable Python (`3.x`, `check-latest: true`). Tomli/tomllib parity remains mandatory.
+The same resolver selects the pinned-container telemetry build and measurement smoke. Required
+`lint` and `check` aggregations fail unless both selected perf validation jobs succeed; an exclusion
+is reported as NOT RUN, never measured success ([the selection policy](test-classes.md)). All
+validation jobs use the same pinned Python setup action before Python or Make commands.
+
+## GA source integration checks
+
+The integrated producer retains GA's 60,000 ms production lease, exact current suite/goldens,
+Task continuation and gate retry/reporting alongside the lab's diagnostic and containment
+contracts ([ADR-0221](adr/0221-integrate-the-performance-lab-with-ga-and-control-short-attempt-fixtures.md)).
+The two reported Store dispatch failures use a separate 1,000 ms Attempt allowance. Their
+fixtures now control Store time locally; no production deadline or allowance is extended.
+Reproduce the repair and its neighboring expiry/accounting cases from the repository root:
+
+```sh
+cargo test --locked --workspace --lib store::task::
+PYTHONDONTWRITEBYTECODE=1 python3 -B scripts/nextest-gate.py --repeat 20 \
+  --locked --workspace --lib --profile ci --test-threads 4 \
+  -E 'test(rejected_task_output_keeps_its_charge) or test(captured_retry_policy_checks_durable_failures) or test(short_attempt_fixture_paths) or test(real_store_dispatch_deadline_boundary) or test(renewal_race)'
+PYTHONDONTWRITEBYTECODE=1 python3 -B scripts/performance/schemas.py
+PYTHONDONTWRITEBYTECODE=1 python3 -B scripts/performance/cli.py harness-digest --check
+```
+
+Use synthetic HOME/XDG directories and the pinned Rust 1.88 toolchain for AF checks. Repeat
+mode stops on any failure and never substitutes an isolated retry for a successful repetition.
+The ordinary native gate retains its separate failed-test isolation policy and reports flakes.
+Regenerate protected inventory/staged policy with `harness-digest --write` after protected
+edits; `.af/` authority is unchanged by this integration. Full native verification and independent
+reviews run on sealed source. Follow the [dispatcher runbook](performance-cohort-dispatch.md)
+only after exact-source acceptance and publication. The retained old cohort stays unchanged
+and disabled. [ADR-0225](adr/0225-declare-the-replacement-hosted-cohort-from-the-accepted-producer.md)
+declares its separate seven-day replacement; installation, parameter sealing, measurements and
+activation remain coordinator operations.

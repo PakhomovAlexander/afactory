@@ -1142,6 +1142,10 @@ labelled away. `content` has no bound (`af telemetry status` calls it *perturbin
 read-latency corpus `af telemetry status` answers in under 2 s on a fresh index and under 200 ms
 when nothing is new, and `show` of one run in under 200 ms, warm.
 
+The performance laboratory runs these three scripts as advisory telemetry experiments on a
+baseline and a candidate binary, and records CLI cases' telemetry in its diagnostic child runs
+([`performance-telemetry.md`](performance-telemetry.md)).
+
 **The overhead protocol.** `scripts/telemetry-overhead.py` runs the three credential-free bench
 fixtures of [`fixtures/telemetry-bench/`](../fixtures/telemetry-bench/README.md) through the Task
 runtime with scripted harnesses: `telemetry-bench-concurrent` (four concurrent Attempts),
@@ -1195,9 +1199,11 @@ homes and `content_index` on, `af telemetry status` on a fresh index, `af teleme
 nothing new and `af telemetry show` of one run, each warm (every file read once first) and, where
 the script may drop the page cache (Linux or macOS as root), cold; otherwise it reports warm-only
 and why. It prints the latency, peak memory and index size of each against its bound, or with
-`--json` the `af/telemetry-read-latency@1` document
-([`schemas/telemetry-read-latency-v1.json`](../schemas/telemetry-read-latency-v1.json)), and
-exits 3 when a warm figure is over its bound.
+`--json` the `af/telemetry-read-latency@2` document
+([`schemas/telemetry-read-latency-v2.json`](../schemas/telemetry-read-latency-v2.json)), and
+exits 3 when a warm figure is over its bound. Protocol v2 records `content_indexed` as well as
+the enable bit: the laboratory validates every index count against the generator layout and
+requires all generated text blobs indexed before admitting a latency judgment.
 
 ```sh
 python3 scripts/telemetry-corpus.py generate --out /scratch/telemetry-corpus-10k

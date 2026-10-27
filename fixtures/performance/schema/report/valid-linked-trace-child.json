@@ -1,5 +1,5 @@
 {
-  "schema": "af.perf-report/2",
+  "schema": "af.perf-report/3",
   "run_id": "fixture_run",
   "plan_digest": "sha256:4efb6064cb01da8d3736f9b9707920fbd454d8aac168e0016a5236b5e4900c64",
   "comparison": "same_host_paired",
@@ -115,6 +115,12 @@
           }
         ],
         "omissions": []
+      },
+      "telemetry": {
+        "state": "unavailable",
+        "reason": "no linked diagnostic child run recorded this case's telemetry: a child run selects it explicitly (cli.py profile ... --telemetry spans, ADR-0196); only CLI cases that run a kernel run record telemetry",
+        "items": [],
+        "omissions": []
       }
     }
   ],
@@ -131,6 +137,7 @@
         "synthetic_fast"
       ],
       "retained_scratch": 0,
+      "telemetry_level": null,
       "page": "diagnostics/trace_child/diagnostic.html",
       "directory": "diagnostics/trace_child"
     }

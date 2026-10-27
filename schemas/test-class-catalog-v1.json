@@ -32,6 +32,17 @@
       },
       "type": "object"
     },
+    "hosted_checks": {
+      "additionalProperties": {
+        "enum": [
+          "functional",
+          "e2e",
+          "uix",
+          "perf"
+        ]
+      },
+      "type": "object"
+    },
     "ignored": {
       "additionalProperties": {
         "enum": [
@@ -102,6 +113,7 @@
     "utilities",
     "always_on_scripts",
     "exact",
+    "hosted_checks",
     "ignored"
   ],
   "type": "object"

@@ -1,5 +1,5 @@
 {
-  "schema": "af.perf-profiles/4",
+  "schema": "af.perf-profiles/6",
   "run_id": "diag_child",
   "parent_run_id": "schema_fixture_run",
   "parent_plan_digest": "sha256:de1427adef11aa8cb7886c5519b526f973597182a824a146bcc1e835a3b10358",
@@ -152,7 +152,12 @@
         "build_ids": [
           "0123456789abcdef0123456789abcdef01234567"
         ],
-        "binary_build_id_present": true
+        "binary_build_id_present": true,
+        "archive": {
+          "path": "symbols/9be5114811dd45bd3344d8b60b493ab93181718c814af15906171e0b0d85a07f.xz",
+          "bytes": 100,
+          "sha256": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+        }
       },
       "artifacts": [
         {
@@ -215,7 +220,12 @@
         "build_ids": [
           "0123456789abcdef0123456789abcdef01234567"
         ],
-        "binary_build_id_present": true
+        "binary_build_id_present": true,
+        "archive": {
+          "path": "symbols/9be5114811dd45bd3344d8b60b493ab93181718c814af15906171e0b0d85a07f.xz",
+          "bytes": 100,
+          "sha256": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+        }
       },
       "artifacts": [
         {
@@ -278,7 +288,12 @@
         "build_ids": [
           "0123456789abcdef0123456789abcdef01234567"
         ],
-        "binary_build_id_present": true
+        "binary_build_id_present": true,
+        "archive": {
+          "path": "symbols/49573a3bf4dcdbb9f990e1e99eb610ca804b8c403c0327254571179083e1088c.xz",
+          "bytes": 100,
+          "sha256": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+        }
       },
       "artifacts": [
         {
@@ -341,7 +356,12 @@
         "build_ids": [
           "0123456789abcdef0123456789abcdef01234567"
         ],
-        "binary_build_id_present": true
+        "binary_build_id_present": true,
+        "archive": {
+          "path": "symbols/49573a3bf4dcdbb9f990e1e99eb610ca804b8c403c0327254571179083e1088c.xz",
+          "bytes": 100,
+          "sha256": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+        }
       },
       "artifacts": [
         {
@@ -518,6 +538,12 @@
     }
   ],
   "counters": [],
+  "telemetry": {
+    "level": null,
+    "perturbing": false,
+    "verdict_effect": "none",
+    "captures": []
+  },
   "omissions": [
     {
       "kind": "trace_overhead",

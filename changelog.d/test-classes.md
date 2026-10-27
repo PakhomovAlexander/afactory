@@ -12,3 +12,6 @@ PR selection, report exemptions explicitly and remain asynchronous after release
 profile label before mutations, and sealed AF gates keep Python evidence outside the source.
 Fresh CI checkouts create the configured timing directory before recording; class runner costs and
 shares count only class intervals, with base/container work reported separately.
+Telemetry build/measurement smoke is selected with perf and required by both stable aggregations;
+its cost stays separate from class runner shares. Native gates retain their ownership wrapper and
+mandatory owner preflight. Advisory telemetry producers keep their existing scheduling and safety.

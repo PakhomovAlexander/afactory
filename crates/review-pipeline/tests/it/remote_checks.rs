@@ -163,8 +163,7 @@ impl Remote {
         Self::replace_in(&self.state, file, text.as_bytes());
     }
 
-    /// The lines of one of the fake's label records: `labels`, `labels-added`,
-    /// `labels-removed` or `labels-created`.
+    /// The lines of one of the fake's label records.
     pub fn label_lines(&self, file: &str) -> Vec<String> {
         std::fs::read_to_string(self.state.join(file))
             .unwrap_or_default()

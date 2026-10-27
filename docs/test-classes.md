@@ -2,14 +2,15 @@
 
 This design governs repository development and release validation. It changes no kernel runtime,
 Task authority, individual assertion, deadline, or nextest exclusive scheduling rule.
-[ADR-0214](adr/0214-select-validation-classes-and-bind-release-profiles-to-tags.md) supersedes the
+[ADR-0229](adr/0229-select-validation-classes-and-bind-release-profiles-to-tags.md) supersedes the
 always-full CI policy in ADR-0107, the unconditional latest-Python lab dependency in ADR-0197,
 and the repository operator's prose-only recommendation for `no-perf` in ADR-0196. The AF kernel's
 remote gate label authority and `.af/` are unchanged. The required AF/local `make check` remains full.
 
 ## Classes and catalog
 
-Every test has exactly one primary class:
+Every test has exactly one primary class. Current counts come from the audited current source
+modules/scripts and the actual nextest inventory, never from historical run totals:
 
 | Class | Meaning | Examples |
 | --- | --- | --- |
@@ -32,6 +33,12 @@ Every top-level Python test script is registered, with utility entrypoints separ
 The performance laboratory's unittest discovery assigns its entire subordinate suite to perf;
 its existing discovery contract admits new lab test modules. Base policy tests are functional but
 always run, independently of class selection. Their script names are recorded in `always_on_scripts`.
+The catalog also classifies hosted companion jobs: `container-probes` is e2e and
+`telemetry-build-smoke` (both build and measurement smoke scripts) and
+`telemetry-runtime-smoke` (contained release AF build and real AF experiment paths) are perf.
+The new `test_telemetry_corpus.py` module and CLI oracle regressions in `test_runner.py` belong
+to the perf laboratory discovery rule; `telemetry_runtime_smoke.py` is the runtime hosted check. Auditing refuses
+unclassified hosted validation jobs, and aggregation requires each selected companion to succeed.
 
 `cargo nextest list --workspace --locked --message-format json` supplies actual binaries, tests and
 ignored state. The classifier refuses unknown identities, overlapping overrides and empty inventory.
@@ -47,6 +54,17 @@ all threads and their original deadlines within their class job. Classes use sep
 The full union includes the former preflight Python checks, performance schemas and harness digest,
 ordinary Rust suite and feature-on perf checks. The lab runs once per selected platform on latest
 stable Python, with `AF_PERF_REQUIRE_TOMLLIB=1`; it is no longer repeated before Rust validation.
+
+The full native/local gate separates compilation and lightweight preflight from suite execution
+([ADR-0231](adr/0231-run-python-performance-tests-after-the-real-build.md)). Preflight retains policy,
+source-integrity, catalog, schema and harness checks; formatting and lint remain mandatory.
+`cargo test --locked --no-run` must finish successfully and emit its real `stage=build` receipt
+before the ordinary Rust suite and the separate `perf-python-tests` target run. The latter runs
+`scripts/test-performance.py` with `stage=tests`, followed by feature-on tests and release checks.
+This places the laboratory suite under the existing test allowance instead of exhausting the build
+allowance before compilation. No test selection, assertion, deadline or receipt semantics change.
+Standalone `make test` retains both Rust runner modes. The selected class entry and its timing
+attribution remain unchanged; the phase repair applies to full `make check`.
 
 Ignored tests retain the previous policy. Benchmarks, child-process helpers and namespace-only probes
 are inventoried as ignored, never silently promoted or discarded. Live container probes are an explicit
@@ -90,7 +108,8 @@ actual packaged-binary onboarding/planning smoke always run for every shipped ta
 `validation / lint` and `validation / check (ubuntu-latest)` retain their exact branch-protection and
 Remote Check names. They are honest aggregation jobs with `always()`. They require resolver and base
 success, successful selected class matrix, exact SHA/catalog/plan receipts for every selected platform
-and class, and live containers when e2e is selected. Missing outputs, skipped selected work, failure
+and class, live containers when e2e is selected, and actual telemetry build/measurement and real AF runtime smoke success when
+perf is selected. The smoke job uses the same resolver output; fast/no-perf skips it explicitly. Missing outputs, skipped selected work, failure
 and cancellation fail. Class exclusion appears as **NOT RUN**, with its reason, never as a passed test.
 An empty or invalid plan cannot form a self-approving green gate. Releases also aggregate macOS.
 
@@ -167,13 +186,23 @@ perf, but do not claim to have awaited asynchronous post-publication measurement
 also applies to a release PR selected full. No required measurement was moved into an asynchronous
 path, and no protected runtime or `.af/` authority was expanded.
 
+The separate `performance-telemetry.yml` producer retains its PR, schedule, release and dispatch
+semantics, source bindings, lifecycle fencing and deadlines. It remains advisory and independent
+of PR/release class selection. Selecting perf requires validation of that subsystem and its
+contained build/measurement smoke; it does not change the producer's execution policy or wait
+for scheduled/advisory measurements.
+
 ## Evidence, metrics and replay
 
 Each class retains the plan, complete nextest inventory, partition, real JUnit, script JUnit when the
 script uses unittest, ci-step JSONL, report JSON and a success receipt. Scripts without unittest have
 command-level step evidence only; no invented passed testcase represents them. Default and feature
-build variants have distinct JUnit identities for reporting. Base and container timings are separate
-artifacts. Under a sealed native AF gate, base Python JUnit writes beneath
+build variants have distinct JUnit identities for reporting. Base, container and Linux perf smoke timings are separate artifacts. The perf smoke commands
+contribute to the observed command envelope, with their cost reported separately from class shares. The gate-owner preflight is mandatory in both the base check and each selected class runner.
+`verify.sh` retains the native ownership wrapper; `verify-body.sh` owns the complete gate body.
+With no arguments it runs full `make check`; explicit `--test-plan PLAN.json` selects
+`check-classes`, keeping its evidence beneath the existing private gate output.
+Under a sealed native AF gate, base Python JUnit writes beneath
 `AF_GATE_NEXTEST_RUN/base-evidence`; ordinary writable checkouts use `target/base-evidence`. Policy
 tests use private temporary directories outside the source. A chmod-sealed, unprivileged regression
 executes the Make recording recipes and proves all source bytes remain unchanged.
@@ -187,11 +216,11 @@ Ignored tests are listed with their policy rather than disappearing from invento
 
 Class runner cost (`observed_runner_command_seconds`) is the sum of observed outer class command
 intervals only. Each class's `runner_cost_share` divides its outer interval by that class-only sum;
-base and container intervals never enter this denominator. The parallel class critical
+base, container and perf smoke intervals never enter this denominator. The parallel class critical
 path is their maximum only when every selected class has a measured interval. It excludes queue time
 and separately reported base/container work; builds inside a class interval are included there.
 The aggregate also reports the observed command envelope from the earliest measured command start
-to the latest finish, including base/container intervals, and names the last finishing command.
+to the latest finish, including base/container/perf smoke intervals, and names the last finishing command.
 This envelope excludes resolver/setup/final-aggregation intervals and is not total workflow
 wall time. Always-on functional unittest counts are reported beside separate base costs.
 Inner ci-step intervals are retained for attribution, never added again to outer intervals. JUnit's

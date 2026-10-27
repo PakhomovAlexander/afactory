@@ -38,6 +38,16 @@ The data of the continuous performance laboratory
   target, the counter cases, the child run's limits, the diagnostic recipes (each a verdict
   recipe of `suite.toml` with only features, symbols and frame pointers added) and every external
   tool with its pin, how it reports its version and its provisioning instructions.
+- `telemetry.toml` — the telemetry experiments (`af.perf-telemetry-lab/2`, ADR-0214): each
+  exactly a bench script of the telemetry design's §12 with its document, the product schema it
+  is read through, its levels and the inputs that identify its measurement authority, and one
+  bounded profile per trigger (rounds, pairs, scale, corpus size, timeout, work bytes and
+  retention). `cli.py telemetry-run` measures it; nothing in it is a verdict sample.
+- `telemetry-diagnostic/` — the four `af telemetry` documents (`runs`, `show`, `status`,
+  `config`) a debug build of this source's AF (0.12.0-rc.5) wrote for the CLI Task fixture in a
+  private HOME on a macOS development host, its directory path replaced by `/scratch/sample` (ADR-0214): the
+  telemetry-capture tests read them through the product's schemas and mutate them into every
+  partial and hostile state.
 - `golden/native.json` — the native oracle's golden entries (`af.perf-golden/2`): per instance,
   the expected fixture identity, digest and count, with the semantic projection a digest covers;
   per seed a native instance reads, what its writer's check must report (ADR-0170);
@@ -188,12 +198,12 @@ neither is the primary metric.
 
 `cli.py report --run DIR --output NEW_DIR` recomputes a run's verdict and writes `report.html`:
 self-contained, every evidence string escaped, and only the bundled script and style allowed by
-their hashes. It also writes the matching `report.json` (`af.perf-report/2`), `verdict.json`,
+their hashes. It also writes the matching `report.json` (`af.perf-report/3`), `verdict.json`,
 the job-summary table `summary.md` and `evidence/`, the verified bundle members the page links;
 `--job-summary $GITHUB_STEP_SUMMARY` appends the table. It exits with the verdict's code. Each
 `--diagnostic CHILD_DIR` links a verified diagnostic child run of this run: its copy goes below
 `diagnostics/<child run>/`, and the page and summary show each case's flamegraphs, trace,
-timeline, coverage, overhead label and omissions. An unrelated, tampered or unsafe child is
+timeline, coverage, overhead label, telemetry captures and omissions. An unrelated, tampered or unsafe child is
 refused, and so is one whose selected cases are not the parent's workloads or whose profiles
 claim another kind than the recipe its frozen plan froze (ADR-0179). The rerun command keeps the plan's trigger, revisions, authority, cases, shards,
 pairs, seed, environment and build mode, and names what it cannot carry as a placeholder.
@@ -240,8 +250,10 @@ only the run's own directory of that filesystem writable (ADR-0176). Every file 
 candidate wrote is admitted as a confined bounded regular file. A step whose files together
 outgrow the room is cancelled and refused, and the byte usage recorded is the evidence's actual
 size, with an 8-MiB administrative reserve inside the cap. It
-writes `run.json`, `profiles.json` (`af.perf-profiles/4`), `diagnostic.html`, the captures,
-flamegraphs, traces and counters, and a bundle manifest into the new `--output` directory. It
+writes `run.json`, `profiles.json` (`af.perf-profiles/6`), `diagnostic.html`, the captures,
+flamegraphs, traces, counters and, with `--telemetry spans|content`, each eligible CLI case's
+telemetry documents (`telemetry/<case>/<side>/`, ADR-0214), and a bundle manifest into the new
+`--output` directory. It
 exits 0 when everything requested was captured and 4 when anything was unavailable; each
 omission names its reason and exact reproduction.
 

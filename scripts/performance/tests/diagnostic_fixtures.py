@@ -190,6 +190,15 @@ if args[0] == "record":
     output = option("-o")
     controls = [item for item in args if item.startswith("--control=fifo:")]
     command = args[args.index("--") + 1:]
+    assert "--no-buildid" not in args and "-B" not in args, "build IDs must be retained"
+    with open(os.path.join(here, "record-argv.jsonl"), "a") as stream:
+        stream.write(json.dumps(args) + "\n")
+    if config.get("cache_links") and ("--no-buildid-cache" not in args
+                                      or config.get("hostile_cache_link")):
+        # perf's automatic cache hard-links an admitted executable outside its private HOME.
+        cache = os.path.join(os.environ["HOME"], ".debug", ".build-id", "ab")
+        os.makedirs(cache, exist_ok=True)
+        os.link(os.path.realpath(command[0]), os.path.join(cache, "cached-elf"))
     sizes = [item for item in args if item.startswith("--max-size=")]
     assert all(item.endswith("K") for item in sizes), sizes
     if controls:
@@ -424,6 +433,41 @@ if args[:2] == ["task", "show"]:
         first = False
     out.write(']}\n')
     sys.exit(0)
+telemetry = os.path.join(os.environ.get("XDG_STATE_HOME", ""), "af", "telemetry")
+if args[:2] == ["task", "start"]:
+    print(json.dumps({"task_id": "perf-check-true", "phase": {"kind": "ready"}}))
+    sys.exit(0)
+if args[:2] == ["task", "run"]:
+    level = os.environ.get("AF_TELEMETRY__LEVEL")
+    if level and level != "off" and config.get("telemetry_docs"):
+        # What it recorded lives in this execution's own state root, nowhere else.
+        os.makedirs(telemetry, exist_ok=True)
+        with open(os.path.join(telemetry, "recorded"), "w") as stream:
+            stream.write(level)
+    print(json.dumps({"task_id": "perf-check-true", "phase": {"kind": "finished"},
+                      "result": {"execution": "completed", "acceptance": "satisfied",
+                                 "domain_conclusion": "verified"},
+                      "run_reports": [{"report": {"nodes": [
+                          {"node": "root.nodes.checks", "outcome": {"kind": "completed"}}]}}],
+                      "runtime_observations": [{"record": {
+                          "node": "root.nodes.checks",
+                          "spans": [{"kind": "check", "label": "truth"}]}}]}))
+    sys.exit(0)
+if args[:1] == ["telemetry"] and len(args) >= 2:
+    kind = args[1]
+    if not os.path.isfile(os.path.join(telemetry, "recorded")):
+        sys.stderr.write("af: the telemetry directory cannot be read\n"); sys.exit(1)
+    if kind in config.get("telemetry_fail", ()):
+        sys.stderr.write("af: telemetry %s failed\n" % kind); sys.exit(1)
+    runs = json.load(open(os.path.join(config["telemetry_docs"], "runs.json")))
+    if kind in ("show", "config"):
+        run = runs["runs"][0]
+        if args[2] != run["run_id"] or args[args.index("--store") + 1] != run["store_id"]:
+            sys.stderr.write("af: unknown run\n"); sys.exit(1)
+    with open(os.path.join(config["telemetry_docs"], kind + ".json"), "rb") as stream:
+        data = stream.read()
+    sys.stdout.buffer.write(data + b" " * config.get("telemetry_pad", 0))
+    sys.exit(0)
 sys.exit(64)
 '''
 
@@ -434,6 +478,9 @@ args = sys.argv[1:]
 with open(os.path.join(here, "docker-calls.jsonl"), "a") as log:
     log.write(json.dumps(args) + "\n")
 if args[0] in ("rm", "ps"):
+    sys.exit(0)
+if args[:2] == ["image", "inspect"]:
+    print('{"/implicit":{}}' if os.path.exists(os.path.join(here, "implicit-volume")) else 'null')
     sys.exit(0)
 assert args[0] == "run", args
 mounts = {}
@@ -500,8 +547,10 @@ sys.stdout.buffer.write(json.dumps(result).encode() + b"\n" + rest)
 def af(directory, **config):
     """A stand-in AF binary; `config` sets its version, busy_seconds, skip_sequence,
     fill_recorder, trace_bytes (the exported trace padded to that size), linger_seconds (a
-    bounded wait after the trace is exported, then the `af-lingered` marker) and the real_home
-    it must not run in."""
+    bounded wait after the trace is exported, then the `af-lingered` marker), the real_home
+    it must not run in, and for a telemetry-recorded `task run` the directory of the
+    `af telemetry` documents its readers print (telemetry_docs), the readers that fail
+    (telemetry_fail) and trailing bytes added to each (telemetry_pad)."""
     path = os.path.join(directory, "af")
     os.makedirs(directory, exist_ok=True)
     with open(os.path.join(directory, "fake-af.json"), "w") as stream:

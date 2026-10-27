@@ -488,6 +488,10 @@ fn settle_charged(
 
 #[test]
 fn typed_review_provenance_binds_exact_attempt_usage_and_unknown_reservation() {
+    test_clock::with_time(1_000_000, check_typed_review_provenance_at_controlled_time);
+}
+
+fn check_typed_review_provenance_at_controlled_time(clock: &std::cell::Cell<u64>) {
     for corruption in [
         "valid",
         "undercharge",
@@ -540,6 +544,7 @@ fn typed_review_provenance_binds_exact_attempt_usage_and_unknown_reservation() {
             .store
             .bind_task_attempt_context(&f.cas, &lease, &reserved, &context_id, &f.authority)
             .unwrap();
+        clock.set(attempt.reservation().deadline_unix_ms - 1);
         f.store
             .start_task_attempt(&f.cas, &lease, &attempt, &f.authority)
             .unwrap();
@@ -562,6 +567,18 @@ fn typed_review_provenance_binds_exact_attempt_usage_and_unknown_reservation() {
         f.store
             .publish_task_output(&f.cas, &lease, &output, Some(attempt.id()), &f.authority)
             .unwrap();
+        f.store = EventStore::open(&f.path).unwrap();
+        let execution = f.state().execution.unwrap();
+        assert_eq!(execution.budget.committed_tokens(), u128::from(charge));
+        assert_eq!(execution.budget.reserved_tokens(), 0);
+        assert_eq!(execution.budget.begun_attempts(), 1);
+        let accounting = execution.attempt_accounting();
+        assert_eq!(accounting[0].reservation, *reserved.reservation());
+        assert_eq!(
+            accounting[0].context_id.as_deref(),
+            Some(context_id.as_str())
+        );
+        assert_eq!(accounting[0].started_unix_ms, Some(clock.get()));
         let selected = f
             .store
             .publish_task_review_result(&f.cas, &lease, &output, &f.authority);
