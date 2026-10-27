@@ -219,9 +219,53 @@ fn catalog_destination_must_be_an_absent_project_relative_path() {
     assert!(root.path().join("demo").is_dir());
 }
 
+/// Issue #358: the README's install step promises a line to paste only to the shells `install.sh`
+/// writes one for, and says what a bin directory no PATH entry can hold gets instead: no line, but
+/// the advice to install with another `XDG_BIN_HOME`
+/// (`install_sh_gives_no_path_line_for_a_bin_directory_no_path_entry_can_hold`).
+#[test]
+fn readme_install_step_promises_a_path_line_only_where_the_installer_prints_one() {
+    let installer = workspace_file("install.sh");
+    for arm in [
+        "      fish) ",
+        "      zsh|bash) ",
+        "      *) printf '  add %s to PATH",
+    ] {
+        assert!(installer.contains(arm), "install.sh: {arm}");
+    }
+    let remedy = "set XDG_BIN_HOME to a directory without one, then install again";
+    assert_eq!(installer.matches(remedy).count(), 2, "install.sh");
+
+    let readme = workspace_file("README.md");
+    let install = collapsed(
+        readme
+            .split("<a id=\"install\"></a>")
+            .nth(1)
+            .unwrap()
+            .split("2. **Connect a Provider**")
+            .next()
+            .unwrap(),
+    );
+    let path = &install[install.find("not on `PATH`").expect("the PATH guidance")..];
+    for shell in ["fish", "bash", "zsh", "another shell"] {
+        assert!(path.contains(shell), "{shell}\n{path}");
+    }
+    for unfit in [
+        "`:`",
+        "control character",
+        "no such line",
+        "`XDG_BIN_HOME`",
+        "install again",
+    ] {
+        assert!(path.contains(unfit), "{unfit}\n{path}");
+    }
+    assert!(!install.contains("for your shell"), "{install}");
+}
+
 /// Issue #358: the README's guidance on Findings that look alike names commands that exist with
-/// the arguments it gives them, says that they stay apart until an operator groups them, and
-/// agrees with `af review group --help`. Each command runs against a Campaign that does not
+/// the arguments it gives them, says that they stay apart until an operator groups them unless an
+/// explicit corroboration or one exact rule occurrence attaches them, and agrees with
+/// `af review group --help`. Each command runs against a Campaign that does not
 /// exist: an error (exit 1), never a usage error (exit 2).
 #[test]
 fn readme_explains_findings_that_look_alike_with_commands_that_parse() {
@@ -242,6 +286,30 @@ fn readme_explains_findings_that_look_alike_with_commands_that_parse() {
     ] {
         assert!(flat.contains(statement), "{statement}\n{flat}");
     }
+    // Look-alike presentation never joins Reports, but the two attachments the reducer makes
+    // without an operator do (`canonical_stage_keys`): an explicit corroboration, and one exact
+    // rule occurrence from any reviewer
+    // (`reviewers_naming_one_rule_occurrence_share_a_finding_and_keep_every_report`). The guidance
+    // names both and never claims the relation is the only way in.
+    let never_enough = flat
+        .split(". ")
+        .find(|sentence| sentence.contains("never enough"))
+        .unwrap_or_else(|| panic!("no sentence says what is never enough\n{flat}"));
+    for presentation in ["path", "line", "title"] {
+        assert!(never_enough.contains(presentation), "{never_enough}");
+    }
+    for attachment in [
+        "corroborat",
+        "`rule_id`",
+        "`occurrence_key`",
+        "any reviewer",
+    ] {
+        assert!(flat.contains(attachment), "{attachment}\n{flat}");
+    }
+    assert!(
+        !flat.contains("only through an explicit relation"),
+        "{flat}"
+    );
     let commands: Vec<&str> = flat
         .split('`')
         .skip(1)
@@ -272,10 +340,18 @@ fn readme_explains_findings_that_look_alike_with_commands_that_parse() {
     assert!(
         group.contains(
             "af never groups Findings by itself: two Reports at the same place with different \
-             titles or severities stay two Findings until an operator groups them (ADR-0006)"
+             titles or severities stay two Findings until an operator groups them, unless"
         ),
         "{group}"
     );
+    for attachment in [
+        "`rule_id`",
+        "`occurrence_key`",
+        "corroborates",
+        "(ADR-0006)",
+    ] {
+        assert!(group.contains(attachment), "{attachment}\n{group}");
+    }
     assert!(
         group.contains("`af review ungroup FROM INTO` undoes it"),
         "{group}"
@@ -342,6 +418,21 @@ fn json_guidance_names_telemetry_tail_as_the_one_json_lines_stream() {
     }
 
     let readme = workspace_file("README.md");
+    // The opening summary promises no one document for every `--json`: it names the stream and
+    // points to the rules below.
+    let intro = collapsed(
+        readme
+            .split("- **Agents can drive it.**")
+            .nth(1)
+            .unwrap()
+            .split("\n\n")
+            .next()
+            .unwrap(),
+    );
+    assert!(intro.contains("`af telemetry tail --json`"), "{intro}");
+    assert!(intro.contains("JSON Lines"), "{intro}");
+    assert!(intro.contains("(#for-agents)"), "{intro}");
+    assert!(!intro.contains("prints one JSON document"), "{intro}");
     let agents = collapsed(
         readme
             .split("## For agents\n")

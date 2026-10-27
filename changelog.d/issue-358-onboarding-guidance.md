@@ -14,6 +14,9 @@
   it, promise one document only where one is printed, and name `af telemetry tail --json` as a
   JSON Lines stream, one `af/telemetry-tail@1` object per line, that a tail failing with an error
   ends with one `af/error@1` line, while a run two Stores record exits 2 with only stderr to say
-  so; the README, with `af review group --help`, explains that Findings that look
-  alike stay apart until an operator groups them
+  so. The README's install step says which PATH guidance each shell gets, and that a bin
+  directory with a `:` or a control character gets none but the advice to install elsewhere. The
+  README, with `af review group --help`, explains that Reports that only look alike, at one path
+  or line or with similar titles, stay separate Findings until an operator groups them, while an
+  explicit corroboration or an exact `rule_id` and `occurrence_key` attaches a Report to a Finding
   ([ADR-0006](../docs/adr/0006-finding-identity-is-path-independent.md)).

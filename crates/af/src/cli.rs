@@ -1000,7 +1000,8 @@ af review challenge-resolution --campaign pr-42 F-01H… --kind new-evidence \\\
     #[command(
         long_about = "Record, after a closed Round, that FROM and INTO are one defect.\n\naf never \
 groups Findings by itself: two Reports at the same place with different titles or severities stay \
-two Findings until an operator groups them (ADR-0006). Grouping keeps both Finding IDs, every \
+two Findings until an operator groups them, unless they carry one exact `rule_id` and \
+`occurrence_key` or one corroborates the other's Finding (ADR-0006). Grouping keeps both Finding IDs, every \
 Report and each Report's own verification; `af review ledger` then lists one Finding under INTO, \
 with FROM as its alias, the higher severity and the status that blocks more, and `af review show` \
 on either ID shows that group. FROM must not be grouped already and INTO must not be an alias. \
