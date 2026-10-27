@@ -497,6 +497,13 @@ change bumps the version rather than reinterpreting an old one. Nothing af print
 affected by a TTY, colours, or the update check: its notice goes to stderr, only on a TTY, and
 never under --json.
 
+Review reading commands:
+
+  af review ledger --json              af/review-ledger@1 (schemas/review-ledger-v1.json)
+  af review show KEY --json            af/review-show@1 (schemas/review-show-v1.json)
+  af review report --json              af/review-report@4 (schemas/review-report-v4.json)
+                                       --json is --format json; combining them is a usage error
+
 The Task documents, each named by its `schema`:
 
   af task show --json                  af/task-inspection@13; a collected Task:

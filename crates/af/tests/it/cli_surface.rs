@@ -58,6 +58,23 @@ fn usage_errors_name_only_the_failing_command() {
 }
 
 #[test]
+fn report_json_and_format_are_mutually_exclusive() {
+    let output = af(&[
+        "review",
+        "report",
+        "--campaign",
+        "demo",
+        "--json",
+        "--format",
+        "md",
+    ]);
+    assert_eq!(output.status.code(), Some(2));
+    let document: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+    assert_eq!(document["schema"], "af/error@2");
+    assert!(document["error"].as_str().unwrap().contains("--format"));
+}
+
+#[test]
 fn help_topics_and_command_paths() {
     let layers = af(&["help", "layers"]);
     assert!(layers.status.success());
@@ -66,6 +83,14 @@ fn help_topics_and_command_paths() {
     let ledger = af(&["help", "review", "ledger"]);
     assert!(ledger.status.success());
     assert!(out(&ledger).contains("--campaign"), "{}", out(&ledger));
+    assert!(out(&ledger).contains("--json"), "{}", out(&ledger));
+    for command in ["show", "report", "plan"] {
+        let help = af(&["help", "review", command]);
+        assert!(help.status.success());
+        assert!(out(&help).contains("--json"), "{command}: {}", out(&help));
+    }
+    let plan = af(&["help", "review", "plan"]);
+    assert!(out(&plan).contains("--long"), "{}", out(&plan));
 
     let unknown = af(&["help", "nonsense"]);
     assert_eq!(unknown.status.code(), Some(2));
@@ -236,6 +261,9 @@ fn task_states_topic_and_the_state_flags_describe_the_commands() {
     }
     let json = out(&af(&["help", "json"]));
     for needle in [
+        "af/review-ledger@1",
+        "af/review-show@1",
+        "af/review-report@4",
         "af/task-inspection@13",
         "af/task-checks@2",
         "af/task-list@3",

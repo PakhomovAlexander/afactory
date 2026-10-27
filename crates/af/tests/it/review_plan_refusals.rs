@@ -280,6 +280,20 @@ fn ready_comes_from_the_registry_and_a_ready_plan_names_the_run_command() {
     ];
     let document: Value = serde_json::from_slice(&plan(&repo, &bound, true).stdout).unwrap();
     assert_eq!(document["schema"], "af/review-plan@1");
+    assert!(
+        document["pipeline"]["topology"]["nodes"]
+            .as_array()
+            .unwrap()
+            .len()
+            > 1
+    );
+    assert_eq!(
+        document["resolved"]["policy_snapshot_id"]
+            .as_str()
+            .unwrap()
+            .len(),
+        71
+    );
     for provider in document["providers"].as_array().unwrap() {
         assert_eq!(provider["ready"], true, "{provider}");
     }
@@ -333,6 +347,12 @@ fn the_first_run_plan_fits_the_terminal_and_keeps_commands_whole() {
             .unwrap();
         assert!(shown.status.success(), "{}", err(&shown));
         let text = out(&shown);
+        assert!(
+            text.lines().count() <= 24,
+            "{} lines:\n{text}",
+            text.lines().count()
+        );
+        assert!(!text.contains("topology\n"), "{text}");
         for line in text.lines() {
             assert!(
                 line.chars().count() <= columns,

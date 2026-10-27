@@ -96,6 +96,27 @@ fn preview_detects_gate_and_writes_nothing() {
 }
 
 #[test]
+fn default_preview_fits_one_screen_and_long_shows_topology() {
+    let root = tempfile::tempdir().unwrap();
+    let repo = repo(root.path());
+    std::fs::write(repo.join("Makefile"), "check:\n\t@true\n").unwrap();
+    let short = af(&repo, &[]);
+    assert!(short.status.success(), "{}", stderr(&short));
+    let text = stdout(&short);
+    assert!(
+        text.lines().count() <= 24,
+        "{} lines:\n{text}",
+        text.lines().count()
+    );
+    assert!(!text.contains("topology\n"), "{text}");
+    assert!(text.contains("--long lists each"), "{text}");
+    let long = af(&repo, &["--long"]);
+    assert!(long.status.success(), "{}", stderr(&long));
+    assert!(stdout(&long).contains("topology\n"));
+    assert!(stdout(&long).contains("  .af/README.md"));
+}
+
+#[test]
 fn preview_preserves_explicit_gate_quoting_in_the_printed_apply_command() {
     let root = tempfile::tempdir().unwrap();
     let repo = repo(root.path());
@@ -252,6 +273,12 @@ fn apply_creates_valid_authority_and_never_overwrites_it() {
     assert_eq!(report["status"], "created");
     assert!(repo.join(".af/README.md").is_file());
     let readme = std::fs::read_to_string(repo.join(".af/README.md")).unwrap();
+    assert!(
+        readme.find("## Quickstart for the owner").unwrap() < readme.find("## What runs").unwrap()
+    );
+    assert!(readme.contains("af review ledger --campaign pr-<number> --json"));
+    assert!(readme.contains("af review show --campaign pr-<number> FINDING_KEY --json"));
+    assert!(readme.contains("af review report --campaign pr-<number> --json"));
     assert!(readme.contains("## Worker data authorization"));
     assert!(readme.contains("should not ask for additional per-Worker"));
     assert!(readme.contains("Plain `af review run` is light"));
@@ -813,6 +840,94 @@ fn task_onboard(repo: &Path, registry: &Path, args: &[&str]) -> Output {
         .env("AF_PROVIDERS_FILE", registry)
         .output()
         .unwrap()
+}
+
+#[test]
+fn afactory_authority_plans_a_three_field_task_with_its_defaults() {
+    let root = tempfile::tempdir().unwrap();
+    let repo = committed_repo(root.path());
+    let source = std::env::var_os("AF_WORKSPACE_ROOT")
+        .map(PathBuf::from)
+        .unwrap_or_else(|| Path::new(env!("CARGO_MANIFEST_DIR")).join("../.."))
+        .join(".af");
+    let copied = std::process::Command::new("cp")
+        .args(["-R", source.to_str().unwrap(), repo.to_str().unwrap()])
+        .output()
+        .unwrap();
+    assert!(copied.status.success(), "{}", stderr(&copied));
+    let project: toml::Value =
+        toml::from_str(&std::fs::read_to_string(repo.join(".af/af.toml")).unwrap()).unwrap();
+    assert_eq!(
+        project["task"]["defaults"]["limits"]["tokens"].as_integer(),
+        Some(6_000_000)
+    );
+    assert_eq!(
+        project["task"]["defaults"]["limits"]["verification"]["tokens"].as_integer(),
+        Some(2_000_000)
+    );
+    assert_eq!(
+        project["task"]["defaults"]["limits"]["verification"]["attempts"].as_integer(),
+        Some(8)
+    );
+    assert_eq!(
+        project["task"]["defaults"]["limits"]["verification"]["wall_ms"].as_integer(),
+        Some(14_400_000)
+    );
+    commit(&repo);
+    let ticket = root.path().join("short.json");
+    std::fs::write(
+        &ticket,
+        r#"{"task_id":"short","kind":"implement","goal":"Improve the CLI"}"#,
+    )
+    .unwrap();
+    let providers = registry(
+        &root.path().join("providers"),
+        &[("codex-main", "codex"), ("claude-main", "claude")],
+    );
+    let bin = root.path().join("bin");
+    crate::fake_models::install(
+        "codex",
+        &bin,
+        &root.path().join("providers/auth-codex-main"),
+    );
+    crate::fake_models::install(
+        "claude",
+        &bin,
+        &root.path().join("providers/auth-claude-main"),
+    );
+    let path = std::env::join_paths(
+        std::iter::once(bin).chain(std::env::split_paths(&std::env::var_os("PATH").unwrap())),
+    )
+    .unwrap();
+    let planned = crate::common::af()
+        .current_dir(&repo)
+        .args([
+            "task",
+            "plan",
+            "--file",
+            ticket.to_str().unwrap(),
+            "--state",
+        ])
+        .arg(root.path().join("state"))
+        .env("AF_PROVIDERS_FILE", providers)
+        .env("USER", "fixture")
+        .env("PATH", path)
+        .output()
+        .unwrap();
+    assert!(
+        planned.status.success(),
+        "{}\n{}",
+        stdout(&planned),
+        stderr(&planned)
+    );
+    assert!(
+        stderr(&planned).contains("limits (tokens 6000000, max_attempts 16, wall_ms 28800000)")
+    );
+    assert!(
+        stdout(&planned).contains("kernel/implementation-reviewed"),
+        "{}",
+        stdout(&planned)
+    );
 }
 
 #[test]

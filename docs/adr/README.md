@@ -429,3 +429,4 @@ future readers need.
   commands](0242-classify-first-run-refusals.md)
 - [0243 — Add pinned Task authority through additive
   onboarding](0243-add-task-authority-with-additive-onboarding.md)
+- [0244 — Version review inspection views](0244-version-review-inspection-views.md)

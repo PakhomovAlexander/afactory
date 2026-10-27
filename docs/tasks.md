@@ -2,7 +2,8 @@
 
 `af task` runs one bounded implementation Task against a local Git repository and, when the
 result is verified, delivers it to a new local branch and worktree for a human to inspect and
-commit. A Task starts from a Task file that names its ID, kind, goal and limits; the Pipeline and
+commit. A Task starts from a Task file that names its ID, kind and goal; limits may come from
+the project defaults. The Pipeline and
 Worker packages that run it are pinned in the repository's committed Task catalog. This page
 covers the `implement` Task and its delivery. Embedded Review, generated plans, repair and the
 other Task kinds are described under [Task execution](task-execution.md).
@@ -122,13 +123,16 @@ fallback = "refuse"
 [task.defaults.limits]
 tokens = 6000000
 max_attempts = 16
-wall_ms = 10800000
+wall_ms = 28800000
 
 [task.defaults.limits.verification]
 tokens = 2000000
 attempts = 8
-wall_ms = 3600000
+wall_ms = 14400000
 ```
+
+The wall bounds leave room for the compiled reviewers, evaluator and repository checks of
+`kernel/implementation-reviewed`; plan another Pipeline against its own declared allowances.
 
 A goal can stay short and point at what it needs. `context` names files of the Task's source
 tree, each with an optional `#section`; standing rules live in `.af/rules.md`. The Worker's

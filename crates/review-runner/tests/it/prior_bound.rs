@@ -62,6 +62,32 @@ fn non_utf8_change_set_patches_remain_byte_exact_in_the_prompt() {
 }
 
 #[test]
+fn git_build_options_stay_in_the_artifact_but_not_the_reviewer_prompt() {
+    let change_set = ChangeSetV1::new(
+        format!("sha256:{}", "a".repeat(64)),
+        format!("sha256:{}", "b".repeat(64)),
+        vec!["src/a.rs".into()],
+        vec![],
+        b"patch",
+        "git version 2.54.0\ncpu: arm64\nsizeof-long: 8\n",
+        "review.kernel/git-tree-diff@test",
+    )
+    .unwrap();
+    let value = serde_json::to_value(&change_set).unwrap();
+    let encoded = review_store::canonical::canonicalize(&value).unwrap();
+    let artifact_id = review_store::canonical::blob_content_id(&encoded);
+    let inputs = inputs_with_change_set(value).unwrap();
+    let artifact = &inputs.artifacts["change_set"][0];
+    assert_eq!(artifact.artifact_id(), artifact_id);
+    let prompt = render(&inputs).unwrap();
+    assert!(prompt.contains("git version 2.54.0"), "{prompt}");
+    assert!(!prompt.contains("cpu: arm64"), "{prompt}");
+    assert!(!prompt.contains("sizeof-long: 8"), "{prompt}");
+    let decoded: ChangeSetV1 = serde_json::from_slice(&encoded).unwrap();
+    assert_eq!(decoded.git_version, change_set.git_version);
+}
+
+#[test]
 fn encoded_change_sets_are_fully_validated_before_prompt_rendering() {
     let change_set = ChangeSetV1::new(
         format!("sha256:{}", "a".repeat(64)),
