@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """Exercise the real release resolver with local repositories; no GitHub side effects."""
 import os
+import copy
 import json
 from pathlib import Path
 import shutil
@@ -280,6 +281,37 @@ fi''')
             self.assertNotEqual(result.returncode, 0)
             self.assertEqual(self.git('tag', '--list'), '')
             self.assertEqual(self.git('ls-remote', '--tags', 'origin'), '')
+
+    def test_frozen_binding_refuses_sha_version_catalog_and_tag_target_mismatches(self):
+        result, _ = self.resolve(labels=['release:fast'])
+        self.assertEqual(result.returncode, 0, result.stderr)
+        original = json.loads(self.git('for-each-ref', '--format=%(contents)', 'refs/tags/v1.0.1'))
+        # Only disposable local repositories: keep the resolver's remote lookup empty so the
+        # production annotation reader, rather than tag-object race detection, judges each case.
+        empty = self.root / 'empty.git'
+        self.git('init', '--bare', str(empty))
+        self.git('remote', 'set-url', 'origin', str(empty))
+        for field, value, diagnostic in (
+                ('sha', self.base, 'SHA/version mismatch'),
+                ('version', '9.9.9', 'SHA/version mismatch'),
+                ('catalog_sha256', '0' * 64, 'resolver/catalog'),
+                ('tag_target', self.base, 'triggering commit')):
+            with self.subTest(field=field):
+                binding = copy.deepcopy(original)
+                target = self.release
+                if field == 'catalog_sha256':
+                    binding['plan'][field] = value
+                elif field == 'tag_target':
+                    target = value
+                else:
+                    binding[field] = value
+                self.git('tag', '-d', 'v1.0.1')
+                self.git('tag', '-a', 'v1.0.1', '-m', json.dumps(binding), target)
+                result, values = self.resolve('tag', 'v1.0.1', pages='error')
+                self.assertNotEqual(result.returncode, 0)
+                self.assertIn(diagnostic, result.stderr)
+                self.assertNotIn('test_plan', values)
+                self.assertEqual(self.git('--git-dir=' + str(empty), 'tag', '--list'), '')
 
     def test_lightweight_manual_tag_defaults_full(self):
         self.git('tag', 'v1.0.1')

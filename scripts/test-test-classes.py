@@ -11,6 +11,7 @@ import subprocess
 import sys
 import tempfile
 import unittest
+from unittest import mock
 
 sys.dont_write_bytecode = True
 ROOT = Path(__file__).resolve().parent.parent
@@ -129,6 +130,113 @@ class Release(unittest.TestCase):
             self.assertEqual(before, manifest.read_bytes())
             self.assertEqual(list(fixture.iterdir()), [manifest])
 
+
+
+class ReleaseProof(unittest.TestCase):
+    def setUp(self):
+        spec = importlib.util.spec_from_file_location('release_proof', ROOT / 'scripts/release-validation-proof.py')
+        self.proof = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(self.proof)
+        self.sha = 'a' * 40
+
+    def test_explicit_profiles_bind_exact_sha_version_and_catalog(self):
+        for profile, selected in [('fast', tc.FAST), ('full', list(tc.CLASSES))]:
+            plan = self.proof.proof_plan(self.sha, '1.2.3', 'workflow_dispatch', profile)
+            self.assertEqual(plan, tc.resolve(['release:' + profile], 'release', self.sha, '1.2.3'))
+            self.assertEqual(plan['selected'], selected)
+            self.assertEqual(plan['classes']['perf']['state'], 'NOT RUN' if profile == 'fast' else 'SELECTED')
+        for event, profile, sha, version in [('push', 'fast', self.sha, '1.2.3'),
+                                              ('workflow_dispatch', '', self.sha, '1.2.3'),
+                                              ('workflow_dispatch', 'fast', 'main', '1.2.3'),
+                                              ('workflow_dispatch', 'full', self.sha, '')]:
+            with self.assertRaises(ValueError):
+                self.proof.proof_plan(sha, version, event, profile)
+
+    def test_pr_opt_in_is_exact_and_ordinary_labels_cannot_reduce_proof(self):
+        for labels in ([], ['test:functional'], ['release:fast', 'release:full']):
+            with self.assertRaises(ValueError):
+                self.proof.proof_plan(self.sha, '1.2.3', 'pull_request', event={
+                    'pull_request': {'labels': [{'name': label} for label in labels]}})
+        for profile in ('fast', 'full'):
+            event = {'pull_request': {'labels': [{'name': 'release:' + profile},
+                                                {'name': 'no-e2e'}, {'name': 'test:functional'}]}}
+            self.assertEqual(self.proof.proof_plan(self.sha, '1.2.3', 'pull_request', event=event),
+                             tc.resolve(['release:' + profile], 'release', self.sha, '1.2.3'))
+
+    def test_entrypoint_retains_exact_plan_and_emits_it_only_after_simulation(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            (root / 'Cargo.toml').write_text('[workspace.package]\nversion = "1.2.3"\n')
+            output = root / 'evidence'
+            github_output = root / 'github-output'
+            github_output.touch()
+            summary = root / 'summary'
+            environment = {'GITHUB_SHA': self.sha, 'GITHUB_EVENT_NAME': 'workflow_dispatch',
+                           'GITHUB_OUTPUT': str(github_output), 'GITHUB_STEP_SUMMARY': str(summary)}
+            arguments = ['proof', '--profile', 'fast', '--output', str(output)]
+            # The resolver simulation has its own real Git integration suite. Here exercise
+            # the actual CLI handoff and exact checkout binding, without rerunning it nested.
+            with mock.patch.dict(os.environ, environment), mock.patch.object(self.proof, 'ROOT', root), \
+                    mock.patch.object(sys, 'argv', arguments), \
+                    mock.patch.object(self.proof.subprocess, 'check_output', return_value=self.sha + '\n'), \
+                    mock.patch.object(self.proof.tc, 'audit_source'), \
+                    mock.patch.object(self.proof, 'simulate', return_value={'tests_run': 22}) as simulate:
+                self.proof.main()
+                plan = tc.read(output / 'plan.json')
+                self.assertEqual(plan, tc.resolve(['release:fast'], 'release', self.sha, '1.2.3'))
+                line = github_output.read_text().strip()
+                self.assertEqual(json.loads(line.split('=', 1)[1]), plan)
+                self.assertEqual(tc.read(output / 'local-binding-results.json')['sha'], self.sha)
+                self.assertIn('perf: NOT RUN', summary.read_text())
+                self.assertIn('No release publication executed or timed', summary.read_text())
+                simulate.assert_called_once_with(output)
+                github_output.write_text('')
+                simulate.side_effect = ValueError('fixture failed')
+                with self.assertRaisesRegex(ValueError, 'fixture failed'):
+                    self.proof.main()
+                self.assertEqual(github_output.read_text(), '')
+                simulate.reset_mock()
+                with mock.patch.dict(os.environ, {'GITHUB_SHA': 'b' * 40}):
+                    with self.assertRaisesRegex(ValueError, 'checkout differs'):
+                        self.proof.main()
+                simulate.assert_not_called()
+
+    def test_workflow_keeps_read_only_opt_in_and_shared_release_gates(self):
+        text = (ROOT / '.github/workflows/release-validation-proof.yml').read_text()
+        trigger = text.split('\njobs:\n', 1)[0]
+        self.assertIn("paths:\n      - '.github/workflows/release-validation-proof.yml'", trigger)
+        self.assertIn('types: [opened, synchronize, reopened, labeled, unlabeled]', trigger)
+        self.assertIn('options: [fast, full]', trigger)
+        self.assertIn('permissions:\n  contents: read', trigger)
+        for forbidden in ('pull_request_target', 'secrets:', 'secrets.', 'write',
+                          'release.yml', 'release.sh', 'git push', 'signing'):
+            # The comment describes the boundary; inspect executable YAML only.
+            self.assertNotIn(forbidden, '\n'.join(line for line in text.splitlines()
+                                                  if not line.startswith('#')))
+        self.assertIn('persist-credentials: false', text)
+        self.assertIn('PROOF_PROFILE: ${{ inputs.profile }}', text)
+        self.assertIn('uses: ./.github/workflows/validate.yml', text)
+        self.assertIn('release: true', text)
+        self.assertIn('test_plan: ${{ needs.proof.outputs.test_plan }}', text)
+        self.assertIn('needs: [proof, validate]', text)
+        self.assertIn('always() &&', text)
+        self.assertIn('test "$PROOF_RESULT" = success', text)
+        self.assertIn('test "$VALIDATION_RESULT" = success', text)
+        self.assertIn('if-no-files-found: error', text)
+        self.assertIn('local-binding-results.json', text)
+        # Every external action uses the same full SHA already reviewed in validation.
+        import re
+        validation = (ROOT / '.github/workflows/validate.yml').read_text()
+        actions = re.findall(r'uses: ([^\s]+@[^\s]+)', text)
+        self.assertTrue(actions)
+        for action in actions:
+            self.assertRegex(action, r'@[a-f0-9]{40}$')
+            self.assertIn('uses: ' + action, validation)
+        self.assertIn('os: ${{ fromJSON(inputs.release &&', validation)
+        self.assertIn('["ubuntu-latest", "macos-latest"]', validation)
+        for dependency in ('base', 'classes', 'container-probes', 'telemetry-build-smoke',
+                           'telemetry-runtime-smoke'):
+            self.assertIn(dependency, validation.split('  lint:', 1)[1].split('    steps:', 1)[0])
 
 
 class LabelSetup(unittest.TestCase):
@@ -343,6 +451,147 @@ class SealedEvidence(unittest.TestCase):
                             self.assertEqual(python['command'], ['python3', 'scripts/test-performance.py'])
                             self.assertLess(records.index(build), records.index(python))
 
+    def test_selected_build_receipts_cover_all_variants_before_any_suite(self):
+        # Real native wrapper, Make graph, class runner and receipt writer; only Cargo
+        # and suite payloads are stand-ins. This also exercises hosted direct-class entry.
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            shutil.copy2(ROOT / 'Makefile', root / 'Makefile')
+            shutil.copytree(ROOT / 'scripts', root / 'scripts')
+            for directory in ('.config', 'schemas', '.github'):
+                shutil.copytree(ROOT / directory, root / directory)
+            scripts = root / 'scripts'
+            for name in ('test-class-python.py', 'changelog-notes.py', 'af-pin.py',
+                         'performance/schemas.py', 'performance/cli.py'):
+                (scripts / name).write_text('pass\n')
+            tools = root / 'bin'
+            tools.mkdir()
+            (tools / 'python3').symlink_to(sys.executable)
+            inventory = {'rust-suites': {
+                'review-core': {'testcases': {'functional': {'ignored': False},
+                                              'perf_trace::perf_case': {'ignored': False}}},
+                'review-process': {'testcases': {'e2e_case': {'ignored': False}}},
+                'af::it': {'testcases': {'cli_surface::uix_case': {'ignored': False}}},
+                'review-pipeline::perf_probe': {'testcases': {
+                    'calibration_build_case': {'ignored': False}}}}}
+            tc.write(root / 'inventory.json', inventory)
+            cargo = tools / 'cargo'
+            cargo.write_text(f'#!{sys.executable}\n' + r"""
+import json, os, pathlib, sys
+if sys.argv[1:3] == ['nextest', 'list']:
+    args = sys.argv[1:]
+    variant = ('trace' if 'review-core/perf-trace,review-core/perf-calibration' in args
+               else 'calibration' if '--features' in args else 'default')
+    report = pathlib.Path(os.environ['AF_CHECK_REPORT'])
+    records = [json.loads(line) for line in report.read_text().splitlines()]
+    with open(os.environ['BUILDS'], 'a') as stream:
+        stream.write(json.dumps({'variant': variant, 'records': records}) + '\n')
+    print(pathlib.Path('inventory.json').read_text())
+    print('compiler diagnostic', file=sys.stderr)
+    if os.environ['FAIL_VARIANT'] == variant:
+        sys.exit(19)
+""")
+            cargo.chmod(0o755)
+            (scripts / 'nextest-gate.py').write_text("""
+import os, pathlib, sys, xml.etree.ElementTree as ET
+args = sys.argv[1:]
+expression = args[args.index('-E') + 1]
+if '--features' in args:
+    cases = ([('review-core', 'perf_trace::perf_case')] if 'test(perf_)' in expression
+             else [('review-pipeline::perf_probe', 'calibration_build_case')])
+elif 'review-process' in expression:
+    cases = [('review-process', 'e2e_case')]
+elif 'af::it' in expression:
+    cases = [('af::it', 'cli_surface::uix_case')]
+elif 'functional' in expression:
+    cases = [('review-core', 'functional')]
+else:
+    cases = [('review-core', 'perf_trace::perf_case'),
+             ('review-pipeline::perf_probe', 'calibration_build_case')]
+root = ET.Element('testsuites')
+suite = ET.SubElement(root, 'testsuite')
+for binary, name in cases:
+    ET.SubElement(suite, 'testcase', classname=binary, name=name, time='0.01')
+path = (pathlib.Path(os.environ['AF_GATE_NEXTEST_RUN']) / 'store/ci/junit.xml'
+        if os.getenv('AF_GATE_NEXTEST_RUN') else pathlib.Path('target/nextest/ci/junit.xml'))
+path.parent.mkdir(parents=True, exist_ok=True)
+ET.ElementTree(root).write(path, encoding='unicode')
+""")
+            env = {k: v for k, v in os.environ.items()
+                   if not k.startswith(('AF_', 'GH_', 'GITHUB_', 'CARGO_', 'RUST', 'MAKE'))}
+            report, builds = root / 'check.jsonl', root / 'builds.jsonl'
+            env.update(PATH=str(tools) + os.pathsep + env['PATH'],
+                       AF_GATE_TARGET_DIR=str(root / 'output'), AF_CHECK_REPORT=str(report),
+                       BUILDS=str(builds))
+            full = list(tc.CLASSES)
+            scenarios = [('native', selected, selected[0], failed)
+                         for selected in (['functional'], ['perf'], full)
+                         for failed in (('none', 'default', 'trace', 'calibration')
+                                        if 'perf' in selected else ('none', 'default'))]
+            # Hosted jobs retain the full plan in receipts but compile only their class.
+            # A broken perf variant cannot block any hosted non-perf job.
+            scenarios += [('hosted', full, kind, failed) for kind in tc.CLASSES
+                          for failed in ('none', 'default', 'trace', 'calibration')]
+            for entry, selected, kind, failed in scenarios:
+                with self.subTest(entry=entry, selected=selected, kind=kind, failed=failed):
+                    report.unlink(missing_ok=True)
+                    builds.unlink(missing_ok=True)
+                    shutil.rmtree(root / 'output', ignore_errors=True)
+                    out = root / 'output/hosted'
+                    plan = tc.resolve(['test:' + c for c in selected])
+                    tc.write(root / 'plan.json', plan)
+                    env['FAIL_VARIANT'] = failed
+                    command = (['bash', 'scripts/verify.sh', '--test-plan', str(root / 'plan.json')]
+                               if entry == 'native' else [sys.executable, 'scripts/test-classes.py',
+                               'run', '--plan', str(root / 'plan.json'), '--class', kind,
+                               '--output', str(out)])
+                    result = subprocess.run(command, cwd=root, env=env, capture_output=True,
+                                            text=True, timeout=60)
+                    includes_perf = 'perf' in selected if entry == 'native' else kind == 'perf'
+                    required = ['default', 'trace', 'calibration'] if includes_perf else ['default']
+                    failed_required = failed in required
+                    self.assertEqual(result.returncode == 0, not failed_required,
+                                     result.stdout + result.stderr)
+                    records = [json.loads(line) for line in report.read_text().splitlines()]
+                    compiled = [json.loads(line) for line in builds.read_text().splitlines()]
+                    # At each compilation in the first class there is still no build
+                    # receipt, including when compiling its last feature variant.
+                    variants = required
+                    if failed_required:
+                        variants = variants[:variants.index(failed) + 1]
+                    self.assertEqual([r['variant'] for r in compiled[:len(variants)]], variants)
+                    for r in compiled[:len(variants)]:
+                        self.assertFalse(any(s['stage'] == 'build' for s in r['records']))
+                    build = next(r for r in records if r['label'] == 'class-build')
+                    self.assertEqual(build['stage'], 'build')
+                    if failed_required:
+                        self.assertNotEqual(build['exit_code'], 0)
+                        # execute's outer class interval records its failure too;
+                        # it must not hide a suite start or claim class success.
+                        test_steps = [r for r in records if r['stage'] == 'tests']
+                        self.assertTrue(all(r['label'] == 'class-' + selected[0]
+                                            and r['exit_code'] != 0 for r in test_steps))
+                        self.assertFalse(list((root / 'output').rglob('receipt.json')))
+                        self.assertFalse(any(r['stage'] == 'build' and r['exit_code'] == 0
+                                             for r in records))
+                        continue
+                    if entry == 'hosted':
+                        self.assertEqual([r['variant'] for r in compiled], required)
+                    self.assertEqual(build['exit_code'], 0)
+                    suites = [r for r in records if r['stage'] == 'tests']
+                    self.assertTrue(suites)
+                    self.assertTrue(all(records.index(r) > records.index(build) for r in suites))
+                    self.assertIn('compiler diagnostic', result.stderr)
+                    inventories = list((root / 'output').rglob('nextest-list.json'))
+                    self.assertTrue(inventories)
+                    self.assertTrue(all(tc.read(p) == inventory for p in inventories))
+                    receipts = list((root / 'output').rglob('receipt.json'))
+                    self.assertEqual(len(receipts), len(selected) if entry == 'native' else 1)
+                    for receipt in receipts:
+                        self.assertEqual(tc.read(receipt)['plan'], plan)
+                    for p in (root / 'output').rglob('feature-*-list.json'):
+                        self.assertEqual(tc.read(p), inventory)
+
     def test_fresh_base_workflow_entry_records_timing_without_a_target_directory(self):
         workflow = (ROOT / '.github/workflows/validate.yml').read_text()
         base = workflow.split('\n  base:\n', 1)[1].split('\n  classes:\n', 1)[0]
@@ -448,6 +697,21 @@ class SealedEvidence(unittest.TestCase):
 
 
 class Catalog(unittest.TestCase):
+    def test_build_scope_does_not_relax_plan_or_class_admission(self):
+        from unittest import mock
+
+        plan = tc.resolve(['test:functional'])
+        tampered = copy.deepcopy(plan)
+        tampered['selected'].append('perf')
+        with mock.patch.object(tc.subprocess, 'run') as cargo:
+            for value, kind, scope in ((plan, 'perf', 'class'), (plan, 'perf', 'plan'),
+                                       (tampered, 'functional', 'class'),
+                                       (tampered, 'functional', 'plan'),
+                                       (plan, 'functional', 'unknown')):
+                with self.subTest(kind=kind, scope=scope), self.assertRaises(ValueError):
+                    tc.build_inventory(value, kind, Path('unused'), scope)
+            cargo.assert_not_called()
+
     def test_gate_owner_is_always_on_and_precedes_selected_cargo_inventory(self):
         cat = tc.catalog()
         self.assertEqual(cat['scripts']['test-gate-owner.py'], 'functional')
@@ -456,7 +720,7 @@ class Catalog(unittest.TestCase):
                                                 'telemetry-runtime-smoke': 'perf'})
         source = (ROOT / 'scripts/test-classes.py').read_text()
         runner = source[source.index('def run_class('):source.index('def main(')]
-        self.assertLess(runner.index("'test-gate-owner.py'"), runner.index("['cargo', 'nextest', 'list'"))
+        self.assertLess(runner.index("'test-gate-owner.py'"), runner.index("'build-inventory'"))
         recipes = (ROOT / 'Makefile').read_text()
         self.assertIn('gate-owner python3 scripts/test-gate-owner.py', recipes.split('preflight-check:', 1)[1])
         self.assertIn('test-gate-owner.py', recipes.split('base-check: release-check', 1)[1])
@@ -590,6 +854,108 @@ class Gates(unittest.TestCase):
 
 
 class Metrics(unittest.TestCase):
+    def test_cli_report_and_aggregate_keep_build_evidence_out_of_class_totals(self):
+        plan = tc.resolve(['release:full'], 'pr')
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            tc.write(root / 'plan.json', plan)
+            tc.write(root / 'needs.json', Gates().good(plan))
+            env = dict(os.environ)
+            env.pop('GITHUB_STEP_SUMMARY', None)
+
+            def cli(*args):
+                return subprocess.run([sys.executable, str(ROOT / 'scripts/test-classes.py'),
+                                       *args], cwd=root, env=env, capture_output=True, text=True)
+
+            def metric(label, seconds, stage='tests'):
+                return {'schema': 'af.ci-step/1', 'stage': stage, 'label': label,
+                        'elapsed_seconds': seconds, 'exit_code': 0,
+                        'started_at': '2026-10-27T00:00:00+00:00'}
+
+            def steps(path, records):
+                path.write_text('\n'.join(map(json.dumps, records)) + '\n')
+
+            def report(path, output):
+                return cli('report', '--plan', 'plan.json', '--steps', str(path),
+                           '--source-run', 'synthetic-cli-regression', '--source-sha', 'none',
+                           '--output', str(output))
+
+            def aggregate():
+                return cli('aggregate', '--plan', 'plan.json', '--needs', 'needs.json',
+                           '--evidence', str(root / 'artifacts'), '--platforms', 'Linux')
+
+            combined = []
+            for kind, seconds in zip(tc.CLASSES, (5, 0, 7, 11)):
+                artifact = root / 'artifacts' / ('validation-class-Linux-' + kind)
+                evidence = artifact / 'class-evidence'
+                tc.write(evidence / 'receipt.json', {'schema': 'af.test-class-receipt/1',
+                         'plan': plan, 'platform': 'Linux', 'class': kind, 'status': 'success'})
+                path = artifact / 'class-metrics.jsonl'
+                output = evidence / 'report.json'
+                inner = [metric('class-build', 2, 'build'), metric('class-' + kind + '-inner', 1)]
+                # Hosted run reports before the outer wrapper has written its own receipt.
+                steps(path, inner)
+                result = report(path, output)
+                self.assertEqual(result.returncode, 0, result.stderr)
+                value = tc.read(output)
+                self.assertEqual(value['ci_steps'], inner)
+                self.assertIsNone(value['classes'][kind]['step_seconds'])
+                self.assertIsNone(value['class_runner_seconds'])
+                self.assertIsNone(value['parallel_class_critical_path_seconds'])
+                records = inner + [metric('class-' + kind, seconds)]
+                combined.extend(records)
+                steps(path, records)
+                result = report(path, output)
+                self.assertEqual(result.returncode, 0, result.stderr)
+                value = tc.read(output)
+                self.assertEqual(value['ci_steps'], records)
+                self.assertEqual(set(value['classes']), set(tc.CLASSES))
+                self.assertEqual(value['classes'][kind]['step_seconds'], seconds)
+                self.assertIsNone(value['class_runner_seconds'])  # Other selected jobs are absent.
+
+            steps(root / 'combined.jsonl', combined)
+            result = report(root / 'combined.jsonl', root / 'combined.json')
+            self.assertEqual(result.returncode, 0, result.stderr)
+            value = tc.read(root / 'combined.json')
+            self.assertEqual(value['ci_steps'], combined)
+            self.assertEqual(value['class_runner_seconds'], 23)
+            self.assertEqual(value['parallel_class_critical_path_seconds'], 11)
+
+            result = aggregate()
+            self.assertEqual(result.returncode, 0, result.stderr)
+            value = tc.read(root / 'target/test-classes/validation-metrics.json')['platforms']['Linux']
+            self.assertEqual(value['observed_runner_command_seconds'], 23)
+            self.assertEqual(value['parallel_class_critical_path_seconds'], 11)
+            self.assertEqual(value['observed_command_envelope_seconds'], 11)
+            self.assertEqual(value['classes']['e2e']['command_seconds'], 0)
+            self.assertEqual(value['classes']['e2e']['runner_cost_share'], 0)
+            self.assertAlmostEqual(value['classes']['functional']['runner_cost_share'], 5 / 23)
+
+            artifact = root / 'artifacts/validation-class-Linux-functional'
+            path = artifact / 'class-metrics.jsonl'
+            output = artifact / 'class-evidence/report.json'
+            inner = [metric('class-build', 2, 'build')]
+            for invalid in (-1, 'NaN', 'Infinity'):
+                with self.subTest(invalid=invalid):
+                    steps(path, inner + [metric('class-functional', invalid)])
+                    result = report(path, output)
+                    self.assertNotEqual(result.returncode, 0)
+                    self.assertIn('invalid duration', result.stderr)
+                    result = aggregate()
+                    self.assertNotEqual(result.returncode, 0)
+                    self.assertIn('invalid duration', result.stderr)
+            for records in (inner, inner + [metric('class-functional', 5)] * 2,
+                            inner + [dict(metric('class-functional', 5), exit_code=1)]):
+                steps(path, records)
+                result = aggregate()
+                self.assertNotEqual(result.returncode, 0)
+                self.assertIn('missing/failed outer class metric', result.stderr)
+            steps(path, inner + [metric('class-functional', 5)])
+            (artifact / 'class-evidence/receipt.json').unlink()
+            result = aggregate()
+            self.assertNotEqual(result.returncode, 0)
+            self.assertIn('missing class receipts', result.stderr)
+
     def test_perf_smoke_cost_is_separate_but_extends_observed_envelope(self):
         plan = tc.resolve(['test:perf'])
         with tempfile.TemporaryDirectory() as tmp:
