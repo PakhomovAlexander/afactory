@@ -5,6 +5,7 @@ use review_runner::cli::{
     strongest_native_failure, transient_ending,
 };
 use review_runner::native_failure::{NativeFailureKind, classify_native_failure};
+use review_runner::task::reply_schema::ReplyContract;
 use review_runner::task::{
     MAX_WORKER_BYTES, ModelWorkerReturn, Unstarted, WorkerAccess, WorkerModelAdapter,
 };
@@ -93,6 +94,28 @@ impl WorkerModelAdapter for CodexTaskAdapter {
         cancellation: Option<&std::sync::atomic::AtomicBool>,
         environment: &[(String, String)],
     ) -> Result<ModelWorkerReturn, Unstarted> {
+        self.invoke_constrained(
+            cas,
+            workdir,
+            input,
+            timeout,
+            access,
+            cancellation,
+            environment,
+            ReplyContract::Request,
+        )
+    }
+    fn invoke_constrained(
+        &self,
+        cas: &Cas,
+        workdir: &Path,
+        input: Vec<u8>,
+        timeout: Duration,
+        access: WorkerAccess,
+        cancellation: Option<&std::sync::atomic::AtomicBool>,
+        environment: &[(String, String)],
+        contract: ReplyContract,
+    ) -> Result<ModelWorkerReturn, Unstarted> {
         if cancellation.is_some_and(|flag| flag.load(std::sync::atomic::Ordering::Acquire)) {
             return Ok(ModelWorkerReturn {
                 notes: Default::default(),
@@ -126,9 +149,10 @@ impl WorkerModelAdapter for CodexTaskAdapter {
                 )));
             }
         };
-        // A typed request's reply contract, as the strict schema Codex enforces on the final
-        // message, written beside it in this Attempt's own staging directory (ADR-0208).
-        let schema = match review_runner::task::reply_schema::strict(&input) {
+        // The reply contract — a typed request's own, or a Campaign reviewer's Reviewer Result —
+        // as the strict schema Codex enforces on the final message, written beside it in this
+        // Attempt's own staging directory (ADR-0208, ADR-0246).
+        let schema = match contract.strict(&input) {
             Ok(schema) => schema,
             Err(error) => {
                 return Ok(ModelWorkerReturn {
@@ -302,9 +326,7 @@ impl WorkerModelAdapter for CodexTaskAdapter {
             // What the strict schema made the model write beyond the contract is removed; the
             // kernel judges the rest. The `-o` file itself is kept above as it was written.
             Some(Ok(Some(bytes))) => Ok(match &request {
-                Some(request) => {
-                    review_runner::task::reply_schema::normalize_strict_reply(request, &bytes)
-                }
+                Some(request) => contract.normalize_strict_reply(request, &bytes),
                 None => bytes,
             }),
             reply => {

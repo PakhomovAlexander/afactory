@@ -1,15 +1,138 @@
-//! The native output schema of a typed Worker request, derived from the request's own captured
-//! output schemas (ADR-0103, ADR-0208). Every adapter that constrains a typed reply natively
-//! builds it here, so the two cannot drift: Claude Code receives [`transport`] inline as
-//! `--json-schema`; Codex receives [`strict`] as the `--output-schema` file.
+//! The native output schema of a Worker's reply. A typed Worker request derives it from its own
+//! captured output schemas (ADR-0103, ADR-0208); a review-Campaign reviewer's prompt carries the
+//! flat `ReviewerResult@2` contract, whose schema is [`reviewer_result`] (ADR-0246). Every
+//! adapter that constrains a reply natively builds it here, through [`ReplyContract`], so the two
+//! cannot drift: Claude Code receives [`ReplyContract::transport`] inline as `--json-schema`;
+//! Codex receives [`ReplyContract::strict`] as the `--output-schema` file.
 //!
 //! The native facility only refuses a structurally wrong reply before it is charged as a
-//! typed-reply failure. It never replaces the kernel's validation: the captured contract still
-//! admits or refuses every reply in full.
+//! reply failure. It never replaces the kernel's validation: the captured contract, or the
+//! Reviewer Result parser and admission, still admits or refuses every reply in full.
 
 use serde_json::{Map, Value, json};
 
 use super::{MAX_WORKER_BYTES, WORKER_REPLY_FORMAT, WorkerRequest};
+
+/// The reply contract one native call is constrained to.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ReplyContract {
+    /// The typed request's own captured output schemas (ADR-0103, ADR-0208). A captured legacy
+    /// prompt has none and runs unconstrained.
+    Request,
+    /// The flat `ReviewerResult@2` of a review-Campaign reviewer with its proposal and notes
+    /// transport fields, whatever prompt carries it (ADR-0246).
+    ReviewerResult,
+}
+
+impl ReplyContract {
+    /// The schema an inline facility (Claude Code `--json-schema`) receives: optional fields
+    /// stay optional. None when the call runs unconstrained.
+    pub fn transport(self, input: &[u8]) -> Result<Option<Value>, String> {
+        match self {
+            Self::Request => transport(input),
+            Self::ReviewerResult => Ok(Some(reviewer_result())),
+        }
+    }
+
+    /// The schema a strict facility (Codex `--output-schema`) receives: every property
+    /// required, an optional one nullable. None when the call runs unconstrained.
+    pub fn strict(self, input: &[u8]) -> Result<Option<Value>, String> {
+        match self {
+            Self::Request => strict(input),
+            Self::ReviewerResult => project(&reviewer_result(), 0)
+                .map(Some)
+                .ok_or_else(|| "The Reviewer Result schema has no strict projection".into()),
+        }
+    }
+
+    /// Remove what [`ReplyContract::strict`] made the model write and the contract never asked
+    /// for. A reply that is not JSON is returned unchanged for the kernel to judge.
+    pub fn normalize_strict_reply(self, input: &[u8], reply: &[u8]) -> Vec<u8> {
+        match self {
+            Self::Request => normalize_strict_reply(input, reply),
+            Self::ReviewerResult => {
+                let Ok(mut value) = serde_json::from_slice::<Value>(reply) else {
+                    return reply.to_vec();
+                };
+                strip_optional_nulls(&mut value, &reviewer_result(), 0);
+                serde_json::to_vec(&value).unwrap_or_else(|_| reply.to_vec())
+            }
+        }
+    }
+}
+
+/// The structural schema of a review-Campaign reviewer's final message: the `ReviewerResult@2`
+/// fields of `schemas/reviewer-result-v2.json` with their types, required fields, enums and
+/// closed objects, beside the two transport fields a reply may carry next to the flat result,
+/// the optional `proposal` (ADR-0038) and `notes` (warm layers). Every value rule the result
+/// schema adds — string bounds and patterns, the canonical path grammar, the line and confidence
+/// ranges, the change-wide line rule — and every rule of the Campaign itself, such as one
+/// disposition per assigned prior Finding, stays the kernel's, unchanged (ADR-0246).
+pub fn reviewer_result() -> Value {
+    let string = || json!({"type":"string"});
+    let strings = || json!({"type":"array","items":{"type":"string"}});
+    json!({
+        "type":"object", "additionalProperties":false,
+        "required":["reports","benchmark_demands","dispositions"],
+        "properties":{
+            "reports":{"type":"array","items":{
+                "type":"object", "additionalProperties":false,
+                "required":["severity","file","title","body","fix"],
+                "properties":{
+                    "severity":{"enum":["blocker","major","minor"]},
+                    "file":string(),
+                    "line":{"type":["integer","null"]},
+                    "title":string(),
+                    "body":string(),
+                    "fix":string(),
+                    "confidence":{"type":["number","null"]},
+                    "rule_id":string(),
+                    "occurrence_key":string()
+                }
+            }},
+            "benchmark_demands":{"type":"array","items":{
+                "type":"object", "additionalProperties":false,
+                "required":["claim","why","suggested_method"],
+                "properties":{"claim":string(),"why":string(),"suggested_method":string()}
+            }},
+            "dispositions":{"type":"array","items":{
+                "type":"object", "additionalProperties":false,
+                "required":["finding_id","position","reason"],
+                "properties":{
+                    "finding_id":string(),
+                    "position":{"enum":["corroborate","not_reproduced","dispute"]},
+                    "reason":string()
+                }
+            }},
+            "proposal":{
+                "type":"object", "additionalProperties":false,
+                "required":["patch","paths","description"],
+                "properties":{
+                    "patch":string(),
+                    "report_indexes":{"type":"array","items":{"type":"integer"}},
+                    "finding_ids":strings(),
+                    "evidence_ids":strings(),
+                    "paths":strings(),
+                    "description":string(),
+                    "auto_apply_nominated":{"type":"boolean"}
+                }
+            },
+            "notes":{
+                "type":"object", "additionalProperties":false,
+                "properties":{
+                    "inspected":strings(),
+                    "model_of_change":string(),
+                    "open_questions":strings(),
+                    "hints":{"type":"array","items":{
+                        "type":"object", "additionalProperties":false,
+                        "required":["path","note"],
+                        "properties":{"path":string(),"note":string()}
+                    }}
+                }
+            }
+        }
+    })
+}
 
 /// The typed request `input` renders, when it is one: None for a captured legacy prompt.
 fn typed_request(input: &[u8]) -> Result<Option<WorkerRequest>, String> {
@@ -330,5 +453,158 @@ mod tests {
         let port = &wrapper["properties"]["outputs"]["properties"]["result"];
         assert_eq!(port["maxItems"], 1024);
         assert_eq!(port["items"]["$id"], "urn:afactory:worker-output:0");
+    }
+
+    /// The structural part of a published schema: its types, required fields, enums, closed
+    /// objects and items, with local references inlined. What [`reviewer_result`] must equal.
+    fn structural(schema: &Value, root: &Value) -> Value {
+        if let Some(reference) = schema.get("$ref").and_then(Value::as_str) {
+            let name = reference.strip_prefix("#/$defs/").unwrap();
+            return structural(&root["$defs"][name], root);
+        }
+        let mut kept = Map::new();
+        for (key, value) in schema.as_object().unwrap() {
+            let value = match key.as_str() {
+                "type" | "required" | "additionalProperties" | "enum" => value.clone(),
+                "items" => structural(value, root),
+                "properties" => Value::Object(
+                    value
+                        .as_object()
+                        .unwrap()
+                        .iter()
+                        .map(|(name, property)| (name.clone(), structural(property, root)))
+                        .collect(),
+                ),
+                _ => continue,
+            };
+            kept.insert(key.clone(), value);
+        }
+        Value::Object(kept)
+    }
+
+    /// ADR-0246: the Campaign reviewer's native schema is the structure of the published
+    /// `ReviewerResult@2` schema, nothing more and nothing less, beside the two transport fields
+    /// whose properties are exactly the fields of their Rust declarations.
+    #[test]
+    fn the_reviewer_schema_is_the_published_result_structure_and_its_transport_fields() {
+        let published: Value =
+            serde_json::from_str(include_str!("../../../../schemas/reviewer-result-v2.json"))
+                .unwrap();
+        let mut native = reviewer_result();
+        let properties = native["properties"].as_object_mut().unwrap();
+        let proposal = properties.remove("proposal").unwrap();
+        let notes = properties.remove("notes").unwrap();
+        assert_eq!(native, structural(&published, &published));
+
+        let declared = |value: Value| {
+            value
+                .as_object()
+                .unwrap()
+                .keys()
+                .cloned()
+                .collect::<std::collections::BTreeSet<_>>()
+        };
+        let full_proposal = serde_json::to_value(crate::ReviewerProposalDeclaration {
+            patch: "diff".into(),
+            report_indexes: vec![0],
+            finding_ids: vec!["F".into()],
+            evidence_ids: vec!["E".into()],
+            paths: vec!["a.rs".into()],
+            description: "d".into(),
+            auto_apply_nominated: true,
+        })
+        .unwrap();
+        let full_notes = serde_json::to_value(crate::ReviewerNotesDeclaration {
+            inspected: vec!["a.rs".into()],
+            model_of_change: "m".into(),
+            open_questions: vec!["q".into()],
+            hints: vec![crate::ReviewerNoteHint {
+                path: "a.rs".into(),
+                note: "n".into(),
+            }],
+        })
+        .unwrap();
+        assert_eq!(
+            declared(proposal["properties"].clone()),
+            declared(full_proposal.clone())
+        );
+        assert_eq!(
+            declared(notes["properties"].clone()),
+            declared(full_notes.clone())
+        );
+        let validator = jsonschema::draft202012::new(&reviewer_result()).unwrap();
+        let reply = json!({"reports":[],"benchmark_demands":[],"dispositions":[],
+            "proposal":full_proposal,"notes":full_notes});
+        assert!(validator.is_valid(&reply), "{reply}");
+        // Structurally wrong replies the native facility refuses: the `findings` alias, a
+        // missing field, a field the contract does not define, a severity outside the enum.
+        for wrong in [
+            json!({"findings":[],"benchmark_demands":[],"dispositions":[]}),
+            json!({"reports":[],"benchmark_demands":[]}),
+            json!({"reports":[],"benchmark_demands":[],"dispositions":[],"summary":"ok"}),
+            json!({"reports":[{"severity":"critical","file":"","title":"t","body":"b","fix":"f"}],
+                "benchmark_demands":[],"dispositions":[]}),
+        ] {
+            assert!(!validator.is_valid(&wrong), "{wrong}");
+        }
+    }
+
+    /// ADR-0246: Codex receives the strict projection of the reviewer schema, every property
+    /// required and every optional one nullable, and what it made the model write — `null` for
+    /// an absent proposal, notes, line or rule — is removed before the kernel parses the reply.
+    #[test]
+    fn the_reviewer_strict_projection_round_trips_to_the_flat_result() {
+        let strict = ReplyContract::ReviewerResult.strict(b"").unwrap().unwrap();
+        let required: std::collections::BTreeSet<_> = strict["required"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|name| name.as_str().unwrap())
+            .collect();
+        assert_eq!(
+            required,
+            std::collections::BTreeSet::from([
+                "benchmark_demands",
+                "dispositions",
+                "notes",
+                "proposal",
+                "reports"
+            ])
+        );
+        assert_eq!(
+            strict["properties"]["proposal"]["anyOf"][1],
+            json!({"type":"null"})
+        );
+        let report = &strict["properties"]["reports"]["items"];
+        assert_eq!(report["additionalProperties"], json!(false));
+        assert_eq!(
+            report["required"].as_array().unwrap().len(),
+            report["properties"].as_object().unwrap().len()
+        );
+        let written = br#"{"reports":[{"severity":"minor","file":"a.rs","line":null,"title":"t","body":"b","fix":"f","confidence":0.5,"rule_id":null,"occurrence_key":null}],"benchmark_demands":[],"dispositions":[],"proposal":null,"notes":null}"#;
+        let validator = jsonschema::draft202012::new(&strict).unwrap();
+        assert!(validator.is_valid(&serde_json::from_slice(written).unwrap()));
+        let normalized = ReplyContract::ReviewerResult.normalize_strict_reply(b"", written);
+        assert_eq!(
+            serde_json::from_slice::<Value>(&normalized).unwrap(),
+            json!({"reports":[{"severity":"minor","file":"a.rs","title":"t","body":"b","fix":"f","confidence":0.5}],
+                "benchmark_demands":[],"dispositions":[]})
+        );
+        let parsed = crate::parse_reviewer_result(std::str::from_utf8(&normalized).unwrap());
+        assert_eq!(parsed.unwrap().reports.len(), 1);
+        assert_eq!(
+            crate::parse_proposal_declaration(std::str::from_utf8(&normalized).unwrap()),
+            Ok(None)
+        );
+        assert_eq!(
+            ReplyContract::ReviewerResult.normalize_strict_reply(b"", b"not json"),
+            b"not json"
+        );
+        // The typed-request contract is the one it always was.
+        assert_eq!(ReplyContract::Request.strict(b"a legacy prompt"), Ok(None));
+        assert_eq!(
+            ReplyContract::ReviewerResult.transport(b"a legacy prompt"),
+            Ok(Some(reviewer_result()))
+        );
     }
 }

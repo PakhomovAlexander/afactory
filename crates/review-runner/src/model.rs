@@ -693,6 +693,22 @@ pub struct RenderedInput {
     pub transport: InputTransport,
     pub bytes: Vec<u8>,
     pub manifest: ContextManifest,
+    /// The native reply schema a model Worker's dispatch passes beside the bytes; None for a
+    /// command Worker, whose stdout the kernel alone parses.
+    pub reply_schema: Option<NativeReplySchema>,
+}
+
+/// The Provider-native schema a review-Campaign model reviewer's dispatch passes to its CLI
+/// (ADR-0246): the option that carries it and the exact schema, as
+/// [`ReplyContract::ReviewerResult`](crate::task::reply_schema::ReplyContract::ReviewerResult)
+/// derives it for that CLI. A structural constraint only; the kernel still parses and admits the
+/// reply as before.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
+pub struct NativeReplySchema {
+    /// `--json-schema` (Claude Code, the schema inline) or `--output-schema` (Codex, the schema
+    /// written to a file of the Attempt's staging directory).
+    pub option: &'static str,
+    pub schema: serde_json::Value,
 }
 
 /// Narrow a run's attention: the Campaign focus, under its own heading after the package
@@ -1263,6 +1279,7 @@ impl ReviewerAdapter for CommandAdapter {
             transport: InputTransport::Json,
             bytes,
             manifest,
+            reply_schema: None,
         })
     }
 }

@@ -254,9 +254,13 @@ for a command Worker — without creating Campaign state, calling a Provider, ru
 spending a token. The Task host composes what it dispatches with the same functions, down to the
 focus heading, so the two cannot drift. Campaign-bound data is listed as omitted rather than
 invented: the Attempt authority section, prior Findings, and the Gate decision exist only inside a
-Campaign. `--json` returns `af/review-render@1` with the bytes, the context manifest, and the
-omissions; without it the header goes to stderr and the raw input to stdout, so `> prompt.md` is
-exact.
+Campaign. A model Worker's header also prints the reply schema its dispatch passes beside the
+bytes: the Reviewer Result schema inline after `--json-schema` for Claude Code, its strict
+projection as the `--output-schema` file for Codex
+([ADR-0246](adr/0246-carry-the-reviewer-result-schema-natively-on-the-campaign-path.md)); a
+command Worker has none. `--json` returns `af/review-render@2` (`schemas/review-render-v2.json`)
+with the bytes, the context manifest, that `reply_schema`, and the omissions; without it the
+header goes to stderr and the raw input to stdout, so `> prompt.md` is exact.
 
 ### Command Workers
 

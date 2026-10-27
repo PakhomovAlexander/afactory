@@ -603,6 +603,38 @@ pub trait WorkerModelAdapter: Send + Sync {
             environment,
         ))
     }
+
+    /// `invoke_started` with the reply natively constrained to `contract`: `invoke` and
+    /// `invoke_started` are this with [`ReplyContract::Request`]. The Campaign Review host
+    /// dispatches every model reviewer with [`ReplyContract::ReviewerResult`] (ADR-0246). An
+    /// adapter that spawns a native client overrides this and passes the contract's schema to
+    /// its CLI (Claude Code `--json-schema`, Codex `--output-schema`); the default, for a double
+    /// that spawns nothing, calls `invoke_started` unconstrained.
+    ///
+    /// [`ReplyContract::Request`]: reply_schema::ReplyContract::Request
+    /// [`ReplyContract::ReviewerResult`]: reply_schema::ReplyContract::ReviewerResult
+    #[allow(clippy::too_many_arguments)]
+    fn invoke_constrained(
+        &self,
+        cas: &Cas,
+        workdir: &Path,
+        input: Vec<u8>,
+        timeout: Duration,
+        access: WorkerAccess,
+        cancellation: Option<&AtomicBool>,
+        environment: &[(String, String)],
+        _contract: reply_schema::ReplyContract,
+    ) -> Result<ModelWorkerReturn, Unstarted> {
+        self.invoke_started(
+            cas,
+            workdir,
+            input,
+            timeout,
+            access,
+            cancellation,
+            environment,
+        )
+    }
 }
 
 impl ModelWorkerReturn {

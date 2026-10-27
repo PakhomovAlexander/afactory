@@ -499,6 +499,8 @@ never under --json.
 
 Review reading commands:
 
+  af review render --json              af/review-render@2 (schemas/review-render-v2.json),
+                                       with the reply schema a model Worker's dispatch passes
   af review ledger --json              af/review-ledger@1 (schemas/review-ledger-v1.json)
   af review show KEY --json            af/review-show@1 (schemas/review-show-v1.json)
   af review report --json              af/review-report@4 (schemas/review-report-v4.json)

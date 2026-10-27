@@ -2643,6 +2643,11 @@ fn print_render(options: &Options) -> Result<(), String> {
             terminal_text(&entry.required_by)
         );
     }
+    match &view.reply_schema {
+        // The exact schema, compact, as the dispatch passes it (ADR-0246).
+        Some(reply) => eprintln!("reply     {} {}", reply.option, reply.schema),
+        None => eprintln!("reply     no native schema; the kernel parses the Worker's stdout"),
+    }
     for item in &view.not_rendered {
         eprintln!("omitted   {}", terminal_text(item));
     }

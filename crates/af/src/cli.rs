@@ -819,7 +819,10 @@ af review plan --policy-rev HEAD --base HEAD~1 --candidate HEAD --long"
     #[command(
         long_about = "Compose the exact input one Worker node would receive — the bytes, their \
 transport, and every artifact the role-scoped manifest names — without a sandbox, a model call, \
-or Campaign state. This is how a human audits what a Worker sees.",
+or Campaign state. This is how a human audits what a Worker sees. A model Worker's header also \
+prints the reply schema its dispatch passes to the Provider CLI (`--json-schema` for Claude Code, \
+`--output-schema` for Codex). --json prints one af/review-render@2 document \
+(schemas/review-render-v2.json) with the bytes, the manifest and that `reply_schema`.",
         override_usage = "af review render --node <NODE> [--heavy] [OPTIONS]",
         after_long_help = "Examples:\n  \
 af review render --node correctness --policy-rev HEAD --base HEAD \\\n    --uncommitted\n  \

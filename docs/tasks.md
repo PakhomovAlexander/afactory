@@ -484,6 +484,12 @@ adds up, and nothing is reset or refunded.
   admitted as that object. Any other reply that does not parse is re-asked once from the same
   Worker, with the parser's message, line, column and the offending excerpt. Both replies are
   kept, and a second failure names them in the diagnostic: `raw reply kept: sha256:…`.
+- **A structurally wrong reply.** A typed reply, and a review-Campaign reviewer's Reviewer
+  Result, travels under a native schema: `--json-schema` for Claude Code, `--output-schema` for
+  Codex ([ADR-0246](adr/0246-carry-the-reviewer-result-schema-natively-on-the-campaign-path.md)).
+  The CLI refuses a reply of the wrong shape inside the same call, charged to it; the kernel
+  still judges every reply it receives. A call that ends without a constrained reply fails the
+  Attempt as `provider_failure`, charged the usage it reported, not as `invalid_output_contract`.
 - **A transient Provider failure** — `network`, `capacity`, `timeout`, or an exit 1 that wrote
   nothing (`exited_without_output`) — is waited out and the call is made again: the wait the
   Provider asked for, else 60 s, then 120 s, then 240 s; at most three retries and ten minutes

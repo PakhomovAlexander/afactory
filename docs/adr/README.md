@@ -458,6 +458,8 @@ future readers need.
 - [0244 — Version review inspection views](0244-version-review-inspection-views.md)
 - [0245 — Show recorded Gate history and version Task
   status](0245-show-recorded-gate-history-and-version-task-status.md)
+- [0246 — Carry the Reviewer Result schema natively on the Campaign
+  path](0246-carry-the-reviewer-result-schema-natively-on-the-campaign-path.md)
 - [0251 — Run the Task gate on the fast validation
   profile](0251-run-the-task-gate-on-the-fast-validation-profile.md)
 - [0252 — Keep the kernel experiment measurement out of every
