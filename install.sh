@@ -7,7 +7,7 @@
 # installed binary again against the release; `af self` takes over from here: the installed
 # binary records the activation, so `af self rollback` works from the first update on. It ends
 # with the next steps of a first run, and the PATH line for $SHELL when the bin directory is not
-# on PATH, or what to change when no PATH entry can hold it.
+# on PATH, or what to change when it prints no such line.
 #
 #   curl --proto '=https' --tlsv1.2 -fsSL https://github.com/PakhomovAlexander/afactory/releases/latest/download/install.sh | sh
 #   curl ... | AF_INSTALL_CHANNEL=rc sh      or      curl ... | sh -s -- --rc
@@ -257,9 +257,10 @@ printf '  %-28s %s\n' "af provider detect --apply" "find your claude/codex login
 printf '  %-28s %s\n' "af onboard" "in a repository: preview .af/ (token-free)"
 printf '  %-28s %s\n' "af self setup-shell --write" "completions + man pages"
 # `af doctor`'s rule for a PATH line: no PATH entry holds a directory with a `:`, which separates
-# entries, or with a control character (C0, DEL or a UTF-8 C1), which a pasted line would not
-# carry. Asked before PATH is, so a `:` cannot make the directory match entries that only spell it
-# together; such a directory gets no command, and one with a control character is never printed.
+# entries, and a directory with a control character (C0, DEL or a UTF-8 C1) gets no line either,
+# since one could not be shown legibly. Asked before PATH is, so a `:` cannot make the directory
+# match entries that only spell it together; such a directory gets no command, and one with a
+# control character is never printed.
 bin_unfit=""
 case "$BIN" in
   *[[:cntrl:]]*) bin_unfit=control ;;
@@ -269,7 +270,7 @@ if [ -z "$bin_unfit" ] && printf '%s' "$BIN" | LC_ALL=C grep -q "$(printf '\302[
   bin_unfit=control
 fi
 case "$bin_unfit:$PATH:" in
-  control:*) echo "  no PATH entry can hold the bin directory, which has a control character: set XDG_BIN_HOME to a directory without one, then install again" ;;
+  control:*) echo "  no PATH line is printed for the bin directory, which has a control character: set XDG_BIN_HOME to a directory without one, then install again" ;;
   colon:*) printf '  no PATH entry can hold %s, which has a `:`: set XDG_BIN_HOME to a directory without one, then install again\n' "$BIN" ;;
   *":$BIN:"*) ;;
   *)

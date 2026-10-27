@@ -220,7 +220,7 @@ fn catalog_destination_must_be_an_absent_project_relative_path() {
 }
 
 /// Issue #358: the README's install step promises a line to paste only to the shells `install.sh`
-/// writes one for, and says what a bin directory no PATH entry can hold gets instead: no line, but
+/// writes one for, and says what a bin directory it writes none for gets instead: no line, but
 /// the advice to install with another `XDG_BIN_HOME`
 /// (`install_sh_gives_no_path_line_for_a_bin_directory_no_path_entry_can_hold`).
 #[test]
@@ -260,6 +260,11 @@ fn readme_install_step_promises_a_path_line_only_where_the_installer_prints_one(
         assert!(path.contains(unfit), "{unfit}\n{path}");
     }
     assert!(!install.contains("for your shell"), "{install}");
+    // A `:` is why no PATH entry holds a directory; a control character is only why the
+    // installer prints no line, since a PATH entry may hold one.
+    assert!(!path.contains("fits in no `PATH` entry"), "{path}");
+    assert!(path.contains("a `:` separates `PATH` entries"), "{path}");
+    assert!(path.contains("will not print a line"), "{path}");
 }
 
 /// Issue #358: the README's guidance on Findings that look alike names commands that exist with
@@ -279,8 +284,9 @@ fn readme_explains_findings_that_look_alike_with_commands_that_parse() {
         .unwrap();
     let flat = collapsed(section);
     for statement in [
-        "They stay two Findings: a Finding's identity comes from its first Report, never from its \
-         path or title, and af never merges claims that only look alike",
+        "Looking alike does not make them one Finding: a Finding's identity comes from its first \
+         Report, never from its path or title, and af never merges claims that only look alike",
+        "such Reports stay separate Findings unless one of two things attaches them",
         "docs/adr/0006-finding-identity-is-path-independent.md",
         "every Report and each Report's own verification stay",
     ] {
@@ -306,10 +312,14 @@ fn readme_explains_findings_that_look_alike_with_commands_that_parse() {
     ] {
         assert!(flat.contains(attachment), "{attachment}\n{flat}");
     }
-    assert!(
-        !flat.contains("only through an explicit relation"),
-        "{flat}"
-    );
+    // Nor does the opening promise that look-alike Reports always stay apart: the attachments
+    // above are the exceptions it names.
+    for unqualified in [
+        "only through an explicit relation",
+        "They stay two Findings",
+    ] {
+        assert!(!flat.contains(unqualified), "{unqualified}\n{flat}");
+    }
     let commands: Vec<&str> = flat
         .split('`')
         .skip(1)

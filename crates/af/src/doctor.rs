@@ -756,8 +756,9 @@ pub(crate) fn path_fix(
         return (
             None,
             Some(format!(
-                "no PATH entry can hold {shown}, which has a `:` or a control character; set \
-                 XDG_BIN_HOME to a directory without one, then run af self install {}",
+                "af prints no PATH line for {shown}: a `:` separates PATH entries, and a control \
+                 character cannot be shown legibly on one line; set XDG_BIN_HOME to a directory \
+                 without either, then run af self install {}",
                 selfmgmt::VERSION
             )),
         );
@@ -797,8 +798,8 @@ pub(crate) fn path_fix(
     }
 }
 
-/// Whether `dir` can be one PATH entry spelled on one line: no `:`, which separates entries,
-/// and no control character, which a pasted line would not carry.
+/// Whether af writes a PATH line for `dir`: no `:`, which separates entries, so no PATH entry
+/// holds one, and no control character, which af declines to put in a line it prints to paste.
 fn path_literal(dir: &str) -> bool {
     !dir.contains(':') && !dir.chars().any(char::is_control)
 }
@@ -1392,10 +1393,18 @@ fn found_unregistered(found: &[PathBuf], ambient: &[&crate::providers::ProviderS
     if !logged_in.is_empty() {
         text.push_str("; to register the logged-in ones: af provider detect --apply");
     } else if !unprobed.is_empty() {
-        text.push_str("; to ask their CLI about a login: af provider detect");
+        // Doctor read no marker, so it cannot say which of them detect will ask about.
+        text.push_str(UNPROBED_GUIDANCE);
     }
     text
 }
+
+/// What `af provider detect` does with a directory doctor did not probe (ADR-0206): it asks a
+/// CLI only about a safe directory holding a login marker, `--all` also about a safe empty one,
+/// and never about an unsafe or missing one.
+const UNPROBED_GUIDANCE: &str = "; to inspect the not-probed ones: af provider detect, which asks \
+     a CLI only about a safe directory holding a login marker; to also ask about a safe empty \
+     one: af provider detect --all; an unsafe or missing one is never asked";
 
 /// A registered Provider that is not authenticated, by what its status probe said: a login af can
 /// see is missing, its CLI cannot be used (no login fixes that), or af disabled it for a while.
@@ -2282,9 +2291,14 @@ esac
         assert_eq!(
             text,
             "; optional, found but not registered: /w/codex-home (logged out), /w/codex-spare, \
-             /w/codex-team (not probed); to ask their CLI about a login: af provider detect"
+             /w/codex-team (not probed); to inspect the not-probed ones: af provider detect, \
+             which asks a CLI only about a safe directory holding a login marker; to also ask \
+             about a safe empty one: af provider detect --all; an unsafe or missing one is \
+             never asked"
         );
         assert!(!text.contains("--apply"), "{text}");
+        // Detect is an inspection, not a promise that every directory's CLI is asked.
+        assert!(!text.contains("ask their CLI"), "{text}");
 
         let logged_in = ambient("/w/codex-home", "authenticated");
         assert_eq!(
@@ -2296,8 +2310,9 @@ esac
         let unprobed = ambient("/w/codex-home", "unavailable");
         assert_eq!(
             found_unregistered(&found[..1], &[&unprobed]),
-            "; optional, found but not registered: /w/codex-home (not probed); to ask their CLI \
-             about a login: af provider detect"
+            format!(
+                "; optional, found but not registered: /w/codex-home (not probed){UNPROBED_GUIDANCE}"
+            )
         );
         // Only logged-out ones: nothing to run.
         assert_eq!(
@@ -2312,13 +2327,12 @@ esac
         );
         for width in [100, 80, 60] {
             let rendered = render(std::slice::from_ref(&check), width);
-            assert!(
-                rendered
-                    .lines()
-                    .any(|line| line.trim_start() == "af provider detect"
-                        || line.ends_with(" af provider detect")),
-                "{width}\n{rendered}"
-            );
+            for command in ["af provider detect,", "af provider detect --all;"] {
+                assert!(
+                    rendered.lines().any(|line| line.contains(command)),
+                    "{width}: {command}\n{rendered}"
+                );
+            }
             for line in rendered.lines() {
                 assert!(
                     line.chars().count() <= width,

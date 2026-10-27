@@ -450,10 +450,10 @@ fn install_sh_bash_and_zsh_path_lines_keep_the_directory_literal() {
     }
 }
 
-/// Issue #358: no PATH entry holds a bin directory with a `:` or a control character, as `af
-/// doctor` judges it, so the install ends with no command for any shell: one line that says so
-/// and to choose another `XDG_BIN_HOME`, the directory shown only when it has no control
-/// character. A `:` is judged before PATH is asked, so a PATH that spells the directory across two
+/// Issue #358: no PATH entry holds a bin directory with a `:`, and one with a control character
+/// gets no line either, as `af doctor` judges it, so the install ends with no command for any
+/// shell: one line that says so and to choose another `XDG_BIN_HOME`, the directory shown only
+/// when it has no control character. A `:` is judged before PATH is asked, so a PATH that spells the directory across two
 /// entries does not hide it. Nothing printed is run.
 #[test]
 fn install_sh_gives_no_path_line_for_a_bin_directory_no_path_entry_can_hold() {
@@ -507,8 +507,8 @@ fn install_sh_gives_no_path_line_for_a_bin_directory_no_path_entry_can_hold() {
 
     // A newline, a tab, an ESC and a C1 CSI: the directory is never printed, so no raw control
     // reaches the terminal and the ending keeps its lines.
-    let refusal = "  no PATH entry can hold the bin directory, which has a control character: set \
-                   XDG_BIN_HOME to a directory without one, then install again";
+    let refusal = "  no PATH line is printed for the bin directory, which has a control character: \
+                   set XDG_BIN_HOME to a directory without one, then install again";
     for control in ["\n", "\t", "\u{1b}[31m", "\u{9b}31m"] {
         let dir = sandbox.path(&format!("af{control}bin"));
         let dir_env = dir.to_str().unwrap();

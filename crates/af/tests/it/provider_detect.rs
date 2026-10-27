@@ -1741,7 +1741,9 @@ fn detail(check: &Value) -> &str {
 /// alone, so doctor must not warn about it with that same fix for ever: the row is `ok`, and the
 /// context is listed as optional and logged out, as the status probe doctor already ran found it.
 /// A marked sibling no probe asked about is `not probed`, and doctor does not hand it to its CLI
-/// (ADR-0206). The controls: a logged-in `CODEX_HOME` is named with the `--apply` that registers
+/// (ADR-0206); nor an empty sibling or one another user may write. The command doctor names for
+/// them is an inspection, and what it says that command does is what detect does: the marked
+/// sibling is asked, the empty one only under `--all`, the unsafe one never. The controls: a logged-in `CODEX_HOME` is named with the `--apply` that registers
 /// it, and a registered Provider that is logged out, has lost its marker, or whose CLI is gone
 /// still warns, each with the fix that clears it or none when no login can.
 #[test]
@@ -1768,6 +1770,9 @@ fn doctor_lists_optional_unregistered_contexts_without_a_warning_loop() {
     }
     let ambient = machine.dir("ambient/codex", &["config.toml"]);
     let spare = machine.dir(".codex-spare", &["auth.json"]);
+    let fresh = machine.dir(".codex-new", &[]);
+    let shared = machine.dir(".codex-shared", &["auth.json", "logged-in"]);
+    std::fs::set_permissions(&shared, std::fs::Permissions::from_mode(0o777)).unwrap();
     let ambient_shown = "~/ambient/codex";
 
     let providers = doctor_providers(&machine, Some(&ambient));
@@ -1778,15 +1783,50 @@ fn doctor_lists_optional_unregistered_contexts_without_a_warning_loop() {
         detail(&providers),
         format!(
             "claude-main (claude, authenticated), codex-main (codex, authenticated); optional, \
-             found but not registered: {ambient_shown} (logged out), ~/.codex-spare (not \
-             probed); to ask their CLI about a login: af provider detect"
+             found but not registered: {ambient_shown} (logged out), ~/.codex-new, \
+             ~/.codex-shared, ~/.codex-spare (not probed); to inspect the not-probed ones: af \
+             provider detect, which asks a CLI only about a safe directory holding a login \
+             marker; to also ask about a safe empty one: af provider detect --all; an unsafe or \
+             missing one is never asked"
         ),
         "{providers}"
     );
-    assert!(
-        !spare.join("probed").exists(),
-        "doctor asked the CLI about a directory only a names-only scan found"
-    );
+    for dir in [&spare, &fresh, &shared] {
+        assert!(
+            !dir.join("probed").exists(),
+            "doctor asked the CLI about {}, which only a names-only scan found",
+            dir.display()
+        );
+    }
+
+    // The inspection doctor names: detect asks about the marked sibling and leaves the empty one
+    // to `--all`, which still never asks about the unsafe one.
+    let mut inspect = machine.command(&["provider", "detect", "--json"]);
+    inspect.env("CODEX_HOME", &ambient);
+    let document = detected(&inspect.output().unwrap());
+    assert_eq!(candidate(&document, &spare)["auth"], "not_authenticated");
+    assert!(spare.join("probed").exists());
+    let empty = candidate(&document, &fresh);
+    assert_eq!(empty["auth"], "not_probed", "{empty}");
+    assert_eq!(empty["suggested"]["command"], "af provider detect --all");
+    assert!(entries(&fresh).is_empty(), "{:?}", entries(&fresh));
+    let unsafe_row = candidate(&document, &shared);
+    assert_eq!(unsafe_row["safe"], false, "{unsafe_row}");
+    assert_eq!(unsafe_row["auth"], "not_probed", "{unsafe_row}");
+    assert_eq!(unsafe_row["suggested"]["action"], "fix_safety");
+    assert!(!shared.join("probed").exists());
+    let mut all = machine.command(&["provider", "detect", "--all", "--json"]);
+    all.env("CODEX_HOME", &ambient);
+    let document = detected(&all.output().unwrap());
+    assert_eq!(candidate(&document, &fresh)["auth"], "not_authenticated");
+    assert_eq!(entries(&fresh), ["probed"]);
+    assert_eq!(candidate(&document, &shared)["auth"], "not_probed");
+    assert!(!shared.join("probed").exists());
+    assert_eq!(machine.registered(), ["claude-main", "codex-main"]);
+    // The inspection registered nothing and changed no answer: doctor's row is the same.
+    let inspected = doctor_providers(&machine, Some(&ambient));
+    assert_eq!(inspected["status"], "ok", "{inspected}");
+    assert_eq!(detail(&inspected), detail(&providers), "{inspected}");
 
     // detect --apply registers nothing here, and doctor says the same thing again: no loop.
     let mut apply = machine.command(&["provider", "detect", "--apply"]);

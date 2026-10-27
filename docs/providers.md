@@ -32,7 +32,10 @@ every first-run surface points at it:
   Beside a registered Provider that works, the unregistered directories are optional and the row
   stays `ok`: each is `logged in` or `logged out` only when the probe already asked about it as a
   CLI's default or `CLAUDE_CONFIG_DIR`/`CODEX_HOME` context, and `not probed` otherwise; doctor
-  probes nothing more for them, and `af provider detect` asks each one's CLI.
+  probes nothing more for them. For the `not probed` ones it names `af provider detect` to
+  inspect them, which asks a CLI only about a safe directory holding a login marker;
+  `af provider detect --all` also asks about a safe empty one, and neither asks about an unsafe
+  or missing one.
 - `af` alone at a terminal opens on the Providers pane while nothing is registered.
 
 ## The default terminal boundary

@@ -62,9 +62,11 @@ are at any point, token-free.
    release, pre-releases included, and `curl … | AF_INSTALL_VERSION=X.Y.Z sh` an exact one. The
    installer ends with the next steps and, when its bin directory is not on `PATH`, says how to
    put it there: a line to paste for fish, bash or zsh, the directory to add for another shell.
-   A bin directory with a `:` or a control character fits in no `PATH` entry, so it gets no such
-   line: set `XDG_BIN_HOME` to another directory and install again. Signatures, updates, source
-   builds and removal are in [docs/self-management.md](docs/self-management.md).
+   A bin directory with a `:` gets no such line, since a `:` separates `PATH` entries, and one
+   with a control character gets none either, since the installer will not print a line it
+   cannot show legibly: for both, set `XDG_BIN_HOME` to another directory and install again.
+   Signatures, updates, source builds and removal are in
+   [docs/self-management.md](docs/self-management.md).
 
 2. **Connect a Provider**, the `claude` or `codex` CLI login that model Workers run under:
 
@@ -132,17 +134,17 @@ explains Task, Worker, Attempt, Snapshot and the other words in two sentences ea
 
 ### Findings that look alike
 
-Two reviewers may report the same line with different titles or severities. They stay two
-Findings: a Finding's identity comes from its first Report, never from its path or title, and af
-never merges claims that only look alike
+Two reviewers may report the same line with different titles or severities. Looking alike does
+not make them one Finding: a Finding's identity comes from its first Report, never from its path
+or title, and af never merges claims that only look alike
 ([ADR-0006](docs/adr/0006-finding-identity-is-path-independent.md)). A path, a line, a title or
-similar wording is never enough for another Report to join a Finding. Two things are: an
-explicit relation, such as a reviewer corroborating that Finding's ID, or the exact `rule_id`
-and `occurrence_key` of one of its Reports, from any reviewer in any Round; the Finding then
-keeps every Report. When you judge two remaining Findings to be one defect, list them with
-`af review ledger --campaign NAME`, then, after the Round closes, run
-`af review group --campaign NAME FROM INTO`. Both IDs, every Report
-and each Report's own verification stay; the ledger lists one Finding under INTO with the higher
+similar wording is never enough for another Report to join a Finding, so such Reports stay
+separate Findings unless one of two things attaches them: an explicit relation, such as a
+reviewer corroborating that Finding's ID, or the exact `rule_id` and `occurrence_key` of one of
+its Reports, from any reviewer in any Round; the Finding then keeps every Report. When you judge
+two remaining Findings to be one defect, list them with `af review ledger --campaign NAME`,
+then, after the Round closes, run `af review group --campaign NAME FROM INTO`. Both IDs, every
+Report and each Report's own verification stay; the ledger lists one Finding under INTO with the higher
 severity, `af review show --campaign NAME FROM` shows the group, and
 `af review ungroup --campaign NAME FROM INTO` undoes it.
 
