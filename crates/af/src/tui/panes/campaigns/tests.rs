@@ -187,7 +187,7 @@ fn the_sources_are_the_default_roots_and_every_registered_review_store() {
 }
 
 /// A load reads every source on a thread and lists nothing until the event loop collects it:
-/// the bar shows the folder with a spinner meanwhile (ADR-0239).
+/// the bar shows the folder with a spinner meanwhile (ADR-0240).
 #[test]
 fn a_load_lists_its_sources_behind_a_spinner_never_on_the_callers_thread() {
     let temp = tempfile::tempdir().unwrap();

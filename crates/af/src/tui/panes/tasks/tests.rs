@@ -1429,7 +1429,7 @@ fn unavailable_registered_stores_are_each_their_own_row() {
 
 /// A load starts the read of every Store on a thread and lists nothing until the event loop
 /// collects it: the bar shows the folder with a spinner meanwhile, so the browser's first frame
-/// never waits on a Store (ADR-0239).
+/// never waits on a Store (ADR-0240).
 #[test]
 fn a_load_lists_its_stores_behind_a_spinner_never_on_the_callers_thread() {
     let temp = tempfile::tempdir().unwrap();

@@ -695,7 +695,7 @@ impl WorkersPane {
     /// Read `HEAD` and the Stores, on a thread; `poll` collects what it found. On a failed
     /// read of `HEAD` the previous entries of the same repository stay, marked by the error.
     /// A read in flight is dropped, its thread ends at its send. Reading `HEAD` runs git and
-    /// reading a Store replays its log, so neither runs on the key loop (ADR-0239).
+    /// reading a Store replays its log, so neither runs on the key loop (ADR-0240).
     fn read(&mut self) {
         let Some(root) = self.root.clone() else {
             // The user scope lists no Worker: Workers belong to a project.

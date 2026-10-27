@@ -1743,7 +1743,7 @@ fn stores_listed(screen: &Screen, count: usize, status: &str) -> bool {
 
 /// The browser opens before any Task Store is read: with many registered Stores, the first
 /// frame is the settings with `tasks/` behind a spinner, and the Stores fill the folder after
-/// it, one by one (ADR-0239). The order is the event loop's: it paints before it polls.
+/// it, one by one (ADR-0240). The order is the event loop's: it paints before it polls.
 #[test]
 fn the_browser_opens_before_any_task_store_is_read() {
     let (_temp, root) = temp_root();

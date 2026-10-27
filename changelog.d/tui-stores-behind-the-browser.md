@@ -2,4 +2,4 @@
   Workers panes read their Stores on a thread behind a spinner on their folder, Store by Store,
   so a machine whose registry names dozens of Stores no longer sits on the splash for as long as
   every event log takes to replay (40 s measured; issue #402,
-  [ADR-0239](docs/adr/0239-open-the-browser-before-any-store-is-read.md)).
+  [ADR-0240](docs/adr/0240-open-the-browser-before-any-store-is-read.md)).

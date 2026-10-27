@@ -513,7 +513,7 @@ impl CampaignsPane {
 
     /// Start a read of every source on a thread; a read in flight is dropped, its thread ends
     /// at its next send. The event loop paints before it polls, so nothing this read finds
-    /// reaches the screen before the browser's first frame (ADR-0239).
+    /// reaches the screen before the browser's first frame (ADR-0240).
     fn start(&mut self, explicit: bool) {
         let Some(places) = self.places.clone() else {
             self.job = None;

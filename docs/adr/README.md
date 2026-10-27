@@ -447,5 +447,5 @@ future readers need.
   results](0238-retain-refused-physical-telemetry-measurements-in-incomplete-results.md)
 - [0239 — Default every pull request to fast
   validation](0239-default-every-pull-request-to-fast-validation.md)
-- [0239 — Open the browser before any Store is
-  read](0239-open-the-browser-before-any-store-is-read.md)
+- [0240 — Open the browser before any Store is
+  read](0240-open-the-browser-before-any-store-is-read.md)

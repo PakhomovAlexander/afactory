@@ -8,7 +8,7 @@
 //! invocation ran and the goal of the revision. Nothing is written. Every read of the Stores
 //! runs on a thread: the one a load or `R` starts, and the one that reads the opened running
 //! Task again about once a second. The event loop collects each Store as it is read, so the bar
-//! fills Store by Store and the browser never waits on one (ADR-0239).
+//! fills Store by Store and the browser never waits on one (ADR-0240).
 
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
@@ -1444,7 +1444,7 @@ impl TasksPane {
     /// Start a read of every target on a thread; a read in flight is dropped, its thread ends
     /// at its next send. The event loop paints before it polls, so nothing this read finds
     /// reaches the screen before the browser's first frame: the splash waits for the scope
-    /// only, never for a Store (ADR-0239). Nothing interrupts the read: it holds no key, and
+    /// only, never for a Store (ADR-0240). Nothing interrupts the read: it holds no key, and
     /// `q` quits without waiting for it.
     fn start(&mut self, explicit: bool) {
         let (targets, opened) = (self.targets.clone(), self.opened_task());

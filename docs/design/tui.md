@@ -40,7 +40,7 @@ load reads no Store: a pane that lists Stores (Tasks, Campaigns, and Workers onc
 their read on a thread of its own and the event loop collects each Store as it is read, after
 the first frame, since the loop paints before it polls. The splash therefore waits for the scope
 only, whatever Stores the machine holds: a registry of eighty Stores and four gigabytes of event
-logs once kept it up for forty seconds ([ADR-0239](../adr/0239-open-the-browser-before-any-store-is-read.md)).
+logs once kept it up for forty seconds ([ADR-0240](../adr/0240-open-the-browser-before-any-store-is-read.md)).
 What it still waits for is small: the scope's files, the Store registry (one file), and the
 Pipelines pane's read of `HEAD` through git, milliseconds on a local repository.
 `q` or `<C-c>` on the splash quits at once; any other key typed meanwhile is the browser's first

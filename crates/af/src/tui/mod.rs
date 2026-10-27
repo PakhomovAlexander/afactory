@@ -219,7 +219,7 @@ pub(crate) fn launch(repo: Option<&Path>) -> Result<i32, String> {
 
 /// The scope, resolved, and every pane loaded: what the splash waits for. No Store is read
 /// here: the Tasks, Campaigns and Workers panes read theirs on threads of their own once the
-/// browser shows, so this takes milliseconds whatever the machine holds (ADR-0239).
+/// browser shows, so this takes milliseconds whatever the machine holds (ADR-0240).
 fn load(repo: Option<&Path>) -> Result<App, String> {
     let scope = match repo {
         Some(dir) => {

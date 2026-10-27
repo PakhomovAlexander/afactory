@@ -1,4 +1,4 @@
-# ADR-0239: Open the browser before any Store is read
+# ADR-0240: Open the browser before any Store is read
 
 **Status:** accepted (2026-10-27). Refines the read-first browser of
 [ADR-0119](0119-open-a-read-first-browser-on-bare-af.md) and the Store registry listing of
