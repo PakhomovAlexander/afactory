@@ -1851,26 +1851,75 @@ fn review_campaigns_json_is_the_format_json_document() {
     );
     assert_eq!(out(&campaigns(&["--json", "--sizes"])), out(&format));
 
-    // The text listing wraps at the terminal width, and a root wider than it (a long `TMPDIR`)
-    // takes a line of its own: read the words, not the layout, for this root and a long one.
-    let long = dir.path().join("x".repeat(120)).join("campaigns");
-    for root in [root, long.to_str().unwrap()] {
+    // The text listing names the root `--state-root` resolves to, whole: its existing ancestor
+    // canonicalized (a macOS `/var/folders` temporary root reads `/private/var/folders`), on the
+    // sentence's line where it fits in 100 columns, else on a line of its own, and as the
+    // `--state` of the command that starts a Campaign there. Controls: this root (short when
+    // `TMPDIR` is), one wider than a line, one with spaces, and one reached through a symlink.
+    let base = std::fs::canonicalize(dir.path()).unwrap();
+    let long = Path::new("x".repeat(120).as_str()).join("campaigns");
+    let spaced = Path::new("with  spaces").join("campaigns");
+    std::fs::create_dir_all(dir.path().join(&spaced)).unwrap();
+    #[cfg_attr(not(unix), allow(unused_mut))]
+    let mut controls = vec![
+        (dir.path().join("campaigns"), base.join("campaigns")),
+        (dir.path().join(&long), base.join(&long)),
+        (dir.path().join(&spaced), base.join(&spaced)),
+    ];
+    #[cfg(unix)]
+    {
+        std::fs::create_dir_all(dir.path().join("real").join("campaigns")).unwrap();
+        std::os::unix::fs::symlink("real", dir.path().join("alias")).unwrap();
+        controls.push((
+            dir.path().join("alias").join("campaigns"),
+            base.join("real").join("campaigns"),
+        ));
+    }
+    for (requested, resolved) in &controls {
+        let root = requested.to_str().unwrap();
+        let shown = resolved.to_str().unwrap();
+        assert!(!shown.chars().any(char::is_control), "{shown:?}");
         let listed = listing(root, &[]);
         assert_eq!(listed.status.code(), Some(0), "{}", err(&listed));
         let text = out(&listed);
         assert_eq!(text, out(&listing(root, &["--format", "text"])));
-        let words: Vec<&str> = text
-            .split_whitespace()
-            .filter(|word| *word != "\\")
-            .collect();
-        assert_eq!(words[..3], ["No", "Campaigns", "under"], "{text}");
-        assert!(
-            words.iter().any(|word| word.trim_end_matches(';') == root),
+        let lines: Vec<&str> = text.lines().collect();
+        let head = format!("No Campaigns under {shown}; start one there with");
+        let command_at = if head.chars().count() <= 100 {
+            assert_eq!(lines[0], head, "{text}");
+            1
+        } else {
+            let alone = format!("  {shown}");
+            assert_eq!(
+                lines[..3],
+                ["No Campaigns under", alone.as_str(), "Start one there with"],
+                "{text}"
+            );
+            3
+        };
+        let command = lines[command_at..]
+            .iter()
+            .map(|line| line.trim().trim_end_matches('\\').trim_end())
+            .collect::<Vec<_>>()
+            .join(" ");
+        let state = resolved.join("NAME");
+        assert_eq!(
+            shell_words::split(&command).unwrap(),
+            [
+                "af",
+                "review",
+                "run",
+                "--campaign",
+                "NAME",
+                "--state",
+                state.to_str().unwrap()
+            ],
             "{text}"
         );
         let document: serde_json::Value =
             serde_json::from_slice(&listing(root, &["--json"]).stdout).unwrap();
         assert_eq!(document["campaigns"], serde_json::json!([]), "{document}");
+        assert_eq!(document["problems"], serde_json::json!([]), "{document}");
     }
 
     for extra in [
