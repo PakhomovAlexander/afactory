@@ -96,11 +96,14 @@ pub(crate) enum Effect {
 pub(crate) trait Pane {
     /// A pure read of disk for this scope; nothing is written. No Store is read here on the
     /// caller's thread, and no directory of Stores walked: a pane that lists Stores starts
-    /// that read on a thread of its own, shows `busy` while it runs and collects it in `poll`,
-    /// so the browser opens before any Store is read (ADR-0240). What stays on the caller's
-    /// thread is small and bounded: the scope's files under `.af/`, the layer directories,
-    /// the Store registry `stores.toml` (one file), and the Pipelines pane's read of `HEAD`
-    /// through git, milliseconds on a local repository.
+    /// that read on a thread of its own (the user scope's walk of the state root for every
+    /// repository's Store included), shows `busy` while it runs and collects it in `poll`, so
+    /// the browser opens before any Store is read (ADR-0240). What stays on the caller's
+    /// thread is small and bounded, one file or one directory each: the scope's files under
+    /// `.af/`, the layer directories, the Store registry `stores.toml`, the metadata of
+    /// `.af/provider-registry` (Settings), `providers.toml` and the names-only listing of the
+    /// Provider auth directories (Providers, before its probe starts on a thread), and the
+    /// Pipelines pane's read of `HEAD` through git, milliseconds on a local repository.
     fn load(&mut self, scope: &Scope) -> Result<(), String>;
 
     /// The bar entries under this pane's folder.

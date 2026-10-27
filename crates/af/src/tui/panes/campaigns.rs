@@ -24,7 +24,7 @@ use super::{Effect, Pane, Row};
 use crate::storage::registry::{self, StoreKind};
 use crate::tui::keymap::Key;
 use crate::tui::paint::{Paint, Span, Tone};
-use crate::tui::scope::Scope;
+use crate::tui::scope::{Scope, ScopeKind};
 use crate::tui::tree::Item;
 
 /// How often the pane reads the Stores again while a Round is open.
@@ -254,6 +254,8 @@ struct Problem {
 
 /// What one source holds.
 struct Group {
+    /// The source it was read from, which places it among the groups.
+    source: Source,
     shown: String,
     campaigns: Vec<Campaign>,
     problems: Vec<Problem>,
@@ -341,6 +343,7 @@ fn read_dir(places: &Places, state: &Path) -> Option<Result<Campaign, Problem>> 
 
 fn read_source(places: &Places, source: &Source) -> Group {
     let mut group = Group {
+        source: source.clone(),
         shown: places.show(source.path()),
         campaigns: Vec::new(),
         problems: Vec::new(),
@@ -401,8 +404,8 @@ fn read_source(places: &Places, source: &Source) -> Group {
 /// What one read of every source found, and the opened Campaign's report.
 /// One message of a read: a source's group as soon as it is read, then the end of the read.
 enum Read {
-    /// The `index`th source, read.
-    Group { index: usize, group: Group },
+    /// One source, read.
+    Group(Group),
     /// Every source was read; the opened Campaign's report, read last.
     Done {
         report: Option<(PathBuf, Result<Value, String>)>,
@@ -419,7 +422,7 @@ fn read(
     sender: &mpsc::Sender<Read>,
 ) {
     let mut seen = BTreeSet::new();
-    for (index, source) in sources.iter().enumerate() {
+    for source in sources {
         let mut group = read_source(places, source);
         group
             .campaigns
@@ -427,7 +430,7 @@ fn read(
         group
             .problems
             .retain(|problem| seen.insert(problem.state.clone()));
-        if sender.send(Read::Group { index, group }).is_err() {
+        if sender.send(Read::Group(group)).is_err() {
             return;
         }
     }
@@ -457,6 +460,9 @@ struct Job {
 #[derive(Default)]
 pub(crate) struct CampaignsPane {
     title: String,
+    /// The scope loaded last, by what makes it another one: another scope lists nothing of
+    /// the old; the same scope with other sources keeps its groups until the read answers.
+    place: Option<(ScopeKind, PathBuf)>,
     sources: Vec<Source>,
     places: Option<Places>,
     /// Why the registry added no source, shown above the Campaigns.
@@ -565,15 +571,34 @@ impl CampaignsPane {
 
     fn apply(&mut self, read: Read) {
         match read {
-            // Groups arrive in source order, so a group not listed yet is the next one.
-            Read::Group { index, group } => {
-                if index < self.groups.len() {
-                    self.groups[index] = group;
+            // A source's group takes the place of what the last read found for it, or its
+            // place in source order. A group of a source this read no longer names stays
+            // until the read is done: a changed source list never unlists a Campaign before
+            // its own source is read, and an opened one stays opened meanwhile.
+            Read::Group(group) => {
+                let listed = self.groups.iter().position(|g| g.source == group.source);
+                if let Some(listed) = listed {
+                    self.groups[listed] = group;
                 } else {
-                    self.groups.push(group);
+                    let order = |source: &Source| {
+                        self.sources
+                            .iter()
+                            .position(|s| s == source)
+                            .unwrap_or(usize::MAX)
+                    };
+                    let index = order(&group.source);
+                    let at = self
+                        .groups
+                        .iter()
+                        .position(|g| order(&g.source) > index)
+                        .unwrap_or(self.groups.len());
+                    self.groups.insert(at, group);
                 }
             }
             Read::Done { report } => {
+                // Every source answered: a group of a source this read did not name goes.
+                let sources = &self.sources;
+                self.groups.retain(|group| sources.contains(&group.source));
                 if let Some((state, report)) = report {
                     self.detail = Some(Detail { state, report });
                 }
@@ -909,12 +934,17 @@ fn ledger_rows(
 impl Pane for CampaignsPane {
     fn load(&mut self, scope: &Scope) -> Result<(), String> {
         let (sources, warning) = sources(scope);
-        if sources != self.sources {
-            // Another scope's sources: nothing read for the old one stays opened.
+        let place = (scope.kind, scope.root.clone());
+        if self.place.as_ref() != Some(&place) {
+            // Another scope: nothing read for the old one stays listed or opened. The same
+            // scope with other sources (a Store registered meanwhile) keeps every group
+            // listed until the read answers for it, so an opened Campaign is never reported
+            // gone because its source is not read yet.
             self.groups.clear();
             self.selected = None;
             self.detail = None;
         }
+        self.place = Some(place);
         self.sources = sources;
         self.warning = warning;
         self.places = Some(Places::of(scope));

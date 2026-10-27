@@ -117,14 +117,22 @@ pub(crate) fn hub_with_tasks(root: &Path) -> (PathBuf, PathBuf) {
     (repo, state)
 }
 
-/// Run the fixture's ticket under `task_id` the way `af task start --execute` runs it.
+/// Run the fixture's ticket under `task_id` the way `af task start --execute` runs it, with the
+/// fixture's state root as the state home: the Task registers nothing in the developer's own
+/// `stores.toml`, as its Store is a default one under that root.
 pub(crate) fn record_task(root: &Path, repo: &Path, state: &Path, task_id: &str) {
     let ticket = std::fs::read(repo.join("ticket.json")).unwrap();
     let mut task: serde_json::Value = serde_json::from_slice(&ticket).unwrap();
     task["task_id"] = serde_json::Value::String(task_id.to_owned());
     let file = root.join(format!("{task_id}.json"));
     std::fs::write(&file, serde_json::to_vec_pretty(&task).unwrap()).unwrap();
-    crate::task_execution::run_silently(&file, repo, state).unwrap();
+    let pin = |home: Option<PathBuf>| {
+        config::STATE_HOME_FOR_TESTS.with(|pinned| *pinned.borrow_mut() = home);
+    };
+    pin(Some(root.join("state")));
+    let ran = crate::task_execution::run_silently(&file, repo, state);
+    pin(None);
+    ran.unwrap();
 }
 
 /// Lines two captures of one Task file share: the plan ID covers the deadline and TIME counts
@@ -299,6 +307,16 @@ fn press(app: &mut App, host: &mut Recorder, keys: &[u8]) {
     }
     // The event loop would collect the panes' reads a few frames later; here, at once.
     app.settle();
+}
+
+/// `press` without the settling: the reads the keys start are still in flight afterwards, as
+/// they are on the screen between a key and the frames that collect them.
+fn press_unsettled(app: &mut App, host: &mut Recorder, keys: &[u8]) {
+    for key in keymap::decode(keys) {
+        if let Some(effect) = app.key(key) {
+            app.apply(effect, host);
+        }
+    }
 }
 
 fn status_line(app: &mut App) -> String {
@@ -2520,6 +2538,111 @@ fn the_tasks_pane_lists_every_registered_store_and_a_state_dir_for_the_session()
         crate::storage::registry::read(&crate::storage::registry::location(&state_root(&root)))
             .unwrap();
     assert_eq!(registry.len(), 1);
+}
+
+/// A Store registered while a Task of another is opened: `R` reads the changed target list
+/// again, and the opened Task stays opened while its Store is unread, never reported gone
+/// because the read has not reached its Store yet (ADR-0240).
+#[test]
+fn an_opened_task_stays_opened_while_a_store_registered_meanwhile_is_read() {
+    let (_temp, root) = temp_root();
+    let (repo, state) = hub_with_tasks(&root);
+    let mut app = app_at(&root, repo);
+    let mut host = Recorder::default();
+    press(&mut app, &mut host, b"]]]]]]]]jj\r");
+    assert_eq!(app.breadcrumb(), "tasks/pagination-cli");
+    let registered = root.join("elsewhere/registered");
+    copy_store(&state, &registered);
+    register(&root, &[(&registered, "task")]);
+    press_unsettled(&mut app, &mut host, b"R");
+    assert!(app.panes.tasks.busy().is_some(), "the read is in flight");
+    assert_eq!(app.breadcrumb(), "tasks/pagination-cli");
+    assert_eq!(
+        app.opened,
+        Opened::Item(Tab::Tasks, "pagination-cli".to_owned())
+    );
+    let line = status_line(&mut app);
+    assert!(!line.contains("no longer listed"), "{line}");
+    app.settle();
+    assert_eq!(app.breadcrumb(), "tasks/pagination-cli");
+    let line = status_line(&mut app);
+    assert!(!line.contains("no longer listed"), "{line}");
+    let bar: Vec<String> = app.tree.rows().iter().map(|row| row.text()).collect();
+    assert!(
+        bar.iter().any(|row| row.contains("registered/ (2)")),
+        "{bar:#?}"
+    );
+}
+
+/// `:state DIR` while a Task is opened: the Store is listed for the session, and the opened
+/// Task stays opened while the changed target list is read, in flight and after.
+#[test]
+fn an_opened_task_stays_opened_while_a_state_dir_added_for_the_session_is_read() {
+    let (_temp, root) = temp_root();
+    let (repo, state) = hub_with_tasks(&root);
+    let session = root.join("elsewhere/session");
+    copy_store(&state, &session);
+    let mut app = app_at(&root, repo);
+    let mut host = Recorder::default();
+    press(&mut app, &mut host, b"]]]]]]]]jj\r");
+    assert_eq!(app.breadcrumb(), "tasks/pagination-cli");
+    press(&mut app, &mut host, b":state ~/elsewhere/session");
+    press_unsettled(&mut app, &mut host, b"\r");
+    assert!(app.panes.tasks.busy().is_some(), "the read is in flight");
+    assert_eq!(app.breadcrumb(), "tasks/pagination-cli");
+    let line = status_line(&mut app);
+    assert!(
+        line.contains("tasks/ lists ~/elsewhere/session for this session"),
+        "{line}"
+    );
+    app.settle();
+    assert_eq!(app.breadcrumb(), "tasks/pagination-cli");
+    assert_eq!(
+        app.opened,
+        Opened::Item(Tab::Tasks, "pagination-cli".to_owned())
+    );
+    let line = status_line(&mut app);
+    assert!(!line.contains("no longer listed"), "{line}");
+    let bar: Vec<String> = app.tree.rows().iter().map(|row| row.text()).collect();
+    assert!(
+        bar.iter().any(|row| row.contains("session/ (2)")),
+        "{bar:#?}"
+    );
+}
+
+/// A review Store registered while a Campaign of another source is opened: `R` reads the
+/// changed source list again, and the opened Campaign stays opened while its source is unread.
+#[test]
+fn an_opened_campaign_stays_opened_while_a_source_registered_meanwhile_is_read() {
+    let (_temp, root) = temp_root();
+    let audit = campaign_stores(&root);
+    let mut app = hub_app(&root);
+    let mut host = Recorder::default();
+    press(&mut app, &mut host, b"]]]]]]]]]]\r");
+    press(&mut app, &mut host, b"G\r");
+    assert_eq!(app.breadcrumb(), "campaigns/audit");
+    let more = root.join("elsewhere/more");
+    crate::option_tests::write_campaign_rounds(&more, "more", &[(1, 1)]);
+    register(&root, &[(&audit, "review"), (&more, "review")]);
+    press_unsettled(&mut app, &mut host, b"R");
+    assert!(
+        app.panes.campaigns.busy().is_some(),
+        "the read is in flight"
+    );
+    assert_eq!(app.breadcrumb(), "campaigns/audit");
+    let line = status_line(&mut app);
+    assert!(!line.contains("no longer listed"), "{line}");
+    app.settle();
+    assert_eq!(app.breadcrumb(), "campaigns/audit");
+    let line = status_line(&mut app);
+    assert!(!line.contains("no longer listed"), "{line}");
+    assert!(
+        app.panes
+            .campaigns
+            .label(&more.display().to_string())
+            .is_some(),
+        "the registered Store's Campaign is listed"
+    );
 }
 
 fn copy_store(from: &Path, to: &Path) {

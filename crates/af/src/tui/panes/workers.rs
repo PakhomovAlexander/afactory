@@ -1145,6 +1145,9 @@ impl Pane for WorkersPane {
         }
         self.root = root;
         self.title = format!("WORKERS  {}: {}", scope.word(), scope.name());
+        // The project scope's own Store, resolved without a read; the user scope lists no
+        // Worker and names no Store here (its repositories' Stores are the Tasks pane's walk,
+        // on that pane's thread).
         (self.targets, self.no_state) = match tasks::targets(scope) {
             Ok(targets) => (targets, None),
             Err(error) => (Vec::new(), Some(error)),

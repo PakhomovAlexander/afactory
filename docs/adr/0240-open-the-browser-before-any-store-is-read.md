@@ -28,10 +28,16 @@ The load the splash waits for resolves the scope and loads the panes; it reads n
 that lists Stores starts their read on a thread of its own in `load`, shows a spinner on its
 folder while that read runs (`Pane::busy`), and collects the result in `poll`. The event loop
 paints before it polls, so the browser's first frame never shows, and never waits on, a Store:
-the order is the loop's, not a race. What a load still does on the calling thread is small and
-bounded: it resolves the scope's targets (the Store registry `stores.toml` is one file, read and
-its paths canonicalised), reads `.af/` and the layer directories, and, in the Pipelines pane,
-reads `HEAD` through git as before this change, milliseconds on a local repository.
+the order is the loop's, not a race. The user scope's targets, every repository's Store under
+the state root, are a directory walk with a `metadata` call behind every symlink: the Tasks
+pane's read discovers them on its thread, first, and the load resolves none of them; the
+Workers pane, which lists no Worker in that scope, names no Store there either. What a load
+still does on the calling thread is small and bounded, one file or one directory each: it
+resolves the project scope's own Store, reads the Store registry `stores.toml` and
+canonicalises its paths, reads `.af/` and the layer directories, checks the metadata of
+`.af/provider-registry` (Settings), reads `providers.toml` and lists the Provider auth
+directories by name (Providers, before its probe starts on a thread), and, in the Pipelines
+pane, reads `HEAD` through git as before this change, milliseconds on a local repository.
 
 The Tasks and Campaigns panes deliver one message per Store (per source), in target order, and
 list each the moment it arrives: the folder fills while the rest are still read, a refused Store
@@ -56,9 +62,13 @@ the read's last message, without timing, by feeding the pane's channel.
 An opened entry that a read in the background no longer lists falls back to its folder with the
 same message as when opening finds it gone (`App::poll`), since a read that used to answer
 inside `open` now answers later: a Worker whose declaration went between the listing and the
-read, or a Task whose Store refused. A refusal taken in `open` (the opened Task can no longer be
-inspected) restarts a read in flight, so that a Store message read before the refusal never lists
-the Task again over it.
+read, or a Task whose Store refused. Never because a Store is unread: a target or source list
+that changed within the scope (a Store registered meanwhile, `:state DIR`) keeps every Store
+listed, and the opened entry opened, until the read answers for that Store, and a Store of a
+target the read no longer names until the read is done; another scope lists nothing of the old.
+A refusal taken on the key loop (the opened Task can no longer be inspected, or an artifact of
+its HISTORY cannot be given back) restarts a read in flight, so that a Store message read before
+the refusal never lists the Task again over it.
 
 ## Consequences
 
@@ -76,6 +86,9 @@ the Task again over it.
   change of its own, not this one.
 - A pane's `items()` lists what has arrived: a test that loads a pane and reads its items at once
   sees nothing, and settles the read first (`settle`, the tests' event loop).
-- The launch-to-browser numbers above were measured by the owner's session in a pseudo-terminal
-  (twenty registered Stores, a private HOME, five runs each) and are not a laboratory receipt;
-  the laboratory case that makes the first frame a performance target is Task B of the campaign.
+- The launch-to-browser numbers above are the maintainer's machine as described (81 registered
+  Stores, 166 event logs; the empty private HOME beside it); the before-and-after comparison in
+  the pull request is a different setup, twenty registered Stores under a private HOME in a
+  pseudo-terminal, five runs each, measured by the owner's session. Neither is a laboratory
+  receipt; the laboratory case that makes the first frame a performance target is Task B of the
+  campaign.

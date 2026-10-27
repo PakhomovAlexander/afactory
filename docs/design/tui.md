@@ -276,15 +276,21 @@ session)`. `r` and `D` on its Tasks add `--state DIR` to the line. A registry th
 read is a warning above the Stores; the scope's own Stores are still listed.
 
 Every read of the Stores runs on a thread, the one a load, `R` or `:state DIR` starts as much as
-the live read of an opened running Task: the bar shows `tasks/` with a spinner while it runs, and
+the live read of an opened running Task, and in the user scope the walk of the state root for
+every repository's Store is that thread's first step, never the load's: the bar shows `tasks/`
+with a spinner while it runs, and
 each Store is listed the moment it is read, in the order above, a refused one with its refusal,
 so the folder fills while the rest are still read and no read of a Store ever holds the key loop
 or the splash (opening one Task still inspects that Task on the key loop, as before). Nothing
 interrupts the read, since it holds no key; `q` quits without waiting for it. The opened Task's
 detail arrives with its own Store, so its bar row and its pane never disagree; a Task whose
-Store refuses when opened restarts a read in flight, so nothing read before the refusal lists it
-again. An opened Task or Worker that a read no longer lists falls back to its folder with the
-same message as when opening finds it gone.
+Store refuses when opened, or whose HISTORY artifact cannot be given back, restarts a read in
+flight, so nothing read before the refusal lists it again. An opened Task or Worker that a read
+no longer lists falls back to its folder with the same message as when opening finds it gone;
+never one whose Store is merely unread: a target list that changed within the scope (a Store
+registered meanwhile, `:state DIR`) keeps every Store listed until the read answers for it, and
+a Store of a target no longer named until the read is done, so the opened Task stays opened
+while its Store is read again. Another scope lists nothing of the old.
 
 Main pane for one Task, top to bottom:
 
@@ -349,7 +355,9 @@ review report` counts them) and its Store's last write in UTC, and the reviewer 
 Round as chips of their latest Attempt's outcome (`running`, `selected`, `failed`): only that
 Round's Attempts, so a Round that has none yet shows no chips, never the previous Round's, and
 the latest Attempt is the one that started last, not the last one listed. Every read runs on a
-thread, the load's included, each source listed as it is read behind a spinner on `campaigns/`.
+thread, the load's included, each source listed as it is read behind a spinner on `campaigns/`;
+a source list that changed within the scope keeps every group listed until the read answers for
+it, so an opened Campaign stays opened while its source is read again.
 While the pane shows, that thread reads every source again: once a second while any listed
 Round is open, the Tasks pane's cadence, and every five seconds otherwise, so a Campaign started
 meanwhile appears without a key.
