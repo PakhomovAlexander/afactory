@@ -428,6 +428,22 @@ class SealedEvidence(unittest.TestCase):
             scripts.mkdir()
             for name in ('verify.sh', 'verify-body.sh', 'gate-owner.py'):
                 shutil.copy2(ROOT / 'scripts' / name, scripts / name)
+            shutil.copy2(ROOT / 'scripts/test-classes.py', scripts / 'test-classes.py')
+            for source in (ROOT / 'scripts').glob('test-*.py'):
+                if source.name != 'test-classes.py':
+                    shutil.copy2(source, scripts / source.name)
+            (root / '.config').mkdir()
+            shutil.copy2(ROOT / '.config/test-classes.json', root / '.config/test-classes.json')
+            (root / 'schemas').mkdir()
+            for name in tc.schema_documents():
+                shutil.copy2(ROOT / 'schemas' / name, root / 'schemas' / name)
+            for source in (ROOT / 'crates').glob('*/tests/it/main.rs'):
+                destination = root / source.relative_to(ROOT)
+                destination.parent.mkdir(parents=True, exist_ok=True)
+                shutil.copy2(source, destination)
+            workflow = root / '.github/workflows/validate.yml'
+            workflow.parent.mkdir(parents=True)
+            shutil.copy2(ROOT / '.github/workflows/validate.yml', workflow)
             tools = root / 'bin'
             tools.mkdir()
             make = tools / 'make'
@@ -447,6 +463,7 @@ class SealedEvidence(unittest.TestCase):
             env.update(PATH=str(tools) + os.pathsep + env['PATH'],
                        AF_GATE_TARGET_DIR=str(target), CALLS=str(calls), STATUS='0')
             for args, expected in [([], ['check']),
+                                   (['--profile', 'full'], ['check']),
                                    (['--test-plan', str(plan)], ['check-classes', f'TEST_PLAN={plan}'])]:
                 for status in (0, 23):
                     env['STATUS'] = str(status)
@@ -458,11 +475,26 @@ class SealedEvidence(unittest.TestCase):
                     self.assertEqual(observed['target'], str(target))
                     self.assertEqual(Path(observed['run']).parent, target / 'nextest-reports')
                     self.assertEqual(observed['metrics'], observed['run'] + '/ci-metrics.jsonl')
+            env['STATUS'] = '0'
+            result = subprocess.run(['bash', str(scripts / 'verify.sh'), '--profile', 'fast'],
+                                    cwd=root, env=env, capture_output=True, text=True, timeout=10)
+            self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+            observed = tc.read(calls)
+            fast_plan = Path(observed['run']) / 'test-plan.json'
+            self.assertEqual(observed['args'], ['test-build', 'check-classes',
+                                                f'TEST_PLAN={fast_plan}'])
+            self.assertEqual(observed['metrics'], observed['run'] + '/ci-metrics.jsonl')
+            self.assertEqual({key: tc.read(fast_plan)[key]
+                              for key in ('profile', 'context', 'selected')},
+                             {'profile': 'fast', 'context': 'gate',
+                              'selected': ['functional', 'e2e', 'uix']})
             calls.unlink()
-            for args in (['--unknown'], ['--test-plan'], ['--test-plan', str(root / 'absent')]):
+            for args in (['--unknown'], ['--profile'], ['--profile', 'perf'],
+                         ['--test-plan'], ['--test-plan', str(root / 'absent')]):
                 result = subprocess.run(['bash', str(scripts / 'verify.sh'), *args], cwd=root,
                                         env=env, capture_output=True, timeout=10)
                 self.assertEqual(result.returncode, 2)
+                self.assertIn(b'usage: scripts/verify.sh', result.stderr)
                 self.assertFalse(calls.exists())
             self.assertFalse((root / 'target').exists())
 
@@ -498,6 +530,15 @@ class SealedEvidence(unittest.TestCase):
                 path = scripts / name
                 path.parent.mkdir(exist_ok=True)
                 path.write_text('pass\n')
+            (scripts / 'test-classes.py').write_text(
+                'import os, pathlib, subprocess, sys\n'
+                'if sys.argv[1] == "plan":\n'
+                '    pathlib.Path(sys.argv[sys.argv.index("--output") + 1]).write_text("{}")\n'
+                'elif sys.argv[1] == "execute":\n'
+                '    for kind in ("functional", "e2e", "uix"):\n'
+                '        subprocess.run([sys.executable, "scripts/ci-step.py", "--stage",\n'
+                '                        "tests", "class-" + kind, sys.executable, "-c", "pass"],\n'
+                '                       check=True)\n')
             tools = root / 'bin'
             tools.mkdir()
             (tools / 'python3').symlink_to(sys.executable)
@@ -509,31 +550,58 @@ class SealedEvidence(unittest.TestCase):
             env = {k: v for k, v in os.environ.items()
                    if not k.startswith(('AF_', 'GH_', 'GITHUB_', 'CARGO_', 'RUST', 'MAKE'))}
             report = root / 'check.jsonl'
+            metrics = root / 'metrics.jsonl'
             env.update(PATH=str(tools) + os.pathsep + env['PATH'],
-                       AF_GATE_TARGET_DIR=str(root / 'output'), AF_CHECK_REPORT=str(report))
+                       AF_GATE_TARGET_DIR=str(root / 'output'), AF_CHECK_REPORT=str(report),
+                       AF_CI_METRICS=str(metrics))
             for runner in ('nextest', 'cargo'):
-                for entry, status in (('check', 0), ('check', 19), ('test', 0)):
+                for entry, status in (('check', 0), ('check', 19), ('test', 0),
+                                      ('fast', 0), ('fast', 19)):
                     with self.subTest(runner=runner, entry=entry, build_status=status):
                         report.unlink(missing_ok=True)
+                        metrics.unlink(missing_ok=True)
                         env.update(TEST_RUNNER=runner, BUILD_STATUS=str(status))
-                        command = (['bash', str(scripts / 'verify.sh')] if entry == 'check'
-                                   else ['make', 'test'])
+                        command = (['bash', str(scripts / 'verify.sh'),
+                                    *(['--profile', 'fast'] if entry == 'fast' else [])]
+                                   if entry != 'test' else ['make', 'test'])
                         result = subprocess.run(command, cwd=root, env=env,
                                                 capture_output=True, text=True, timeout=20)
                         self.assertEqual(result.returncode == 0, status == 0,
                                          result.stdout + result.stderr)
                         records = [json.loads(line) for line in report.read_text().splitlines()]
-                        wanted = (expected[:len(preflight) + len(lint) + 1] if status
-                                  else expected if entry == 'check'
-                                  else [('test-build', 'build'), ('test', 'tests')])
+                        if entry == 'fast':
+                            wanted = [('test-build', 'build')]
+                            if not status:
+                                wanted += [(label, 'release') for label in release]
+                                wanted += [(label, 'preflight') for label in
+                                           ('gate-owner', 'test-classes', 'test-catalog')]
+                                wanted += [(label, 'lint') for label in lint]
+                                wanted += [(f'class-{kind}', 'tests') for kind in
+                                           ('functional', 'e2e', 'uix')]
+                        else:
+                            wanted = (expected[:len(preflight) + len(lint) + 1] if status
+                                      else expected if entry == 'check'
+                                      else [('test-build', 'build'), ('test', 'tests')])
                         self.assertEqual([(r['label'], r['stage']) for r in records], wanted)
                         build = next(r for r in records if r['label'] == 'test-build')
                         self.assertEqual(build['command'], ['cargo', 'test', '--locked', '--no-run'])
                         self.assertEqual(build['exit_code'], status)
+                        timed = [json.loads(line) for line in metrics.read_text().splitlines()]
+                        self.assertEqual([r['label'] for r in timed],
+                                         [r['label'] for r in records])
                         if status:
                             self.assertFalse(any(r['stage'] == 'tests' for r in records))
+                            self.assertFalse(any(r['label'].startswith('class-') for r in records))
+                            self.assertFalse(any(r['label'].startswith('class-') for r in timed))
                             continue
                         self.assertTrue(all(r['exit_code'] == 0 for r in records))
+                        if entry == 'fast':
+                            self.assertEqual(timed[0]['command'],
+                                             ['cargo', 'test', '--locked', '--no-run'])
+                            self.assertEqual(records[0]['stage'], 'build')
+                            self.assertLess(0, next(i for i, r in enumerate(records)
+                                                    if r['stage'] == 'tests'))
+                            continue
                         rust = next(r for r in records if r['label'] == 'test')
                         self.assertEqual(rust['command'][:2], ['python3', 'scripts/nextest-gate.py']
                                          if runner == 'nextest' else ['cargo', 'test'])
@@ -848,7 +916,8 @@ class Catalog(unittest.TestCase):
         for c in tc.CLASSES:
             expression = tc.filterset(entries, [c])
             self.assertIn('binary_id(', expression)
-        self.assertEqual(tc.classify('af::it', 'perf_kernel_measure::guarded_kernel_experiments_measure_one_judged_sample_and_refuse_every_tampered_harness'), 'perf')
+        self.assertEqual(tc.classify('af::it', 'perf_kernel_measure::guarded_kernel_experiments_refuse_every_tampered_harness'), 'perf')
+        self.assertEqual(tc.classify('af::it', 'perf_kernel_measure::guarded_kernel_experiments_measure_one_judged_sample'), 'perf')
         self.assertEqual(tc.classify('af::it', 'cli_surface::usage_errors_name_only_the_failing_command'), 'uix')
         self.assertEqual(tc.classify('af::it', 'project::workflow'), 'e2e')
         self.assertEqual(tc.classify('af::bin/af', 'tui::tests::navigation'), 'uix')

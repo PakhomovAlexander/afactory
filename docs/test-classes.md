@@ -1,11 +1,16 @@
 # Validation test classes
 
 This design governs repository development and release validation. It changes no kernel runtime,
-Task authority, individual assertion, deadline, or nextest exclusive scheduling rule.
+individual assertion, deadline, or nextest exclusive scheduling rule.
 [ADR-0229](adr/0229-select-validation-classes-and-bind-release-profiles-to-tags.md) supersedes the
 always-full CI policy in ADR-0107, the unconditional latest-Python lab dependency in ADR-0197,
 and the repository operator's prose-only recommendation for `no-perf` in ADR-0196. The AF kernel's
-remote gate label authority and `.af/` are unchanged. The required AF/local `make check` remains full.
+remote gate label authority is unchanged. Local `make check` remains full. The repository's
+Task gate selects the fast profile (functional, e2e, uix) through
+`scripts/verify.sh --profile fast`
+([ADR-0251](adr/0251-run-the-task-gate-on-the-fast-validation-profile.md)); every pull request
+defaults to the same fast selection (ADR-0239), and the full check remains in `make check`,
+main validation and unbound releases.
 
 ## Classes and catalog
 
@@ -17,7 +22,7 @@ modules/scripts and the actual nextest inventory, never from historical run tota
 | functional | Component and public contract correctness | Typed schemas, config admission, graph compilation |
 | e2e | Complete workflows, lifecycle, subprocesses and containment | Task delivery, Campaign rounds, process cancellation, live containers |
 | uix | CLI/TUI interaction, output, help, errors and navigation | `cli_surface`, `help_hygiene`, `task_file_errors`, `tui` |
-| perf | Measurement, the performance laboratory and expensive performance integration checks | `perf_kernel_measure`, `perf_probe`, optimizer and telemetry overhead tests |
+| perf | Measurement, the performance laboratory and expensive performance integration checks | `perf_kernel_measure` refusal checks, `perf_probe`, optimizer and telemetry overhead tests |
 
 `.config/test-classes.json` is the versioned, reviewable ownership catalog. Consolidated integration
 binaries list every top-level module explicitly, including fixture-only modules. Adding or removing
@@ -46,7 +51,11 @@ It partitions every identity once, including ignored tests, then generates bound
 from the audited inventory. Tests in each root module are grouped only when their selection agrees;
 other names stay exact. Explicit singleton overrides classify manual measurement tests as perf.
 Every ignored identity also records its manual/child/container policy; a new ignored test fails
-the audit until reviewed. Feature-on trace/calibration checks are additional perf build variants of the
+the audit until reviewed. The guarded kernel baseline refusal test is build-free; the judged comparison and
+tampered-candidate refusals after a measured baseline are `manual-measurement`: run
+`make perf-kernel-measure` before a pull request that changes its protected harness, experiment
+runtime or kernel receipts ([ADR-0252](adr/0252-keep-the-kernel-experiment-measurement-out-of-every-gate.md)).
+Feature-on trace/calibration checks are additional perf build variants of the
 original lint checks, with distinct retained JUnit files. Default-off Rust builds remain unchanged.
 
 Exclusivity is orthogonal: `.config/nextest.toml` remains authoritative. Its real-time tests retain
@@ -62,9 +71,11 @@ source-integrity, catalog, schema and harness checks; formatting and lint remain
 before the ordinary Rust suite and the separate `perf-python-tests` target run. The latter runs
 `scripts/test-performance.py` with `stage=tests`, followed by feature-on tests and release checks.
 This places the laboratory suite under the existing test allowance instead of exhausting the build
-allowance before compilation. No test selection, assertion, deadline or receipt semantics change.
+allowance before compilation. The fast Task gate also records this shared build receipt before its
+first class receipt, ending the build deadline before class tests begin. No test selection,
+assertion or deadline changes.
 Standalone `make test` retains both Rust runner modes. The selected class entry and its timing
-attribution remain unchanged; the phase repair applies to full `make check`.
+attribution remain unchanged; the phase repair applies to full `make check` and the fast Task gate.
 
 Ignored tests retain the previous policy. Benchmarks, child-process helpers and namespace-only probes
 are inventoried as ignored, never silently promoted or discarded. Live container probes are an explicit
@@ -210,8 +221,11 @@ command-level step evidence only; no invented passed testcase represents them. D
 build variants have distinct JUnit identities for reporting. Base, container and Linux perf smoke timings are separate artifacts. The perf smoke commands
 contribute to the observed command envelope, with their cost reported separately from class shares. The gate-owner preflight is mandatory in both the base check and each selected class runner.
 `verify.sh` retains the native ownership wrapper; `verify-body.sh` owns the complete gate body.
-With no arguments it runs full `make check`; explicit `--test-plan PLAN.json` selects
-`check-classes`, keeping its evidence beneath the existing private gate output.
+With no arguments or `--profile full` it runs full `make check`; `--profile fast` writes
+a gate-context `release:fast` plan into the private run directory, then runs `test-build` before
+`check-classes`.
+Explicit `--test-plan PLAN.json` selects `check-classes` as before, keeping its evidence
+beneath the existing private gate output.
 Native `execute` explicitly passes `--build-scope plan`: every selected variant compiles before
 the first successful build-stage receipt. Independent hosted `run` defaults to
 `--build-scope class`: functional, e2e and uix compile the default workspace inventory only,

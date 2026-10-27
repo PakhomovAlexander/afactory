@@ -32,6 +32,12 @@ Where Linux and macOS differ, split on `target_os`.
 
 ## Before every pull request
 
+For a code Task, the implementer runs a filtered nextest selection through `--profile ci`
+for the tests it touched and repeats that selection after its last edit. The Task gate runs
+the fast profile (functional, e2e, uix; ADR-0251), and every pull request defaults to the same
+fast selection (ADR-0239); the full check remains in `make check`, main validation and unbound
+releases. Before a pull request, run the full local check:
+
 ```sh
 make check
 ```
@@ -39,6 +45,7 @@ make check
 That is `cargo fmt --all -- --check`, `cargo clippy --all-targets --locked -- -D warnings`,
 `cargo nextest run --profile ci` over every test binary, and the release-selection check
 (`scripts/test-release-resolve.py`), plus preflight and feature-on perf checks.
+This repository's Task gate runs `scripts/verify.sh --profile fast` (functional, e2e, uix).
 CI uses the selected classes described below; the default PR omits perf. A local pass alone
 does not establish the outcome of separate CI/container work.
 Clippy warnings are errors; fix them rather than allowing them.
@@ -57,11 +64,13 @@ failed build that prevents both Rust and Python test execution.
 
 The gate runs one test per process and schedules tests across every test binary at once
 ([ADR-0124](docs/adr/0124-run-tests-in-parallel-processes-and-link-them-once.md)).
-`TEST_THREADS` bounds how many run at a time: four on a four-core CI runner, half the cores on
-a developer machine. Native-provider fixtures spawn several processes per test, so the host CPU
-count itself is not a suitable bound. The few tests that assert against a fixed real-time budget
-are listed in `.config/nextest.toml` and run alone; add a test there when its assertion depends
-on wall-clock, never by raising the budget it asserts.
+`TEST_THREADS` bounds how many tests `make test` runs at a time: four on a four-core CI runner, half
+the cores on a developer machine. A bare `cargo nextest run` uses the default profile's four
+threads. Native-provider fixtures spawn several processes per test, so the host CPU count
+itself is not a suitable bound. The few tests that assert against a fixed real-time budget
+are listed in `.config/nextest.toml` under the default profile and run alone in both default
+and `ci`; add a test there when its assertion depends on wall-clock, never by raising the
+budget it asserts.
 
 The runner is the pinned, checksum-verified binary that `scripts/install-nextest.sh` installs
 into a temporary tools directory (CI) or `cargo install cargo-nextest --locked` (a developer
@@ -274,7 +283,9 @@ Either is fine; the prefixes are used but not required. Domain terms keep their 
   `python3 scripts/check-pr-report.py --body FILE --diff origin/main HEAD` runs the same
   comparison locally.
 - One topic per PR. Split unrelated fixes even when they are small.
-- `make check` passes; say so in the PR template checklist.
+- Run full `make check` before the PR and say so in the PR template checklist. The local Task
+  gate and every pull request run the fast profile; `make check`, main validation and unbound
+  releases provide full validation.
 - A user-visible change adds its own note, `changelog.d/<topic>.md` (see
   [`changelog.d/README.md`](changelog.d/README.md)), and never edits `CHANGELOG.md`: a note per
   pull request means two open pull requests never conflict on the changelog. The release
@@ -304,8 +315,12 @@ Vulnerabilities go through private reporting, never a public issue: see `SECURIT
 
 ## Selecting validation classes
 
-`make check` remains the full AF gate. For selective development use `make check-fast` (functional,
-e2e, uix), `make check-full` (all four, including perf), or `make test-plan TEST_LABEL_FILE=event.json`
+`make check` remains full. The local Task gate uses `scripts/verify.sh --profile fast`,
+which records the shared `test-build` receipt before functional, e2e and uix class tests;
+every pull request defaults to the same fast selection (ADR-0239), and the full check remains
+in `make check`, main validation and unbound releases. For
+selective development use `make check-fast` (functional, e2e, uix), `make check-full` (all four,
+including perf), or `make test-plan TEST_LABEL_FILE=event.json`
 then `make check-classes`. The JSON file has the GitHub event shape
 `{"pull_request":{"labels":[{"name":"test:functional"},{"name":"test:e2e"}]}}`.
 Selective e2e includes live containers and requires Docker. Fmt/lint and policy checks always run.
@@ -322,6 +337,13 @@ Every integration module/binary and Python test script needs a reviewed entry in
 `.config/test-classes.json`; new internal modules of registered unit binaries follow their documented
 component default unless overridden. Tests of help/errors/navigation belong to uix; complete workflows
 belong to e2e even if they assert output. Keep nextest exclusive scheduling independent of class.
+
+The guarded kernel perf-class test refuses every tampered harness as a baseline with no build.
+Its judged comparison and tampered-candidate refusals after a measured baseline are an ignored
+manual measurement: run `make perf-kernel-measure` before a pull request changing
+`scripts/performance/`, `crates/review-pipeline/examples/perf-probe/`,
+`crates/review-pipeline/build.rs`, the experiment runtime or kernel receipts
+([ADR-0252](docs/adr/0252-keep-the-kernel-experiment-measurement-out-of-every-gate.md)).
 
 `make release VERSION=X.Y.Z COMPAT='...'` opens a release PR with `release:fast` by default;
 `PROFILE=full` selects all classes. Provision the ten canonical labels with `make test-labels` (dry-run),
