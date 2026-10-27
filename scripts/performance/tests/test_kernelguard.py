@@ -5,7 +5,9 @@ BOOTSTRAP DIGEST measure ...`, over small trees with the protected layout, whose
 an owned marker the moment it is imported: a refused tree must leave no marker. The adapter's
 own steps run against this repository's registry and golden entries with a stand-in Cargo and
 probe; the real build, the real probe and the kernel's receipts are exercised by
-`crates/af/tests/it/perf_kernel_measure.rs`. Nothing here measures the product.
+`crates/af/tests/it/perf_kernel_measure.rs`: its refusal test runs in the perf gate, while its
+judged comparison is an ignored manual measurement (`make perf-kernel-measure`). Nothing here
+measures the product.
 """
 import io
 import json

@@ -527,7 +527,10 @@ pin or Cargo configuration, including every dependency update and version bump.
 `scripts/release.sh` re-pins the staged files in the release commit. The staged objectives
 compare `elapsed_ms`; the inner `wall_ms` stays pending until the guard's kernel integration
 (`crates/af/tests/it/perf_kernel_measure.rs`) is accepted on a sealed source and a reviewed
-change selects it.
+change selects it. Its guarded comparison is an ignored manual test, run with
+`make perf-kernel-measure` before a pull request that changes the protected harness, experiment
+runtime or kernel receipts; the tamper refusals remain in the ordinary perf class
+([ADR-0252](adr/0252-keep-the-kernel-experiment-measurement-out-of-every-gate.md)).
 
 ## Ruleset and release-pin coexistence (pending)
 

@@ -10,7 +10,14 @@
           "ignored": false,
           "kind": "test"
         },
-        "perf_kernel_measure::guarded_kernel_experiments_measure_one_judged_sample_and_refuse_every_tampered_harness": {
+        "perf_kernel_measure::guarded_kernel_experiments_measure_one_judged_sample": {
+          "filter-match": {
+            "status": "matches"
+          },
+          "ignored": true,
+          "kind": "test"
+        },
+        "perf_kernel_measure::guarded_kernel_experiments_refuse_every_tampered_harness": {
           "filter-match": {
             "status": "matches"
           },

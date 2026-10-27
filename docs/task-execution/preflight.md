@@ -142,4 +142,4 @@ than a replay of `protected_after`, live holds or scope admission.
 regressions for changed source, stale plan, mismatched/empty diff, omitted named proof,
 evidence after evaluation, absent data binding, different source, missing coverage,
 conditional evidence, exact large token counters, protected reserve and malformed input.
-The same tests are included in `make check`.
+The same tests are included in full `make check` and the repository's fast Task gate.
