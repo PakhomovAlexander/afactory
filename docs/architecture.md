@@ -180,9 +180,12 @@ The same premise holds wherever af runs git against a checkout, not only in capt
 browser that bare `af` opens and the Task file advice run git through
 `review_source_git::git::isolated_command`, the cleared environment and full `-c` override set
 capture uses. The browser marks drift by comparing `ls-tree`/`cat-file` blobs with working-tree
-bytes itself, never through `git diff` or `git hash-object`. `crates/af/tests/it/tui.rs` pins
-it with an fsmonitor and a required clean filter configured in `.git/config`. A tree that names a
-path git itself refuses (`.git` in any ASCII case or NTFS/HFS+ spelling, a symlinked
+bytes itself, never through `git diff` or `git hash-object`. Review selector suggestions compare
+committed and worktree captures through that same isolated path; their default-branch metadata
+reads never inspect worktree bytes. `crates/af/tests/it/tui.rs` and
+`crates/af/tests/it/review_plan_refusals.rs` pin these paths with hostile filters and an
+fsmonitor configured in `.git/config`. A tree that names a path git itself refuses (`.git` in
+any ASCII case or NTFS/HFS+ spelling, a symlinked
 `.gitmodules`) is refused at capture, materialization and Task binding through one predicate,
 `git_refuses_path`. Otherwise its `.git/config` would configure every `git` run in the sandbox.
 

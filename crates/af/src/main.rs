@@ -1196,7 +1196,8 @@ fn review_next_command(subcommand: &str, extra: &[String]) -> String {
     shell_words::join(command)
 }
 
-/// Local Git metadata only. Never consult the candidate's `.af/` to choose authority.
+/// Local Git metadata and isolated captures. Never consult the candidate's `.af/` to choose
+/// authority.
 fn review_selector_refusal(options: &Options, subcommand: &str) -> Result<(), String> {
     if options.policy_rev.is_some()
         || subcommand == "run"
@@ -1270,6 +1271,11 @@ fn review_selector_refusal(options: &Options, subcommand: &str) -> Result<(), St
     let mut candidate_details = serde_json::Map::new();
     let next = chosen.as_ref().and_then(|(branch, commit)| {
         let on_default = current.as_deref() == Some(branch.as_str());
+        let scratch = tempfile::tempdir().ok()?;
+        let cas = Cas::open(scratch.path().join("cas")).ok()?;
+        let git_home = scratch.path().join("git-home");
+        std::fs::create_dir_all(&git_home).ok()?;
+        let repo = Repo::open(&options.repo, &git_home);
         let policy = if on_default {
             "HEAD".to_owned()
         } else {
@@ -1282,7 +1288,17 @@ fn review_selector_refusal(options: &Options, subcommand: &str) -> Result<(), St
         let mut uncommitted = options.uncommitted;
         let mut candidate = options.candidate.clone();
         if on_default {
-            let dirty = git(&["status", "--porcelain"]).is_some_and(|status| !status.is_empty());
+            // Capture reads worktree bytes directly. Git sees only isolated plumbing, so a
+            // candidate-selected clean filter cannot run before review has a sandbox.
+            let capture = review_source_git::Capture::new(&repo, &cas);
+            let dirty = capture
+                .committed("HEAD")
+                .and_then(|head| {
+                    capture
+                        .dirty()
+                        .map(|worktree| head.content_digest != worktree.content_digest)
+                })
+                .unwrap_or(false);
             if !dirty && candidate.is_none() && !uncommitted {
                 return None;
             }
@@ -1301,11 +1317,6 @@ fn review_selector_refusal(options: &Options, subcommand: &str) -> Result<(), St
         selected.base = options.base.clone().or(Some(policy));
         selected.candidate = candidate;
         selected.uncommitted = uncommitted;
-        let scratch = tempfile::tempdir().ok()?;
-        let cas = Cas::open(scratch.path().join("cas")).ok()?;
-        let git_home = scratch.path().join("git-home");
-        std::fs::create_dir_all(&git_home).ok()?;
-        let repo = Repo::open(&options.repo, &git_home);
         let resolved = authority::resolve_plan(&selected, &cas, &repo).ok()?;
         let registered = providers::registered().ok()?.0;
         let mut unique = true;
