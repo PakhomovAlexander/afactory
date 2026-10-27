@@ -5,14 +5,15 @@
 //! `fixtures/performance/kernel-measure/code-policy-measures.toml` installed into it verbatim,
 //! as its README describes. Every Task below runs `af task start --execute`: the kernel measures
 //! the source and the implementer's sealed candidate with the staged literal bootstrap, which
-//! verifies the protected harness before it imports the driver or builds anything, builds the
-//! real `perf-probe` offline into the kernel's warm Cargo target and supplies one judged sample
-//! of `canonical_validate_small` per repetition.
+//! verifies the protected harness before it imports the driver or builds anything. Only a
+//! passing guard builds the real `perf-probe` offline into the kernel's warm Cargo target and
+//! supplies one judged sample of `canonical_validate_small` per repetition.
 //!
-//! The positive comparison is controlled, never timing noise: the Task's source is a disposable
-//! product revision whose `review_store::validate_envelope` sleeps, and the candidate removes the
-//! sleep with the protected harness byte-identical. Tampered candidates also remove the sleep, so
-//! only the guard stands between them and an improved receipt; each leaves an owned marker if any
+//! The build-free baseline refusals need no successful measurement. The positive comparison is
+//! controlled, never timing noise: the Task's source is a disposable product revision whose
+//! `review_store::validate_envelope` sleeps, and the candidate removes the sleep with the
+//! protected harness byte-identical. In the ignored manual test, tampered candidates also remove
+//! the sleep, so only the guard stands between them and an improved receipt; each leaves a marker if any
 //! of its code ran. Every Task's public evidence, its result, each output's typed envelope and
 //! every repetition's bounded public stdout and stderr (`af.perf-kernel-receipts/3`, ADR-0186,
 //! ADR-0187), is checked against its schema and reader, which recomputes every envelope's kernel
@@ -275,6 +276,44 @@ impl Consumer {
         git(&self.repo, &["commit", "-qm", message]);
     }
 
+    /// Commit source edits in the same forms accepted by the fixture implementer. Null removes
+    /// a file so each refusal can restore the original source before the next scenario.
+    fn commit_source(&self, edits: &Value, message: &str) {
+        for (path, body) in edits.as_object().unwrap() {
+            let target = self.repo.join(path);
+            let original = if body.get("replace").is_some() {
+                Some(std::fs::read_to_string(&target).unwrap())
+            } else {
+                None
+            };
+            if target.symlink_metadata().is_ok() {
+                std::fs::remove_file(&target).unwrap();
+            }
+            if body.is_null() {
+                continue;
+            }
+            std::fs::create_dir_all(target.parent().unwrap()).unwrap();
+            if let Some(link) = body.get("symlink") {
+                std::os::unix::fs::symlink(link.as_str().unwrap(), &target).unwrap();
+            } else if let Some(encoded) = body.get("base64") {
+                std::fs::write(&target, decode_base64(encoded.as_str().unwrap())).unwrap();
+            } else if let Some(replace) = body.get("replace") {
+                let original = original.unwrap();
+                let old = replace[0].as_str().unwrap();
+                assert!(original.contains(old), "{path}: {old}");
+                std::fs::write(
+                    &target,
+                    original.replacen(old, replace[1].as_str().unwrap(), 1),
+                )
+                .unwrap();
+            } else {
+                std::fs::write(&target, body.as_str().unwrap()).unwrap();
+            }
+        }
+        git(&self.repo, &["add", "-A"]);
+        git(&self.repo, &["commit", "-qm", message]);
+    }
+
     fn af(&self, args: &[&str]) -> (i32, String, String) {
         let home = self.root.join("home");
         let mut command = crate::common::af();
@@ -497,39 +536,65 @@ impl Consumer {
 /// Exact Task membership is part of the fixture: additions, omissions or reordering must
 /// update this partition explicitly rather than inherit another source revision's slowdown.
 fn receipt_documents(digest: &str, receipts: &[Value]) -> Vec<(&'static str, Value)> {
-    let phases: [(&str, u64, &[&str]); 3] = [
-        ("missing-inputs", 0, &["missing-inputs"]),
-        ("improve", SLOW_MS, &["improve"]),
-        (
-            "refusal",
-            REFUSAL_SLOW_MS,
-            &[
-                "timing-boundary",
-                "golden-fixture",
-                "build-inputs",
-                "case-variant-build-inputs",
-                "symlink-to-file",
-                "bytecode",
-                "wrong-unit",
-                "undeclared-key",
-                "refused-case",
-            ],
-        ),
+    const TAMPERED: [&str; 6] = [
+        "timing-boundary",
+        "golden-fixture",
+        "build-inputs",
+        "case-variant-build-inputs",
+        "symlink-to-file",
+        "bytecode",
     ];
     let actual: Vec<_> = receipts
         .iter()
         .map(|task| task["task_id"].as_str().unwrap())
         .collect();
-    let expected: Vec<_> = phases
+    let baseline_refusal: Vec<_> = TAMPERED.iter().copied().chain(["refused-case"]).collect();
+    let candidate_refusal: Vec<_> = TAMPERED
         .iter()
-        .flat_map(|(_, _, tasks)| tasks.iter().copied())
+        .copied()
+        .chain(["wrong-unit", "undeclared-key"])
         .collect();
-    assert_eq!(actual, expected, "receipt source-phase partition changed");
+    // The committed receipt fixture lists missing inputs first; the gate test runs that
+    // deliberate build attempt last, after it has proved that no refusal case built anything.
+    let refusal_first: Vec<_> = ["missing-inputs"]
+        .into_iter()
+        .chain(baseline_refusal.iter().copied())
+        .collect();
+    let refusal_last: Vec<_> = baseline_refusal
+        .iter()
+        .copied()
+        .chain(["missing-inputs"])
+        .collect();
+    let manual: Vec<_> = ["improve"]
+        .into_iter()
+        .chain(candidate_refusal.iter().copied())
+        .collect();
+    let phases: Vec<(&str, u64, Vec<&str>)> = if actual == refusal_first {
+        vec![
+            ("missing-inputs", 0, vec!["missing-inputs"]),
+            ("refusal", 0, baseline_refusal),
+        ]
+    } else if actual == refusal_last {
+        vec![
+            ("refusal", 0, baseline_refusal),
+            ("missing-inputs", 0, vec!["missing-inputs"]),
+        ]
+    } else if actual == manual {
+        vec![
+            ("improve", SLOW_MS, vec!["improve"]),
+            ("candidate-refusal", REFUSAL_SLOW_MS, candidate_refusal),
+        ]
+    } else if actual == ["improve"] {
+        vec![("improve", SLOW_MS, vec!["improve"])]
+    } else {
+        panic!("receipt source-phase partition changed: {actual:?}");
+    };
     let mut offset = 0;
     phases
         .into_iter()
         .map(|(phase, slowdown_ms, tasks)| {
             let end = offset + tasks.len();
+            assert_eq!(actual[offset..end], tasks);
             let document = json!({
                 "schema": "af.perf-kernel-receipts/3",
                 "harness_digest": digest,
@@ -556,15 +621,12 @@ fn receipts_partition_preserves_every_task_and_labels_each_source_phase() {
     .unwrap();
     let ids = [
         "missing-inputs",
-        "improve",
         "timing-boundary",
         "golden-fixture",
         "build-inputs",
         "case-variant-build-inputs",
         "symlink-to-file",
         "bytecode",
-        "wrong-unit",
-        "undeclared-key",
         "refused-case",
     ];
     // Reuse a valid public Task receipt; only its scenario label differs in this fast test.
@@ -586,11 +648,7 @@ fn receipts_partition_preserves_every_task_and_labels_each_source_phase() {
                 doc["tasks"].as_array().unwrap().len()
             ))
             .collect::<Vec<_>>(),
-        vec![
-            ("missing-inputs", 0, 1),
-            ("improve", 7500, 1),
-            ("refusal", 1500, 9)
-        ]
+        vec![("missing-inputs", 0, 1), ("refusal", 0, 7)]
     );
     let retained: Vec<_> = documents
         .iter()
@@ -614,9 +672,52 @@ fn receipts_partition_preserves_every_task_and_labels_each_source_phase() {
             serde_json::from_slice(&std::fs::read(exported.join(filename)).unwrap()).unwrap();
         assert_eq!(&saved, document);
     }
-    assert_eq!(std::fs::read_dir(&exported).unwrap().count(), 3);
+    assert_eq!(std::fs::read_dir(&exported).unwrap().count(), 2);
+    let manual_ids = [
+        "improve",
+        "timing-boundary",
+        "golden-fixture",
+        "build-inputs",
+        "case-variant-build-inputs",
+        "symlink-to-file",
+        "bytecode",
+        "wrong-unit",
+        "undeclared-key",
+    ];
+    let manual_receipts: Vec<_> = manual_ids
+        .iter()
+        .map(|id| {
+            let mut task = fixture["tasks"][0].clone();
+            task["task_id"] = json!(id);
+            task
+        })
+        .collect();
+    let manual_documents = receipt_documents(
+        fixture["harness_digest"].as_str().unwrap(),
+        &manual_receipts,
+    );
+    assert_eq!(
+        manual_documents
+            .iter()
+            .map(|(phase, doc)| (
+                *phase,
+                doc["slowdown_ms"].as_u64().unwrap(),
+                doc["tasks"].as_array().unwrap().len()
+            ))
+            .collect::<Vec<_>>(),
+        vec![("improve", 7500, 1), ("candidate-refusal", 1500, 8)]
+    );
+    for (phase, document) in &manual_documents {
+        consumer.export_document(phase, document, None);
+    }
+    let improvement_documents = receipt_documents(
+        fixture["harness_digest"].as_str().unwrap(),
+        &manual_receipts[..1],
+    );
+    assert_eq!(improvement_documents.len(), 1);
+    assert_eq!(improvement_documents[0].0, "improve");
     for altered in [
-        receipts[..10].to_vec(),
+        receipts[..7].to_vec(),
         {
             let mut tasks = receipts.clone();
             tasks.swap(0, 1);
@@ -1138,6 +1239,42 @@ fn base64(bytes: &[u8]) -> String {
     out
 }
 
+fn decode_base64(encoded: &str) -> Vec<u8> {
+    let digit = |byte: u8| match byte {
+        b'A'..=b'Z' => byte - b'A',
+        b'a'..=b'z' => byte - b'a' + 26,
+        b'0'..=b'9' => byte - b'0' + 52,
+        b'+' => 62,
+        b'/' => 63,
+        _ => panic!("invalid base64 digit"),
+    };
+    assert_eq!(encoded.len() % 4, 0);
+    let mut bytes = Vec::with_capacity(encoded.len() / 4 * 3);
+    for chunk in encoded.as_bytes().chunks_exact(4) {
+        let a = u32::from(digit(chunk[0]));
+        let b = u32::from(digit(chunk[1]));
+        let c = if chunk[2] == b'=' {
+            0
+        } else {
+            u32::from(digit(chunk[2]))
+        };
+        let d = if chunk[3] == b'=' {
+            0
+        } else {
+            u32::from(digit(chunk[3]))
+        };
+        let value = (a << 18) | (b << 12) | (c << 6) | d;
+        bytes.push((value >> 16) as u8);
+        if chunk[2] != b'=' {
+            bytes.push((value >> 8) as u8);
+        }
+        if chunk[3] != b'=' {
+            bytes.push(value as u8);
+        }
+    }
+    bytes
+}
+
 /// Constructed elapsed receipts, not new measurements or a product speed claim. The old
 /// pair was observed under load; credit only one extra sleep although setup validates too.
 #[test]
@@ -1220,14 +1357,12 @@ fn guarded_improvement_margin_covers_observed_load_within_sample_timeout() {
     assert!(3 * SLOW_MS < timeout_ms);
 }
 
-#[test]
-fn guarded_kernel_experiments_measure_one_judged_sample_and_refuse_every_tampered_harness() {
-    let mut consumer = Consumer::new();
+/// A sealed consumer and the digest of the exact staged harness it installs.
+fn guarded_consumer() -> (Consumer, String, String) {
+    let consumer = Consumer::new();
     let workspace = workspace();
     let canonical = std::fs::read_to_string(workspace.join(CANONICAL)).unwrap();
     assert!(canonical.contains(VALIDATE));
-    let sleep = format!("    std::thread::sleep(std::time::Duration::from_millis({SLOW_MS}));\n");
-
     // The repository check agrees with the staged policy installed here: the consumer holds the
     // workspace's exact protected harness, so the staged digest is its digest.
     let check = Command::new("python3")
@@ -1249,7 +1384,252 @@ fn guarded_kernel_experiments_measure_one_judged_sample_and_refuse_every_tampere
     let staged = std::fs::read_to_string(workspace.join(STAGED)).unwrap();
     assert!(staged.contains(&format!("value = \"{digest}\"")));
 
-    // 1. Missing inputs fail: the warm Cargo home is empty and the build is offline and locked.
+    (consumer, canonical, digest)
+}
+
+#[test]
+fn guarded_kernel_experiments_refuse_every_tampered_harness() {
+    let (mut consumer, _canonical, digest) = guarded_consumer();
+    let workspace = workspace();
+    // The warm Cargo home stays empty and the build is offline and locked, so an accidental
+    // build fails with "never fetched" instead of the guard's REFUSED diagnostic every tampered
+    // baseline must reach first; the deliberate missing-inputs build attempt runs last, after
+    // the proof below that no refusal case staged a source copy or invoked Cargo.
+    let unslow = Value::Null;
+    let golden =
+        std::fs::read_to_string(workspace.join("fixtures/performance/golden/native.json")).unwrap();
+    let entry: Value = serde_json::from_str::<Value>(&golden).unwrap()["entries"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|entry| entry["instance_id"] == INSTANCE)
+        .unwrap()
+        .clone();
+    let expected = entry["digest"].as_str().unwrap().to_string();
+    let build_marker = consumer.markers.join("build-rs-ran");
+    let case_marker = consumer.markers.join("case-variant-build-rs-ran");
+    let bytecode_marker = consumer.markers.join("bytecode-imported");
+    let (bytecode_path, bytecode) = planted_bytecode(&consumer.root, &bytecode_marker);
+    let tampered: Vec<(&str, Value, &str)> = vec![
+        (
+            "timing-boundary",
+            json!({
+                CANONICAL: unslow,
+                "crates/review-pipeline/examples/perf-probe/cases.rs": {"replace": [
+                    ".and_then(|envelope| review_store::validate_envelope(&envelope).map(|()| envelope))",
+                    ".and_then(|envelope| Ok(envelope))"
+                ]},
+            }),
+            "harness of",
+        ),
+        (
+            "golden-fixture",
+            json!({
+                CANONICAL: unslow,
+                "fixtures/performance/golden/native.json": {"replace": [
+                    expected.clone(), format!("sha256:{}", "1".repeat(64))
+                ]},
+            }),
+            "harness of",
+        ),
+        (
+            "build-inputs",
+            json!({
+                CANONICAL: unslow,
+                ".cargo/config.toml": "[build]\nrustflags = [\"-Cdebug-assertions=off\"]\n",
+                "crates/review-store/build.rs": format!(
+                    "fn main() {{ std::fs::write({:?}, b\"ran\").unwrap(); }}\n",
+                    build_marker.display().to_string()
+                ),
+                "crates/review-store/examples/extra/Cargo.toml": "[package]\nname = \"extra\"\n",
+            }),
+            "harness of",
+        ),
+        (
+            // Effective on a case-insensitive filesystem, where Cargo runs BUILD.RS as the
+            // package's build script and reads .CaRgO/config.toml; the guard folds case.
+            "case-variant-build-inputs",
+            json!({
+                CANONICAL: unslow,
+                ".CaRgO/config.toml": "[build]\nrustflags = [\"-Cdebug-assertions=off\"]\n",
+                "crates/review-store/BUILD.RS": format!(
+                    "fn main() {{ std::fs::write({:?}, b\"ran\").unwrap(); }}\n",
+                    case_marker.display().to_string()
+                ),
+            }),
+            "harness of",
+        ),
+        (
+            "symlink-to-file",
+            json!({CANONICAL: unslow, "crates/lockfile": {"symlink": "../Cargo.lock"}}),
+            "crates/lockfile is a symbolic link",
+        ),
+        (
+            // Sealing leaves bytecode out of a candidate unless the tree stages it (ADR-0207);
+            // this candidate stages it, so the guard is what refuses it.
+            "bytecode",
+            json!({
+                CANONICAL: unslow,
+                bytecode_path: {"base64": base64(&bytecode)},
+                ".af/seal-ignore": "!__pycache__/\n!*.pyc\n",
+            }),
+            "harness of",
+        ),
+    ];
+    for (task, mut files, why) in tampered {
+        // Product slowdown is irrelevant to a baseline refusal. Only the protected harness
+        // edit is committed, so the candidate is a trivial unmeasured note.
+        files.as_object_mut().unwrap().remove(CANONICAL);
+        let mut restore = serde_json::Map::new();
+        for path in files.as_object().unwrap().keys() {
+            let target = consumer.repo.join(path);
+            let original = match target.symlink_metadata() {
+                Ok(metadata) if metadata.file_type().is_symlink() => {
+                    json!({"symlink": std::fs::read_link(&target).unwrap().to_str().unwrap()})
+                }
+                Ok(_) => json!({"base64": base64(&std::fs::read(&target).unwrap())}),
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => Value::Null,
+                Err(error) => panic!("{path}: {error}"),
+            };
+            restore.insert(path.clone(), original);
+        }
+        consumer.commit_source(&files, task);
+        let outcome = consumer.start(task, json!({"NOTES.md": "unmeasured\n"}), 4);
+        let cas = consumer.cas();
+        let baseline = measurement(&cas, &outcome, "baseline");
+        assert_eq!(outcome_of(&baseline.outcome), "failed", "{task}");
+        let failure = baseline.failure.as_ref().unwrap();
+        assert_eq!(
+            (failure.repetition, failure.reason.as_str()),
+            (1, "exit"),
+            "{task}"
+        );
+        assert_eq!(baseline.runs.len(), 1, "{task}");
+        assert_eq!(baseline.runs[0].exit_code, Some(2), "{task}");
+        let stderr = text(&cas, baseline.runs[0].stderr_id.as_ref());
+        assert!(
+            stderr.contains(REFUSED) && stderr.contains(why),
+            "{task}: {stderr}"
+        );
+        assert!(
+            !stderr.contains("kernel-measure setup"),
+            "{task}: nothing was built"
+        );
+        assert!(
+            text(&cas, baseline.runs[0].stdout_id.as_ref()).is_empty(),
+            "{task}"
+        );
+        // The fixture trial still creates a candidate Measurement after a failed baseline.
+        // Its guard refuses the same tampered source without building or sampling the probe.
+        let candidate = measurement(&cas, &outcome, "candidate");
+        assert_eq!(outcome_of(&candidate.outcome), "failed", "{task}");
+        assert_eq!(candidate.runs.len(), 1, "{task}");
+        assert_eq!(candidate.runs[0].exit_code, Some(2), "{task}");
+        let candidate_stderr = text(&cas, candidate.runs[0].stderr_id.as_ref());
+        assert!(
+            candidate_stderr.contains(REFUSED),
+            "{task}: {candidate_stderr}"
+        );
+        assert!(!candidate_stderr.contains("kernel-measure setup: "));
+        assert!(text(&cas, candidate.runs[0].stdout_id.as_ref()).is_empty());
+        let recorded = comparison(&cas, &outcome);
+        assert_eq!(outcome_of(&recorded.outcome), "inconclusive", "{task}");
+        assert!(!attempted(&cas, &outcome, EVALUATE), "{task}");
+        consumer.commit_source(
+            &Value::Object(restore),
+            &format!("restore source after {task}"),
+        );
+    }
+    for marker in [&build_marker, &case_marker, &bytecode_marker] {
+        assert!(
+            !marker.exists(),
+            "{} ran before the guard refused",
+            marker.display()
+        );
+    }
+
+    // The adapter refuses this unsupported case before it can build or report a sample.
+    let policy = std::fs::read_to_string(consumer.repo.join(".af/code-policy.toml")).unwrap();
+    let edited = policy.replacen(
+        &format!("value = \"{INSTANCE}\""),
+        "value = \"source_capture__files_100_tree_source_files_128b\"",
+        1,
+    );
+    consumer.commit(&[(".af/code-policy.toml", edited)], "refused-case");
+    let outcome = consumer.start("refused-case", json!({"NOTES.md": "unmeasured\n"}), 4);
+    let cas = consumer.cas();
+    let baseline = measurement(&cas, &outcome, "baseline");
+    assert_eq!(outcome_of(&baseline.outcome), "failed", "refused-case");
+    let failure = baseline.failure.as_ref().unwrap();
+    assert_eq!(failure.reason.as_str(), "exit", "refused-case");
+    assert!(
+        failure.detail.contains("the command exited 1"),
+        "{}",
+        failure.detail
+    );
+    assert!(baseline.summary.is_empty(), "refused-case");
+    let stderr = text(&cas, baseline.runs[0].stderr_id.as_ref());
+    assert!(
+        stderr.contains("not a nonspawning native library case"),
+        "{stderr}"
+    );
+    // Check every retained Task run so far, including the policy refusal.
+    for task in &consumer.receipts {
+        for output in task["outputs"].as_object().unwrap().values() {
+            for run in output["streams"].as_array().unwrap() {
+                let stderr = &run["stderr"];
+                if stderr.is_object() {
+                    assert_eq!(stderr["retained"], "whole");
+                    for part in ["head", "tail"] {
+                        assert!(
+                            !stderr[part]
+                                .as_str()
+                                .unwrap()
+                                .contains("kernel-measure setup: "),
+                            "{} printed a build setup record",
+                            task["task_id"]
+                        );
+                    }
+                }
+            }
+        }
+    }
+    // No refusal case reached the probe build: the measure stages its source copy
+    // (`af-kernel-measure-source`) before it invokes Cargo, so an absent copy and an absent
+    // release directory prove that no compiler ran, and the warm Cargo home holds no file.
+    let cache = consumer.root.join("cache/af/task-build-cache");
+    if cache.exists() {
+        for project in std::fs::read_dir(&cache).unwrap().flatten() {
+            if !project.path().is_dir() {
+                continue;
+            }
+            for key in std::fs::read_dir(project.path()).unwrap().flatten() {
+                let target = key.path().join("cargo_target");
+                for staged in ["af-kernel-measure-source", "release", "build.log"] {
+                    assert!(
+                        !target.join(staged).exists(),
+                        "a refusal case reached the probe build: {}",
+                        target.join(staged).display()
+                    );
+                }
+            }
+        }
+    }
+    let home = warm_cargo_home(&consumer.root);
+    if home.exists() {
+        assert!(
+            workspace_files(&home).is_empty(),
+            "a refusal case wrote into the warm Cargo home {home:?}"
+        );
+    }
+    // The staged policy is restored for the deliberate missing-inputs build attempt, the one
+    // untampered baseline of this test: the guard passes ("protected files match") and the
+    // offline locked build fails at once on the empty Cargo home, before any dependency is
+    // fetched. It runs last so that the proof above covers every refusal case.
+    consumer.commit(
+        &[(".af/code-policy.toml", policy.clone())],
+        "restore the staged policy",
+    );
     let outcome = consumer.start("missing-inputs", json!({"NOTES.md": "unmeasured\n"}), 4);
     let cas = consumer.cas();
     let baseline = measurement(&cas, &outcome, "baseline");
@@ -1263,10 +1643,44 @@ fn guarded_kernel_experiments_measure_one_judged_sample_and_refuse_every_tampere
         !text(&cas, baseline.runs[0].stdout_id.as_ref()).contains("af.measure-report/1"),
         "a failed repetition prints no report"
     );
+    // That deliberate attempt can stage a source copy before Cargo fails. It cannot produce
+    // the probe binary or the successful-build source record.
+    for project in std::fs::read_dir(&cache).unwrap().flatten() {
+        if !project.path().is_dir() {
+            continue;
+        }
+        for key in std::fs::read_dir(project.path()).unwrap().flatten() {
+            let target = key.path().join("cargo_target");
+            assert!(!target.join("release/examples/perf-probe").exists());
+            assert!(!target.join("af-kernel-measure-sources.json").exists());
+        }
+    }
+    let home = warm_cargo_home(&consumer.root);
+    // Cargo may create housekeeping directories during the deliberate missing-inputs failure;
+    // no locked package archive or cached index entry was seeded into the warm home.
+    assert!(!home.join("registry/cache").exists(), "{home:?}");
+    for path in workspace_files(&home) {
+        assert!(
+            !path.ends_with(".crate") && !path.contains("/.cache/"),
+            "{path}"
+        );
+    }
+    consumer.export(&digest);
+}
+
+#[test]
+#[ignore = "manual measurement: three cold release builds of perf-probe, about 20 minutes alone; make perf-kernel-measure"]
+fn guarded_kernel_experiments_measure_one_judged_sample() {
+    let (mut consumer, canonical, digest) = guarded_consumer();
+    // Create the kernel's bound warm-home key before copying offline dependencies into it.
+    // The refusal test checks this setup failure; only the judged Task is exported here.
+    consumer.start("missing-inputs", json!({"NOTES.md": "unmeasured\n"}), 4);
+    consumer.receipts.clear();
     seed_cargo_home(
         &consumer.repo.join("Cargo.lock"),
         &warm_cargo_home(&consumer.root),
     );
+    let sleep = format!("    std::thread::sleep(std::time::Duration::from_millis({SLOW_MS}));\n");
 
     // The disposable slow product revision for the successful comparison only.
     consumer.commit(
@@ -1370,19 +1784,19 @@ fn guarded_kernel_experiments_measure_one_judged_sample_and_refuse_every_tampere
     .unwrap();
     assert_eq!(folded.metrics["wall_ms"].conclusion.as_str(), "improved");
 
-    // 3. Tampered candidates: each removes the slowdown too, so only the guard keeps it from an
-    // improved receipt, and each leaves an owned marker if any of its code ran.
-    // These scenarios do not need the positive comparison's larger timing margin.
-    let sleep =
+    // These candidate refusals keep round 1's measured, smaller baseline.
+    let refusal_sleep =
         format!("    std::thread::sleep(std::time::Duration::from_millis({REFUSAL_SLOW_MS}));\n");
     consumer.commit(
         &[(
             CANONICAL,
-            canonical.replace(VALIDATE, &format!("{VALIDATE}{sleep}")),
+            canonical.replace(VALIDATE, &format!("{VALIDATE}{refusal_sleep}")),
         )],
-        "disposable smaller slowdown for refusal scenarios",
+        "disposable smaller slowdown for candidate refusals",
     );
-    let unslow = json!({"replace": [sleep, ""]});
+    let unslow = json!({"replace": [refusal_sleep, ""]});
+    // The candidate-side refusals need a measured baseline and therefore run manually.
+    let workspace = workspace();
     let golden =
         std::fs::read_to_string(workspace.join("fixtures/performance/golden/native.json")).unwrap();
     let entry: Value = serde_json::from_str::<Value>(&golden).unwrap()["entries"]
@@ -1502,9 +1916,7 @@ fn guarded_kernel_experiments_measure_one_judged_sample_and_refuse_every_tampere
             marker.display()
         );
     }
-
-    // 4. Malformed reports and failures are the kernel's to refuse, never the adapter's to
-    // repair: another unit, another key, and a case the adapter refuses with no report.
+    // These malformed reports require a successful sample before policy validation.
     let policy = std::fs::read_to_string(consumer.repo.join(".af/code-policy.toml")).unwrap();
     let block = format!("[[measures.{MEASURE}.metrics]]\nkey = \"wall_ms\"\nunit = \"ms\"\n");
     assert!(policy.contains(&block));
@@ -1527,16 +1939,6 @@ fn guarded_kernel_experiments_measure_one_judged_sample_and_refuse_every_tampere
             "malformed_report",
             "the measure declares",
         ),
-        (
-            "refused-case",
-            policy.replacen(
-                &format!("value = \"{INSTANCE}\""),
-                "value = \"source_capture__files_100_tree_source_files_128b\"",
-                1,
-            ),
-            "exit",
-            "the command exited 1",
-        ),
     ] {
         consumer.commit(&[(".af/code-policy.toml", edited)], task);
         let outcome = consumer.start(task, json!({"NOTES.md": "unmeasured\n"}), 4);
@@ -1551,13 +1953,6 @@ fn guarded_kernel_experiments_measure_one_judged_sample_and_refuse_every_tampere
             failure.detail
         );
         assert!(baseline.summary.is_empty(), "{task}");
-        if task == "refused-case" {
-            let stderr = text(&cas, baseline.runs[0].stderr_id.as_ref());
-            assert!(
-                stderr.contains("not a nonspawning native library case"),
-                "{stderr}"
-            );
-        }
     }
     consumer.export(&digest);
 }

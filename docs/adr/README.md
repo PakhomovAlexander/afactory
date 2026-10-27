@@ -445,9 +445,15 @@ future readers need.
   bootstrap](0237-isolate-telemetry-stall-boundaries-and-shortcut-uniform-bootstrap.md)
 - [0238 — Retain refused physical telemetry measurements in incomplete
   results](0238-retain-refused-physical-telemetry-measurements-in-incomplete-results.md)
+- [0239 — Default every pull request to fast
+  validation](0239-default-every-pull-request-to-fast-validation.md)
 - [0240 — Distinguish host-denied Provider probes from incompatible
   CLIs](0240-distinguish-host-denied-provider-probes.md)
 - [0241 — Install an agent entry point from the help
   page](0241-install-an-agent-entry-point-from-the-help-page.md)
 - [0242 — Classify first-run refusals and suggest only explicit trusted review
   commands](0242-classify-first-run-refusals.md)
+- [0251 — Run the Task gate on the fast validation
+  profile](0251-run-the-task-gate-on-the-fast-validation-profile.md)
+- [0252 — Keep the kernel experiment measurement out of every
+  gate](0252-keep-the-kernel-experiment-measurement-out-of-every-gate.md)

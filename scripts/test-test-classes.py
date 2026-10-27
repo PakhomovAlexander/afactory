@@ -6,6 +6,7 @@ import itertools
 import json
 import os
 import shutil
+import stat
 from pathlib import Path
 import subprocess
 import sys
@@ -25,10 +26,11 @@ class Selection(unittest.TestCase):
         self.assertEqual(tc.resolve(context='pr')['selected'], tc.FAST)
         self.assertEqual(tc.resolve(context='release')['selected'], list(tc.CLASSES))
         self.assertEqual(tc.resolve()['selected'], list(tc.CLASSES))
-        self.assertEqual(tc.resolve(context='gate')['selected'], list(tc.CLASSES))
+        self.assertEqual(tc.resolve(context='gate')['selected'], tc.FAST)
+        self.assertEqual(tc.resolve(context='release_pr')['selected'], tc.FAST)
         self.assertEqual(tc.event_context({'pull_request': {'base': {'ref': 'af-gate/task/base'}}}), 'gate')
         self.assertEqual(tc.event_context({'pull_request': {'base': {'ref': 'main'}}}), 'pr')
-        self.assertEqual(tc.event_context({'pull_request': {'head': {'ref': 'release/v1.2.3'}}}), 'release')
+        self.assertEqual(tc.event_context({'pull_request': {'head': {'ref': 'release/v1.2.3'}}}), 'release_pr')
         self.assertEqual(tc.resolve(['release:fast'], 'release')['selected'], tc.FAST)
         self.assertEqual(tc.resolve(['test:functional', 'test:e2e'], 'pr')['selected'], ['functional', 'e2e'])
         self.assertEqual(tc.resolve(['test:perf'], 'pr')['selected'], ['perf'])
@@ -40,8 +42,8 @@ class Selection(unittest.TestCase):
             labels = [f'test:{c}' if f == 1 else f'no-{c}' for c, f in zip(tc.CLASSES, flags) if f]
             positive = {c for c, f in zip(tc.CLASSES, flags) if f == 1}
             negative = {c for c, f in zip(tc.CLASSES, flags) if f == 2}
-            for context in ('pr', 'release', 'local'):
-                expected = (positive or set(tc.FAST if context == 'pr' else tc.CLASSES)) - negative
+            for context in ('pr', 'gate', 'release_pr', 'release', 'local'):
+                expected = (positive or set(tc.FAST if context in ('pr', 'gate', 'release_pr') else tc.CLASSES)) - negative
                 with self.subTest(labels=labels, context=context):
                     if expected:
                         self.assertEqual(set(tc.resolve(labels, context)['selected']), expected)
@@ -54,8 +56,35 @@ class Selection(unittest.TestCase):
                        *[[f'test:{c}', f'no-{c}'] for c in tc.CLASSES],
                        *[['release:full', f'no-{c}'] for c in tc.CLASSES],
                        ['release:full', 'test:functional']]:
-            with self.subTest(labels=labels), self.assertRaises(ValueError):
-                tc.resolve(labels)
+            for context in ('pr', 'gate', 'release_pr', 'release', 'local'):
+                with self.subTest(labels=labels, context=context), self.assertRaises(ValueError):
+                    tc.resolve(labels, context)
+
+    def test_gate_pr_cli_defaults_labels_and_measurement_selection(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            event, output, gh = root / 'event.json', root / 'plan.json', root / 'github-output'
+            for labels, selected in [([], tc.FAST), (['no-perf'], tc.FAST),
+                                     (['no-uix'], ['functional', 'e2e']),
+                                     (['test:perf'], ['perf']),
+                                     (['release:full'], list(tc.CLASSES))]:
+                event.write_text(json.dumps({'pull_request': {
+                    'labels': [{'name': label} for label in labels],
+                    'head': {'ref': 'af-gate/task/head'}, 'base': {'ref': 'af-gate/task/base'}}}))
+                subprocess.run([sys.executable, str(ROOT / 'scripts/test-classes.py'), 'plan',
+                                '--context', 'pr', '--event', str(event), '--output', str(output)],
+                               check=True, capture_output=True)
+                plan = tc.read(output)
+                self.assertEqual(plan['selected'], selected)
+                self.assertEqual(plan['context'], 'gate')
+                if 'perf' not in selected:
+                    self.assertEqual(plan['classes']['perf']['state'], 'NOT RUN')
+                gh.write_text('')
+                subprocess.run([sys.executable, str(ROOT / 'scripts/test-classes.py'),
+                                'measurement-scope', '--event', str(event),
+                                '--event-name', 'pull_request', '--github-output', str(gh)],
+                               check=True, capture_output=True)
+                self.assertEqual(gh.read_text(), 'exempt=' + str('perf' not in selected).lower() + '\n')
 
     def test_event_data_is_not_shell(self):
         label = 'harmless; $(touch SHOULD_NOT_EXIST)\noutput=oops'
@@ -82,7 +111,7 @@ class Release(unittest.TestCase):
                 'source_pr': {'repository': 'owner/repo', 'number': 335,
                               'merge_commit_sha': self.sha, 'base': 'main',
                               'head': 'release/v1.2.3', 'merged_at': '2026-10-25T11:36:48Z'},
-                'plan': tc.resolve(labels, 'release', self.sha, '1.2.3')}
+                'plan': tc.resolve(labels, 'release_pr', self.sha, '1.2.3')}
 
     def test_captured_tag_rerun_is_immutable(self):
         binding = self.binding()
@@ -94,6 +123,49 @@ class Release(unittest.TestCase):
     def test_direct_manual_tags_default_full(self):
         for annotation in ('', 'v1.2.3', 'manual release'):
             self.assertEqual(tc.release_plan(annotation, self.sha, '1.2.3')['selected'], list(tc.CLASSES))
+
+    def test_binding_context_requires_matching_provenance(self):
+        binding = self.binding([])
+        binding['plan'] = tc.resolve([], 'release', self.sha, '1.2.3')
+        with self.assertRaisesRegex(ValueError, 'release plan binding mismatch'):
+            tc.release_plan(json.dumps(binding), self.sha, '1.2.3')
+        binding['source_pr'] = None
+        self.assertEqual(tc.release_plan(json.dumps(binding), self.sha, '1.2.3')['profile'], 'full')
+        binding['plan'] = tc.resolve([], 'release_pr', self.sha, '1.2.3')
+        with self.assertRaisesRegex(ValueError, 'release plan binding mismatch'):
+            tc.release_plan(json.dumps(binding), self.sha, '1.2.3')
+
+    def test_prior_contract_versions_fail_closed(self):
+        binding = self.binding([])
+        binding['schema'] = 'af.release-tests/1'
+        with self.assertRaisesRegex(ValueError, 'invalid release selection annotation'):
+            tc.release_plan(json.dumps(binding), self.sha, '1.2.3')
+        plan = tc.resolve()
+        plan['schema'] = 'af.test-plan/1'
+        with self.assertRaisesRegex(ValueError, 'unsupported test plan'):
+            tc.validate_plan(plan)
+
+    def test_release_pr_context_and_bound_plan_are_admitted_by_cli(self):
+        plan = self.binding([])['plan']
+        with tempfile.TemporaryDirectory() as tmp:
+            output = Path(tmp) / 'plan.json'
+            command = [sys.executable, str(ROOT / 'scripts/test-classes.py'), 'plan',
+                       '--sha', self.sha, '--version', '1.2.3', '--output', str(output)]
+            for args in (['--context', 'release_pr'], ['--bound', json.dumps(plan)]):
+                subprocess.run([*command, *args], check=True, capture_output=True)
+                self.assertEqual(tc.read(output), plan)
+
+    def test_bound_plan_rejects_an_explicit_mismatched_version(self):
+        plan = self.binding([])['plan']
+        with tempfile.TemporaryDirectory() as tmp:
+            output = Path(tmp) / 'plan.json'
+            result = subprocess.run([sys.executable, str(ROOT / 'scripts/test-classes.py'), 'plan',
+                                     '--bound', json.dumps(plan), '--sha', self.sha,
+                                     '--version', '1.2.4', '--output', str(output)],
+                                    capture_output=True, text=True)
+            self.assertNotEqual(result.returncode, 0)
+            self.assertIn('bound release plan does not name this version', result.stderr)
+            self.assertFalse(output.exists())
 
     def test_stale_annotation_and_tampered_plan_fail_closed(self):
         binding = self.binding()
@@ -123,7 +195,7 @@ class Release(unittest.TestCase):
             with mock.patch.object(tc, 'ROOT', fixture):
                 for labels in (['release:fast'], ['release:full'], ['test:functional', 'test:e2e']):
                     tc.check_release_pr(event)
-                    self.assertTrue(tc.resolve(labels, 'release')['selected'])
+                    self.assertTrue(tc.resolve(labels, 'release_pr')['selected'])
                 event['pull_request']['head']['ref'] = 'release/v1.2.4'
                 with self.assertRaises(ValueError):
                     tc.check_release_pr(event)
@@ -240,6 +312,12 @@ class ReleaseProof(unittest.TestCase):
 
 
 class LabelSetup(unittest.TestCase):
+    def test_make_release_defaults_fast_and_preserves_full_override(self):
+        for args, expected in [([], 'fast'), (['PROFILE=full'], 'full')]:
+            result = subprocess.run(['make', '-n', 'release', 'VERSION=1.2.3', 'COMPAT=unchanged',
+                                     *args], cwd=ROOT, check=True, capture_output=True, text=True)
+            self.assertIn('--profile "' + expected + '"', result.stdout)
+
     def load_labels(self):
         spec = importlib.util.spec_from_file_location('labels', ROOT / 'scripts/test-labels.py')
         module = importlib.util.module_from_spec(spec)
@@ -298,6 +376,11 @@ class LabelSetup(unittest.TestCase):
                 self.assertNotEqual(result.returncode, 0)
                 self.assertIn('make test-labels APPLY=1', result.stderr)
                 self.assertIn('release:' + profile, result.stderr)
+            default = subprocess.run(['bash', str(scripts / 'release.sh'), '1.2.3', '--compat',
+                                      'unchanged', '--yes'], env=env, cwd=root,
+                                     capture_output=True, text=True)
+            self.assertNotEqual(default.returncode, 0)
+            self.assertIn('release:fast', default.stderr)
             self.assertEqual(sorted(p.name for p in root.iterdir()), ['gh', 'scripts'])
 
     def test_release_resolver_has_only_the_required_api_read_permission_and_runner_token(self):
@@ -317,15 +400,23 @@ class LabelSetup(unittest.TestCase):
             root = Path(tmp)
             event = root / 'event.json'
             output = root / 'plan.json'
-            for label, selected in [('release:fast', tc.FAST), ('release:full', list(tc.CLASSES)),
-                                    ('test:perf', ['perf'])]:
-                event.write_text(json.dumps({'pull_request': {'labels': [{'name': label}],
+            gh = root / 'github-output'
+            for labels, selected in [([], tc.FAST), (['release:fast'], tc.FAST),
+                                     (['release:full'], list(tc.CLASSES)), (['test:perf'], ['perf'])]:
+                event.write_text(json.dumps({'pull_request': {'labels': [{'name': label} for label in labels],
                                  'head': {'ref': 'release/v' + version}, 'base': {'ref': 'main'}}}))
                 subprocess.run([sys.executable, str(ROOT / 'scripts/test-classes.py'), 'plan',
                                 '--context', 'pr', '--event', str(event), '--output', str(output)],
                                check=True, capture_output=True)
                 self.assertEqual(tc.read(output)['selected'], selected)
+                self.assertEqual(tc.read(output)['context'], 'release_pr')
                 self.assertEqual(tc.read(output)['version'], version)
+                gh.write_text('')
+                subprocess.run([sys.executable, str(ROOT / 'scripts/test-classes.py'),
+                                'measurement-scope', '--event', str(event),
+                                '--event-name', 'pull_request', '--github-output', str(gh)],
+                               check=True, capture_output=True)
+                self.assertEqual(gh.read_text(), 'exempt=' + str('perf' not in selected).lower() + '\n')
             self.assertFalse((ROOT / '.config/release-tests.json').exists())
 
 
@@ -337,6 +428,22 @@ class SealedEvidence(unittest.TestCase):
             scripts.mkdir()
             for name in ('verify.sh', 'verify-body.sh', 'gate-owner.py'):
                 shutil.copy2(ROOT / 'scripts' / name, scripts / name)
+            shutil.copy2(ROOT / 'scripts/test-classes.py', scripts / 'test-classes.py')
+            for source in (ROOT / 'scripts').glob('test-*.py'):
+                if source.name != 'test-classes.py':
+                    shutil.copy2(source, scripts / source.name)
+            (root / '.config').mkdir()
+            shutil.copy2(ROOT / '.config/test-classes.json', root / '.config/test-classes.json')
+            (root / 'schemas').mkdir()
+            for name in tc.schema_documents():
+                shutil.copy2(ROOT / 'schemas' / name, root / 'schemas' / name)
+            for source in (ROOT / 'crates').glob('*/tests/it/main.rs'):
+                destination = root / source.relative_to(ROOT)
+                destination.parent.mkdir(parents=True, exist_ok=True)
+                shutil.copy2(source, destination)
+            workflow = root / '.github/workflows/validate.yml'
+            workflow.parent.mkdir(parents=True)
+            shutil.copy2(ROOT / '.github/workflows/validate.yml', workflow)
             tools = root / 'bin'
             tools.mkdir()
             make = tools / 'make'
@@ -356,6 +463,7 @@ class SealedEvidence(unittest.TestCase):
             env.update(PATH=str(tools) + os.pathsep + env['PATH'],
                        AF_GATE_TARGET_DIR=str(target), CALLS=str(calls), STATUS='0')
             for args, expected in [([], ['check']),
+                                   (['--profile', 'full'], ['check']),
                                    (['--test-plan', str(plan)], ['check-classes', f'TEST_PLAN={plan}'])]:
                 for status in (0, 23):
                     env['STATUS'] = str(status)
@@ -367,11 +475,26 @@ class SealedEvidence(unittest.TestCase):
                     self.assertEqual(observed['target'], str(target))
                     self.assertEqual(Path(observed['run']).parent, target / 'nextest-reports')
                     self.assertEqual(observed['metrics'], observed['run'] + '/ci-metrics.jsonl')
+            env['STATUS'] = '0'
+            result = subprocess.run(['bash', str(scripts / 'verify.sh'), '--profile', 'fast'],
+                                    cwd=root, env=env, capture_output=True, text=True, timeout=10)
+            self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+            observed = tc.read(calls)
+            fast_plan = Path(observed['run']) / 'test-plan.json'
+            self.assertEqual(observed['args'], ['test-build', 'check-classes',
+                                                f'TEST_PLAN={fast_plan}'])
+            self.assertEqual(observed['metrics'], observed['run'] + '/ci-metrics.jsonl')
+            self.assertEqual({key: tc.read(fast_plan)[key]
+                              for key in ('profile', 'context', 'selected')},
+                             {'profile': 'fast', 'context': 'gate',
+                              'selected': ['functional', 'e2e', 'uix']})
             calls.unlink()
-            for args in (['--unknown'], ['--test-plan'], ['--test-plan', str(root / 'absent')]):
+            for args in (['--unknown'], ['--profile'], ['--profile', 'perf'],
+                         ['--test-plan'], ['--test-plan', str(root / 'absent')]):
                 result = subprocess.run(['bash', str(scripts / 'verify.sh'), *args], cwd=root,
                                         env=env, capture_output=True, timeout=10)
                 self.assertEqual(result.returncode, 2)
+                self.assertIn(b'usage: scripts/verify.sh', result.stderr)
                 self.assertFalse(calls.exists())
             self.assertFalse((root / 'target').exists())
 
@@ -407,6 +530,15 @@ class SealedEvidence(unittest.TestCase):
                 path = scripts / name
                 path.parent.mkdir(exist_ok=True)
                 path.write_text('pass\n')
+            (scripts / 'test-classes.py').write_text(
+                'import os, pathlib, subprocess, sys\n'
+                'if sys.argv[1] == "plan":\n'
+                '    pathlib.Path(sys.argv[sys.argv.index("--output") + 1]).write_text("{}")\n'
+                'elif sys.argv[1] == "execute":\n'
+                '    for kind in ("functional", "e2e", "uix"):\n'
+                '        subprocess.run([sys.executable, "scripts/ci-step.py", "--stage",\n'
+                '                        "tests", "class-" + kind, sys.executable, "-c", "pass"],\n'
+                '                       check=True)\n')
             tools = root / 'bin'
             tools.mkdir()
             (tools / 'python3').symlink_to(sys.executable)
@@ -418,31 +550,58 @@ class SealedEvidence(unittest.TestCase):
             env = {k: v for k, v in os.environ.items()
                    if not k.startswith(('AF_', 'GH_', 'GITHUB_', 'CARGO_', 'RUST', 'MAKE'))}
             report = root / 'check.jsonl'
+            metrics = root / 'metrics.jsonl'
             env.update(PATH=str(tools) + os.pathsep + env['PATH'],
-                       AF_GATE_TARGET_DIR=str(root / 'output'), AF_CHECK_REPORT=str(report))
+                       AF_GATE_TARGET_DIR=str(root / 'output'), AF_CHECK_REPORT=str(report),
+                       AF_CI_METRICS=str(metrics))
             for runner in ('nextest', 'cargo'):
-                for entry, status in (('check', 0), ('check', 19), ('test', 0)):
+                for entry, status in (('check', 0), ('check', 19), ('test', 0),
+                                      ('fast', 0), ('fast', 19)):
                     with self.subTest(runner=runner, entry=entry, build_status=status):
                         report.unlink(missing_ok=True)
+                        metrics.unlink(missing_ok=True)
                         env.update(TEST_RUNNER=runner, BUILD_STATUS=str(status))
-                        command = (['bash', str(scripts / 'verify.sh')] if entry == 'check'
-                                   else ['make', 'test'])
+                        command = (['bash', str(scripts / 'verify.sh'),
+                                    *(['--profile', 'fast'] if entry == 'fast' else [])]
+                                   if entry != 'test' else ['make', 'test'])
                         result = subprocess.run(command, cwd=root, env=env,
                                                 capture_output=True, text=True, timeout=20)
                         self.assertEqual(result.returncode == 0, status == 0,
                                          result.stdout + result.stderr)
                         records = [json.loads(line) for line in report.read_text().splitlines()]
-                        wanted = (expected[:len(preflight) + len(lint) + 1] if status
-                                  else expected if entry == 'check'
-                                  else [('test-build', 'build'), ('test', 'tests')])
+                        if entry == 'fast':
+                            wanted = [('test-build', 'build')]
+                            if not status:
+                                wanted += [(label, 'release') for label in release]
+                                wanted += [(label, 'preflight') for label in
+                                           ('gate-owner', 'test-classes', 'test-catalog')]
+                                wanted += [(label, 'lint') for label in lint]
+                                wanted += [(f'class-{kind}', 'tests') for kind in
+                                           ('functional', 'e2e', 'uix')]
+                        else:
+                            wanted = (expected[:len(preflight) + len(lint) + 1] if status
+                                      else expected if entry == 'check'
+                                      else [('test-build', 'build'), ('test', 'tests')])
                         self.assertEqual([(r['label'], r['stage']) for r in records], wanted)
                         build = next(r for r in records if r['label'] == 'test-build')
                         self.assertEqual(build['command'], ['cargo', 'test', '--locked', '--no-run'])
                         self.assertEqual(build['exit_code'], status)
+                        timed = [json.loads(line) for line in metrics.read_text().splitlines()]
+                        self.assertEqual([r['label'] for r in timed],
+                                         [r['label'] for r in records])
                         if status:
                             self.assertFalse(any(r['stage'] == 'tests' for r in records))
+                            self.assertFalse(any(r['label'].startswith('class-') for r in records))
+                            self.assertFalse(any(r['label'].startswith('class-') for r in timed))
                             continue
                         self.assertTrue(all(r['exit_code'] == 0 for r in records))
+                        if entry == 'fast':
+                            self.assertEqual(timed[0]['command'],
+                                             ['cargo', 'test', '--locked', '--no-run'])
+                            self.assertEqual(records[0]['stage'], 'build')
+                            self.assertLess(0, next(i for i, r in enumerate(records)
+                                                    if r['stage'] == 'tests'))
+                            continue
                         rust = next(r for r in records if r['label'] == 'test')
                         self.assertEqual(rust['command'][:2], ['python3', 'scripts/nextest-gate.py']
                                          if runner == 'nextest' else ['cargo', 'test'])
@@ -460,6 +619,10 @@ class SealedEvidence(unittest.TestCase):
             shutil.copytree(ROOT / 'scripts', root / 'scripts')
             for directory in ('.config', 'schemas', '.github'):
                 shutil.copytree(ROOT / directory, root / directory)
+            # AF snapshots are read-only; this disposable fixture rewrites copied files.
+            for path in root.rglob('*'):
+                if path.is_file() and not path.is_symlink():
+                    path.chmod(stat.S_IMODE(path.stat().st_mode) | stat.S_IWUSR)
             scripts = root / 'scripts'
             for name in ('test-class-python.py', 'changelog-notes.py', 'af-pin.py',
                          'performance/schemas.py', 'performance/cli.py'):
@@ -753,7 +916,8 @@ class Catalog(unittest.TestCase):
         for c in tc.CLASSES:
             expression = tc.filterset(entries, [c])
             self.assertIn('binary_id(', expression)
-        self.assertEqual(tc.classify('af::it', 'perf_kernel_measure::guarded_kernel_experiments_measure_one_judged_sample_and_refuse_every_tampered_harness'), 'perf')
+        self.assertEqual(tc.classify('af::it', 'perf_kernel_measure::guarded_kernel_experiments_refuse_every_tampered_harness'), 'perf')
+        self.assertEqual(tc.classify('af::it', 'perf_kernel_measure::guarded_kernel_experiments_measure_one_judged_sample'), 'perf')
         self.assertEqual(tc.classify('af::it', 'cli_surface::usage_errors_name_only_the_failing_command'), 'uix')
         self.assertEqual(tc.classify('af::it', 'project::workflow'), 'e2e')
         self.assertEqual(tc.classify('af::bin/af', 'tui::tests::navigation'), 'uix')
@@ -813,7 +977,7 @@ class Gates(unittest.TestCase):
     def test_telemetry_smoke_requires_actual_success_only_when_perf_selected(self):
         plans = [tc.resolve(labels, 'pr') for labels in
                  ([], ['no-perf'], ['release:fast'], ['test:perf'], ['release:full'])]
-        plans += [tc.resolve(context=context) for context in ('local', 'gate', 'release')]
+        plans += [tc.resolve(context=context) for context in ('local', 'gate', 'release_pr', 'release')]
         for plan in plans:
             expected = 'success' if 'perf' in plan['selected'] else 'skipped'
             for job in ('telemetry-build-smoke', 'telemetry-runtime-smoke'):
@@ -837,11 +1001,12 @@ class Gates(unittest.TestCase):
             root = Path(tmp)
             with self.assertRaises(ValueError):
                 tc.receipts(plan, root, ['Linux', 'macOS'])
-            receipt = {'schema': 'af.test-class-receipt/1', 'plan': plan,
+            receipt = {'schema': 'af.test-class-receipt/2', 'plan': plan,
                        'platform': 'Linux', 'class': 'uix', 'status': 'success'}
             tc.write(root / 'linux/receipt.json', receipt)
             tc.receipts(plan, root, ['Linux'])
             for mutation in [{'status': 'cancelled'}, {'class': 'perf'}, {'unexpected': 1},
+                             {'schema': 'af.test-class-receipt/1'},
                              {'plan': tc.resolve(['test:perf'])}]:
                 bad = dict(receipt, **mutation)
                 tc.write(root / 'linux/receipt.json', bad)
@@ -888,7 +1053,7 @@ class Metrics(unittest.TestCase):
             for kind, seconds in zip(tc.CLASSES, (5, 0, 7, 11)):
                 artifact = root / 'artifacts' / ('validation-class-Linux-' + kind)
                 evidence = artifact / 'class-evidence'
-                tc.write(evidence / 'receipt.json', {'schema': 'af.test-class-receipt/1',
+                tc.write(evidence / 'receipt.json', {'schema': 'af.test-class-receipt/2',
                          'plan': plan, 'platform': 'Linux', 'class': kind, 'status': 'success'})
                 path = artifact / 'class-metrics.jsonl'
                 output = evidence / 'report.json'
@@ -992,7 +1157,7 @@ class Metrics(unittest.TestCase):
             for kind, seconds in [('functional', 10), ('uix', 5)]:
                 artifact = root / ('validation-class-Linux-' + kind)
                 evidence = artifact / 'class-evidence'
-                tc.write(evidence / 'receipt.json', {'schema': 'af.test-class-receipt/1', 'plan': plan,
+                tc.write(evidence / 'receipt.json', {'schema': 'af.test-class-receipt/2', 'plan': plan,
                          'platform': 'Linux', 'class': kind, 'status': 'success'})
                 tc.write(evidence / 'report.json', {'plan': plan, 'classes': {kind: {'passed': 1}}})
                 metric(artifact / 'class-metrics.jsonl', {'label': 'class-' + kind,

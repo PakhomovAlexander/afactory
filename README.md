@@ -310,7 +310,8 @@ pull request apart from Dependabot's and the release pull requests carries their
 
 ```sh
 make prereqs                         # what make check needs, with the command for each missing tool
-make check                           # preflight, fmt, clippy, the test suite and the release checks
+make check                           # full preflight, fmt, clippy, tests and release checks
+bash scripts/verify.sh --profile fast # Task gate profile: functional, e2e, uix
 make review-kernel-container-probes  # live container probes; needs a usable runtime
 ```
 
@@ -322,7 +323,7 @@ opening a pull request, and [AGENTS.md](AGENTS.md) if you are an agent working h
 
 `make release VERSION=X.Y.Z COMPAT="…"` opens the release pull request: the version bump and the
 `CHANGELOG.md` section, written from the merged pull requests and their `changelog.d/` notes.
-Merging it tags the commit, runs `make check` on Linux and macOS, builds every target, signs
+Merging it tags the commit, runs full `make check` on Linux and macOS, builds every target, signs
 `SHA256SUMS` and publishes the release
 ([ADR-0045](docs/adr/0045-one-release-train-and-a-pin-that-binds-bytes.md)). A `pin` job then
 moves this repository's `.af/af.lock` to the new release, so `af` here runs the newest one;
