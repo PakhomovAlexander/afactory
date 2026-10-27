@@ -23,8 +23,10 @@ may hold only `.md`, `.toml` and `.json` data.
   reader refuses its version. The integration now exports `af.perf-kernel-receipts/3` to
   `$AF_PERF_KERNEL_RECEIPTS` as three homogeneous v3 documents named
   `receipts-<pid>-missing-inputs.json` (0 ms), `receipts-<pid>-improve.json` (7,500 ms),
-  and `receipts-<pid>-refusal.json` (1,500 ms). The last retains all six tampered and
-  all three malformed-report/refusal Tasks. The fixture asserts the exact phase partition;
+  and `receipts-<pid>-refusal.json` (0 ms). The last retains six tampered baseline
+  refusals and the build-free policy refusal; the manual test also exports
+  `receipts-<pid>-candidate-refusal.json` (1,500 ms) with six tampered-candidate refusals
+  and two report-policy cases. The fixture asserts the exact phase partition;
   every document passes both validators. Together these exports hold every Task's typed result, each output's
   complete envelope and every repetition's public stdout and stderr, whole up to 64 KiB, else
   the first and last 32 KiB. It is checked against `schemas/performance-kernel-receipts-v3.json`

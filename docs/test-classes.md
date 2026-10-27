@@ -46,7 +46,8 @@ It partitions every identity once, including ignored tests, then generates bound
 from the audited inventory. Tests in each root module are grouped only when their selection agrees;
 other names stay exact. Explicit singleton overrides classify manual measurement tests as perf.
 Every ignored identity also records its manual/child/container policy; a new ignored test fails
-the audit until reviewed. The guarded kernel comparison is `manual-measurement`: run
+the audit until reviewed. The guarded kernel baseline refusal test is build-free; the judged comparison and
+tampered-candidate refusals after a measured baseline are `manual-measurement`: run
 `make perf-kernel-measure` before a pull request that changes its protected harness, experiment
 runtime or kernel receipts ([ADR-0252](adr/0252-keep-the-kernel-experiment-measurement-out-of-every-gate.md)).
 Feature-on trace/calibration checks are additional perf build variants of the

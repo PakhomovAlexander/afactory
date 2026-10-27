@@ -173,8 +173,9 @@ offline into the bound `CARGO_TARGET_DIR` and report one golden-judged library s
 repetition. The kernel's repetitions, `elapsed_ms` and comparison are unchanged; the staged
 objectives compare `elapsed_ms` until the guarded inner metric is accepted. A real Task in
 `crates/af/tests/it/perf_kernel_measure.rs` measures a consumer repository with the policy
-installed. Its ordinary perf test shows that every tampered candidate fails its first repetition
-with no report; its ignored measurement proves the judged comparison when run with
+installed. Its ordinary perf test shows that every tampered harness is refused by the kernel as a baseline,
+with no build; its ignored measurement proves the judged comparison plus tampered-candidate
+refusals after a measured baseline when run with
 `make perf-kernel-measure` ([ADR-0252](../adr/0252-keep-the-kernel-experiment-measurement-out-of-every-gate.md)).
 Protected names match whatever their case, a warm target is rebuilt from the measured sources
 whenever any byte of the measured Snapshot differs, and the probe's output is bounded while it

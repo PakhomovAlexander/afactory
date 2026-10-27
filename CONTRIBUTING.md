@@ -328,7 +328,8 @@ Every integration module/binary and Python test script needs a reviewed entry in
 component default unless overridden. Tests of help/errors/navigation belong to uix; complete workflows
 belong to e2e even if they assert output. Keep nextest exclusive scheduling independent of class.
 
-The guarded kernel refusal test runs in the perf class. Its judged comparison is an ignored
+The guarded kernel perf-class test refuses every tampered harness as a baseline with no build.
+Its judged comparison and tampered-candidate refusals after a measured baseline are an ignored
 manual measurement: run `make perf-kernel-measure` before a pull request changing
 `scripts/performance/`, `crates/review-pipeline/examples/perf-probe/`,
 `crates/review-pipeline/build.rs`, the experiment runtime or kernel receipts
