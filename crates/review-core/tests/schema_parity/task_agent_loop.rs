@@ -1,5 +1,5 @@
 //! The agent loop's documents and records (ADR-0211): `af/task-findings@1`,
-//! `af/task-materialized@1`, `af/task-diff@1`, `af/task-status@1`, `af/task-detached@2`,
+//! `af/task-materialized@1`, `af/task-diff@1`, `af/task-status@2`, `af/task-detached@2`,
 //! `af/task-cancelled@1`, the `runs/` records `af/task-run-process@1` and
 //! `af/task-cancel-request@1`, and the `af/TaskDeliveryProof@1` a verification Task's delivery
 //! references. A typed value the Rust validator accepts satisfies its schema, both reject the
@@ -296,8 +296,8 @@ fn materialized_diff_and_status_documents_are_closed() {
             ),
         ],
     );
-    let status = TaskStatusV1 {
-        schema: TASK_STATUS_V1.into(),
+    let status = TaskStatusV2 {
+        schema: TASK_STATUS_V2.into(),
         task_id: "pagination-cli".into(),
         state: TaskStateV1::ended(
             TaskStatePhaseV1::Abandoned,
@@ -307,18 +307,30 @@ fn materialized_diff_and_status_documents_are_closed() {
         .with_next("af task run pagination-cli"),
         node: None,
         elapsed_ms: Some(12_000),
-        chargeable_tokens: 412_000u128.into(),
+        charged_tokens: 412_000u128.into(),
+        reserved_tokens: 2_000u128.into(),
+        remaining_tokens: 586_000u128.into(),
+        unknown_usage_attempts: 1,
+        last_gate: Some("check test: 51m 00s".into()),
         run: Some(run_process()),
         cancel: Some(cancel_request()),
     };
     both(
-        "task-status-v1.json",
+        "task-status-v2.json",
         &status,
-        TaskStatusV1::validate,
+        TaskStatusV2::validate,
         vec![
             (
-                Box::new(|v: &mut Value| v["chargeable_tokens"] = json!(412000)),
+                Box::new(|v: &mut Value| v["schema"] = json!("af/task-status@1")),
+                "an older status document",
+            ),
+            (
+                Box::new(|v: &mut Value| v["charged_tokens"] = json!(412000)),
                 "a token count that is not decimal text",
+            ),
+            (
+                Box::new(|v: &mut Value| v["reserved_tokens"] = json!("02")),
+                "a noncanonical reservation",
             ),
             (
                 Box::new(|v: &mut Value| v["run"]["schema"] = json!("af/task-run-process@2")),

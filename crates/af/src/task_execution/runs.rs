@@ -296,7 +296,7 @@ fn settled_code(state: &TaskStateV1) -> i32 {
 // ------------------------------------------------------------------------------------------
 // af task status
 
-fn status_document(opened: &OpenedTask, state: TaskStateV1) -> TaskStatusV1 {
+fn status_document(opened: &OpenedTask, state: TaskStateV1) -> TaskStatusV2 {
     let task = &opened.task;
     let running = state.phase == TaskStatePhaseV1::Running;
     let elapsed_ms = task.clock_started_unix_ms().map(|started| {
@@ -311,15 +311,30 @@ fn status_document(opened: &OpenedTask, state: TaskStateV1) -> TaskStatusV1 {
         .into_iter()
         .rev()
         .find(|request| request.epoch == task.lease_epoch());
-    TaskStatusV1 {
-        schema: TASK_STATUS_V1.into(),
+    let budget = task.execution.as_ref().map(|execution| &execution.budget);
+    TaskStatusV2 {
+        schema: TASK_STATUS_V2.into(),
         task_id: task.task_id.clone(),
         state,
         node: running
             .then(|| running_node(task).map(|(node, _)| node_name(&node)))
             .flatten(),
         elapsed_ms,
-        chargeable_tokens: committed_tokens(task).into(),
+        charged_tokens: committed_tokens(task).into(),
+        reserved_tokens: budget.map_or(0, |budget| budget.reserved_tokens()).into(),
+        remaining_tokens: budget
+            .map_or(u128::from(task.revision.limits.tokens), |budget| {
+                u128::from(budget.remaining_limits().tokens)
+            })
+            .into(),
+        unknown_usage_attempts: task.execution.as_ref().map_or(0, |execution| {
+            execution
+                .attempt_accounting()
+                .into_iter()
+                .filter(|attempt| attempt.unknown_usage.is_some())
+                .count() as u64
+        }),
+        last_gate: super::gate_history::last(&opened.cas, &opened.store, task),
         run: lease_run(records(&opened.state, &task.task_id), task.lease_writer()),
         cancel,
     }
@@ -399,7 +414,7 @@ pub(crate) fn command_lines(lead: &str, command: &str, width: usize, indent: &st
 /// `Task ID: running, node implement, 3 min, 41.2k tokens; run 2 pid 812 on builder`, then the
 /// next command on its own indented line or lines: at most `width` columns each, the state
 /// broken only between its parts and the command only between its arguments.
-fn status_lines(status: &TaskStatusV1, width: usize) -> Vec<String> {
+fn status_lines(status: &TaskStatusV2, width: usize) -> Vec<String> {
     let mut parts = vec![status.state.label()];
     if let Some(node) = &status.node {
         parts.push(format!("node {}", preview::text(node)));
@@ -407,7 +422,6 @@ fn status_lines(status: &TaskStatusV1, width: usize) -> Vec<String> {
     if let Some(elapsed) = status.elapsed_ms {
         parts.push(state::duration_words(elapsed));
     }
-    parts.push(format!("{} tokens", tokens(status.chargeable_tokens.get())));
     let mut segments = vec![format!("Task {}: {}", status.task_id, parts.join(", "))];
     if status.state.phase == TaskStatePhaseV1::Running
         && let Some(run) = &status.run
@@ -437,6 +451,20 @@ fn status_lines(status: &TaskStatusV1, width: usize) -> Vec<String> {
             None => lines.push(segment),
         }
     }
+    lines.push(format!(
+        "  tokens: {} reserved, {} charged{}, {} remaining",
+        tokens(status.reserved_tokens.get()),
+        tokens(status.charged_tokens.get()),
+        if status.unknown_usage_attempts == 0 {
+            String::new()
+        } else {
+            format!(" (+{} unknown)", status.unknown_usage_attempts)
+        },
+        tokens(status.remaining_tokens.get())
+    ));
+    if let Some(last_gate) = &status.last_gate {
+        lines.push(format!("  last Gate here: {last_gate}"));
+    }
     if let Some(next) = &status.state.next_action {
         lines.extend(command_lines(
             "  next:",
@@ -448,7 +476,7 @@ fn status_lines(status: &TaskStatusV1, width: usize) -> Vec<String> {
     lines
 }
 
-fn print_status(status: &TaskStatusV1, json: bool) -> Result<(), String> {
+fn print_status(status: &TaskStatusV2, json: bool) -> Result<(), String> {
     status.validate()?;
     if json {
         println!(
@@ -494,6 +522,8 @@ fn starting_run(state: &Path, task: &TaskProjection) -> Option<TaskRunProcessV1>
 pub(crate) fn wait(
     id: &str,
     timeout: Option<u64>,
+    bell: bool,
+    notify: bool,
     inspect: &crate::cli::TaskInspectArgs,
 ) -> Result<i32, String> {
     let mut opened = open_task(id, &inspect.repo, inspect.state.as_deref())?;
@@ -520,6 +550,12 @@ pub(crate) fn wait(
             }
             let code = settled_code(&view.state);
             print_status(&status_document(&opened, view.state), inspect.json)?;
+            if bell && std::io::IsTerminal::is_terminal(&std::io::stderr()) {
+                eprint!("\x07");
+            }
+            if notify {
+                notify_completion(id, code);
+            }
             return Ok(code);
         }
         if !said {
@@ -537,6 +573,43 @@ pub(crate) fn wait(
         }
         std::thread::sleep(Duration::from_millis(250));
         opened.refresh()?;
+    }
+}
+
+/// A notification is a best-effort side effect of a completed wait, never its result.
+fn notify_completion(id: &str, code: i32) {
+    let message = format!("Task {id} completed (exit {code})");
+    #[cfg(target_os = "macos")]
+    let result = {
+        let escaped = message.replace('\\', "\\\\").replace('"', "\\\"");
+        let mut command = std::process::Command::new("osascript");
+        command.args([
+            "-e",
+            &format!("display notification \"{escaped}\" with title \"af task wait\""),
+        ]);
+        review_process::run_supervised(&mut command, None, Duration::from_secs(5))
+            .map(|output| output.status)
+            .map_err(|error| error.to_string())
+    };
+    #[cfg(target_os = "linux")]
+    let result = {
+        let mut command = std::process::Command::new("notify-send");
+        command.args(["af task wait", &message]);
+        review_process::run_supervised(&mut command, None, Duration::from_secs(5))
+            .map(|output| output.status)
+            .map_err(|error| error.to_string())
+    };
+    #[cfg(not(any(target_os = "macos", target_os = "linux")))]
+    let result: Result<std::process::ExitStatus, String> =
+        Err("no OS notifier on this platform".into());
+    match result {
+        Ok(status) if status.success() => {}
+        Ok(status) => eprintln!(
+            "af task wait: warning: notification failed ({status}); Task {id} still completed"
+        ),
+        Err(error) => eprintln!(
+            "af task wait: warning: notifier unavailable ({error}); Task {id} still completed"
+        ),
     }
 }
 
@@ -1274,9 +1347,9 @@ mod tests {
         assert_eq!(lease_run(Vec::new(), "cli-101"), None);
     }
 
-    fn finished(next: &str) -> TaskStatusV1 {
-        TaskStatusV1 {
-            schema: TASK_STATUS_V1.into(),
+    fn finished(next: &str) -> TaskStatusV2 {
+        TaskStatusV2 {
+            schema: TASK_STATUS_V2.into(),
             task_id: "implementation-small".into(),
             state: TaskStateV1::ended(
                 TaskStatePhaseV1::Finished,
@@ -1286,7 +1359,11 @@ mod tests {
             .with_next(next),
             node: None,
             elapsed_ms: Some(1_000),
-            chargeable_tokens: 0_u128.into(),
+            charged_tokens: 0_u128.into(),
+            reserved_tokens: 0_u128.into(),
+            remaining_tokens: 100_u128.into(),
+            unknown_usage_attempts: 0,
+            last_gate: None,
             run: None,
             cancel: None,
         }
@@ -1300,11 +1377,11 @@ mod tests {
         for width in [100, 80] {
             let lines = status_lines(&status, width);
             assert_eq!(
-                lines[0], "Task implementation-small: finished/verified, 1 s, 0 tokens",
+                lines[0], "Task implementation-small: finished/verified, 1 s",
                 "{lines:#?}"
             );
             assert!(
-                lines[1].starts_with("  next: af task deliver"),
+                lines[2].starts_with("  next: af task deliver"),
                 "{lines:#?}"
             );
             for line in &lines {
@@ -1312,28 +1389,47 @@ mod tests {
             }
             // Broken only between arguments, each line but the last continued: the lines are
             // the one command a shell reads.
-            let joined: Vec<String> = lines[1..]
+            let joined: Vec<String> = lines[2..]
                 .iter()
                 .map(|line| line.trim().trim_end_matches('\\').trim().to_owned())
                 .collect();
             assert_eq!(joined.join(" "), format!("next: {next}"));
-            for line in &lines[1..lines.len() - 1] {
+            for line in &lines[2..lines.len() - 1] {
                 assert!(line.ends_with(" \\"), "{line}");
             }
         }
         assert_eq!(
             status_lines(&status, 80),
             [
-                "Task implementation-small: finished/verified, 1 s, 0 tokens",
+                "Task implementation-small: finished/verified, 1 s",
+                "  tokens: 0 reserved, 0 charged, 100 remaining",
                 "  next: af task deliver implementation-small --branch af/implementation-small \\",
                 "        --worktree ../implementation-small --confirm implementation-small",
             ]
         );
         // A short command stays on its one line.
         assert_eq!(
-            status_lines(&finished("af task show implementation-small"), 100)[1],
+            status_lines(&finished("af task show implementation-small"), 100)[2],
             "  next: af task show implementation-small"
         );
+    }
+
+    #[test]
+    fn unknown_usage_is_named_beside_the_three_exact_status_counters() {
+        let mut status = finished("af task show implementation-small");
+        status.unknown_usage_attempts = 1;
+        status.charged_tokens = 7_u128.into();
+        status.reserved_tokens = 3_u128.into();
+        status.remaining_tokens = 90_u128.into();
+        assert_eq!(
+            status_lines(&status, 100)[1],
+            "  tokens: 3 reserved, 7 charged (+1 unknown), 90 remaining"
+        );
+        let json = serde_json::to_value(&status).unwrap();
+        assert_eq!(json["reserved_tokens"], "3");
+        assert_eq!(json["charged_tokens"], "7");
+        assert_eq!(json["remaining_tokens"], "90");
+        assert_eq!(json["unknown_usage_attempts"], 1);
     }
 
     #[test]

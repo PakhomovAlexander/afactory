@@ -48,6 +48,7 @@ pub(super) mod developer;
 pub(crate) mod domain;
 pub(super) mod export;
 pub(super) mod findings;
+mod gate_history;
 mod input_bindings;
 mod input_file;
 mod inspection;
@@ -3976,6 +3977,11 @@ fn present_with_format(
         );
     } else if explain && state.plan_id.is_some() {
         print!("{}", preview::current(cas, &state, tree)?);
+        if undeclared.is_some()
+            && let Some(hint) = gate_history::last(cas, store, &state)
+        {
+            println!("last Gate here: {hint}");
+        }
     } else {
         for line in show_lines(
             cas,

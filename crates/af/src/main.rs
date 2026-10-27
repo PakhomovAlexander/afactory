@@ -2178,8 +2178,10 @@ fn task_command(command: cli::TaskCommand) -> Result<i32, String> {
         cli::TaskCommand::Wait {
             task_id,
             timeout,
+            bell,
+            notify,
             inspect,
-        } => task_execution::runs::wait(&task_id, timeout, &inspect),
+        } => task_execution::runs::wait(&task_id, timeout, bell, notify, &inspect),
         cli::TaskCommand::Status { task_id, inspect } => {
             task_execution::runs::status(&task_id, &inspect)
         }
