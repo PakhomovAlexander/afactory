@@ -28,8 +28,22 @@ fn af(state_home: &Path, args: &[&str]) -> Output {
         .env("XDG_CONFIG_HOME", state_home.join("config"))
         .env("XDG_STATE_HOME", state_home)
         .env("AF_SELF_OFFLINE", "1")
+        .env("PATH", path_without_provider_clis())
         .output()
         .unwrap()
+}
+
+/// `PATH` without the directories that hold a `codex` or `claude`. A plan reads each bound
+/// Provider's model catalog token-free through its CLI, so with the developer's own CLI on
+/// `PATH` a model line would read `ok` where CI, which has none, reads `unverified against the
+/// catalog`; here every machine reads the latter.
+fn path_without_provider_clis() -> std::ffi::OsString {
+    let path = std::env::var_os("PATH").unwrap_or_default();
+    std::env::join_paths(
+        std::env::split_paths(&path)
+            .filter(|dir| !["codex", "claude"].iter().any(|cli| dir.join(cli).exists())),
+    )
+    .unwrap()
 }
 
 fn register_codex(state_home: &Path) {
@@ -424,7 +438,7 @@ fn review_plan_prints_each_model_line_and_refuses_an_effort_level_codex_does_not
     assert!(planned.status.success(), "{}", stderr(&planned));
     let text = String::from_utf8_lossy(&planned.stdout);
     for node in ["correctness", "architecture"] {
-        let line = format!("model {node} gpt-6-sol high  ok");
+        let line = format!("model {node} gpt-6-sol high  unverified against the catalog");
         assert!(text.lines().any(|row| row == line), "{line}:\n{text}");
     }
 
