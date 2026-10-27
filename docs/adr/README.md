@@ -445,5 +445,7 @@ future readers need.
   bootstrap](0237-isolate-telemetry-stall-boundaries-and-shortcut-uniform-bootstrap.md)
 - [0238 — Retain refused physical telemetry measurements in incomplete
   results](0238-retain-refused-physical-telemetry-measurements-in-incomplete-results.md)
-- [0239 — Execute performance experiments independently on a locked
-  VM](0239-execute-performance-experiments-independently-on-a-locked-vm.md)
+- [0239 — Default every pull request to fast
+  validation](0239-default-every-pull-request-to-fast-validation.md)
+- [0240 — Execute performance experiments independently on a locked
+  VM](0240-execute-performance-experiments-independently-on-a-locked-vm.md)

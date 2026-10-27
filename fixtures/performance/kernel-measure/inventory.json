@@ -2542,12 +2542,12 @@
   },
   {
    "path": "scripts/performance/perflab/executor.py",
-   "sha256": "sha256:3d0d7f36f00fdd109b237b39e06e485c1071934524f2a2d3e705f65e00d95ca6",
+   "sha256": "sha256:c660f693ecea7aad6b6d8de30905fe12703e5ab7c37056c87387d842914d4bc7",
    "size": 49425
   },
   {
    "path": "scripts/performance/perflab/executorcontracts.py",
-   "sha256": "sha256:c5b0b68f576253d23f695585aab24d5c59697739dc5c5b684b510817749e993e",
+   "sha256": "sha256:cf2ca288c2cb2e6ca981ed96f6a64e829ec2dbfb93a0c6091718439ef47afd8b",
    "size": 13186
   },
   {
@@ -2607,7 +2607,7 @@
   },
   {
    "path": "scripts/performance/perflab/localcalibration.py",
-   "sha256": "sha256:545e9165f61fcc0df6ba520d3d0fc5e12ce1e8679eee10769612e4e34e8c96fc",
+   "sha256": "sha256:fd95ecab25e9ee0f133f0b5a6e30196960debc0260c4441f227e4d69f09b77e5",
    "size": 6912
   },
   {
@@ -3161,7 +3161,7 @@
    "size": 6777
   }
  ],
- "harness_digest": "sha256:0798e4a4794ac2904802054f5b4e296a9976f83473f9a3f11f45659c63500c1e",
+ "harness_digest": "sha256:014ac3f955a72a5cbec2dc086d72eede4b550c7ee25fef1410e3dfcd53aaa44a",
  "inner_metric": "pending",
  "inner_metric_reason": "the inner wall_ms metric is recorded in every Measurement but no staged objective selects it until the guard's real kernel integration and tampered-candidate tests are accepted on the sealed source and a reviewed human change installs and selects it",
  "objective_metric": "elapsed_ms",

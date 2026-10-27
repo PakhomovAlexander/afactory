@@ -2,7 +2,7 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "urn:af:schema:performance-local-cohort-declaration:1",
   "title": "af.perf-local-cohort/1",
-  "description": "Independent performance executor: local-cohort-declaration (ADR-0239).",
+  "description": "Independent performance executor: local-cohort-declaration (ADR-0240).",
   "type": "object",
   "additionalProperties": false,
   "properties": {

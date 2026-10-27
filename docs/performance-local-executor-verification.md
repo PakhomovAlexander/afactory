@@ -233,7 +233,7 @@ all recorded IDs:
 Changed persisted shapes take configuration/state/result v2; obsolete v1 schemas/readers are
 removed and old receipts refuse. Request/cohort/readiness shapes and hosted declarations stay
 unchanged. New shipping/expiry golden fixtures pass schema/reader/writer parity. The operator
-guide, ADR-0239, domain design and change note document these repairs.
+guide, ADR-0240, domain design and change note document these repairs.
 
 Focused command, Python 3.14.4:
 
@@ -275,14 +275,14 @@ coordinator owns accepted installation and authentic core/telemetry/lock evidenc
 The earlier hosted core absolute deadline and all sample/statistical/resource minima remain
 unchanged. Separate #378/#382/#380 work remains outside this repair.
 
-## Exact-main integration (2026-10-27)
+## Previous exact-main integration (2026-10-27)
 
 This bounded integration preserves accepted candidate
 `a81be5d90cbdebc6a0311515c7cfdfe2257c61dd` (tree
 `8d70f9f6d6c145a7bcb28724875a52236b5ae572`) and integrates every upstream change from
 `8c0ca71a1df2b73ed7c1d0ba9686a6ec1ddf47b1` to exact main
-`2dce351a4b332f0e3cbbaf78aa586de2770637bb`. The latter is the whole-feature review base
-for this continuation. Earlier sections retain historical verification and review bases.
+`2dce351a4b332f0e3cbbaf78aa586de2770637bb`. The latter was the whole-feature review base
+for that continuation. Earlier sections retain historical verification and review bases.
 
 Before reading the declared public bundle, `sha256sum` and `wc -c` confirmed SHA-256
 `3750e9c8afc6e733acc417288b82f3024821c7a48a11a3570b2711b6ad44bb3d` and 66870 bytes.
@@ -293,7 +293,7 @@ Git blob identities and executable modes before integration. No external source 
 
 `git merge-tree --write-tree a81be5d90cbdebc6a0311515c7cfdfe2257c61dd 2dce351a4b332f0e3cbbaf78aa586de2770637bb`
 reported exactly the four declared content conflicts. Retain upstream ADRs 0235–0238 and move
-only the executor ADR, title and references to 0239. The schema fixture index has no shipped
+only the executor ADR, title and references to its then-unused number. The schema fixture index has no shipped
 whole-index generator: its independently added expectation records were mechanically combined
 from the two exact parents, requiring equality for every shared record and uniqueness by path.
 All **399 entries** and every incoming telemetry refusal fixture remain; unchanged parity tests
@@ -365,3 +365,105 @@ Final source checks with `python3 -I -B /tmp/af-integration-final.py` passed, ex
 Git whitespace checks against both parents, exact preservation of accepted executor behavior
 and regression tests, absence of obsolete v1 shapes, and complete executor ADR renumbering.
 The source contains no temporary integration helper, merge object database or input bundle.
+
+## Latest exact-main integration and fixture proof (2026-10-27)
+
+This continuation starts from sealed source `ebeb6fffb6d1e89d584a7ec5b84a8bad2fc5ac0e`
+and integrates **all** changes from previous main
+`2dce351a4b332f0e3cbbaf78aa586de2770637bb` to exact main
+`bdf17c2b239dba966be5c2fd272dab443e3772e0`, the current whole-feature review base.
+The preceding integration's focused results did not establish independent acceptance or a full
+native pass: native validation stopped at the upstream copied-fixture permission failure.
+This continuation uses PR405's already merged repair unchanged.
+
+Before use, these commands confirmed the declared input's **24,170 bytes**, SHA-256
+`fa987cd1f921194a5b01392906e2971624ade09528897354d160aa6e4554abee`, exact main ref
+`refs/heads/upstream-main-vm-final-20261027`, and previous-main prerequisite:
+
+```sh
+stat -c '%s %n' /var/lib/af-task-performance/ga/task-inputs/upstream-main-bdf17c2b239d.bundle
+sha256sum /var/lib/af-task-performance/ga/task-inputs/upstream-main-bdf17c2b239d.bundle
+git --git-dir=/tmp/af-main-integration-TMRIgJ/objects.git bundle verify /var/lib/af-task-performance/ga/task-inputs/upstream-main-bdf17c2b239d.bundle
+git --git-dir=/tmp/af-main-integration-TMRIgJ/objects.git bundle list-heads /var/lib/af-task-performance/ga/task-inputs/upstream-main-bdf17c2b239d.bundle
+git --git-dir=/tmp/af-main-integration-TMRIgJ/objects.git merge-base ebeb6fffb6d1e89d584a7ec5b84a8bad2fc5ac0e bdf17c2b239dba966be5c2fd272dab443e3772e0
+```
+
+The disposable Git database read only the exact declared public source objects; no external
+worktree was changed. Before integration, all **2,773** source files matched the sealed commit's
+blob identities and executable modes. `merge-tree --write-tree` on the two exact tips found
+only the ADR-index content conflict. All **19 nonconflicting incoming paths**, counting both
+sides of schema renames, match main exactly in bytes and executable mode; deleted v1 schemas
+are absent. The combined index is exactly main's index followed by the executor entry.
+Upstream ADR-0239 and every earlier decision are preserved; only the executor ADR moves to
+0240. Module docstrings and generated descriptions follow that renumbering.
+
+The incoming fast defaults, `release_pr` provenance, selection/binding/receipt v2 and obsolete
+version refusal remain upstream's exact implementation and assertions. Ordinary main, local
+full validation and unbound releases remain full. The fixture repair grants owner-write only
+to regular, nonsymlink files in its disposable fixture before overwriting them. It does not
+change source permissions, production sealing or fixture cleanup ownership.
+
+Focused commands, **non-root uid 994**, Python **3.14.4**; all exited **0**:
+
+```sh
+python3 -I -B -c 'import sys,unittest; sys.path.insert(0,"scripts/performance"); unittest.main(module=None,argv=["unittest","tests.test_executor","tests.test_localcalibration","tests.test_contracts","tests.test_hostlock","tests.test_builds.ContainerBuild","tests.test_builds.FakeBuild.test_the_shipping_recipe_builds_through_exactly_its_pinned_cargo_zigbuild","tests.test_diagnostics.Command","tests.test_telemetry_measurements","tests.test_telemetry_lab","tests.test_telemetry_lock_handoff","tests.test_telemetry_build_bounds","tests.test_telemetry_cleanup","tests.test_telemetry_terminal"],verbosity=1)'
+python3 -I -B -c 'import sys,unittest; sys.path.insert(0,"scripts/performance"); unittest.main(module=None,argv=["unittest","tests.test_kernelguard.Bootstrap","tests.test_kernelguard.Staged","tests.test_kernelguard.Receipts.test_the_committed_fixtures_are_their_recipes"],verbosity=1)'
+python3 -I -B scripts/test-release-resolve.py -v
+python3 -I -B scripts/test-test-classes.py SealedEvidence.test_selected_build_receipts_cover_all_variants_before_any_suite -v
+python3 -I -B scripts/test-test-classes.py -v
+python3 -I -B /tmp/af-main-integration-TMRIgJ/sealed-check.py
+```
+
+**PASS:** executor/schema/telemetry **163 tests / 149.643 s**; protected inventory
+**10 / 1.406 s**; release resolution **25 / 5.613 s**; ordinary fixture method
+**1 / 13.257 s**; complete ordinary class suite **45 / 20.588 s**. The owned read-only
+source proof reran that same unchanged method (**1 / 12.833 s**) and complete class suite
+(**45 / 20.725 s**): **290 test executions** in total, with no skipped assertions or scenarios.
+
+The temporary seal helper copied public source into its own temporary directory, required
+non-root ownership, removed every write bit from copied files and directories while preserving
+execution bits, and proved an attempted source overwrite raises `PermissionError`. It ran the
+two commands above against that copy with isolated Python and bytecode disabled. After each
+run it compared SHA-256 bytes and full permission modes for all **3,380** copied file/directory
+entries, and separately checked the sandbox source: unchanged. Only after comparison did it
+restore permissions on its own copy for removal. The copy was removed; original source modes
+were never changed. These tests run the native wrapper and Make/class receipt graph with the
+existing bounded Cargo/suite stand-ins, not the full native gate.
+
+Metadata and faithful-integration commands, each **PASS, exit 0**:
+
+```sh
+python3 -B scripts/performance/schemas.py --write
+python3 -B scripts/performance/schemas.py
+python3 -I -B /tmp/af-main-integration-TMRIgJ/inventory.py
+python3 -B scripts/test-classes.py audit
+python3 -B scripts/changelog-notes.py --check
+python3 -I -B /tmp/af-main-integration-TMRIgJ/final.py
+```
+
+The unchanged schema generator regenerated eight executor schema descriptions. The inventory
+helper copied the public protected closure to an owned temporary root without the sandbox's
+reserved empty `.git`, ran unchanged `cli.py harness-digest --root COPY --write` and `--check`,
+then copied back only generated staged policy/inventory. Exact digest/path/size/hash parity
+holds between the actual sandbox closure, generated copy and literal bootstrap: **632 files**,
+`sha256:014ac3f955a72a5cbec2dc086d72eede4b550c7ee25fef1410e3dfcd53aaa44a`.
+Both generators and the bootstrap match the source and main exactly. The schema fixture index
+retains all **399** entries unchanged. `.af/` authority was not edited.
+
+The final audit checks exact incoming preservation, combined index, executor ADR renumbering,
+whitespace against both tips, and the complete permitted change set. Executor implementation
+and regression tests are unchanged apart from ADR text in three module headers/contracts.
+All four accepted fixes remain: diagnostic cleanup uncertainty keeps exclusion; frozen Zig
+configuration reaches both builders; full queues drain; expired calibration originals never
+launch and retain their identities and denominator. Telemetry result v2 and executor
+configuration/state/result v2, common lock, exact sources/containers, budgets, deadlines,
+statistical minima and original records remain intact. The accepted missing `--zigbuild-bin`
+in diagnostic reproduction commands is still a follow-up; actual execution retains the path.
+
+No `make check`, `scripts/test-performance.py`, full Rust suite or full Markdown gate ran in
+this Worker. The enclosing unchanged native kernel/Markdown gates and independent judging
+must still accept this exact candidate. Installation, publication, real VM core/telemetry runs,
+live cross-user common-lock proof, backend activation and report export remain coordinator-owned
+and unclaimed. No original was retried, cleanup fence cleared or measurement limit relaxed.
+Temporary merge objects, helpers, ignored test bytecode and owned copies were removed; no input
+bundle or helper was added to the sealed source. The declared external input was left untouched.

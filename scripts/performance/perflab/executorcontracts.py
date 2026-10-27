@@ -1,4 +1,4 @@
-"""Closed contracts of the independent operator executor (ADR-0239).
+"""Closed contracts of the independent operator executor (ADR-0240).
 
 Measurement formats stay unchanged: these receipts bind their native evidence to an actual
 backend. Local originals never inhabit an Actions ID field.
@@ -186,4 +186,4 @@ def register(c):
     for name, (node, validator) in entries.items():
         schema = node.by_name["schema"].node.value
         c.CONTRACTS[name] = (schema, node, validator or (lambda doc, where="executor", n=node: n.validate(doc, where)),
-                             "Independent performance executor: " + name + " (ADR-0239).")
+                             "Independent performance executor: " + name + " (ADR-0240).")

@@ -1024,7 +1024,7 @@ checked 2026-10-25, states “GitHub ignores case when comparing strings.” The
 workflow and scheduler stay unchanged; their executable test models platform equality on the
 original uppercase input. This local model is not a hosted dispatch or a calibration original.
 
-Independent VM execution (ADR-0239) adds `cli.py executor`, a bounded operator controller over
+Independent VM execution (ADR-0240) adds `cli.py executor`, a bounded operator controller over
 these same components. It freezes local sources, environment and workload before contained
 build/measurement, runs shards sequentially, keeps native reports/archives and retains original
 Git objects for offline admission. Local requests/claims/results have their own identities;

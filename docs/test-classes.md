@@ -80,8 +80,10 @@ Other labels have no selection effect. Both label addition and removal rerun val
 older PR runs through their existing concurrency group.
 
 1. Reject any `test:CLASS` with `no-CLASS`, and reject `release:fast` with `release:full`.
-2. Defaults are functional + e2e + uix for a PR; all four for local, ordinary main, AF gate PRs targeting `af-gate/**`, release PRs named
-   `release/vX.Y.Z`, and an unconfigured release. The event base ref selects the gate context, preserving the Remote Check full default. `release:fast` changes the default to functional + e2e + uix.
+2. Every PR defaults to functional + e2e + uix, including AF gate PRs targeting `af-gate/**`
+   and release PRs named `release/vX.Y.Z`. Local `make check`, ordinary main and releases
+   without a matching merged release PR run all four. A tagged release with a matching PR
+   inherits that PR's selection. `release:fast` explicitly selects the fast default.
 3. Any positive labels form an explicit allowlist replacing those defaults:
    `test:functional`, `test:e2e`, `test:uix`, `test:perf`. With no positive label, use the default.
 4. Subtract `no-functional`, `no-e2e`, `no-uix`, `no-perf`. An empty result fails.
@@ -91,7 +93,7 @@ older PR runs through their existing concurrency group.
 
 | Labels | PR selection | Profile |
 | --- | --- | --- |
-| none | functional, e2e, uix | fast |
+| none (any PR) | functional, e2e, uix | fast |
 | `test:functional`, `test:e2e` | functional, e2e | custom |
 | `test:perf` | perf only | custom |
 | `no-uix` | functional, e2e | custom |
@@ -115,8 +117,9 @@ An empty or invalid plan cannot form a self-approving green gate. Releases also 
 
 ## Release binding
 
-`make release VERSION=X.Y.Z COMPAT='...' PROFILE=fast` passes `--profile fast` to `release.sh`;
-omitting PROFILE uses full. The script applies `release:fast` or `release:full` to the release PR.
+`make release VERSION=X.Y.Z COMPAT='...'` passes `--profile fast` to `release.sh` by default;
+`PROFILE=full` opts into full validation. Calling `scripts/release.sh` without `--profile` also
+selects fast. The script applies `release:fast` or `release:full` to the release PR.
 Before any branch, source change, commit or push, it checks that the requested profile label exists
 and is readable. Provision the ten definitions explicitly (this Task never executes remote writes):
 
@@ -142,10 +145,11 @@ Only one merged PR may supply labels: its `merge_commit_sha` must equal the exac
 its base must be `main`, and its head must be `release/vVERSION`. This same test covers GitHub's
 merge, squash and fast-forward results; no ancestry guess or latest-unrelated-PR lookup grants
 selection authority. Unmerged PRs, wrong versions/branches/bases and other SHAs supply no labels.
-No match defaults full. Multiple exact matches, API errors, malformed responses, pagination overflow
+No match defaults full. An unlabeled matching release PR selects fast, just as its PR checks did.
+Multiple exact matches, API errors, malformed responses, pagination overflow
 and invalid label selections fail before creating/pushing a tag.
 
-Before pushing, the resolver freezes `af.release-tests/1` JSON in the annotated tag: exact SHA,
+Before pushing, the resolver freezes `af.release-tests/2` JSON in the annotated tag: exact SHA,
 version, source PR repository/number/merge SHA/base/head/merge time (or null), captured labels and
 complete resolved plan including catalog digest. The pushed remote tag object must equal the local
 object. Competing creators never force or replace a ref. Subsequent main retries and tag-triggered
@@ -154,6 +158,12 @@ wrong commit, moved local tag or tag/version mismatch fail closed. The same plan
 Labels are captured at first tag creation, not historically at the merge instant: a label change
 between merge and first creation affects that initial capture. Once the annotation exists, later
 label changes and even API outages cannot change its selection or block retries.
+
+Plans use `af.test-plan/2`, receipts use `af.test-class-receipt/2`, and tag bindings use
+`af.release-tests/2`. The `release_pr` context requires exact merged PR provenance in the binding;
+the `release` context without provenance requires the full unlabeled plan. The generated v2
+schemas and parity checks cover this added context. Earlier contract versions fail closed under
+ADR-0145 rather than being treated as unbound manual tags.
 
 A direct lightweight tag or manually annotated tag without this binding defaults full, regardless of
 associated PR labels or stale metadata files. Ordinary main commits also run full. A tag creation race

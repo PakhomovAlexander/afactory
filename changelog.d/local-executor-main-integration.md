@@ -1,4 +1,5 @@
-- Integrate the independent performance executor with exact upstream validation and telemetry
-  changes. Preserve telemetry result v2 beside executor configuration/state/result v2, retain
-  upstream ADRs 0235–0238, move the executor decision to ADR-0239, and regenerate the combined
-  schema descriptions and protected harness pins without changing their generators.
+- Integrate exact main `bdf17c2b` with the accepted independent performance executor. Retain
+  upstream fast defaults for every PR, release provenance and selection v2, and the owned
+  fixture-copy permission repair. Preserve upstream ADR-0239 and move only the executor
+  decision to ADR-0240. Regenerate descriptions and protected pins with unchanged generators;
+  record focused non-root ordinary/read-only checks in the executor verification note.

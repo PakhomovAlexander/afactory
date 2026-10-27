@@ -1,5 +1,5 @@
 {
-  "$id": "urn:af:schema:release-test-binding:1",
+  "$id": "urn:af:schema:release-test-binding:2",
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "additionalProperties": false,
   "properties": {
@@ -118,6 +118,7 @@
           "enum": [
             "pr",
             "gate",
+            "release_pr",
             "local",
             "release"
           ]
@@ -137,7 +138,7 @@
           ]
         },
         "schema": {
-          "const": "af.test-plan/1"
+          "const": "af.test-plan/2"
         },
         "selected": {
           "items": {
@@ -179,7 +180,7 @@
       "type": "object"
     },
     "schema": {
-      "const": "af.release-tests/1"
+      "const": "af.release-tests/2"
     },
     "sha": {
       "type": "string"

@@ -2,7 +2,7 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "urn:af:schema:performance-executor-journal:1",
   "title": "af.perf-executor-journal/1",
-  "description": "Independent performance executor: executor-journal (ADR-0239).",
+  "description": "Independent performance executor: executor-journal (ADR-0240).",
   "type": "object",
   "additionalProperties": false,
   "properties": {

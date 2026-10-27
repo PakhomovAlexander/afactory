@@ -1,4 +1,4 @@
-"""Local calibration originals, using the shared statistical judge unchanged (ADR-0239)."""
+"""Local calibration originals, using the shared statistical judge unchanged (ADR-0240)."""
 import os
 import time
 
