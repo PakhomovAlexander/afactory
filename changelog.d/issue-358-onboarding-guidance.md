@@ -7,6 +7,7 @@
   registered Provider whose CLI is missing or incompatible is no longer told to log in.
   `af review campaigns --json` prints the `--format json` document, and the two together are a
   usage error. The README and `af help json` claim `--json` only for commands whose `--help` lists
-  it, and the README, with `af review group --help`, explains that Findings that look alike stay
+  it, promise one document only where one is printed, and name `af telemetry tail --json` as a
+  JSON Lines stream, one `af/telemetry-tail@1` object per line; the README, with `af review group --help`, explains that Findings that look alike stay
   apart until an operator groups them
   ([ADR-0006](../docs/adr/0006-finding-identity-is-path-independent.md)).

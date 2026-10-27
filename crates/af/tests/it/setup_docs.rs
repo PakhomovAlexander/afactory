@@ -281,3 +281,87 @@ fn readme_explains_findings_that_look_alike_with_commands_that_parse() {
         "{group}"
     );
 }
+
+/// Issue #358: `af telemetry tail --json` is the one command whose `--json` streams JSON Lines,
+/// one `af/telemetry-tail@1` object per line, and the README and `af help json` name it as the
+/// exception to the one-document rule instead of promising one document for every `--json`.
+/// Every other `--help` describes its `--json` as one document; the recorded tail stream
+/// (`telemetry_golden/tail.jsonl`) is several lines, each its own object, and not one document.
+#[test]
+fn json_guidance_names_telemetry_tail_as_the_one_json_lines_stream() {
+    let mut streams = Vec::new();
+    let mut documents = 0;
+    for (page, text) in crate::help_examples::pages() {
+        let lines: Vec<&str> = text.lines().collect();
+        let Some(at) = lines.iter().position(|line| {
+            let option = line.trim_start();
+            line.starts_with(' ') && (option == "--json" || option.starts_with("--json "))
+        }) else {
+            continue;
+        };
+        let mut described = lines[at]
+            .trim_start()
+            .trim_start_matches("--json")
+            .to_owned();
+        for line in &lines[at + 1..] {
+            let continued = line.trim_start();
+            if continued.is_empty() || continued.starts_with('-') {
+                break;
+            }
+            described.push(' ');
+            described.push_str(continued);
+        }
+        let described = collapsed(&described);
+        if described.contains("per line") {
+            streams.push(page);
+        } else {
+            documents += 1;
+        }
+    }
+    assert_eq!(streams, ["af telemetry tail --help"]);
+    assert!(
+        documents >= 20,
+        "only {documents} one-document --json pages"
+    );
+
+    let recorded = workspace_file("crates/af/tests/it/telemetry_golden/tail.jsonl");
+    assert!(serde_json::from_str::<serde_json::Value>(&recorded).is_err());
+    let records: Vec<serde_json::Value> = recorded
+        .lines()
+        .map(|line| serde_json::from_str(line).unwrap())
+        .collect();
+    assert!(records.len() > 1, "{recorded}");
+    for record in &records {
+        assert_eq!(record["schema"], "af/telemetry-tail@1", "{record}");
+    }
+
+    let readme = workspace_file("README.md");
+    let agents = collapsed(
+        readme
+            .split("### Agents and CI\n")
+            .nth(1)
+            .unwrap()
+            .split("\n### ")
+            .next()
+            .unwrap(),
+    );
+    assert!(
+        agents.contains(
+            "A command whose `--help` lists `--json` prints one versioned document under it, \
+             except `af telemetry tail --json`: it streams JSON Lines, one \
+             `af/telemetry-tail@1` object per line"
+        ),
+        "{agents}"
+    );
+    let topic = help(&["help", "json"]);
+    assert!(
+        topic.contains(
+            "A command whose --help lists --json prints exactly one JSON document on stdout \
+             under it — no banner, no trailing text — so `af … --json | jq` works, with one \
+             exception: `af telemetry tail --json` streams JSON Lines, one \
+             af/telemetry-tail@1 object per line"
+        ),
+        "{topic}"
+    );
+    assert!(!topic.contains("always works"), "{topic}");
+}
