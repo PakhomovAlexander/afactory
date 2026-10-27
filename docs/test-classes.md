@@ -69,9 +69,11 @@ source-integrity, catalog, schema and harness checks; formatting and lint remain
 before the ordinary Rust suite and the separate `perf-python-tests` target run. The latter runs
 `scripts/test-performance.py` with `stage=tests`, followed by feature-on tests and release checks.
 This places the laboratory suite under the existing test allowance instead of exhausting the build
-allowance before compilation. No test selection, assertion, deadline or receipt semantics change.
+allowance before compilation. The fast Task gate also records this shared build receipt before its
+first class receipt, ending the build deadline before class tests begin. No test selection,
+assertion or deadline changes.
 Standalone `make test` retains both Rust runner modes. The selected class entry and its timing
-attribution remain unchanged; the phase repair applies to full `make check`.
+attribution remain unchanged; the phase repair applies to full `make check` and the fast Task gate.
 
 Ignored tests retain the previous policy. Benchmarks, child-process helpers and namespace-only probes
 are inventoried as ignored, never silently promoted or discarded. Live container probes are an explicit
@@ -208,7 +210,8 @@ build variants have distinct JUnit identities for reporting. Base, container and
 contribute to the observed command envelope, with their cost reported separately from class shares. The gate-owner preflight is mandatory in both the base check and each selected class runner.
 `verify.sh` retains the native ownership wrapper; `verify-body.sh` owns the complete gate body.
 With no arguments or `--profile full` it runs full `make check`; `--profile fast` writes
-a gate-context `release:fast` plan into the private run directory and runs `check-classes`.
+a gate-context `release:fast` plan into the private run directory, then runs `test-build` before
+`check-classes`.
 Explicit `--test-plan PLAN.json` selects `check-classes` as before, keeping its evidence
 beneath the existing private gate output.
 Under a sealed native AF gate, base Python JUnit writes beneath

@@ -64,9 +64,11 @@ it was free builds cold and says `busy`.
 ## Two deadlines: the build, then the tests
 
 With `build_wall_ms` declared, a check has two phases. The build phase runs from its start until
-it reports a `build` step through `$AF_CHECK_REPORT` (`scripts/ci-step.py --stage build` does; in
-this repository that is the `test-build` step shared by fast and full checks), and `build_wall_ms` bounds it. The tests
-run from there, and `check_wall_ms` bounds them, so a cold build never eats the tests' time. A
+it reports a `build` step through `$AF_CHECK_REPORT` (`scripts/ci-step.py --stage build` does).
+The Task gate's fast profile and full `make check` record the same `test-build` step before their
+tests; `build_wall_ms` bounds the build through that receipt. The tests run from there, and
+`check_wall_ms` bounds them,
+so a cold build never eats the tests' time. A
 check that has reported steps but no build step when its build deadline passes is ended there; one
 that reports no step at all gets both deadlines as one. The check Attempt's wall is
 `check_wall_ms` plus `build_wall_ms`; a Task file whose verification reserve is smaller is refused

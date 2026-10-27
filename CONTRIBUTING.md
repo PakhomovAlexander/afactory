@@ -313,7 +313,8 @@ Vulnerabilities go through private reporting, never a public issue: see `SECURIT
 ## Selecting validation classes
 
 `make check` remains full. The local Task gate uses `scripts/verify.sh --profile fast`,
-which resolves functional, e2e and uix; CI gate pull requests and releases run full. For
+which records the shared `test-build` receipt before functional, e2e and uix class tests;
+CI gate pull requests and releases run full. For
 selective development use `make check-fast` (functional, e2e, uix), `make check-full` (all four,
 including perf), or `make test-plan TEST_LABEL_FILE=event.json`
 then `make check-classes`. The JSON file has the GitHub event shape
