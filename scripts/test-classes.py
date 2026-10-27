@@ -19,8 +19,8 @@ ROOT = Path(__file__).resolve().parent.parent
 CATALOG = ROOT / '.config/test-classes.json'
 CLASSES = ('functional', 'e2e', 'uix', 'perf')
 FAST = list(CLASSES[:3])
-SCHEMA = 'af.test-plan/1'
-BINDING = 'af.release-tests/1'
+SCHEMA = 'af.test-plan/2'
+BINDING = 'af.release-tests/2'
 PERF_VARIANTS = (
     ('trace', 'review-core/perf-trace,review-core/perf-calibration',
      'binary_id(=review-core) & test(perf_)'),
@@ -67,7 +67,7 @@ def schema_documents():
                'ignored': mapping({'enum': ['live-container', 'namespace-child',
                                            'manual-measurement', 'subprocess-helper']})})
     plan = obj({'schema': {'const': SCHEMA}, 'profile': {'enum': ['full', 'fast', 'custom']},
-                'context': {'enum': ['pr', 'gate', 'local', 'release']}, 'sha': nullable, 'version': nullable,
+                'context': {'enum': ['pr', 'gate', 'release_pr', 'local', 'release']}, 'sha': nullable, 'version': nullable,
                 'labels': names, 'selected': {'type': 'array', 'items': kind,
                                              'minItems': 1, 'uniqueItems': True},
                 'catalog_sha256': {'type': 'string', 'pattern': '^[a-f0-9]{64}$'},
@@ -77,12 +77,13 @@ def schema_documents():
                    'source_pr': {'anyOf': [{'type': 'null'}, obj({'repository': text,
                        'number': {'type': 'integer', 'minimum': 1}, 'merge_commit_sha': text,
                        'base': text, 'head': text, 'merged_at': text})]}, 'plan': plan})
-    receipt = obj({'schema': {'const': 'af.test-class-receipt/1'}, 'plan': plan,
+    receipt = obj({'schema': {'const': 'af.test-class-receipt/2'}, 'plan': plan,
                    'platform': text, 'class': kind, 'status': {'const': 'success'}})
-    return {f'{name}-v1.json': {'$schema': 'https://json-schema.org/draft/2020-12/schema',
-                               '$id': f'urn:af:schema:{name}:1', **document}
-            for name, document in [('test-class-catalog', cat), ('test-class-plan', plan),
-                                   ('release-test-binding', binding), ('test-class-receipt', receipt)]}
+    return {f'{name}-v{version}.json': {'$schema': 'https://json-schema.org/draft/2020-12/schema',
+                                      '$id': f'urn:af:schema:{name}:{version}', **document}
+            for name, version, document in [('test-class-catalog', 1, cat), ('test-class-plan', 2, plan),
+                                            ('release-test-binding', 2, binding),
+                                            ('test-class-receipt', 2, receipt)]}
 
 
 def schema_parity(rewrite=False):
@@ -97,7 +98,7 @@ def schema_parity(rewrite=False):
 
 def resolve(labels=(), context='local', sha=None, version=None):
     """Positive labels replace defaults; negatives subtract. Contradictions never win."""
-    if context not in ('pr', 'gate', 'local', 'release'):
+    if context not in ('pr', 'gate', 'release_pr', 'local', 'release'):
         raise ValueError('unknown selection context')
     if not isinstance(labels, (list, tuple)) or not all(isinstance(x, str) for x in labels):
         raise ValueError('labels must be strings')
@@ -118,7 +119,7 @@ def resolve(labels=(), context='local', sha=None, version=None):
         raise ValueError('contradictory release profiles')
     if full and (negative or (positive and positive != set(CLASSES))):
         raise ValueError('release:full refuses exclusions or a partial allowlist')
-    defaults = list(CLASSES) if context != 'pr' else FAST
+    defaults = FAST if context in ('pr', 'gate', 'release_pr') else list(CLASSES)
     if fast:
         defaults = FAST
     if full:
@@ -157,7 +158,7 @@ def event_context(event):
     pr = event['pull_request']
     if pr.get('base', {}).get('ref', '').startswith('af-gate/'):
         return 'gate'
-    return 'release' if pr.get('head', {}).get('ref', '').startswith('release/v') else 'pr'
+    return 'release_pr' if pr.get('head', {}).get('ref', '').startswith('release/v') else 'pr'
 
 
 def check_release_pr(event):
@@ -172,7 +173,7 @@ def check_release_pr(event):
 
 def release_plan(annotation, sha, version):
     # A lightweight/manual tag or unrelated annotation carries no fast authority.
-    if BINDING not in annotation:
+    if 'af.release-tests/' not in annotation:
         return resolve([], 'release', sha, version)
     try:
         binding = json.loads(annotation.strip())
@@ -184,7 +185,8 @@ def release_plan(annotation, sha, version):
         raise ValueError('release selection SHA/version mismatch')
     validate_source_pr(binding['source_pr'], sha, version)
     plan = validate_plan(binding['plan'])
-    if plan['context'] != 'release' or plan['sha'] != sha or plan['version'] != version:
+    context = 'release_pr' if binding['source_pr'] is not None else 'release'
+    if plan['context'] != context or plan['sha'] != sha or plan['version'] != version:
         raise ValueError('release plan binding mismatch')
     if binding['source_pr'] is None and plan != resolve([], 'release', sha, version):
         raise ValueError('release labels require exact merged PR provenance')
@@ -332,7 +334,7 @@ def receipts(plan, directory, platforms):
     for path in Path(directory).rglob('receipt.json'):
         value = read(path)
         key = value['platform'], value['class']
-        if set(value) != {'schema', 'plan', 'platform', 'class', 'status'} or value['schema'] != 'af.test-class-receipt/1':
+        if set(value) != {'schema', 'plan', 'platform', 'class', 'status'} or value['schema'] != 'af.test-class-receipt/2':
             raise ValueError('unknown receipt shape')
         if key not in expected or key in observed or value['plan'] != plan or value['status'] != 'success':
             raise ValueError(f'invalid/duplicate class receipt: {path}')
@@ -666,7 +668,7 @@ def run_class(plan, kind, out, threads, build_scope='class'):
                 stream.write(summary(result))
     if failure:
         raise failure
-    write(out / 'receipt.json', {'schema': 'af.test-class-receipt/1', 'plan': plan,
+    write(out / 'receipt.json', {'schema': 'af.test-class-receipt/2', 'plan': plan,
                                  'platform': os.getenv('RUNNER_OS', sys.platform),
                                  'class': kind, 'status': 'success'})
 
@@ -675,7 +677,7 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     sub = parser.add_subparsers(dest='command', required=True)
     plan = sub.add_parser('plan')
-    plan.add_argument('--context', choices=('pr', 'gate', 'local', 'release'), default='local')
+    plan.add_argument('--context', choices=('pr', 'gate', 'release_pr', 'local', 'release'), default='local')
     plan.add_argument('--label', action='append', default=[])
     plan.add_argument('--event')
     plan.add_argument('--bound')
@@ -733,14 +735,16 @@ def main():
         labels = event_labels(read(args.event)) if args.event else args.label
         context = event_context(read(args.event)) if args.event and args.context == 'pr' else args.context
         version = args.version
-        if args.event and context == 'release':
+        if args.event and context == 'release_pr':
             version = read(args.event)['pull_request']['head']['ref'][len('release/v'):]
         value = validate_plan(json.loads(args.bound)) if args.bound else resolve(
             labels, context, args.sha, version)
         if args.event:
             check_release_pr(read(args.event))
-        if args.bound and (value['context'] != 'release' or value['sha'] != args.sha):
+        if args.bound and (value['context'] not in ('release', 'release_pr') or value['sha'] != args.sha):
             raise ValueError('bound release plan does not name this commit')
+        if args.bound and args.version is not None and value['version'] != args.version:
+            raise ValueError('bound release plan does not name this version')
         write(args.output, value)
         print(json.dumps(value, indent=2))
         if args.github_output:

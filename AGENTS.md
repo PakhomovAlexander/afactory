@@ -27,14 +27,16 @@ review corpora belong in consuming repositories, not here.
   directory's figure, bar and share; the same check renders the block again from the pull
   request's commits and refuses a description whose block is missing or differs
   ([ADR-0195](docs/adr/0195-state-the-lines-a-pull-request-adds-per-directory-and-check-them.md)).
-- PR validation uses the reviewed functional/e2e/uix/perf catalog and label selection in
+- Every PR defaults to fast validation (functional, e2e and uix), including AF gate and release
+  PRs. PR validation uses the reviewed functional/e2e/uix/perf catalog and label selection in
   [the test-class design](docs/test-classes.md). `no-perf` excludes both perf validation and
   the separate Performance measurement; exclusions are reported as NOT RUN or exempt, never
   as measured passes. Inspect the entire diff when choosing coverage and explain the choice
   in the PR description. Re-evaluate labels on updates. Local `make check` remains full;
   release selections are bound to exact SHA/version tags. This operator policy supersedes
   ADR-0196's prose-only recommendation; the kernel's remote-gate `no_perf_paths` authority
-  remains prose-only and unchanged ([ADR-0229](docs/adr/0229-select-validation-classes-and-bind-release-profiles-to-tags.md)).
+  remains prose-only and unchanged ([ADR-0229](docs/adr/0229-select-validation-classes-and-bind-release-profiles-to-tags.md),
+  [ADR-0239](docs/adr/0239-default-every-pull-request-to-fast-validation.md)).
 - Product rebranding must not rename `review.kernel/*` artifact types, persisted events, or
   established Review Kernel domain terms until a separate accepted migration ADR supersedes this
   rule. Releases are cut only through `make release` and the release workflow; a lock pins the

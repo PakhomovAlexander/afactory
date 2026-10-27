@@ -1,5 +1,5 @@
 {
-  "$id": "urn:af:schema:test-class-receipt:1",
+  "$id": "urn:af:schema:test-class-receipt:2",
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "additionalProperties": false,
   "properties": {
@@ -126,6 +126,7 @@
           "enum": [
             "pr",
             "gate",
+            "release_pr",
             "local",
             "release"
           ]
@@ -145,7 +146,7 @@
           ]
         },
         "schema": {
-          "const": "af.test-plan/1"
+          "const": "af.test-plan/2"
         },
         "selected": {
           "items": {
@@ -190,7 +191,7 @@
       "type": "string"
     },
     "schema": {
-      "const": "af.test-class-receipt/1"
+      "const": "af.test-class-receipt/2"
     },
     "status": {
       "const": "success"

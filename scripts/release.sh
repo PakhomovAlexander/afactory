@@ -4,7 +4,7 @@
 # under changelog.d/ (which it then removes), commit on release/vX.Y.Z, push, and open the PR. Merging that PR is the one human act of a release; .github/workflows/release.yml
 # tags, checks, builds, signs, and publishes from there (ADR-0045).
 #
-#   scripts/release.sh X.Y.Z --compat "<one line on authority compatibility>" [--dry-run] [--yes]
+#   scripts/release.sh X.Y.Z --compat "<one line on authority compatibility>" [--profile fast|full] [--dry-run] [--yes]
 #
 # The compatibility line is required: every release says whether committed `.af/` authority
 # keeps working as is, needs `af onboard --refresh-lock`, or needs a documented hand edit.
@@ -19,7 +19,7 @@ version=""
 compat=""
 dry_run=0
 yes=0
-profile=full
+profile=fast
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --profile) profile="${2:-}"; shift 2 ;;

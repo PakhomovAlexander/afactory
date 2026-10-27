@@ -1,6 +1,6 @@
 # ADR-0233: Select real AF runtime smoke with the perf class
 
-**Status:** accepted (2026-10-26)
+**Status:** accepted (2026-10-26); gate PR default selection superseded in part by [ADR-0239](0239-default-every-pull-request-to-fast-validation.md).
 
 ## Context
 
