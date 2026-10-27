@@ -399,6 +399,8 @@ const EXIT_CODES: &str = "  0    pass — the command succeeded; for `review run
        refuses a context that is not logged in with 6 unless --unverified
   7    usage unavailable — `provider status --usage` only: an authenticated Provider's optional
        subscription or quota probe did not answer. Authentication is unaffected
+  8    Provider probe denied — the host refused the CLI probe before compatibility or login
+       could be established; retry outside the sandbox or with host-approved permissions
 
 Under --json the same codes apply and the document on stdout carries the typed outcome.
 
@@ -426,8 +428,8 @@ the cause:
 A command that classifies its own outcomes — `af provider status` and `af provider setup` — prints
 its own versioned document instead, carrying that exit code and an af-authored `diagnostic`;
 stderr still gets one diagnostic line, so discarding stdout never hides a refusal. The Provider
-documents are af/provider-detect@3 (`af provider detect`), af/provider-status@3,
-af/provider-setup@1 and af/provider-models@1; none carries an account, a credential or the
+documents are af/provider-detect@4 (`af provider detect`), af/provider-status@4,
+af/provider-setup@2 and af/provider-models@1; none carries an account, a credential or the
 Provider CLI's own words.
 
 Documents carry `kind@version` identifiers where they describe persisted records; a payload shape

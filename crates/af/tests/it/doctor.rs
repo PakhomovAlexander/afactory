@@ -1,6 +1,6 @@
 //! `af doctor`: a token-free check of the machine and the repository it runs in (ADR-0210). Each
 //! case runs in a private home that a snapshot proves the command leaves exactly as it found it,
-//! and every `--json` document is checked against `schemas/doctor-v2.json`.
+//! and every `--json` document is checked against `schemas/doctor-v3.json`.
 
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
@@ -97,8 +97,8 @@ fn err(output: &Output) -> String {
 fn document(output: &Output) -> serde_json::Value {
     let value: serde_json::Value = serde_json::from_slice(&output.stdout)
         .unwrap_or_else(|error| panic!("{error}: {}\n{}", out(output), err(output)));
-    schemas::valid(&schemas::validator("doctor-v2.json"), &value);
-    assert_eq!(value["schema"], "af/doctor@2");
+    schemas::valid(&schemas::validator("doctor-v3.json"), &value);
+    assert_eq!(value["schema"], "af/doctor@3");
     assert_eq!(value["token_free"], true);
     assert_eq!(
         value["exit_code"].as_i64(),
@@ -167,6 +167,9 @@ fn a_clean_host_only_warns_says_what_to_do_and_writes_nothing() {
     assert_eq!(
         ids,
         [
+            "harness",
+            "sandbox",
+            "network",
             "binary",
             "path",
             "shell",
@@ -264,7 +267,7 @@ fn a_repository_without_af_is_told_to_onboard() {
     );
     assert_eq!(json.status.code(), Some(0), "{}", err(&json));
     let document = document(&json);
-    assert_eq!(document["checks"].as_array().unwrap().len(), 8);
+    assert_eq!(document["checks"].as_array().unwrap().len(), 11);
     let project = check(&document, "project");
     assert_eq!(project["status"], "warn", "{document}");
     assert!(
@@ -668,9 +671,12 @@ fn every_fix_of_a_machine_where_every_check_fails_is_a_command() {
             )
         })
         .collect();
-    assert_eq!(statuses.len(), 8, "{failing}");
+    assert_eq!(statuses.len(), 11, "{failing}");
     assert!(
-        statuses.iter().all(|(_, status)| *status != "ok"),
+        statuses
+            .iter()
+            .filter(|(id, _)| !["harness", "sandbox", "network"].contains(id))
+            .all(|(_, status)| *status != "ok"),
         "every check is a problem: {statuses:?}"
     );
     assert_eq!(

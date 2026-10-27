@@ -81,8 +81,9 @@ impl Machine {
 
     /// `af` on a `PATH` holding only the fixture programs, with the registered context as the
     /// ambient one too, so every document has exactly one Provider.
-    fn af(&self, args: &[&str]) -> Output {
-        crate::common::af()
+    fn command(&self, args: &[&str]) -> std::process::Command {
+        let mut command = crate::common::af();
+        command
             .args(args)
             // Outside any checkout, so no repository's af pin is consulted.
             .current_dir(self.root.path())
@@ -91,8 +92,14 @@ impl Machine {
             .env("CODEX_HOME", &self.auth)
             .env("PATH", self.bin())
             .env("AF_SELF_OFFLINE", "1")
-            .output()
-            .unwrap()
+            .env_remove("CODEX_SANDBOX")
+            .env_remove("CODEX_SANDBOX_NETWORK_DISABLED")
+            .env_remove("CODEX_THREAD_ID");
+        command
+    }
+
+    fn af(&self, args: &[&str]) -> Output {
+        self.command(args).output().unwrap()
     }
 }
 
@@ -113,7 +120,7 @@ fn document(output: &Output) -> Value {
     let document: Value = serde_json::from_str(stdout.trim())
         .unwrap_or_else(|error| panic!("stdout is not one document: {error}\n{stdout}"));
     crate::schemas::valid(
-        &crate::schemas::validator("provider-status-v3.json"),
+        &crate::schemas::validator("provider-status-v4.json"),
         &document,
     );
     document
@@ -270,7 +277,7 @@ fn setup_refuses_a_cli_that_cannot_start_as_a_missing_provider_cli() {
     let stdout = out(&setup);
     let reported: Value = serde_json::from_str(stdout.trim()).unwrap();
     crate::schemas::valid(
-        &crate::schemas::validator("provider-setup-v1.json"),
+        &crate::schemas::validator("provider-setup-v2.json"),
         &reported,
     );
     assert_eq!(reported["result"], "provider_cli_missing");
@@ -591,7 +598,7 @@ fn a_codex_whose_app_server_exits_before_initialize_is_incompatible_on_status_an
     let stdout = out(&setup);
     let reported: Value = serde_json::from_str(stdout.trim()).unwrap();
     crate::schemas::valid(
-        &crate::schemas::validator("provider-setup-v1.json"),
+        &crate::schemas::validator("provider-setup-v2.json"),
         &reported,
     );
     assert_eq!(reported["result"], "provider_cli_missing");
@@ -611,6 +618,149 @@ fn a_codex_whose_app_server_exits_before_initialize_is_incompatible_on_status_an
     let registry =
         std::fs::read_to_string(machine.root.path().join("config/af/providers.toml")).unwrap();
     assert!(!registry.contains("codex-other"), "{registry}");
+}
+
+/// Issue #361: a host-denied initialize proves neither compatibility nor authentication.
+#[test]
+fn denied_codex_probe_is_distinct_on_status_and_detect_with_or_without_sandbox_markers() {
+    let machine = Machine::registered();
+    let unexpected = machine.root.path().join("unexpected-model-or-login-call");
+    let script = format!(
+        "#!/bin/sh\nif [ \"$1\" = --version ]; then echo 'codex-cli 0.164.0'; exit 0; fi\n\
+         if [ \"$1\" = app-server ]; then echo 'Error: Operation not permitted (os error 1)' >&2; exit 1; fi\n\
+         echo \"$*\" > '{}'\nexit 64\n",
+        unexpected.display()
+    );
+    machine.install("codex", &with_help("codex", &script), 0o755);
+    for sandboxed in [false, true] {
+        for args in [
+            &["provider", "status", "--json"][..],
+            &["provider", "detect", "--json"][..],
+        ] {
+            let mut command = machine.command(args);
+            if sandboxed {
+                command
+                    .env("CODEX_SANDBOX", "seatbelt")
+                    .env("CODEX_SANDBOX_NETWORK_DISABLED", "1")
+                    .env("CODEX_THREAD_ID", "fixture-thread");
+            }
+            let output = command.output().unwrap();
+            assert_eq!(code(&output), 8, "{}", err(&output));
+            let value: Value = serde_json::from_slice(&output.stdout).unwrap();
+            if args[1] == "status" {
+                crate::schemas::valid(
+                    &crate::schemas::validator("provider-status-v4.json"),
+                    &value,
+                );
+                assert_eq!(only_provider(&value)["auth"], "probe_denied");
+            } else {
+                crate::schemas::valid(
+                    &crate::schemas::validator("provider-detect-v4.json"),
+                    &value,
+                );
+                assert_eq!(value["binaries"][0]["probe"], "denied");
+                assert_eq!(value["binaries"][0]["compatible"], Value::Null);
+                assert!(
+                    value["candidates"]
+                        .as_array()
+                        .unwrap()
+                        .iter()
+                        .any(|row| row["auth"] == "probe_denied")
+                );
+            }
+            assert_eq!(value["exit_code"], 8);
+            let stderr = err(&output);
+            assert!(stderr.contains("codex app-server exited 1 before answering initialize: Error: Operation not permitted (os error 1)"), "{stderr}");
+            assert!(
+                stderr.contains("compatibility and login could not be established"),
+                "{stderr}"
+            );
+            assert_eq!(
+                stderr.contains("inside a detected sandbox"),
+                sandboxed,
+                "{stderr}"
+            );
+            assert!(!stderr.contains("upgrade"), "{stderr}");
+            assert!(!stderr.contains("install"), "{stderr}");
+            assert!(!out(&output).contains("Operation not permitted"));
+        }
+    }
+    let other = machine.root.path().join("codex-denied-setup");
+    std::fs::create_dir(&other).unwrap();
+    let setup = machine.af(&[
+        "provider",
+        "setup",
+        "codex-denied",
+        "--kind",
+        "codex",
+        "--auth-dir",
+        other.to_str().unwrap(),
+        "--json",
+    ]);
+    assert_eq!(code(&setup), 8, "{}", err(&setup));
+    let setup_doc: Value = serde_json::from_slice(&setup.stdout).unwrap();
+    crate::schemas::valid(
+        &crate::schemas::validator("provider-setup-v2.json"),
+        &setup_doc,
+    );
+    assert_eq!(setup_doc["result"], "probe_denied");
+    assert_eq!(setup_doc["provider"]["auth"], "unknown");
+    assert!(!out(&setup).contains("Operation not permitted"));
+    assert!(!err(&setup).contains("upgrade"));
+    let add = machine.af(&[
+        "provider",
+        "add",
+        "codex-denied-add",
+        "--kind",
+        "codex",
+        "--auth-dir",
+        other.to_str().unwrap(),
+    ]);
+    assert_eq!(code(&add), 8, "{}", err(&add));
+    assert!(!err(&add).contains("upgrade"));
+    let doctor = machine
+        .command(&["doctor", "--json"])
+        .env("CODEX_SANDBOX", "seatbelt")
+        .env("CODEX_SANDBOX_NETWORK_DISABLED", "1")
+        .env("CODEX_THREAD_ID", "fixture-thread")
+        .output()
+        .unwrap();
+    let report: Value = serde_json::from_slice(&doctor.stdout).unwrap();
+    crate::schemas::valid(&crate::schemas::validator("doctor-v3.json"), &report);
+    let row = |id: &str| {
+        report["checks"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|row| row["id"] == id)
+            .unwrap()
+    };
+    assert_eq!(row("harness")["detail"], "driving agent harness: Codex");
+    assert_eq!(row("sandbox")["detail"], "agent sandbox: detected");
+    assert_eq!(row("network")["detail"], "agent sandbox network: blocked");
+    assert_eq!(row("providers")["fix"], Value::Null);
+    assert!(!report.to_string().contains("Operation not permitted"));
+    assert!(!row("providers").to_string().contains("detect --apply"));
+    std::fs::remove_file(machine.root.path().join("config/af/providers.toml")).unwrap();
+    let unregistered_doctor = machine
+        .command(&["doctor", "--json"])
+        .env("CODEX_SANDBOX", "seatbelt")
+        .output()
+        .unwrap();
+    let unregistered: Value = serde_json::from_slice(&unregistered_doctor.stdout).unwrap();
+    crate::schemas::valid(&crate::schemas::validator("doctor-v3.json"), &unregistered);
+    let provider_check = unregistered["checks"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|row| row["id"] == "providers")
+        .unwrap();
+    assert_eq!(provider_check["fix"], Value::Null);
+    assert!(!provider_check.to_string().contains("detect --apply"));
+    assert!(
+        !unexpected.exists(),
+        "no credential or model call is permitted"
+    );
 }
 
 /// A codex whose `exec --help` declares every option and whose login is ChatGPT, but whose bare
@@ -942,7 +1092,7 @@ fn setup_refuses_an_incompatible_cli_before_any_login() {
     let stdout = out(&setup);
     let reported: Value = serde_json::from_str(stdout.trim()).unwrap();
     crate::schemas::valid(
-        &crate::schemas::validator("provider-setup-v1.json"),
+        &crate::schemas::validator("provider-setup-v2.json"),
         &reported,
     );
     assert_eq!(reported["result"], "provider_cli_missing");

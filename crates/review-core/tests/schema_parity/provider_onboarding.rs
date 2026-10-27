@@ -10,7 +10,7 @@ use serde_json::{Value, json};
 
 fn status() -> Value {
     json!({
-        "schema": "af/provider-status@3",
+        "schema": "af/provider-status@4",
         "exit_code": 0,
         "usage_requested": false,
         "registry": {"path": "/home/o/.config/af/providers.toml", "warning": null},
@@ -31,9 +31,33 @@ fn status() -> Value {
     })
 }
 
+#[test]
+fn a_host_denied_status_is_closed_and_cannot_claim_a_login() {
+    let mut denied = status();
+    denied["exit_code"] = json!(8);
+    denied["providers"][0]["auth"] = json!("probe_denied");
+    denied["providers"][0]["credential"] = json!("none");
+    denied["providers"][0]["usability"] = json!("unusable");
+    assert_valid("provider-status-v4.json", &denied);
+    let mut wrong = denied.clone();
+    wrong["exit_code"] = json!(0);
+    assert_invalid(
+        "provider-status-v4.json",
+        &wrong,
+        "a denial cannot exit zero",
+    );
+    wrong = denied.clone();
+    wrong["schema"] = json!("af/provider-status@3");
+    assert_invalid(
+        "provider-status-v4.json",
+        &wrong,
+        "the retired shape fails closed",
+    );
+}
+
 fn setup() -> Value {
     json!({
-        "schema": "af/provider-setup@1",
+        "schema": "af/provider-setup@2",
         "result": "registered",
         "exit_code": 0,
         "login_launched": false,
@@ -51,8 +75,34 @@ fn setup() -> Value {
 }
 
 #[test]
+fn setup_denial_keeps_login_unknown_and_uses_its_own_exit_code() {
+    let mut denied = setup();
+    denied["result"] = json!("probe_denied");
+    denied["exit_code"] = json!(8);
+    denied["provider"]["registered"] = json!(false);
+    denied["provider"]["auth"] = json!("unknown");
+    denied["provider"]["usability"] = json!("unknown");
+    denied["diagnostic"] = json!("host denied the Provider capability probe");
+    assert_valid("provider-setup-v2.json", &denied);
+    let mut wrong = denied.clone();
+    wrong["schema"] = json!("af/provider-setup@1");
+    assert_invalid(
+        "provider-setup-v2.json",
+        &wrong,
+        "the retired setup version",
+    );
+    wrong = denied;
+    wrong["provider"]["auth"] = json!("authenticated");
+    assert_invalid(
+        "provider-setup-v2.json",
+        &wrong,
+        "denial cannot prove login",
+    );
+}
+
+#[test]
 fn status_states_are_stable_and_independent() {
-    assert_valid("provider-status-v3.json", &status());
+    assert_valid("provider-status-v4.json", &status());
 
     let window = json!({
         "window_minutes": 300,
@@ -63,14 +113,14 @@ fn status_states_are_stable_and_independent() {
     let mut probed = status();
     probed["usage_requested"] = json!(true);
     probed["providers"][0]["usage"] = json!({"state": "available", "windows": [window]});
-    assert_valid("provider-status-v3.json", &probed);
+    assert_valid("provider-status-v4.json", &probed);
 
     // The whole point of the usage axis: a probe that did not answer leaves authentication and
     // usability exactly where they were.
     let mut unavailable = probed.clone();
     unavailable["exit_code"] = json!(7);
     unavailable["providers"][0]["usage"] = json!({"state": "unavailable", "windows": []});
-    assert_valid("provider-status-v3.json", &unavailable);
+    assert_valid("provider-status-v4.json", &unavailable);
     assert_eq!(
         unavailable["providers"][0]["auth"],
         json!("authenticated"),
@@ -80,7 +130,7 @@ fn status_states_are_stable_and_independent() {
     let mut unsupported = probed.clone();
     unsupported["providers"][0]["credential"] = json!("api_key");
     unsupported["providers"][0]["usage"] = json!({"state": "unsupported", "windows": []});
-    assert_valid("provider-status-v3.json", &unsupported);
+    assert_valid("provider-status-v4.json", &unsupported);
 
     let mut ambient = status();
     ambient["providers"][0] = json!({
@@ -95,7 +145,7 @@ fn status_states_are_stable_and_independent() {
         "usability": "unusable",
         "usage": {"state": "not_applicable", "windows": []},
     });
-    assert_valid("provider-status-v3.json", &ambient);
+    assert_valid("provider-status-v4.json", &ambient);
 
     for (path, replacement, why) in [
         ("/exit_code", json!(1), "undocumented status exit code"),
@@ -124,14 +174,14 @@ fn status_states_are_stable_and_independent() {
     ] {
         let mut invalid = status();
         *invalid.pointer_mut(path).unwrap() = replacement;
-        assert_invalid("provider-status-v3.json", &invalid, why);
+        assert_invalid("provider-status-v4.json", &invalid, why);
     }
 
     // Exit 7 is a claim about a requested probe, never about a skipped one.
     let mut unrequested = status();
     unrequested["exit_code"] = json!(7);
     assert_invalid(
-        "provider-status-v3.json",
+        "provider-status-v4.json",
         &unrequested,
         "exit 7 without a usage request",
     );
@@ -141,7 +191,7 @@ fn status_states_are_stable_and_independent() {
     smuggled["providers"][0]["usage"]["windows"] = json!([{"window_minutes": 300, "used_percent": 42, "resets_at_unix": null,
             "reset_reported": false}]);
     assert_invalid(
-        "provider-status-v3.json",
+        "provider-status-v4.json",
         &smuggled,
         "windows without an answered probe",
     );
@@ -150,7 +200,7 @@ fn status_states_are_stable_and_independent() {
     let mut demoted = status();
     demoted["providers"][0]["usability"] = json!("unusable");
     assert_invalid(
-        "provider-status-v3.json",
+        "provider-status-v4.json",
         &demoted,
         "authenticated but unusable",
     );
@@ -163,18 +213,18 @@ fn status_names_what_it_found_unregistered_and_unreported_resets() {
     let mut found = status();
     found["found_unregistered"] = json!(["/home/o/.config/claude-work", "/home/o/.codex-acme"]);
     found["next_action"] = json!("af provider detect");
-    assert_valid("provider-status-v3.json", &found);
+    assert_valid("provider-status-v4.json", &found);
     let mut silent = found.clone();
     silent["next_action"] = json!(null);
     assert_invalid(
-        "provider-status-v3.json",
+        "provider-status-v4.json",
         &silent,
         "found without a next action",
     );
     let mut idle = status();
     idle["next_action"] = json!("af provider detect");
     assert_invalid(
-        "provider-status-v3.json",
+        "provider-status-v4.json",
         &idle,
         "a next action with nothing found",
     );
@@ -185,7 +235,7 @@ fn status_names_what_it_found_unregistered_and_unreported_resets() {
         "window_minutes": 10080, "used_percent": 88, "resets_at_unix": null,
         "reset_reported": false,
     }]});
-    assert_valid("provider-status-v3.json", &unreported);
+    assert_valid("provider-status-v4.json", &unreported);
     for (resets_at, reported, why) in [
         (json!(null), true, "a reported reset without its time"),
         (
@@ -197,7 +247,7 @@ fn status_names_what_it_found_unregistered_and_unreported_resets() {
         let mut invalid = unreported.clone();
         invalid["providers"][0]["usage"]["windows"][0]["resets_at_unix"] = resets_at;
         invalid["providers"][0]["usage"]["windows"][0]["reset_reported"] = json!(reported);
-        assert_invalid("provider-status-v3.json", &invalid, why);
+        assert_invalid("provider-status-v4.json", &invalid, why);
     }
 }
 
@@ -211,7 +261,7 @@ fn status_reports_a_cli_that_cannot_start_under_exit_4() {
     broken["providers"][0]["credential"] = json!("none");
     broken["providers"][0]["usability"] = json!("unusable");
     broken["providers"][0]["usage"] = json!({"state": "not_applicable", "windows": []});
-    assert_valid("provider-status-v3.json", &broken);
+    assert_valid("provider-status-v4.json", &broken);
 
     let mut with_usage = broken.clone();
     with_usage["usage_requested"] = json!(true);
@@ -222,7 +272,7 @@ fn status_reports_a_cli_that_cannot_start_under_exit_4() {
         .as_array_mut()
         .unwrap()
         .push(healthy);
-    assert_valid("provider-status-v3.json", &with_usage);
+    assert_valid("provider-status-v4.json", &with_usage);
 
     for (path, replacement, why) in [
         (
@@ -243,12 +293,12 @@ fn status_reports_a_cli_that_cannot_start_under_exit_4() {
     ] {
         let mut invalid = broken.clone();
         *invalid.pointer_mut(path).unwrap() = replacement;
-        assert_invalid("provider-status-v3.json", &invalid, why);
+        assert_invalid("provider-status-v4.json", &invalid, why);
     }
     let mut unexplained = status();
     unexplained["exit_code"] = json!(4);
     assert_invalid(
-        "provider-status-v3.json",
+        "provider-status-v4.json",
         &unexplained,
         "exit 4 without a Provider whose CLI cannot start",
     );
@@ -256,7 +306,7 @@ fn status_reports_a_cli_that_cannot_start_under_exit_4() {
     let mut leaked = broken.clone();
     leaked["providers"][0]["cli_error"] = json!("Error: Missing optional dependency");
     assert_invalid(
-        "provider-status-v3.json",
+        "provider-status-v4.json",
         &leaked,
         "Provider-authored CLI error",
     );
@@ -275,7 +325,7 @@ fn status_reports_an_incompatible_cli_under_exit_4() {
     incompatible["providers"][0]["credential"] = json!("none");
     incompatible["providers"][0]["usability"] = json!("unusable");
     incompatible["providers"][0]["usage"] = json!({"state": "not_applicable", "windows": []});
-    assert_valid("provider-status-v3.json", &incompatible);
+    assert_valid("provider-status-v4.json", &incompatible);
 
     for (path, replacement, why) in [
         (
@@ -296,7 +346,7 @@ fn status_reports_an_incompatible_cli_under_exit_4() {
     ] {
         let mut invalid = incompatible.clone();
         *invalid.pointer_mut(path).unwrap() = replacement;
-        assert_invalid("provider-status-v3.json", &invalid, why);
+        assert_invalid("provider-status-v4.json", &invalid, why);
     }
     for (key, value) in [
         ("cli_version", json!("2.1.101 (Claude Code)")),
@@ -305,7 +355,7 @@ fn status_reports_an_incompatible_cli_under_exit_4() {
     ] {
         let mut leaked = incompatible.clone();
         leaked["providers"][0][key] = value;
-        assert_invalid("provider-status-v3.json", &leaked, key);
+        assert_invalid("provider-status-v4.json", &leaked, key);
     }
 }
 
@@ -324,10 +374,10 @@ fn status_never_carries_personal_credential_or_provider_text() {
     ] {
         let mut leaked = status();
         leaked["providers"][0][key] = json!("leaked");
-        assert_invalid("provider-status-v3.json", &leaked, key);
+        assert_invalid("provider-status-v4.json", &leaked, key);
         let mut leaked_root = status();
         leaked_root[key] = json!("leaked");
-        assert_invalid("provider-status-v3.json", &leaked_root, key);
+        assert_invalid("provider-status-v4.json", &leaked_root, key);
     }
     let mut labelled = status();
     labelled["usage_requested"] = json!(true);
@@ -342,7 +392,7 @@ fn status_never_carries_personal_credential_or_provider_text() {
         }],
     });
     assert_invalid(
-        "provider-status-v3.json",
+        "provider-status-v4.json",
         &labelled,
         "Provider-authored window label",
     );
@@ -350,11 +400,11 @@ fn status_never_carries_personal_credential_or_provider_text() {
 
 #[test]
 fn setup_outcomes_bind_result_exit_code_and_next_action() {
-    assert_valid("provider-setup-v1.json", &setup());
+    assert_valid("provider-setup-v2.json", &setup());
 
     let mut already = setup();
     already["result"] = json!("already_registered");
-    assert_valid("provider-setup-v1.json", &already);
+    assert_valid("provider-setup-v2.json", &already);
 
     // The safe non-interactive outcome: no login was started, and a human is given the exact
     // command instead of an OAuth exchange.
@@ -369,10 +419,10 @@ fn setup_outcomes_bind_result_exit_code_and_next_action() {
         "command": "af provider setup codex-main --kind codex --auth-dir /home/o/.codex --login",
     });
     human["diagnostic"] = json!("af refuses to start the codex CLI login outside a terminal");
-    assert_valid("provider-setup-v1.json", &human);
+    assert_valid("provider-setup-v2.json", &human);
     let mut opt_in = human.clone();
     opt_in["next_action"]["kind"] = json!("interactive_login");
-    assert_valid("provider-setup-v1.json", &opt_in);
+    assert_valid("provider-setup-v2.json", &opt_in);
 
     for (result, code, auth) in [
         ("provider_cli_missing", 4, "unknown"),
@@ -391,11 +441,11 @@ fn setup_outcomes_bind_result_exit_code_and_next_action() {
         };
         failed["provider"]["usability"] = json!(usability);
         failed["diagnostic"] = json!("af-authored reason");
-        assert_valid("provider-setup-v1.json", &failed);
+        assert_valid("provider-setup-v2.json", &failed);
 
         let mut mismatched = failed.clone();
         mismatched["exit_code"] = json!(0);
-        assert_invalid("provider-setup-v1.json", &mismatched, "exit code drift");
+        assert_invalid("provider-setup-v2.json", &mismatched, "exit code drift");
     }
 
     for (path, replacement, why) in [
@@ -408,11 +458,11 @@ fn setup_outcomes_bind_result_exit_code_and_next_action() {
             "next action that is not an af command",
         ),
         ("/provider/auth", json!("unavailable"), "open auth state"),
-        ("/schema", json!("af/provider-setup@2"), "unversioned drift"),
+        ("/schema", json!("af/provider-setup@1"), "unversioned drift"),
     ] {
         let mut invalid = setup();
         *invalid.pointer_mut(path).unwrap() = replacement;
-        assert_invalid("provider-setup-v1.json", &invalid, why);
+        assert_invalid("provider-setup-v2.json", &invalid, why);
     }
 
     // Success may not carry a next action, and a refusal may not claim registration.
@@ -422,7 +472,7 @@ fn setup_outcomes_bind_result_exit_code_and_next_action() {
         "command": "af provider setup codex-main --kind codex --login",
     });
     assert_invalid(
-        "provider-setup-v1.json",
+        "provider-setup-v2.json",
         &succeeded_with_action,
         "success with a pending human action",
     );
@@ -431,7 +481,7 @@ fn setup_outcomes_bind_result_exit_code_and_next_action() {
     refusal_claiming_success["exit_code"] = json!(5);
     refusal_claiming_success["diagnostic"] = json!("provider `codex-main` already exists");
     assert_invalid(
-        "provider-setup-v1.json",
+        "provider-setup-v2.json",
         &refusal_claiming_success,
         "refusal that still claims an authenticated registration",
     );
@@ -454,10 +504,10 @@ fn setup_never_carries_oauth_credential_or_provider_output() {
     ] {
         let mut leaked = setup();
         leaked[key] = json!("leaked");
-        assert_invalid("provider-setup-v1.json", &leaked, key);
+        assert_invalid("provider-setup-v2.json", &leaked, key);
         let mut leaked_provider = setup();
         leaked_provider["provider"][key] = json!("leaked");
-        assert_invalid("provider-setup-v1.json", &leaked_provider, key);
+        assert_invalid("provider-setup-v2.json", &leaked_provider, key);
     }
     let mut leaked_action = setup();
     leaked_action["result"] = json!("human_action_required");
@@ -472,7 +522,7 @@ fn setup_never_carries_oauth_credential_or_provider_output() {
         "oauth_url": "https://auth.example.test/device?code=ABCD-EFGH",
     });
     assert_invalid(
-        "provider-setup-v1.json",
+        "provider-setup-v2.json",
         &leaked_action,
         "OAuth material beside the next action",
     );
@@ -488,7 +538,7 @@ fn disabled_status_has_exact_expiry_and_enable_action_without_auth_or_usage_clai
     disabled["providers"][0]["disabled_until"] =
         json!({"unix_seconds": 1800000000, "nanoseconds": 123456789});
     disabled["providers"][0]["enable_command"] = json!("af provider enable codex-main");
-    assert_valid("provider-status-v3.json", &disabled);
+    assert_valid("provider-status-v4.json", &disabled);
     for (path, value) in [
         ("/schema", json!("af/provider-status@2")),
         ("/providers/0/auth", json!("authenticated")),
@@ -498,6 +548,6 @@ fn disabled_status_has_exact_expiry_and_enable_action_without_auth_or_usage_clai
     ] {
         let mut invalid = disabled.clone();
         *invalid.pointer_mut(path).unwrap() = value;
-        assert_invalid("provider-status-v3.json", &invalid, path);
+        assert_invalid("provider-status-v4.json", &invalid, path);
     }
 }
