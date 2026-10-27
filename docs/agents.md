@@ -99,7 +99,7 @@ command to run next. The exit code says the same to a script: 0 verified, 3 chan
 stderr's last line is always `Task TASK_ID: phase/outcome/cause; next: COMMAND`. Branch on
 `state.outcome` and run `state.next_action`; never parse the prose. `next_action` carries the
 `--repo`, `--state` or `--workspace` the command was given, so it runs as printed. A refusal
-under `--json` is one `af/error@1` document with the same exit code; one af classifies, such as a
+under `--json` is one `af/error@2` document with the same exit code; one af classifies, such as a
 node past its recovery allowance, also carries `cause`, `next_action` and `details`
 (`af help json`).
 

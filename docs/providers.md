@@ -186,7 +186,7 @@ carries as `found_unregistered` with `next_action` `af provider detect`. `af doc
 onboard` list the same directories from the same scan.
 
 Exit codes: 0 the scan completed, 1 unclassified failure, an `--apply` refused for an unreadable
-registry among them, 2 usage error (both as one `af/error@1` document under `--json`), 4 a found
+registry among them, 2 usage error (both as one `af/error@2` document under `--json`), 4 a found
 CLI cannot start or is incompatible, or a login was left unregistered because its CLI is off
 `PATH` (the rows are still printed), 5 a registry conflict stopped `--apply`. Never 3 and never
 6: detect starts no login.

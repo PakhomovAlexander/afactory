@@ -259,9 +259,9 @@ fn a_newer_af_proceeds_and_says_so() {
 
     commit_all(&repo);
     let planned = plan(&repo);
-    assert!(planned.status.success(), "{}", stderr(&planned));
+    assert_eq!(planned.status.code(), Some(1), "{}", stderr(&planned));
     let document: serde_json::Value = serde_json::from_slice(&planned.stdout).unwrap();
-    assert_eq!(document["schema"], "af/review-plan@1");
+    assert_eq!(document["cause"], "review_binding_missing");
     assert!(
         stderr(&planned).contains("pinned by af 0.0.1"),
         "the note goes to stderr, leaving JSON stdout intact: {}",
@@ -302,7 +302,9 @@ fn an_unpinned_lock_stays_silent() {
 
     commit_all(&repo);
     let planned = plan(&repo);
-    assert!(planned.status.success(), "{}", stderr(&planned));
+    assert_eq!(planned.status.code(), Some(1), "{}", stderr(&planned));
+    let document: serde_json::Value = serde_json::from_slice(&planned.stdout).unwrap();
+    assert_eq!(document["cause"], "review_binding_missing");
     assert!(
         !stderr(&planned).contains("pinned by af"),
         "{}",

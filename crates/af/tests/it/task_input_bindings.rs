@@ -303,7 +303,7 @@ fn a_chain_of_tasks_becomes_a_chain_of_artifact_ids_in_one_store() {
     // Its delivery is refused, before the prepared record and any Git mutation.
     let refused_tree = root.path().join("refused");
     let refused = deliver("chain-source", "chain/source", &refused_tree, 1);
-    assert_eq!(refused["schema"], "af/error@1");
+    assert_eq!(refused["schema"], "af/error@2");
     let reason = refused["error"].as_str().unwrap();
     assert!(reason.contains("task chain-base/snapshot"), "{reason}");
     assert!(reason.contains("no commit"), "{reason}");

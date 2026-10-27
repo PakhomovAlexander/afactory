@@ -353,6 +353,26 @@ fn progress(
     prepared: &crate::authority::PreparedRun,
     captured: &CapturedReviewTask,
 ) {
+    if let Some(policy) = &options.policy_rev {
+        crate::run_progress(options, format_args!("policy   {policy}"));
+    }
+    if let Some(base) = &options.base {
+        crate::run_progress(options, format_args!("base     {base}"));
+    }
+    crate::run_progress(
+        options,
+        format_args!(
+            "candidate {}",
+            if options.uncommitted {
+                "worktree"
+            } else {
+                options.candidate.as_deref().unwrap_or("HEAD")
+            }
+        ),
+    );
+    for (node, id) in &options.provider_bindings {
+        crate::run_progress(options, format_args!("binding  {node} => {id}"));
+    }
     let convergence = prepared.convergence;
     crate::run_progress(
         options,

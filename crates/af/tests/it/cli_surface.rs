@@ -242,11 +242,22 @@ fn task_states_topic_and_the_state_flags_describe_the_commands() {
         "af/task-list-entry@3",
         "af/task-report@2",
         "af/task-selection@3",
-        "af/error@1",
+        "af/error@2",
         "recovery_exhausted",
         "planning_diagnostic.required_limits",
     ] {
         assert!(json.contains(needle), "{needle}:\n{json}");
+    }
+    let errors = out(&af(&["help", "errors"]));
+    for cause in ["no_task_catalog", "review_binding_missing", "plan_mismatch"] {
+        assert!(errors.contains(cause), "{errors}");
+        let one = out(&af(&["help", "errors", cause]));
+        assert!(one.starts_with(&format!("{cause}: ")), "{one}");
+        let listed = errors.split_whitespace().collect::<Vec<_>>().join(" ");
+        assert!(
+            listed.contains(one.trim_start_matches(&format!("{cause}: ")).trim()),
+            "{errors}"
+        );
     }
     for (command, flags) in [
         (
@@ -638,7 +649,7 @@ fn project_help_and_the_workspace_flag_describe_the_commands() {
             "--workspace LABEL",
             "Never: writes inside a checkout, commits, pushes, or removes a Store.",
             "af/project@1",
-            "af/error@1",
+            "af/error@2",
             "af project workspace new triage --branch agent/triage",
             "af project workspace remove triage --delete-worktree",
         ] {
@@ -1208,7 +1219,7 @@ fn json_errors_are_one_document_on_stdout() {
     assert_eq!(failed.status.code(), Some(1));
     let document: serde_json::Value = serde_json::from_slice(&failed.stdout)
         .unwrap_or_else(|_| panic!("not JSON: {}", out(&failed)));
-    assert_eq!(document["schema"], "af/error@1");
+    assert_eq!(document["schema"], "af/error@2");
     assert!(
         document["error"].as_str().unwrap().contains("HOME"),
         "{document}"
@@ -1385,6 +1396,7 @@ fn root_help_has_one_command_list_and_every_named_topic_resolves() {
             "environment",
             "exit-codes",
             "json",
+            "errors",
             "providers",
             "task-states",
             "task-file",
@@ -1841,7 +1853,7 @@ fn task_run_help_and_the_task_file_topic_describe_continuation() {
     }
 }
 
-/// A usage error under `--json` is the one `af/error@1` document `af help json` promises, with
+/// A usage error under `--json` is the one `af/error@2` document `af help json` promises, with
 /// clap's message and exit 2, beside clap's own lines on stderr; without `--json` stdout stays
 /// empty, and `--help` and `--version` under `--json` are no errors.
 #[test]
@@ -1885,8 +1897,8 @@ fn usage_errors_under_json_print_one_error_document() {
         assert_eq!(json.status.code(), Some(2), "{args:?}: {}", err(&json));
         let document: serde_json::Value = serde_json::from_slice(&json.stdout)
             .unwrap_or_else(|_| panic!("{args:?}: not one document: {}", out(&json)));
-        crate::schemas::valid(&crate::schemas::validator("error-v1.json"), &document);
-        assert_eq!(document["schema"], "af/error@1", "{args:?}");
+        crate::schemas::valid(&crate::schemas::validator("error-v2.json"), &document);
+        assert_eq!(document["schema"], "af/error@2", "{args:?}");
         assert_eq!(document["exit_code"], 2, "{args:?}");
         assert_eq!(document["cause"], "usage", "{args:?}");
         let message = document["error"].as_str().unwrap();
@@ -1907,7 +1919,7 @@ fn usage_errors_under_json_print_one_error_document() {
         let shown = af(args);
         assert!(shown.status.success(), "{args:?}: {}", err(&shown));
         assert!(
-            !out(&shown).contains("af/error@1"),
+            !out(&shown).contains("af/error@2"),
             "{args:?}: {}",
             out(&shown)
         );

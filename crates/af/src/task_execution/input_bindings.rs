@@ -7,7 +7,7 @@
 //! replay never read the referencing Task file again.
 //!
 //! Every refusal here is an ordinary Task-file input error — `af: …` on stderr, exit 1, the
-//! `af/error@1` document under `--json` — and every one of them runs before a Worker is
+//! `af/error@2` document under `--json` — and every one of them runs before a Worker is
 //! dispatched or a Provider admitted, because `start_captured` resolves bindings while it is
 //! still building the Task revision.
 

@@ -520,7 +520,7 @@ A rendered `orient` for afactory at bf027de6, abridged:
 | `af project tasks [--workspace LABEL] [--json]` (PJ5) | Every Task across the Project's Workspaces, with outcome and spend: `af task list` over the whole Project. |
 
 Exit codes: 0, 1 for a failure that names its next action, 2 for usage, and the existing
-`af/error@1` document under `--json`. `af onboard --apply` grows the registration and the first
+`af/error@2` document under `--json`. `af onboard --apply` grows the registration and the first
 Survey (§3.4); no `af project init` exists, because onboarding is already the one way a project
 starts.
 

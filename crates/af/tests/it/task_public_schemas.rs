@@ -54,7 +54,7 @@ fn json_output(output: Output, status: i32) -> Value {
 
 fn refused(output: Output, label: &str) {
     let error = json_output(output, 1);
-    assert_eq!(error["schema"], "af/error@1", "{label}");
+    assert_eq!(error["schema"], "af/error@2", "{label}");
     assert!(!error["error"].as_str().unwrap().is_empty(), "{label}");
 }
 

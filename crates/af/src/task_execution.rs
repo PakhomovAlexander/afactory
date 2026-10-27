@@ -609,7 +609,16 @@ fn capture_authority(
     task_kind: &str,
     delivery_undeclared_af_paths: review_config::layout::UndeclaredAfPathsPolicy,
 ) -> Result<(String, RunAuthority, TaskPlanCompiler), String> {
-    let bytes = captured_file(cas, manifest, ".af/task-catalog.toml")?;
+    let bytes = captured_file(cas, manifest, ".af/task-catalog.toml").map_err(|message| {
+        if manifest.get(".af/task-catalog.toml").is_some() { return message; }
+        crate::error_document::typed(
+            format!("{message}; review and commit a local catalog, then select that commit; af catalog init --repo .. --profile software --destination af-demo creates a starter"),
+            crate::error_document::Detail::new(crate::error_document::Cause::NoTaskCatalog)
+                .next("af catalog init --repo .. --profile software --destination af-demo")
+                .with("path", ".af/task-catalog.toml")
+                .with("revision", "selected Authority Snapshot"),
+        )
+    })?;
     let mut catalog: TaskCatalog = parse(Path::new(".af/task-catalog.toml"), &bytes)?;
     let provider_admission = provider_admission::catalog_cost(&catalog)?;
     let import_locks = catalog::restore_imports(cas, manifest, &mut catalog)?;
@@ -1556,7 +1565,21 @@ fn start_bytes(
     let source_repo = Repo::open(&repo, git_home.path());
     let policy_source = Capture::new(&source_repo, &cas)
         .committed(&options.authority)
-        .map_err(|e| e.to_string())?;
+        .map_err(|e| {
+            let message = e.to_string();
+            if message.contains("not a git repository") {
+                crate::error_document::typed(
+                    format!(
+                        "{} is not a Git repository; choose a repository with a commit",
+                        repo.display()
+                    ),
+                    crate::error_document::Detail::new(crate::error_document::Cause::NotRepository)
+                        .with("repo", repo.display().to_string()),
+                )
+            } else {
+                message
+            }
+        })?;
     let delivery = captured_delivery_policy(&cas, &policy_source.manifest)?;
     let authority = capture_authority(
         &cas,
@@ -3032,11 +3055,24 @@ pub(super) fn run(
     }
     if let Some(expected) = confirm_plan {
         if !review_core::is_digest(expected) || projection.plan_id.as_deref() != Some(expected) {
-            return Err(format!(
-                "Plan confirmation differs from the current captured plan; inspect it again: \
+            return Err(crate::error_document::typed(
+                format!(
+                    "Plan confirmation differs from the current captured plan; inspect it again: \
                  Task {id}'s plan is {}; read it with `af task explain {id} --tree` and confirm \
                  that one",
-                projection.plan_id.as_deref().unwrap_or("not recorded")
+                    projection.plan_id.as_deref().unwrap_or("not recorded")
+                ),
+                crate::error_document::Detail::new(crate::error_document::Cause::PlanMismatch)
+                    .next(with_selectors(&format!(
+                        "af task explain {} --tree",
+                        shell_words::quote(id)
+                    )))
+                    .with("task_id", id)
+                    .with("confirmed", expected)
+                    .with(
+                        "current",
+                        projection.plan_id.as_deref().unwrap_or("not recorded"),
+                    ),
             ));
         }
     }
@@ -3624,9 +3660,15 @@ pub(crate) fn task_not_found(state: &Path, id: &str) -> String {
         }
         Err(error) => format!(" (its Tasks cannot be listed: {error})"),
     };
-    format!(
-        "Task {} not found in {place}{holds}; af task list{selector} lists its Tasks",
-        preview::text(id)
+    crate::error_document::typed(
+        format!(
+            "Task {} not found in {place}{holds}; af task list{selector} lists its Tasks",
+            preview::text(id)
+        ),
+        crate::error_document::Detail::new(crate::error_document::Cause::TaskNotFound)
+            .next(format!("af task list{selector}"))
+            .with("task_id", id)
+            .with("store", place),
     )
 }
 

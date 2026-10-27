@@ -296,7 +296,7 @@ fn a_repository_without_af_is_told_to_onboard() {
     let missing = machine.doctor(&plain, &["--repo", "absent", "--json"], None);
     assert_eq!(missing.status.code(), Some(1));
     let error: serde_json::Value = serde_json::from_slice(&missing.stdout).unwrap();
-    assert_eq!(error["schema"], "af/error@1");
+    assert_eq!(error["schema"], "af/error@2");
     assert!(
         error["error"]
             .as_str()

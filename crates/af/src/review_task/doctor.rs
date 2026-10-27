@@ -163,7 +163,7 @@ impl PreparedDoctor {
         if let Some(error) = self.failure {
             eprintln!("af provider doctor: {error}");
             // A completed observation already emitted its one typed document. Returning
-            // an exit code avoids main adding af/error@1 beside the doctor document.
+            // an exit code avoids main adding af/error@2 beside the doctor document.
             1
         } else {
             0

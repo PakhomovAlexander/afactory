@@ -457,7 +457,7 @@ next: af task deliver chain-base --branch af/chain-base --worktree ../chain-base
         &["task", "findings", "chain-base", "--round", "2", "--json"],
     );
     let error = document(&missing, 1, None);
-    assert_eq!(error["schema"], "af/error@1");
+    assert_eq!(error["schema"], "af/error@2");
     let unknown = af(&repo, &state, &["task", "findings", "nope"]);
     assert_eq!(unknown.status.code(), Some(1));
     assert!(

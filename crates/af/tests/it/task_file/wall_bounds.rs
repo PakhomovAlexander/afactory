@@ -68,7 +68,7 @@ fn zero_file_wall_refuses_before_state_and_does_not_consume_the_task_id() {
             "{printed}"
         );
         let document: Value = serde_json::from_slice(&out.stdout).expect(&printed);
-        assert_eq!(document["schema"], "af/error@1", "{printed}");
+        assert_eq!(document["schema"], "af/error@2", "{printed}");
         assert!(
             document["error"]
                 .as_str()
