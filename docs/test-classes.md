@@ -267,3 +267,48 @@ of 334–490s. These source-run references are supplied task observations, not i
 artifacts in this checkout. No historical JUnit was supplied, so no measured before/after result or
 performance score is claimed. The commands above produce replay estimates when actual JUnit is
 available; the offline fixture tests exercise all four scenarios without inventing historical data.
+
+## Hosted release validation proof
+
+`Release validation proof` (`.github/workflows/release-validation-proof.yml`) exercises the
+existing reusable validator with `release: true`, without running the publishing workflow.
+It changes no production default. Dispatch it with the explicit `profile` choice `fast` or
+`full`; fast selects functional/e2e/uix and reports perf **NOT RUN**, while full selects all
+four classes. Both choices run the selected classes and mandatory base checks on Linux and
+macOS. The validator retains its live Linux container probes, selected perf companions,
+artifact admission and fail-closed aggregates.
+
+Before merge, the workflow accepts only `pull_request` events whose changed paths include
+this proof workflow itself, with exactly one explicit `release:fast` or `release:full` label.
+Other PR paths alone never trigger it. Other `test:*` and `no-*` labels still govern ordinary
+PR validation; they cannot reduce the proof's chosen profile. Conflicting profile labels fail.
+Label events reselect a proof plan from that event's labels; a retry uses the original event
+payload. To prove a different profile, change the label or dispatch a new run. No
+`pull_request_target`, credentials persisted by checkout, inherited secrets, write permission,
+release signing or publication job is used.
+
+The operator starts the live CI runs. After the workflow is available on the default branch,
+for example, use the Actions UI or dispatch each profile against the intended ref:
+
+```sh
+gh workflow run release-validation-proof.yml --ref BRANCH -f profile=fast
+gh workflow run release-validation-proof.yml --ref BRANCH -f profile=full
+```
+
+Inspect the proof summary and `release-validation-proof-ATTEMPT` artifact: `plan.json` binds
+the exact checked-out `github.sha` (the merge SHA on PR events), workspace version and catalog
+digest using the production class resolver. The proof refuses a different checkout SHA.
+`local-binding.log` and `local-binding-results.json` retain the existing real release resolver
+fixtures, including changed labels on retries, frozen tag SHA/version/catalog refusals and
+full fallback for manual/unbound tags. These fixtures use disposable local Git repositories,
+local bare remotes and a fixture `gh` API; simulated commits/tags never touch GitHub refs.
+Their timing is explicitly a **local binding simulation executed in CI**, not release
+publication. Scratch repositories are removed after each fixture.
+
+Require the proof result and reusable validation to succeed. Inspect the usual
+`validation-plan-ATTEMPT`, `validation-base-OS-ATTEMPT`, `validation-class-OS-CLASS-ATTEMPT`,
+container and aggregate summary artifacts for each selected platform/class; selected-class
+JUnit and step timings remain separate from base/build and companion costs. A skipped,
+failed or missing selected result is not a proof pass. Compare fast/full observations only
+for matching SHA/version/catalog and equivalent runner conditions. Omitted perf work is
+NOT RUN; this workflow provides no release publication timing or verified savings claim.
