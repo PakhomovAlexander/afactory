@@ -12,17 +12,22 @@ same gates and a failure there ends the Task:
 
 1. `cargo fmt --all`
 2. `cargo clippy --workspace --all-targets -- -D warnings`
-3. The tests of every crate you touched, with `--workspace` selection
-   (`cargo test --workspace --lib`, `cargo test --workspace --test <stem>`), never `-p`.
+3. The tests of what you touched, through nextest's gate profile with a filter that names the
+   test binaries or modules you changed, for example
+   `cargo nextest run --workspace --locked --profile ci -E 'binary(af::it) & test(/^task_cli::/)'`,
+   and the script tests your change touches (`python3 -I scripts/test-<name>.py`). Keep the
+   `--workspace` selection (never `-p`), but never the whole workspace without a filter.
 4. `npx --yes markdownlint-cli2@0.22.1 <each Markdown file you changed>`
-5. Run the full suite as the last step; no edit after it: `cargo nextest run --workspace`, every
-   test and no filter. A fix after it means running it again; a candidate sealed after an edit
-   the full suite never saw is a candidate nobody verified.
+5. Run that filtered selection again as the last step; no edit after it. Never run the whole
+   workspace suite, `make check`, `make check-fast` or `make check-classes`: the gate runs the
+   full check after you, and a second whole-suite run on the same host doubles its load and
+   its flakes (owner's decision, 27 October 2026). A fix after your last run means running the
+   selection again; a candidate sealed after an edit no test saw is a candidate nobody verified.
 
 Build output and caches stay where the tools put them: anything added under a top-level name the
 repository did not have (`target/`, `.cache/`) and any new top-level dotfile are discarded as
 scratch, never part of your change. So never add a new top-level directory or dotfile you mean
-to keep. Do not run `make check` itself: it takes longer than your Attempt allows. Follow
+to keep. Do not run `make check` itself. Follow
 existing patterns and keep `deny_unknown_fields` and existing schema parity tests satisfied.
 
 ## Rules that bind you
@@ -63,7 +68,7 @@ the Task captured.
 
 Return the reply envelope the request describes. The `report` payload's `summary` states what
 you changed, which tests and fixtures you added, and any deliverable you could not complete
-and why. It ends with one line about that last full run, `last full run at <commit/time>; edits
+and why. It ends with one line about that last run, `last test run at <time>: <the filter>; edits
 after it: none`, with the run's summary line. When a `findings` input is present, the summary also lists every finding by its `id`
 as `fixed`, `disputed` or `out of scope`, each with one line of reason. Be exact; the evaluator
 reads only this summary, the sealed tree and the check receipts.

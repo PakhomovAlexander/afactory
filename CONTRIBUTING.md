@@ -32,6 +32,10 @@ Where Linux and macOS differ, split on `target_os`.
 
 ## Before every pull request
 
+For a code Task, the implementer runs a filtered nextest selection through `--profile ci`
+for the tests it touched and repeats that selection after its last edit. The Task gate owns
+the full suite. Before a pull request, run the full local check:
+
 ```sh
 make check
 ```
@@ -57,11 +61,13 @@ failed build that prevents both Rust and Python test execution.
 
 The gate runs one test per process and schedules tests across every test binary at once
 ([ADR-0124](docs/adr/0124-run-tests-in-parallel-processes-and-link-them-once.md)).
-`TEST_THREADS` bounds how many run at a time: four on a four-core CI runner, half the cores on
-a developer machine. Native-provider fixtures spawn several processes per test, so the host CPU
-count itself is not a suitable bound. The few tests that assert against a fixed real-time budget
-are listed in `.config/nextest.toml` and run alone; add a test there when its assertion depends
-on wall-clock, never by raising the budget it asserts.
+`TEST_THREADS` bounds how many tests `make test` runs at a time: four on a four-core CI runner, half
+the cores on a developer machine. A bare `cargo nextest run` uses the default profile's four
+threads. Native-provider fixtures spawn several processes per test, so the host CPU count
+itself is not a suitable bound. The few tests that assert against a fixed real-time budget
+are listed in `.config/nextest.toml` under the default profile and run alone in both default
+and `ci`; add a test there when its assertion depends on wall-clock, never by raising the
+budget it asserts.
 
 The runner is the pinned, checksum-verified binary that `scripts/install-nextest.sh` installs
 into a temporary tools directory (CI) or `cargo install cargo-nextest --locked` (a developer
