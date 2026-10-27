@@ -11,6 +11,7 @@ import subprocess
 import sys
 import tempfile
 import unittest
+from unittest import mock
 
 sys.dont_write_bytecode = True
 ROOT = Path(__file__).resolve().parent.parent
@@ -129,6 +130,113 @@ class Release(unittest.TestCase):
             self.assertEqual(before, manifest.read_bytes())
             self.assertEqual(list(fixture.iterdir()), [manifest])
 
+
+
+class ReleaseProof(unittest.TestCase):
+    def setUp(self):
+        spec = importlib.util.spec_from_file_location('release_proof', ROOT / 'scripts/release-validation-proof.py')
+        self.proof = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(self.proof)
+        self.sha = 'a' * 40
+
+    def test_explicit_profiles_bind_exact_sha_version_and_catalog(self):
+        for profile, selected in [('fast', tc.FAST), ('full', list(tc.CLASSES))]:
+            plan = self.proof.proof_plan(self.sha, '1.2.3', 'workflow_dispatch', profile)
+            self.assertEqual(plan, tc.resolve(['release:' + profile], 'release', self.sha, '1.2.3'))
+            self.assertEqual(plan['selected'], selected)
+            self.assertEqual(plan['classes']['perf']['state'], 'NOT RUN' if profile == 'fast' else 'SELECTED')
+        for event, profile, sha, version in [('push', 'fast', self.sha, '1.2.3'),
+                                              ('workflow_dispatch', '', self.sha, '1.2.3'),
+                                              ('workflow_dispatch', 'fast', 'main', '1.2.3'),
+                                              ('workflow_dispatch', 'full', self.sha, '')]:
+            with self.assertRaises(ValueError):
+                self.proof.proof_plan(sha, version, event, profile)
+
+    def test_pr_opt_in_is_exact_and_ordinary_labels_cannot_reduce_proof(self):
+        for labels in ([], ['test:functional'], ['release:fast', 'release:full']):
+            with self.assertRaises(ValueError):
+                self.proof.proof_plan(self.sha, '1.2.3', 'pull_request', event={
+                    'pull_request': {'labels': [{'name': label} for label in labels]}})
+        for profile in ('fast', 'full'):
+            event = {'pull_request': {'labels': [{'name': 'release:' + profile},
+                                                {'name': 'no-e2e'}, {'name': 'test:functional'}]}}
+            self.assertEqual(self.proof.proof_plan(self.sha, '1.2.3', 'pull_request', event=event),
+                             tc.resolve(['release:' + profile], 'release', self.sha, '1.2.3'))
+
+    def test_entrypoint_retains_exact_plan_and_emits_it_only_after_simulation(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            (root / 'Cargo.toml').write_text('[workspace.package]\nversion = "1.2.3"\n')
+            output = root / 'evidence'
+            github_output = root / 'github-output'
+            github_output.touch()
+            summary = root / 'summary'
+            environment = {'GITHUB_SHA': self.sha, 'GITHUB_EVENT_NAME': 'workflow_dispatch',
+                           'GITHUB_OUTPUT': str(github_output), 'GITHUB_STEP_SUMMARY': str(summary)}
+            arguments = ['proof', '--profile', 'fast', '--output', str(output)]
+            # The resolver simulation has its own real Git integration suite. Here exercise
+            # the actual CLI handoff and exact checkout binding, without rerunning it nested.
+            with mock.patch.dict(os.environ, environment), mock.patch.object(self.proof, 'ROOT', root), \
+                    mock.patch.object(sys, 'argv', arguments), \
+                    mock.patch.object(self.proof.subprocess, 'check_output', return_value=self.sha + '\n'), \
+                    mock.patch.object(self.proof.tc, 'audit_source'), \
+                    mock.patch.object(self.proof, 'simulate', return_value={'tests_run': 22}) as simulate:
+                self.proof.main()
+                plan = tc.read(output / 'plan.json')
+                self.assertEqual(plan, tc.resolve(['release:fast'], 'release', self.sha, '1.2.3'))
+                line = github_output.read_text().strip()
+                self.assertEqual(json.loads(line.split('=', 1)[1]), plan)
+                self.assertEqual(tc.read(output / 'local-binding-results.json')['sha'], self.sha)
+                self.assertIn('perf: NOT RUN', summary.read_text())
+                self.assertIn('No release publication executed or timed', summary.read_text())
+                simulate.assert_called_once_with(output)
+                github_output.write_text('')
+                simulate.side_effect = ValueError('fixture failed')
+                with self.assertRaisesRegex(ValueError, 'fixture failed'):
+                    self.proof.main()
+                self.assertEqual(github_output.read_text(), '')
+                simulate.reset_mock()
+                with mock.patch.dict(os.environ, {'GITHUB_SHA': 'b' * 40}):
+                    with self.assertRaisesRegex(ValueError, 'checkout differs'):
+                        self.proof.main()
+                simulate.assert_not_called()
+
+    def test_workflow_keeps_read_only_opt_in_and_shared_release_gates(self):
+        text = (ROOT / '.github/workflows/release-validation-proof.yml').read_text()
+        trigger = text.split('\njobs:\n', 1)[0]
+        self.assertIn("paths:\n      - '.github/workflows/release-validation-proof.yml'", trigger)
+        self.assertIn('types: [opened, synchronize, reopened, labeled, unlabeled]', trigger)
+        self.assertIn('options: [fast, full]', trigger)
+        self.assertIn('permissions:\n  contents: read', trigger)
+        for forbidden in ('pull_request_target', 'secrets:', 'secrets.', 'write',
+                          'release.yml', 'release.sh', 'git push', 'signing'):
+            # The comment describes the boundary; inspect executable YAML only.
+            self.assertNotIn(forbidden, '\n'.join(line for line in text.splitlines()
+                                                  if not line.startswith('#')))
+        self.assertIn('persist-credentials: false', text)
+        self.assertIn('PROOF_PROFILE: ${{ inputs.profile }}', text)
+        self.assertIn('uses: ./.github/workflows/validate.yml', text)
+        self.assertIn('release: true', text)
+        self.assertIn('test_plan: ${{ needs.proof.outputs.test_plan }}', text)
+        self.assertIn('needs: [proof, validate]', text)
+        self.assertIn('always() &&', text)
+        self.assertIn('test "$PROOF_RESULT" = success', text)
+        self.assertIn('test "$VALIDATION_RESULT" = success', text)
+        self.assertIn('if-no-files-found: error', text)
+        self.assertIn('local-binding-results.json', text)
+        # Every external action uses the same full SHA already reviewed in validation.
+        import re
+        validation = (ROOT / '.github/workflows/validate.yml').read_text()
+        actions = re.findall(r'uses: ([^\s]+@[^\s]+)', text)
+        self.assertTrue(actions)
+        for action in actions:
+            self.assertRegex(action, r'@[a-f0-9]{40}$')
+            self.assertIn('uses: ' + action, validation)
+        self.assertIn('os: ${{ fromJSON(inputs.release &&', validation)
+        self.assertIn('["ubuntu-latest", "macos-latest"]', validation)
+        for dependency in ('base', 'classes', 'container-probes', 'telemetry-build-smoke',
+                           'telemetry-runtime-smoke'):
+            self.assertIn(dependency, validation.split('  lint:', 1)[1].split('    steps:', 1)[0])
 
 
 class LabelSetup(unittest.TestCase):
