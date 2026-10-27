@@ -1437,9 +1437,15 @@ def cmd_executor(args):
                 doc = journal.submit(args.work, base, head, args.key, args.kind)
                 print(json.dumps(doc, sort_keys=True))
             elif args.operation in ("cycle", "service"):
+                outcome = journal.cycle()
                 if args.operation == "service" and config["poll_main"]:
-                    journal.poll(args.work)
-                print(journal.cycle())
+                    # Drain admitted work first. A busy machine may leave the finite queue
+                    # full; skip discovery until capacity exists, without hiding any refusal.
+                    if sum(journal.state(i)["state"] == "queued" for i in journal.names()) < config["max_queue"]:
+                        journal.poll(args.work)
+                        if outcome == "idle":
+                            outcome = journal.cycle()
+                print(outcome)
             elif args.operation == "status":
                 print(json.dumps([journal.state(i) for i in journal.names()], sort_keys=True))
             elif args.operation == "verify":

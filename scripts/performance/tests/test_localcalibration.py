@@ -9,7 +9,7 @@ from fractions import Fraction
 from unittest import mock
 
 from perflab import (budget, calibration, contracts, executor, gitrefs, localcalibration,
-                     planning, schedule, synthetic)
+                     hostlock, planning, schedule, synthetic)
 from perflab.values import ContractError, canonical_digest, format_decimal
 from tests import calibration_fixtures as fx
 from tests.support import TempDir, lab_repo, read, SYNTHETIC_SUITE
@@ -95,6 +95,116 @@ class LocalOriginals(TempDir):
                 "fixtures/performance/cohort-quick-20261028-hosted-v7.json"), "cohort")
             self.assertEqual(hosted["schedule"]["runners"], "fresh_hosted")
             self.assertEqual(hosted["dispatch"]["event"], "workflow_dispatch")
+
+    def test_queued_original_expires_after_contention_and_capacity_scan_without_launch(self):
+        member = self.cohort["members"][0]
+        with executor.Journal(self.c) as journal:
+            request = journal.submit("core", self.authority, self.authority,
+                canonical_digest(self.cohort) + ":" + member["member_id"], "calibration",
+                cohort=self.cohort, member=member["member_id"])
+            # Future admission is still refused; a queued original cannot be substituted.
+            future = next(m for m in self.cohort["members"] if m["day"] > member["day"])
+            with self.assertRaisesRegex(ContractError, "off schedule"):
+                journal.submit("core", self.authority, self.authority,
+                    canonical_digest(self.cohort) + ":" + future["member_id"], "calibration",
+                    cohort=self.cohort, member=future["member_id"])
+            launch = mock.Mock(side_effect=AssertionError("expired original must not launch"))
+            with hostlock.MachineLock(self.locks):
+                self.assertEqual(journal.cycle(execute=launch, lock_directory=self.locks), "busy")
+            capacity = journal.capacity
+            def midnight(*args):
+                capacity(*args)
+                self.now = calibration.start_unix_ms(self.cohort) / 1000 + (member["day"] + 1) * 86400
+            with mock.patch.object(journal, "capacity", side_effect=midnight):
+                self.assertEqual(journal.cycle(execute=launch, lock_directory=self.locks), "expired")
+            launch.assert_not_called()
+            state = journal.state(request["request_id"])
+            self.assertEqual(state["state"], "expired")
+            self.assertIsNone(state["started_unix_ms"])
+            self.assertIsNone(state["result_sha256"])
+            self.assertEqual(journal.request(request["request_id"]), request)
+            runs, refused, hist = localcalibration.collect(journal, self.cohort)
+            self.assertEqual(len(runs), len(self.cohort["members"]))
+            self.assertEqual(runs[member["member_id"]].status, "invalid")
+            self.assertEqual(runs[member["member_id"]].reasons, ["off_schedule"])
+            self.assertEqual(runs[member["member_id"]].provenance["request_id"], request["request_id"])
+            self.assertIsNone(runs[member["member_id"]].attempt)
+            self.assertEqual(refused, [])
+        # A fresh controller replays expiration, never creates a replacement or claim.
+        with executor.Journal(self.c) as journal:
+            self.assertEqual(journal.submit("core", self.authority, self.authority,
+                request["submission"]["key"], "calibration", cohort=self.cohort,
+                member=member["member_id"]), request)
+            self.assertEqual(journal.cycle(execute=launch, lock_directory=self.locks), "idle")
+            following = journal.submit("core", self.authority, self.authority, "following-manual")
+            self.assertEqual(journal.cycle(execute=lambda *a: {
+                "status": "complete", "measurement_status": "synthetic", "evidence": [],
+                "actions": None, "detail": "synthetic following work"}, lock_directory=self.locks), "complete")
+            self.assertEqual(journal.state(following["request_id"])["state"], "complete")
+        with hostlock.MachineLock(self.locks):
+            pass
+
+    def test_preparation_crossing_midnight_rechecks_before_any_builder_or_sample(self):
+        member = self.cohort["members"][0]
+        with executor.Journal(self.c) as journal:
+            request = journal.submit("core", self.authority, self.authority,
+                canonical_digest(self.cohort) + ":" + member["member_id"], "calibration",
+                cohort=self.cohort, member=member["member_id"])
+            retain = executor.retain_sources
+            def prepare(*args):
+                result = retain(*args)
+                self.now = calibration.start_unix_ms(self.cohort) / 1000 + (member["day"] + 1) * 86400
+                return result
+            with mock.patch.object(executor, "retain_sources", side_effect=prepare), \
+                    mock.patch.object(executor.builds, "Builder") as builder, \
+                    mock.patch.object(executor.runner, "run_shard") as shard, \
+                    mock.patch.object(executor.hostprep, "prepare") as scratch:
+                self.assertEqual(journal.cycle(lock_directory=self.locks), "expired")
+            builder.assert_not_called()
+            shard.assert_not_called()
+            scratch.assert_not_called()
+            state = journal.state(request["request_id"])
+            result = contracts.read_json(read(os.path.join(journal.path(request["request_id"]),
+                                                          "result.json")), "executor-result")
+            self.assertEqual(state["state"], "expired")
+            self.assertEqual(result["measurement_status"], "not_executed_off_schedule")
+            self.assertTrue(result["evidence"])  # Frozen plan and original sources remain retained.
+            runs, _, _ = localcalibration.collect(journal, self.cohort)
+            self.assertEqual(runs[member["member_id"]].reasons, ["off_schedule"])
+            self.assertIsNone(runs[member["member_id"]].attempt)
+            with hostlock.MachineLock(self.locks):
+                pass
+
+    def test_readiness_keeps_missed_original_in_power_denominator_as_off_schedule(self):
+        with executor.Journal(self.c) as journal:
+            for member in self.cohort["members"]:
+                if member["kind"] in ("aa", "preparation"):
+                    self.original(journal, member)
+            runs, _, _ = localcalibration.collect(journal, self.cohort)
+            parameters = calibration.prepare(self.cohort, runs, calibration.tolerances_of(runs, self.cohort))
+            self.repo.commit("reviewed seal", {"fixtures/performance/local-calibration-parameters.json":
+                contracts.write_bytes(parameters, "calibration-parameters")})
+            trial = next(m for m in self.cohort["members"] if m["kind"] == "power")
+            self.now = calibration.start_unix_ms(self.cohort) / 1000 + trial["day"] * 86400 + 3600
+            request = journal.submit("core", self.authority, self.authority,
+                canonical_digest(self.cohort) + ":" + trial["member_id"], "calibration",
+                cohort=self.cohort, member=trial["member_id"], parameters=parameters)
+            self.now = calibration.start_unix_ms(self.cohort) / 1000 + (trial["day"] + 1) * 86400
+            self.assertEqual(journal.cycle(execute=lambda *a: self.fail("expired trial launched"),
+                                          lock_directory=self.locks), "expired")
+            runs, refused, hist = localcalibration.collect(journal, self.cohort, parameters)
+            readiness = calibration.readiness(self.cohort, parameters, runs, refused, hist)
+            contracts.validate_local_readiness(readiness, cohort=self.cohort, calibration=parameters)
+            missed = next(m for m in readiness["members"] if m["member_id"] == trial["member_id"])
+            self.assertEqual(missed["status"], "invalid")
+            self.assertEqual(missed["reasons"], ["off_schedule"])
+            self.assertEqual(missed["provenance"]["request_id"], request["request_id"])
+            self.assertIsNone(missed["provenance"]["started_unix_ms"])
+            self.assertFalse(missed["qualifies"])
+            self.assertEqual(len(readiness["members"]), len(self.cohort["members"]))
+            self.assertEqual(readiness["tallies"]["power_members"], 10)
+            self.assertEqual(readiness["tallies"]["power_qualifying"], 0)
+            self.assertFalse(readiness["ready"])
 
     def test_original_local_journal_and_seal_preserve_whole_trial_denominators(self):
         with executor.Journal(self.c) as journal:

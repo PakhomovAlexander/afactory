@@ -1,10 +1,1 @@
-{
-  "schema": "af.perf-executor-state/999",
-  "request_id": "exp_synthetic",
-  "request_digest": "sha256:c64f3bc80dfbfbfbea271cac51aee94558ba48f8c80397be25ca07e59d6a2f08",
-  "state": "queued",
-  "started_unix_ms": null,
-  "ended_unix_ms": null,
-  "result_sha256": null,
-  "detail": "synthetic fixture"
-}
+{"detail":"synthetic fixture","ended_unix_ms":null,"request_digest":"sha256:c64f3bc80dfbfbfbea271cac51aee94558ba48f8c80397be25ca07e59d6a2f08","request_id":"exp_synthetic","result_sha256":null,"schema":"af.perf-executor-state/1","started_unix_ms":null,"state":"queued"}

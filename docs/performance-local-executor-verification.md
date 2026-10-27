@@ -199,3 +199,78 @@ independent Terra bug review, Astra correctness review and Astra evaluation thro
 claimed by this Worker. No full suite ran here. The coordinator owns actual Docker CI, final
 publication and authentic VM execution after native acceptance; deployment, calibration
 qualification and speedup remain unclaimed. Follow-ups #378/#382/#380 remain separate.
+
+## Four native finding repairs (2026-10-27)
+
+This continuation starts from reviewed candidate `28cc14e32215fe6773633e4880da5f17d4c72cd3`
+(PR398), with findings from `performance-lab-local-executor-verify-20261027`. Coverage maps to
+all recorded IDs:
+
+- `correctness-1` and the evaluator's first issue: real diagnostic orchestration stops on
+  unconfirmed build-container removal, marks owning/borrowed cleanup uncertain and retains
+  the fence plus child plan and named recovery detail. Tests drive the actual build-image
+  removal/confirmation protocol through a stand-in Docker client, standalone `run_profile`,
+  and executor `cycle` → `execute_local` → borrowed `run_profile`. No later tool/capture or
+  scratch cleanup launches; subsequent acquisition refuses. Confirmed-clean build failures
+  still produce admitted omission reports and allow safe subsequent acquisition.
+- `correctness-2` and the evaluator's second issue: configuration v2 freezes a validated
+  image-local `zigbuild_bin`, included in environment identity and passed to both Builder
+  sites. Nightly/release plans reach the actual parent and diagnostic `Builder.check_host`,
+  `ContainerToolchain` and `ContainerZigbuild` readers with the configured path and unchanged
+  Rust/Zig/cargo-zigbuild pins. Image responses and compilation are synthetic; the installed
+  image admission and authentic builds are not proven. Missing/invalid shipping settings
+  refuse through the actual service command before journal reservation or Builder creation.
+- `bugs-1` / duplicated `correctness-3`: the actual service command drains a manual original
+  from `max_queue=1`, discovers the new main tip, executes it on the next invocation and never
+  claims either twice. Busy/full admission waits without swallowing authority refusals.
+- `bugs-2`: frozen member windows are checked after machine contention/capacity scanning and
+  again after source preparation, before a builder can launch. Tests cross midnight at both
+  boundaries, preserve terminal expiration across controllers/idempotent resubmission and
+  prove subsequent queue progress. Native readiness retains the missed power original as
+  `invalid` / `off_schedule`, with request provenance, no qualification and denominator ten.
+  Existing in-window cohort execution, seal and statistical assertions still pass.
+
+Changed persisted shapes take configuration/state/result v2; obsolete v1 schemas/readers are
+removed and old receipts refuse. Request/cohort/readiness shapes and hosted declarations stay
+unchanged. New shipping/expiry golden fixtures pass schema/reader/writer parity. The operator
+guide, ADR-0235, domain design and change note document these repairs.
+
+Focused command, Python 3.14.4:
+
+```sh
+python3 -I -B -c 'import sys,unittest; sys.path.insert(0,"scripts/performance"); unittest.main(module=None,argv=["unittest","tests.test_executor","tests.test_localcalibration","tests.test_contracts","tests.test_hostlock","tests.test_builds.ContainerBuild","tests.test_builds.FakeBuild.test_the_shipping_recipe_builds_through_exactly_its_pinned_cargo_zigbuild","tests.test_diagnostics.Command"],verbosity=1)'
+```
+
+**PASS: 62 tests, 64.763 seconds, exit 0.** An earlier version of this set passed 61 tests
+in 52.027 seconds before the explicit missed-power readiness regression was added.
+Initial targeted development exposed an unsupported release-case selection and an incorrectly
+quoted expected error in the new tests; both fixtures were corrected without changing a
+product contract, limit or assertion requirement.
+
+After adding directory fsync for recovery evidence and the service configuration-refusal
+regression, the directly affected checks were run again:
+
+```sh
+python3 -I -B -c 'import sys,unittest; sys.path.insert(0,"scripts/performance"); unittest.main(module=None,argv=["unittest","tests.test_executor.AuthorityAndShapes.test_service_refuses_missing_or_invalid_shipping_configuration_before_reservation","tests.test_executor.Journal.test_diagnostic_build_removal_uncertainty_keeps_borrowed_executor_fence","tests.test_diagnostics.Command","tests.test_contracts"],verbosity=1)'
+python3 -B scripts/performance/schemas.py
+python3 -B scripts/changelog-notes.py --check
+python3 -I -B /tmp/af-four-findings-inventory.py
+```
+
+**PASS:** 17 tests in 2.029 seconds, exit 0; schema parity, change-note validation and inventory
+helper each exit 0. Schemas were generated with `python3 -B scripts/performance/schemas.py --write`.
+The inventory helper handles the reserved empty `.git` by copying only the public protected
+closure/staged data to a temporary root, invoking the unchanged `cli.py harness-digest --root
+COPY --write` and `--check` (both exit 0), copying back only generated staged policy/inventory,
+and requiring exact path/size/hash parity against the actual sandbox closure. Latest inventory:
+**621 files**, `sha256:beacbf7d9140e27f6c4d88b962f87122a6796eddd8b492d0a931bb2a5e3c661f`.
+The generator, bootstrap, `.af/`, native gates, hosted workflows and service units are unchanged.
+
+These focused checks establish orchestration and protocol behavior using explicit synthetic
+compute/image/mount seams, real Git, journals, locks and retained evidence. They establish no
+authentic Docker/Claw execution, deployment, calibration qualification, speedup or independent
+acceptance. No `make check`, full `scripts/test-performance.py` or Rust suite ran here. The
+unchanged enclosing native/Markdown gates and independent judging own final validation; the
+coordinator owns accepted installation and authentic core/telemetry/lock evidence afterward.
+The earlier hosted core absolute deadline and all sample/statistical/resource minima remain
+unchanged. Separate #378/#382/#380 work remains outside this repair.

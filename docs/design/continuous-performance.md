@@ -1031,7 +1031,13 @@ Git objects for offline admission. Local requests/claims/results have their own 
 Actions remains a selectable dispatch backend and preserves original hosted receipts. Separate
 dedicated Claw profiles and a local telemetry history keep persistent VM evidence distinct.
 The common machine lock covers preparation through terminal evidence and retains a crash fence
-when owned cleanup is uncertain. The [operator guide](../performance-local-executor.md) describes
+when owned cleanup is uncertain, including a diagnostic build container whose removal is
+unconfirmed even with clean diagnostic scratch. Executor configuration v2 freezes the pinned
+image's Zig/cargo-zigbuild directory for shipping and diagnostic builders. Service invocations
+drain admitted work before polling; calibration launch decisions recheck the frozen member day
+after capacity and source preparation. Missed originals retire as non-executed `expired` in
+state/result v2 and remain off schedule in readiness with their original denominator.
+The [operator guide](../performance-local-executor.md) describes
 reviewed-main polling, explicit trusted PR/release submissions, separately declared seven-day
 local calibration originals, the parameter review checkpoint and systemd examples. Hosted
 event workflows and calibration declarations stay unchanged. Tests establish orchestration,

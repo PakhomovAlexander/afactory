@@ -28,7 +28,11 @@ samples locally. Local identities are opaque request IDs, never numeric Actions 
 Reserve an original directory atomically before launch; sync its request, configuration and
 state receipts and an index that refuses deleted/unindexed originals. A machine busy refusal precedes the claim and may be retried. A durable claim
 is never automatically executed again. Lost claims become uncertain; torn publications refuse
-recovery. Bound the journal and storage by refusal, preserving every original. The controller
+recovery. Bound the journal and storage by refusal, preserving every original. Drain admitted work
+before polling; a full busy queue defers new discovery, never execution of admitted work.
+Recheck a calibration original's frozen member day after capacity scanning and at the actual
+builder launch decision after source preparation. An expired original retires durably as
+non-executed, keeps its identity/denominator and appears off schedule in local readiness. The controller
 polls newly observed reviewed main tips, comparing each with its first parent. Exact PR merges
 and release tags require explicit trusted submissions. This is advisory polling, not a required
 CI check or automatic coverage of every intermediate revision.
@@ -37,7 +41,9 @@ Extend `perflab.hostlock` with an explicit checked in-process lease and a durabl
 Hold the same fixed machine lock across source retention, builds, scratch preparation, every
 sequential shard, cleanup and terminal evidence. Nested runners borrow the actual lease;
 neither environment variables nor descriptor numbers convey it. Controller loss or uncertain
-owned cleanup leaves the fence. Never unlink or replace the lock. All compute services must
+owned cleanup leaves the fence. Unconfirmed diagnostic build-container cleanup is terminal
+ownership uncertainty independently of diagnostic scratch; it stops subsequent launches and
+retains named recovery evidence for owning and borrowed leases. Never unlink or replace the lock. All compute services must
 see its same inode: a required root-owned inode anchor refuses private temporary namespaces,
 and compute uses no `PrivateTmp` or private scratch mount namespace. Exclude the inode and
 fence from temporary-file age sweeps. Operator recovery must
@@ -45,7 +51,11 @@ confirm all owned resources stopped before settling a fence, and never retries a
 This extends ADR-0169's process-death behavior; its inode and admission requirements stand.
 
 Introduce separately named executor request/state/result, local cohort and local readiness
-contracts, with schemas and golden parity examples. Leaf measurement shapes stay unchanged.
+contracts, with schemas and golden parity examples. The repaired executor configuration is
+v2 and freezes an explicit image-local Zig/cargo-zigbuild directory for musl profiles; both
+parent and diagnostic builders retain exact pinned version checks. State/result v2 add the
+explicit non-executed `expired` outcome. Their obsolete v1 shapes fail closed (ADR-0145);
+request, cohort and readiness shapes stay unchanged. Leaf measurement shapes stay unchanged.
 Local core environments are separate `dedicated` profiles; telemetry has a separate local
 history root and its executor receipt binds backend, environment and native bundle hashes.
 Keep hosted declarations, original Actions receipts and hosted readiness readers unchanged.

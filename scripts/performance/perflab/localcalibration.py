@@ -60,6 +60,10 @@ def collect(journal, cohort, sealed=None):
         run.attempt = None if state["started_unix_ms"] is None else {
             "started_unix_ms": state["started_unix_ms"],
             "updated_unix_ms": state["ended_unix_ms"] or state["started_unix_ms"]}
+        if state["state"] == "expired":
+            run.attempt = None  # A claim timestamp is not an executed calibration attempt.
+            run.fail("invalid", "off_schedule")
+            continue
         if state["state"] != "complete":
             run.fail("missing" if state["state"] == "queued" else "interrupted",
                      "artifact_missing" if state["state"] == "queued" else "attempt_incomplete")

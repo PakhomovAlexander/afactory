@@ -1,13 +1,13 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "$id": "urn:af:schema:performance-executor-state:1",
-  "title": "af.perf-executor-state/1",
+  "$id": "urn:af:schema:performance-executor-state:2",
+  "title": "af.perf-executor-state/2",
   "description": "Independent performance executor: executor-state (ADR-0235).",
   "type": "object",
   "additionalProperties": false,
   "properties": {
     "schema": {
-      "const": "af.perf-executor-state/1"
+      "const": "af.perf-executor-state/2"
     },
     "request_id": {
       "$ref": "#/$defs/id"
@@ -24,7 +24,8 @@
         "failed",
         "interrupted",
         "uncertain",
-        "submitted"
+        "submitted",
+        "expired"
       ]
     },
     "started_unix_ms": {

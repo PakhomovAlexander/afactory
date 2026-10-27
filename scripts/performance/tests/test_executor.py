@@ -17,6 +17,7 @@ from perflab import (archive, budget, builds, bundle, calibration, contracts, di
                      hostlock, localcalibration, planning, runner, synthetic, telemetrylab,
                      tomlfile, telemetryexec)
 from perflab.values import ContractError, canonical_digest, sha256_bytes
+from tests import build_fixtures
 from tests import telemetry_fixtures as tf
 from tests.support import ROOT, TempDir, lab_repo, read
 
@@ -190,6 +191,59 @@ class Journal(ExecutorFixture):
             self.assertEqual(two["sources"]["baseline_sha"], self.head)
             self.assertEqual(one["sources"]["candidate_sha"], self.head)
 
+    def test_service_drains_full_queue_then_discovers_main_without_duplicate_claim(self):
+        import cli
+        self.c.update(max_queue=1, poll_main=True)
+        with executor.Journal(self.c) as j:
+            original = self.submit(j)
+        latest = self.repo.commit("new reviewed main", {"README": "later tip"})
+        calls = []
+        def execute(c, request, path, lease, installed):
+            lease.check()
+            calls.append(request["request_id"])
+            return receipt()
+        native = executor.Journal.cycle
+        def cycle(j):
+            return native(j, lock_directory=self.locks)
+        args = SimpleNamespace(operation="service", config="operator-config", work="core")
+        with mock.patch.object(executor, "load_config", return_value=self.c), \
+                mock.patch.object(executor.Journal, "cycle", cycle), \
+                mock.patch.object(executor, "execute_local", execute):
+            self.assertEqual(cli.cmd_executor(args), 0)
+            with executor.Journal(self.c) as j:
+                self.assertEqual(j.state(original["request_id"])["state"], "complete")
+                main = [j.request(i) for i in j.names() if i != original["request_id"]]
+                self.assertEqual(len(main), 1)
+                self.assertEqual(main[0]["sources"]["candidate_sha"], latest)
+                self.assertEqual(j.state(main[0]["request_id"])["state"], "queued")
+            self.assertEqual(cli.cmd_executor(args), 0)
+            self.assertEqual(cli.cmd_executor(args), 0)
+        self.assertEqual(calls, [original["request_id"], main[0]["request_id"]])
+        with executor.Journal(self.c) as j:
+            self.assertEqual(len(j.names()), 2)
+            self.assertTrue(all(j.state(i)["state"] == "complete" for i in j.names()))
+
+    def test_service_busy_full_queue_waits_and_authority_errors_still_refuse(self):
+        import cli
+        self.c.update(max_queue=1, poll_main=True)
+        with executor.Journal(self.c) as j:
+            original = self.submit(j)
+        native = executor.Journal.cycle
+        def cycle(j):
+            return native(j, lock_directory=self.locks)
+        args = SimpleNamespace(operation="service", config="operator-config", work="core")
+        with mock.patch.object(executor, "load_config", return_value=self.c), \
+                mock.patch.object(executor.Journal, "cycle", cycle), \
+                mock.patch.object(executor, "execute_local", return_value=receipt()), \
+                mock.patch.object(executor.Journal, "poll", side_effect=ContractError("authority failure")) as poll:
+            with hostlock.MachineLock(self.locks):
+                self.assertEqual(cli.cmd_executor(args), 0)
+                poll.assert_not_called()
+            self.assertEqual(cli.cmd_executor(args), 4)
+            poll.assert_called_once()
+        with executor.Journal(self.c) as j:
+            self.assertEqual(j.state(original["request_id"])["state"], "complete")
+
     def test_real_failed_child_and_deadline_settle_before_safe_subsequent_acquisition(self):
         for label, body, seconds in (("failed", "import sys; sys.exit(7)", 5),
                                      ("deadline", "import time; time.sleep(60)", .2)):
@@ -354,6 +408,134 @@ class Journal(ExecutorFixture):
             self.assertFalse(os.path.exists(os.path.join(j.path(request["request_id"]), "run")),
                              "diagnostics never create verdict samples")
             self.assertTrue(os.path.isfile(os.path.join(j.path(request["request_id"]), "profile/diagnostic.html")))
+
+    def test_shipping_nightly_release_reach_both_builders_with_frozen_pinned_tools(self):
+        control = self.repo.commit("diagnostic authority", {diagnostics.REGISTRY_PATH:
+            read(os.path.join(ROOT, diagnostics.REGISTRY_PATH))})
+        self.base = self.head = control
+        self.c["control_sha"] = control
+        tool_dir = "/opt/pinned-tools/bin"
+        native_builder, native_profile = builds.Builder, diagnostics.run_profile
+        class PreflightReached(ContractError):
+            pass
+        for tier in ("nightly", "release"):
+            for work in ("core", "profile"):
+                with self.subTest(tier=tier, work=work):
+                    c = copy.deepcopy(self.c)
+                    c.update(root=self.path(tier + work), zigbuild_bin=tool_dir)
+                    c["core"].update(tier=tier, environment="linux_x86_64_musl_claw",
+                                     cases=["cli_discovery__command_version"])
+                    c["diagnostic"]["cases"] = ["cli_discovery__command_version"]
+                    c["diagnostic"]["recipe"] = "linux_musl_trace"
+                    locks = self.path(tier + work + "-locks")
+                    os.mkdir(locks)
+                    checked, tool_calls = [], []
+                    class Image:
+                        env = {}
+                        def __init__(inner, docker, reference):
+                            self.assertEqual(reference, IMAGE)
+                            inner.reference = reference
+                        def refuse_implicit_volumes(inner):
+                            pass  # Image admission alone is substituted; tool readers are real.
+                        def run_once(inner, argv, env):
+                            tool_calls.append((argv, env))
+                            if argv == ["rustc", "--print", "sysroot"]:
+                                out = b"/pinned/rust"
+                            elif argv == ["/pinned/rust/bin/rustc", "-vV"]:
+                                out = b"rustc 1.88.0\nrelease: 1.88.0\nhost: x86_64-unknown-linux-gnu\n"
+                            elif argv == ["/pinned/rust/bin/cargo", "-V"]:
+                                out = b"cargo 1.88.0"
+                            elif argv == [tool_dir + "/cargo-zigbuild", "--version"]:
+                                self.assertEqual(env["PATH"].split(":")[0], tool_dir)
+                                out = b"cargo-zigbuild 0.23.4"
+                            elif argv[-2:] == ["sh", tool_dir]:
+                                out = b"zig\n0.15.2\n"
+                            else:
+                                self.assertEqual(argv[:2], ["/bin/sh", "-c"])
+                                self.assertIn("--print target-libdir", argv[2])
+                                out = b""
+                            return subprocess.CompletedProcess(argv, 0, out, b"")
+                    class Builder(native_builder):
+                        def build(inner):
+                            inner.budget.free_bytes = lambda path: 1 << 50
+                            inner.check_host()  # Real recipe dispatch, Rust and Zig version checks.
+                            self.assertTrue(inner.bounded_container)
+                            self.assertEqual(inner.zigbuild_bin, tool_dir)
+                            self.assertIn("cargo-zigbuild 0.23.4; zig 0.15.2", inner.zigbuild.identity)
+                            checked.append(inner.plan["scope"])
+                            if work == "core" or inner.plan["scope"] == "diagnostic":
+                                raise PreflightReached("preflight reached; no compilation or measurement")
+                            os.makedirs(inner.layout.build)
+                            return synthetic.builds(inner.plan)
+                    def profile(git, options, machine_lease=None):
+                        options.contained_host = lambda *a: (options.scratch_fs, [0, 1], "synthetic runtime")
+                        return native_profile(git, options, machine_lease=machine_lease)
+                    with executor.Journal(c) as j:
+                        request = self.submit(j, work, tier + work)
+                        frozen = contracts.read_json(read(os.path.join(j.path(request["request_id"]),
+                                                                      "configuration.json")), "executor")
+                        self.assertEqual(frozen["zigbuild_bin"], tool_dir)
+                        j.config = dict(c, zigbuild_bin="/other/operator-setting")
+                        with mock.patch.object(builds, "Builder", Builder), \
+                                mock.patch.object(builds, "BuildImage", Image), \
+                                mock.patch.object(executor.hostprep, "prepare", side_effect=lambda i, p, *a, **kw: os.mkdir(p)), \
+                                mock.patch.object(diagnostics, "run_profile", profile), \
+                                self.assertRaises(PreflightReached):
+                            j.cycle(lock_directory=locks)
+                    self.assertEqual(checked, ["partial_scope"] + (["diagnostic"] if work == "profile" else []))
+                    self.assertEqual(sum(argv == [tool_dir + "/cargo-zigbuild", "--version"]
+                                         for argv, env in tool_calls), len(checked))
+
+    def test_diagnostic_build_removal_uncertainty_keeps_borrowed_executor_fence(self):
+        control = self.repo.commit("diagnostic authority", {diagnostics.REGISTRY_PATH:
+            read(os.path.join(ROOT, diagnostics.REGISTRY_PATH))})
+        self.base = self.head = control
+        self.c["control_sha"] = control
+        calls = []
+        class Builder:
+            def __init__(self, owner, plan, toolchain, **kwargs):
+                self.layout = SimpleNamespace(build=os.path.join(owner, "target/performance/build"))
+                self.plan = plan
+            def build(inner):
+                calls.append("build")
+                if len(calls) == 1:
+                    os.makedirs(inner.layout.build)
+                    return synthetic.builds(inner.plan)
+                image = "sha256:" + "a" * 64
+                docker = build_fixtures.fake_docker(self.path("docker"), {image: (image, [])},
+                                                   lingering="af-perf-probe-")
+                builds.BuildImage(docker, image).run_once(["/bin/true"])
+                self.fail("removal must refuse")
+        def prepare(image, mount, size_bytes, **kwargs):
+            os.mkdir(mount)
+        native = diagnostics.run_profile
+        borrowed = []
+        def profile(git, options, machine_lease=None):
+            borrowed.append(machine_lease)
+            options.contained_host = lambda *a: (options.scratch_fs, [0, 1], "synthetic runtime")
+            return native(git, options, machine_lease=machine_lease)
+        with executor.Journal(self.c) as j:
+            request = self.submit(j, "profile", "uncertain-profile")
+            path = j.path(request["request_id"])
+            with mock.patch.object(builds, "Builder", Builder), \
+                    mock.patch.object(executor.hostprep, "prepare", prepare), \
+                    mock.patch.object(executor.hostprep, "cleanup") as cleanup, \
+                    mock.patch.object(diagnostics, "run_profile", profile), \
+                    mock.patch.object(diagnostics, "probe_tools") as tools:
+                with self.assertRaises(diagnostics.Unavailable) as caught:
+                    j.cycle(lock_directory=self.locks)
+            self.assertEqual(caught.exception.reason, "build_container_unconfirmed")
+            self.assertFalse(caught.exception.cleanup_confirmed)
+            self.assertTrue(borrowed[0].uncertain)
+            cleanup.assert_not_called()
+            tools.assert_not_called()
+            self.assertEqual(calls, ["build", "build"])
+            self.assertEqual(j.state(request["request_id"])["state"], "uncertain")
+            self.assertIn(b"af-perf-probe-", read(os.path.join(path, "profile/cleanup-uncertain.txt")))
+            self.assertTrue(os.path.isdir(os.path.join(path, "scratch")))
+            self.assertEqual(j.cycle(lock_directory=self.locks), "idle")
+        with self.assertRaisesRegex(hostlock.Refused, "unfinished experiment"):
+            hostlock.MachineLock(self.locks)
 
     def test_local_telemetry_builds_both_sides_verifies_raw_and_keeps_separate_history(self):
         self.c["core"]["cases"] = ["canonical_serialize_small"]
@@ -646,6 +828,45 @@ class AuthorityAndShapes(TempDir):
                 os.chmod(path, 0o666)
             with self.subTest(kind=kind), self.assertRaises(hostlock.Refused):
                 hostlock.MachineLock(directory)
+
+    def test_shipping_tool_directory_is_explicit_canonical_and_changes_environment(self):
+        c = config(self.path("journal"), self.tmp, "1" * 40)
+        self.assertIsNone(c["zigbuild_bin"])  # GNU starts without shipping tools.
+        gnu = executor.environment(c)
+        c["zigbuild_bin"] = "/opt/pinned-tools/bin"
+        contracts.validate_executor(c)
+        self.assertNotEqual(executor.environment(c), gnu)
+        c["core"].update(tier="nightly", environment="linux_x86_64_musl_claw")
+        for value in (None, "tools/bin", "/opt/../tools", "/opt/tools/", "/opt/tools:/bin",
+                      "/opt/tools\n", "/opt/$(command)", ""):
+            with self.subTest(value=value), self.assertRaises(ContractError):
+                contracts.validate_executor(dict(c, zigbuild_bin=value))
+        del c["zigbuild_bin"]
+        with self.assertRaisesRegex(ContractError, "requires zigbuild_bin"):
+            contracts.validate_executor(c)
+        obsolete = config(self.path("old"), self.tmp, "1" * 40)
+        obsolete["schema"] = "af.perf-executor/1"
+        with self.assertRaisesRegex(ContractError, "expected.*af.perf-executor/2"):
+            contracts.validate_executor(obsolete)
+
+    def test_service_refuses_missing_or_invalid_shipping_configuration_before_reservation(self):
+        import cli
+        raw = read(os.path.join(LAB, "service/executor.example.toml")).decode()
+        config_path = self.path("operator.toml")
+        for tier in ("nightly", "release"):
+            for setting in ("", 'zigbuild_bin = "tools/bin"\n'):
+                with self.subTest(tier=tier, setting=setting):
+                    text = raw.replace('tier = "quick"', 'tier = "' + tier + '"').replace(
+                        'environment = "linux_x86_64_gnu_claw"', 'environment = "linux_x86_64_musl_claw"')
+                    text = text.replace('[core]', setting + '\n[core]')
+                    with open(config_path, "w") as stream:
+                        stream.write(text)
+                    with mock.patch.object(executor, "Journal") as journal, \
+                            mock.patch.object(builds, "Builder") as builder:
+                        self.assertEqual(cli.cmd_executor(SimpleNamespace(config=config_path,
+                            operation="service", work="core")), 4)
+                    journal.assert_not_called()
+                    builder.assert_not_called()
 
     def test_lock_lease_refuses_inode_replacement_and_inherited_capabilities(self):
         with hostlock.MachineLock(self.tmp) as lease:

@@ -1,13 +1,13 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "$id": "urn:af:schema:performance-executor:1",
-  "title": "af.perf-executor/1",
+  "$id": "urn:af:schema:performance-executor:2",
+  "title": "af.perf-executor/2",
   "description": "Independent performance executor: executor (ADR-0235).",
   "type": "object",
   "additionalProperties": false,
   "properties": {
     "schema": {
-      "const": "af.perf-executor/1"
+      "const": "af.perf-executor/2"
     },
     "backend": {
       "type": "string",
@@ -54,6 +54,18 @@
       "type": "string",
       "maxLength": 330,
       "pattern": "^(?:(?:[a-z0-9]+(?:(?:[._]|__|-+)[a-z0-9]+)*(?::[0-9]{1,5})?/)*[a-z0-9]+(?:(?:[._]|__|-+)[a-z0-9]+)*@)?sha256:[0-9a-f]{64}$"
+    },
+    "zigbuild_bin": {
+      "anyOf": [
+        {
+          "type": "null"
+        },
+        {
+          "type": "string",
+          "maxLength": 1024,
+          "pattern": "^/[A-Za-z0-9_./+-]{1,1023}$"
+        }
+      ]
     },
     "max_requests": {
       "type": "integer",

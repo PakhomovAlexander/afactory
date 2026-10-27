@@ -2399,7 +2399,7 @@
       "path": "executor/invalid-version.json",
       "contract": "executor",
       "valid": false,
-      "error": "expected af.perf-executor/1",
+      "error": "expected af.perf-executor/2",
       "shape": true
     },
     {
@@ -2423,7 +2423,7 @@
       "path": "executor-state/invalid-version.json",
       "contract": "executor-state",
       "valid": false,
-      "error": "expected af.perf-executor-state/1",
+      "error": "expected af.perf-executor-state/2",
       "shape": true
     },
     {
@@ -2435,7 +2435,7 @@
       "path": "executor-result/invalid-version.json",
       "contract": "executor-result",
       "valid": false,
-      "error": "expected af.perf-executor-result/1",
+      "error": "expected af.perf-executor-result/2",
       "shape": true
     },
     {
@@ -2485,6 +2485,35 @@
       "valid": false,
       "error": "expected af.perf-machine-lock-anchor/1",
       "shape": true
+    },
+    {
+      "path": "executor/valid-shipping.json",
+      "contract": "executor",
+      "valid": true
+    },
+    {
+      "path": "executor/invalid-missing-shipping-tools.json",
+      "contract": "executor",
+      "valid": false,
+      "shape": false,
+      "error": "requires zigbuild_bin"
+    },
+    {
+      "path": "executor/invalid-relative-tools.json",
+      "contract": "executor",
+      "valid": false,
+      "shape": true,
+      "error": "does not match"
+    },
+    {
+      "path": "executor-state/valid-expired.json",
+      "contract": "executor-state",
+      "valid": true
+    },
+    {
+      "path": "executor-result/valid-expired.json",
+      "contract": "executor-result",
+      "valid": true
     }
   ]
 }

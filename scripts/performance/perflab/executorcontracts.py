@@ -12,11 +12,12 @@ def register(c):
     path = Str(pattern=r"^/[^\x00\n]{1,1023}$", max_len=1024)
     backend = Str(enum=("local", "github_actions"))
     configuration = Obj(
-        Field("schema", Const("af.perf-executor/1")), Field("backend", backend),
+        Field("schema", Const("af.perf-executor/2")), Field("backend", backend),
         Field("root", path), Field("repository_path", path), Field("repository", c.REPOSITORY),
         Field("control_sha", SHA), Field("trusted_ref", Str(pattern=r"^refs/heads/[A-Za-z0-9._/-]+$")),
         Field("machine_id", ID), Field("journal_id", ID),
         Field("build_image", c.images.REFERENCE), Field("sample_image", c.images.REFERENCE),
+        Field("zigbuild_bin", Nullable(Str(pattern=r"^/[A-Za-z0-9_./+-]{1,1023}$", max_len=1024)), required=False),
         Field("max_requests", Int(1, 4096)),
         Field("max_queue", Int(1, 256)), Field("max_bytes", Int(1, c.limits.ARCHIVE_BYTES_MAX)),
         Field("archive_bytes", Int(1, c.limits.ARCHIVE_BYTES_MAX)),
@@ -47,16 +48,16 @@ def register(c):
         Field("producer_digest", DIGEST), Field("plan_sha256", Nullable(DIGEST)),
         Field("cohort_digest", Nullable(DIGEST)), Field("member_id", Nullable(ID)),
         Field("parameters_sha256", Nullable(DIGEST)))
-    states = ("queued", "claimed", "complete", "failed", "interrupted", "uncertain", "submitted")
-    state = Obj(Field("schema", Const("af.perf-executor-state/1")), Field("request_id", ID),
+    states = ("queued", "claimed", "complete", "failed", "interrupted", "uncertain", "submitted", "expired")
+    state = Obj(Field("schema", Const("af.perf-executor-state/2")), Field("request_id", ID),
         Field("request_digest", DIGEST), Field("state", Str(enum=states)),
         Field("started_unix_ms", Nullable(c.UNIX_MS)), Field("ended_unix_ms", Nullable(c.UNIX_MS)),
         Field("result_sha256", Nullable(DIGEST)), Field("detail", Str(max_len=4096)))
-    outcome = Obj(Field("schema", Const("af.perf-executor-result/1")), Field("request_id", ID),
+    outcome = Obj(Field("schema", Const("af.perf-executor-result/2")), Field("request_id", ID),
         Field("request_digest", DIGEST), Field("backend", backend),
         Field("machine_id", ID), Field("environment_digest", DIGEST),
         Field("producer_digest", DIGEST), Field("sources", frozen), Field("host", c.HOST),
-        Field("status", Str(enum=("complete", "failed", "interrupted", "uncertain", "submitted"))),
+        Field("status", Str(enum=("complete", "failed", "interrupted", "uncertain", "submitted", "expired"))),
         Field("measurement_status", Str(max_len=128)), Field("required_check", Const(False)),
         Field("started_unix_ms", c.UNIX_MS), Field("ended_unix_ms", c.UNIX_MS),
         Field("evidence", Arr(Obj(Field("path", c.REL_PATH), Field("sha256", DIGEST),
@@ -92,6 +93,14 @@ def register(c):
 
     def validate_config(doc, where="executor"):
         configuration.validate(doc, where)
+        doc.setdefault("zigbuild_bin", None)
+        if doc["zigbuild_bin"] is not None:
+            import posixpath
+            require("\n" not in doc["zigbuild_bin"]
+                    and posixpath.normpath(doc["zigbuild_bin"]) == doc["zigbuild_bin"],
+                    "zigbuild_bin: use a canonical image-local absolute directory")
+        require(doc["backend"] != "local" or doc["core"]["environment"] != "linux_x86_64_musl_claw"
+                or doc["zigbuild_bin"] is not None, "local musl requires zigbuild_bin in the pinned image")
         for key in ("pairs", "scale", "corpus_runs"):
             doc["telemetry"].setdefault(key, None)
         doc["diagnostic"].setdefault("telemetry", None)
@@ -110,6 +119,9 @@ def register(c):
                 "local outcome cannot claim Actions provenance")
         require(doc["backend"] != "github_actions" or doc["actions"] is not None,
                 "hosted submission must retain its transport receipt")
+        if doc["status"] == "expired":
+            require(doc["backend"] == "local" and doc["measurement_status"] == "not_executed_off_schedule",
+                    "expired calibration outcome must state non-execution off schedule")
         paths = [item["path"] for item in doc["evidence"]]
         require(paths == sorted(set(paths)), "executor evidence paths must be sorted and unique")
         return doc

@@ -48,7 +48,18 @@ Copy [executor.example.toml](../scripts/performance/service/executor.example.tom
 Replace its deliberately unusable zero SHA and image digests with real accepted identities.
 Review paths, repository, machine/journal IDs, byte caps, queue bound, total wall bound, tier,
 local environment, shard count, case selection, telemetry profile and diagnostic settings.
-The configuration is closed: misspellings refuse. Profile limits, oracles, N/K, tolerances,
+The configuration is `af.perf-executor/2`; misspellings and obsolete v1 configurations refuse.
+For `tier = "nightly"` or `"release"` with `environment = "linux_x86_64_musl_claw"`, set
+`zigbuild_bin` to the canonical absolute directory **inside the pinned build image** holding
+`cargo-zigbuild` and `zig` (or its `python3 -m ziglang`). For example,
+`zigbuild_bin = "/opt/af-perf-tools/bin"` is valid only if that verified image actually installs
+its tools there. It is not a host tool path or automatic discovery. Omission refuses local
+musl configuration; relative paths, aliases such as `..`, PATH lists and shell expressions
+refuse. GNU needs no setting. Both parent and diagnostic builders receive the frozen directory
+and verify the unchanged recipe pins: cargo-zigbuild 0.23.4, Zig 0.15.2 and Rust 1.88.0.
+Changing the directory changes the frozen configuration and environment identity.
+Finish or discard prior-version journals with their original control before upgrading;
+state/result v1 receipts are also refused rather than migrated. Profile limits, oracles, N/K, tolerances,
 sentinel rules and the free-disk floor are unchanged. The example reserves 256 GiB overall,
 32 GiB each for native core archive and local telemetry history; capacity exhaustion stops
 new work, never deletes original receipts. Provision a filesystem/quota at that overall bound
@@ -98,6 +109,30 @@ so age-based cleanup cannot remove the lock inode or an uncertainty fence.
 must also be visible to the Docker daemon. The compute unit deliberately uses account/file
 permissions rather than systemd filesystem options that would split these namespaces.
 The source-only fetch service may use a private temporary namespace because it measures nothing.
+
+## Queue and recovery outcomes
+
+Each service invocation drains one admitted original before observing main. If idle, it may
+observe and execute one main original in that invocation. After draining existing work it
+queues a newly observed tip for the next invocation; a busy full queue defers discovery until
+space exists. The finite queue bound and exact submission identities remain enforced.
+Authority failures still refuse; they are not treated as backpressure.
+
+Diagnostic build-container removal uncertainty stops all further diagnostic launches, even
+when diagnostic scratch is empty. The child plan and `profile/cleanup-uncertain.txt` retain the
+named build-container recovery detail; existing build paths remain available. Both standalone
+profile runs and executor-borrowed leases keep the common fence. Inspect and confirm all owned
+containers and resources stopped before operator recovery. A confirmed-clean diagnostic build
+failure remains a reportable omission.
+
+Calibration originals recheck their frozen cohort/member day after capacity scanning and
+again after source preparation, immediately before the first builder can launch. A missed
+original becomes terminal `expired` in `af.perf-executor-state/2`, without a build or sample,
+and is never retried or replaced. If the day expires during source preparation after claim,
+`af.perf-executor-result/2` records `not_executed_off_schedule`; its start timestamp records the
+claim, not an executed sample. Pre-claim expiry retains null start/result fields. Native local
+readiness reports either case as `invalid` / `off_schedule`, retains the request provenance
+and original denominator, and grants no qualification. Future-day submissions still refuse.
 
 ## One local run
 

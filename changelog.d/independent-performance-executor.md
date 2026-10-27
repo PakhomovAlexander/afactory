@@ -8,3 +8,12 @@
   telemetry build smoke's own observed fence after reaping its CLI and proving Docker and
   exact scratch cleanup under the common flock; retain uncertain or foreign state. Hostile
   builds must reach their intended compilation or admission rejection before a case passes.
+
+- Repair diagnostic build-container ownership uncertainty for owning and borrowed machine leases;
+  stop further launches and retain named recovery evidence independently of diagnostic scratch.
+  Freeze a validated image-local Zig/cargo-zigbuild directory in executor configuration v2 and
+  pass it to shipping parent/diagnostic builders with unchanged version pins. Drain admitted
+  originals before polling a bounded full queue. Recheck frozen calibration member days after
+  capacity/source preparation and retain missed originals as explicit non-executed `expired`
+  state/result v2 outcomes, off schedule in readiness with unchanged denominators. Obsolete
+  configuration/state/result v1 shapes refuse; no migration or fallback is provided.

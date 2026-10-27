@@ -18,7 +18,7 @@ from . import (admission, archive, budget, builds, calibration, compare, contrac
 from .values import ContractError, canonical_digest, require, sha256_bytes
 
 ROOT = telemetrylab.ROOT
-TERMINAL = ("complete", "failed", "interrupted", "uncertain", "submitted")
+TERMINAL = ("complete", "failed", "interrupted", "uncertain", "submitted", "expired")
 RESERVE = 30
 EVIDENCE_PREFIXES = ("plan.json", "cohort.json", "parameters.json", "sources.git", "run",
                      "report", "profile", "baseline-build", "candidate-build")
@@ -111,6 +111,7 @@ def environment(config):
     return canonical_digest({"backend": config["backend"], "machine_id": config["machine_id"],
         "lifetime": "persistent_vm" if config["backend"] == "local" else "fresh_hosted",
         "build_image": config["build_image"], "sample_image": config["sample_image"],
+        "zigbuild_bin": config["zigbuild_bin"],
         "core": config["core"], "telemetry": config["telemetry"],
         "diagnostic": config["diagnostic"]})
 
@@ -224,7 +225,8 @@ class Journal:
         ident = request["request_id"]
         old = self.state(ident)
         require(old["state"] not in TERMINAL, "terminal originals cannot be retried or replaced")
-        require((old["state"], state) in (("queued", "claimed"), ("claimed", "complete"),
+        require((old["state"], state) in (("queued", "claimed"), ("queued", "expired"),
+                ("claimed", "expired"), ("claimed", "complete"),
                 ("claimed", "failed"), ("claimed", "interrupted"), ("claimed", "uncertain"),
                 ("claimed", "submitted")), "invalid original transition")
         now = int(time.time() * 1000)
@@ -336,7 +338,7 @@ class Journal:
                 atomic(os.path.join(path, filename), doc, contract)
         self.index["originals"].append({"request_id": ident, "request_digest": canonical_digest(request)})
         atomic(os.path.join(self.root, "journal.json"), self.index, "executor-journal")
-        atomic(os.path.join(path, "state.json"), {"schema": "af.perf-executor-state/1",
+        atomic(os.path.join(path, "state.json"), {"schema": "af.perf-executor-state/2",
             "request_id": ident, "request_digest": canonical_digest(request), "state": "queued",
             "started_unix_ms": None, "ended_unix_ms": None, "result_sha256": None, "detail": ""}, "executor-state")
         return request
@@ -389,6 +391,9 @@ class Journal:
                 # those bounded archives too, before any original is spent.
                 reserve += 4 * frozen_config["archive_bytes"] + frozen_config["history_bytes"]
                 self.capacity(reserve)
+            if calibration_expired(request, self.path(ident)):
+                self.transition(request, "expired", "not executed: frozen calibration member day expired")
+                return "expired"
             state = self.transition(request, "claimed")
             if lock is not None:
                 lock.guard()
@@ -402,7 +407,7 @@ class Journal:
                 else:
                     result = dispatch_actions(frozen_config, request, self.path(ident), transport)
                 with terminal.enforce("publishing executor terminal evidence"):
-                    result.update(schema="af.perf-executor-result/1", request_id=ident,
+                    result.update(schema="af.perf-executor-result/2", request_id=ident,
                         request_digest=canonical_digest(request), backend=request["backend"],
                         machine_id=request["machine_id"], environment_digest=request["environment_digest"],
                         producer_digest=request["producer_digest"], sources=request["sources"],
@@ -436,6 +441,26 @@ class Journal:
         finally:
             if lock is not None:
                 lock.release()
+
+
+def calibration_expired(request, path):
+    """Check the original frozen member, immediately at each launch decision.
+
+    A future member is an authority error, never an expired/backfilled replacement.
+    """
+    if request["cohort_digest"] is None:
+        return False
+    cohort = contracts.read_json(read(os.path.join(path, "cohort.json")), "local-cohort-declaration")
+    require(canonical_digest(cohort) == request["cohort_digest"], "original cohort changed")
+    member = next((m for m in cohort["members"] if m["member_id"] == request["member_id"]), None)
+    require(member is not None and request["backend"] == "local"
+            and request["submission"] == {"kind": "calibration",
+                "key": request["cohort_digest"] + ":" + member["member_id"]},
+            "unbound calibration original")
+    start = calibration.start_unix_ms(cohort) + member["day"] * calibration.DAY_MS
+    now = int(time.time() * 1000)
+    require(now >= start, "calibration original is before its frozen member day")
+    return now >= start + calibration.DAY_MS
 
 
 def run_git(repo, args, timing, cwd=None):
@@ -530,8 +555,14 @@ def execute_local(config, request, path, lease, installed=ROOT):
         require(sha256_bytes(contracts.write_bytes(plan, "run")) == request["plan_sha256"], "local plan changed")
         # Original plan is frozen before launch; replay is from retained objects, never Actions.
         require(plan["resolved"] == request["sources"], "plan names another source")
+        # Source/producer preparation can cross midnight after the durable claim. Check
+        # again here, before the first builder (including its container probes) can launch.
+        if calibration_expired(request, path):
+            return {"status": "expired", "measurement_status": "not_executed_off_schedule",
+                    "evidence": file_manifest(path, EVIDENCE_PREFIXES, terminal), "actions": None,
+                    "detail": "not executed: frozen calibration member day expired during preparation"}
         build = builds.Builder(owner, plan, None, bounded_container=True,
-                               deadline_unix_ms=deadline_ms)
+                               zigbuild_bin=config["zigbuild_bin"], deadline_unix_ms=deadline_ms)
         built = build.build()
         require(built["cleanup"]["status"] == "removed", "core build cleanup unconfirmed")
         with timing.enforce("preparing local sample scratch"):
@@ -574,7 +605,7 @@ def execute_local(config, request, path, lease, installed=ROOT):
                     "remaining local deadline cannot cover the declared diagnostic profile")
             def diagnostic_builder(child, until):
                 builder = builds.Builder(owner, child, None, bounded_container=True,
-                                         deadline_unix_ms=min(until, deadline_ms))
+                                         zigbuild_bin=config["zigbuild_bin"], deadline_unix_ms=min(until, deadline_ms))
                 doc = builder.build()
                 require(doc["cleanup"]["status"] == "removed", "diagnostic build cleanup unconfirmed")
                 return builder.layout.build

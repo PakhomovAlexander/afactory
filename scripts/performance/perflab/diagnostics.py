@@ -2416,10 +2416,27 @@ def run_profile(git, options, authority_factory=None, machine_lease=None):
                 lock.mark_uncertain()
         return result
     except Unavailable as error:
+        if not error.cleanup_confirmed:
+            if machine_lease is None:
+                lock.uncertain = True
+            else:
+                lock.mark_uncertain()
+            # Keep the named build container/recovery detail beside the frozen child plan.
+            # Mark the lease first: a failed evidence write cannot restore cleanup certainty.
+            if os.path.isdir(options.output):
+                with open(os.path.join(options.output, "cleanup-uncertain.txt"), "x") as stream:
+                    stream.write((error.reason + ": " + str(error))[:4096] + "\n")
+                    stream.flush()
+                    os.fsync(stream.fileno())
+                with deadlines.defer_alarm():
+                    fd = os.open(options.output, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+                try:
+                    os.fsync(fd)
+                finally:
+                    with deadlines.defer_alarm():
+                        os.close(fd)
         if machine_lease is None and not os.path.lexists(options.output) and error.cleanup_confirmed:
             lock.confirm_clean()
-        elif machine_lease is not None and not error.cleanup_confirmed:
-            lock.mark_uncertain()
         raise
     finally:
         lock.release()
@@ -2489,6 +2506,12 @@ def _run_locked(git, options, authority_factory, parent, plan, registry, raw, en
                               "detail": "neither --build nor a build configuration was given",
                               "reproduction": reproduction(None)})
     except (Exhausted, Unavailable, builds.Unavailable, deadlines.Expired) as error:
+        if getattr(error, "reason", None) == "build_container_unconfirmed" \
+                or not getattr(error, "cleanup_confirmed", True):
+            # Diagnostic scratch says nothing about ownership of a build container. Stop
+            # before parent probes, capability checks or captures can launch anything else.
+            raise Unavailable(getattr(error, "reason", "build_failed"), str(error),
+                              cleanup_confirmed=False) from error
         omissions.append({"kind": "build", "instance_id": None, "side": None,
                           "reason": getattr(error, "reason", "build_failed"),
                           "detail": str(error)[:4096], "reproduction": reproduction(None)})
