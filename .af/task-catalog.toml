@@ -198,7 +198,7 @@ path = ".af/task-packages/kernel/review-code-remote"
 
 [packages."default/implementer"]
 version = "1.0.0"
-digest = "sha256:2791db385f8fd7701c397cb31cfe695ad6ff3c6bf7883b7cd35da49c288a7daa"
+digest = "sha256:e7112e57284398f86883227607b30fb74a10b1e3c2d980ea64a840e64a6dda61"
 path = ".af/task-packages/default/implementer"
 
 [packages."default/bugs"]

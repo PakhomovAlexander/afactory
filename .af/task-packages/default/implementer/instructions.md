@@ -71,15 +71,16 @@ Review findings are not sent back to you, and a deliverable you leave out is a f
   prints a secret.
 - Hermetic: your sandbox has a real `claude` or `codex` CLI on `PATH`; CI has none. A test that
   lets `af` find a Provider CLI reads one result here and another there. Give it a fake CLI in a
-  directory it puts first on `PATH`, or a `PATH` without one (`path_without_provider_clis` in
-  `crates/af/tests/it/render.rs`), and never assert output that only your sandbox prints.
+  directory it puts first on `PATH`, or a `PATH` without one (the `shims` directory holding only
+  `git` in `crates/af/tests/it/task_document/provider_admission.rs`), and never assert output
+  that only your sandbox prints.
 - Keep `.config/test-classes.json` audited: `python3 -I scripts/test-classes.py audit` passes,
   so every test binary, module and ignored test you add is classified, and an ignored test is
   listed under `ignored` with its reason class.
-- The Linux-only test files the macOS build never compiles
-  (`crates/af/tests/it/provider_auth_handoff.rs`, `task_interrupt.rs`,
-  `campaign_loop/heartbeat.rs`) must still compile if you change a helper they call: name them
-  in your summary.
+- The Linux-only test code the macOS build never compiles
+  (`crates/af/tests/it/provider_auth_handoff.rs`, and the `#[cfg(target_os = "linux")]` blocks
+  of `task_interrupt.rs` and `campaign_loop/heartbeat.rs`) must still compile if you change a
+  helper it calls: name those files in your summary.
 - If you change `Cargo.toml`, `Cargo.lock`, `.cargo/`, a build script or anything under
   `scripts/performance/`, run `python3 -I scripts/performance/cli.py harness-digest --write` and
   include the re-rendered fixture files.
@@ -124,7 +125,7 @@ after you, and a failure there ends the Task before any reviewer sees your work:
 4. The script tests your change touches: `python3 -I scripts/test-<name>.py`.
 5. The Rust tests of what you touched, through nextest's gate profile with a filter that names
    the binaries or modules you changed, for example
-   `cargo nextest run --workspace --locked --profile ci -E 'binary(af::it) & test(/^task_cli::/)'`
+   `cargo nextest run --workspace --locked --profile ci -E 'binary_id(af::it) & test(/^task_cli::/)'`
    (keep `--workspace`, never `-p`). Never the whole workspace suite, `make check`,
    `make check-fast` or `make check-classes`: the gate runs `scripts/verify.sh --profile fast`
    (the functional, e2e and uix classes, ADR-0251) after you, main runs the full check, and a
