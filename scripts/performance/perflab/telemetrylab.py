@@ -46,6 +46,7 @@ import copy
 import hashlib
 import importlib.util
 import json
+import math
 import os
 import re
 import stat
@@ -318,9 +319,179 @@ def script_module(script, root=None):
     return _MODULES[key]
 
 
+@dataclass(frozen=True)
+class _NumericToken:
+    text: str
+
+
+class MeasurementRefusal(ContractError):
+    """A known numeric field refused before any summarization or comparison."""
+
+    def __init__(self, field, token, reason):
+        self.field, self.token, self.reason = field, token, reason
+        ContractError.__init__(self, "%s: %s (numeric token %s)" % (
+            field, reason, token[:512]))
+
+
+def _numeric_fields(doc, schema, definitions, path=""):
+    """Walk only schema-declared fields. Candidate keys and free text never enter evidence."""
+    if "$ref" in schema:
+        yield from _numeric_fields(doc, definitions[schema["$ref"].split("/")[-1]],
+                                   definitions, path)
+        return
+    for child in schema.get("oneOf", ()):
+        yield from _numeric_fields(doc, child, definitions, path)
+    if isinstance(doc, dict):
+        for key, child in schema.get("properties", {}).items():
+            if key in doc:
+                yield from _numeric_fields(doc[key], child, definitions,
+                                           path + ("." if path else "") + key)
+    elif isinstance(doc, list) and "items" in schema:
+        for index, value in enumerate(doc):
+            # Evidence must resolve through the same declared bounds offline. The
+            # complete document still goes through ordinary schema admission below;
+            # excess entries are never admitted by truncating selected samples.
+            if index >= schema.get("maxItems", 100000000):
+                break
+            yield from _numeric_fields(value, schema["items"], definitions,
+                                       "%s[%d]" % (path, index))
+    else:
+        kinds = schema.get("type", ())
+        kinds = [kinds] if isinstance(kinds, str) else kinds
+        if "number" in kinds or "integer" in kinds:
+            if isinstance(doc, _NumericToken):
+                yield path, doc.text, schema
+            elif type(doc) in (int, float):
+                yield path, json.dumps(doc), schema
+
+
+def _numeric_reason(path, token, schema):
+    if len(token) > 512:
+        return "token_too_long"
+    # Inspect the bounded original mantissa before float parsing loses its sign/value
+    # through underflow. Never expand an exponent or construct an exact huge power.
+    mantissa = re.split("[eE]", token, maxsplit=1)[0]
+    nonzero = any(digit in "123456789" for digit in mantissa)
+    value = json.loads(token)
+    if isinstance(value, float) and not math.isfinite(value):
+        return "nonfinite"
+    kinds = schema["type"]
+    if "integer" in kinds and type(value) is not int:
+        return "not_integer"
+    # Differences, percentages and their intervals are signed. These physical quantities
+    # and every individual latency sample are not, even when a median hides a bad sample.
+    physical = re.search(r"(?:^|\.)(?:wall_ms|drain_ms|off_ms|spans_ms|latency_ms|"
+                         r"peak_rss_bytes|index_bytes|stdout_bytes|segments|load1|"
+                         r"samples_ms\[[0-9]+\])$", path)
+    if token.startswith("-") and nonzero and (physical or schema.get("minimum", -1) >= 0):
+        return "negative"
+    if nonzero and value == 0:
+        return "unrepresentable"
+    if (path.endswith(".wall_ms") or schema.get("exclusiveMinimum") == 0) and value <= 0:
+        return "not_positive"
+    try:
+        number = _number(value, path)
+        if physical or schema.get("minimum", -1) >= 0:
+            contracts.DECIMAL.validate(format_decimal(number, path), path)
+        else:
+            # Signed derived figures are carried as exact rationals in the result.
+            contracts.RATIONAL.validate(format_rational(number), path)
+    except ContractError:
+        return "unrepresentable"
+    return None
+
+
+def validate_measurements(experiment, doc, registry, root=None):
+    schema = jsonsubset.load(registry["experiments"][experiment]["schema_file"], root).doc
+    for path, token, node in _numeric_fields(doc, schema, schema.get("$defs", {})):
+        reason = _numeric_reason(path, token, node)
+        if reason is not None:
+            raise MeasurementRefusal(path, token, reason)
+
+
+def measurement_evidence(error, data):
+    token = error.token.encode("ascii")
+    return {"document_sha256": sha256_bytes(data), "document_bytes": len(data),
+            "field": error.field, "token": error.token[:512], "token_bytes": len(token),
+            "token_sha256": sha256_bytes(token), "reason": error.reason}
+
+
+def measurement_detail(run, evidence):
+    return ("%s/round-%d/%s: %s: %s (numeric token %s)" % (
+        run["experiment"], run["round"], run["side"], evidence["field"],
+        evidence["reason"], evidence["token"]))[:4096]
+
+
+def verify_measurement_refusal(run, registry, root=None):
+    """Replay the bounded numeric projection. It has no document or judgment authority."""
+    evidence = run["measurement_refusal"]
+    path, token = evidence["field"], evidence["token"]
+    require(len(path) <= 256 and re.fullmatch(contracts.TELEMETRY_MEASUREMENT_PATH, path),
+            "measurement refusal: a bounded canonical field path")
+    # Resolve schema paths directly without allocating candidate-sized arrays. A candidate
+    # cannot smuggle arbitrary keys, names, text, or a signed figure into a raw-metric rule.
+    schema = jsonsubset.load(registry["experiments"][run["experiment"]]["schema_file"], root).doc
+    definitions = schema.get("$defs", {})
+
+    def resolve(node, remaining):
+        if "$ref" in node:
+            return resolve(definitions[node["$ref"].split("/")[-1]], remaining)
+        if "oneOf" in node:
+            return [found for child in node["oneOf"] for found in resolve(child, remaining)]
+        if not remaining:
+            kinds = node.get("type", ())
+            return [node] if "number" in kinds or "integer" in kinds else []
+        part, rest = remaining[0], remaining[1:]
+        if part.startswith("["):
+            index = int(part[1:-1])
+            if index >= node.get("maxItems", 100000000):
+                return []
+            child = node.get("items")
+        else:
+            child = node.get("properties", {}).get(part)
+        return [] if child is None else resolve(child, rest)
+
+    parts = re.findall(r"[a-z_][a-z0-9_-]*|\[[0-9]+\]", path)
+    nodes = resolve(schema, parts)
+    require(len(nodes) == 1, "measurement refusal: field is not a declared numeric field")
+    require(evidence["document_bytes"] >= evidence["token_bytes"],
+            "measurement refusal: token fits its original document")
+    if evidence["token_bytes"] > 512:
+        require(len(token) == 512 and evidence["reason"] == "token_too_long"
+                and re.fullmatch(r"-?(?:0|[1-9][0-9]*)(?:\.[0-9]*)?(?:[eE][+-]?[0-9]*)?",
+                                 token) is not None,
+                "measurement refusal: a capped original token")
+    else:
+        require(len(token) == evidence["token_bytes"]
+                and sha256_bytes(token.encode("ascii")) == evidence["token_sha256"],
+                "measurement refusal: original numeric token identity")
+        try:
+            parsed = json.loads(token, parse_int=_NumericToken, parse_float=_NumericToken,
+                                parse_constant=_NumericToken)
+            require(isinstance(parsed, _NumericToken), "measurement refusal: a numeric token")
+            reason = _numeric_reason(path, token, nodes[0])
+        except (ValueError, TypeError) as error:
+            raise ContractError("measurement refusal: invalid numeric token") from error
+        require(reason == evidence["reason"], "measurement refusal: numeric refusal must replay")
+    require(run["detail"] == measurement_detail(run, evidence),
+            "measurement refusal: diagnostic must match retained evidence")
+
+
 def read_document(experiment, data, where, registry, root=None):
     """A script's document through the product's committed schema of it."""
     entry = registry["experiments"][experiment]
+    require(isinstance(data, bytes) and len(data) <= DOCUMENT_BYTES_MAX,
+            "%s: over its document byte bound" % where)
+    try:
+        # Preserve the original numeric spelling, including non-finite and overflow tokens,
+        # only for the fixed numeric projection. The normal strict reader still admits
+        # every successful document below; no arbitrary refused document is published.
+        numeric = json.loads(data.decode("utf-8"), object_pairs_hook=jsonsubset._unique,
+                             parse_int=_NumericToken, parse_float=_NumericToken,
+                             parse_constant=_NumericToken)
+    except (UnicodeDecodeError, ValueError, RecursionError) as error:
+        raise ContractError("%s: not one JSON document: %s" % (where, str(error)[:512]))
+    validate_measurements(experiment, numeric, registry, root)
     doc = jsonsubset.parse(data, where, DOCUMENT_BYTES_MAX)
     require(isinstance(doc, dict) and doc.get("schema") == entry["document"],
             "%s: expected %s" % (where, entry["document"]))
@@ -347,6 +518,7 @@ def admit(experiment, doc, expect, registry, root=None):
     """(verdict, reasons) of one document read through its schema: refused unless it is the
     planned run (`expectation`) and every figure it derives is what its script's own rule
     gives its raw pairs or samples."""
+    validate_measurements(experiment, doc, registry, root)
     module = script_module(registry["experiments"][experiment]["script"], root)
     require(expect["version"] is not None and doc["af"]["version"] == expect["version"],
             "it reports binary %r, not this side's %r" % (doc["af"]["version"][:64],
@@ -393,6 +565,7 @@ def admit(experiment, doc, expect, registry, root=None):
         raise ContractError("its script refuses to judge it: %s" % str(error)[:512])
     require(again == doc, "a difference, median, interval or verdict it records is not what "
             "its script's rule gives its pairs")
+    validate_figures(experiment, doc)
     return doc["gate"]["verdict"], [str(reason)[:512] for reason in doc["gate"]["reasons"]][:64]
 
 
@@ -445,6 +618,7 @@ def _admit_read_latency(module, doc, expect):
             reasons.append("%s: %s ms warm, bound %s ms" % (name, warm["latency_ms"],
                                                            module.BOUNDS_MS[name]))
     require(doc["passed"] is (not reasons), "its passed is not its measurements'")
+    validate_figures("read_latency", doc)
     if corpus["runs"] != module.FULL_RUNS:
         return "not_judged", ["corpus %s of %d runs: the read bounds are stated for the full "
                               "%d-run corpus" % (corpus["name"], corpus["runs"],
@@ -514,6 +688,21 @@ def figures(experiment, doc):
             within.append((name, "content", "index_bytes",
                            _number(item["warm"]["index_bytes"], name)))
     return values, within
+
+
+def validate_figures(experiment, doc):
+    """Admit output representability per run, before it can enter finalization.
+
+    Even representable raw samples can have an exact median one decimal place longer.
+    Such a refusal belongs to this run and must not abort other runs' result publication.
+    """
+    values, within = figures(experiment, doc)
+    for (subject, level, metric, shape), value in values.items():
+        where = "%s/%s/%s/%s: derived physical median" % (subject, level, shape or "", metric)
+        contracts.DECIMAL.validate(format_decimal(value, where), where)
+    for subject, level, figure, value in within:
+        contracts.RATIONAL.validate(format_rational(value), "%s/%s/%s" % (
+            subject, level, figure))
 
 
 def protocol(experiment, doc):
@@ -1163,7 +1352,8 @@ def _run_locked(settings, root, registry, registry_sha, config, mode, sources, b
                           "position": position, "seed": seed,
                           "argv": argv_for(experiment, settings_, seed, script),
                           "status": "not_run", "exit_code": None, "wall_ms": None,
-                          "document": None, "log": None, "judgment": None, "detail": ""}
+                          "document": None, "log": None, "measurement_refusal": None,
+                          "judgment": None, "detail": ""}
                 result["runs"].append(record)
                 if experiment == "read_latency" and not corpus_ok:
                     record["detail"] = "the corpus was not generated, so nothing was read"
@@ -1224,6 +1414,10 @@ def _run_locked(settings, root, registry, registry_sha, config, mode, sources, b
                                   else verdict == "fail")
                         require(outcome.code == (EXIT_GATE_FAILED if failed else 0),
                                 "the script's exit status is not its verdict's")
+                    except MeasurementRefusal as error:
+                        record["status"] = "refused_document"
+                        record["measurement_refusal"] = measurement_evidence(error, outcome.stdout)
+                        record["detail"] = measurement_detail(record, record["measurement_refusal"])
                     except ContractError as error:
                         record["status"] = "refused_document"
                         record["detail"] = str(error)[:4096]
@@ -1343,6 +1537,8 @@ def verify(source, root=None):
                 root))
     documents = {}
     for run in result["runs"]:
+        if run["measurement_refusal"] is not None:
+            verify_measurement_refusal(run, registry, root)
         if run["document"] is None:
             continue
         where = "%s/%s" % (label, run["document"]["path"])
@@ -1712,6 +1908,10 @@ def summary_markdown(result):
                 for run in result["runs"] if run["judgment"] is not None]
     lines += ["", "Each script's own judgment: " + render.markdown_cell(
         "; ".join(verdicts) or "none"), ""]
+    refused = [run["detail"] for run in result["runs"]
+               if run["measurement_refusal"] is not None]
+    if refused:
+        lines += ["Refused measurements: " + render.markdown_cell("; ".join(refused)), ""]
     return "\n".join(lines)
 
 
