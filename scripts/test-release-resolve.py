@@ -178,6 +178,51 @@ fi''')
             self.assertEqual(result.returncode, 0, result.stderr)
             self.assertEqual(json.loads(values['test_plan']), plan)
 
+    def test_unlabeled_merged_release_pr_keeps_fast_selection_after_tagging(self):
+        result, values = self.resolve(labels=[])
+        self.assertEqual(result.returncode, 0, result.stderr)
+        plan = json.loads(values['test_plan'])
+        self.assertEqual(plan['context'], 'release_pr')
+        self.assertEqual(plan['profile'], 'fast')
+        calls = self.api_log.read_text()
+        for ref_type in ('branch', 'tag'):
+            result, retry = self.resolve(ref_type, 'v1.0.1' if ref_type == 'tag' else 'main',
+                                         labels=['release:full'])
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertEqual(json.loads(retry['test_plan']), plan)
+        self.assertEqual(self.api_log.read_text(), calls)
+
+    def test_full_merged_release_pr_keeps_full_selection_after_tagging(self):
+        result, values = self.resolve(labels=['release:full'])
+        self.assertEqual(result.returncode, 0, result.stderr)
+        plan = json.loads(values['test_plan'])
+        self.assertEqual(plan['context'], 'release_pr')
+        self.assertEqual(plan['selected'], ['functional', 'e2e', 'uix', 'perf'])
+        calls = self.api_log.read_text()
+        for ref_type in ('branch', 'tag'):
+            result, retry = self.resolve(ref_type, 'v1.0.1' if ref_type == 'tag' else 'main',
+                                         labels=[])
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertEqual(json.loads(retry['test_plan']), plan)
+        self.assertEqual(self.api_log.read_text(), calls)
+
+    def test_prior_binding_version_on_matching_tag_fails_closed_without_api(self):
+        result, _ = self.resolve(labels=[])
+        self.assertEqual(result.returncode, 0, result.stderr)
+        tag = 'refs/tags/v1.0.1'
+        binding = json.loads(self.git('for-each-ref', '--format=%(contents)', tag))
+        binding['schema'] = 'af.release-tests/1'
+        binding['plan']['schema'] = 'af.test-plan/1'
+        self.git('push', 'origin', ':' + tag)
+        self.git('tag', '-d', 'v1.0.1')
+        self.git('tag', '-a', 'v1.0.1', '-m', json.dumps(binding))
+        self.git('push', 'origin', tag)
+        calls = self.api_log.read_text()
+        result, _ = self.resolve('tag', 'v1.0.1', pages='error')
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn('invalid release selection annotation', result.stderr)
+        self.assertEqual(self.api_log.read_text(), calls)
+
     def test_merge_commit_binds_the_merged_release_pr(self):
         self.git('branch', 'release/v1.0.1')
         self.git('checkout', '--detach', self.base)
@@ -211,7 +256,7 @@ fi''')
                          ['functional', 'e2e', 'uix', 'perf'])
         self.assertFalse(self.api_log.exists())
         self.git('tag', '-d', 'v1.0.1')
-        stale = {'schema': 'af.release-tests/1', 'sha': self.base, 'version': '1.0.0',
+        stale = {'schema': 'af.release-tests/2', 'sha': self.base, 'version': '1.0.0',
                  'source_pr': None, 'plan': {}}
         self.git('tag', '-a', 'v1.0.1', '-m', json.dumps(stale))
         self.git('remote', 'set-url', 'origin', str(self.root / 'empty.git'))

@@ -310,7 +310,8 @@ then `make check-classes`. The JSON file has the GitHub event shape
 `{"pull_request":{"labels":[{"name":"test:functional"},{"name":"test:e2e"}]}}`.
 Selective e2e includes live containers and requires Docker. Fmt/lint and policy checks always run.
 
-Ordinary PRs default to functional + e2e + uix; AF gate PRs targeting `af-gate/**` default full. Any positive `test:functional`, `test:e2e`, `test:uix`, `test:perf`
+Every PR defaults to functional + e2e + uix, including AF gate and release PRs. Any positive
+`test:functional`, `test:e2e`, `test:uix`, `test:perf`
 labels replace that default with an explicit allowlist. `no-functional`, `no-e2e`, `no-uix`, `no-perf`
 exclude from defaults. Contradictions, unknown reserved labels and empty selections fail. Skipped
 classes are reported as NOT RUN. `no-perf` also exempts the separate Performance measurement workflow;
@@ -322,15 +323,16 @@ Every integration module/binary and Python test script needs a reviewed entry in
 component default unless overridden. Tests of help/errors/navigation belong to uix; complete workflows
 belong to e2e even if they assert output. Keep nextest exclusive scheduling independent of class.
 
-`make release VERSION=X.Y.Z COMPAT='...' PROFILE=fast` opens a release PR with `release:fast`;
-the default PROFILE is full. Provision the ten canonical labels with `make test-labels` (dry-run),
+`make release VERSION=X.Y.Z COMPAT='...'` opens a release PR with `release:fast` by default;
+`PROFILE=full` selects all classes. Provision the ten canonical labels with `make test-labels` (dry-run),
 then explicitly `make test-labels APPLY=1`; no PR labels are assigned by that setup command.
 Release preparation checks the profile label exists before changing source, committing or pushing.
 Changing release PR labels directly reruns selected CI; no policy file or metadata commit is required.
 When creating the absent tag, the resolver captures labels from the single exact merged release PR
 associated with that commit (matching SHA, main base and release/version head). It freezes the source
 PR provenance and plan in the annotated tag, bound to commit/version/catalog. First creation captures
-then-current labels; every later retry/tag run uses the annotation and ignores moving labels.
+then-current labels; an unlabeled matching release PR retains the fast default. Every later
+retry/tag run uses the annotation and ignores moving labels.
 `release:full` forces all classes and rejects partial/excluded
 selections. Direct unbound tags run full. All selected Linux/macOS gates and packaged binary, archive,
 architecture and signature smoke remain mandatory. Fast/custom release notes state their scope.
