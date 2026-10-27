@@ -302,7 +302,7 @@ fn install_sh_ends_with_the_next_steps_and_the_path_line_for_the_shell() {
         "{next:#?}"
     );
 
-    // fish, with the bin directory off PATH: its own PATH line.
+    // fish, with the bin directory off PATH: its own PATH line, the directory a fish literal.
     let fish = installer.run(&installer.with_minisign, &[("SHELL", "/usr/bin/fish")]);
     assert!(fish.status.success(), "{}", err(&fish));
     let lines = ending(&fish);
@@ -311,9 +311,39 @@ fn install_sh_ends_with_the_next_steps_and_the_path_line_for_the_shell() {
     assert_eq!(
         lines[5],
         format!(
-            "  fish_add_path {}   # af is not on PATH yet",
+            "  fish_add_path '{}'   # af is not on PATH yet",
             bin.display()
         )
+    );
+
+    // A bin directory with a space, a `'` and a `\`: fish reads its line as one path argument,
+    // the `'` and `\` escaped the way `af doctor` writes them; bash's double quotes keep the
+    // space. Neither line is run.
+    let spaced = sandbox.path("My Tools/it's\\bin");
+    let spaced_env = spaced.to_str().unwrap();
+    let fish = installer.run(
+        &installer.with_minisign,
+        &[("SHELL", "/usr/bin/fish"), ("XDG_BIN_HOME", spaced_env)],
+    );
+    assert!(fish.status.success(), "{}", err(&fish));
+    let lines = ending(&fish);
+    assert_eq!(lines[1..5], next, "{lines:#?}");
+    assert_eq!(
+        lines[5],
+        format!(
+            "  fish_add_path '{}/My Tools/it\\'s\\\\bin'   # af is not on PATH yet",
+            spaced.ancestors().nth(2).unwrap().display()
+        ),
+        "{lines:#?}"
+    );
+    let bash = installer.run(
+        &installer.with_minisign,
+        &[("SHELL", "/bin/bash"), ("XDG_BIN_HOME", spaced_env)],
+    );
+    assert!(bash.status.success(), "{}", err(&bash));
+    assert_eq!(
+        ending(&bash)[5],
+        format!("  export PATH=\"{spaced_env}:$PATH\"   # add to ~/.bashrc: af is not on PATH yet")
     );
 
     // bash: the export line, naming the rc file.

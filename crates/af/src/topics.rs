@@ -411,9 +411,10 @@ stdout is the result, stderr is progress. A command whose --help lists --json pr
 JSON document on stdout under it — no banner, no trailing text — so `af … --json | jq` works,
 with one exception: `af telemetry tail --json` streams JSON Lines, one af/telemetry-tail@1 object
 per line as each record is written, until the segments it follows are sealed; read it line by
-line (`jq -c`), never as one document. `af review report` takes --format json instead. Not
-every command has a JSON form: `af review ledger`, `af review show` and `af config paths`, for
-example, print text only.
+line (`jq -c`), never as one document. A tail that fails, even after records, ends the stream
+with one af/error@1 line and exits nonzero, so tell each line by its `schema`. `af review report`
+takes --format json instead. Not every command has a JSON form: `af review ledger`,
+`af review show` and `af config paths`, for example, print text only.
 Errors under --json are one af/error@1 document on stdout (schemas/error-v1.json) with the same
 exit code: `command`, `error` (the sentence stderr prints) and `exit_code`. A usage error is one
 too, exit 2, with clap's message; `--help` and `--version` are not errors. A refusal af

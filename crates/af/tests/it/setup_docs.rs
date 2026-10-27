@@ -287,6 +287,9 @@ fn readme_explains_findings_that_look_alike_with_commands_that_parse() {
 /// exception to the one-document rule instead of promising one document for every `--json`.
 /// Every other `--help` describes its `--json` as one document; the recorded tail stream
 /// (`telemetry_golden/tail.jsonl`) is several lines, each its own object, and not one document.
+/// A failed tail ends the stream with one `af/error@1` line after the records it printed
+/// (`telemetry_tail_refuses_interior_corruption_of_a_live_segment`), and both surfaces say so,
+/// as `docs/telemetry.md` does.
 #[test]
 fn json_guidance_names_telemetry_tail_as_the_one_json_lines_stream() {
     let mut streams = Vec::new();
@@ -353,6 +356,13 @@ fn json_guidance_names_telemetry_tail_as_the_one_json_lines_stream() {
         ),
         "{agents}"
     );
+    assert!(
+        agents.contains(
+            "A tail that fails, even after records, ends the stream with one `af/error@1` line \
+             and exits nonzero, so tell each line by its `schema`."
+        ),
+        "{agents}"
+    );
     let topic = help(&["help", "json"]);
     assert!(
         topic.contains(
@@ -362,6 +372,20 @@ fn json_guidance_names_telemetry_tail_as_the_one_json_lines_stream() {
              af/telemetry-tail@1 object per line"
         ),
         "{topic}"
+    );
+    assert!(
+        collapsed(&topic).contains(
+            "A tail that fails, even after records, ends the stream with one af/error@1 line \
+             and exits nonzero, so tell each line by its `schema`."
+        ),
+        "{topic}"
+    );
+    let telemetry = collapsed(&workspace_file("docs/telemetry.md"));
+    assert!(
+        telemetry.contains(
+            "a tail that fails, even after records, ends the stream with one `af/error@1` line"
+        ),
+        "docs/telemetry.md"
     );
     assert!(!topic.contains("always works"), "{topic}");
 }

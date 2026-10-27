@@ -259,10 +259,14 @@ case ":$PATH:" in
   *":$BIN:"*) ;;
   *)
     login_shell=${SHELL:-}   # unset in containers, CI runners and cron, and `set -u` is on
+    # printf, not echo: sh's echo may read a `\` in the directory as an escape.
     case "${login_shell##*/}" in
-      fish) echo "  fish_add_path $BIN   # af is not on PATH yet" ;;
-      zsh) echo "  export PATH=\"$BIN:\$PATH\"   # add to ~/.zshrc: af is not on PATH yet" ;;
-      bash) echo "  export PATH=\"$BIN:\$PATH\"   # add to ~/.bashrc: af is not on PATH yet" ;;
-      *) echo "  add $BIN to PATH: af is not on PATH yet" ;;
+      # A fish literal, as `af doctor` writes it: single-quoted, where only `\\` and `\'` are
+      # escapes, so a space or `$` in the directory stays one path argument.
+      fish) fish_bin=$(printf '%s' "$BIN" | sed -e 's/\\/\\\\/g' -e "s/'/\\\\'/g")
+        printf "  fish_add_path '%s'   # af is not on PATH yet\n" "$fish_bin" ;;
+      zsh) printf '  export PATH="%s:$PATH"   # add to ~/.zshrc: af is not on PATH yet\n' "$BIN" ;;
+      bash) printf '  export PATH="%s:$PATH"   # add to ~/.bashrc: af is not on PATH yet\n' "$BIN" ;;
+      *) printf '  add %s to PATH: af is not on PATH yet\n' "$BIN" ;;
     esac ;;
 esac

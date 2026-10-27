@@ -119,9 +119,11 @@ verification stay. `af review show --campaign NAME FROM` shows the group, and
 A command whose `--help` lists `--json` prints one versioned document under it, except
 `af telemetry tail --json`: it streams JSON Lines, one `af/telemetry-tail@1` object per line as
 each record is written, until the segments it follows are sealed, so read it line by line, never
-as one document. `af review report` takes `--format json` instead. Not every reading command has
-a JSON form: `af review ledger`, `af review show` and `af config paths`, for example, print text
-only. Exit codes are stable (`af help json`, `af help exit-codes`). A Provider login is a human's:
+as one document. A tail that fails, even after records, ends the stream with one `af/error@1`
+line and exits nonzero, so tell each line by its `schema`. `af review report` takes
+`--format json` instead. Not every reading command has a JSON form: `af review ledger`,
+`af review show` and `af config paths`, for example, print text only. Exit codes are stable
+(`af help json`, `af help exit-codes`). A Provider login is a human's:
 `af provider setup --login` runs only at an interactive terminal, because the OAuth URL and code
 it prints are credentials in transit
 ([ADR-0112](docs/adr/0112-refuse-agent-mediated-provider-logins.md)); without one, setup exits 3
