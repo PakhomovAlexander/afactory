@@ -1505,9 +1505,14 @@ fn stores_are_listed_one_by_one_as_each_is_read() {
             detail: None,
         })
         .unwrap();
-    sender.send(Read::Done(cache.clone())).unwrap();
     assert!(pane.poll());
     assert_eq!(groups(&pane), ["one/ (2)", "two/ (2)"]);
+    assert!(
+        pane.busy().is_some(),
+        "every Store listed, the read is not over until its last message"
+    );
+    sender.send(Read::Done(cache.clone())).unwrap();
+    assert!(pane.poll());
     assert!(pane.busy().is_none(), "the last message ends the read");
     assert!(!pane.cache.finished.is_empty(), "the read's cache is kept");
     // A second read replaces each Store in its place, the first before the second, and the
@@ -1578,4 +1583,148 @@ fn the_opened_tasks_detail_comes_with_its_stores_message() {
         pane.task("pagination-cli").is_some(),
         "its Store is listed all the same"
     );
+}
+
+/// A refused Store is listed with its refusal the moment it is read, while the Stores after it
+/// are still unread.
+#[test]
+fn a_refused_store_is_listed_before_the_stores_after_it() {
+    let temp = tempfile::tempdir().unwrap();
+    let root = std::fs::canonicalize(temp.path()).unwrap();
+    let (_repo, state) = crate::tui::tests::hub_with_tasks(&root);
+    // Entries but no event log: not a Store this release reads.
+    let broken = root.join("broken");
+    std::fs::create_dir_all(broken.join("cas")).unwrap();
+    let target = |dir: &Path, shown: &str| Target {
+        dir: dir.to_path_buf(),
+        shown: shown.to_owned(),
+        repo: Some(shown.to_owned()),
+        origin: Origin::Registered,
+    };
+    let mut pane = TasksPane {
+        targets: vec![target(&broken, "broken"), target(&state, "good")],
+        ..TasksPane::default()
+    };
+    let sender = pane.fed();
+    let mut cache = Cache::default();
+    let labels = |pane: &TasksPane| -> Vec<String> {
+        let mut labels = Vec::new();
+        for item in pane.items() {
+            labels.push(item.label.clone());
+            for child in item.children.into_iter().flatten() {
+                labels.push(child.label);
+            }
+        }
+        labels
+    };
+    sender
+        .send(Read::Store {
+            index: 0,
+            store: Box::new(read_target(&target(&broken, "broken"), &mut cache)),
+            detail: None,
+        })
+        .unwrap();
+    assert!(pane.poll());
+    let listed = labels(&pane);
+    assert!(
+        listed.iter().any(|label| label == "! Store unreadable"),
+        "{listed:?}"
+    );
+    assert!(
+        !listed.iter().any(|label| label.starts_with("good/")),
+        "the Store after it is still unread: {listed:?}"
+    );
+    assert!(pane.busy().is_some());
+    sender
+        .send(Read::Store {
+            index: 1,
+            store: Box::new(read_target(&target(&state, "good"), &mut cache)),
+            detail: None,
+        })
+        .unwrap();
+    sender.send(Read::Done(cache)).unwrap();
+    assert!(pane.poll());
+    let listed = labels(&pane);
+    assert!(listed.iter().any(|label| label == "! Store unreadable"));
+    assert!(
+        listed.iter().any(|label| label == "good/ (2)"),
+        "{listed:?}"
+    );
+    assert!(pane.busy().is_none());
+}
+
+/// A Task whose Store refuses when it is opened: a read in flight, which may hold that Store
+/// as it stood before the refusal, is dropped and started over, so nothing read before the
+/// refusal lists the Task again over it.
+#[test]
+fn a_refusal_taken_on_open_restarts_a_read_in_flight() {
+    let temp = tempfile::tempdir().unwrap();
+    let root = std::fs::canonicalize(temp.path()).unwrap();
+    let (_repo, state) = crate::tui::tests::hub_with_tasks(&root);
+    let target = Target {
+        dir: state.clone(),
+        shown: "state".to_owned(),
+        repo: None,
+        origin: Origin::Scope,
+    };
+    let mut pane = TasksPane {
+        targets: vec![target.clone()],
+        ..TasksPane::default()
+    };
+    // Listed once, so the Task can be opened.
+    let mut cache = Cache::default();
+    let sender = pane.fed();
+    sender
+        .send(Read::Store {
+            index: 0,
+            store: Box::new(read_target(&target, &mut cache)),
+            detail: None,
+        })
+        .unwrap();
+    sender.send(Read::Done(cache.clone())).unwrap();
+    assert!(pane.poll());
+    assert!(pane.task("pagination-cli").is_some());
+    // A read in flight has the Store as it stands now, readable, queued but not collected.
+    let sender = pane.fed();
+    let before = read_target(&target, &mut cache);
+    assert!(before.tasks.is_ok());
+    sender
+        .send(Read::Store {
+            index: 0,
+            store: Box::new(before),
+            detail: None,
+        })
+        .unwrap();
+    // The finished Task's revision goes; opening it refuses the Store.
+    let done = document(&state, "pagination-cli");
+    let revision = done["revision_id"]
+        .as_str()
+        .unwrap()
+        .trim_start_matches("sha256:");
+    std::fs::remove_file(
+        state
+            .join("cas/objects")
+            .join(&revision[..2])
+            .join(&revision[2..]),
+    )
+    .unwrap();
+    pane.open(Some("pagination-cli"));
+    assert!(
+        pane.selected.is_none(),
+        "the refused Store opens as the folder"
+    );
+    assert!(pane.stores[0].tasks.is_err(), "the Store is refused");
+    // The queued message is never collected: its read was dropped and a new one started.
+    assert!(
+        sender.send(Read::Done(cache.clone())).is_err(),
+        "the read in flight was dropped"
+    );
+    assert!(pane.busy().is_some(), "a read started over");
+    pane.settle();
+    assert!(
+        pane.stores[0].tasks.is_err(),
+        "read after the refusal, the Store refuses again: {:?}",
+        pane.stores[0].tasks.as_ref().err()
+    );
+    assert!(pane.task("pagination-cli").is_none());
 }

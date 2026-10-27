@@ -1852,6 +1852,12 @@ impl Pane for TasksPane {
                 Err(error) => {
                     refuse(&mut self.stores, &dir, &task_id, &error);
                     self.selected = None;
+                    // A read in flight may still deliver this Store as it stood before the
+                    // refusal and list the Task again over it: the read starts over, so
+                    // whatever lands was read after the refusal and repeats it.
+                    if self.job.is_some() {
+                        self.read_now();
+                    }
                 }
             }
         }

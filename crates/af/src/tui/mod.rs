@@ -483,6 +483,7 @@ impl App {
         self.panes.campaigns.settle();
         self.panes.workers.settle();
         self.sync();
+        self.follow_listing();
     }
 
     fn sync(&mut self) {
@@ -492,15 +493,36 @@ impl App {
         }
     }
 
-    /// Collect background work; the bar follows what it found.
+    /// Collect background work; the bar follows what it found. An opened entry a read no
+    /// longer lists (a Worker whose declaration went, a Task whose Store refused) falls back
+    /// to its folder with the message `show` gives, as it does when opening finds it gone.
     pub(crate) fn poll(&mut self) {
         let mut changed = false;
         for tab in PANES {
             changed |= self.panes.get_mut(tab).poll();
         }
-        if changed {
-            self.sync();
+        if !changed {
+            return;
         }
+        self.sync();
+        self.follow_listing();
+    }
+
+    /// The opened entry, if a read no longer lists it, falls back to its folder with the
+    /// message `show` gives when opening finds it gone.
+    fn follow_listing(&mut self) {
+        let Opened::Item(tab, id) = &self.opened else {
+            return;
+        };
+        let (tab, id) = (*tab, id.clone());
+        if listed(&self.panes.get(Some(tab)).items(), &id) {
+            return;
+        }
+        self.panes.get_mut(Some(tab)).open(None);
+        self.say_error(format!("{id} is no longer listed; showing the folder"));
+        self.opened = Opened::Folder(tab);
+        self.main = View::default();
+        self.sync();
     }
 
     fn say(&mut self, text: impl Into<String>) {

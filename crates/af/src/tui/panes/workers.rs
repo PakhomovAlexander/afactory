@@ -760,6 +760,15 @@ impl WorkersPane {
         }
         self.stores = loaded.stores;
         self.job = None;
+        // An opened Worker the read no longer finds: the folder shows, and the browser follows
+        // (`App::poll` falls back to the folder when the opened entry is gone).
+        if self
+            .selected
+            .as_deref()
+            .is_some_and(|id| self.entry(id).is_none())
+        {
+            self.selected = None;
+        }
         self.rebuild();
     }
 

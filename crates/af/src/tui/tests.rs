@@ -2621,3 +2621,72 @@ fn an_ambient_provider_row_says_how_it_got_there_and_how_to_make_it_go() {
     );
     assert!(!rows[at + 2].contains("unset"), "{}", rows[at + 2]);
 }
+
+/// A Worker whose declaration went while its pane read in the background: opened from a stale
+/// row, or opened and then refreshed, it falls back to the folder when the read answers, with
+/// the message opening gives when it finds an entry gone.
+#[test]
+fn a_worker_gone_before_a_background_read_answers_falls_back_to_the_folder() {
+    let (_temp, root) = temp_root();
+    let repo = hub_repo(&root);
+    let mut app = app_at(&root, repo.clone());
+    let mut host = Recorder::default();
+    press(&mut app, &mut host, b"]]]]\r");
+    assert_eq!(app.breadcrumb(), "workers/");
+    let commit = |repo: &Path, path: &str| {
+        git(repo, &["rm", "-rq", path]);
+        git(
+            repo,
+            &[
+                "-c",
+                "user.name=T",
+                "-c",
+                "user.email=t@example.invalid",
+                "commit",
+                "-qm",
+                "a Worker goes",
+            ],
+        );
+    };
+    // Gone between the listing and the open: the stale row opens, the read answers, the
+    // folder shows.
+    commit(&repo, ".af/task-packages/fixture/evaluator");
+    press(&mut app, &mut host, b"j\r");
+    assert_eq!(app.opened, Opened::Folder(Tab::Workers));
+    assert_eq!(
+        app.message.as_ref().map(|(text, _)| text.as_str()),
+        Some(
+            ".af/task-packages/fixture/evaluator/worker.toml is no longer listed; showing the folder"
+        )
+    );
+    let listed: Vec<String> = app
+        .panes
+        .workers
+        .items()
+        .into_iter()
+        .map(|item| item.label)
+        .collect();
+    assert_eq!(listed, ["fixture/implementer"]);
+    // Opened, then gone before `R`: the reread answers, the folder shows.
+    let implementer = ".af/task-packages/fixture/implementer/worker.toml";
+    assert!(app.tree.select(NodeKind::Item(Tab::Workers), implementer));
+    press(&mut app, &mut host, b"\r");
+    assert_eq!(
+        app.opened,
+        Opened::Item(
+            Tab::Workers,
+            ".af/task-packages/fixture/implementer/worker.toml".to_owned()
+        )
+    );
+    commit(&repo, ".af/task-packages/fixture/implementer");
+    press(&mut app, &mut host, b"R");
+    assert_eq!(app.opened, Opened::Folder(Tab::Workers));
+    assert_eq!(
+        app.message.as_ref().map(|(text, _)| text.as_str()),
+        Some(
+            ".af/task-packages/fixture/implementer/worker.toml is no longer listed; showing the folder"
+        )
+    );
+    assert_eq!(app.breadcrumb(), "workers/");
+    assert!(app.panes.workers.items().is_empty());
+}
