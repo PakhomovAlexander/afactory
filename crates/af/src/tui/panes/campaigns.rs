@@ -399,17 +399,27 @@ fn read_source(places: &Places, source: &Source) -> Group {
 }
 
 /// What one read of every source found, and the opened Campaign's report.
-struct Reread {
-    groups: Vec<Group>,
-    report: Option<(PathBuf, Result<Value, String>)>,
+/// One message of a read: a source's group as soon as it is read, then the end of the read.
+enum Read {
+    /// The `index`th source, read.
+    Group { index: usize, group: Group },
+    /// Every source was read; the opened Campaign's report, read last.
+    Done {
+        report: Option<(PathBuf, Result<Value, String>)>,
+    },
 }
 
 /// Read every source, a Store listed twice only the first time, and the opened Campaign's
-/// report again. It runs on the key loop for a load or `R`, and on a thread for a live read.
-fn read(sources: &[Source], places: &Places, opened: Option<(PathBuf, String)>) -> Reread {
+/// report again, on the calling thread: each group goes through `sender` the moment its
+/// source is read, the report last. A receiver gone away ends the read early.
+fn read(
+    sources: &[Source],
+    places: &Places,
+    opened: Option<(PathBuf, String)>,
+    sender: &mpsc::Sender<Read>,
+) {
     let mut seen = BTreeSet::new();
-    let mut groups = Vec::new();
-    for source in sources {
+    for (index, source) in sources.iter().enumerate() {
         let mut group = read_source(places, source);
         group
             .campaigns
@@ -417,13 +427,15 @@ fn read(sources: &[Source], places: &Places, opened: Option<(PathBuf, String)>) 
         group
             .problems
             .retain(|problem| seen.insert(problem.state.clone()));
-        groups.push(group);
+        if sender.send(Read::Group { index, group }).is_err() {
+            return;
+        }
     }
     let report = opened.map(|(state, label)| {
         let report = crate::browse_report(&state, &label);
         (state, report)
     });
-    Reread { groups, report }
+    let _ = sender.send(Read::Done { report });
 }
 
 /// The opened Campaign: its report, and what Enter does on each of its rows.
@@ -433,9 +445,13 @@ struct Detail {
 }
 
 struct Job {
-    receiver: Receiver<Reread>,
-    /// The Campaign the read was started for; a read for another is dropped.
+    receiver: Receiver<Read>,
+    /// The Campaign the read was started for: its report is dropped when another is opened
+    /// meanwhile; the groups are listed either way.
     for_campaign: Option<String>,
+    /// A load or `R` started it: its groups are wanted whether or not the pane shows, so
+    /// closing the pane or opening a Campaign keeps it. A live reread is dropped by both.
+    explicit: bool,
 }
 
 #[derive(Default)]
@@ -453,6 +469,8 @@ pub(crate) struct CampaignsPane {
     opened: bool,
     job: Option<Job>,
     next: Option<Instant>,
+    /// The spinner frame the bar shows while a read runs.
+    spinner: usize,
     /// Live reads started, for tests.
     #[cfg(test)]
     reads: usize,
@@ -488,19 +506,79 @@ impl CampaignsPane {
         Some((campaign.state.clone(), campaign.label().to_owned()))
     }
 
+    /// A load or `R`: every source is read again, on a thread, each group listed as it is read.
     fn read_now(&mut self) {
-        self.job = None;
-        let Some(places) = self.places.clone() else {
-            return;
-        };
-        let reread = read(&self.sources, &places, self.opened_campaign());
-        self.apply(reread);
+        self.start(true);
     }
 
-    fn apply(&mut self, reread: Reread) {
-        self.groups = reread.groups;
-        if let Some((state, report)) = reread.report {
-            self.detail = Some(Detail { state, report });
+    /// Start a read of every source on a thread; a read in flight is dropped, its thread ends
+    /// at its next send. The event loop paints before it polls, so nothing this read finds
+    /// reaches the screen before the browser's first frame (ADR-0239).
+    fn start(&mut self, explicit: bool) {
+        let Some(places) = self.places.clone() else {
+            self.job = None;
+            return;
+        };
+        let (sources, opened) = (self.sources.clone(), self.opened_campaign());
+        let (sender, receiver) = mpsc::channel();
+        std::thread::spawn(move || read(&sources, &places, opened, &sender));
+        self.job = Some(Job {
+            receiver,
+            for_campaign: self.selected.clone(),
+            explicit,
+        });
+    }
+
+    /// Whether the read in flight, if any, was started by a load or `R`.
+    fn explicit_read(&self) -> bool {
+        self.job.as_ref().is_some_and(|job| job.explicit)
+    }
+
+    /// One message of the read in flight: the report is for the Campaign the read was started
+    /// for, and dropped when another was opened meanwhile; a group is listed either way.
+    fn collect(&mut self, read: Read) {
+        let current = self
+            .job
+            .as_ref()
+            .is_some_and(|job| job.for_campaign == self.selected);
+        let read = match read {
+            Read::Done { report: Some(_) } if !current => Read::Done { report: None },
+            other => other,
+        };
+        self.apply(read);
+    }
+
+    /// Wait for the read in flight, if any, and list everything it finds: a test's event loop.
+    #[cfg(test)]
+    pub(crate) fn settle(&mut self) {
+        loop {
+            let received = match &self.job {
+                Some(job) => job.receiver.recv(),
+                None => return,
+            };
+            match received {
+                Ok(read) => self.collect(read),
+                Err(_) => self.job = None,
+            }
+        }
+    }
+
+    fn apply(&mut self, read: Read) {
+        match read {
+            // Groups arrive in source order, so a group not listed yet is the next one.
+            Read::Group { index, group } => {
+                if index < self.groups.len() {
+                    self.groups[index] = group;
+                } else {
+                    self.groups.push(group);
+                }
+            }
+            Read::Done { report } => {
+                if let Some((state, report)) = report {
+                    self.detail = Some(Detail { state, report });
+                }
+                self.job = None;
+            }
         }
         // A Campaign no longer listed takes its pane with it: the folder shows instead.
         if let Some(id) = self.selected.clone()
@@ -896,7 +974,9 @@ impl Pane for CampaignsPane {
     }
 
     fn open(&mut self, item: Option<&str>) {
-        if item != self.selected.as_deref() {
+        if item != self.selected.as_deref() && !self.explicit_read() {
+            // A slow live read of the previously opened Campaign must not delay the new one's;
+            // a load's read lists every source and goes on.
             self.job = None;
         }
         self.opened = true;
@@ -914,7 +994,9 @@ impl Pane for CampaignsPane {
 
     fn close(&mut self) {
         self.opened = false;
-        self.job = None;
+        if !self.explicit_read() {
+            self.job = None;
+        }
     }
 
     fn rows(&self) -> &[Row] {
@@ -949,22 +1031,26 @@ impl Pane for CampaignsPane {
     }
 
     fn poll(&mut self) -> bool {
-        if let Some(job) = &self.job {
-            return match job.receiver.try_recv() {
-                Ok(reread) => {
-                    let current = job.for_campaign == self.selected;
-                    self.job = None;
-                    if current {
-                        self.apply(reread);
-                    }
-                    current
+        // Every group the read in flight has delivered, then the end of the read.
+        let mut changed = false;
+        while let Some(job) = &self.job {
+            match job.receiver.try_recv() {
+                Ok(read) => {
+                    self.collect(read);
+                    changed = true;
                 }
-                Err(TryRecvError::Empty) => false,
+                Err(TryRecvError::Empty) => {
+                    self.spinner = self.spinner.wrapping_add(1);
+                    return changed;
+                }
                 Err(TryRecvError::Disconnected) => {
                     self.job = None;
-                    false
+                    return changed;
                 }
-            };
+            }
+        }
+        if changed {
+            return true;
         }
         let Some(cadence) = self.cadence() else {
             return false;
@@ -978,19 +1064,13 @@ impl Pane for CampaignsPane {
         {
             self.reads += 1;
         }
-        let Some(places) = self.places.clone() else {
-            return false;
-        };
-        let (sources, opened) = (self.sources.clone(), self.opened_campaign());
-        let (sender, receiver) = mpsc::channel();
-        std::thread::spawn(move || {
-            let _ = sender.send(read(&sources, &places, opened));
-        });
-        self.job = Some(Job {
-            receiver,
-            for_campaign: self.selected.clone(),
-        });
+        self.start(false);
         false
+    }
+
+    fn busy(&self) -> Option<char> {
+        let spinner = super::SPINNER[self.spinner % super::SPINNER.len()];
+        self.job.as_ref().map(|_| spinner)
     }
 
     fn yank(&self, _row: usize) -> Option<String> {

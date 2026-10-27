@@ -1667,3 +1667,166 @@ fn every_af_command_the_tui_design_quotes_parses() {
     }
     assert!(checked >= 10, "only {checked} commands checked");
 }
+
+/// `root/stores/sN`, N copies of one Store holding a finished Task, written by `af task start
+/// --execute` into `s1` and copied; the registry at `home/state/af/stores.toml` names them all,
+/// and `extra` besides, so the project scope lists every one (ADR-0144).
+fn registered_stores(root: &Path, home: &Path, repo: &Path, count: usize, extra: &[&Path]) {
+    let ticket = root.join("ticket.json");
+    std::fs::copy(repo.join("ticket.json"), &ticket).unwrap();
+    let first = root.join("stores/s1");
+    let args = [
+        "task",
+        "start",
+        "--execute",
+        "--file",
+        ticket.to_str().unwrap(),
+        "--state",
+        first.to_str().unwrap(),
+        "--json",
+    ];
+    let started = af(repo, home, &args);
+    let stderr = String::from_utf8_lossy(&started.stderr);
+    assert!(started.status.success(), "{stderr}");
+    let mut stores = vec![first.clone()];
+    for n in 2..=count {
+        let copy = root.join(format!("stores/s{n}"));
+        copy_tree(&first, &copy);
+        stores.push(copy);
+    }
+    stores.extend(extra.iter().map(|path| path.to_path_buf()));
+    let registry = home.join("state/af/stores.toml");
+    std::fs::create_dir_all(registry.parent().unwrap()).unwrap();
+    let mut text = String::from("version = 2\n");
+    for store in &stores {
+        text.push_str(&format!(
+            "\n[[store]]\npath = {:?}\nkind = \"task\"\nfirst_use_unix_ms = 1\nlast_use_unix_ms = 1\n",
+            store.display().to_string()
+        ));
+    }
+    std::fs::write(&registry, text).unwrap();
+}
+
+/// Where the browser first painted `tasks/` with its spinner: the folder shown while its
+/// Stores are still read.
+fn tasks_spinner_at(painted: &str) -> Option<usize> {
+    ['|', '/', '-', '\\']
+        .into_iter()
+        .filter_map(|spinner| painted.find(&format!("tasks/ {spinner}")))
+        .min()
+}
+
+/// The browser opens before any Task Store is read: with many registered Stores, the first
+/// frame is the settings with `tasks/` behind a spinner, and the Stores fill the folder after
+/// it, one by one (ADR-0239). The order is the event loop's: it paints before it polls.
+#[test]
+fn the_browser_opens_before_any_task_store_is_read() {
+    let (_temp, root) = temp_root();
+    let home = root.join("home");
+    let repo = hub(&root);
+    registered_stores(&root, &home, &repo, 8, &[]);
+    // Tall enough for every Store's group, its `done/` and its Task.
+    let mut browser = Browser::launch_sized(&repo, &home, 60, COLS);
+    let filled = |screen: &Screen| {
+        bar_rows(screen)
+            .iter()
+            .filter(|row| row.trim_start() == "v done/ (1)")
+            .count()
+            == 8
+    };
+    let screen = browser.wait_for("every registered Store's Tasks", filled);
+    let painted = String::from_utf8_lossy(&browser.bytes).into_owned();
+    let splash = painted.find("agent pipelines made fast").unwrap();
+    let settings = painted.find("SETTINGS  project: hub").unwrap();
+    let first_store = painted.find("done/").unwrap();
+    assert!(splash < settings && settings < first_store, "{painted:?}");
+    let spinner = tasks_spinner_at(&painted).expect("tasks/ carried a spinner while it read");
+    assert!(
+        spinner < first_store,
+        "the spinner showed before the first Store was listed"
+    );
+    assert!(
+        screen.lines()[59].starts_with("NORMAL  hub"),
+        "{}",
+        screen.text()
+    );
+    assert!(
+        bar_rows(&screen)
+            .iter()
+            .all(|row| !row.starts_with("  v tasks/ ")),
+        "the spinner is gone once every Store is read: {}",
+        screen.text()
+    );
+    browser.keys(b"q");
+    assert_eq!(browser.exit_code(), 0);
+}
+
+/// Outside a repository the user scope lists every repository's Store: the browser opens
+/// before any of them is read, and they fill the folder after it.
+#[test]
+fn the_user_scope_opens_before_its_repositories_stores_are_read() {
+    let (_temp, root) = temp_root();
+    let home = root.join("home");
+    hub_with_a_task(&root, &home);
+    let local = home.join("state/af/task/local");
+    let written = std::fs::read_dir(&local)
+        .unwrap()
+        .next()
+        .unwrap()
+        .unwrap()
+        .path();
+    for n in 2..=8 {
+        copy_tree(&written, &local.join(format!("repository-{n}")));
+    }
+    let plain = home.join("plain");
+    std::fs::create_dir_all(&plain).unwrap();
+    let mut browser = Browser::launch_sized(&plain, &home, 60, COLS);
+    let filled = |screen: &Screen| {
+        bar_rows(screen)
+            .iter()
+            .filter(|row| row.trim_start() == "v done/ (1)")
+            .count()
+            == 8
+    };
+    browser.wait_for("every repository's Tasks", filled);
+    let painted = String::from_utf8_lossy(&browser.bytes).into_owned();
+    let settings = painted.find("SETTINGS  user: ~").unwrap();
+    let first_store = painted.find("done/").unwrap();
+    assert!(settings < first_store, "{painted:?}");
+    let spinner = tasks_spinner_at(&painted).expect("tasks/ carried a spinner while it read");
+    assert!(spinner < first_store);
+    browser.keys(b"q");
+    assert_eq!(browser.exit_code(), 0);
+}
+
+/// A registered Store that cannot be read is listed with its refusal as the others fill, and
+/// never keeps the browser from opening.
+#[test]
+fn a_refused_store_shows_its_refusal_while_the_others_load() {
+    let (_temp, root) = temp_root();
+    let home = root.join("home");
+    let repo = hub(&root);
+    // Entries but no `events.sqlite`: what this release does not read as a Task Store.
+    let broken = root.join("stores/broken");
+    std::fs::create_dir_all(broken.join("cas")).unwrap();
+    registered_stores(&root, &home, &repo, 3, &[&broken]);
+    let mut browser = Browser::launch_sized(&repo, &home, 60, COLS);
+    let filled = |screen: &Screen| {
+        let bar = bar_rows(screen);
+        bar.iter()
+            .filter(|row| row.trim_start() == "v done/ (1)")
+            .count()
+            == 3
+            && bar
+                .iter()
+                .any(|row| row.trim_start() == "! Store unreadable")
+    };
+    let screen = browser.wait_for("three Stores and the refusal", filled);
+    let painted = String::from_utf8_lossy(&browser.bytes).into_owned();
+    let settings = painted.find("SETTINGS  project: hub").unwrap();
+    let refusal = painted.find("! Store unreadable").unwrap();
+    assert!(settings < refusal, "{painted:?}");
+    assert!(screen.text().contains("broken/ (0)"), "{}", screen.text());
+    browser.keys(b"q");
+    assert_eq!(browser.exit_code(), 0);
+}

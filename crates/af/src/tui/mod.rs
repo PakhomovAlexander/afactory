@@ -169,8 +169,8 @@ pub(crate) fn wanted() -> bool {
 }
 
 /// `af` with no subcommand on a terminal: browse the scope until `q`. The terminal is entered and
-/// the splash painted first, before anything is read; the scope and every pane load on a thread
-/// of their own while it animates.
+/// the splash painted first, before anything is read; the scope resolves and every pane loads
+/// on a thread of their own while it animates, and the Stores are read behind the browser.
 pub(crate) fn launch(repo: Option<&Path>) -> Result<i32, String> {
     let mut session = term::Session::open()?;
     let palette = paint::Palette::from_env();
@@ -217,7 +217,9 @@ pub(crate) fn launch(repo: Option<&Path>) -> Result<i32, String> {
     }
 }
 
-/// The scope and every pane, read: what the splash waits for.
+/// The scope, resolved, and every pane loaded: what the splash waits for. No Store is read
+/// here: the Tasks, Campaigns and Workers panes read theirs on threads of their own once the
+/// browser shows, so this takes milliseconds whatever the machine holds (ADR-0239).
 fn load(repo: Option<&Path>) -> Result<App, String> {
     let scope = match repo {
         Some(dir) => {
@@ -458,7 +460,9 @@ impl App {
         app
     }
 
-    /// Read every pane for the scope and put what they found in the bar.
+    /// Load every pane for the scope and put what they found in the bar. A pane that reads
+    /// Stores starts that read on a thread here and lists them as `poll` collects them: the
+    /// event loop paints before it polls, so the first frame never waits on a Store.
     fn load(&mut self) {
         for tab in PANES {
             let loaded = self.panes.get_mut(tab).load(&self.scope);
@@ -469,6 +473,16 @@ impl App {
         self.sync();
         let opened = self.opened.clone();
         self.show(opened);
+    }
+
+    /// Wait for every read in flight and list what it found: a test's event loop, where the
+    /// real one would collect the Stores a few frames later.
+    #[cfg(test)]
+    pub(crate) fn settle(&mut self) {
+        self.panes.tasks.settle();
+        self.panes.campaigns.settle();
+        self.panes.workers.settle();
+        self.sync();
     }
 
     fn sync(&mut self) {

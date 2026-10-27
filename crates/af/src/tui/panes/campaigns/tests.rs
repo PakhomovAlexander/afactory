@@ -185,3 +185,27 @@ fn the_sources_are_the_default_roots_and_every_registered_review_store() {
     assert_eq!(some.len(), 2);
     assert!(warning.unwrap().contains("version 1"));
 }
+
+/// A load reads every source on a thread and lists nothing until the event loop collects it:
+/// the bar shows the folder with a spinner meanwhile (ADR-0239).
+#[test]
+fn a_load_lists_its_sources_behind_a_spinner_never_on_the_callers_thread() {
+    let temp = tempfile::tempdir().unwrap();
+    let root = std::fs::canonicalize(temp.path()).unwrap();
+    let repo = crate::tui::tests::hub_repo(&root);
+    let scope = crate::tui::tests::hub_scope(&root, &repo);
+    let mut pane = CampaignsPane::default();
+    pane.load(&scope).unwrap();
+    assert!(pane.busy().is_some(), "the read runs behind the folder");
+    assert!(
+        pane.groups.is_empty(),
+        "nothing is listed before the read is collected"
+    );
+    pane.settle();
+    assert!(pane.busy().is_none());
+    assert_eq!(
+        pane.groups.len(),
+        pane.sources.len(),
+        "one group per source, in order"
+    );
+}

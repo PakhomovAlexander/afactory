@@ -1426,3 +1426,156 @@ fn unavailable_registered_stores_are_each_their_own_row() {
     assert!(same_store(&root.join("gone/one"), &root.join("gone/one")));
     assert!(same_store(&locked, &root.join("locked/../locked")));
 }
+
+/// A load starts the read of every Store on a thread and lists nothing until the event loop
+/// collects it: the bar shows the folder with a spinner meanwhile, so the browser's first frame
+/// never waits on a Store (ADR-0239).
+#[test]
+fn a_load_lists_its_stores_behind_a_spinner_never_on_the_callers_thread() {
+    let temp = tempfile::tempdir().unwrap();
+    let root = std::fs::canonicalize(temp.path()).unwrap();
+    let (repo, _state) = crate::tui::tests::hub_with_tasks(&root);
+    let scope = crate::tui::tests::hub_scope(&root, &repo);
+    let mut pane = TasksPane::default();
+    pane.load(&scope).unwrap();
+    assert!(pane.busy().is_some(), "the read runs behind the folder");
+    assert!(
+        pane.items().is_empty(),
+        "nothing is listed before the read is collected"
+    );
+    pane.settle();
+    assert!(pane.busy().is_none());
+    let labels: Vec<String> = pane.items().into_iter().map(|item| item.label).collect();
+    assert!(
+        labels.iter().any(|label| label.starts_with("done/")),
+        "{labels:?}"
+    );
+    assert!(
+        labels.iter().any(|label| label.starts_with("failed/")),
+        "{labels:?}"
+    );
+}
+
+/// Stores are listed one by one as each is read, in target order, while the rest are still
+/// read: the folder fills, and the spinner stays until the last Store.
+#[test]
+fn stores_are_listed_one_by_one_as_each_is_read() {
+    let temp = tempfile::tempdir().unwrap();
+    let root = std::fs::canonicalize(temp.path()).unwrap();
+    let (_repo, state) = crate::tui::tests::hub_with_tasks(&root);
+    let target = |repo: &str| Target {
+        dir: state.clone(),
+        shown: repo.to_owned(),
+        repo: Some(repo.to_owned()),
+        origin: Origin::Registered,
+    };
+    let mut pane = TasksPane {
+        targets: vec![target("one"), target("two")],
+        ..TasksPane::default()
+    };
+    let sender = pane.fed();
+    let mut cache = Cache::default();
+    let store = |repo: &str, cache: &mut Cache| read_target(&target(repo), cache);
+    let groups = |pane: &TasksPane| -> Vec<String> {
+        pane.items()
+            .into_iter()
+            .filter(|item| item.children.is_some())
+            .map(|item| item.label)
+            .collect()
+    };
+    sender
+        .send(Read::Store {
+            index: 0,
+            store: Box::new(store("one", &mut cache)),
+            detail: None,
+        })
+        .unwrap();
+    assert!(pane.poll(), "the first Store changed the rows");
+    assert_eq!(
+        groups(&pane),
+        ["one/ (2)"],
+        "the second Store is not read yet"
+    );
+    assert!(pane.busy().is_some(), "the read goes on");
+    assert!(!pane.poll(), "nothing more arrived");
+    sender
+        .send(Read::Store {
+            index: 1,
+            store: Box::new(store("two", &mut cache)),
+            detail: None,
+        })
+        .unwrap();
+    sender.send(Read::Done(cache.clone())).unwrap();
+    assert!(pane.poll());
+    assert_eq!(groups(&pane), ["one/ (2)", "two/ (2)"]);
+    assert!(pane.busy().is_none(), "the last message ends the read");
+    assert!(!pane.cache.finished.is_empty(), "the read's cache is kept");
+    // A second read replaces each Store in its place, the first before the second, and the
+    // second stays listed while its own read is still to come.
+    let sender = pane.fed();
+    sender
+        .send(Read::Store {
+            index: 0,
+            store: Box::new(store("one", &mut cache)),
+            detail: None,
+        })
+        .unwrap();
+    assert!(pane.poll());
+    assert_eq!(groups(&pane), ["one/ (2)", "two/ (2)"]);
+    assert!(pane.busy().is_some());
+    // The reader gone (a load dropped it): the read ends with what it listed.
+    drop(sender);
+    assert!(!pane.poll());
+    assert!(pane.busy().is_none());
+}
+
+/// The opened Task's detail travels with its Store's message, so the bar row and the main
+/// pane come from one read; a detail read for a Task opened earlier is dropped, its Store
+/// still listed.
+#[test]
+fn the_opened_tasks_detail_comes_with_its_stores_message() {
+    let temp = tempfile::tempdir().unwrap();
+    let root = std::fs::canonicalize(temp.path()).unwrap();
+    let (_repo, state) = crate::tui::tests::hub_with_tasks(&root);
+    let target = Target {
+        dir: state.clone(),
+        shown: "state".to_owned(),
+        repo: None,
+        origin: Origin::Scope,
+    };
+    let mut pane = TasksPane {
+        targets: vec![target.clone()],
+        ..TasksPane::default()
+    };
+    let mut cache = Cache::default();
+    let message = |cache: &mut Cache| Read::Store {
+        index: 0,
+        store: Box::new(read_target(&target, cache)),
+        detail: Some(Detail::read(&state, "pagination-cli", cache)),
+    };
+    // Read for the Task opened now: listed, and shown.
+    pane.selected = Some("pagination-cli".to_owned());
+    pane.opened = true;
+    let sender = pane.fed();
+    sender.send(message(&mut cache)).unwrap();
+    sender.send(Read::Done(cache.clone())).unwrap();
+    assert!(pane.poll());
+    assert!(matches!(&pane.detail, Some(Ok(detail)) if detail.task_id == "pagination-cli"));
+    assert!(pane.task("pagination-cli").is_some());
+    // Read for a Task that was opened when the read started, then left: its Store is listed,
+    // its detail is not shown.
+    pane.detail = None;
+    let sender = pane.fed();
+    pane.selected = None;
+    sender.send(message(&mut cache)).unwrap();
+    sender.send(Read::Done(cache.clone())).unwrap();
+    assert!(pane.poll());
+    assert!(
+        pane.detail.is_none(),
+        "a detail for another Task is dropped"
+    );
+    assert!(
+        pane.task("pagination-cli").is_some(),
+        "its Store is listed all the same"
+    );
+}

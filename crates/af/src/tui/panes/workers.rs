@@ -20,6 +20,7 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
+use std::sync::mpsc::{self, Receiver, TryRecvError};
 
 use review_runner_claude::models as rules;
 use serde_json::Value as Json;
@@ -605,12 +606,29 @@ fn read_store(target: &Target) -> Store {
     }
 }
 
+/// What one read on a thread found: `HEAD`'s Workers, or why not and what the kept entries'
+/// files drifted to, and the Stores' tallies.
+struct Loaded {
+    discovered: Result<Discovery, String>,
+    /// On a failed read of `HEAD`: for each kept entry, in order, its drifted files.
+    drifts: Vec<Vec<String>>,
+    stores: Vec<Store>,
+}
+
+struct Job {
+    receiver: Receiver<Loaded>,
+}
+
 #[derive(Default)]
 pub(crate) struct WorkersPane {
     title: String,
     root: Option<PathBuf>,
     /// The pane was opened in this scope: from then on every load reads.
     wanted: bool,
+    /// The read in flight, on its thread.
+    job: Option<Job>,
+    /// The spinner frame the bar shows while a read runs.
+    spinner: usize,
     /// The commit the entries were read from.
     commit: String,
     entries: Vec<Entry>,
@@ -666,6 +684,7 @@ impl WorkersPane {
     /// Everything read for one repository, dropped when the scope names another.
     fn forget(&mut self) {
         self.wanted = false;
+        self.job = None;
         self.commit.clear();
         self.entries.clear();
         self.error = None;
@@ -673,42 +692,88 @@ impl WorkersPane {
         self.selected = None;
     }
 
-    /// Read `HEAD` and the Stores. On a failed read of `HEAD` the previous entries of the same
-    /// repository stay, marked by the error.
+    /// Read `HEAD` and the Stores, on a thread; `poll` collects what it found. On a failed
+    /// read of `HEAD` the previous entries of the same repository stay, marked by the error.
+    /// A read in flight is dropped, its thread ends at its send. Reading `HEAD` runs git and
+    /// reading a Store replays its log, so neither runs on the key loop (ADR-0239).
     fn read(&mut self) {
         let Some(root) = self.root.clone() else {
             // The user scope lists no Worker: Workers belong to a project.
+            self.job = None;
             self.commit.clear();
             self.entries.clear();
             self.error = None;
             self.stores.clear();
             return;
         };
-        match discover(&root) {
+        let targets = self.targets.clone();
+        let commit = self.commit.clone();
+        // The kept entries still show the working tree's drift from their commit.
+        let kept: Vec<(String, String, bool)> = self
+            .entries
+            .iter()
+            .map(|entry| {
+                (
+                    entry.id.clone(),
+                    entry.prompt_path(),
+                    entry.prompt.is_some(),
+                )
+            })
+            .collect();
+        let (sender, receiver) = mpsc::channel();
+        std::thread::spawn(move || {
+            let discovered = discover(&root);
+            let drifts = match &discovered {
+                Ok(_) => Vec::new(),
+                Err(_) => {
+                    let shown: Vec<(&str, &str, bool)> = kept
+                        .iter()
+                        .map(|(id, prompt, committed)| (id.as_str(), prompt.as_str(), *committed))
+                        .collect();
+                    drift(&root, &commit, &shown)
+                }
+            };
+            let stores = targets.iter().map(read_store).collect();
+            let _ = sender.send(Loaded {
+                discovered,
+                drifts,
+                stores,
+            });
+        });
+        self.job = Some(Job { receiver });
+    }
+
+    /// What a read found, listed.
+    fn apply(&mut self, loaded: Loaded) {
+        match loaded.discovered {
             Ok(found) => {
                 self.commit = found.commit;
                 self.entries = found.entries;
                 self.error = None;
             }
             Err(error) => {
-                // The kept entries still show the working tree's drift from their commit.
-                let prompts: Vec<String> = self.entries.iter().map(Entry::prompt_path).collect();
-                let shown: Vec<(&str, &str, bool)> = self
-                    .entries
-                    .iter()
-                    .zip(&prompts)
-                    .map(|(entry, prompt)| {
-                        (entry.id.as_str(), prompt.as_str(), entry.prompt.is_some())
-                    })
-                    .collect();
-                let drifts = drift(&root, &self.commit, &shown);
-                for (entry, drifted) in self.entries.iter_mut().zip(drifts) {
+                for (entry, drifted) in self.entries.iter_mut().zip(loaded.drifts) {
                     entry.drifted = drifted;
                 }
                 self.error = Some(error);
             }
         }
-        self.stores = self.targets.iter().map(read_store).collect();
+        self.stores = loaded.stores;
+        self.job = None;
+        self.rebuild();
+    }
+
+    /// Wait for the read in flight, if any, and list what it found: a test's event loop.
+    #[cfg(test)]
+    pub(crate) fn settle(&mut self) {
+        let received = match &self.job {
+            Some(job) => job.receiver.recv(),
+            None => return,
+        };
+        match received {
+            Ok(loaded) => self.apply(loaded),
+            Err(_) => self.job = None,
+        }
     }
 
     fn rebuild(&mut self) {
@@ -1130,8 +1195,10 @@ impl Pane for WorkersPane {
     fn open(&mut self, item: Option<&str>) {
         self.wanted = true;
         self.read();
+        // An entry is listed once the read answers; until then an opened one is kept, so a
+        // reload that re-opens it shows it rather than the folder.
         self.selected = item
-            .filter(|id| self.entry(id).is_some())
+            .filter(|id| self.entry(id).is_some() || self.job.is_some())
             .map(str::to_owned);
         self.rebuild();
     }
@@ -1162,11 +1229,27 @@ impl Pane for WorkersPane {
     /// generation moved since the rows were built, they are built again for the same selection,
     /// so an open Worker's verdict follows the catalogs as they arrive or go away.
     fn poll(&mut self) -> bool {
+        let mut changed = false;
+        if let Some(job) = &self.job {
+            match job.receiver.try_recv() {
+                Ok(loaded) => {
+                    self.apply(loaded);
+                    changed = true;
+                }
+                Err(TryRecvError::Empty) => self.spinner = self.spinner.wrapping_add(1),
+                Err(TryRecvError::Disconnected) => self.job = None,
+            }
+        }
         if self.catalogs.generation() == self.generation {
-            return false;
+            return changed;
         }
         self.rebuild();
         true
+    }
+
+    fn busy(&self) -> Option<char> {
+        let spinner = super::SPINNER[self.spinner % super::SPINNER.len()];
+        self.job.as_ref().map(|_| spinner)
     }
 
     /// The prompt's working-tree file at and below the PROMPT rule, committed or not: that is
