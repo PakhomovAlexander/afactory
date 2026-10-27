@@ -34,8 +34,11 @@ value = "fast"
 provenance = "literal"
 
 # The remote form runs this repository's full CI gate (ADR-0140): the pull_request run of ci.yml,
-# by the job names the Actions jobs API reports for it. container-probes is not part of the local
-# fast Task gate. A pipeline runs it there by listing `kernel` in its check node's `remote_checks`;
+# by the job names the Actions jobs API reports for it. The fast Task gate's e2e class runs
+# container-probes through `make review-kernel-container-probes`; the perf class and release
+# validation beyond base checks run in CI gate pull requests, `make check`, `make check-full` and
+# releases. A pipeline runs the
+# remote form by listing `kernel` in its check node's `remote_checks`;
 # the released 0.11.0, which the lock may still pin, selects it through the machine mapping.
 [checks.kernel.remote]
 executor = "github-pr"
