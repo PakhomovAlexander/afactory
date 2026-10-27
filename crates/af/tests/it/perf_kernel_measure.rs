@@ -554,18 +554,30 @@ fn receipt_documents(digest: &str, receipts: &[Value]) -> Vec<(&'static str, Val
         .copied()
         .chain(["wrong-unit", "undeclared-key"])
         .collect();
-    let refusal: Vec<_> = ["missing-inputs"]
+    // The committed receipt fixture lists missing inputs first; the gate test runs that
+    // deliberate build attempt last, after it has proved that no refusal case built anything.
+    let refusal_first: Vec<_> = ["missing-inputs"]
         .into_iter()
         .chain(baseline_refusal.iter().copied())
+        .collect();
+    let refusal_last: Vec<_> = baseline_refusal
+        .iter()
+        .copied()
+        .chain(["missing-inputs"])
         .collect();
     let manual: Vec<_> = ["improve"]
         .into_iter()
         .chain(candidate_refusal.iter().copied())
         .collect();
-    let phases: Vec<(&str, u64, Vec<&str>)> = if actual == refusal {
+    let phases: Vec<(&str, u64, Vec<&str>)> = if actual == refusal_first {
         vec![
             ("missing-inputs", 0, vec!["missing-inputs"]),
             ("refusal", 0, baseline_refusal),
+        ]
+    } else if actual == refusal_last {
+        vec![
+            ("refusal", 0, baseline_refusal),
+            ("missing-inputs", 0, vec!["missing-inputs"]),
         ]
     } else if actual == manual {
         vec![
@@ -1379,22 +1391,10 @@ fn guarded_consumer() -> (Consumer, String, String) {
 fn guarded_kernel_experiments_refuse_every_tampered_harness() {
     let (mut consumer, _canonical, digest) = guarded_consumer();
     let workspace = workspace();
-    // 1. Missing inputs fail: the warm Cargo home is empty and the build is offline and locked.
-    let outcome = consumer.start("missing-inputs", json!({"NOTES.md": "unmeasured\n"}), 4);
-    let cas = consumer.cas();
-    let baseline = measurement(&cas, &outcome, "baseline");
-    assert_eq!(outcome_of(&baseline.outcome), "failed");
-    let failure = baseline.failure.as_ref().unwrap();
-    assert_eq!((failure.repetition, failure.reason.as_str()), (1, "exit"));
-    let stderr = text(&cas, baseline.runs[0].stderr_id.as_ref());
-    assert!(stderr.contains("protected files match"), "{stderr}");
-    assert!(stderr.contains("never fetched"), "{stderr}");
-    assert!(
-        !text(&cas, baseline.runs[0].stdout_id.as_ref()).contains("af.measure-report/1"),
-        "a failed repetition prints no report"
-    );
-    // An empty offline Cargo home makes an accidental build fail with "never fetched";
-    // every tampered baseline must instead reach the guard's REFUSED diagnostic first.
+    // The warm Cargo home stays empty and the build is offline and locked, so an accidental
+    // build fails with "never fetched" instead of the guard's REFUSED diagnostic every tampered
+    // baseline must reach first; the deliberate missing-inputs build attempt runs last, after
+    // the proof below that no refusal case staged a source copy or invoked Cargo.
     let unslow = Value::Null;
     let golden =
         std::fs::read_to_string(workspace.join("fixtures/performance/golden/native.json")).unwrap();
@@ -1573,7 +1573,7 @@ fn guarded_kernel_experiments_refuse_every_tampered_harness() {
         stderr.contains("not a nonspawning native library case"),
         "{stderr}"
     );
-    // Check every retained Task run, including missing inputs and the policy refusal.
+    // Check every retained Task run so far, including the policy refusal.
     for task in &consumer.receipts {
         for output in task["outputs"].as_object().unwrap().values() {
             for run in output["streams"].as_array().unwrap() {
@@ -1594,9 +1594,57 @@ fn guarded_kernel_experiments_refuse_every_tampered_harness() {
             }
         }
     }
-    // The deliberate missing-inputs build can stage a source copy before Cargo fails. It
-    // cannot produce the probe binary or the successful-build source record.
+    // No refusal case reached the probe build: the measure stages its source copy
+    // (`af-kernel-measure-source`) before it invokes Cargo, so an absent copy and an absent
+    // release directory prove that no compiler ran, and the warm Cargo home holds no file.
     let cache = consumer.root.join("cache/af/task-build-cache");
+    if cache.exists() {
+        for project in std::fs::read_dir(&cache).unwrap().flatten() {
+            if !project.path().is_dir() {
+                continue;
+            }
+            for key in std::fs::read_dir(project.path()).unwrap().flatten() {
+                let target = key.path().join("cargo_target");
+                for staged in ["af-kernel-measure-source", "release", "build.log"] {
+                    assert!(
+                        !target.join(staged).exists(),
+                        "a refusal case reached the probe build: {}",
+                        target.join(staged).display()
+                    );
+                }
+            }
+        }
+    }
+    let home = warm_cargo_home(&consumer.root);
+    if home.exists() {
+        assert!(
+            workspace_files(&home).is_empty(),
+            "a refusal case wrote into the warm Cargo home {home:?}"
+        );
+    }
+    // The staged policy is restored for the deliberate missing-inputs build attempt, the one
+    // untampered baseline of this test: the guard passes ("protected files match") and the
+    // offline locked build fails at once on the empty Cargo home, before any dependency is
+    // fetched. It runs last so that the proof above covers every refusal case.
+    consumer.commit(
+        &[(".af/code-policy.toml", policy.clone())],
+        "restore the staged policy",
+    );
+    let outcome = consumer.start("missing-inputs", json!({"NOTES.md": "unmeasured\n"}), 4);
+    let cas = consumer.cas();
+    let baseline = measurement(&cas, &outcome, "baseline");
+    assert_eq!(outcome_of(&baseline.outcome), "failed");
+    let failure = baseline.failure.as_ref().unwrap();
+    assert_eq!((failure.repetition, failure.reason.as_str()), (1, "exit"));
+    let stderr = text(&cas, baseline.runs[0].stderr_id.as_ref());
+    assert!(stderr.contains("protected files match"), "{stderr}");
+    assert!(stderr.contains("never fetched"), "{stderr}");
+    assert!(
+        !text(&cas, baseline.runs[0].stdout_id.as_ref()).contains("af.measure-report/1"),
+        "a failed repetition prints no report"
+    );
+    // That deliberate attempt can stage a source copy before Cargo fails. It cannot produce
+    // the probe binary or the successful-build source record.
     for project in std::fs::read_dir(&cache).unwrap().flatten() {
         if !project.path().is_dir() {
             continue;
