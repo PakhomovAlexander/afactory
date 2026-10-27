@@ -6,6 +6,7 @@ import itertools
 import json
 import os
 import shutil
+import stat
 from pathlib import Path
 import subprocess
 import sys
@@ -18,6 +19,17 @@ ROOT = Path(__file__).resolve().parent.parent
 spec = importlib.util.spec_from_file_location('testclasses', ROOT / 'scripts/test-classes.py')
 tc = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(tc)
+
+
+def private_copy(source, destination):
+    """Copy a tree into private scratch; only the copy gains owner write, never the source."""
+    # copytree keeps a chmod-sealed source's 0444/0555 modes, so a fixture could not
+    # replace a copied payload. Links are never followed back into the source.
+    shutil.copytree(source, destination)
+    for directory, _, names in os.walk(destination):
+        for path in (directory, *(os.path.join(directory, name) for name in names)):
+            if not os.path.islink(path):
+                os.chmod(path, os.stat(path).st_mode | stat.S_IWUSR)
 
 
 class Selection(unittest.TestCase):
@@ -451,19 +463,76 @@ class SealedEvidence(unittest.TestCase):
                             self.assertEqual(python['command'], ['python3', 'scripts/test-performance.py'])
                             self.assertLess(records.index(build), records.index(python))
 
+    @staticmethod
+    def selected_build_fixture(source, root):
+        # The checkout may be chmod-sealed by the native gate: write only private copies.
+        shutil.copy2(source / 'Makefile', root / 'Makefile')
+        for directory in ('scripts', '.config', 'schemas', '.github'):
+            private_copy(source / directory, root / directory)
+        scripts = root / 'scripts'
+        for name in ('test-class-python.py', 'changelog-notes.py', 'af-pin.py',
+                     'performance/schemas.py', 'performance/cli.py'):
+            (scripts / name).write_text('pass\n')
+        return scripts
+
+    def test_selected_build_fixture_copies_a_sealed_source_without_touching_it(self):
+        # A chmod seal is meaningful only as the unprivileged gate user; never skip this proof.
+        self.assertNotEqual(os.geteuid(), 0, 'run policy tests as the unprivileged gate user')
+        with tempfile.TemporaryDirectory() as tmp:
+            source = Path(tmp) / 'source'
+            source.mkdir()
+            shutil.copy2(ROOT / 'Makefile', source / 'Makefile')
+            for directory in ('scripts', '.config', 'schemas', '.github'):
+                shutil.copytree(ROOT / directory, source / directory)
+            paths = [source, *source.rglob('*')]
+
+            def snapshot():
+                return {str(p.relative_to(source)): (stat.S_IMODE(p.lstat().st_mode),
+                                                     None if p.is_dir() else p.read_bytes())
+                        for p in paths}
+
+            writable = snapshot()
+            try:
+                for sealed in (False, True):
+                    if sealed:
+                        for p in paths:
+                            p.chmod(stat.S_IMODE(p.stat().st_mode) & ~0o222)
+                        with self.assertRaises(PermissionError):
+                            (source / 'scripts/forbidden').write_text('no')
+                    before = snapshot()
+                    with self.subTest(sealed=sealed), tempfile.TemporaryDirectory() as private:
+                        root = Path(private)
+                        scripts = self.selected_build_fixture(source, root)
+                        for name in ('test-class-python.py', 'performance/cli.py'):
+                            self.assertEqual((scripts / name).read_text(), 'pass\n')
+                        (scripts / 'nextest-gate.py').write_text('pass\n')
+                        (root / '.config/written').write_text('private')
+                        self.assertTrue(os.access(scripts / 'verify.sh', os.X_OK))
+                        self.assertTrue((root / 'schemas').stat().st_mode & stat.S_IWUSR)
+                        # Control: a plain copy keeps the seal, the failure private_copy repairs.
+                        shutil.copytree(source / '.config', root / 'plain')
+                        if sealed:
+                            with self.assertRaises(PermissionError):
+                                (root / 'plain/test-classes.json').write_text('{}')
+                            for p in (root / 'plain', *(root / 'plain').iterdir()):
+                                p.chmod(0o755 if p.is_dir() else 0o644)
+                    self.assertEqual(snapshot(), before)
+                    self.assertFalse((source / 'scripts/forbidden').exists())
+                    if sealed:
+                        self.assertTrue(all(mode & 0o222 == 0 for mode, _ in before.values()))
+                    else:
+                        self.assertEqual(before, writable)
+            finally:
+                for p in paths:
+                    mode, _ = writable[str(p.relative_to(source))]
+                    p.chmod(mode)
+
     def test_selected_build_receipts_cover_all_variants_before_any_suite(self):
         # Real native wrapper, Make graph, class runner and receipt writer; only Cargo
         # and suite payloads are stand-ins. This also exercises hosted direct-class entry.
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
-            shutil.copy2(ROOT / 'Makefile', root / 'Makefile')
-            shutil.copytree(ROOT / 'scripts', root / 'scripts')
-            for directory in ('.config', 'schemas', '.github'):
-                shutil.copytree(ROOT / directory, root / directory)
-            scripts = root / 'scripts'
-            for name in ('test-class-python.py', 'changelog-notes.py', 'af-pin.py',
-                         'performance/schemas.py', 'performance/cli.py'):
-                (scripts / name).write_text('pass\n')
+            scripts = self.selected_build_fixture(ROOT, root)
             tools = root / 'bin'
             tools.mkdir()
             (tools / 'python3').symlink_to(sys.executable)
