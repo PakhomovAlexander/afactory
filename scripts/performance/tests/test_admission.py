@@ -12,6 +12,7 @@ import stat
 from contextlib import contextmanager
 import subprocess
 import sys
+import tempfile
 from unittest import mock
 
 from perflab import admission, budget, limits, reference, seeds
@@ -62,6 +63,33 @@ class Clock(object):
         value = self.now
         self.now += self.tick
         return value
+
+
+class FixtureRoots(TempDir):
+    def test_created_roots_are_canonical_but_admission_still_refuses_links(self):
+        # Both spellings of a test-owned temporary parent, including a /var-like
+        # symlink, must produce usable fixtures without changing strict admission.
+        alias = self.path("temp-alias")
+        os.symlink(self.tmp, alias)
+        for parent in (self.tmp, alias):
+            with self.subTest(parent=parent), mock.patch.object(tempfile, "tempdir", parent):
+                fixture = TempDir()
+                fixture.setUp()
+                self.addCleanup(fixture.doCleanups)
+                self.assertEqual(fixture.tmp, os.path.realpath(fixture.tmp))
+                path = fixture.path("data")
+                with open(path, "wb") as stream:
+                    stream.write(b"owned fixture")
+                fd, info = admission.open_confined(os.path.sep, path.lstrip(os.path.sep), path)
+                try:
+                    self.assertEqual(os.read(fd, info.st_size), b"owned fixture")
+                finally:
+                    os.close(fd)
+                link = fixture.path("link")
+                os.symlink(path, link)
+                for rejected in (link, os.path.join(alias, os.path.basename(fixture.tmp), "data")):
+                    with self.assertRaises(ContractError):
+                        admission.open_confined(os.path.sep, rejected.lstrip(os.path.sep), rejected)
 
 
 class Seeds(TempDir):

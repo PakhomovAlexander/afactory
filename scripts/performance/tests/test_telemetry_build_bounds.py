@@ -139,6 +139,25 @@ class BuildBounds(TempDir):
                         image.refuse_implicit_volumes()
 
     def test_shared_step_preallocates_and_caps_logs_and_settles_timer_interruption(self):
+        # The hosted build uses Linux posix_fallocate. On macOS exercise the same
+        # allocation-before-launch boundary with real dense writes, never sparse truncate
+        # or a success-only mock. Production preallocation remains mandatory.
+        native_allocate = getattr(os, "posix_fallocate", None)
+        allocations = []
+        def allocate(fd, offset, count):
+            if native_allocate is not None:
+                native_allocate(fd, offset, count)
+            else:
+                written = 0
+                while written < count:
+                    written += os.pwrite(fd, b"x" * min(65536, count - written), offset + written)
+            info = os.fstat(fd)
+            self.assertEqual(info.st_size, offset + count)
+            self.assertGreaterEqual(info.st_blocks * 512, count)
+            allocations.append(count)
+        patch = mock.patch.object(os, "posix_fallocate", allocate, create=True)
+        patch.start()
+        self.addCleanup(patch.stop)
         import sys
         from types import SimpleNamespace
         logs = self.path("logs")
@@ -164,5 +183,22 @@ class BuildBounds(TempDir):
             with self.assertRaises(budget.Interrupted), timer.enforce("fixture build cancellation"):
                 steps.run("interrupted", [sys.executable, "-B", "-c", "import time; time.sleep(30)"],
                           self.tmp, {"PYTHONDONTWRITEBYTECODE": "1"})
+        self.assertEqual(allocations, [4 << 20, 4 << 20])
         self.assertEqual(len(children), 1)
         self.assertIsNotNone(children[0].returncode, "build client survived the total deadline")
+
+    def test_failed_log_preallocation_refuses_before_launch(self):
+        from types import SimpleNamespace
+        logs = self.path("logs")
+        os.mkdir(logs)
+        layout = SimpleNamespace(logs=logs, recorded=lambda value: value)
+        step_budget = SimpleNamespace(run_deadline=time.monotonic() + 20, deadline_seconds=20,
+            log_bytes=4 << 20, preallocate_logs=True, exceeded=lambda: None)
+        steps = telemetrybuild.builds.Steps(layout, step_budget)
+        with mock.patch.object(os, "posix_fallocate", side_effect=OSError("allocation refused"),
+                               create=True) as allocate, \
+                mock.patch.object(telemetrybuild.subprocess, "Popen") as launch:
+            with self.assertRaisesRegex(OSError, "allocation refused"):
+                steps.run("refused", ["unused"], self.tmp, {})
+        self.assertEqual(allocate.call_args.args[1:], (0, 4 << 20))
+        launch.assert_not_called()

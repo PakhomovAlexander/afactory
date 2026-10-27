@@ -1,13 +1,4 @@
-"""The laboratory's Python latest-stable Python checks gate a required check, and fail it when they do not
-succeed.
-
-The repository's required checks name `validation / lint` and `validation / check
-(ubuntu-latest)` (`.af/code-policy.toml`); the `performance-python` matrix is not one of them.
-These tests read `.github/workflows/validate.yml` as text (the standard library has no YAML
-reader) and require that the required `lint` job depends on the matrix, runs whatever its
-outcome, and first executes a guard that fails unless the matrix succeeded. The guard's own
-shell is extracted and run for every result GitHub reports for a dependency.
-"""
+"""Selected laboratory validation gates stable checks; missing selected work fails closed."""
 import os
 import re
 import shutil
@@ -102,15 +93,15 @@ class RequiredPythonCompatibility(unittest.TestCase):
         self.text = read(WORKFLOW).decode("utf-8")
         self.jobs = jobs(self.text)
 
-    def test_one_latest_stable_python_runs_tests_and_required_tomllib_parity(self):
-        job = self.jobs["performance-python"]
-        self.assertEqual(key(job, "name"), "performance lab (latest stable Python)")
-        self.assertIsNone(key(job, "strategy"))
-        text = "\n".join(job)
-        self.assertNotIn("matrix.", text)
-        self.assertIn("AF_PERF_REQUIRE_TOMLLIB: '1'", text)
-        self.assertIn("python scripts/test-performance.py", text)
-        self.assertIn("python scripts/performance/schemas.py", text)
+    def test_latest_stable_class_job_requires_tomllib_parity_once(self):
+        job = "\n".join(self.jobs["classes"])
+        self.assertIn("AF_PERF_REQUIRE_TOMLLIB: '1'", job)
+        self.assertIn("fromJSON(needs.resolve.outputs.selected", job)
+        self.assertIn("|| '[\"functional\"]'", job)
+        runner = read(os.path.join(ROOT, "scripts/test-classes.py")).decode()
+        self.assertIn("scripts/performance/schemas.py", runner)
+        self.assertIn("kind == 'perf'", runner)
+        self.assertNotIn("performance-lab", "\n".join(self.jobs["base"]))
 
     def test_every_validation_job_selects_latest_stable_python_before_using_it(self):
         for name, job in self.jobs.items():
@@ -120,6 +111,7 @@ class RequiredPythonCompatibility(unittest.TestCase):
                          if "uses: actions/setup-python@" in step[0]]
                 self.assertEqual(len(setup), 1)
                 text = "\n".join(actions[setup[0]])
+                self.assertIn("uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0", text)
                 self.assertIn("python-version: '3.x'", text)
                 self.assertIn("check-latest: true", text)
                 self.assertNotIn("allow-prereleases:", text)
@@ -130,42 +122,52 @@ class RequiredPythonCompatibility(unittest.TestCase):
                 self.assertTrue(uses_python)
                 self.assertLess(setup[0], min(uses_python))
 
-    def test_a_required_check_depends_on_the_python_job_and_always_runs(self):
+    def test_required_checks_always_require_every_selected_class_and_receipt(self):
         policy = read(POLICY).decode("utf-8")
-        required = re.search(r'^required = (\[[^\]]*"validation / [^\]]*\])$', policy, re.M)
-        self.assertIsNotNone(required)
-        self.assertIn('"validation / lint"', required.group(1))
-        lint = self.jobs["lint"]
-        self.assertEqual(key(lint, "name"), "lint")
-        self.assertEqual(key(lint, "needs"), "performance-python")
-        # always() runs the job after a failed, cancelled or skipped dependency; without it
-        # GitHub skips a dependent job, and a skipped required check reports success.
-        self.assertEqual(key(lint, "if"), "always()")
-        self.assertIsNone(key(self.jobs["performance-python"], "if"))
+        self.assertIn('"validation / lint"', policy)
+        self.assertIn('"validation / check (ubuntu-latest)"', policy)
+        for name in ("lint", "check"):
+            gate = self.jobs[name]
+            self.assertEqual(key(gate, "needs"),
+                             "[resolve, base, classes, container-probes, "
+                             "telemetry-build-smoke, telemetry-runtime-smoke]")
+            self.assertEqual(key(gate, "if"), "always()")
+            text = "\n".join(gate)
+            self.assertIn("scripts/test-classes.py aggregate", text)
+            self.assertIn("--evidence target/class-receipts", text)
+            self.assertNotIn("continue-on-error", text)
+        self.assertEqual(key(self.jobs["container-probes"], "if"), "needs.resolve.outputs.e2e == 'true'")
+        self.assertEqual(key(self.jobs["lint"], "name"), "lint")
+        self.assertEqual(key(self.jobs["check"], "name"), "check (${{ matrix.os }})")
 
-    def test_the_guard_runs_first_and_names_the_dependency_result(self):
-        first = steps(self.jobs["lint"])[0]
-        self.assertIn("Require the performance lab", first[0])
-        self.assertEqual(env(first), {
-            "PERFORMANCE_PYTHON": "${{ needs.performance-python.result }}"})
-        self.assertFalse(any(re.match(r"^        (if|continue-on-error):", line)
-                             for line in first), first)
+    def test_resolver_data_is_passed_as_data_and_cannot_make_an_empty_green_gate(self):
+        job = "\n".join(self.jobs["resolve"])
+        self.assertIn('--bound "$BOUND_PLAN"', job)
+        self.assertIn('--event "$GITHUB_EVENT_PATH"', job)
+        self.assertNotIn("github.event.pull_request.labels", job)
+        self.assertNotIn("continue-on-error", job)
 
-    @unittest.skipUnless(shutil.which("bash"), "bash unavailable")
-    def test_the_guard_fails_unless_the_python_job_succeeded(self):
-        script = block(steps(self.jobs["lint"])[0], "run")
-        self.assertIsNotNone(script)
-        for result in DEPENDENCY_RESULTS + ("",):
-            with self.subTest(result=result):
-                # GitHub runs `run:` steps with `bash -e {0}` on Linux runners.
-                outcome = subprocess.run(["bash", "-e", "-c", script],
-                                         env={"PATH": os.environ.get("PATH", "/usr/bin:/bin"),
-                                              "PERFORMANCE_PYTHON": result},
-                                         stdout=subprocess.PIPE, stderr=subprocess.PIPE)
-                self.assertEqual(outcome.returncode == 0, result == "success",
-                                 outcome.stderr.decode())
-                if result != "success":
-                    self.assertIn("'%s'" % result, outcome.stderr.decode())
+    def test_telemetry_smoke_is_selected_perf_validation_with_original_containment(self):
+        job = self.jobs['telemetry-build-smoke']
+        self.assertEqual(key(job, 'needs'), 'resolve')
+        self.assertEqual(key(job, 'if'), "needs.resolve.outputs.perf == 'true'")
+        self.assertEqual(key(job, 'timeout-minutes'), '20')
+        self.assertIn('      perf: ${{ steps.plan.outputs.perf }}', self.jobs['resolve'])
+        joined = '\n'.join(job)
+        self.assertNotIn('continue-on-error', joined)
+        self.assertIn('ghcr.io/pakhomovalexander/afactory-perf-gnu@sha256:'
+                      '26b0c708b9cdffdeb4731da33161f148b419af3c9e656ae9dc51d318215ae8b2', joined)
+        smoke_steps = steps(job)
+        expected = [('Pull the pinned telemetry build image', '4'),
+                    ('Exercise offline builds', '15'),
+                    ('Exercise contained measurements', '4')]
+        for prefix, timeout in expected:
+            step = next(item for item in smoke_steps if prefix in item[0])
+            self.assertIn('        timeout-minutes: ' + timeout, step)
+        for script in ('telemetry_build_smoke.py', 'telemetry_measurement_smoke.py'):
+            self.assertIn('python -I -B scripts/performance/tests/' + script, joined)
+        self.assertIn("PYTHONDONTWRITEBYTECODE: '1'", joined)
+        self.assertIn('validation-telemetry-smoke-${{ github.run_attempt }}', joined)
 
     def test_every_action_stays_pinned_to_a_commit(self):
         for line in self.text.splitlines():
@@ -174,5 +176,5 @@ class RequiredPythonCompatibility(unittest.TestCase):
                 self.assertRegex(match.group(1), r"^[A-Za-z0-9_.-]+/[A-Za-z0-9_./-]+@[0-9a-f]{40}$")
 
 
-if __name__ == "__main__":
+if __name__ == '__main__':
     unittest.main()

@@ -38,8 +38,22 @@ make check
 
 That is `cargo fmt --all -- --check`, `cargo clippy --all-targets --locked -- -D warnings`,
 `cargo nextest run --profile ci` over every test binary, and the release-selection check
-(`scripts/test-release-resolve.py`). CI runs exactly this, so a green local run is a green PR.
+(`scripts/test-release-resolve.py`), plus preflight and feature-on perf checks.
+CI uses the selected classes described below; the default PR omits perf. A local pass alone
+does not establish the outcome of separate CI/container work.
 Clippy warnings are errors; fix them rather than allowing them.
+
+Full `make check` keeps lightweight policy, source-integrity, catalog/schema checks and lint
+before the Rust test build. `cargo test --locked --no-run` must succeed before `ci-step.py`
+emits its genuine `stage=build` receipt. The ordinary Rust suite then runs, followed by
+`perf-python-tests` (`scripts/test-performance.py`) with `stage=tests`, feature-on tests and
+release checks. The Python laboratory suite executes tests and belongs under the test deadline;
+putting it in preflight consumed the build allowance before Rust compilation even began.
+Neither allowance changes. Standalone `make test` still builds and runs only the Rust suite,
+with either nextest or `TEST_RUNNER=cargo`. Selected class execution retains its own ordering
+and timing evidence. The focused regression in `scripts/test-test-classes.py` exercises the
+native wrapper, real Make recipes and receipt writer with command stand-ins, including a
+failed build that prevents both Rust and Python test execution.
 
 The gate runs one test per process and schedules tests across every test binary at once
 ([ADR-0124](docs/adr/0124-run-tests-in-parallel-processes-and-link-them-once.md)).
@@ -287,3 +301,41 @@ sign-off requirement.
 ## Security
 
 Vulnerabilities go through private reporting, never a public issue: see `SECURITY.md`.
+
+## Selecting validation classes
+
+`make check` remains the full AF gate. For selective development use `make check-fast` (functional,
+e2e, uix), `make check-full` (all four, including perf), or `make test-plan TEST_LABEL_FILE=event.json`
+then `make check-classes`. The JSON file has the GitHub event shape
+`{"pull_request":{"labels":[{"name":"test:functional"},{"name":"test:e2e"}]}}`.
+Selective e2e includes live containers and requires Docker. Fmt/lint and policy checks always run.
+
+Ordinary PRs default to functional + e2e + uix; AF gate PRs targeting `af-gate/**` default full. Any positive `test:functional`, `test:e2e`, `test:uix`, `test:perf`
+labels replace that default with an explicit allowlist. `no-functional`, `no-e2e`, `no-uix`, `no-perf`
+exclude from defaults. Contradictions, unknown reserved labels and empty selections fail. Skipped
+classes are reported as NOT RUN. `no-perf` also exempts the separate Performance measurement workflow;
+`test:perf` opts into it. Label changes rerun both workflows and cancel earlier PR work. Choose classes
+based on the whole change and record the coverage decision for reviewers.
+
+Every integration module/binary and Python test script needs a reviewed entry in
+`.config/test-classes.json`; new internal modules of registered unit binaries follow their documented
+component default unless overridden. Tests of help/errors/navigation belong to uix; complete workflows
+belong to e2e even if they assert output. Keep nextest exclusive scheduling independent of class.
+
+`make release VERSION=X.Y.Z COMPAT='...' PROFILE=fast` opens a release PR with `release:fast`;
+the default PROFILE is full. Provision the ten canonical labels with `make test-labels` (dry-run),
+then explicitly `make test-labels APPLY=1`; no PR labels are assigned by that setup command.
+Release preparation checks the profile label exists before changing source, committing or pushing.
+Changing release PR labels directly reruns selected CI; no policy file or metadata commit is required.
+When creating the absent tag, the resolver captures labels from the single exact merged release PR
+associated with that commit (matching SHA, main base and release/version head). It freezes the source
+PR provenance and plan in the annotated tag, bound to commit/version/catalog. First creation captures
+then-current labels; every later retry/tag run uses the annotation and ignores moving labels.
+`release:full` forces all classes and rejects partial/excluded
+selections. Direct unbound tags run full. All selected Linux/macOS gates and packaged binary, archive,
+architecture and signature smoke remain mandatory. Fast/custom release notes state their scope.
+The post-publication Performance measurement is asynchronous, not a publication gate.
+
+See [the complete class design](docs/test-classes.md) for precedence, catalog policy, retained evidence
+and `scripts/test-classes.py report --replay` commands. Real class timing reports keep wall time,
+summed test-seconds and runner cost separate; replay scenarios are estimates, not measured savings.

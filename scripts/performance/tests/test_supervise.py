@@ -282,7 +282,7 @@ class HostBackstop(TempDir):
         # finish its 110 s setup and 80 s publication.
         self.assertEqual(supervise.backstop_seconds(request, margin=60),
                          110 + 5 + 80 + 5 + 60)
-        alone = supervise.request(["/bin/true"], {}, self.tmp, "", 80000, 1, 1, grace_ms=5000)
+        alone = supervise.request([sys.executable, "-I", "-c", "pass"], {}, self.tmp, "", 80000, 1, 1, grace_ms=5000)
         self.assertEqual(supervise.backstop_seconds(alone, margin=60), 80 + 5 + 60)
 
     def test_a_setup_and_child_near_their_limits_are_never_cut_off(self):

@@ -681,7 +681,7 @@ class BoundedTools(TempDir):
         missing = toolrun.run(boss, [self.path("absent")], {}, 5, 64, cwd=self.tmp)
         self.assertIn("cannot run", missing.failure())
         # No time beyond the supervisor's reserve: nothing launches, and it is no success.
-        past = toolrun.run(boss, ["/bin/true"], {}, 5, 64, cwd=self.tmp,
+        past = toolrun.run(boss, [sys.executable, "-I", "-c", "pass"], {}, 5, 64, cwd=self.tmp,
                            deadline=time.monotonic() + 0.5)
         self.assertFalse(past.ok)
         self.assertTrue(past.late)
@@ -704,7 +704,7 @@ class BoundedTools(TempDir):
                               cwd=self.tmp, stdout_path=self.path("out"), file_bytes=6000)
         self.assertTrue(written.ok, written.failure())
         self.assertEqual(os.path.getsize(self.path("out")), 5000)
-        again = toolrun.run(boss, ["/bin/true"], env, 10, 64, cwd=self.tmp,
+        again = toolrun.run(boss, [sys.executable, "-I", "-c", "pass"], env, 10, 64, cwd=self.tmp,
                             stdout_path=self.path("out"))
         self.assertIn("already exists", again.failure())
         bounded = toolrun.run(boss, ["/bin/sh", "-c", "yes | head -c 50000"], env, 10, 64,
@@ -1867,7 +1867,7 @@ class UncertainCleanup(ChildRunBase):
                         self.assertFalse(os.path.exists(os.path.join(output, "manifest.json")))
                         with self.assertRaises(perfcapture.CaptureError): profile.collect("unsafe")
                         with self.assertRaises(perfcapture.CaptureError):
-                            profile.tool_run(["/bin/true"], 1, 1, self.tmp)
+                            profile.tool_run([sys.executable, "-I", "-c", "pass"], 1, 1, self.tmp)
                         if mode == "linux_container": self.assertTrue(state["removals"])
                         for directory in ("child", "probe-bin", "supervisor", "perf", "inferno",
                                           "scratch-fs", "docker"):
@@ -1978,7 +1978,7 @@ class UncertainCleanup(ChildRunBase):
                         self.assertFalse(os.path.exists(os.path.join(output, "manifest.json")),
                                          "uncertain staging cannot become an admitted bundle")
                         with self.assertRaises(perfcapture.CaptureError):
-                            profile.tool_run(["/bin/true"], 1, 1, self.tmp)
+                            profile.tool_run([sys.executable, "-I", "-c", "pass"], 1, 1, self.tmp)
                         with self.assertRaises(perfcapture.CaptureError):
                             profile.collect("unsafe")
                         # Only test-owned recovery after all product retention assertions.

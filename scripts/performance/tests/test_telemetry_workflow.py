@@ -36,9 +36,25 @@ class Workflow(unittest.TestCase):
     def test_validation_builds_real_release_af_and_runs_the_contained_setup_regression(self):
         jobs = text.jobs(read(os.path.join(ROOT, '.github/workflows/validate.yml')).decode())
         job = jobs['telemetry-runtime-smoke']
-        self.assertIsNone(text.key(job, 'if'))
+        self.assertEqual(text.key(job, 'needs'), 'resolve')
+        self.assertEqual(text.key(job, 'if'), "needs.resolve.outputs.perf == 'true'")
         self.assertEqual(text.key(job, 'runs-on'), 'ubuntu-latest')
+        self.assertEqual(text.key(job, 'timeout-minutes'), '95')
+        for gate in ('lint', 'check'):
+            self.assertIn('telemetry-runtime-smoke', text.key(jobs[gate], 'needs'))
+            self.assertEqual(text.key(jobs[gate], 'if'), 'always()')
+        for step in text.steps(job):
+            if any('uses:' in line for line in step):
+                action = next(line.split('uses: ', 1)[1].split()[0]
+                              for line in step if 'uses:' in line)
+                self.assertRegex(action, PIN)
         body = '\n'.join(job)
+        self.assertIn('timeout-minutes: 4', body)
+        self.assertIn('timeout-minutes: 81', body)
+        self.assertIn('timeout-minutes: 9', body)
+        self.assertIn('ghcr.io/pakhomovalexander/afactory-perf-gnu@sha256:'
+                      '26b0c708b9cdffdeb4731da33161f148b419af3c9e656ae9dc51d318215ae8b2', body)
+        self.assertIn('validation-telemetry-runtime-smoke-${{ github.run_attempt }}', body)
         self.assertIn('persist-credentials: false', body)
         self.assertIn('telemetry-contained-build', body)
         self.assertIn('--source-sha "$GITHUB_SHA"', body)

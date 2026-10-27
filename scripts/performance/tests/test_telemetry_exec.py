@@ -159,12 +159,12 @@ class TrustedLocal(TempDir):
         self.assertFalse(os.path.exists(doc.outputs()[0]))
 
     def test_a_long_telemetry_deadline_does_not_raise_the_verdict_sample_bound(self):
-        outcome = self.executor.run(execution(self, ["/bin/true"], seconds=600))
+        outcome = self.executor.run(execution(self, [sys.executable, "-I", "-c", "pass"], seconds=600))
         self.assertIsNone(outcome.failure(), outcome.cleanup_detail)
         self.assertEqual(limits.SAMPLE_TIMEOUT_SECONDS_MAX, 120)
 
     def test_an_exit_observed_after_the_absolute_deadline_is_still_a_timeout(self):
-        doc = execution(self, ["/bin/true"])
+        doc = execution(self, [sys.executable, "-I", "-c", "pass"])
         wait = telemetryexec._LocalProcess.wait
         def observe_late(process, timeout):
             wait(process, timeout)
@@ -252,7 +252,7 @@ class LocalEvidence(TempDir):
             observed.append(leader)
             return signal_group(pgid, sent)
         with mock.patch.object(telemetryexec.os, "killpg", side_effect=check):
-            outcome = self.executor.run(execution(self, ["/bin/true"]))
+            outcome = self.executor.run(execution(self, [sys.executable, "-I", "-c", "pass"]))
         self.assertIsNone(outcome.failure(), outcome.cleanup_detail)
         self.assertTrue(observed)
         self.assertTrue(all(leader[1] == "Z" for leader in observed))
@@ -270,7 +270,7 @@ class LocalEvidence(TempDir):
                     raise error
                 return scan(*args)
             with mock.patch.object(telemetryexec, "_group_alive", side_effect=fail_once):
-                outcome = self.executor.run(execution(self, ["/bin/true"],
+                outcome = self.executor.run(execution(self, [sys.executable, "-I", "-c", "pass"],
                                                      label="unknown%d" % index))
             self.assertEqual(outcome.cleanup, "uncertain", outcome.cleanup_detail)
             self.assertIn(str(error), outcome.cleanup_detail)
@@ -299,7 +299,7 @@ class LocalEvidence(TempDir):
                 raise PermissionError(errno.EPERM, "group signal denied")
             return killpg(*args)
         with mock.patch.object(telemetryexec.os, "killpg", side_effect=fail_once):
-            outcome = self.executor.run(execution(self, ["/bin/true"]))
+            outcome = self.executor.run(execution(self, [sys.executable, "-I", "-c", "pass"]))
         self.assertEqual(outcome.cleanup, "uncertain")
         self.assertIn("group signal denied", outcome.failure())
 
@@ -325,7 +325,7 @@ class LocalEvidence(TempDir):
         with mock.patch.object(telemetryexec.os, "waitid", side_effect=lost), \
                 mock.patch.object(self.executor, "launch", side_effect=record), \
                 mock.patch.object(telemetryexec.os, "killpg") as sent:
-            outcome = self.executor.run(execution(self, ["/bin/true"]))
+            outcome = self.executor.run(execution(self, [sys.executable, "-I", "-c", "pass"]))
         sent.assert_not_called()
         self.assertEqual(outcome.cleanup, "uncertain")
         self.assertIn("lost ownership", outcome.failure())
@@ -369,7 +369,7 @@ class LocalEvidence(TempDir):
                 return io.BytesIO(prefix + b") " + b" ".join(fields) + b"\n")
             return original(path, *args, **kwargs)
         with mock.patch("builtins.open", side_effect=corrupt_once):
-            outcome = self.executor.run(execution(self, ["/bin/true"]))
+            outcome = self.executor.run(execution(self, [sys.executable, "-I", "-c", "pass"]))
         self.assertTrue(failed)
         self.assertEqual(outcome.cleanup, "uncertain")
         self.assertIn("process status", outcome.failure())
@@ -486,14 +486,14 @@ class Contained(ContainedBase):
     def test_volume_admission_refuses_before_any_candidate_launch(self):
         with mock.patch.object(self.executor.image, "refuse_implicit_volumes",
                                side_effect=ContractError("implicit writable volumes")):
-            result = self.executor.run(execution(self, ["/bin/true"], cwd=self.run_dir))
+            result = self.executor.run(execution(self, [sys.executable, "-I", "-c", "pass"], cwd=self.run_dir))
         self.assertIn("implicit writable volumes", result.error)
         self.assertEqual((self.executor.current, self.executor.names), (None, 0))
         self.assertEqual(result.cleanup, "confirmed")
         self.assertFalse(os.path.exists(os.path.join(self.docker_dir, "docker-calls.jsonl")))
 
     def test_volume_inspection_shares_the_deadline_and_cannot_launch_after_it(self):
-        doc = execution(self, ["/bin/true"], cwd=self.run_dir)
+        doc = execution(self, [sys.executable, "-I", "-c", "pass"], cwd=self.run_dir)
         now = [doc.deadline - 1]
         self.executor.clock = lambda: now[0]
 
@@ -534,7 +534,7 @@ class Contained(ContainedBase):
         self.assertEqual(argv[argv.index("--user") + 1], "%d:%d" % (os.getuid(), os.getgid()))
         # Nothing outside the result's own scratch directory is ever writable.
         for outside in (self.path("result"), self.scratch, self.path("candidate")):
-            hostile = execution(self, ["/bin/true"], cwd=self.run_dir)
+            hostile = execution(self, [sys.executable, "-I", "-c", "pass"], cwd=self.run_dir)
             hostile.writable.append(outside)
             with self.assertRaises(ContractError):
                 self.executor.argv("x", hostile)
