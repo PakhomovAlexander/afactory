@@ -1,0 +1,60 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:af:schema:performance-executor-journal:1",
+  "title": "af.perf-executor-journal/1",
+  "description": "Independent performance executor: executor-journal (ADR-0235).",
+  "type": "object",
+  "additionalProperties": false,
+  "properties": {
+    "schema": {
+      "const": "af.perf-executor-journal/1"
+    },
+    "journal_id": {
+      "$ref": "#/$defs/id"
+    },
+    "repository": {
+      "type": "string",
+      "maxLength": 201,
+      "pattern": "^[A-Za-z0-9_.-]{1,100}/[A-Za-z0-9_.-]{1,100}$"
+    },
+    "originals": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "request_id": {
+            "$ref": "#/$defs/id"
+          },
+          "request_digest": {
+            "$ref": "#/$defs/digest"
+          }
+        },
+        "required": [
+          "request_id",
+          "request_digest"
+        ]
+      },
+      "minItems": 0,
+      "maxItems": 4096
+    }
+  },
+  "required": [
+    "schema",
+    "journal_id",
+    "repository",
+    "originals"
+  ],
+  "$defs": {
+    "digest": {
+      "type": "string",
+      "maxLength": 71,
+      "pattern": "^sha256:[0-9a-f]{64}$"
+    },
+    "id": {
+      "type": "string",
+      "maxLength": 64,
+      "pattern": "^[a-z][a-z0-9_]{0,63}$"
+    }
+  }
+}

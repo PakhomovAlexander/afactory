@@ -18,7 +18,7 @@ import sys
 import time
 from unittest import mock
 
-from perflab import builds, budget, capability, contracts, hostprep, telemetryexec, telemetrylab
+from perflab import builds, budget, capability, contracts, hostlock, hostprep, telemetryexec, telemetrylab
 from perflab.values import ContractError
 from tests import telemetry_fixtures as fx
 from tests import test_workflow as workflow
@@ -91,6 +91,12 @@ class WorkflowCleanup(ContainedBase):
         self.stderr = io.StringIO()
         self.stdout = io.TextIOWrapper(io.BytesIO(), write_through=True)
         with contextlib.redirect_stderr(self.stderr), contextlib.redirect_stdout(self.stdout):
+            if command == "ci-scratch":
+                # A simulated host gets its own actual inode/fence. The AF sandbox's /tmp
+                # deliberately is not a root-owned system directory; production refuses it.
+                directory = getattr(self, "machine_lock_directory", self.path("machine-lock"))
+                os.makedirs(directory, exist_ok=True)
+                return cli.cmd_ci_scratch(args, lock_directory=directory)
             return args.handler(args)
 
     def retained(self):
@@ -237,12 +243,13 @@ class WorkflowCleanup(ContainedBase):
         args = cli.parser().parse_args(self.argv("telemetry-run") + ["--experiment", "overhead",
             "--rounds", "1", "--pairs", "1", "--scale", "smoke", "--corpus-runs", "10"])
         original = telemetrylab.run
-        os.makedirs(self.path("machine-lock"), exist_ok=True)
+        lock_directory = getattr(self, "machine_lock_directory", self.path("machine-lock"))
+        os.makedirs(lock_directory, exist_ok=True)
 
         def run(settings):
             settings.executor = self.executor
             self.executor.owner = settings.scratch_owner
-            settings.lock_directory = self.path("machine-lock")
+            settings.lock_directory = lock_directory
             settings.host_identity = lambda: fx.HOST
             if configure is not None:
                 configure(settings)
@@ -319,6 +326,9 @@ class WorkflowCleanup(ContainedBase):
     def test_mutating_probe_and_opaque_preparation_interruptions_keep_persisted_fence(self):
         for boundary in ("probe", "image_hook", "host_hook", "executor"):
             with self.subTest(boundary=boundary):
+                # Each injected interruption is a distinct fixture machine. Never erase a
+                # prior scenario's durable global fence just to run the next boundary.
+                self.machine_lock_directory = self.path("machine-lock-" + boundary)
                 failure = {"probe": OSError("partially mutating probe"),
                            "image_hook": telemetrylab.Unavailable("refused", "opaque image hook"),
                            "host_hook": KeyboardInterrupt("preparation interrupted"),
@@ -350,12 +360,17 @@ class WorkflowCleanup(ContainedBase):
                 self.assertEqual(self.executor.names, 0)
                 self.assertEqual(Path(self.mount, "preparation-data").read_bytes(),
                                  b"possibly still owned")
-                # Test-owned recovery, never product compensation.
+                with self.assertRaisesRegex(hostlock.Refused, "unfinished experiment fence"):
+                    hostlock.MachineLock(self.machine_lock_directory)
+                # Test-owned recovery, never product compensation. The machine fence stays.
                 with self.owner() as owner:
                     owner.doc["filesystem_pending"] = False
                     owner._write()
 
     def assert_unused_fence_settlement(self, boundary, preparation_delay=0):
+        # Every injected failed cleanup remains fenced. Later fault scenarios are separate
+        # fixture machines; no automatic or test recovery removes an uncertain machine fence.
+        self.machine_lock_directory = self.path("machine-lock-settlement-" + boundary)
         offset = [0.0]
         actual_sync = telemetrylab._sync
         calls, settlements, failures = [], [], []

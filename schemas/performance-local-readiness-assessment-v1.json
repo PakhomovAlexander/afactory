@@ -1,0 +1,499 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:af:schema:performance-local-readiness-assessment:1",
+  "title": "af.perf-local-readiness/1",
+  "description": "Independent performance executor: local-readiness-assessment (ADR-0235).",
+  "type": "object",
+  "additionalProperties": false,
+  "properties": {
+    "schema": {
+      "const": "af.perf-local-readiness/1"
+    },
+    "cohort_id": {
+      "$ref": "#/$defs/id"
+    },
+    "cohort_digest": {
+      "$ref": "#/$defs/digest"
+    },
+    "calibration_digest": {
+      "$ref": "#/$defs/digest"
+    },
+    "recomputed_calibration_digest": {
+      "$ref": "#/$defs/digest"
+    },
+    "history": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "journal_id": {
+          "$ref": "#/$defs/id"
+        },
+        "journal_digest": {
+          "$ref": "#/$defs/digest"
+        },
+        "requests": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 4096
+        }
+      },
+      "required": [
+        "journal_id",
+        "journal_digest",
+        "requests"
+      ]
+    },
+    "members": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "member_id": {
+            "$ref": "#/$defs/id"
+          },
+          "kind": {
+            "type": "string",
+            "enum": [
+              "aa",
+              "preparation",
+              "injection",
+              "power"
+            ]
+          },
+          "status": {
+            "type": "string",
+            "enum": [
+              "complete",
+              "missing",
+              "interrupted",
+              "failed",
+              "unhealthy",
+              "invalid"
+            ]
+          },
+          "reasons": {
+            "type": "array",
+            "items": {
+              "type": "string",
+              "enum": [
+                "no_dispatch",
+                "artifact_missing",
+                "artifact_expired",
+                "artifact_unreadable",
+                "attempt_unsuccessful",
+                "artifact_ambiguous",
+                "runner_unverified",
+                "producer_unverified",
+                "attempt_unavailable",
+                "attempt_incomplete",
+                "off_schedule",
+                "before_calibration",
+                "cpu_group_mismatch",
+                "unprepared_cpu_group",
+                "wrong_plan",
+                "shard_missing",
+                "shard_interrupted",
+                "shard_failed",
+                "health_unstable",
+                "records_incomplete",
+                "not_measured"
+              ]
+            },
+            "minItems": 0,
+            "maxItems": 16,
+            "uniqueItems": true
+          },
+          "provenance": {
+            "anyOf": [
+              {
+                "type": "null"
+              },
+              {
+                "type": "object",
+                "additionalProperties": false,
+                "properties": {
+                  "request_id": {
+                    "$ref": "#/$defs/id"
+                  },
+                  "request_digest": {
+                    "$ref": "#/$defs/digest"
+                  },
+                  "result_sha256": {
+                    "anyOf": [
+                      {
+                        "type": "null"
+                      },
+                      {
+                        "$ref": "#/$defs/digest"
+                      }
+                    ]
+                  },
+                  "plan_digest": {
+                    "anyOf": [
+                      {
+                        "type": "null"
+                      },
+                      {
+                        "$ref": "#/$defs/digest"
+                      }
+                    ]
+                  },
+                  "started_unix_ms": {
+                    "anyOf": [
+                      {
+                        "type": "null"
+                      },
+                      {
+                        "type": "integer",
+                        "minimum": 0,
+                        "maximum": 9007199254740992
+                      }
+                    ]
+                  },
+                  "ended_unix_ms": {
+                    "anyOf": [
+                      {
+                        "type": "null"
+                      },
+                      {
+                        "type": "integer",
+                        "minimum": 0,
+                        "maximum": 9007199254740992
+                      }
+                    ]
+                  }
+                },
+                "required": [
+                  "request_id",
+                  "request_digest",
+                  "result_sha256",
+                  "plan_digest",
+                  "started_unix_ms",
+                  "ended_unix_ms"
+                ]
+              }
+            ]
+          },
+          "cpu_groups": {
+            "type": "object",
+            "minProperties": 0,
+            "maxProperties": 64,
+            "patternProperties": {
+              "^[a-z][a-z0-9_]{0,63}$": {
+                "anyOf": [
+                  {
+                    "type": "null"
+                  },
+                  {
+                    "$ref": "#/$defs/id"
+                  }
+                ]
+              }
+            },
+            "additionalProperties": false
+          },
+          "verdict_sha256": {
+            "anyOf": [
+              {
+                "type": "null"
+              },
+              {
+                "$ref": "#/$defs/digest"
+              }
+            ]
+          },
+          "cases": {
+            "type": "object",
+            "minProperties": 0,
+            "maxProperties": 64,
+            "patternProperties": {
+              "^[a-z][a-z0-9_]{0,63}$": {
+                "type": "object",
+                "additionalProperties": false,
+                "properties": {
+                  "classification": {
+                    "anyOf": [
+                      {
+                        "type": "null"
+                      },
+                      {
+                        "type": "string",
+                        "enum": [
+                          "regression",
+                          "improvement",
+                          "within_tolerance",
+                          "non_regression",
+                          "inconclusive",
+                          "candidate_failure",
+                          "baseline_failure",
+                          "environment_unstable",
+                          "missing_records",
+                          "budget_missed"
+                        ]
+                      }
+                    ]
+                  },
+                  "injected_median_ms": {
+                    "anyOf": [
+                      {
+                        "type": "null"
+                      },
+                      {
+                        "$ref": "#/$defs/rational"
+                      }
+                    ]
+                  },
+                  "target_ms": {
+                    "anyOf": [
+                      {
+                        "type": "null"
+                      },
+                      {
+                        "$ref": "#/$defs/rational"
+                      }
+                    ]
+                  },
+                  "injection_valid": {
+                    "anyOf": [
+                      {
+                        "type": "null"
+                      },
+                      {
+                        "type": "boolean"
+                      }
+                    ]
+                  }
+                },
+                "required": [
+                  "classification",
+                  "injected_median_ms",
+                  "target_ms",
+                  "injection_valid"
+                ]
+              }
+            },
+            "additionalProperties": false
+          },
+          "qualifies": {
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "member_id",
+          "kind",
+          "status",
+          "reasons",
+          "provenance",
+          "cpu_groups",
+          "verdict_sha256",
+          "cases",
+          "qualifies"
+        ]
+      },
+      "minItems": 1,
+      "maxItems": 256
+    },
+    "refused_evidence": {
+      "type": "array",
+      "items": {
+        "type": "string",
+        "maxLength": 4096
+      },
+      "minItems": 0,
+      "maxItems": 256
+    },
+    "tallies": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "aa_members": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 9223372036854775807
+        },
+        "aa_within_tolerance": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 9223372036854775807
+        },
+        "power_members": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 9223372036854775807
+        },
+        "power_qualifying": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 9223372036854775807
+        },
+        "power_by_case": {
+          "type": "object",
+          "minProperties": 0,
+          "maxProperties": 64,
+          "patternProperties": {
+            "^[a-z][a-z0-9_]{0,63}$": {
+              "type": "object",
+              "additionalProperties": false,
+              "properties": {
+                "detections": {
+                  "type": "integer",
+                  "minimum": 0,
+                  "maximum": 9223372036854775807
+                },
+                "valid_injections": {
+                  "type": "integer",
+                  "minimum": 0,
+                  "maximum": 9223372036854775807
+                }
+              },
+              "required": [
+                "detections",
+                "valid_injections"
+              ]
+            }
+          },
+          "additionalProperties": false
+        },
+        "power_by_group": {
+          "type": "object",
+          "minProperties": 0,
+          "maxProperties": 17,
+          "patternProperties": {
+            "^[a-z][a-z0-9_]{0,63}$": {
+              "type": "object",
+              "additionalProperties": false,
+              "properties": {
+                "members": {
+                  "type": "integer",
+                  "minimum": 0,
+                  "maximum": 9223372036854775807
+                },
+                "qualifying": {
+                  "type": "integer",
+                  "minimum": 0,
+                  "maximum": 9223372036854775807
+                }
+              },
+              "required": [
+                "members",
+                "qualifying"
+              ]
+            }
+          },
+          "additionalProperties": false
+        },
+        "injection": {
+          "type": "object",
+          "minProperties": 3,
+          "maxProperties": 3,
+          "patternProperties": {
+            "^injection_(?:2|5|10)$": {
+              "type": "object",
+              "additionalProperties": false,
+              "properties": {
+                "members": {
+                  "type": "integer",
+                  "minimum": 0,
+                  "maximum": 9223372036854775807
+                },
+                "regressions": {
+                  "type": "integer",
+                  "minimum": 0,
+                  "maximum": 9223372036854775807
+                },
+                "valid_injections": {
+                  "type": "integer",
+                  "minimum": 0,
+                  "maximum": 9223372036854775807
+                }
+              },
+              "required": [
+                "members",
+                "regressions",
+                "valid_injections"
+              ]
+            }
+          },
+          "additionalProperties": false
+        }
+      },
+      "required": [
+        "aa_members",
+        "aa_within_tolerance",
+        "power_members",
+        "power_qualifying",
+        "power_by_case",
+        "power_by_group",
+        "injection"
+      ]
+    },
+    "groups": {
+      "type": "object",
+      "minProperties": 1,
+      "maxProperties": 16,
+      "patternProperties": {
+        "^[a-z][a-z0-9_]{0,63}$": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "ready": {
+              "type": "boolean"
+            },
+            "unavailable": {
+              "type": "array",
+              "items": {
+                "$ref": "#/$defs/id"
+              },
+              "minItems": 0,
+              "maxItems": 64
+            }
+          },
+          "required": [
+            "ready",
+            "unavailable"
+          ]
+        }
+      },
+      "additionalProperties": false
+    },
+    "ready": {
+      "type": "boolean"
+    },
+    "claim": {
+      "const": "9 of 10 power trials is a readiness decision for the demonstrated targets, not proof of 90% population detection power; group tallies are descriptive and a mixed-host trial appears in each observed critical-case group"
+    }
+  },
+  "required": [
+    "schema",
+    "cohort_id",
+    "cohort_digest",
+    "calibration_digest",
+    "recomputed_calibration_digest",
+    "history",
+    "members",
+    "refused_evidence",
+    "tallies",
+    "groups",
+    "ready",
+    "claim"
+  ],
+  "$defs": {
+    "digest": {
+      "type": "string",
+      "maxLength": 71,
+      "pattern": "^sha256:[0-9a-f]{64}$"
+    },
+    "id": {
+      "type": "string",
+      "maxLength": 64,
+      "pattern": "^[a-z][a-z0-9_]{0,63}$"
+    },
+    "rational": {
+      "type": "string",
+      "maxLength": 512,
+      "pattern": "^-?(?:0|[1-9][0-9]*)(?:/[1-9][0-9]*)?$",
+      "description": "Exact signed rational in lowest terms, such as -3/4 or 2."
+    }
+  }
+}

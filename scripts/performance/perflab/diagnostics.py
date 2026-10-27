@@ -2228,9 +2228,10 @@ def finish(output, doc, traces, budget=None):
 # The command -------------------------------------------------------------------------------
 
 class Unavailable(ContractError):
-    def __init__(self, reason, detail):
+    def __init__(self, reason, detail, cleanup_confirmed=True):
         ContractError.__init__(self, detail)
         self.reason = reason
+        self.cleanup_confirmed = cleanup_confirmed
 
 
 class Options(object):
@@ -2342,7 +2343,7 @@ def check_mode(plan, mode, host=None):
     return mode, declared
 
 
-def run_profile(git, options, authority_factory=None):
+def run_profile(git, options, authority_factory=None, machine_lease=None):
     """Create one diagnostic child run; (exit code, profiles path or None, message)."""
     from . import planning, runner
     # Every explicit bound is checked before anything is created, built or launched.
@@ -2397,12 +2398,29 @@ def run_profile(git, options, authority_factory=None):
     # The machine's one coordination lock, the one timed shards take (ADR-0169), from before
     # the child run's directory exists until its terminal evidence is written.
     try:
-        lock = runner.machine_lock(options.lock_directory)
+        lock = runner.machine_lock(options.lock_directory, lease=machine_lease)
     except runner.Unavailable as refused:
         raise Unavailable(refused.reason, str(refused))
     try:
-        return _run_locked(git, options, authority_factory, parent, plan, registry, raw, entry,
+        if machine_lease is None:
+            lock.guard()
+        result = _run_locked(git, options, authority_factory, parent, plan, registry, raw, entry,
                            selection, cases, frequency, mode, declared, lock.path)
+        if machine_lease is None:
+            doc, _ = _read(result[1], "profiles")
+            if not doc["execution"]["retained_scratch"]:
+                lock.confirm_clean()
+        elif result[1] is not None:
+            doc, _ = _read(result[1], "profiles")
+            if doc["execution"]["retained_scratch"]:
+                lock.mark_uncertain()
+        return result
+    except Unavailable as error:
+        if machine_lease is None and not os.path.lexists(options.output) and error.cleanup_confirmed:
+            lock.confirm_clean()
+        elif machine_lease is not None and not error.cleanup_confirmed:
+            lock.mark_uncertain()
+        raise
     finally:
         lock.release()
 
@@ -2423,9 +2441,10 @@ def _contained(options, plan, budget):
                                                                           budget.clock, 0),
                                             budget.clock)
     except runner.Unavailable as refused:
-        raise Unavailable(refused.reason, str(refused))
+        raise Unavailable(refused.reason, str(refused), cleanup_confirmed=refused.cleanup_confirmed)
     except deadlines.Expired as expired:
-        raise Unavailable("diagnostic_deadline", str(expired))
+        raise Unavailable("diagnostic_deadline", str(expired),
+                          cleanup_confirmed=getattr(expired, "cleanup_confirmed", True))
     scratch_root = os.path.realpath(scratch_root)
     work = os.path.join(scratch_root, supervise.DIAGNOSTIC_DIRECTORY)
     if os.path.lexists(work):

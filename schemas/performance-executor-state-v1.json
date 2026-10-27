@@ -1,0 +1,91 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:af:schema:performance-executor-state:1",
+  "title": "af.perf-executor-state/1",
+  "description": "Independent performance executor: executor-state (ADR-0235).",
+  "type": "object",
+  "additionalProperties": false,
+  "properties": {
+    "schema": {
+      "const": "af.perf-executor-state/1"
+    },
+    "request_id": {
+      "$ref": "#/$defs/id"
+    },
+    "request_digest": {
+      "$ref": "#/$defs/digest"
+    },
+    "state": {
+      "type": "string",
+      "enum": [
+        "queued",
+        "claimed",
+        "complete",
+        "failed",
+        "interrupted",
+        "uncertain",
+        "submitted"
+      ]
+    },
+    "started_unix_ms": {
+      "anyOf": [
+        {
+          "type": "null"
+        },
+        {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 9007199254740992
+        }
+      ]
+    },
+    "ended_unix_ms": {
+      "anyOf": [
+        {
+          "type": "null"
+        },
+        {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 9007199254740992
+        }
+      ]
+    },
+    "result_sha256": {
+      "anyOf": [
+        {
+          "type": "null"
+        },
+        {
+          "$ref": "#/$defs/digest"
+        }
+      ]
+    },
+    "detail": {
+      "type": "string",
+      "maxLength": 4096
+    }
+  },
+  "required": [
+    "schema",
+    "request_id",
+    "request_digest",
+    "state",
+    "started_unix_ms",
+    "ended_unix_ms",
+    "result_sha256",
+    "detail"
+  ],
+  "$defs": {
+    "digest": {
+      "type": "string",
+      "maxLength": 71,
+      "pattern": "^sha256:[0-9a-f]{64}$"
+    },
+    "id": {
+      "type": "string",
+      "maxLength": 64,
+      "pattern": "^[a-z][a-z0-9_]{0,63}$"
+    }
+  }
+}

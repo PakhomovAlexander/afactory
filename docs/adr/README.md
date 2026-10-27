@@ -437,3 +437,5 @@ future readers need.
   class](0233-select-real-af-runtime-smoke-with-the-perf-class.md)
 - [0234 — Reconcile validation classes with bounded upstream for
   CI](0234-reconcile-validation-classes-with-bounded-upstream-for-ci.md)
+- [0235 — Execute performance experiments independently on a locked
+  VM](0235-execute-performance-experiments-independently-on-a-locked-vm.md)

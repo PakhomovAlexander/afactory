@@ -1,0 +1,301 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:af:schema:performance-executor:1",
+  "title": "af.perf-executor/1",
+  "description": "Independent performance executor: executor (ADR-0235).",
+  "type": "object",
+  "additionalProperties": false,
+  "properties": {
+    "schema": {
+      "const": "af.perf-executor/1"
+    },
+    "backend": {
+      "type": "string",
+      "enum": [
+        "local",
+        "github_actions"
+      ]
+    },
+    "root": {
+      "type": "string",
+      "maxLength": 1024,
+      "pattern": "^/[^\\x00\\n]{1,1023}$"
+    },
+    "repository_path": {
+      "type": "string",
+      "maxLength": 1024,
+      "pattern": "^/[^\\x00\\n]{1,1023}$"
+    },
+    "repository": {
+      "type": "string",
+      "maxLength": 201,
+      "pattern": "^[A-Za-z0-9_.-]{1,100}/[A-Za-z0-9_.-]{1,100}$"
+    },
+    "control_sha": {
+      "$ref": "#/$defs/git_sha"
+    },
+    "trusted_ref": {
+      "type": "string",
+      "maxLength": 4096,
+      "pattern": "^refs/heads/[A-Za-z0-9._/-]+$"
+    },
+    "machine_id": {
+      "$ref": "#/$defs/id"
+    },
+    "journal_id": {
+      "$ref": "#/$defs/id"
+    },
+    "build_image": {
+      "type": "string",
+      "maxLength": 330,
+      "pattern": "^(?:(?:[a-z0-9]+(?:(?:[._]|__|-+)[a-z0-9]+)*(?::[0-9]{1,5})?/)*[a-z0-9]+(?:(?:[._]|__|-+)[a-z0-9]+)*@)?sha256:[0-9a-f]{64}$"
+    },
+    "sample_image": {
+      "type": "string",
+      "maxLength": 330,
+      "pattern": "^(?:(?:[a-z0-9]+(?:(?:[._]|__|-+)[a-z0-9]+)*(?::[0-9]{1,5})?/)*[a-z0-9]+(?:(?:[._]|__|-+)[a-z0-9]+)*@)?sha256:[0-9a-f]{64}$"
+    },
+    "max_requests": {
+      "type": "integer",
+      "minimum": 1,
+      "maximum": 4096
+    },
+    "max_queue": {
+      "type": "integer",
+      "minimum": 1,
+      "maximum": 256
+    },
+    "max_bytes": {
+      "type": "integer",
+      "minimum": 1,
+      "maximum": 1099511627776
+    },
+    "archive_bytes": {
+      "type": "integer",
+      "minimum": 1,
+      "maximum": 1099511627776
+    },
+    "history_bytes": {
+      "type": "integer",
+      "minimum": 1,
+      "maximum": 1099511627776
+    },
+    "run_seconds": {
+      "type": "integer",
+      "minimum": 120,
+      "maximum": 28800
+    },
+    "cycle_seconds": {
+      "type": "integer",
+      "minimum": 1,
+      "maximum": 300
+    },
+    "poll_main": {
+      "type": "boolean"
+    },
+    "core": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "tier": {
+          "type": "string",
+          "enum": [
+            "quick",
+            "nightly",
+            "release"
+          ]
+        },
+        "environment": {
+          "$ref": "#/$defs/id"
+        },
+        "shards": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 16
+        },
+        "cases": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/id"
+          },
+          "minItems": 0,
+          "maxItems": 64,
+          "uniqueItems": true
+        }
+      },
+      "required": [
+        "tier",
+        "environment",
+        "shards",
+        "cases"
+      ]
+    },
+    "telemetry": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "profile": {
+          "type": "string",
+          "enum": [
+            "pr",
+            "nightly",
+            "release",
+            "manual"
+          ]
+        },
+        "experiments": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "enum": [
+              "overhead",
+              "invocation_cost",
+              "read_latency"
+            ]
+          },
+          "minItems": 1,
+          "maxItems": 3,
+          "uniqueItems": true
+        },
+        "rounds": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 8
+        },
+        "pairs": {
+          "anyOf": [
+            {
+              "type": "null"
+            },
+            {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 40
+            }
+          ]
+        },
+        "scale": {
+          "anyOf": [
+            {
+              "type": "null"
+            },
+            {
+              "type": "string",
+              "enum": [
+                "smoke",
+                "full"
+              ]
+            }
+          ]
+        },
+        "corpus_runs": {
+          "anyOf": [
+            {
+              "type": "null"
+            },
+            {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 10000
+            }
+          ]
+        }
+      },
+      "required": [
+        "profile",
+        "experiments",
+        "rounds"
+      ]
+    },
+    "diagnostic": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "recipe": {
+          "$ref": "#/$defs/id"
+        },
+        "cases": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/id"
+          },
+          "minItems": 1,
+          "maxItems": 16,
+          "uniqueItems": true
+        },
+        "total_minutes": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 30
+        },
+        "duration_seconds": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 30
+        },
+        "frequency_hz": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 1999
+        },
+        "telemetry": {
+          "anyOf": [
+            {
+              "type": "null"
+            },
+            {
+              "type": "string",
+              "enum": [
+                "spans",
+                "content"
+              ]
+            }
+          ]
+        }
+      },
+      "required": [
+        "recipe",
+        "cases",
+        "total_minutes",
+        "duration_seconds",
+        "frequency_hz"
+      ]
+    }
+  },
+  "required": [
+    "schema",
+    "backend",
+    "root",
+    "repository_path",
+    "repository",
+    "control_sha",
+    "trusted_ref",
+    "machine_id",
+    "journal_id",
+    "build_image",
+    "sample_image",
+    "max_requests",
+    "max_queue",
+    "max_bytes",
+    "archive_bytes",
+    "history_bytes",
+    "run_seconds",
+    "cycle_seconds",
+    "poll_main",
+    "core",
+    "telemetry",
+    "diagnostic"
+  ],
+  "$defs": {
+    "git_sha": {
+      "type": "string",
+      "maxLength": 64,
+      "pattern": "^(?:[0-9a-f]{40}|[0-9a-f]{64})$"
+    },
+    "id": {
+      "type": "string",
+      "maxLength": 64,
+      "pattern": "^[a-z][a-z0-9_]{0,63}$"
+    }
+  }
+}

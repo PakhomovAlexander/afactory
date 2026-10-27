@@ -1275,7 +1275,10 @@ COHORT = Obj(
 
 
 def validate_cohort(doc, where="cohort.json"):
-    COHORT.validate(doc, where)
+    if isinstance(doc, dict) and doc.get("schema") == "af.perf-local-cohort/1":
+        LOCAL_COHORT.validate(doc, where)
+    else:
+        COHORT.validate(doc, where)
     import datetime
     try:
         datetime.date(*(int(part) for part in doc["schedule"]["start_date"].split("-")))
@@ -1672,6 +1675,50 @@ def compute_readiness(cohort, calibration, members):
     return tallies, groups, qualifies, ready
 
 
+def validate_readiness_injection(member, at):
+    """Shared dose admission for hosted and local member judgments."""
+    for ident, case in sorted(member["cases"].items()):
+        injected = case["injected_median_ms"]
+        target = case["target_ms"]
+        expected = (None if member["kind"] in ("aa", "preparation") else injection_valid(
+            None if injected is None else parse_rational(injected, at),
+            None if target is None else parse_rational(target, at)))
+        require(case["injection_valid"] == expected,
+                at + ".cases.%s.injection_valid: does not follow from the measured median "
+                "and its target" % ident)
+
+
+def validate_readiness_totals(doc, where, cohort, calibration):
+    """Shared sealed-target, denominator and whole-trial admission."""
+    declared = {member["member_id"]: member for member in cohort["members"]}
+    validate_calibration(calibration, cohort=cohort)
+    require(doc["calibration_digest"] == canonical_digest(calibration),
+            where + ".calibration_digest: names other calibration parameters")
+    require(doc["recomputed_calibration_digest"] == doc["calibration_digest"],
+            where + ".recomputed_calibration_digest: the sealed parameters are not those "
+            "the A/A and preparation originals give")
+    for member in doc["members"]:
+        level = member_level(declared[member["member_id"]])
+        for ident, case in member["cases"].items():
+            group = calibration_group(calibration, ident, member["cpu_groups"].get(ident) or "")
+            expected = None
+            if level not in (None, "preparation") and group is not None \
+                    and group["a0"] is not None:
+                expected = format_rational(target_ms(group, level))
+            require(case["target_ms"] == expected,
+                    where + ".members.%s.cases.%s.target_ms: not the frozen target"
+                    % (member["member_id"], ident))
+    tallies, groups, qualifies, ready = compute_readiness(cohort, calibration,
+                                                          doc["members"])
+    for member in doc["members"]:
+        require(member["qualifies"] == qualifies[member["member_id"]],
+                where + ".members.%s.qualifies: does not match the recomputation"
+                % member["member_id"])
+    require(doc["tallies"] == tallies, where + ".tallies: do not match the recomputation")
+    require(doc["groups"] == groups, where + ".groups: do not match the recomputation")
+    require(doc["ready"] == ready, where + ".ready: does not match the recomputation")
+
+
 def validate_readiness(doc, where="readiness.json", cohort=None, calibration=None):
     READINESS.validate(doc, where)
     ids = [member["member_id"] for member in doc["members"]]
@@ -1725,15 +1772,7 @@ def validate_readiness(doc, where="readiness.json", cohort=None, calibration=Non
         else:
             require(member["status"] == "missing", at + ".status: an undispatched member is "
                     "missing")
-        for ident, case in sorted(member["cases"].items()):
-            injected = case["injected_median_ms"]
-            target = case["target_ms"]
-            expected = (None if member["kind"] in ("aa", "preparation") else injection_valid(
-                None if injected is None else parse_rational(injected, at),
-                None if target is None else parse_rational(target, at)))
-            require(case["injection_valid"] == expected,
-                    at + ".cases.%s.injection_valid: does not follow from the measured median "
-                    "and its target" % ident)
+        validate_readiness_injection(member, at)
     history = doc["history"]
     require(history["latest_run_number"] - history["after_run_number"] == history["runs"],
             where + ".history: every run after the anchor, each number once")
@@ -1773,32 +1812,7 @@ def validate_readiness(doc, where="readiness.json", cohort=None, calibration=Non
                     where + ".members.%s.cases: a complete member contains every declared case"
                     % member["member_id"])
     if cohort is not None and calibration is not None:
-        validate_calibration(calibration, cohort=cohort)
-        require(doc["calibration_digest"] == canonical_digest(calibration),
-                where + ".calibration_digest: names other calibration parameters")
-        require(doc["recomputed_calibration_digest"] == doc["calibration_digest"],
-                where + ".recomputed_calibration_digest: the sealed parameters are not those "
-                "the A/A and preparation originals give")
-        for member in doc["members"]:
-            level = member_level(declared[member["member_id"]])
-            for ident, case in member["cases"].items():
-                group = calibration_group(calibration, ident, member["cpu_groups"].get(ident) or "")
-                expected = None
-                if level not in (None, "preparation") and group is not None \
-                        and group["a0"] is not None:
-                    expected = format_rational(target_ms(group, level))
-                require(case["target_ms"] == expected,
-                        where + ".members.%s.cases.%s.target_ms: not the frozen target"
-                        % (member["member_id"], ident))
-        tallies, groups, qualifies, ready = compute_readiness(cohort, calibration,
-                                                              doc["members"])
-        for member in doc["members"]:
-            require(member["qualifies"] == qualifies[member["member_id"]],
-                    where + ".members.%s.qualifies: does not match the recomputation"
-                    % member["member_id"])
-        require(doc["tallies"] == tallies, where + ".tallies: do not match the recomputation")
-        require(doc["groups"] == groups, where + ".groups: do not match the recomputation")
-        require(doc["ready"] == ready, where + ".ready: does not match the recomputation")
+        validate_readiness_totals(doc, where, cohort, calibration)
     return doc
 
 
@@ -5016,3 +5030,9 @@ def write_bytes(doc, name):
     validate = CONTRACTS[name][2]
     validate(doc)
     return document_bytes(doc)
+
+
+# Register separately named local contracts after the shared measurement contracts.
+from . import executorcontracts as _executorcontracts
+import sys as _sys
+_executorcontracts.register(_sys.modules[__name__])

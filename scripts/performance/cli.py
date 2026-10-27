@@ -169,7 +169,7 @@ from perflab import release, report, runner  # noqa: E402
 from perflab import transport  # noqa: E402
 from perflab import suite as suite_module  # noqa: E402
 from perflab.compare import InvalidInput, compare  # noqa: E402
-from perflab.values import ContractError, document_bytes  # noqa: E402
+from perflab.values import ContractError, document_bytes, require  # noqa: E402
 
 EXIT_INVALID = 2
 EXIT_FAIL = 3
@@ -793,10 +793,15 @@ def cmd_telemetry_bind_attempt(args):
 
 
 def cmd_telemetry_contained_build(args):
-    from perflab import telemetrybuild
+    from perflab import telemetrybuild, hostlock
     try:
-        telemetrybuild.run(args.source, args.output, args.image, args.scratch_fs,
-                           args.source_sha, args.seconds)
+        with hostlock.MachineLock() as lease:
+            lease.guard()
+            telemetrybuild.run(args.source, args.output, args.image, args.scratch_fs,
+                               args.source_sha, args.seconds)
+            lease.confirm_clean()
+    except hostlock.Refused as error:
+        return _refuse("unavailable", error.reason, str(error))
     except (ContractError, OSError, subprocess.SubprocessError) as error:
         return _refuse("invalid", "telemetry_build_failed", str(error))
     return 0
@@ -928,6 +933,7 @@ def cmd_telemetry_collect(args):
 
 
 def cmd_build(args):
+    from perflab import hostlock
     try:
         with open(args.plan, "rb") as stream:
             plan = contracts.read_json(stream.read(contracts.limits.MAX_JSON_BYTES + 1), "run",
@@ -942,7 +948,13 @@ def cmd_build(args):
                                  zigbuild_bin=args.zigbuild_bin, build_image=args.build_image,
                                  docker=args.docker, deadline_unix_ms=args.deadline_unix_ms,
                                  build_cache=args.build_cache)
-        doc = builder.build()
+        with hostlock.MachineLock() as lease:
+            lease.guard()
+            doc = builder.build()
+            if doc["cleanup"]["status"] == "removed":
+                lease.confirm_clean()
+    except hostlock.Refused as error:
+        return _refuse("unavailable", error.reason, str(error))
     except builds.Unavailable as error:
         return _refuse("unavailable", error.reason, str(error))
     except (ContractError, OSError) as error:
@@ -964,8 +976,13 @@ def cmd_capabilities(args):
         if args.verify_scratch_enforcement:
             # The fill shares the scratch filesystem with every shard of this machine.
             lock = runner.machine_lock()
+            lock.guard()
         doc = capability.report(loaded.doc, args.docker, args.scratch,
                                 args.verify_scratch_enforcement)
+        if lock is not None:
+            fill = doc["linux_container"]["scratch"]["fill"]
+            if fill is None or fill["cleanup"] is None:
+                lock.confirm_clean()
     except runner.Unavailable as error:
         return _refuse("unavailable", error.reason, str(error))
     except (ContractError, OSError) as error:
@@ -1300,7 +1317,21 @@ def cmd_ci_credentials(args):
     return 0
 
 
-def cmd_ci_scratch(args):
+def cmd_ci_scratch(args, *, lock_directory=None):
+    from perflab import hostlock
+    try:
+        with hostlock.MachineLock(lock_directory) as lease:
+            lease.guard()
+            code = _ci_scratch_locked(args)
+            if code == 0:
+                lease.confirm_clean()
+            return code
+    except hostlock.Refused as error:
+        return _refuse("unavailable", error.reason, "%s; retained recovery paths: image=%s "
+                       "mount=%s ownership=%s" % (error, args.image, args.mount, args.telemetry_owner))
+
+
+def _ci_scratch_locked(args):
     try:
         if args.cleanup:
             if args.telemetry_owner:
@@ -1372,10 +1403,91 @@ def cmd_harness_digest(args):
     return 0
 
 
+
+def cmd_executor(args):
+    """Operator controller; all executable authority comes from this installed checkout."""
+    from perflab import executor, localcalibration
+    try:
+        config = executor.load_config(args.config)
+        if args.operation == "cohort-declare":
+            require(args.cohort_id and args.start_date and args.output and args.group,
+                    "cohort-declare needs --cohort-id, --start-date, --group and --output")
+            doc = localcalibration.declare(config, args.cohort_id,
+                [calibration.parse_group(group) for group in args.group], args.start_date,
+                args.days, args.preparation_members)
+            _emit(contracts.write_bytes(doc, "local-cohort-declaration"), args.output)
+            return 0
+        with executor.cancellation(), executor.Journal(config) as journal:
+            if args.operation == "submit":
+                require(args.base and args.head and args.key, "submit needs exact --base, --head and --key")
+                git = executor.source_repository(config)
+                base, head = args.base, args.head
+                # PR/release metadata is an explicit trusted operator submission. Never read
+                # candidate workflows or run hooks on this controller.
+                if args.kind == "pr":
+                    parents = git.parents(git.resolve(head, "PR merge"))
+                    require(len(parents) == 2 and parents[0] == git.resolve(base, "PR base")
+                            and args.pr_head and parents[1] == git.resolve(args.pr_head, "PR head"),
+                            "PR submission must bind the exact merge and its ordered parents")
+                elif args.kind == "release":
+                    require(args.tag, "release submission needs --tag")
+                    tagged, _, _, predecessor = gitrefs.release_baseline(git, args.tag)
+                    require(git.resolve(head, "release") == tagged and git.resolve(base, "predecessor") == predecessor,
+                            "release submission disagrees with the tag/predecessor rule")
+                doc = journal.submit(args.work, base, head, args.key, args.kind)
+                print(json.dumps(doc, sort_keys=True))
+            elif args.operation in ("cycle", "service"):
+                if args.operation == "service" and config["poll_main"]:
+                    journal.poll(args.work)
+                print(journal.cycle())
+            elif args.operation == "status":
+                print(json.dumps([journal.state(i) for i in journal.names()], sort_keys=True))
+            elif args.operation == "verify":
+                require(args.request_id, "verify needs --request-id")
+                print(json.dumps(executor.verify_original(journal, args.request_id)[2], sort_keys=True))
+            else:
+                require(args.cohort, "local calibration operation needs --cohort")
+                cohort = contracts.read_json(executor.read(args.cohort), "local-cohort-declaration")
+                sealed = (contracts.read_json(executor.read(args.parameters), "calibration-parameters")
+                          if args.parameters else None)
+                if args.operation == "calibration-dispatch":
+                    print(json.dumps(localcalibration.dispatch_due(journal, cohort, sealed)))
+                else:
+                    require(args.output, "calibration output needs --output")
+                    runs, refused, hist = localcalibration.collect(journal, cohort, sealed)
+                    if args.operation == "calibration-prepare":
+                        doc = calibration.prepare(cohort, runs, calibration.tolerances_of(runs, cohort))
+                        contract = "calibration-parameters"
+                    else:
+                        require(sealed is not None, "readiness needs --parameters")
+                        doc = calibration.readiness(cohort, sealed, runs, refused, hist)
+                        contract = "local-readiness-assessment"
+                    _emit(contracts.write_bytes(doc, contract), args.output)
+        return 0
+    except executor.JournalBusy as error:
+        return _refuse("unavailable", "executor_busy", str(error))
+    except (ContractError, OSError, subprocess.SubprocessError, executor.hostlock.Refused) as error:
+        return _refuse("unavailable", "executor_refused", str(error))
+
+
 def parser():
     top = argparse.ArgumentParser(prog="cli.py", description=__doc__.split("\n\n")[0])
     commands = top.add_subparsers(dest="command")
     commands.required = True
+
+    execution = commands.add_parser("executor", help="independent local or GitHub performance backend")
+    execution.add_argument("--config", required=True)
+    execution.add_argument("operation", choices=("submit", "cycle", "service", "status", "verify",
+        "cohort-declare", "calibration-dispatch", "calibration-prepare", "readiness"))
+    execution.add_argument("--work", choices=("core", "telemetry", "profile"), default="core")
+    execution.add_argument("--kind", choices=("manual", "pr", "release"), default="manual")
+    for option in ("base", "head", "key", "pr-head", "tag", "request-id", "cohort", "parameters",
+                   "cohort-id", "start-date", "output"):
+        execution.add_argument("--" + option)
+    execution.add_argument("--group", nargs=3, action="append")
+    execution.add_argument("--days", type=int, default=7)
+    execution.add_argument("--preparation-members", type=int, default=2)
+    execution.set_defaults(handler=cmd_executor)
 
     listing = commands.add_parser("list", help="validate and expand a registry")
     listing.add_argument("--suite", default="fixtures/performance/suite.toml")
