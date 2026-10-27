@@ -317,8 +317,8 @@ fn install_sh_ends_with_the_next_steps_and_the_path_line_for_the_shell() {
     );
 
     // A bin directory with a space, a `'` and a `\`: fish reads its line as one path argument,
-    // the `'` and `\` escaped the way `af doctor` writes them; bash's double quotes keep the
-    // space. Neither line is run.
+    // the `'` and `\` escaped the way `af doctor` writes them; bash's single quotes keep the
+    // space and the `\`, the `'` written `'\''`. Neither line is run.
     let spaced = sandbox.path("My Tools/it's\\bin");
     let spaced_env = spaced.to_str().unwrap();
     let fish = installer.run(
@@ -343,7 +343,11 @@ fn install_sh_ends_with_the_next_steps_and_the_path_line_for_the_shell() {
     assert!(bash.status.success(), "{}", err(&bash));
     assert_eq!(
         ending(&bash)[5],
-        format!("  export PATH=\"{spaced_env}:$PATH\"   # add to ~/.bashrc: af is not on PATH yet")
+        format!(
+            "  export PATH='{}/My Tools/it'\\''s\\bin':\"$PATH\"   # add to ~/.bashrc: af is not on \
+             PATH yet",
+            spaced.ancestors().nth(2).unwrap().display()
+        )
     );
 
     // bash: the export line, naming the rc file.
@@ -355,7 +359,7 @@ fn install_sh_ends_with_the_next_steps_and_the_path_line_for_the_shell() {
     assert_eq!(
         lines[5],
         format!(
-            "  export PATH=\"{}:$PATH\"   # add to ~/.bashrc: af is not on PATH yet",
+            "  export PATH='{}':\"$PATH\"   # add to ~/.bashrc: af is not on PATH yet",
             bin.display()
         )
     );
@@ -378,6 +382,71 @@ fn install_sh_ends_with_the_next_steps_and_the_path_line_for_the_shell() {
         assert_eq!(lines.len(), 5, "{lines:#?}");
         assert_eq!(lines[1..], next, "{lines:#?}");
         assert!(!out(&quiet).contains("PATH"), "{}", out(&quiet));
+    }
+}
+
+/// The directory a POSIX shell word of single-quoted runs and `\`-escaped characters spells, and
+/// the text after it; `None` where the word leaves a quote open. Nothing is run to read it.
+fn posix_word(line: &str) -> Option<(String, &str)> {
+    let mut word = String::new();
+    let mut rest = line;
+    loop {
+        if let Some(quoted) = rest.strip_prefix('\'') {
+            let end = quoted.find('\'')?;
+            word.push_str(&quoted[..end]);
+            rest = &quoted[end + 1..];
+        } else if let Some(escaped) = rest.strip_prefix('\\') {
+            let c = escaped.chars().next()?;
+            word.push(c);
+            rest = &escaped[c.len_utf8()..];
+        } else {
+            return Some((word, rest));
+        }
+    }
+}
+
+/// Issue #358: the bash and zsh lines keep a bin directory literal when pasted, as `af doctor`'s
+/// do. A `$HOME`, a `$(…)`, a backtick, `"`, `'` and `\` in it are single-quoted, each `'` written
+/// `'\''`, and only the `$PATH` after the directory expands. The lines are read, and parsed by
+/// `sh -n`, never run.
+#[test]
+fn install_sh_bash_and_zsh_path_lines_keep_the_directory_literal() {
+    let Some(host) = install_host() else {
+        return;
+    };
+    let installer = Installer::new();
+    let sandbox = &installer.sandbox;
+    sandbox.publish_for("0.8.2", host);
+    write(
+        &sandbox.release_dir("0.8.2").join("SHA256SUMS.minisig"),
+        "signature\n",
+    );
+    let hostile = sandbox.path("h/$HOME/$(touch x)/`id`/\"q\"/it's\\bin");
+    let hostile_env = hostile.to_str().unwrap();
+    let root = hostile.ancestors().nth(6).unwrap().display().to_string();
+    assert_eq!(format!("{root}/h"), sandbox.path("h").display().to_string());
+    for (shell, rc) in [("/bin/bash", "~/.bashrc"), ("/usr/bin/zsh", "~/.zshrc")] {
+        let install = installer.run(
+            &installer.with_minisign,
+            &[("SHELL", shell), ("XDG_BIN_HOME", hostile_env)],
+        );
+        assert!(install.status.success(), "{}", err(&install));
+        let lines = ending(&install);
+        let tail = format!(":\"$PATH\"   # add to {rc}: af is not on PATH yet");
+        assert_eq!(
+            lines[5],
+            format!("  export PATH='{root}/h/$HOME/$(touch x)/`id`/\"q\"/it'\\''s\\bin'{tail}"),
+            "{lines:#?}"
+        );
+        let command = lines[5].trim_start().split("   # ").next().unwrap();
+        let (directory, rest) = posix_word(command.strip_prefix("export PATH=").unwrap()).unwrap();
+        assert_eq!(directory, hostile_env, "{command}");
+        assert_eq!(rest, ":\"$PATH\"", "{command}");
+        let parsed = std::process::Command::new("/bin/sh")
+            .args(["-n", "-c", command])
+            .output()
+            .unwrap();
+        assert!(parsed.status.success(), "{command}: {parsed:?}");
     }
 }
 

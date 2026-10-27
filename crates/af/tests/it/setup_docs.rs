@@ -287,9 +287,12 @@ fn readme_explains_findings_that_look_alike_with_commands_that_parse() {
 /// exception to the one-document rule instead of promising one document for every `--json`.
 /// Every other `--help` describes its `--json` as one document; the recorded tail stream
 /// (`telemetry_golden/tail.jsonl`) is several lines, each its own object, and not one document.
-/// A failed tail ends the stream with one `af/error@1` line after the records it printed
-/// (`telemetry_tail_refuses_interior_corruption_of_a_live_segment`), and both surfaces say so,
-/// as `docs/telemetry.md` does.
+/// A tail that fails with an error ends the stream with one `af/error@1` line after the records
+/// it printed (`telemetry_tail_refuses_interior_corruption_of_a_live_segment`); a run two Stores
+/// record exits 2 with no further stdout line, the Stores named on stderr
+/// (`telemetry_tail_refuses_a_second_store_that_appears_while_following`). Both surfaces say
+/// which is which, as `docs/telemetry.md` does, and none promises the error line for every
+/// failure.
 #[test]
 fn json_guidance_names_telemetry_tail_as_the_one_json_lines_stream() {
     let mut streams = Vec::new();
@@ -358,8 +361,12 @@ fn json_guidance_names_telemetry_tail_as_the_one_json_lines_stream() {
     );
     assert!(
         agents.contains(
-            "A tail that fails, even after records, ends the stream with one `af/error@1` line \
-             and exits nonzero, so tell each line by its `schema`."
+            "A tail that fails with an error, such as a segment it cannot read, even after \
+             records, ends the stream with one `af/error@1` line carrying its exit code, so tell \
+             each line by its `schema`. A run two Stores record is no such error: shared when \
+             tail starts or by a second Store that appears while it follows, tail exits 2 with \
+             no further line on stdout and names both Stores for `--store` on stderr, so check \
+             the exit code too."
         ),
         "{agents}"
     );
@@ -375,17 +382,37 @@ fn json_guidance_names_telemetry_tail_as_the_one_json_lines_stream() {
     );
     assert!(
         collapsed(&topic).contains(
-            "A tail that fails, even after records, ends the stream with one af/error@1 line \
-             and exits nonzero, so tell each line by its `schema`."
+            "A tail that fails with an error, such as a segment it cannot read, even after \
+             records, ends the stream with one af/error@1 line carrying its exit code, so tell \
+             each line by its `schema`. A run two Stores record is no such error: shared when \
+             tail starts or by a second Store that appears while it follows, tail exits 2 with \
+             no further line on stdout and names both Stores for --store on stderr, so check the \
+             exit code too."
         ),
         "{topic}"
     );
     let telemetry = collapsed(&workspace_file("docs/telemetry.md"));
     assert!(
         telemetry.contains(
-            "a tail that fails, even after records, ends the stream with one `af/error@1` line"
+            "a tail that fails with an error, such as a segment it cannot read, even after \
+             records, ends the stream with one `af/error@1` line \
+             ([`schemas/error-v1.json`](../schemas/error-v1.json)) carrying its exit code. A run \
+             two Stores record is no such error: tail exits 2 with no further line on stdout and \
+             names both Stores for `--store` on stderr."
         ),
         "docs/telemetry.md"
     );
+    // No surface promises the error line for every failed tail.
+    for (surface, text) in [
+        ("README.md", agents.as_str()),
+        ("af help json", collapsed(&topic).as_str()),
+        ("docs/telemetry.md", telemetry.as_str()),
+    ] {
+        assert!(
+            !text.contains("A tail that fails, even after records")
+                && !text.contains("a tail that fails, even after records"),
+            "{surface}"
+        );
+    }
     assert!(!topic.contains("always works"), "{topic}");
 }

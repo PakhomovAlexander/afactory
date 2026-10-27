@@ -119,8 +119,11 @@ verification stay. `af review show --campaign NAME FROM` shows the group, and
 A command whose `--help` lists `--json` prints one versioned document under it, except
 `af telemetry tail --json`: it streams JSON Lines, one `af/telemetry-tail@1` object per line as
 each record is written, until the segments it follows are sealed, so read it line by line, never
-as one document. A tail that fails, even after records, ends the stream with one `af/error@1`
-line and exits nonzero, so tell each line by its `schema`. `af review report` takes
+as one document. A tail that fails with an error, such as a segment it cannot read, even after
+records, ends the stream with one `af/error@1` line carrying its exit code, so tell each line by
+its `schema`. A run two Stores record is no such error: shared when tail starts or by a second
+Store that appears while it follows, tail exits 2 with no further line on stdout and names both
+Stores for `--store` on stderr, so check the exit code too. `af review report` takes
 `--format json` instead. Not every reading command has a JSON form: `af review ledger`,
 `af review show` and `af config paths`, for example, print text only. Exit codes are stable
 (`af help json`, `af help exit-codes`). A Provider login is a human's:

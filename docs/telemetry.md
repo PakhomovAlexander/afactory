@@ -531,9 +531,11 @@ gone without a sealed file tail could validate or a recovery tail itself complet
 reader's recovery renamed it `.corrupt`, tail names that `.corrupt` file; it is never taken as
 sealed. `--json` prints one
 `af/telemetry-tail@1` object per line
-([`schemas/telemetry-tail-v1.json`](../schemas/telemetry-tail-v1.json)); a tail that fails,
-even after records, ends the stream with one `af/error@1` line
-([`schemas/error-v1.json`](../schemas/error-v1.json)) and exits nonzero. With `RUN` tail first
+([`schemas/telemetry-tail-v1.json`](../schemas/telemetry-tail-v1.json)); a tail that fails with
+an error, such as a segment it cannot read, even after records, ends the stream with one
+`af/error@1` line ([`schemas/error-v1.json`](../schemas/error-v1.json)) carrying its exit code.
+A run two Stores record is no such error: tail exits 2 with no further line on stdout and names
+both Stores for `--store` on stderr. With `RUN` tail first
 looks the run up, within `--store ID` when given: a run no Store records there exits 1 naming
 it, and nothing is followed. A run that cannot be found while a segment is unreadable is never
 called unknown, since that segment may hold it: tail names the segment and why it is unreadable

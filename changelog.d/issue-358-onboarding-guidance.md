@@ -1,6 +1,7 @@
 - Make the first-run guidance truthful (issue #358). The installer's next steps and `af --help`
-  recommend `af provider detect --apply`, as the README does, and its fish PATH line quotes the
-  bin directory as `af doctor` does, so one with a space stays one path. Beside a registered
+  recommend `af provider detect --apply`, as the README does, and its fish, bash and zsh PATH
+  lines quote the bin directory as `af doctor` does, so a space, `$`, backtick, quote or `\` in it
+  stays one literal path when the line is pasted. Beside a registered
   Provider that works, `af doctor` lists unregistered contexts as optional (`logged in` or `logged out` only
   where its status probe already asked, else `not probed`) instead of a warning whose
   `detect --apply` fix cannot clear it, and probes nothing more
@@ -9,7 +10,8 @@
   `af review campaigns --json` prints the `--format json` document, and the two together are a
   usage error. The README and `af help json` claim `--json` only for commands whose `--help` lists
   it, promise one document only where one is printed, and name `af telemetry tail --json` as a
-  JSON Lines stream, one `af/telemetry-tail@1` object per line, that a failing tail ends with one
-  `af/error@1` line; the README, with `af review group --help`, explains that Findings that look
+  JSON Lines stream, one `af/telemetry-tail@1` object per line, that a tail failing with an error
+  ends with one `af/error@1` line, while a run two Stores record exits 2 with only stderr to say
+  so; the README, with `af review group --help`, explains that Findings that look
   alike stay apart until an operator groups them
   ([ADR-0006](../docs/adr/0006-finding-identity-is-path-independent.md)).

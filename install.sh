@@ -265,8 +265,11 @@ case ":$PATH:" in
       # escapes, so a space or `$` in the directory stays one path argument.
       fish) fish_bin=$(printf '%s' "$BIN" | sed -e 's/\\/\\\\/g' -e "s/'/\\\\'/g")
         printf "  fish_add_path '%s'   # af is not on PATH yet\n" "$fish_bin" ;;
-      zsh) printf '  export PATH="%s:$PATH"   # add to ~/.zshrc: af is not on PATH yet\n' "$BIN" ;;
-      bash) printf '  export PATH="%s:$PATH"   # add to ~/.bashrc: af is not on PATH yet\n' "$BIN" ;;
+      # A POSIX literal, as `af doctor` writes it: the directory single-quoted, each `'` in it
+      # written `'\''`, so a `$`, `` ` ``, `"` or `\` stays text; only the `$PATH` after it expands.
+      zsh|bash) sh_bin=$(printf '%s' "$BIN" | sed -e "s/'/'\\\\''/g")
+        rc_file="~/.${login_shell##*/}rc"
+        printf "  export PATH='%s':\"\$PATH\"   # add to %s: af is not on PATH yet\n" "$sh_bin" "$rc_file" ;;
       *) printf '  add %s to PATH: af is not on PATH yet\n' "$BIN" ;;
     esac ;;
 esac
