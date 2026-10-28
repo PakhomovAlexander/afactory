@@ -272,8 +272,8 @@
   },
   {
    "path": "fixtures/performance/cli/tui-open.py",
-   "sha256": "sha256:3d09b756f12d2b667c95c13b06fbd6c77a1ff48a67dc87cbbdebacc34318b9af",
-   "size": 17852
+   "sha256": "sha256:6dcfa5aa44654a316db31c347be160049066ae2e583036928a5dacd35f8e88d1",
+   "size": 18074
   },
   {
    "path": "fixtures/performance/cohort-quick-20261023-hosted-v6.json",
@@ -3206,7 +3206,7 @@
    "size": 6777
   }
  ],
- "harness_digest": "sha256:01780003adc776059f2de968d5b05444d22747f7d41c9e08638bf82b429b079e",
+ "harness_digest": "sha256:390c4fa071cb01e13cef3fceeb809dd2206f38031342d2ec978d8502b570c00f",
  "inner_metric": "pending",
  "inner_metric_reason": "the inner wall_ms metric is recorded in every Measurement but no staged objective selects it until the guard's real kernel integration and tampered-candidate tests are accepted on the sealed source and a reviewed human change installs and selects it",
  "objective_metric": "elapsed_ms",

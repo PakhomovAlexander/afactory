@@ -217,16 +217,19 @@ def listed(token, exclude, born):
     return found
 
 
-def settle_listed(token, exclude, deadline, born):
-    """Kill every process `listed` names until none is, or until `deadline`: whether one was
-    found, and whether none is left."""
+def settle_listed(token, exclude, seconds, born):
+    """Kill every process `listed` names until none is: whether one was found, and whether none
+    is left within `seconds` of the first kill. The listing has a bound of its own."""
     found = False
+    deadline = None
     while True:
         pids = listed(token, exclude, born)
         if not pids:
             return found, True
         found = True
-        if time.monotonic() >= deadline:
+        if deadline is None:
+            deadline = time.monotonic() + seconds
+        elif time.monotonic() >= deadline:
             return found, False
         for pid in pids:
             try:
@@ -247,7 +250,8 @@ def reap(child):
 def end(child, watch, token, deadline, born):
     """Kill the running session, observe its leader's exit, settle its group, reap the leader,
     and, whether or not the leader was reaped before, clear what left the group; whether every
-    step was confirmed before `deadline`."""
+    step was confirmed, the group's before `deadline` and what left it within CLEANUP_SECONDS
+    of its first kill."""
     if child.returncode is None:
         kill_group(child.pid)
         while not watch.seen():
@@ -257,7 +261,7 @@ def end(child, watch, token, deadline, born):
         if not settle(child.pid, deadline):
             return False
         reap(child)
-    return settle_listed(token, {child.pid}, deadline, born)[1]
+    return settle_listed(token, {child.pid}, CLEANUP_SECONDS, born)[1]
 
 
 def drain(master, timeout):
@@ -374,13 +378,13 @@ def measure(argv):
         if not settle(child.pid, cleanup_by):
             raise Unconfirmed("a process of the browser's session survived its kill")
         code = reap(child)
-        escaped, cleared = settle_listed(token, {child.pid},
-                                         time.monotonic() + CLEANUP_SECONDS, born)
+        escaped, cleared = settle_listed(token, {child.pid}, CLEANUP_SECONDS, born)
         settled = True
         if not cleared:
             raise Unconfirmed("a process the browser started survived its kill")
+        held_by = time.monotonic() + CLEANUP_SECONDS
         while open_terminal:
-            if time.monotonic() >= cleanup_by:
+            if time.monotonic() >= held_by:
                 raise Unconfirmed("a process outside the browser's group still holds its "
                                   "terminal")
             open_terminal = drain(master, 0.02)
