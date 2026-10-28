@@ -112,7 +112,7 @@ fn incomplete_native_observation_survives_cas_outage_and_both_admission_and_work
 }
 
 /// A Worker its Attempt wall ended during a CAS outage: the wall end cannot be written, and the
-/// counters it reported are retained before it is tried (ADR-0253, ADR-0068).
+/// counters it reported are retained before it is tried (ADR-0257, ADR-0068).
 #[test]
 fn a_wall_end_during_a_cas_outage_keeps_the_reported_usage() {
     recovery_cases(&[1], false, true, &mut vec![]);

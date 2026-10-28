@@ -2,7 +2,7 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "urn:af:schema:task-report:3",
   "title": "af/task-report@3",
-  "description": "What `af task report --json` prints (ADR-0142): what recorded Tasks cost and how they ran, read from one Store and never estimated. A figure the Store does not record is absent, never zero or null. Tasks appear in the order the command named them, each numbered by its position (its round), and `pipelines` lists the distinct pipelines their current plans run, in first-use order. A Worker is named only by Provider kind, model and effort: every object is closed, so no Provider registry label or principal, path, credential, prompt or Worker output can appear. Totals are the sums of the Tasks' figures; a sum is absent when any Task does not record its part. Version 3: its Task state is task-state version 2, whose causes add `provider_environment` (provider_failed) and `attempt_wall` (exhausted) (ADR-0253); the previous version is neither printed nor read.",
+  "description": "What `af task report --json` prints (ADR-0142): what recorded Tasks cost and how they ran, read from one Store and never estimated. A figure the Store does not record is absent, never zero or null. Tasks appear in the order the command named them, each numbered by its position (its round), and `pipelines` lists the distinct pipelines their current plans run, in first-use order. A Worker is named only by Provider kind, model and effort: every object is closed, so no Provider registry label or principal, path, credential, prompt or Worker output can appear. Totals are the sums of the Tasks' figures; a sum is absent when any Task does not record its part. Version 3: its Task state is task-state version 2, whose causes add `provider_environment` (provider_failed) and `attempt_wall` (exhausted) (ADR-0257); the previous version is neither printed nor read.",
   "type": "object",
   "additionalProperties": false,
   "required": [
@@ -483,7 +483,7 @@
       ],
       "properties": {
         "class": {
-          "description": "The failed Attempt's typed retry feedback code; `attempt_wall` for an Attempt its wall ended, whatever feedback its Worker's failure produced (ADR-0253); `abandoned` for an Attempt recovery settled; `unclassified` for a failure that recorded no feedback.",
+          "description": "The failed Attempt's typed retry feedback code; `attempt_wall` for an Attempt its wall ended, whatever feedback its Worker's failure produced (ADR-0257); `abandoned` for an Attempt recovery settled; `unclassified` for a failure that recorded no feedback.",
           "enum": [
             "provider_failure",
             "process_failure",

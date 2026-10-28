@@ -619,6 +619,32 @@ class ContainerBuild(TempDir):
         options.setdefault("docker", self.docker)
         return builds.Builder(self.repo.path, plan, None, registry(), **options)
 
+    def test_local_bounded_build_uses_private_cache_and_enforces_container_and_disk_limits(self):
+        builder = self.builder(self.linux_plan("local_bounded", image=IMAGE), bounded_container=True)
+        doc = builder.build()
+        self.assertEqual(doc["cleanup"]["status"], "removed")
+        self.assertTrue(builder.layout.private_cargo_home)
+        calls = build_fixtures.docker_calls(self.docker_dir)
+        self.assertTrue(any("{{json .Config.Volumes}}" in call for call in calls))
+        steps = [call for call in calls if call[0] == "run" and "--name" in call
+                 and call[call.index("--name") + 1].startswith("af-perf-build-")]
+        self.assertTrue(steps)
+        for call in steps:
+            for flag, value in (("--memory", "8g"), ("--memory-swap", "8g"),
+                                ("--pids-limit", "512"), ("--ipc", "none"),
+                                ("--log-driver", "none"),
+                                ("--ulimit", "fsize=8589934592:8589934592")):
+                self.assertEqual(call[call.index(flag) + 1], value)
+        # Private Cargo/home/tmp data counts alongside targets, even outside worktrees.
+        os.mkdir(builder.layout.home)
+        with open(os.path.join(builder.layout.home, "candidate-output"), "wb") as stream:
+            stream.write(b"x" * 128)
+        builder.budget.worktree_limit = 1
+        self.assertIsNotNone(builder.budget.exceeded())
+        with self.assertRaisesRegex(ContractError, "private Cargo"):
+            self.builder(self.linux_plan("shared_cache", image=IMAGE), bounded_container=True,
+                         cargo_home=self.path("shared"))
+
     def test_every_compile_runs_without_network_in_its_own_container_of_the_pinned_image(self):
         builder = self.builder(self.linux_plan("contained", image=IMAGE))
         doc = builder.build()

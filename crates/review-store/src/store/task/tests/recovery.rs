@@ -505,7 +505,7 @@ fn recovery_fixture_dispatch_refuses_deadline_and_later_after_cold_reopen() {
 }
 
 /// The wall-end evidence of one Attempt: its partial candidate and its wall end, produced by
-/// `attempt` at node `by`, kept in the sidecar under `attempt` (ADR-0253). Returns their IDs.
+/// `attempt` at node `by`, kept in the sidecar under `attempt` (ADR-0257). Returns their IDs.
 fn keep_wall_end(f: &mut Fixture, lease: &TaskLease, attempt: &str, by: &str) -> (String, String) {
     use review_core::task::attempt_wall::*;
     let run = task_run_id(lease.task_id()).unwrap();
@@ -569,7 +569,7 @@ fn keep_wall_end(f: &mut Fixture, lease: &TaskLease, attempt: &str, by: &str) ->
 }
 
 /// A writer lost after its Attempt wall ended an Attempt, and after it kept the wall end, leaves
-/// its successor that wall end (ADR-0253): the Attempt settles failed at its wall with the wall
+/// its successor that wall end (ADR-0257): the Attempt settles failed at its wall with the wall
 /// end and the partial tree it names, counts as a failed Attempt and spends no recovery
 /// allowance, where without it the Attempt reads abandoned by a lost writer.
 #[test]
@@ -622,7 +622,7 @@ fn a_lost_writers_wall_ended_attempt_settles_failed_from_its_kept_wall_end() {
     });
 }
 
-/// A kept wall end roots its evidence against collection (ADR-0253): a writer lost after it kept
+/// A kept wall end roots its evidence against collection (ADR-0257): a writer lost after it kept
 /// the wall end, whose lease then expired, leaves a Task that `af task gc --apply` may sweep
 /// before anyone recovers it, and the sweep keeps the wall end and the partial tree it names,
 /// so the successor still settles the Attempt failed at its wall.

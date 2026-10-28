@@ -1431,7 +1431,7 @@ impl TaskProjection {
     }
 }
 
-/// The `af/TaskAttemptWallEnd@1` a lost writer kept for one of its Attempts (ADR-0253): it
+/// The `af/TaskAttemptWallEnd@1` a lost writer kept for one of its Attempts (ADR-0257): it
 /// must be that Attempt's own record, produced by it, naming its Task, node and Attempt.
 fn recorded_wall_end(
     cas: &Cas,
@@ -1473,7 +1473,7 @@ impl EventStore {
     /// as abandoned by a lost writer and charged its observed usage, or zero with its usage
     /// unknown (ADR-0143, ADR-0209), unless its writer kept the wall end of an Attempt its wall
     /// ended: that one settles failed at its wall with the wall end and its partial tree
-    /// (ADR-0253). Only a durable prepare with no start record may release its credit.
+    /// (ADR-0257). Only a durable prepare with no start record may release its credit.
     pub fn recover_task_attempts(
         &mut self,
         cas: &Cas,
@@ -1579,7 +1579,7 @@ impl EventStore {
                     .transpose()?;
                 // An Attempt its wall ended keeps its wall end before settlement; its successor
                 // settles it failed at its wall, as its writer would have, with the wall end and
-                // the partial tree it names, and spends no recovery allowance (ADR-0253).
+                // the partial tree it names, and spends no recovery allowance (ADR-0257).
                 let wall_end = self
                     .task_attempt_wall_end(&task_run_id(&lease.task_id)?, id)?
                     .map(|wall_end_id| {

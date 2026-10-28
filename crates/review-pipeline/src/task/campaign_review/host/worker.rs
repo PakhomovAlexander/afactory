@@ -365,7 +365,7 @@ impl CampaignReviewTaskHost<'_, '_> {
             // A transient ending lets the runtime call again within this Attempt (ADR-0208).
             result.notes = returned.notes;
             // An environment failure is its own closed class, never an account change
-            // (ADR-0253).
+            // (ADR-0257).
             result.notes.environment |= returned.native_failure
                 == Some(review_runner::native_failure::NativeFailureKind::Environment);
             result.usage = returned.usage;

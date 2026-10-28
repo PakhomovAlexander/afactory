@@ -310,7 +310,7 @@ fn an_inspection_carries_the_state_its_failures_and_its_gate() {
     );
 }
 
-/// `af/task-inspection@14` (ADR-0253): an implementer its Attempt wall ended reads
+/// `af/task-inspection@14` (ADR-0257): an implementer its Attempt wall ended reads
 /// `exhausted/attempt_wall`, lists its wall end with the partial tree it kept, a plan lists each
 /// Worker slot's Attempt wall beside its model, and a Task that continues a partial tree names
 /// it; a wall end that names its partial tree by anything but a digest, a slot without its wall

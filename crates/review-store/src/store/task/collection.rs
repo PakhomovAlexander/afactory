@@ -355,7 +355,7 @@ impl EventStore {
             for row in rows {
                 runs.insert(row?);
             }
-            // A wall end is kept before anything else of its Attempt is published (ADR-0253):
+            // A wall end is kept before anything else of its Attempt is published (ADR-0257):
             // a lost writer's Task may have nothing else that names it or its partial tree.
             let mut ends = self
                 .conn

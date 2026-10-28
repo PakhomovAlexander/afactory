@@ -581,7 +581,7 @@
       }
     },
     "attempt_wall_ends": {
-      "description": "Each Attempt a Worker's Attempt wall ended, in log order (ADR-0253): the af/TaskAttemptWallEnd@1 its settlement keeps among its raw evidence and, for a source-writing Worker, the af/TaskPartialCandidate@1 its tree was sealed as. Never an output: no seal, check, review, acceptance or delivery reads one. Absent when there is none.",
+      "description": "Each Attempt a Worker's Attempt wall ended, in log order (ADR-0257): the af/TaskAttemptWallEnd@1 its settlement keeps among its raw evidence and, for a source-writing Worker, the af/TaskPartialCandidate@1 its tree was sealed as. Never an output: no seal, check, review, acceptance or delivery reads one. Absent when there is none.",
       "type": "array",
       "minItems": 1,
       "items": {
@@ -701,7 +701,7 @@
       }
     },
     "slots": {
-      "description": "Each Worker slot of the recorded plan beside its binding and its Attempt wall, in the order `af task plan` lists them (ADR-0253): the slot, its captured Worker package, a model binding's Provider, model and effort or a command Worker, and the longest `wall_ms_per_attempt` the compiled graph gives a node the slot runs as, null for a slot no node runs. Present with `plan` and `graph` (`af task plan`, `start`, `explain` and `run --from` without --execute).",
+      "description": "Each Worker slot of the recorded plan beside its binding and its Attempt wall, in the order `af task plan` lists them (ADR-0257): the slot, its captured Worker package, a model binding's Provider, model and effort or a command Worker, and the longest `wall_ms_per_attempt` the compiled graph gives a node the slot runs as, null for a slot no node runs. Present with `plan` and `graph` (`af task plan`, `start`, `explain` and `run --from` without --execute).",
       "type": "array",
       "items": {
         "type": "object",
@@ -1271,7 +1271,7 @@
       "$ref": "urn:af:schema:task-input-bindings:1"
     },
     "continues": {
-      "description": "What a continued Task continues (ADR-0212): the Task and review round it was planned from with `af task run NEW --from TASK` or a Task file's `continue` table, that Task's result, the reviewed candidate Snapshot this Task reads as its source, and the af/TaskReviewFindings@1 artifact its implementer receives with the number of findings it holds. Absent for a Task that continues nothing; provenance, never authority. A Task planned from a Task that recorded no review round continues the partial tree an Attempt wall left (ADR-0253): it names the continued Task, the node and Attempt its wall stopped, the af/TaskAttemptWallEnd@1 record its provenance keeps, the af/TaskPartialCandidate@1 and the Snapshot of the tree this Task reads; no findings travel with it.",
+      "description": "What a continued Task continues (ADR-0212): the Task and review round it was planned from with `af task run NEW --from TASK` or a Task file's `continue` table, that Task's result, the reviewed candidate Snapshot this Task reads as its source, and the af/TaskReviewFindings@1 artifact its implementer receives with the number of findings it holds. Absent for a Task that continues nothing; provenance, never authority. A Task planned from a Task that recorded no review round continues the partial tree an Attempt wall left (ADR-0257): it names the continued Task, the node and Attempt its wall stopped, the af/TaskAttemptWallEnd@1 record its provenance keeps, the af/TaskPartialCandidate@1 and the Snapshot of the tree this Task reads; no findings travel with it.",
       "oneOf": [
         {
           "type": "object",

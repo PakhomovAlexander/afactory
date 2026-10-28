@@ -1874,7 +1874,7 @@ candidate (ADR-0212): the candidate Snapshot of its last review round (--round N
 the new source, that round's reviewer findings and evaluator verdict are the implementer's \
 `findings` input, --goal FILE replaces the goal, and TASK's Task file is the rest. A TASK that \
 recorded no review round, but whose implementer its Attempt wall stopped \
-(`exhausted/attempt_wall`), continues from the partial tree the kernel kept of it (ADR-0253), \
+(`exhausted/attempt_wall`), continues from the partial tree the kernel kept of it (ADR-0257), \
 without findings. Without --execute it prints the plan for --confirm-plan, as `af task plan` \
 does; --from runs in the foreground and cannot be combined with --detach.\n\nResuming: a run that stopped \
 before the Task finished (Ctrl-C, SIGTERM, a closed lid, a killed process, a lost writer lease) \

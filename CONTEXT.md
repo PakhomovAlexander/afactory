@@ -233,14 +233,14 @@ receives that round's findings as one typed `af/TaskReviewFindings@1` input. It 
 carries no acceptance, verification or budget of the Task it continues (ADR-0212).
 _Avoid_: **Task Review Continuation** — that is repair evidence inside one Review; "follow-up
 Task" with the findings pasted into its goal. A Task that recorded no review round continues from
-its **Partial candidate** instead, without findings (ADR-0253).
+its **Partial candidate** instead, without findings (ADR-0257).
 
 **Partial candidate**:
 The tree a source-writing Worker left when its Attempt wall ended it, sealed exactly as a
 candidate is and kept as `af/TaskPartialCandidate@1`, named by the Attempt's
 `af/TaskAttemptWallEnd@1` with the wall and the time the Attempt took. Raw evidence of a failed
 Attempt, never an output: it is never sealed into a result, checked, reviewed, accepted or
-delivered on its own; a **Task continuation** binds it as the new Task's source (ADR-0253).
+delivered on its own; a **Task continuation** binds it as the new Task's source (ADR-0257).
 _Avoid_: "timed-out candidate", "malformed reply" for an Attempt its wall ended.
 
 **Base sibling**:
@@ -264,6 +264,25 @@ An explicit source refresh creates a new Task revision when selected fields chan
 its affected plan approval and retains the original execution allowance and all prior spend.
 
 ### Performance laboratory
+
+**Performance Executor**:
+The operator controller that selects independent local VM compute or GitHub Actions from a
+closed configuration. Local compute calls the existing laboratory with installed committed
+control, pinned containers and one machine lease; Actions dispatch preserves hosted identities.
+Every local result is advisory and carries its actual backend and persistent environment.
+
+**Local Experiment Original**:
+One atomically reserved request directory, with frozen sources/configuration and a durable
+claim before launch. Machine busy before that claim may wait; a claimed original is never
+executed again, including after a crash or ambiguous handoff. Its locally retained source
+objects, plan, samples and terminal receipts support offline admission without Actions IDs.
+A local calibration cohort declares this journal and producer before its finite originals.
+
+**Machine Experiment Fence**:
+The durable sibling of the fixed performance machine lock, created before shared work and
+settled only after confirmed cleanup and terminal evidence. Controller loss or uncertain owned
+descendants retain it across users/workspaces. Every compute process sees the same lock inode;
+private temporary namespaces cannot supply independent performance slots.
 
 **Performance Case**:
 A reviewed entry of `fixtures/performance/suite.toml`: one workload with its independent oracle,

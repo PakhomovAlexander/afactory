@@ -90,9 +90,10 @@ CONTAINER_BINARIES = {"af": "/perf/bin/af", "probe": "/perf/bin/perf-probe"}
 class Unavailable(ContractError):
     """This host cannot run the shard as frozen; nothing was sampled or substituted."""
 
-    def __init__(self, reason, detail):
+    def __init__(self, reason, detail, cleanup_confirmed=True):
         ContractError.__init__(self, detail)
         self.reason = reason
+        self.cleanup_confirmed = cleanup_confirmed
 
 
 class Stop(Exception):
@@ -347,12 +348,16 @@ def contained_host(docker, image, scratch_fs, environment, run_budget, clock, be
     record = capability.scratch_capability(scratch_fs, limit, verify_enforcement=True,
                                            host=capability.Host(clock=clock),
                                            deadline=deadline)
+    cleanup_confirmed = (record["fill"] or {}).get("cleanup") is None
     if record["capability"]["status"] != "available":
         if capability.ended_by_deadline(record) \
                 and deadline - started < capability.FILL_SECONDS_MAX:
-            raise run_budget.expired(fill, deadline - started)
+            expired = run_budget.expired(fill, deadline - started)
+            expired.cleanup_confirmed = cleanup_confirmed
+            raise expired
         raise Unavailable("scratch_unverified", "no verified disk-bounded scratch: "
-                          + "; ".join(record["capability"]["reasons"]))
+                          + "; ".join(record["capability"]["reasons"]),
+                          cleanup_confirmed=cleanup_confirmed)
     from . import builds
     try:
         builds.refuse_implicit_volumes(docker, image, run_budget)
@@ -394,7 +399,8 @@ class Shard(object):
             self.budget.seconds("verifying the build's artifacts")
             self.binaries = Binaries(options.build, self.manifest, self.budget)
         except budget.Expired as expired:
-            raise Unavailable("run_deadline", str(expired))
+            raise Unavailable("run_deadline", str(expired),
+                              cleanup_confirmed=getattr(expired, "cleanup_confirmed", True))
         self.seed_bounds = seeds.bounds(plan["profile"]["environment"]["scratch_limit_bytes"])
         self.check_states()
         self.mode = self.check_mode()
@@ -431,7 +437,8 @@ class Shard(object):
                     "and a rerun is a new run" % self.root)
         except budget.Expired as expired:
             _remove_work(self.work)
-            raise Unavailable("run_deadline", str(expired))
+            raise Unavailable("run_deadline", str(expired),
+                              cleanup_confirmed=getattr(expired, "cleanup_confirmed", True))
         except BaseException:
             _remove_work(self.work)
             raise
@@ -1475,23 +1482,38 @@ def _remove_work(path):
     shutil.rmtree(path, ignore_errors=True)
 
 
-def machine_lock(directory=None, register=None):
+def machine_lock(directory=None, register=None, lease=None):
     """The machine's performance coordination lock (ADR-0169), or Unavailable."""
     try:
-        return hostlock.MachineLock(directory, register=register)
+        return hostlock.acquire(directory, register=register, lease=lease)
     except hostlock.Refused as refused:
         raise Unavailable(refused.reason, str(refused))
 
 
-def run_shard(options):
+def run_shard(options, machine_lease=None):
     """Execute one shard; its terminal `af.perf-shard/4` document.
 
     The machine lock is taken before anything shared is touched (the run directory, the
     scratch filesystem's enforcement fill, a container) and held until the terminal evidence
     is written, whatever happens."""
-    lock = machine_lock(options.lock_directory)
+    lock = machine_lock(options.lock_directory, lease=machine_lease)
     try:
+        if machine_lease is None:
+            lock.guard()
         shard = Shard(options, lock.path)
-        return shard.run()
+        doc = shard.run()
+        if machine_lease is not None and (shard.retained or shard.seed_cleanup):
+            lock.mark_uncertain()
+        if machine_lease is None and not shard.retained and not shard.seed_cleanup:
+            lock.confirm_clean()
+        return doc
+    except Unavailable as error:
+        # Constructor refusal precedes all candidate launches. Its preflight subprocesses
+        # have settled through the existing bounded APIs.
+        if machine_lease is None and 'shard' not in locals() and error.cleanup_confirmed:
+            lock.confirm_clean()
+        elif machine_lease is not None and not error.cleanup_confirmed:
+            lock.mark_uncertain()
+        raise
     finally:
         lock.release()

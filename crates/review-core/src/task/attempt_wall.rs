@@ -1,4 +1,4 @@
-//! What the kernel records when an Attempt wall ends a Worker (ADR-0253).
+//! What the kernel records when an Attempt wall ends a Worker (ADR-0257).
 //!
 //! `af/TaskAttemptWallEnd@1` (`af.task-attempt-wall-end/1`) is the typed end of an Attempt whose
 //! wall ran out before its Worker answered: the node, the Attempt, the wall and the time the

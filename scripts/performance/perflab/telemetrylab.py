@@ -980,7 +980,7 @@ def _executor(settings, registry, config, budget, preparation):
     return executor, executor.directory
 
 
-def run(settings):
+def run(settings, machine_lease=None):
     """One telemetry experiment run; the result document (also written, with its raw documents,
     logs, report and manifest, below the new `settings.output`). The machine's performance lock
     is held throughout."""
@@ -1025,11 +1025,20 @@ def run(settings):
     try:
         try:
             _sync(budget, "acquiring telemetry machine lock", runner.machine_lock,
-                  settings.lock_directory, register=locks.append)
+                  settings.lock_directory, register=locks.append, lease=machine_lease)
         except runner.Unavailable as refused:
             raise Unavailable(refused.reason, str(refused))
+        if machine_lease is None:
+            locks[-1].guard()
         if settings.scratch_owner is not None:
-            _sync(budget, "fencing telemetry work", settings.scratch_owner.prepare_work)
+            try:
+                _sync(budget, "fencing telemetry work", settings.scratch_owner.prepare_work)
+            except BaseException:
+                # Only controller metadata was attempted: no executor preparation, scratch
+                # probe or launch has begun. The durable owner still decides scratch cleanup.
+                if machine_lease is None:
+                    locks[-1].confirm_clean()
+                raise
         preparation = _Preparation()
         executor, work = None, settings.scratch_fs or settings.work or settings.output + ".work"
         try:
@@ -1037,9 +1046,15 @@ def run(settings):
                                    _executor, settings, registry, config, budget, preparation)
             # From here controller setup can write even before the first candidate launch.
             preparation.may_work()
-            return _run_locked(settings, root, registry, registry_sha, config, mode, sources,
+            result = _run_locked(settings, root, registry, registry_sha, config, mode, sources,
                                binaries, builds_doc, digest, files, output, deadline, executor,
                                work)
+            if result["execution"]["cleanup"] != "confirmed":
+                if machine_lease is not None:
+                    locks[-1].mark_uncertain()
+            elif machine_lease is None:
+                locks[-1].confirm_clean()
+            return result
         except BaseException as error:
             if executor is not None:
                 _uncertain(settings, executor)
@@ -1049,6 +1064,8 @@ def run(settings):
                           "settling unused telemetry work", settings.scratch_owner.work_cleaned)
                 except BaseException as settlement:
                     add_note(error, "Unused work fence settlement unconfirmed: %s" % settlement)
+            if preparation.no_work and machine_lease is None:
+                locks[-1].confirm_clean()
             recovery = "Recovery work: %s" % work
             if settings.scratch_owner is not None:
                 recovery += "; ownership: %s; mount: %s" % (
@@ -1072,6 +1089,18 @@ def run(settings):
                 except BaseException:
                     # Rollback cannot replace the original failure or start a new allowance.
                     pass
+            if not preparation.no_work and machine_lease is None and settings.scratch_owner is not None:
+                def stopped_and_removed():
+                    # Preserve the hosted cleanup path after a publication-only failure.
+                    # This is original durable ownership evidence, never a result boolean.
+                    ownership = settings.scratch_owner.available()
+                    require(not ownership["filesystem_pending"], "scratch cleanup receipt remains pending")
+                    require(not os.path.lexists(work), "telemetry work remains; retain machine fence")
+                    locks[-1].confirm_clean()
+                try:
+                    _sync(terminal, "confirming stopped telemetry ownership", stopped_and_removed)
+                except BaseException as settlement:
+                    add_note(error, "Machine cleanup remains unconfirmed: %s" % settlement)
             raise
     finally:
         for lock in locks:

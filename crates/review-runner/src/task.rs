@@ -490,7 +490,7 @@ pub struct CallNotes {
     pub refusal_category: Option<String>,
     /// The call failed because the Provider's machine environment failed af, not the model or
     /// the login: its CLI could not start or serve its protocol, or its identity probes proved
-    /// nothing within their bounded retries (ADR-0208, ADR-0253).
+    /// nothing within their bounded retries (ADR-0208, ADR-0257).
     pub environment: bool,
 }
 

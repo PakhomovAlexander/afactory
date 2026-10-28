@@ -2,7 +2,7 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "urn:af:schema:task-attempt-wall-end:1",
   "title": "af.task-attempt-wall-end/1",
-  "description": "The typed end of an Attempt whose wall ran out before its Worker answered (ADR-0253), the payload of `af/TaskAttemptWallEnd@1`: the Task, the qualified node, the exact Attempt, the node's Attempt wall as its allowance captured it, and the time from the Attempt's start to its end. A source-writing Worker's tree is sealed as a candidate is and named as `partial_candidate_id` (an `af/TaskPartialCandidate@1`); absent for a Worker that writes no source or whose tree could not be sealed. Raw evidence of the failed Attempt's settlement, never an output: its Attempt is charged and counted as every failed Attempt is.",
+  "description": "The typed end of an Attempt whose wall ran out before its Worker answered (ADR-0257), the payload of `af/TaskAttemptWallEnd@1`: the Task, the qualified node, the exact Attempt, the node's Attempt wall as its allowance captured it, and the time from the Attempt's start to its end. A source-writing Worker's tree is sealed as a candidate is and named as `partial_candidate_id` (an `af/TaskPartialCandidate@1`); absent for a Worker that writes no source or whose tree could not be sealed. Raw evidence of the failed Attempt's settlement, never an output: its Attempt is charged and counted as every failed Attempt is.",
   "type": "object",
   "additionalProperties": false,
   "required": [

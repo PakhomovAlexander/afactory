@@ -33,11 +33,18 @@ scope filters the same Store by repository identity. `arg_required_else_help` on
 `Option<Command>::None` dispatches to `tui::launch(scope)`.
 
 `launch` enters the terminal and paints the splash (`splash.rs`, `brand/README.md`) before it
-reads anything, a few milliseconds after `af` starts. The scope and every pane load on a thread
-of their own; the splash animates while it waits on that load a step at a time and ends the
-moment the load arrives, so the browser is never later than it would be without one. `q` or
-`<C-c>` on the splash quits at once; any other key typed meanwhile is the browser's first input.
-A scope error (`--repo` outside a repository) leaves the terminal before it is printed.
+reads anything, a few milliseconds after `af` starts. The scope resolves and every pane loads on
+a thread of their own; the splash animates while it waits on that load a step at a time and ends
+the moment the load arrives, so the browser is never later than it would be without one. That
+load reads no Store: a pane that lists Stores (Tasks, Campaigns, and Workers once opened) starts
+their read on a thread of its own and the event loop collects each Store as it is read, after
+the first frame, since the loop paints before it polls. The splash therefore waits for the scope
+only, whatever Stores the machine holds: a registry of eighty Stores and four gigabytes of event
+logs once kept it up for forty seconds ([ADR-0240](../adr/0240-open-the-browser-before-any-store-is-read.md)).
+What it still waits for is small: the scope's files, the Store registry (one file), and the
+Pipelines pane's read of `HEAD` through git, milliseconds on a local repository.
+`q` or `<C-c>` on the splash quits at once; any other key typed meanwhile is the browser's first
+input. A scope error (`--repo` outside a repository) leaves the terminal before it is printed.
 
 `af review tui` no longer exists (PR #114). `af task tui` is not added: the Task pane covers it.
 
@@ -203,6 +210,9 @@ The bar lists Worker packages found in the declared directories, in this order a
 source folded in as a second-level group when more than one exists:
 `.af/workers/` (reviewer Workers), `.af/task-packages/`, `.af/packages/`, `.af/vendor/`.
 User scope lists nothing here except catalogs synced under `~/.local/share/af` when present.
+The pane reads nothing until it is first opened; from then on each read (`HEAD`'s declarations
+through git, and every Task Store's Attempts for STATE) runs on a thread behind a spinner on
+`workers/`, never on the key loop.
 
 Main pane, three sections separated by rules:
 
@@ -264,6 +274,31 @@ ones `:state DIR` added for the session. Each is one more bar level named by the
 and its main-pane heading is its path with `(--state, in stores.toml)` or `(:state, this
 session)`. `r` and `D` on its Tasks add `--state DIR` to the line. A registry this release cannot
 read is a warning above the Stores; the scope's own Stores are still listed.
+
+Every read of the Stores runs on a thread, the one a load, `R` or `:state DIR` records as much
+as the live read of an opened running Task, each started at the first poll after it, which the
+event loop reaches after the frame that follows, and in the user scope the walk of the state root for
+every repository's Store is that thread's first step, never the load's: the bar shows `tasks/`
+with a spinner while it runs, and
+each Store is listed the moment it is read, in the order above, a refused one with its refusal,
+so the folder fills while the rest are still read and no read of a Store ever holds the key loop
+or the splash (opening one Task still inspects that Task on the key loop, as before). Nothing
+interrupts the read, since it holds no key; `q` quits without waiting for it. The opened Task's
+detail arrives with its own Store, so its bar row and its pane never disagree; a Task whose
+Store refuses when opened, or whose HISTORY artifact cannot be given back, falls back to its
+folder on that key and restarts a read in flight, so nothing read before the refusal lists it
+again: the status line carries the HISTORY refusal's cause, and for the opening the message of
+an entry found gone, its cause on the Store's row in the folder. An opened Task or Worker that a read no
+longer lists falls back to its folder with the same message as when opening finds it gone;
+never one whose Store is merely unread: a target list that changed within the scope (a Store
+registered meanwhile, `:state DIR`) keeps every Store listed until the read answers for it, and
+a Store of a target no longer named until the read is done, so the opened Task stays opened
+while its Store is read again; the Stores stand in the order of the targets as they are now.
+In the user scope the read discovers the repositories' Stores, and a walk that fails lists the
+registered and session Stores alone once the read is done, with the cause in the folder. A Task
+opened while an explicit read is in flight has its detail read again when its Store answers,
+since a read started before carries none for it, or one from an earlier opening of the same
+Task. Another scope lists nothing of the old.
 
 Main pane for one Task, top to bottom:
 
@@ -327,10 +362,19 @@ state and verdict, its spend (the Tasks' cumulative charge and the Rounds' wall-
 review report` counts them) and its Store's last write in UTC, and the reviewer nodes of the newest
 Round as chips of their latest Attempt's outcome (`running`, `selected`, `failed`): only that
 Round's Attempts, so a Round that has none yet shows no chips, never the previous Round's, and
-the latest Attempt is the one that started last, not the last one listed. While the pane shows,
-a thread reads every source again: once a second while any listed Round is open, the Tasks
-pane's cadence, and every five seconds otherwise, so a Campaign started meanwhile appears
-without a key.
+the latest Attempt is the one that started last, not the last one listed. Every read runs on a
+thread, started at the first poll after the load or `R` that records it, each source listed as
+it is read behind a spinner on `campaigns/`;
+a Store is listed once, where the source that answers it first in source order puts it, and
+that answer takes the place of what the last read listed for the Store wherever that was (a
+Campaign a root listed may be a registered Store's answer this time, and a Campaign becomes the
+refusal a source reports for its Store the moment that arrives); a Store no source answered yet
+stays listed from the last read until one does, or until the read is done, so a source list
+that changed within the scope never unlists an opened Campaign before a source answers for its
+Store. The groups stand in source order.
+While the pane shows, that thread reads every source again: once a second while any listed
+Round is open, the Tasks pane's cadence, and every five seconds otherwise, so a Campaign started
+meanwhile appears without a key.
 
 One Campaign's pane shows STATE, SPEND and STORE, NODES (each reviewer's latest outcome,
 charge and wall), LEDGER (the report's verdict and findings summary, then its findings grouped by

@@ -1,4 +1,4 @@
-//! ADR-0253 end to end: an implementer that writes files and then outlives a short Attempt wall
+//! ADR-0257 end to end: an implementer that writes files and then outlives a short Attempt wall
 //! leaves its tree sealed as a partial candidate; the Task ends `exhausted/attempt_wall` with the
 //! wall and the elapsed time in `af task show`, its `--json`, `af task report` and the run's
 //! stderr; and `af task run NEW --from TASK` continues from those edits, not from the base. The

@@ -57,7 +57,7 @@ pub(crate) struct NodeFailure {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub(crate) stderr_id: Option<String>,
     /// What happened in af's own words when the Attempt wall ended the node's last Attempt
-    /// (ADR-0253): `implementer reached its Attempt wall of 30 min after 30 min`. The report
+    /// (ADR-0257): `implementer reached its Attempt wall of 30 min after 30 min`. The report
     /// prints it where it prints no diagnostic.
     #[serde(skip)]
     pub(crate) wall: Option<String>,
@@ -350,7 +350,7 @@ fn next_action(cas: &Cas, state: &TaskProjection, cause: TaskCauseV1) -> Result<
         | TaskCauseV1::ProviderTimeout
         | TaskCauseV1::ProviderEnvironment => "af provider status".into(),
         // The edits an Attempt wall stopped are kept: a continuation starts from them
-        // (ADR-0253). A Worker that writes no source left nothing to continue from.
+        // (ADR-0257). A Worker that writes no source left nothing to continue from.
         TaskCauseV1::AttemptWall => match super::continuation::partial_candidate(cas, state) {
             Some(_) => format!("af task run {NEW_TASK_ID} --from {id}"),
             None => format!("af task show {id}"),
@@ -661,7 +661,7 @@ fn diagnostic_cause(cas: &Cas, attempt: &TaskAttemptAccounting) -> Option<String
 }
 
 /// The `af/TaskAttemptWallEnd@1` an Attempt's settlement keeps among its raw evidence, with its
-/// ID, when the Attempt wall ended it (ADR-0253).
+/// ID, when the Attempt wall ended it (ADR-0257).
 pub(crate) fn wall_end(
     cas: &Cas,
     attempt: &TaskAttemptAccounting,
@@ -706,7 +706,7 @@ fn node_cause(
 ) -> TaskCauseV1 {
     let text = format!("{}\n{message}", attempt_error.unwrap_or_default());
     if let Some(attempt) = attempt {
-        // The typed records of ADR-0253 first: an Attempt its wall ended, and a failure whose
+        // The typed records of ADR-0257 first: an Attempt its wall ended, and a failure whose
         // diagnostic names the Provider's environment as its closed class.
         if wall_end(cas, attempt).is_some() {
             return TaskCauseV1::AttemptWall;
@@ -1110,7 +1110,7 @@ fn summary_with(view: &TaskView, diagnostics: bool) -> Option<String> {
             if diagnostics {
                 format!("{}: {}", failure.node, failure.first_line)
             } else if let Some(wall) = &failure.wall {
-                // af's own words, never a Worker's: the wall and the time it took (ADR-0253).
+                // af's own words, never a Worker's: the wall and the time it took (ADR-0257).
                 format!("{}: {wall}", failure.node)
             } else {
                 format!("{} failed", failure.node)
@@ -1813,7 +1813,7 @@ mod tests {
         );
     }
 
-    /// ADR-0253: an Attempt its wall ended reads `attempt_wall`, and a failure whose diagnostic
+    /// ADR-0257: an Attempt its wall ended reads `attempt_wall`, and a failure whose diagnostic
     /// names the Provider's environment reads `provider_environment`, whatever their words say;
     /// an Attempt without either record is classified as before.
     #[test]

@@ -1,4 +1,4 @@
-# ADR-0253: Seal the implementer's tree when its Attempt wall ends it
+# ADR-0257: Seal the implementer's tree when its Attempt wall ends it
 
 **Status:** accepted (2026-10-26). Extends
 [ADR-0212](0212-continue-a-task-from-its-reviewed-candidate-and-give-judging-workers-the-base.md)

@@ -247,7 +247,7 @@ fn entry(
 
 /// The detail a report row prints beside the state: the state's own summary, then, for a
 /// continued Task, the Task and round it continues (ADR-0212), or the Task whose partial tree it
-/// continues (ADR-0253), so a chain of continuations reads as one in the report.
+/// continues (ADR-0257), so a chain of continuations reads as one in the report.
 fn report_detail(
     cas: &Cas,
     state: &TaskProjection,
@@ -261,7 +261,7 @@ fn report_detail(
             record.continues.round
         )
     });
-    // A partial tree an Attempt wall left (ADR-0253).
+    // A partial tree an Attempt wall left (ADR-0257).
     let partial =
         super::continuation::recorded_partial(cas, &state.revision)?.map(|(_, end, _)| {
             format!(
@@ -950,7 +950,7 @@ fn tally_attempts(
     ))
 }
 
-/// Why a settled Attempt failed: `attempt_wall` when its wall ended it (ADR-0253), whatever
+/// Why a settled Attempt failed: `attempt_wall` when its wall ended it (ADR-0257), whatever
 /// retry feedback its Worker's failure produced (a timed-out model reads as a Provider failure
 /// to the re-ask); otherwise by its typed retry feedback. `None` when it did not fail or has not
 /// settled.
@@ -1145,7 +1145,7 @@ pub(crate) fn markdown(report: &TaskReportV3) -> String {
             None => task.state.label(),
         };
         // An Attempt wall's edits are continued by a new Task: the report says how, as `af task
-        // show` does (ADR-0253).
+        // show` does (ADR-0257).
         if task.state.cause == Some(review_core::task::state::TaskCauseV1::AttemptWall)
             && let Some(next) = &task.state.next_action
         {

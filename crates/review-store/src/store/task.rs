@@ -87,7 +87,7 @@ pub fn now() -> Result<u64, StoreError> {
 /// `af/ProjectBriefReceipt@1` records of its Project Briefs (ADR-0160), and a continuation's
 /// `af/TaskReviewFindings@1`, the `af/TaskReadFirst@2` record and a declared `af/TaskBase@1`
 /// (ADR-0212, ADR-0254), or the `af/TaskAttemptWallEnd@1` of the partial tree it continues
-/// (ADR-0253), and the `af/TaskAcceptance@1` record (ADR-0255). Nothing else is
+/// (ADR-0257), and the `af/TaskAcceptance@1` record (ADR-0255). Nothing else is
 /// preserved, so a revision whose adapter recorded some other observation keeps byte for byte
 /// the list it had.
 ///
@@ -114,7 +114,7 @@ pub fn revision_provenance_inputs(cas: &Cas, revision: &TaskRevisionV1) -> Vec<S
                 review_core::task::findings::TASK_REVIEW_FINDINGS_V1,
                 review_core::task::findings::TASK_READ_FIRST_V2,
                 review_core::task::findings::TASK_BASE_V1,
-                // The Attempt wall end whose partial tree a continuation binds (ADR-0253).
+                // The Attempt wall end whose partial tree a continuation binds (ADR-0257).
                 review_core::task::attempt_wall::TASK_ATTEMPT_WALL_END_V1,
                 // A Task file's acceptance items (ADR-0255).
                 review_core::task::acceptance::TASK_ACCEPTANCE_V1,

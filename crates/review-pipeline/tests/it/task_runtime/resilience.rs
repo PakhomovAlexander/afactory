@@ -594,7 +594,7 @@ fn an_exhausted_identity_reprobe_is_recorded_as_an_environment_failure() {
     );
 }
 
-/// ADR-0253: a model Worker its runner killed at its Attempt wall fails with that cause first,
+/// ADR-0257: a model Worker its runner killed at its Attempt wall fails with that cause first,
 /// the wall and the time it took, and one typed `af/TaskAttemptWallEnd@1` among its raw
 /// evidence. A Worker that writes no source keeps no partial tree. The Attempt is settled and
 /// charged as every failed Attempt is: it reported no usage, so it is charged zero with its

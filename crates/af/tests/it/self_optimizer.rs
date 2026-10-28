@@ -1228,7 +1228,7 @@ fn controlled_candidate(edit_path: &str, edit_text: &str, accepted: bool) {
 
 /// The plan preview lists an optimization experiment's baseline and candidate Workers with the
 /// Attempt wall their Worker packages declare, in the summary, the tree and `slots` under
-/// `--json` (ADR-0253): the arms run as experiment children, not as static Worker nodes.
+/// `--json` (ADR-0257): the arms run as experiment children, not as static Worker nodes.
 fn experiment_arms_show_their_attempt_walls(repo: &Path, state: &Path, task: &str) {
     let explain = |extra: &[&str]| {
         let output = crate::common::af()

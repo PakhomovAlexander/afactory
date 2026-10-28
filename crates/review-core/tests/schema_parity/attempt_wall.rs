@@ -1,4 +1,4 @@
-//! `af/TaskAttemptWallEnd@1` and `af/TaskPartialCandidate@1` (ADR-0253): the Rust types and the
+//! `af/TaskAttemptWallEnd@1` and `af/TaskPartialCandidate@1` (ADR-0257): the Rust types and the
 //! schemas accept and refuse the same documents.
 
 use super::{assert_invalid, assert_valid};

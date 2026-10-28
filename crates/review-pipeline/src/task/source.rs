@@ -536,7 +536,7 @@ struct CapturedCandidate {
 }
 
 /// The one capture of a writer's sealed tree, for its candidate and for the partial tree an
-/// Attempt wall leaves (ADR-0253) alike. A Worker with a shell leaves scratch behind (build
+/// Attempt wall leaves (ADR-0257) alike. A Worker with a shell leaves scratch behind (build
 /// output, tool caches); it is not part of what the Worker wrote, so it never reaches the
 /// tree. What the project's ignore rules exclude among what the Worker added — generated files
 /// of its own test runs and builds — is left out and listed (ADR-0207).
@@ -706,7 +706,7 @@ impl TaskEnvironment for SnapshotTaskEnvironment {
     }
 
     /// The tree a source-writing Worker left when its Attempt wall ended it, sealed exactly as
-    /// `finish` seals a candidate and kept as `af/TaskPartialCandidate@1` (ADR-0253): the same
+    /// `finish` seals a candidate and kept as `af/TaskPartialCandidate@1` (ADR-0257): the same
     /// scratch and ignore exclusions, a derived Snapshot of the Worker's source and the
     /// `af/SourceTree@1` that names it. A Worker without a candidate port, or one that changed
     /// nothing, leaves nothing to keep.

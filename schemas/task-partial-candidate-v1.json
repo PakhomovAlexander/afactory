@@ -2,7 +2,7 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "urn:af:schema:task-partial-candidate:1",
   "title": "af.task-partial-candidate/1",
-  "description": "The tree a source-writing Worker left when its Attempt wall ended it (ADR-0253), the payload of `af/TaskPartialCandidate@1`, sealed exactly as an ordinary candidate is (the same shell scratch and ignore exclusions): the Snapshot it started from, the derived Snapshot of what it left and the `af/SourceTree@1` naming it, and how many paths differ. Raw evidence of the failed Attempt, named by its `af/TaskAttemptWallEnd@1`; never an output, so it is never sealed into a result, checked, reviewed, accepted or delivered on its own. `af task run NEW --from TASK` binds it as the new Task's source.",
+  "description": "The tree a source-writing Worker left when its Attempt wall ended it (ADR-0257), the payload of `af/TaskPartialCandidate@1`, sealed exactly as an ordinary candidate is (the same shell scratch and ignore exclusions): the Snapshot it started from, the derived Snapshot of what it left and the `af/SourceTree@1` naming it, and how many paths differ. Raw evidence of the failed Attempt, named by its `af/TaskAttemptWallEnd@1`; never an output, so it is never sealed into a result, checked, reviewed, accepted or delivered on its own. `af task run NEW --from TASK` binds it as the new Task's source.",
   "type": "object",
   "additionalProperties": false,
   "required": [

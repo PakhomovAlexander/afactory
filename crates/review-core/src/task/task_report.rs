@@ -330,7 +330,7 @@ pub enum TaskReportFailureClassV1 {
     OutputAdmissionRejected,
     ContextRejected,
     CompilerRejected,
-    /// The Attempt wall ended the Attempt (ADR-0253), whatever its Worker's failure said.
+    /// The Attempt wall ended the Attempt (ADR-0257), whatever its Worker's failure said.
     AttemptWall,
     Abandoned,
     Unclassified,

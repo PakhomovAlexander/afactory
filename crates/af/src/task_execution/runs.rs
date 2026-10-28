@@ -1021,7 +1021,7 @@ impl Seen {
                         "finished".to_owned()
                     }
                     // An Attempt its wall ended says so, with the wall and the time it took,
-                    // and whether its edits were kept (ADR-0253).
+                    // and whether its edits were kept (ADR-0257).
                     _ => match state::wall_end(cas, attempt) {
                         Some((_, end)) => format!(
                             "failed: its Attempt wall of {} ran out after {}{}",

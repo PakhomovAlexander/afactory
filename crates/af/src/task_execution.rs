@@ -1729,7 +1729,7 @@ fn start_captured(
             ));
         }
     }
-    // Only a reviewed continuation carries findings; a partial tree's continuation (ADR-0253)
+    // Only a reviewed continuation carries findings; a partial tree's continuation (ADR-0257)
     // binds its source alone, and any Pipeline that takes a source can read it.
     if continued.as_ref().is_some_and(|c| c.port().is_some()) {
         let named = file.pipeline.as_ref().map(|choice| choice.name.as_str());
@@ -5027,7 +5027,7 @@ fn inspection(
                         continue;
                     };
                     // The typed end of an Attempt its wall stopped, with the partial tree it
-                    // kept (ADR-0253).
+                    // kept (ADR-0257).
                     if artifact.artifact_type
                         == review_core::task::attempt_wall::TASK_ATTEMPT_WALL_END_V1
                     {
@@ -5319,7 +5319,7 @@ fn inspection(
     if explain && let Some(id) = &state.plan_id {
         let plan: ExecutionPlanV1 = artifact(cas, id, EXECUTION_PLAN_V1)?;
         let graph = artifact::<CompiledTask>(cas, &plan.compiled_graph_id, COMPILED_TASK_V1)?;
-        // Each Worker slot's binding beside its Attempt wall (ADR-0253).
+        // Each Worker slot's binding beside its Attempt wall (ADR-0257).
         value["slots"] = preview::slots_value(cas, &plan, &graph);
         value["graph"] = serde_json::to_value(graph).map_err(|e| e.to_string())?;
         value["plan"] = serde_json::to_value(plan).map_err(|e| e.to_string())?;

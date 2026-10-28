@@ -306,6 +306,44 @@ scratch_limit_bytes = 2147483648
 state = "supported"
 pending = ""
 
+[environments.linux_x86_64_gnu_claw]
+description = "Persistent Claw Linux VM, independent executor; affinity never claims exclusive CPUs."
+os = "linux"
+arch = "x86_64"
+libc = "gnu"
+runner = "dedicated"
+runner_label = "independent-claw-vm"
+containment = "linux_container"
+logical_cpus = 2
+prefer_separate_physical_cores = true
+memory_limit_bytes = 4294967296
+pid_limit = 256
+swap = "disabled"
+network = "disabled"
+cpu_quota = "none"
+scratch_limit_bytes = 2147483648
+state = "supported"
+pending = ""
+
+[environments.linux_x86_64_musl_claw]
+description = "Persistent Claw Linux VM running the shipping musl binary independently."
+os = "linux"
+arch = "x86_64"
+libc = "musl"
+runner = "dedicated"
+runner_label = "independent-claw-vm"
+containment = "linux_container"
+logical_cpus = 2
+prefer_separate_physical_cores = true
+memory_limit_bytes = 4294967296
+pid_limit = 256
+swap = "disabled"
+network = "disabled"
+cpu_quota = "none"
+scratch_limit_bytes = 2147483648
+state = "supported"
+pending = ""
+
 [environments.macos_arm64_local]
 description = "A named, explicitly trusted local macOS arm64 host: discovery and nonspawning library cases."
 os = "macos"
@@ -325,7 +363,10 @@ pending = ""
 
 [tiers.quick]
 description = "Pull requests and main pushes."
-profiles = [{ environment = "linux_x86_64_gnu_hosted", recipe = "linux_gnu_native_release" }]
+profiles = [
+  { environment = "linux_x86_64_gnu_hosted", recipe = "linux_gnu_native_release" },
+  { environment = "linux_x86_64_gnu_claw", recipe = "linux_gnu_native_release" },
+]
 # Spread the full suite over sixteen schedules, four at a time. Long authority workloads
 # may use 25 sampling minutes within the same 60-minute total limit (ADR-0193).
 # These defaults stay below the unchanged hard maxima of eight jobs and 30 minutes per shard.
@@ -339,6 +380,7 @@ description = "Frozen main against the highest reachable stable release."
 profiles = [
   { environment = "linux_x86_64_musl_hosted", recipe = "linux_musl_shipping" },
   { environment = "macos_arm64_local", recipe = "macos_arm64_native_release" },
+  { environment = "linux_x86_64_musl_claw", recipe = "linux_musl_shipping" },
 ]
 shards = 4
 concurrent_jobs = 4
@@ -350,6 +392,7 @@ description = "A published release against its predecessor; advisory for publica
 profiles = [
   { environment = "linux_x86_64_musl_hosted", recipe = "linux_musl_shipping" },
   { environment = "macos_arm64_local", recipe = "macos_arm64_native_release" },
+  { environment = "linux_x86_64_musl_claw", recipe = "linux_musl_shipping" },
 ]
 shards = 4
 concurrent_jobs = 4

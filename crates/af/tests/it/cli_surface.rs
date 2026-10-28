@@ -1675,7 +1675,7 @@ fn task_run_help_and_the_task_file_topic_describe_continuation() {
             "--round <N>",
             "--goal <FILE>",
             "continues the finished Task TASK from its reviewed candidate",
-            "continues from the partial tree the kernel kept of it (ADR-0253)",
+            "continues from the partial tree the kernel kept of it (ADR-0257)",
             "the implementer's `findings` input",
             "af task run NEW_ID --from TASK_ID",
         ] {

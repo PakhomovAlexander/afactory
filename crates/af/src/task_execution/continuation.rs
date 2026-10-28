@@ -1,7 +1,7 @@
 //! Continuing a reviewed Task (ADR-0212): `af task run NEW --from TASK [--round N]`, or a Task
 //! file's `continue` table. A Task that recorded no review round, but whose source-writing
 //! Worker an Attempt wall stopped, continues from the partial tree the kernel sealed then
-//! (ADR-0253).
+//! (ADR-0257).
 //!
 //! Resolution happens once, at plan time, from the `--state` Store alone, like an `inputs`
 //! binding (ADR-0117). The continued round's reviewed candidate becomes the new Task's `source`,
@@ -51,7 +51,7 @@ pub(super) struct Continued {
 pub(super) enum Lineage {
     /// A review round's candidate, with the round's findings for the implementer (ADR-0212).
     Reviewed { findings_id: String },
-    /// The partial tree an Attempt wall left (ADR-0253): no review ran, so no findings travel.
+    /// The partial tree an Attempt wall left (ADR-0257): no review ran, so no findings travel.
     Partial { wall_end_id: String },
 }
 
@@ -79,7 +79,7 @@ impl Continued {
 }
 
 /// The partial tree a Task's source-writing Worker left when its Attempt wall ended it
-/// (ADR-0253): the latest settled Attempt whose `af/TaskAttemptWallEnd@1` names one, with the
+/// (ADR-0257): the latest settled Attempt whose `af/TaskAttemptWallEnd@1` names one, with the
 /// wall end's ID, the wall end, the partial candidate's ID and the partial candidate.
 pub(super) fn partial_candidate(
     cas: &Cas,
@@ -261,7 +261,7 @@ pub(super) fn resolve(
         recorded.push((id, round));
     }
     if recorded.is_empty() {
-        // No review ran: the partial tree an Attempt wall left, when one was kept (ADR-0253).
+        // No review ran: the partial tree an Attempt wall left, when one was kept (ADR-0257).
         let partial = partial_candidate(cas, &projection);
         if let (Some(number), Some(_)) = (reference.round, &partial) {
             return Err(format!(
@@ -405,7 +405,7 @@ pub(super) fn recorded(
     Ok(None)
 }
 
-/// The partial-tree continuation a recorded revision carries (ADR-0253): the
+/// The partial-tree continuation a recorded revision carries (ADR-0257): the
 /// `af/TaskAttemptWallEnd@1` in its provenance, with its ID, and the partial candidate it
 /// names. `None` for every Task that continues no partial tree.
 pub(super) fn recorded_partial(
@@ -434,7 +434,7 @@ pub(super) fn recorded_partial(
     Ok(None)
 }
 
-/// The `continues` member of `af/task-inspection@14` for a partial tree (ADR-0253): the
+/// The `continues` member of `af/task-inspection@14` for a partial tree (ADR-0257): the
 /// continued Task, the node and Attempt its wall stopped, the wall end, the partial candidate
 /// and the Snapshot of the tree the new Task reads.
 pub(super) fn partial_inspection_value(

@@ -150,7 +150,7 @@ pub enum TaskCauseV1 {
     ProviderTimeout,
     /// The Provider's machine environment failed af, not the model or the login: its CLI
     /// could not start or serve its protocol, or its identity probes proved nothing within
-    /// their bounded retries (ADR-0208, ADR-0253).
+    /// their bounded retries (ADR-0208, ADR-0257).
     ProviderEnvironment,
     IdentityChanged,
     IdentityUnverified,
@@ -158,7 +158,7 @@ pub enum TaskCauseV1 {
     WriterLost,
     Deadline,
     Budget,
-    /// A Worker's Attempt reached its Attempt wall before it answered (ADR-0253).
+    /// A Worker's Attempt reached its Attempt wall before it answered (ADR-0257).
     AttemptWall,
     Collected,
     HostCancelled,
@@ -758,7 +758,7 @@ flaky: a::b, c::d
                 "Task node root.nodes.x exhausted its Attempt limit",
                 TaskCauseV1::Budget,
             ),
-            // ADR-0253: the Attempt wall is its own cause, before the timeout words it carries.
+            // ADR-0257: the Attempt wall is its own cause, before the timeout words it carries.
             (
                 "implementer reached its Attempt wall of 30 min after 30 min; its edits are kept \
                  as partial candidate sha256:…; implementer did not answer within 1800000ms",

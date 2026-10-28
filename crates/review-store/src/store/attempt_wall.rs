@@ -1,7 +1,7 @@
 //! Exact-usage sidecar: one row per Attempt holding its wall-clock interval, its cumulative
 //! `TaskTokenUsage@3` floor and its native usage observation; and, beside it, the
 //! `af/TaskAttemptWallEnd@1` of an Attempt its wall ended, kept before settlement so a lost
-//! writer's successor settles that Attempt from it (ADR-0253).
+//! writer's successor settles that Attempt from it (ADR-0257).
 
 use super::{EventStore, StoreError, TaskAttemptWall};
 use review_core::task::usage::{TaskTokenUsageV3, TaskUsageObservationV1};
@@ -190,7 +190,7 @@ impl EventStore {
     }
 
     /// Keep the `af/TaskAttemptWallEnd@1` an Attempt's wall left before anything else of the
-    /// Attempt is published (ADR-0253): a writer lost before settlement leaves its successor the
+    /// Attempt is published (ADR-0257): a writer lost before settlement leaves its successor the
     /// wall end and the partial tree it names, not only an unsettled Attempt. The artifact must
     /// already be durable in the CAS. One Attempt keeps one wall end; recording another is a
     /// conflict.

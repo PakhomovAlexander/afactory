@@ -97,9 +97,7 @@ def stage(image, tool, source, state, logs, git, phase, timing):
                             [(source, "/src", False), (state, "/state", True),
                              (git, "/provenance", False)], network=phase == "fetch")
     # No daemon log can escape the filesystem budget. No writable /dev/shm mount.
-    command[2:2] = ["--memory", "8g", "--memory-swap", "8g", "--pids-limit", "512",
-                    "--ipc", "none", "--log-driver", "none",
-                    "--ulimit", "fsize=8589934592:8589934592"]
+    builds.bound_container(command)
     def exceeded():
         if shutil.disk_usage(os.path.dirname(git)).free < limits.FREE_DISK_FLOOR_BYTES:
             return "build free-disk floor crossed"

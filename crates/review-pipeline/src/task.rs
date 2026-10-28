@@ -240,7 +240,7 @@ fn refuse_billing<T>(outputs: &mut Result<T, String>, refusal: &str) {
     *outputs = Err(error);
 }
 
-/// Whether the Attempt wall ended a failed Worker (ADR-0253): its runner killed it at the
+/// Whether the Attempt wall ended a failed Worker (ADR-0257): its runner killed it at the
 /// deadline it was given, which is the remaining Attempt wall, or that wall has passed on the
 /// Store's clock, the clock that stamped the reservation's deadline. A wall end is not a
 /// malformed reply or a Provider failure, whatever words the Worker's failure carries.
@@ -816,7 +816,7 @@ fn starts_a_worker(operator: &CompiledOperator) -> bool {
 }
 
 impl TaskRuntime<'_, '_> {
-    /// Record the end of an Attempt its wall stopped (ADR-0253): one
+    /// Record the end of an Attempt its wall stopped (ADR-0257): one
     /// `af/TaskAttemptWallEnd@1` among the Attempt's raw evidence, naming the partial tree the
     /// host kept, and the Attempt's error led by what happened in those words. Returns the
     /// record's ID.
@@ -868,7 +868,7 @@ impl TaskRuntime<'_, '_> {
             )
             .map_err(|e| e.to_string())?;
         // Durable before the rest of the Attempt is published: a writer lost from here on
-        // leaves its successor this record to settle the Attempt from (ADR-0253).
+        // leaves its successor this record to settle the Attempt from (ADR-0257).
         self.cas.flush().map_err(|e| e.to_string())?;
         self.store
             .lock()
@@ -1076,7 +1076,7 @@ impl TaskRuntime<'_, '_> {
             }
             // A Worker Attempt its wall ended says so first, with the wall and the time it took,
             // and records it as typed raw evidence beside the partial tree a writer left
-            // (ADR-0253). The Attempt is still a failed one: charged and counted as every
+            // (ADR-0257). The Attempt is still a failed one: charged and counted as every
             // failed Attempt is.
             // The record is written once the Attempt's usage is retained, so a CAS failure
             // while it is written cannot lose the counters the Worker reported (ADR-0068).
@@ -1351,7 +1351,7 @@ impl TaskRuntime<'_, '_> {
                     }
                     Err(error) => {
                         // The closed class of a failure af knows better than its words: the
-                        // Attempt wall, or the Provider's environment (ADR-0253).
+                        // Attempt wall, or the Provider's environment (ADR-0257).
                         let mut diagnostic =
                             serde_json::json!({"schema":"af.task-diagnostic/1", "error":error});
                         if wall_ended.is_some() {

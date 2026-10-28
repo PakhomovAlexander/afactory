@@ -13,7 +13,7 @@
   `af/task-list-entry@4`, `af/task-checks@3`, `af/task-collected-inspection@3`,
   `af/task-detached@3`, `af/task-findings@2`, `af/task-report@3`, `af/task-status@2` and
   `af/task-cancelled@2`
-  ([ADR-0253](../docs/adr/0253-seal-the-implementers-tree-when-its-attempt-wall-ends-it.md)).
+  ([ADR-0257](../docs/adr/0257-seal-the-implementers-tree-when-its-attempt-wall-ends-it.md)).
 - A wall end survives its writer: the Attempt's reported usage is retained before the wall end is
   written, so a CAS failure then loses no counter, and the wall end's ID is kept in the Store
   before the rest of the Attempt is published, so a run interrupted after it is resumed with
@@ -24,4 +24,4 @@
   --from TASK`. The plan preview lists every slot that runs with its Attempt wall, the ninth
   included, the walls beside each Worker in `--tree`, and an optimization experiment's baseline
   and candidate arms with the wall their Worker packages declare (`attempt_wall_ms` under
-  `--json`) ([ADR-0253](../docs/adr/0253-seal-the-implementers-tree-when-its-attempt-wall-ends-it.md)).
+  `--json`) ([ADR-0257](../docs/adr/0257-seal-the-implementers-tree-when-its-attempt-wall-ends-it.md)).

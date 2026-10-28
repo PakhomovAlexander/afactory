@@ -236,7 +236,7 @@ fn ordered_slots(plan: &ExecutionPlanV1, graph: &CompiledTask) -> Vec<String> {
     slots
 }
 /// Each Worker slot of the plan with its binding and its Attempt wall, the `slots` member of
-/// the plan's `--json` document (ADR-0253), in the order the preview lists them.
+/// the plan's `--json` document (ADR-0257), in the order the preview lists them.
 pub(super) fn slots_value(
     cas: &Cas,
     plan: &ExecutionPlanV1,
@@ -308,7 +308,7 @@ fn node_label(
     graph: &CompiledTask,
 ) -> String {
     let name = id.rsplit('.').next().unwrap_or(id);
-    // A Worker's binding beside its Attempt wall, as the summary lists it (ADR-0253).
+    // A Worker's binding beside its Attempt wall, as the summary lists it (ADR-0257).
     let detail = if let Some(slot) = worker(node) {
         binding_and_wall(cas, plan, graph, slot)
     } else {
@@ -694,7 +694,7 @@ fn render_marked(
                 ),
             );
         }
-        // Each slot's Attempt wall beside its model: how long one Attempt may take (ADR-0253).
+        // Each slot's Attempt wall beside its model: how long one Attempt may take (ADR-0257).
         // Every slot a node runs is listed with its wall; only bound slots no node runs fold.
         let slots = ordered_slots(plan, graph)
             .into_iter()
@@ -875,7 +875,7 @@ pub(super) fn current_marked(
 mod tests {
     use super::*;
     /// Every slot a node runs is listed with its Attempt wall, a ninth one included; only bound
-    /// slots no node runs fold behind `use --tree or --json` (ADR-0253).
+    /// slots no node runs fold behind `use --tree or --json` (ADR-0257).
     #[test]
     fn every_executable_slot_is_listed_and_only_idle_bindings_fold() {
         let slot = |n: usize, runs: bool| (format!("root.slots.w{n}"), runs);

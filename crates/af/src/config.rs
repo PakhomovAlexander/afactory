@@ -516,7 +516,20 @@ pub(crate) fn config_home() -> Result<PathBuf, String> {
     xdg("XDG_CONFIG_HOME", ".config").map(|path| canonical_root(&path))
 }
 pub(crate) fn state_home() -> Result<PathBuf, String> {
+    #[cfg(test)]
+    if let Some(pinned) = STATE_HOME_FOR_TESTS.with(|home| home.borrow().clone()) {
+        return Ok(pinned);
+    }
     xdg("XDG_STATE_HOME", ".local/state").map(|path| canonical_root(&path))
+}
+
+#[cfg(test)]
+thread_local! {
+    /// The state home a test pins for its thread while it records a Task into a fixture, so
+    /// that the Task registers nothing in the developer's own `stores.toml` (ADR-0144): the
+    /// fixture's state root instead, where its Store is a default one and registers nothing.
+    pub(crate) static STATE_HOME_FOR_TESTS: std::cell::RefCell<Option<PathBuf>> =
+        const { std::cell::RefCell::new(None) };
 }
 pub(crate) fn data_home() -> Result<PathBuf, String> {
     xdg("XDG_DATA_HOME", ".local/share").map(|path| canonical_root(&path))

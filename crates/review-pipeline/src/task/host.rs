@@ -85,7 +85,7 @@ pub trait TaskEnvironment: Sync {
         outputs: BTreeMap<String, ArtifactInputV1>,
     ) -> Result<BTreeMap<String, ArtifactInputV1>, String>;
     /// The tree a source-writing Worker left when its Attempt wall ended it, sealed as `finish`
-    /// seals a candidate and kept as one `af/TaskPartialCandidate@1` (ADR-0253), whose ID is
+    /// seals a candidate and kept as one `af/TaskPartialCandidate@1` (ADR-0257), whose ID is
     /// returned; `None` when the Worker writes no source or changed nothing. The record is raw
     /// evidence of the failed Attempt, never an output.
     fn retain_partial(
@@ -1047,7 +1047,7 @@ impl<'a> CapturedTaskHost<'a> {
                 Ok(reply) => reply,
                 // The Attempt wall ended the Worker: the tree a source writer left is sealed as
                 // a candidate is and kept as the Attempt's raw evidence, never as its output
-                // (ADR-0253).
+                // (ADR-0257).
                 Err(error)
                     if super::attempt_wall_reached(attempt, &error)
                         && crate::task::control::check(cancellation).is_ok() =>

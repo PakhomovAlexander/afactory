@@ -1257,7 +1257,7 @@ impl super::host::TaskEnvironment for OptimizationEnvironment {
             .finish(cas, input, signature, attempt, sandbox, outputs)
     }
 
-    /// The source environment's partial tree (ADR-0253), after the same preparation `finish`
+    /// The source environment's partial tree (ADR-0257), after the same preparation `finish`
     /// undoes: a materialized cache is removed first, and a measurement fixture or a data-only
     /// optimizer Worker keeps nothing.
     fn retain_partial(
