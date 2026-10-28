@@ -19,7 +19,7 @@ kind = "same_as"
 input = "source"
 
 [signature.contract.inputs.checks]
-artifact_type = "af/TaskCheckReceipt@1"
+artifact_type = "af/TaskCheckReceipt@2"
 cardinality = "one"
 optional = false
 covers = []
@@ -36,6 +36,17 @@ covers = []
 
 [signature.contract.inputs.history.affinity]
 kind = "unbound"
+
+# The change this Worker judges, built by the kernel (ADR-0254).
+[signature.contract.inputs.diff_subject]
+artifact_type = "af/DiffSubject@1"
+cardinality = "one"
+optional = true
+covers = []
+
+[signature.contract.inputs.diff_subject.affinity]
+kind = "same_as"
+input = "source"
 
 [signature.contract.inputs.source]
 artifact_type = "af/SourceTree@1"

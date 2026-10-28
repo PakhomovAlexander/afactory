@@ -232,13 +232,29 @@ A new Task planned from a finished reviewed one (`af task run NEW --from TASK`, 
 receives that round's findings as one typed `af/TaskReviewFindings@1` input. It records the lineage and
 carries no acceptance, verification or budget of the Task it continues (ADR-0212).
 _Avoid_: **Task Review Continuation** — that is repair evidence inside one Review; "follow-up
-Task" with the findings pasted into its goal.
+Task" with the findings pasted into its goal. A Task that recorded no review round continues from
+its **Partial candidate** instead, without findings (ADR-0257).
+
+**Partial candidate**:
+The tree a source-writing Worker left when its Attempt wall ended it, sealed exactly as a
+candidate is and kept as `af/TaskPartialCandidate@1`, named by the Attempt's
+`af/TaskAttemptWallEnd@1` with the wall and the time the Attempt took. Raw evidence of a failed
+Attempt, never an output: it is never sealed into a result, checked, reviewed, accepted or
+delivered on its own; a **Task continuation** binds it as the new Task's source (ADR-0257).
+_Avoid_: "timed-out candidate", "malformed reply" for an Attempt its wall ended.
 
 **Base sibling**:
 The tree before the change, materialized read-only beside a judging Worker's own tree at
-`../base`, with `../diff-subject.json` (`af/diff-subject@1`) listing each changed path and its
-digest on each side. Context for a reviewer, evaluator or verifier, never a port and never sealed
-back (ADR-0212).
+`../base`. Context for a reviewer, evaluator or verifier, never a port and never sealed back
+(ADR-0212).
+
+**Diff Subject**:
+The change a judging Worker judges: one kernel-built `af/DiffSubject@1` artifact whose
+`af/diff-subject@1` document lists each path that differs between the Base sibling and the
+Worker's source, with its digest on each side. It reaches the Worker as a typed input on the
+optional `diff_subject` port its contract declares, which no Pipeline binds, and is checked before
+dispatch (ADR-0254).
+_Avoid_: `../diff-subject.json` — that file is no longer written.
 
 **Captured Issue Source**:
 An exact read-only observation of ticket fields, with raw source, per-field value and normalized

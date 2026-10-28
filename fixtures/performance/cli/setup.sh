@@ -9,7 +9,10 @@
 #   setup.sh SETUP SCRATCH AF PROBE ARGUMENT
 #
 # task_repository      a fresh Git repository of task-roots/repo at SCRATCH/repo, and the Task
-#                      file at SCRATCH/task.json
+#                      file at SCRATCH/task.json; ARGUMENT is the side's check-receipt
+#                      generation (ADR-0255): `receipt-v2`, or `receipt-v1` for a side before
+#                      ADR-0255, whose repository gets task-roots/receipt-v1 laid over it so its
+#                      evaluator declares the receipt that side's AF writes
 # task_started         the same, then the Task captured by the side's own `af task start`
 # seed_copy            a private copy of the read-only seed ARGUMENT at SCRATCH/seed
 # native_seed_copy     a private, writable copy of the read-only native seed ARGUMENT at
@@ -65,7 +68,19 @@ repository() {
 }
 
 task_repository() {
-    repository "$fixtures/task-roots/repo" "$scratch/repo"
+    mkdir "$scratch/repo"
+    copy_tree "$fixtures/task-roots/repo" "$scratch/repo"
+    case "$argument" in
+    receipt-v2) ;;
+    receipt-v1) copy_tree "$fixtures/task-roots/receipt-v1" "$scratch/repo" ;;
+    *)
+        echo "setup.sh: unknown check-receipt generation $argument" >&2
+        exit 2
+        ;;
+    esac
+    git_fixture "$scratch/repo" init -q -b main
+    git_fixture "$scratch/repo" add -A
+    git_fixture "$scratch/repo" commit -q -m "performance CLI fixture"
     cat "$fixtures/task-roots/task.json" >"$scratch/task.json"
 }
 

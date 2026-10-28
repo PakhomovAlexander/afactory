@@ -337,7 +337,7 @@ fn ids_elided(text: &str) -> String {
 }
 
 /// Item 1: per reviewer each finding with its severity, confidence, title, location, evidence
-/// and fix, grouped by severity, then the evaluator's verdict; one `af/task-findings@1` under
+/// and fix, grouped by severity, then the evaluator's verdict; one `af/task-findings@2` under
 /// `--json`; a Task without a review round says so with its state; a round it did not record is
 /// refused by its number.
 #[test]
@@ -415,9 +415,9 @@ next: af task deliver chain-base --branch af/chain-base --worktree ../chain-base
     let value = document(
         &af(&repo, &state, &["task", "findings", "chain-base", "--json"]),
         0,
-        Some("task-findings-v1.json"),
+        Some("task-findings-v2.json"),
     );
-    assert_eq!(value["schema"], "af/task-findings@1");
+    assert_eq!(value["schema"], "af/task-findings@2");
     assert_eq!(value["rounds"], 1);
     let round = &value["round"];
     assert_eq!(
@@ -437,7 +437,7 @@ next: af task deliver chain-base --branch af/chain-base --worktree ../chain-base
     );
     assert_eq!(round["reviewers"][1]["findings"], serde_json::json!([]));
     assert_eq!(value["evaluation"]["outcome"], "passed");
-    let typed: review_core::task::agent_loop::TaskFindingsV1 =
+    let typed: review_core::task::agent_loop::TaskFindingsV2 =
         serde_json::from_value(value.clone()).unwrap();
     typed.validate().unwrap();
     assert_eq!(
@@ -468,7 +468,7 @@ next: af task deliver chain-base --branch af/chain-base --worktree ../chain-base
     let none = document(
         &af(&repo, &state, &["task", "findings", "gc-older", "--json"]),
         0,
-        Some("task-findings-v1.json"),
+        Some("task-findings-v2.json"),
     );
     assert_eq!(
         (none["rounds"].clone(), none["round"].clone()),
@@ -1151,16 +1151,15 @@ fn alive(pid: u32) -> bool {
     .is_ok()
 }
 
-/// Kills the background run and its Worker group if the test fails before `cancel` did.
-struct Leftovers(Vec<u32>);
-impl Drop for Leftovers {
-    fn drop(&mut self) {
-        for pid in &self.0 {
-            let target = nix::unistd::Pid::from_raw(i32::try_from(*pid).unwrap());
-            let _ = nix::sys::signal::killpg(target, nix::sys::signal::Signal::SIGKILL);
-            let _ = nix::sys::signal::kill(target, nix::sys::signal::Signal::SIGKILL);
-        }
-    }
+/// Reports the background run and its Worker if the test fails before `cancel` stopped them.
+/// Neither is this test's child, so neither is signalled here: the Worker ends by itself once
+/// the run is gone, and the run ends at its Attempt walls (issue #331 item 7).
+fn leftovers(pids: &[u32]) -> crate::common::recorded::Leftovers {
+    crate::common::recorded::Leftovers(
+        pids.iter()
+            .filter_map(|pid| crate::common::recorded::Recorded::now(i32::try_from(*pid).ok()?))
+            .collect(),
+    )
 }
 
 /// Items 4, 5 and 8: a detached run returns at once with its pid and log, outlives the shell
@@ -1202,7 +1201,7 @@ fn a_detached_run_is_followed_cancelled_and_resumed() {
         .env("AF_TEST_HEARTBEAT_MS", "300")
         .output()
         .unwrap();
-    let value = document(&detached, 0, Some("task-detached-v2.json"));
+    let value = document(&detached, 0, Some("task-detached-v3.json"));
     assert!(
         started.elapsed() < Duration::from_secs(60),
         "returned at once"
@@ -1210,7 +1209,7 @@ fn a_detached_run_is_followed_cancelled_and_resumed() {
     assert_eq!(value["admitted"], true, "{value:#}");
     assert_eq!(value["next_action"], format!("af task wait {task}"));
     let pid = u32::try_from(value["pid"].as_u64().unwrap()).unwrap();
-    let mut leftovers = Leftovers(vec![pid]);
+    let mut leftovers = leftovers(&[pid]);
     let log = PathBuf::from(value["log"].as_str().unwrap());
     assert!(log.ends_with(format!("runs/{task}-1.log")), "{log:?}");
     assert!(log.is_file(), "{log:?}");
@@ -1233,7 +1232,9 @@ fn a_detached_run_is_followed_cancelled_and_resumed() {
         );
         std::thread::sleep(Duration::from_millis(20));
     };
-    leftovers.0.push(worker[0]);
+    leftovers.0.extend(crate::common::recorded::Recorded::now(
+        i32::try_from(worker[0]).unwrap(),
+    ));
     assert!(alive(pid), "the run outlived the shell that started it");
 
     let status = expect(&af(&repo, &state, &["task", "status", task]), 0);
@@ -1310,7 +1311,7 @@ fn a_detached_run_is_followed_cancelled_and_resumed() {
     let cancelled = document(
         &af(&repo, &state, &["task", "cancel", task, "--json"]),
         0,
-        Some("task-cancelled-v1.json"),
+        Some("task-cancelled-v2.json"),
     );
     assert_eq!(cancelled["request"]["pid"], pid);
     assert_eq!(
@@ -1475,9 +1476,9 @@ fn a_detached_run_not_admitted_in_time_is_not_claimed_to_run() {
         .env("AF_TEST_DETACHED_START_DELAY_MS", "3000")
         .output()
         .unwrap();
-    let value = document(&detached, 4, Some("task-detached-v2.json"));
+    let value = document(&detached, 4, Some("task-detached-v3.json"));
     let pid = u32::try_from(value["pid"].as_u64().unwrap()).unwrap();
-    let _leftovers = Leftovers(vec![pid]);
+    let _leftovers = leftovers(&[pid]);
     assert_eq!(value["admitted"], false, "{value:#}");
     assert_eq!(value["next_action"], format!("af task status {task}"));
     assert_ne!(value["state"]["phase"], "running", "{value:#}");

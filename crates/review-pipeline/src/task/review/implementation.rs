@@ -16,7 +16,7 @@ pub(super) fn signature(policy: &str, allow_targeted: bool) -> OperatorSignature
                     port(SOURCE_TREE_V1, PortAffinityV1::Unbound {}, false),
                 ),
                 ("review".into(), port(TASK_REVIEW_ROUND_V1, same(), false)),
-                ("checks".into(), port(TASK_CHECK_RECEIPT_V1, same(), false)),
+                ("checks".into(), port(TASK_CHECK_RECEIPT_V2, same(), false)),
             ]),
             outputs: BTreeMap::from([
                 ("snapshot".into(), port(SOURCE_TREE_V1, same(), false)),

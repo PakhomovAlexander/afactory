@@ -1018,7 +1018,7 @@ pub(super) fn show(options: InspectOptions, checks: bool) -> Result<(), String> 
     Err(super::task_execution::task_not_found(&state, task_id))
 }
 
-/// `af task report` (ADR-0142): one Markdown block, or one `af/task-report@2` document, over
+/// `af task report` (ADR-0142): one Markdown block, or one `af/task-report@3` document, over
 /// the named Tasks of one Store. Read-only; nothing is printed unless every Task is found.
 /// `af task report --pr-body`: the template it fills, and the base its lines added block counts
 /// from.
@@ -1789,7 +1789,7 @@ fn print_task_list(
 ) -> Result<(), String> {
     if options.json {
         let mut document = serde_json::json!({
-            "schema": TASK_LIST_V3,
+            "schema": TASK_LIST_V4,
             "tasks": tasks,
         });
         if let Some(store) = store {
@@ -1919,7 +1919,7 @@ fn list_row(row: &[String; 6], widths: &[usize; 6], wide: bool) -> String {
 }
 
 /// The document `af task list --json` prints.
-pub(crate) const TASK_LIST_V3: &str = "af/task-list@3";
+pub(crate) const TASK_LIST_V4: &str = "af/task-list@4";
 
 /// How long ago, as `af task list` prints it: `45s`, `12m`, `3h`, `2d`.
 fn age(ms: u64) -> String {

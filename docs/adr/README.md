@@ -447,6 +447,8 @@ future readers need.
   results](0238-retain-refused-physical-telemetry-measurements-in-incomplete-results.md)
 - [0239 — Default every pull request to fast
   validation](0239-default-every-pull-request-to-fast-validation.md)
+- [0240 — Open the browser before any Store is
+  read](0240-open-the-browser-before-any-store-is-read.md)
 - [0240 — Execute performance experiments independently on a locked
   VM](0240-execute-performance-experiments-independently-on-a-locked-vm.md)
 - [0241 — Install an agent entry point from the help
@@ -466,3 +468,11 @@ future readers need.
   gate](0252-keep-the-kernel-experiment-measurement-out-of-every-gate.md)
 - [0253 — The default Task pipeline lives in the
   catalog](0253-the-default-task-pipeline-lives-in-the-catalog.md)
+- [0254 — Name the tree of a Worker's rules, and deliver the Diff Subject as a typed
+  input](0254-name-the-tree-of-a-workers-rules-and-deliver-the-diff-subject-as-a-typed-input.md)
+- [0255 — Say a check stopped at its wall, and carry typed acceptance in the check
+  receipt](0255-say-a-check-stopped-at-its-wall-and-carry-typed-acceptance-in-the-check-receipt.md)
+- [0256 — Carry the recovery of an interrupted command as a typed
+  field](0256-carry-the-recovery-of-an-interrupted-command-as-a-typed-field.md)
+- [0257 — Seal the implementer's tree when its Attempt wall ends
+  it](0257-seal-the-implementers-tree-when-its-attempt-wall-ends-it.md)

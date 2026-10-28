@@ -15,7 +15,7 @@ use serde_json::Value;
 const SAFE: u64 = review_core::json::SAFE_INTEGER_MAX as u64;
 
 /// Every field of `af.task-file/1`, in the order the schema declares them.
-const FIELDS: [&str; 18] = [
+const FIELDS: [&str; 19] = [
     "schema",
     "task_id",
     "kind",
@@ -24,6 +24,7 @@ const FIELDS: [&str; 18] = [
     "continue",
     "base",
     "requirements",
+    "acceptance",
     "inputs",
     "document_sources",
     "report_sources",
@@ -130,6 +131,18 @@ pub(super) fn diagnose(document: &Value) -> Option<String> {
                     .iter()
                     .enumerate()
                     .find_map(|(index, item)| text(&format!("context[{index}]"), item)),
+            },
+            "acceptance" => match value.as_array() {
+                None => Some(format!(
+                    "acceptance must be a list of items, each {{\"id\": NAME, \"text\": TEXT}}, got {}",
+                    quoted(value)
+                )),
+                Some(items) => items.iter().enumerate().find_map(|(index, item)| {
+                    typed::<review_core::task::acceptance::TaskAcceptanceItemV1>(
+                        &format!("acceptance[{index}]"),
+                        item,
+                    )
+                }),
             },
             "inputs" => table(path, value).or_else(|| {
                 value.as_object().and_then(|ports| {

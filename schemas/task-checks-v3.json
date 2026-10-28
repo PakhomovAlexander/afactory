@@ -1,8 +1,8 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "$id": "urn:af:schema:task-checks:2",
-  "title": "Task checks af/task-checks@2",
-  "$comment": "What `af task show ID --checks --json` prints: the Task's state and gate summary, and the last check receipt its execution recorded with every check it names. `receipt` is null before a check recorded one. Read-only: nothing runs. Under a warm layer each started check carries `layer`, its `af/TaskCheckLayer@1` entry (ADR-0207): the key, how the check came by it, warm or cold at the start, the source groups the content rule made stale, the build and test phases against their deadlines, and an eviction with its cause.",
+  "$id": "urn:af:schema:task-checks:3",
+  "title": "Task checks af/task-checks@3",
+  "$comment": "What `af task show ID --checks --json` prints: the Task's state and gate summary, and the last check receipt its execution recorded with every check it names. `receipt` is null before a check recorded one. Read-only: nothing runs. Under a warm layer each started check carries `layer`, its `af/TaskCheckLayer@1` entry (ADR-0207): the key, how the check came by it, warm or cold at the start, the source groups the content rule made stale, the build and test phases against their deadlines, and an eviction with its cause. A check the kernel stopped at its wall carries `stop` from its `af/TaskCheckReceipt@2` (ADR-0255): the cause `wall`, the wall and how long it ran; a check that never started has neither `stop` nor `elapsed_ms`. The state is `task-state-v2` (ADR-0257). `af/task-checks@2` is neither written nor read.",
   "type": "object",
   "additionalProperties": false,
   "required": [
@@ -14,18 +14,18 @@
   ],
   "properties": {
     "schema": {
-      "const": "af/task-checks@2"
+      "const": "af/task-checks@3"
     },
     "task_id": {
       "$ref": "urn:af:schema:task-contracts:1#/$defs/name"
     },
     "state": {
-      "$ref": "urn:af:schema:task-state:1#/$defs/state"
+      "$ref": "urn:af:schema:task-state:2#/$defs/state"
     },
     "gate": {
       "anyOf": [
         {
-          "$ref": "urn:af:schema:task-state:1#/$defs/gate"
+          "$ref": "urn:af:schema:task-state:2#/$defs/gate"
         },
         {
           "type": "null"
@@ -119,6 +119,10 @@
         "remote": {
           "type": "boolean"
         },
+        "stop": {
+          "description": "The wall the kernel stopped the check at, as its receipt records it (ADR-0255); absent for a check that ended on its own or never started.",
+          "$ref": "urn:af:schema:task-check-receipt:2#/$defs/stop"
+        },
         "stopped_step": {
           "type": "object",
           "additionalProperties": false,
@@ -141,7 +145,7 @@
           "maxItems": 200,
           "uniqueItems": true,
           "items": {
-            "$ref": "urn:af:schema:task-state:1#/$defs/testName"
+            "$ref": "urn:af:schema:task-state:2#/$defs/testName"
           }
         },
         "flaky": {
@@ -149,7 +153,7 @@
           "maxItems": 200,
           "uniqueItems": true,
           "items": {
-            "$ref": "urn:af:schema:task-state:1#/$defs/testName"
+            "$ref": "urn:af:schema:task-state:2#/$defs/testName"
           }
         },
         "stdout_id": {

@@ -70,6 +70,11 @@ path = "junit.xml"
 #   heartbeat lease. It passed alone in 19.385 s but took 27.888 s in the full gate and
 #   exhausted resources at repair verification. Preserve those budgets and execute it with
 #   the suite's threads held, alongside heavy starter repair (ADR-0203).
+# - telemetry_tail_follows_a_live_run_within_the_flush_latency: every span end `af telemetry
+#   tail` prints while the run is open must be visible within the 1 s flush latency of its
+#   creation, through two processes' wake-ups (the writer's consumer thread, tail's 250 ms
+#   look). Seen failing in a full gate beside the suite (issue #331); its other assertions measure
+#   nothing. Alone it took 8-12 s under 14 CPU-bound and 2 spawning workers at load 70-267.
 # The guarded kernel measurement is manual (`make perf-kernel-measure`).
 # Its refusal half runs in the ordinary perf class without exclusivity (ADR-0252).
 [[profile.default.overrides]]
@@ -86,6 +91,7 @@ test(/::identity_rechecks_cancel_an_inflight_status_process$/)
 | test(/::heavy_starter_repair_uses_current_evidence$/)
 | test(/::targeted_starter_repair_uses_current_evidence$/)
 | test(/concurrent_short_commands_complete_within_their_real_time_bounds$/)
+| test(/::telemetry_tail_follows_a_live_run_within_the_flush_latency$/)
 '''
 threads-required = "num-test-threads"
 priority = 100

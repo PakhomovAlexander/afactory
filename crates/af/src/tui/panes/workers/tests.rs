@@ -140,11 +140,13 @@ fn every_committed_worker_is_found_however_nested_and_grouped_by_source() {
     // More than one source has Workers: each is a group named by its directory.
     let mut pane = WorkersPane::default();
     pane.load(&scope(root)).unwrap();
+    pane.settle();
     assert!(
         pane.items().is_empty(),
         "nothing is read before the pane opens"
     );
     pane.open(None);
+    pane.settle();
     let groups: Vec<String> = pane.items().into_iter().map(|item| item.label).collect();
     assert_eq!(
         groups,
@@ -170,6 +172,7 @@ fn every_committed_worker_is_found_however_nested_and_grouped_by_source() {
     commit_all(flat, "flat");
     let mut pane = WorkersPane::default();
     pane.refresh(&scope(flat)).unwrap();
+    pane.settle();
     let items = pane.items();
     assert_eq!(items.len(), 2);
     assert!(items.iter().all(|item| item.children.is_none()));
@@ -189,7 +192,9 @@ fn a_working_tree_that_differs_from_head_is_marked_and_head_is_what_is_shown() {
     commit_all(root, "worker");
     let mut pane = WorkersPane::default();
     pane.load(&scope(root)).unwrap();
+    pane.settle();
     pane.open(Some(".af/task-packages/w/worker.toml"));
+    pane.settle();
     assert_eq!(pane.items()[0].label, "fixture/w");
     let rows = texts(pane.rows());
     assert_eq!(rows[0], "WORKER  fixture/w");
@@ -200,6 +205,7 @@ fn a_working_tree_that_differs_from_head_is_marked_and_head_is_what_is_shown() {
         "Edited prompt.\n",
     );
     pane.refresh(&scope(root)).unwrap();
+    pane.settle();
     let item = &pane.items()[0];
     assert_eq!(item.label, "fixture/w *");
     assert!(item.muted);
@@ -215,6 +221,7 @@ fn a_working_tree_that_differs_from_head_is_marked_and_head_is_what_is_shown() {
     std::fs::write(&file, text.replace("fixture/w", "dirty/w")).unwrap();
     worker(root, ".af/task-packages/untracked", "untracked");
     pane.refresh(&scope(root)).unwrap();
+    pane.settle();
     assert_eq!(pane.items().len(), 1);
     let rows = texts(pane.rows());
     assert!(
@@ -232,12 +239,15 @@ fn a_prompt_only_the_working_tree_has_is_drift() {
     commit_all(root, "a worker without its prompt");
     let mut pane = WorkersPane::default();
     pane.load(&scope(root)).unwrap();
+    pane.settle();
     pane.open(Some(".af/task-packages/w/worker.toml"));
+    pane.settle();
     assert_eq!(pane.items()[0].label, "fixture/w");
     // An untracked prompt: `commit` has no such file, the working tree does.
     let prompt = ".af/task-packages/w/instructions.md";
     write(root, prompt, "Not committed yet.\n");
     pane.open(Some(".af/task-packages/w/worker.toml"));
+    pane.settle();
     assert_eq!(pane.items()[0].label, "fixture/w *");
     let rows = texts(pane.rows());
     assert!(
@@ -253,9 +263,11 @@ fn a_prompt_only_the_working_tree_has_is_drift() {
     std::fs::remove_file(root.join(prompt)).unwrap();
     std::os::unix::fs::symlink("missing.md", root.join(prompt)).unwrap();
     pane.open(Some(".af/task-packages/w/worker.toml"));
+    pane.settle();
     assert_eq!(pane.items()[0].label, "fixture/w *");
     std::fs::remove_file(root.join(prompt)).unwrap();
     pane.open(Some(".af/task-packages/w/worker.toml"));
+    pane.settle();
     assert_eq!(pane.items()[0].label, "fixture/w");
 }
 
@@ -267,7 +279,9 @@ fn a_failed_read_of_head_keeps_the_last_entries_under_the_error() {
     commit_all(root, "worker");
     let mut pane = WorkersPane::default();
     pane.load(&scope(root)).unwrap();
+    pane.settle();
     pane.open(Some(".af/task-packages/w/worker.toml"));
+    pane.settle();
     // HEAD now names a commit the repository does not have.
     let head_ref = String::from_utf8(git(root, &["symbolic-ref", "HEAD"]).unwrap()).unwrap();
     std::fs::write(
@@ -276,6 +290,7 @@ fn a_failed_read_of_head_keeps_the_last_entries_under_the_error() {
     )
     .unwrap();
     pane.refresh(&scope(root)).unwrap();
+    pane.settle();
     assert!(pane.error.is_some());
     assert_eq!(pane.entries.len(), 1, "the last good entries stay");
     assert!(pane.items()[0].muted);
@@ -285,6 +300,7 @@ fn a_failed_read_of_head_keeps_the_last_entries_under_the_error() {
         "{rows:#?}"
     );
     pane.open(None);
+    pane.settle();
     let rows = texts(pane.rows());
     assert!(
         rows[2].starts_with(" error  HEAD could not be read; the entries below"),
@@ -297,6 +313,7 @@ fn a_failed_read_of_head_keeps_the_last_entries_under_the_error() {
     std::fs::write(&declaration, format!("{text}# edited\n")).unwrap();
     write(root, ".af/task-packages/w/instructions.md", "Untracked.\n");
     pane.refresh(&scope(root)).unwrap();
+    pane.settle();
     assert!(pane.error.is_some());
     assert_eq!(pane.items()[0].label, "fixture/w *");
     assert_eq!(
@@ -395,8 +412,10 @@ fn identity_shows_only_what_the_declaration_carries() {
     commit_all(root, "declarations");
     let mut pane = WorkersPane::default();
     pane.load(&scope(root)).unwrap();
+    pane.settle();
     let identity = |pane: &mut WorkersPane, id: &str| {
         pane.open(Some(id));
+        pane.settle();
         let rows = texts(pane.rows());
         let start = rows
             .iter()
@@ -484,8 +503,10 @@ fn the_prompt_is_the_file_the_kernel_sends_and_nothing_else() {
     assert_eq!(Kind::Task.prompt(), "instructions.md");
     let mut pane = WorkersPane::default();
     pane.load(&scope(root)).unwrap();
+    pane.settle();
     let prompt = |pane: &mut WorkersPane, id: &str| {
         pane.open(Some(id));
+        pane.settle();
         texts(&pane.rows()[pane.prompt_row..])
     };
     assert_eq!(
@@ -534,12 +555,12 @@ fn the_prompt_is_the_file_the_kernel_sends_and_nothing_else() {
 fn the_user_scope_lists_no_workers_and_says_they_belong_to_a_project() {
     let temp = tempfile::tempdir().unwrap();
     let home = temp.path();
-    let mut scope = Scope::user().unwrap();
-    scope.home = Some(home.to_path_buf());
-    scope.state = Some(home.join("state"));
+    let scope = crate::tui::tests::user_scope(home);
     let mut pane = WorkersPane::default();
     pane.load(&scope).unwrap();
+    pane.settle();
     pane.open(None);
+    pane.settle();
     assert!(pane.items().is_empty());
     let rows = texts(pane.rows());
     assert!(
@@ -904,7 +925,9 @@ fn a_reviewer_and_a_task_package_sharing_a_name_keep_their_own_attempts() {
     commit_all(root, "two packages named bugs");
     let mut pane = WorkersPane::default();
     pane.load(&scope(root)).unwrap();
+    pane.settle();
     pane.open(None);
+    pane.settle();
     pane.stores = vec![Store {
         shown: "state".to_owned(),
         tallies: Ok(tallies),
@@ -936,8 +959,10 @@ fn every_open_reads_the_stores_and_the_working_tree_again() {
     let id = ".af/task-packages/fixture/implementer/worker.toml";
     let mut pane = WorkersPane::default();
     pane.load(&scope).unwrap();
+    pane.settle();
     let attempts = |pane: &mut WorkersPane| {
         pane.open(Some(id));
+        pane.settle();
         let rows = texts(pane.rows());
         rows.into_iter()
             .find(|row| row.starts_with("attempts"))
@@ -955,6 +980,7 @@ fn every_open_reads_the_stores_and_the_working_tree_again() {
     let text = std::fs::read_to_string(&declaration).unwrap();
     std::fs::write(&declaration, format!("{text}\n# edited\n")).unwrap();
     pane.open(Some(id));
+    pane.settle();
     let rows = texts(pane.rows());
     assert!(
         rows[0].starts_with("working tree differs from HEAD in worker.toml"),
@@ -1017,7 +1043,9 @@ fn state_counts_only_the_digest_the_committed_pin_records() {
     commit_all(root, "pinned at the new digest");
     let mut pane = WorkersPane::default();
     pane.load(&scope(root)).unwrap();
+    pane.settle();
     pane.open(Some(".af/task-packages/implementer/worker.toml"));
+    pane.settle();
     pane.stores = vec![Store {
         shown: "state".to_owned(),
         tallies: Ok(tallies),
@@ -1051,8 +1079,10 @@ fn a_declaration_without_a_name_yanks_nothing() {
     commit_all(root, "a worker that names nothing");
     let mut pane = WorkersPane::default();
     pane.load(&scope(root)).unwrap();
+    pane.settle();
     let id = ".af/task-packages/nameless/worker.toml";
     pane.open(Some(id));
+    pane.settle();
     // The directory stands in as its label, never as its name.
     assert_eq!(pane.items()[0].label, "nameless");
     assert_eq!(pane.yank(0), None);
@@ -1135,7 +1165,9 @@ fn a_task_worker_may_sit_at_its_source_root() {
     );
     let mut pane = WorkersPane::default();
     pane.load(&scope(root)).unwrap();
+    pane.settle();
     pane.open(Some(".af/vendor/worker.toml"));
+    pane.settle();
     assert_eq!(pane.items()[0].label, "fixture/vendored");
     let rows = texts(pane.rows());
     assert!(
@@ -1324,8 +1356,10 @@ fn the_runner_row_carries_the_verdict_against_the_providers_catalog() {
     shared.set(&super::super::providers::tests::fixture_catalogs());
     let mut pane = WorkersPane::with_catalogs(shared);
     pane.load(&scope(root)).unwrap();
+    pane.settle();
     let runner = |pane: &mut WorkersPane, id: &str| {
         pane.open(Some(id));
+        pane.settle();
         texts(pane.rows())
             .into_iter()
             .find(|row| row.starts_with("runner "))
@@ -1357,6 +1391,7 @@ fn the_runner_row_carries_the_verdict_against_the_providers_catalog() {
     // with its exact ID, and a pair that passes them is ok by those rules.
     let mut alone = WorkersPane::default();
     alone.load(&scope(root)).unwrap();
+    alone.settle();
     assert!(
         runner(&mut alone, ".af/task-packages/model/worker.toml")
             .ends_with("verdict (static rules): ok")
@@ -1386,7 +1421,9 @@ fn the_runner_row_gives_one_verdict_per_provider_of_its_kind() {
     let id = ".af/task-packages/fable/worker.toml";
     let runner = |pane: &mut WorkersPane| {
         pane.load(&scope(root)).unwrap();
+        pane.settle();
         pane.open(Some(id));
+        pane.settle();
         texts(pane.rows())
             .into_iter()
             .find(|row| row.starts_with("runner "))
@@ -1436,7 +1473,9 @@ fn the_runner_row_follows_the_catalogs_as_they_arrive() {
     let shared = super::super::providers::SharedCatalogs::default();
     let mut pane = WorkersPane::with_catalogs(shared.clone());
     pane.load(&scope(root)).unwrap();
+    pane.settle();
     pane.open(Some(".af/task-packages/fable/worker.toml"));
+    pane.settle();
     let row = runner(&pane);
     assert!(row.ends_with("verdict (static rules): ok"), "{row}");
     assert!(!pane.poll());

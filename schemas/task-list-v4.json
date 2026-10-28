@@ -1,7 +1,7 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "$id": "urn:af:schema:task-list:3",
-  "title": "Task list af/task-list@3",
+  "$id": "urn:af:schema:task-list:4",
+  "title": "Task list af/task-list@4",
   "$comment": "What `af task list --json` prints: one entry per Task of the Store, collected Tasks included, in Task ID order; with --sizes, each entry's footprint and the Store's totals.",
   "type": "object",
   "additionalProperties": false,
@@ -11,12 +11,12 @@
   ],
   "properties": {
     "schema": {
-      "const": "af/task-list@3"
+      "const": "af/task-list@4"
     },
     "tasks": {
       "type": "array",
       "items": {
-        "$ref": "urn:af:schema:task-list-entry:3"
+        "$ref": "urn:af:schema:task-list-entry:4"
       }
     },
     "store": {
@@ -30,16 +30,16 @@
       ],
       "properties": {
         "objects": {
-          "$ref": "urn:af:schema:task-list-entry:3#/$defs/count"
+          "$ref": "urn:af:schema:task-list-entry:4#/$defs/count"
         },
         "bytes": {
-          "$ref": "urn:af:schema:task-list-entry:3#/$defs/count"
+          "$ref": "urn:af:schema:task-list-entry:4#/$defs/count"
         },
         "unreachable_objects": {
-          "$ref": "urn:af:schema:task-list-entry:3#/$defs/count"
+          "$ref": "urn:af:schema:task-list-entry:4#/$defs/count"
         },
         "unreachable_bytes": {
-          "$ref": "urn:af:schema:task-list-entry:3#/$defs/count"
+          "$ref": "urn:af:schema:task-list-entry:4#/$defs/count"
         }
       }
     }

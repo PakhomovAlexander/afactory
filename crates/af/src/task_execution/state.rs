@@ -17,19 +17,22 @@ use review_core::task::runtime::{
 };
 use review_core::task::state::*;
 use review_core::task::usage::TaskUnknownUsageCauseV1;
-use review_core::task::verification::{TASK_CHECK_RECEIPT_V1, TaskCheckReceiptV1};
+use review_core::task::verification::{TASK_CHECK_RECEIPT_V2, TaskCheckReceiptV2, TaskCheckStopV2};
 use review_graph::task::{CompiledOperator, ReviewOperation};
 use review_store::store::task::execution::TaskAttemptAccounting;
 use review_store::store::task::gate_retry::GateRetry;
 
 /// The schema of `af task show ID --checks --json`.
-pub(crate) const TASK_CHECKS_V2: &str = "af/task-checks@2";
+pub(crate) const TASK_CHECKS_V3: &str = "af/task-checks@3";
 
 /// How many lines of a check's stderr `af task show --checks` prints.
 const STDERR_TAIL_LINES: usize = 40;
 
 /// The literal a next command names for the Task file a person edits.
 pub(crate) const TASK_FILE: &str = "TASK_FILE";
+
+/// The literal a next command names for the ID of a new Task a person chooses.
+pub(crate) const NEW_TASK_ID: &str = "NEW_TASK_ID";
 
 /// The state of one Task and the evidence its renderings print beside it.
 pub(crate) struct TaskView {
@@ -53,6 +56,11 @@ pub(crate) struct NodeFailure {
     /// The full stderr of the node's last failed Attempt or check, when one was recorded.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub(crate) stderr_id: Option<String>,
+    /// What happened in af's own words when the Attempt wall ended the node's last Attempt
+    /// (ADR-0257): `implementer reached its Attempt wall of 30 min after 30 min`. The report
+    /// prints it where it prints no diagnostic.
+    #[serde(skip)]
+    pub(crate) wall: Option<String>,
 }
 
 /// One check receipt as `af task show --checks` prints it.
@@ -78,6 +86,10 @@ pub(crate) struct CheckView {
     /// without a warm cache.
     pub(crate) cache: String,
     pub(crate) remote: bool,
+    /// The wall the kernel stopped the check at, as its receipt records it (ADR-0255); absent
+    /// for a check that ended on its own or never started.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(crate) stop: Option<TaskCheckStopV2>,
     /// The step the check's own step log says stopped it (`scripts/ci-step.py`).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub(crate) stopped_step: Option<StoppedStep>,
@@ -335,7 +347,14 @@ fn next_action(cas: &Cas, state: &TaskProjection, cause: TaskCauseV1) -> Result<
         }
         TaskCauseV1::ProviderNetwork
         | TaskCauseV1::ProviderCapacity
-        | TaskCauseV1::ProviderTimeout => "af provider status".into(),
+        | TaskCauseV1::ProviderTimeout
+        | TaskCauseV1::ProviderEnvironment => "af provider status".into(),
+        // The edits an Attempt wall stopped are kept: a continuation starts from them
+        // (ADR-0257). A Worker that writes no source left nothing to continue from.
+        TaskCauseV1::AttemptWall => match super::continuation::partial_candidate(cas, state) {
+            Some(_) => format!("af task run {NEW_TASK_ID} --from {id}"),
+            None => format!("af task show {id}"),
+        },
         TaskCauseV1::IdentityChanged | TaskCauseV1::IdentityUnverified => {
             match failed_provider(cas, state) {
                 Some(provider) => format!("af provider setup {provider} --login"),
@@ -423,8 +442,9 @@ fn node_kind(operator: Option<&CompiledOperator>) -> NodeKind {
     }
 }
 
-/// A failed gate's cause: a check never started, or every failed check stopped at a step before
-/// its tests and named no test; its tests failed after some were flaky; or it failed.
+/// A failed gate's cause: a check the kernel stopped at its wall ran and failed (ADR-0255); a
+/// check never started, or every failed check stopped at a step before its tests and named no
+/// test; its tests failed after some were flaky; or it failed.
 fn gate_cause(checks: &ChecksView, gate: &TaskGateV1) -> TaskCauseV1 {
     let preflight = checks.checks.iter().all(|c| {
         c.status != "failed"
@@ -433,7 +453,13 @@ fn gate_cause(checks: &ChecksView, gate: &TaskGateV1) -> TaskCauseV1 {
                     .as_ref()
                     .is_some_and(|s| !s.step.starts_with("test")))
     });
+    let walled = checks
+        .checks
+        .iter()
+        .any(|c| c.status != "passed" && c.stop.is_some());
     match gate.status {
+        _ if walled && gate.flaky.is_empty() => TaskCauseV1::CheckFailed,
+        _ if walled => TaskCauseV1::CheckFlakyThenFailed,
         TaskGateStatusV1::NotRun => TaskCauseV1::PreflightFailed,
         _ if preflight => TaskCauseV1::PreflightFailed,
         _ if !gate.flaky.is_empty() => TaskCauseV1::CheckFlakyThenFailed,
@@ -594,6 +620,9 @@ fn failures(cas: &Cas, state: &TaskProjection) -> Result<Vec<NodeFailure>, Strin
                 })
                 .unwrap_or_else(|| diagnostic_id.clone()),
             stderr_id: last_failed.and_then(|attempt| stderr_capture(cas, attempt)),
+            wall: last_failed
+                .and_then(|attempt| wall_end(cas, attempt))
+                .map(|(_, end)| end.describe(operator.and_then(node_slot))),
         };
         if consequence {
             consequences.push(failure);
@@ -617,6 +646,39 @@ fn attempt_error(cas: &Cas, attempt: &TaskAttemptAccounting) -> Option<String> {
         .as_str()
         .or_else(|| value["message"].as_str())
         .map(str::to_owned)
+}
+
+/// The closed class an Attempt's own diagnostic names, when af wrote one (`cause`):
+/// `host_cancelled`, `writer_lost`, `attempt_wall` or `environment`.
+fn diagnostic_cause(cas: &Cas, attempt: &TaskAttemptAccounting) -> Option<String> {
+    let (Some(TaskAttemptResultV1::Failed { diagnostic_id, .. })
+    | Some(TaskAttemptResultV1::Abandoned { diagnostic_id })) = &attempt.result
+    else {
+        return None;
+    };
+    let value = cas.get_json(diagnostic_id).ok()?;
+    value["cause"].as_str().map(str::to_owned)
+}
+
+/// The `af/TaskAttemptWallEnd@1` an Attempt's settlement keeps among its raw evidence, with its
+/// ID, when the Attempt wall ended it (ADR-0257).
+pub(crate) fn wall_end(
+    cas: &Cas,
+    attempt: &TaskAttemptAccounting,
+) -> Option<(
+    String,
+    review_core::task::attempt_wall::TaskAttemptWallEndV1,
+)> {
+    use review_core::task::attempt_wall::*;
+    attempt.raw_artifact_ids.iter().find_map(|id| {
+        let envelope = cas.get_optional_artifact(id).ok()??;
+        if envelope.artifact_type != TASK_ATTEMPT_WALL_END_V1 {
+            return None;
+        }
+        let end: TaskAttemptWallEndV1 = serde_json::from_value(envelope.payload).ok()?;
+        end.validate().ok()?;
+        Some((id.clone(), end))
+    })
 }
 
 /// The raw capture of an Attempt's stderr, when its Worker adapter recorded one by that name.
@@ -644,6 +706,14 @@ fn node_cause(
 ) -> TaskCauseV1 {
     let text = format!("{}\n{message}", attempt_error.unwrap_or_default());
     if let Some(attempt) = attempt {
+        // The typed records of ADR-0257 first: an Attempt its wall ended, and a failure whose
+        // diagnostic names the Provider's environment as its closed class.
+        if wall_end(cas, attempt).is_some() {
+            return TaskCauseV1::AttemptWall;
+        }
+        if diagnostic_cause(cas, attempt).as_deref() == Some("environment") {
+            return TaskCauseV1::ProviderEnvironment;
+        }
         match attempt.unknown_usage {
             Some(TaskUnknownUsageCauseV1::Capacity | TaskUnknownUsageCauseV1::RateLimit) => {
                 return TaskCauseV1::ProviderCapacity;
@@ -735,7 +805,7 @@ fn last_checks(cas: &Cas, state: &TaskProjection) -> Result<Option<ChecksView>, 
             },
         };
         for port in output.outputs.values() {
-            if port.artifact_type == TASK_CHECK_RECEIPT_V1
+            if port.artifact_type == TASK_CHECK_RECEIPT_V2
                 && let Some(id) = port.artifact_ids.last()
             {
                 found = Some((node.clone(), output_id.clone(), id.clone()));
@@ -745,7 +815,7 @@ fn last_checks(cas: &Cas, state: &TaskProjection) -> Result<Option<ChecksView>, 
     let Some((node, output_id, receipt_id)) = found else {
         return Ok(None);
     };
-    let receipt: TaskCheckReceiptV1 = artifact(cas, &receipt_id, TASK_CHECK_RECEIPT_V1)?;
+    let receipt: TaskCheckReceiptV2 = artifact(cas, &receipt_id, TASK_CHECK_RECEIPT_V2)?;
     let attempt = execution.attempt_accounting().into_iter().find(|attempt| {
         matches!(&attempt.result, Some(TaskAttemptResultV1::Succeeded { output_id: id }) if *id == output_id)
     });
@@ -754,6 +824,7 @@ fn last_checks(cas: &Cas, state: &TaskProjection) -> Result<Option<ChecksView>, 
     for (name, result_id) in &receipt.checks {
         let mut view = check_view(cas, name, result_id, attempt.as_ref())?;
         view.layer = layers.get(name).cloned();
+        view.stop = receipt.stopped.get(name).cloned();
         checks.push(view);
     }
     Ok(Some(ChecksView {
@@ -895,6 +966,7 @@ fn check_view(
         elapsed_ms,
         cache,
         remote: result["remote"].is_string(),
+        stop: None,
         stopped_step,
         failed_tests,
         flaky,
@@ -975,12 +1047,44 @@ fn summary_with(view: &TaskView, diagnostics: bool) -> Option<String> {
                 .filter(|c| c.status != "passed")
                 .map(|c| c.name.as_str())
                 .collect::<Vec<_>>();
+            // A check stopped at its wall says so first, with its wall and how long it ran
+            // (ADR-0255), and what to do about it.
+            let walled = checks
+                .checks
+                .iter()
+                .filter(|c| c.status != "passed")
+                .filter_map(|c| {
+                    c.stop
+                        .as_ref()
+                        .map(|stop| format!("check {} {}", c.name, wall_words(stop)))
+                })
+                .collect::<Vec<_>>();
+            let gate = view.gate.as_ref()?;
+            if !walled.is_empty() {
+                let mut text = walled.join("; ");
+                let others = checks
+                    .checks
+                    .iter()
+                    .filter(|c| c.status != "passed" && c.stop.is_none())
+                    .map(|c| c.name.as_str())
+                    .collect::<Vec<_>>();
+                if !others.is_empty() {
+                    text.push_str(&format!("; also not passed: {}", others.join(", ")));
+                }
+                if !gate.failed_tests.is_empty() {
+                    text.push_str(&format!(
+                        "; failing tests: {}",
+                        tests_list(&gate.failed_tests, 5)
+                    ));
+                }
+                text.push_str(&format!("; {WALL_NEXT}"));
+                return Some(text);
+            }
             let mut text = format!(
                 "{} {}",
                 if failed.len() == 1 { "check" } else { "checks" },
                 failed.join(", ")
             );
-            let gate = view.gate.as_ref()?;
             if !gate.failed_tests.is_empty() {
                 text.push_str(&format!(
                     ", {} {}: {}",
@@ -1005,6 +1109,9 @@ fn summary_with(view: &TaskView, diagnostics: bool) -> Option<String> {
         Some(_) => view.failures.first().map(|failure| {
             if diagnostics {
                 format!("{}: {}", failure.node, failure.first_line)
+            } else if let Some(wall) = &failure.wall {
+                // af's own words, never a Worker's: the wall and the time it took (ADR-0257).
+                format!("{}: {wall}", failure.node)
             } else {
                 format!("{} failed", failure.node)
             }
@@ -1023,6 +1130,28 @@ pub(crate) fn duration_words(ms: u64) -> String {
             minutes => format!("{} h {minutes} min", seconds / 3_600),
         },
     }
+}
+
+/// What a person does about a check stopped at its wall (ADR-0255).
+pub(crate) const WALL_NEXT: &str = "make the check faster, or raise its wall in \
+     .af/code-policy.toml (check_wall_ms, check_process_wall_ms or [warm] build_wall_ms) and plan \
+     the Task again";
+
+/// `stopped at its 90 min wall after 88 min`: a check the kernel stopped at its wall, in whole
+/// minutes, or in seconds below one (ADR-0255).
+pub(crate) fn wall_words(stop: &TaskCheckStopV2) -> String {
+    let minutes = |ms: u64| {
+        if ms < 59_500 {
+            format!("{} s", ms.saturating_add(500) / 1_000)
+        } else {
+            format!("{} min", ms.saturating_add(30_000) / 60_000)
+        }
+    };
+    format!(
+        "stopped at its {} wall after {}",
+        minutes(stop.wall_ms),
+        minutes(stop.elapsed_ms)
+    )
 }
 
 /// A Unix time as this machine's local wall clock: `17:41:18 +03`, with the date before it
@@ -1148,10 +1277,10 @@ pub(crate) fn tests_list(names: &[String], max: usize) -> String {
     }
 }
 
-/// The `af/task-checks@2` document of `af task show ID --checks --json`.
+/// The `af/task-checks@3` document of `af task show ID --checks --json`.
 pub(crate) fn checks_document(task_id: &str, view: &TaskView) -> serde_json::Value {
     json!({
-        "schema": TASK_CHECKS_V2,
+        "schema": TASK_CHECKS_V3,
         "task_id": task_id,
         "state": view.state,
         "gate": view.gate,
@@ -1179,13 +1308,17 @@ pub(crate) fn checks_lines(task_id: &str, view: &TaskView) -> Vec<String> {
         if let Some(code) = check.exit_code {
             head.push_str(&format!(" (exit {code})"));
         }
-        match check.elapsed_ms {
-            Some(ms) => head.push_str(&format!(" in {ms} ms")),
-            None if check.remote => head.push_str(", run remotely"),
-            None => head.push_str(", never started"),
+        match (&check.stop, check.elapsed_ms) {
+            (Some(stop), _) => head.push_str(&format!(", {}", wall_words(stop))),
+            (None, Some(ms)) => head.push_str(&format!(" in {ms} ms")),
+            (None, None) if check.remote => head.push_str(", run remotely"),
+            (None, None) => head.push_str(", never started"),
         }
         head.push_str(&format!(", {}", check.cache));
         lines.push(head);
+        if check.stop.is_some() {
+            lines.push(format!("  next: {WALL_NEXT}"));
+        }
         if let Some(reason) = &check.reason {
             lines.push(format!("  reason: {reason}"));
         }
@@ -1233,6 +1366,32 @@ pub(crate) fn checks_lines(task_id: &str, view: &TaskView) -> Vec<String> {
     lines
 }
 
+/// `check kernel stopped at its 90 min wall after 88 min; make the check faster, …`: the line
+/// every rendering prints for a check the kernel stopped at its wall (ADR-0255).
+fn wall_line(check: &CheckView) -> Option<String> {
+    check
+        .stop
+        .as_ref()
+        .filter(|_| check.status != "passed")
+        .map(|stop| {
+            format!(
+                "check {} {}; {WALL_NEXT}",
+                preview::text(&check.name),
+                wall_words(stop)
+            )
+        })
+}
+
+/// The line of each check of the gate's last receipt the kernel stopped at its wall: what a
+/// run prints on stderr in every format (ADR-0255).
+pub(crate) fn wall_lines(view: &TaskView) -> Vec<String> {
+    view.checks
+        .iter()
+        .flat_map(|checks| &checks.checks)
+        .filter_map(wall_line)
+        .collect()
+}
+
 /// The lines `af task run` adds on stderr after a run whose gate failed: the failing tests, at
 /// most 20, then where the rest are.
 pub(crate) fn failed_gate_tail(task_id: &str, view: &TaskView) -> Vec<String> {
@@ -1248,6 +1407,10 @@ pub(crate) fn failed_gate_tail(task_id: &str, view: &TaskView) -> Vec<String> {
     };
     let mut lines = Vec::new();
     for check in checks.checks.iter().filter(|c| c.status != "passed") {
+        if let Some(line) = wall_line(check) {
+            lines.push(line);
+            continue;
+        }
         let detail = match (&check.stopped_step, check.failed_tests.len()) {
             (_, n) if n > 0 => format!("{n} failing {}", if n == 1 { "test" } else { "tests" }),
             (Some(step), _) => format!("stopped at step {} (exit {})", step.step, step.exit_code),
@@ -1322,6 +1485,7 @@ mod tests {
             elapsed_ms: Some(10),
             cache: "cold (no warm cache)".into(),
             remote: false,
+            stop: None,
             stopped_step: step.map(|s| StoppedStep {
                 step: s.into(),
                 exit_code: 2,
@@ -1428,13 +1592,102 @@ mod tests {
             "  phases: no build step reported, 9000 ms in one (build 2400000 ms + tests 3600000 ms)"
         );
         let document = checks_document("t", &task);
-        assert_eq!(document["schema"], "af/task-checks@2");
+        assert_eq!(document["schema"], "af/task-checks@3");
         assert_eq!(document["receipt"]["checks"][0]["layer"]["lock"], "waited");
         assert_eq!(
             document["receipt"]["checks"][0]["layer"]["phases"]["deadline"],
             "tests"
         );
         assert!(document["receipt"]["checks"][1]["layer"]["phases"]["build_ms"].is_null());
+    }
+
+    /// A check the kernel stopped at its wall (ADR-0255) is `check_failed`, and every rendering
+    /// names its wall, how long it ran and what to do; a check that never started still says so
+    /// and nothing else does, and alone it is still `preflight_failed`.
+    #[test]
+    fn a_check_stopped_at_its_wall_is_named_so_and_never_as_never_started() {
+        use review_core::task::verification::TaskCheckStopCauseV2;
+        let mut kernel = check("not_run", &[], &[], None);
+        kernel.exit_code = None;
+        kernel.reason = Some("no result within 5400s; the check was killed".into());
+        kernel.elapsed_ms = Some(5_280_000);
+        kernel.stop = Some(TaskCheckStopV2 {
+            cause: TaskCheckStopCauseV2::Wall,
+            wall_ms: 5_400_000,
+            elapsed_ms: 5_280_000,
+        });
+        let mut unstarted = check("not_run", &[], &[], None);
+        unstarted.name = "markdownlint".into();
+        unstarted.exit_code = None;
+        unstarted.elapsed_ms = None;
+        unstarted.reason = Some("Task check deadline expired".into());
+        let walled = view(vec![kernel.clone(), unstarted.clone()]);
+        let gate = gate_of(&walled);
+        assert_eq!(gate.status, TaskGateStatusV1::NotRun);
+        assert_eq!(gate_cause(&walled, &gate), TaskCauseV1::CheckFailed);
+        let wall = "check kernel stopped at its 90 min wall after 88 min";
+        let task = TaskView {
+            state: TaskStateV1::ended(
+                TaskStatePhaseV1::Finished,
+                TaskOutcomeV1::GateFailed,
+                Some(TaskCauseV1::CheckFailed),
+            )
+            .with_next("af task run t --retry-gate"),
+            gate: Some(gate.clone()),
+            checks: Some(walled),
+            failures: vec![],
+        };
+        let lines = checks_lines("t", &task);
+        assert_eq!(
+            lines[2..6],
+            [
+                "check kernel: not_run, stopped at its 90 min wall after 88 min, cold (no warm \
+                 cache)",
+                &format!("  next: {WALL_NEXT}"),
+                "  reason: no result within 5400s; the check was killed",
+                "check markdownlint: not_run, never started, cold (no warm cache)",
+            ]
+        );
+        let line = format!("{wall}; {WALL_NEXT}");
+        assert_eq!(wall_lines(&task), [line.clone()]);
+        let tail = failed_gate_tail("t", &task);
+        assert_eq!(tail[0], line);
+        assert_eq!(
+            tail[1],
+            "check markdownlint: not_run: Task check deadline expired"
+        );
+        let summary = format!("{wall}; also not passed: markdownlint; {WALL_NEXT}");
+        assert_eq!(summary_with(&task, true).unwrap(), summary);
+        assert_eq!(report_summary(&task).unwrap(), summary);
+        let document = checks_document("t", &task);
+        assert_eq!(
+            document["receipt"]["checks"][0]["stop"],
+            json!({"cause": "wall", "wall_ms": 5_400_000, "elapsed_ms": 5_280_000})
+        );
+        assert!(document["receipt"]["checks"][1].get("stop").is_none());
+
+        // Without the stopped check, the one that never started reads as before.
+        let alone = view(vec![unstarted]);
+        let gate = gate_of(&alone);
+        assert_eq!(gate_cause(&alone, &gate), TaskCauseV1::PreflightFailed);
+        let task = TaskView {
+            checks: Some(alone),
+            gate: Some(gate),
+            ..task
+        };
+        assert!(wall_lines(&task).is_empty());
+        assert!(
+            checks_lines("t", &task)
+                .iter()
+                .all(|line| !line.contains("wall"))
+        );
+        // Seconds below a minute: a short test wall reads as one.
+        let short = TaskCheckStopV2 {
+            cause: TaskCheckStopCauseV2::Wall,
+            wall_ms: 2_000,
+            elapsed_ms: 2_049,
+        };
+        assert_eq!(wall_words(&short), "stopped at its 2 s wall after 2 s");
     }
 
     #[test]
@@ -1558,6 +1811,98 @@ mod tests {
             TaskCauseV1::Budget.outcome(),
             Some(TaskOutcomeV1::Exhausted)
         );
+    }
+
+    /// ADR-0257: an Attempt its wall ended reads `attempt_wall`, and a failure whose diagnostic
+    /// names the Provider's environment reads `provider_environment`, whatever their words say;
+    /// an Attempt without either record is classified as before.
+    #[test]
+    fn typed_wall_ends_and_environment_failures_name_their_own_cause() {
+        use review_core::task::attempt_wall::*;
+        let directory = tempfile::tempdir().unwrap();
+        let cas = Cas::open(directory.path()).unwrap();
+        let producer = review_core::Producer::KernelOperation {
+            run_id: "state-test".into(),
+            node_id: None,
+            operation_id: "fixture@1".into(),
+        };
+        let end = TaskAttemptWallEndV1 {
+            schema: TASK_ATTEMPT_WALL_END_SCHEMA.into(),
+            task_id: "t".into(),
+            node: "root.nodes.implement".into(),
+            attempt_id: "01AAAAAAAAAAAAAAAAAAAAAAAA".into(),
+            wall_ms: 2_000,
+            elapsed_ms: 2_100,
+            partial_candidate_id: None,
+        };
+        let (end_id, _) = cas
+            .put_artifact(
+                TASK_ATTEMPT_WALL_END_V1,
+                producer,
+                vec![],
+                None,
+                serde_json::to_value(&end).unwrap(),
+            )
+            .unwrap();
+        let attempt = |diagnostic: serde_json::Value, raw: Vec<String>| TaskAttemptAccounting {
+            attempt_id: end.attempt_id.clone(),
+            invocation_id: end_id.clone(),
+            plan_id: end_id.clone(),
+            reservation: review_attempt::task_budget::TaskReservation {
+                id: "reservation:0".into(),
+                node: end.node.clone(),
+                tokens: 10,
+                deadline_unix_ms: 1,
+            },
+            started: true,
+            started_unix_ms: Some(1),
+            settled_unix_ms: Some(2),
+            released: false,
+            charged_tokens: 0,
+            state: None,
+            result: Some(TaskAttemptResultV1::Failed {
+                diagnostic_id: cas.put_json(&diagnostic).unwrap(),
+                feedback_id: None,
+            }),
+            context_id: None,
+            raw_artifact_ids: raw,
+            usage_id: None,
+            unknown_usage: Some(TaskUnknownUsageCauseV1::Unreported),
+            abandoned: None,
+        };
+        let cause = |attempt: &TaskAttemptAccounting| {
+            let error = attempt_error(&cas, attempt);
+            node_cause(
+                &cas,
+                TaskFailureClassV1::Resources,
+                NodeKind::Worker,
+                Some(attempt),
+                error.as_deref(),
+                "Task node root.nodes.implement exhausted its Attempt limit",
+            )
+        };
+        let walled = attempt(
+            serde_json::json!({"schema":"af.task-diagnostic/1",
+                "error":"implementer did not answer within 2000ms and was killed",
+                "cause":"attempt_wall"}),
+            vec![end_id.clone()],
+        );
+        assert_eq!(cause(&walled), TaskCauseV1::AttemptWall);
+        assert_eq!(wall_end(&cas, &walled).unwrap().1, end);
+        let environment = attempt(
+            serde_json::json!({"schema":"af.task-diagnostic/1",
+                "error":"identity recheck: probe timed out 3×; the account was not verified",
+                "cause":"environment"}),
+            vec![],
+        );
+        assert_eq!(cause(&environment), TaskCauseV1::ProviderEnvironment);
+        let changed = attempt(
+            serde_json::json!({"schema":"af.task-diagnostic/1",
+                "error":"identity recheck: the Claude account differs from the one captured at \
+                         plan: run `af task plan` again"}),
+            vec![],
+        );
+        assert_eq!(cause(&changed), TaskCauseV1::IdentityChanged);
     }
 
     #[test]

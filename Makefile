@@ -1,4 +1,4 @@
-.PHONY: prereqs release-check preflight-check check fmt lint test-build test test-repeat release review-kernel-container-probes
+.PHONY: prereqs release-check preflight-check check fmt lint test-build test test-repeat stress-proof release review-kernel-container-probes
 
 # What this machine needs before `make check`, one line per tool with the command that installs
 # a missing one (issue #161): python3, git 2.30+, the rustup toolchain rust-toolchain.toml pins,
@@ -62,6 +62,16 @@ NEXTEST_FILTER ?= all()
 test-repeat:
 	python3 scripts/nextest-gate.py --repeat $(NEXTEST_REPEAT) --locked --profile ci --test-threads $(TEST_THREADS) -E "$(NEXTEST_FILTER)"
 
+# The concurrent-load stress proof of the recurring flakes (issue #331, CONTRIBUTING.md): every
+# test scripts/stress-proof.py names runs STRESS_RUNS times through the gate's profile beside
+# STRESS_LOAD CPU-bound and STRESS_SPAWN process-spawning workers it starts and kills by pid,
+# never rerun or stopped early, and it prints each test's passes, load range and wall.
+STRESS_RUNS ?= 20
+STRESS_LOAD ?= $(shell python3 -c 'import os; print(os.cpu_count() or 4)')
+STRESS_SPAWN ?= 2
+stress-proof:
+	python3 -I scripts/stress-proof.py --runs $(STRESS_RUNS) --load-workers $(STRESS_LOAD) --spawn-workers $(STRESS_SPAWN) --test-threads $(TEST_THREADS)
+
 # Live containment and the v3 Gate route. These stay outside `make check` because a missing
 # daemon is a hard failure here, never a skip disguised as success.
 review-kernel-container-probes:
@@ -98,6 +108,7 @@ preflight-check:
 	$(CI_STEP) --stage preflight prereqs python3 scripts/test-prereqs.py
 	$(CI_STEP) --stage preflight gate-owner python3 scripts/test-gate-owner.py
 	$(CI_STEP) --stage preflight nextest-gate python3 scripts/test-nextest-gate.py
+	$(CI_STEP) --stage preflight stress-proof python3 scripts/test-stress-proof.py
 	$(CI_STEP) --stage preflight test-time-report python3 scripts/test-test-time-report.py
 	$(CI_STEP) --stage preflight provider-auth-host python3 scripts/test-provider-auth-host.py
 	$(CI_STEP) --stage preflight pr-report python3 scripts/test-check-pr-report.py

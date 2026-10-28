@@ -147,7 +147,16 @@ fn a_clean_host_only_warns_says_what_to_do_and_writes_nothing() {
         shown.contains("warn  providers  no Provider registered"),
         "{shown}"
     );
-    assert!(shown.contains("fix: af provider detect --apply"), "{shown}");
+    // #331 D5: no login is found to register, so `af provider detect --apply` could not clear
+    // the check: no fix, and the hint names the setup a person runs at a private terminal.
+    assert!(
+        !shown.contains("fix: af provider detect --apply"),
+        "{shown}"
+    );
+    assert!(
+        shown.contains("hint: no login was found to register; log in and register one"),
+        "{shown}"
+    );
     assert!(shown.contains("fix: af self setup-shell --"), "{shown}");
     assert!(
         shown.lines().last().unwrap().starts_with("nothing failed"),
@@ -193,6 +202,14 @@ fn a_clean_host_only_warns_says_what_to_do_and_writes_nothing() {
     );
     // The default link's directory is not on this PATH.
     assert_eq!(check(&document, "path")["status"], "warn");
+    let providers = check(&document, "providers");
+    assert_eq!(providers["fix"], serde_json::Value::Null, "{document}");
+    assert!(
+        providers["hint"].as_str().unwrap().ends_with(
+            "at a private terminal: af provider setup claude-main --kind claude --login"
+        ),
+        "{document}"
+    );
     // $SHELL is unset: the fix names the SHELL placeholder, the hint its choices.
     assert_eq!(
         check(&document, "shell")["fix"],
@@ -274,11 +291,19 @@ fn a_repository_without_af_is_told_to_onboard() {
         project["detail"].as_str().unwrap().contains("has no .af/"),
         "{document}"
     );
-    assert!(
-        project["fix"]
-            .as_str()
-            .unwrap()
-            .starts_with("af onboard --repo "),
+    // #331 D4: `af onboard` only previews and writes no `.af/`, so it is no fix: the hint gives
+    // the preview and then the `--apply` that writes it.
+    assert_eq!(project["fix"], serde_json::Value::Null, "{document}");
+    let onboard = format!(
+        "af onboard --repo {}",
+        shell_words::quote(&canonical(&repo))
+    );
+    assert_eq!(
+        project["hint"],
+        format!(
+            "preview the .af/ it would write, token-free, writing nothing: {onboard}; then \
+             write it, to review and commit: {onboard} --apply"
+        ),
         "{document}"
     );
     // The same from inside the repository, without --repo.
@@ -369,7 +394,10 @@ fn the_update_row_warns_of_a_failed_or_stalled_release_check() {
 
 /// GA final fix item 7: the human rows fit 100 columns, or a narrower `COLUMNS` (80 here), with
 /// a long install path: a detail or path continues on indented lines and is never cut short, and
-/// each fix command stays whole on its line or is broken between its arguments.
+/// each fix command stays whole on its line or is broken between its arguments. The PATH is the
+/// test's own, so both forms of the binary's install fix are proven whatever the host's PATH
+/// holds (#331, Linux CI): with an `af` on PATH it runs that `af`; with none, this binary by its
+/// path, its printed lines the command the JSON carries.
 #[test]
 fn rows_fit_100_and_80_columns_with_a_long_install_path() {
     let machine = Machine::new();
@@ -380,14 +408,27 @@ fn rows_fit_100_and_80_columns_with_a_long_install_path() {
     std::fs::create_dir_all(&home).unwrap();
     let bin = home.join(".local/bin");
     let squeeze = |text: &str| text.split_whitespace().collect::<String>();
-    // The zsh PATH fix is one line, printed whole even where it is wider than one.
-    let export = format!("export PATH='{}':\"$PATH\"", bin.display());
-    for columns in [100, 80] {
+    // A PATH with git and no `af`, and one with an `af` link to this binary before it.
+    let tools = machine.path("tools-path");
+    std::fs::create_dir_all(&tools).unwrap();
+    std::os::unix::fs::symlink(on_path("git"), tools.join("git")).unwrap();
+    let linked = machine.path("af-path");
+    std::fs::create_dir_all(&linked).unwrap();
+    std::os::unix::fs::symlink(crate::common::af_binary(), linked.join("af")).unwrap();
+    let with_af = std::env::join_paths([&linked, &tools]).unwrap();
+    let version = env!("CARGO_PKG_VERSION");
+    for (columns, af_on_path) in [(100, false), (100, true), (80, false), (80, true)] {
+        let path = if af_on_path {
+            with_af.as_os_str()
+        } else {
+            tools.as_os_str()
+        };
         let wide = columns.to_string();
-        let output = machine.doctor_at(&home, &work, &[], None, &[("COLUMNS", &wide)]);
+        let envs = [("COLUMNS", wide.as_str())];
+        let output = machine.doctor_at(&home, &work, &[], Some(path), &envs);
         assert_eq!(output.status.code(), Some(0), "{}", err(&output));
         let text = out(&output);
-        for line in text.lines().filter(|line| !line.contains(&export)) {
+        for line in text.lines() {
             assert!(
                 line.chars().count() <= columns,
                 "{columns}: `{line}`\n{text}"
@@ -402,16 +443,18 @@ fn rows_fit_100_and_80_columns_with_a_long_install_path() {
             flat.contains(&format!("{}isnotonPATH", bin.display())),
             "{columns}\n{text}"
         );
-        // Without $SHELL no line is written for an unknown shell: the hint names the directory.
+        // Without $SHELL no line is written for an unknown shell: the hint says to install first,
+        // which links the default, and names the directory (#331 D7).
         assert!(
-            flat.contains(&squeeze(&format!(
-                "hint: put {} first on PATH",
-                bin.display()
-            ))),
+            flat.contains(&squeeze("first on PATH in your shell's startup file"))
+                && flat.contains(&squeeze(&format!("put {} first on PATH", bin.display()))),
+            "{columns}\n{text}"
+        );
+        assert!(
+            flat.contains("hint:installfirst,whichlinks"),
             "{columns}\n{text}"
         );
         // The receipt path is printed canonical; its tail below the machine root is the same.
-        let version = env!("CARGO_PKG_VERSION");
         assert!(
             flat.contains(&format!(
                 "/home/a-long-gate-like-directory-name-for-path-length-tests/\
@@ -419,12 +462,27 @@ fn rows_fit_100_and_80_columns_with_a_long_install_path() {
             )),
             "{columns}\n{text}"
         );
-        // Each af fix command is whole on its line, or broken between its arguments.
-        assert!(
-            text.lines()
-                .any(|line| line.ends_with(&format!("fix: af self install {version}"))),
-            "{columns}\n{text}"
-        );
+        // Each af fix command is whole on its line, or broken between its arguments: the
+        // binary's install runs the `af` on PATH, or this binary by its path when none is.
+        if af_on_path {
+            assert!(
+                text.lines()
+                    .any(|line| line.ends_with(&format!("fix: af self install {version}"))),
+                "{columns}\n{text}"
+            );
+        } else {
+            let json = document(&machine.doctor_at(&home, &work, &["--json"], Some(path), &envs));
+            let fix = check(&json, "binary")["fix"].as_str().unwrap().to_owned();
+            let program = crate::common::af_binary();
+            let program = shell_words::quote(program.to_str().unwrap()).into_owned();
+            assert_eq!(fix, format!("{program} self install {version}"), "{json}");
+            let printed = printed_fix(&text, "binary");
+            assert_eq!(
+                shell_words::split(&printed.replace("\\\n", "")).unwrap(),
+                shell_words::split(&fix).unwrap(),
+                "{columns}\n{text}"
+            );
+        }
         let setup: Vec<String> = text
             .lines()
             .skip_while(|line| !line.contains("fix: af self setup-shell"))
@@ -443,30 +501,34 @@ fn rows_fit_100_and_80_columns_with_a_long_install_path() {
             "{columns}\n{text}"
         );
 
-        // With zsh the shell row names the long completion and man page paths, and the PATH fix
-        // is one shell word, printed whole on its own line even where it is wider than one.
-        let zsh = machine.doctor_at(
-            &home,
-            &work,
-            &[],
-            None,
-            &[("COLUMNS", &wide), ("SHELL", "/bin/zsh")],
-        );
+        // With zsh the shell row names the long completion and man page paths, and the PATH
+        // fix, which installs first because the default link is absent (#331 D7), is held to
+        // the width, its directory cut where the shell joins it again (D6): the printed lines
+        // are the command the JSON carries.
+        let envs = [("COLUMNS", wide.as_str()), ("SHELL", "/bin/zsh")];
+        let zsh = machine.doctor_at(&home, &work, &[], Some(path), &envs);
         let text = out(&zsh);
-        assert!(
-            text.lines()
-                .any(
-                    |line| line.trim_start().strip_prefix("fix: ") == Some(export.as_str())
-                        || line.trim_start() == export
-                ),
-            "{columns}: `{export}` whole\n{text}"
-        );
-        for line in text.lines().filter(|line| !line.contains(&export)) {
+        for line in text.lines() {
             assert!(
                 line.chars().count() <= columns,
                 "{columns}: `{line}`\n{text}"
             );
         }
+        let json = document(&machine.doctor_at(&home, &work, &["--json"], Some(path), &envs));
+        let fix = check(&json, "path")["fix"].as_str().unwrap().to_owned();
+        assert!(
+            fix.ends_with(&format!(
+                " self install {version} && export PATH='{}':\"$PATH\"",
+                bin.display()
+            )),
+            "{fix}"
+        );
+        let printed = printed_fix(&text, "path");
+        assert_eq!(
+            shell_words::split(&printed.replace("\\\n", "")).unwrap(),
+            shell_words::split(&fix).unwrap(),
+            "{columns}\n{text}"
+        );
         assert!(
             squeeze(&text).contains(&squeeze(&format!(
                 "no zsh completions at {}",
@@ -475,10 +537,34 @@ fn rows_fit_100_and_80_columns_with_a_long_install_path() {
             "{columns}\n{text}"
         );
         assert!(
-            squeeze(&text).contains("hint:addthatlineto~/.zshrc,thenopenanewshell"),
+            squeeze(&text).contains("addthePATHlineto~/.zshrc,thenopenanewshell"),
             "{columns}\n{text}"
         );
     }
+}
+
+/// The fix of row `id` as the text form printed it: from past `fix: ` to the line before its
+/// hint or the next row, its lines as printed.
+fn printed_fix(text: &str, id: &str) -> String {
+    let mut lines = text
+        .lines()
+        .skip_while(|line| !line.starts_with(&format!("warn  {id} ")))
+        .skip_while(|line| !line.contains(" fix: "));
+    let first = lines
+        .next()
+        .unwrap_or_else(|| panic!("no {id} fix\n{text}"));
+    let mut printed = first[first.find(" fix: ").unwrap() + 6..].to_owned();
+    for line in lines.take_while(|line| {
+        !line.trim_start().starts_with("hint: ")
+            && !line.starts_with("warn ")
+            && !line.starts_with("ok ")
+            && !line.starts_with("fail ")
+            && !line.starts_with("nothing failed")
+    }) {
+        printed.push('\n');
+        printed.push_str(line);
+    }
+    printed
 }
 
 /// The `--json` document of `af doctor` under `envs`, with `$SHELL` set when `shell` names one.
@@ -725,11 +811,13 @@ fn every_fix_of_a_machine_where_every_check_fails_is_a_command() {
             .starts_with(&format!("correct {} line 1 by hand", registry.display())),
         "{failing}"
     );
+    // With no `af` on PATH, the install runs this binary by its path (#331 D7).
+    let binary = check(&failing, "binary")["hint"].as_str().unwrap();
     assert!(
-        check(&failing, "binary")["hint"]
-            .as_str()
-            .unwrap()
-            .contains("which stops this fix; then run: af self install "),
+        binary.contains(&format!(
+            "which stops this fix; then run: {} self install ",
+            crate::common::af_binary().display()
+        )),
         "{failing}"
     );
     assert_fixes_are_commands(&failing);
@@ -796,7 +884,8 @@ fn run_fixes(
                     }
                 })
                 .collect();
-            let output = if command[0] == "af" {
+            // An `af` named by its path runs as the binary under test, in the private home.
+            let output = if command[0] == "af" || command[0].ends_with("/af") {
                 crate::common::af()
                     .args(&command[1..])
                     .current_dir(dir)
@@ -856,7 +945,12 @@ fn canonical_or(path: &Path) -> String {
 /// A repository whose `.af/` validates, onboarded in `machine`'s private home, with a Worker
 /// that needs a claude Provider.
 fn onboarded(machine: &Machine) -> PathBuf {
-    let repo = machine.path("work/onboarded");
+    onboarded_with(machine, "claude")
+}
+
+/// [`onboarded`] with Workers that need a `runner` Provider.
+fn onboarded_with(machine: &Machine, runner: &str) -> PathBuf {
+    let repo = machine.path(&format!("work/onboarded-{runner}"));
     std::fs::create_dir_all(&repo).unwrap();
     git(&repo, &["init", "-q", "-b", "main"]);
     let home = machine.path("home");
@@ -867,7 +961,7 @@ fn onboarded(machine: &Machine) -> PathBuf {
             "--gate",
             "check=git --version",
             "--runner",
-            "claude",
+            runner,
         ])
         .current_dir(&repo)
         .env("HOME", &home)
@@ -988,7 +1082,20 @@ fn no_fix_is_offered_that_the_reported_error_would_stop() {
     std::fs::remove_file(&config).unwrap();
 
     // The Provider registry: the providers check names it; the project's `af provider detect
-    // --apply`, which the reviewer's missing Provider would offer, waits for it.
+    // --apply`, which the reviewer's missing Provider would offer for the login found here,
+    // waits for it.
+    let found = home.join(".claude");
+    std::fs::create_dir_all(&found).unwrap();
+    std::fs::set_permissions(&found, std::fs::Permissions::from_mode(0o700)).unwrap();
+    std::fs::write(found.join(".credentials.json"), "{}").unwrap();
+    // A login its CLI on PATH reports, which `af provider detect --apply` would register.
+    std::fs::write(found.join("logged-in"), "").unwrap();
+    std::fs::write(
+        bin.join("claude"),
+        crate::provider_cli::with_help("claude", CLAUDE),
+    )
+    .unwrap();
+    std::fs::set_permissions(bin.join("claude"), std::fs::Permissions::from_mode(0o755)).unwrap();
     std::fs::write(&registry, "version = 1\n[[providers]\n").unwrap();
     let document = doctor();
     let providers = check(&document, "providers");
@@ -1024,15 +1131,771 @@ fn no_fix_is_offered_that_the_reported_error_would_stop() {
         "{flat}"
     );
 
-    // With the registry gone the same project check offers the command again: it can clear it.
+    // With the registry gone and no login found, `af provider detect --apply` would register
+    // nothing, so it is no fix (#331 D5): the hint names the setup a person runs.
     std::fs::remove_file(&registry).unwrap();
+    std::fs::remove_dir_all(&found).unwrap();
     let document = doctor();
-    assert_eq!(
-        check(&document, "project")["fix"],
-        "af provider detect --apply",
+    let project = check(&document, "project");
+    assert_eq!(project["fix"], serde_json::Value::Null, "{document}");
+    assert!(
+        project["hint"].as_str().unwrap().contains(
+            "no claude login was found to register; log in and register one yourself at a \
+             private terminal: af provider setup claude-main --kind claude --login"
+        ),
         "{document}"
     );
     run_fixes(&machine, &document, &repo, &bin, &envs, &[]);
+
+    // An empty auth directory holds no login: `af provider detect --apply` probes none there
+    // and registers nothing, so it is no fix either (#331 D5); the hint says why, naming the
+    // directory `~/.claude` below HOME whether or not HOME is reached through a symbolic link
+    // (macOS's `/var`).
+    std::fs::create_dir_all(&found).unwrap();
+    std::fs::set_permissions(&found, std::fs::Permissions::from_mode(0o700)).unwrap();
+    let document = doctor();
+    for (id, login) in [("project", "claude login"), ("providers", "login")] {
+        let row = check(&document, id);
+        assert_eq!(row["fix"], serde_json::Value::Null, "{id}: {document}");
+        assert!(
+            row["hint"].as_str().unwrap().contains(&format!(
+                "no {login} was found to register: no CLI on PATH reports a login in \
+                 ~/.claude; log in and register one yourself at a private terminal"
+            )),
+            "{id}: {document}"
+        );
+    }
+    let detected = crate::common::af()
+        .args(["provider", "detect", "--apply", "--json"])
+        .current_dir(&repo)
+        .env("HOME", &home)
+        .env("XDG_CONFIG_HOME", home.join(".config"))
+        .env("XDG_STATE_HOME", home.join(".local/state"))
+        .env("XDG_CACHE_HOME", home.join(".cache"))
+        .env("XDG_DATA_HOME", home.join(".local/share"))
+        .envs(envs.iter().copied())
+        .output()
+        .unwrap();
+    assert!(!registry.exists(), "{}", err(&detected));
+
+    // A marker alone is no login: with the Claude CLI on PATH reporting the context logged
+    // out, and then with no Claude CLI on PATH, `af provider detect --apply` registers nothing,
+    // so it is no fix (#331 UX close-out).
+    std::fs::write(found.join("settings.json"), "{}").unwrap();
+    let no_fix = |document: &serde_json::Value| {
+        for id in ["project", "providers"] {
+            assert_eq!(
+                check(document, id)["fix"],
+                serde_json::Value::Null,
+                "{id}: {document}"
+            );
+        }
+    };
+    no_fix(&doctor());
+    std::fs::rename(bin.join("claude"), machine.path("claude-off-path")).unwrap();
+    no_fix(&doctor());
+    std::fs::rename(machine.path("claude-off-path"), bin.join("claude")).unwrap();
+    // Logged in, its CLI on PATH: the command registers it, and the check clears.
+    std::fs::write(found.join("logged-in"), "").unwrap();
+    let document = doctor();
+    for id in ["project", "providers"] {
+        assert_eq!(
+            check(&document, id)["fix"],
+            "af provider detect --apply",
+            "{id}: {document}"
+        );
+    }
+    let detected = crate::common::af()
+        .args(["provider", "detect", "--apply", "--json"])
+        .current_dir(&repo)
+        .env("HOME", &home)
+        .env("PATH", &bin)
+        .env("XDG_CONFIG_HOME", home.join(".config"))
+        .env("XDG_STATE_HOME", home.join(".local/state"))
+        .env("XDG_CACHE_HOME", home.join(".cache"))
+        .env("XDG_DATA_HOME", home.join(".local/share"))
+        .envs(envs.iter().copied())
+        .output()
+        .unwrap();
+    assert!(registry.exists(), "{}", err(&detected));
+    let document = doctor();
+    for id in ["project", "providers"] {
+        assert_eq!(
+            check(&document, id)["fix"],
+            serde_json::Value::Null,
+            "{id}: {document}"
+        );
+    }
+    std::fs::remove_dir_all(&found).unwrap();
+}
+
+/// #331 final review: a project whose Workers need a codex Provider, on a machine whose one
+/// login is a claude login its CLI reports authenticated, which `af provider detect --apply`
+/// registers: the project hint names the missing codex login and never denies the claude one.
+#[test]
+fn a_missing_codex_login_never_denies_an_available_claude_login() {
+    let machine = Machine::new();
+    let repo = onboarded_with(&machine, "codex");
+    let home = machine.path("home");
+    let bin = machine.path("tools-path");
+    std::fs::create_dir_all(&bin).unwrap();
+    std::os::unix::fs::symlink(on_path("git"), bin.join("git")).unwrap();
+    use std::os::unix::fs::PermissionsExt as _;
+    let found = home.join(".claude");
+    std::fs::create_dir_all(&found).unwrap();
+    std::fs::set_permissions(&found, std::fs::Permissions::from_mode(0o700)).unwrap();
+    std::fs::write(found.join(".credentials.json"), "{}").unwrap();
+    std::fs::write(found.join("logged-in"), "").unwrap();
+    std::fs::write(
+        bin.join("claude"),
+        crate::provider_cli::with_help("claude", CLAUDE),
+    )
+    .unwrap();
+    std::fs::set_permissions(bin.join("claude"), std::fs::Permissions::from_mode(0o755)).unwrap();
+    let document =
+        document(&machine.doctor_at(&home, &repo, &["--json"], Some(bin.as_os_str()), &[]));
+    assert_eq!(
+        check(&document, "providers")["fix"],
+        "af provider detect --apply",
+        "{document}"
+    );
+    let hint = check(&document, "project")["hint"].as_str().unwrap();
+    assert!(
+        hint.contains(
+            "needs a codex Provider and no codex login was found to register; af provider \
+             detect --apply registers only the claude login it finds; log in and register one \
+             yourself at a private terminal: af provider setup codex-main --kind codex --login"
+        ),
+        "{hint}"
+    );
+    assert!(!hint.contains("no CLI on PATH reports a login"), "{hint}");
+}
+
+/// A Claude CLI whose context is `$CLAUDE_CONFIG_DIR`, or `~/.claude` without it: logged in
+/// where that directory holds `logged-in`; installed with the help page af's capability check
+/// reads.
+const CLAUDE: &str = r#"#!/bin/sh
+if [ "$1" = --version ]; then
+  printf '%s\n' '2.1.299 (Claude Code)'
+  exit 0
+fi
+if [ "$1" = auth ] && [ "$2" = status ] && [ "$3" = --json ]; then
+  if [ -f "${CLAUDE_CONFIG_DIR:-$HOME/.claude}/logged-in" ]; then
+    printf '%s\n' '{"loggedIn":true,"authMethod":"claude.ai","apiProvider":"firstParty","subscriptionType":"max"}'
+    exit 0
+  fi
+  printf '%s\n' '{"loggedIn":false,"authMethod":"none","apiProvider":"firstParty"}'
+  exit 1
+fi
+exit 64
+"#;
+
+/// #331 D2 and D3: the `.af/` file the project row names is the one onboarding stopped at, in
+/// its reader's order (the selected pipeline before the lock), and a typed error is located by
+/// its file and line like a syntax error; the hint's file is the one `af onboard` names.
+#[test]
+fn the_project_row_names_the_file_onboarding_stopped_at() {
+    let machine = Machine::new();
+    let repo = onboarded(&machine);
+    let home = machine.path("home");
+    let quoted = shell_words::quote(&canonical(&repo)).into_owned();
+    let project_hint = || {
+        let document = document(&machine.doctor_at(&home, &repo, &["--json"], None, &[]));
+        let project = check(&document, "project").clone();
+        assert_eq!(project["status"], "fail", "{document}");
+        assert_eq!(project["fix"], serde_json::Value::Null, "{document}");
+        project["hint"].as_str().unwrap().to_owned()
+    };
+    let onboard_says = || {
+        let output = crate::common::af()
+            .args(["onboard", "--repo", &canonical(&repo)])
+            .env("HOME", &home)
+            .output()
+            .unwrap();
+        assert!(!output.status.success());
+        err(&output)
+    };
+    let lock = repo.join(".af/af.lock");
+    let pipeline = repo.join(".af/pipelines/review.toml");
+    let (kept_lock, kept_pipeline) = (
+        std::fs::read(&lock).unwrap(),
+        std::fs::read(&pipeline).unwrap(),
+    );
+    std::fs::write(&lock, [kept_lock.as_slice(), b"\nbroken = [\n"].concat()).unwrap();
+    std::fs::write(
+        &pipeline,
+        [kept_pipeline.as_slice(), b"\nbroken = [\n"].concat(),
+    )
+    .unwrap();
+    let line = String::from_utf8_lossy(&kept_pipeline).lines().count() + 2;
+    let hint = project_hint();
+    assert!(
+        hint.starts_with(&format!(
+            "correct {}/.af/pipelines/review.toml line {line} by hand (",
+            canonical(&repo)
+        )),
+        "{hint}"
+    );
+    assert!(
+        hint.ends_with(&format!("then recheck: af doctor --repo {quoted}")),
+        "{hint}"
+    );
+    // Onboarding itself stops at that pipeline, never at the lock.
+    let said = onboard_says();
+    assert!(said.contains(&format!("line {line}")), "{said}");
+    assert!(!said.contains("af.lock"), "{said}");
+    std::fs::write(&lock, &kept_lock).unwrap();
+    std::fs::write(&pipeline, &kept_pipeline).unwrap();
+
+    // A value of the wrong type parses as TOML, and is still located.
+    let project = repo.join(".af/af.toml");
+    let kept = std::fs::read_to_string(&project).unwrap();
+    let at = kept
+        .lines()
+        .position(|line| line.starts_with("version = "))
+        .unwrap()
+        + 1;
+    std::fs::write(
+        &project,
+        kept.replacen("version = 1", "version = \"one\"", 1),
+    )
+    .unwrap();
+    let hint = project_hint();
+    assert!(
+        hint.starts_with(&format!(
+            "correct {}/.af/af.toml line {at} by hand (invalid type",
+            canonical(&repo)
+        )),
+        "{hint}"
+    );
+    std::fs::write(&project, kept).unwrap();
+}
+
+/// #331 D2 and D3, the Worker packages: the hint names the file onboarding stops at because it
+/// takes onboarding's own steps. A package's pin is checked before its manifest is parsed, so a
+/// changed and malformed `reviewer.toml` gets its line and the re-pin; a manifest is parsed as
+/// its typed shape and no other file of the package as TOML; a symlinked manifest stops the
+/// reader before any later route; and a package named by a path outside `.af/workers` names
+/// the pipeline, never a file outside `.af/`.
+#[test]
+fn the_authority_hint_follows_the_package_reader_and_stays_in_af() {
+    let machine = Machine::new();
+    let repo = onboarded(&machine);
+    let home = machine.path("home");
+    let af = repo.join(".af");
+    let root = canonical(&repo);
+    let quoted = shell_words::quote(&root).into_owned();
+    let project_hint = || {
+        let document = document(&machine.doctor_at(&home, &repo, &["--json"], None, &[]));
+        let project = check(&document, "project").clone();
+        assert_eq!(project["status"], "fail", "{document}");
+        assert_eq!(project["fix"], serde_json::Value::Null, "{document}");
+        project["hint"].as_str().unwrap().to_owned()
+    };
+    let onboard_says = || {
+        let output = crate::common::af()
+            .args(["onboard", "--repo", &root])
+            .env("HOME", &home)
+            .output()
+            .unwrap();
+        assert!(!output.status.success());
+        err(&output)
+    };
+    let manifest = af.join("workers/correctness/reviewer.toml");
+    let pipeline = af.join("pipelines/review.toml");
+    let lock = af.join("af.lock");
+    let kept = |path: &Path| std::fs::read_to_string(path).unwrap();
+    let (kept_manifest, kept_pipeline, kept_lock, kept_project) = (
+        kept(&manifest),
+        kept(&pipeline),
+        kept(&lock),
+        kept(&af.join("af.toml")),
+    );
+    // A later route whose pipeline is malformed: the reader reaches it only when every file of
+    // the selected pipeline reads, so no hint below may name it.
+    std::fs::write(
+        af.join("af.toml"),
+        format!(
+            "{kept_project}\n[[routes]]\nname = \"docs\"\npaths = [\"docs/**\"]\npipeline = \"docs\"\n"
+        ),
+    )
+    .unwrap();
+    std::fs::write(af.join("pipelines/docs.toml"), "version = \"one\"\n").unwrap();
+    let restore = || {
+        std::fs::write(&manifest, &kept_manifest).unwrap();
+        std::fs::write(&pipeline, &kept_pipeline).unwrap();
+        std::fs::write(&lock, &kept_lock).unwrap();
+    };
+    // Re-pins one Worker package, or the selected pipeline, as `--refresh-lock` would.
+    let repin = |section: &str, digest: String| {
+        let text = kept(&lock);
+        let at = text.find(&format!("[{section}]")).unwrap();
+        let start = at + text[at..].find("digest = \"").unwrap() + "digest = \"".len();
+        let end = start + text[start..].find('"').unwrap();
+        std::fs::write(&lock, format!("{}{digest}{}", &text[..start], &text[end..])).unwrap();
+    };
+    let package_digest = || {
+        review_config::lock::package_digest("correctness", &af.join("workers/correctness")).unwrap()
+    };
+
+    // Changed and malformed, the lock untouched: onboarding stops at the package's pin, and
+    // the hint names its manifest's line and the re-pin, never the route.
+    std::fs::write(&manifest, format!("{kept_manifest}\nbroken = [\n")).unwrap();
+    let line = kept_manifest.lines().count() + 2;
+    let hint = project_hint();
+    assert!(
+        hint.starts_with(&format!(
+            "correct {root}/.af/workers/correctness/reviewer.toml line {line} by hand ("
+        )),
+        "{hint}"
+    );
+    assert!(
+        hint.contains(&format!(
+            "then re-pin it, as its package changed since .af/af.lock pinned it: af onboard \
+             --repo {quoted} --refresh-lock; then recheck: af doctor --repo {quoted}"
+        )),
+        "{hint}"
+    );
+    assert!(!hint.contains("docs.toml"), "{hint}");
+    let said = onboard_says();
+    assert!(
+        said.contains("reviewer `correctness`") && said.contains("does not match its pin"),
+        "{said}"
+    );
+
+    // Its pin matching, a manifest of the wrong shape (`subjects` a number) is refused by the
+    // typed reader and located; a malformed file beside it is no manifest and never named.
+    std::fs::write(
+        &manifest,
+        kept_manifest.replacen("subjects = [\"diff\"]", "subjects = 1", 1),
+    )
+    .unwrap();
+    std::fs::write(af.join("workers/correctness/a-notes.toml"), "broken = [\n").unwrap();
+    repin("workers.correctness", package_digest());
+    let at = kept_manifest
+        .lines()
+        .position(|line| line.starts_with("subjects = "))
+        .unwrap()
+        + 1;
+    let hint = project_hint();
+    assert!(
+        hint.starts_with(&format!(
+            "correct {root}/.af/workers/correctness/reviewer.toml line {at} by hand (invalid type"
+        )),
+        "{hint}"
+    );
+    assert!(
+        hint.ends_with(&format!("then recheck: af doctor --repo {quoted}")),
+        "{hint}"
+    );
+    let said = onboard_says();
+    assert!(said.contains("reviewer.toml for `correctness`"), "{said}");
+    std::fs::remove_file(af.join("workers/correctness/a-notes.toml")).unwrap();
+    restore();
+
+    // A symlinked manifest stops the package reader, before the route is read.
+    let outside = machine.path("outside.toml");
+    std::fs::write(&outside, &kept_manifest).unwrap();
+    std::fs::remove_file(&manifest).unwrap();
+    std::os::unix::fs::symlink(&outside, &manifest).unwrap();
+    let hint = project_hint();
+    assert!(
+        hint.starts_with(&format!(
+            "correct {root}/.af/workers/correctness/reviewer.toml by hand (reviewer \
+             `correctness` contains a symlink"
+        )),
+        "{hint}"
+    );
+    assert!(onboard_says().contains("contains a symlink"));
+    std::fs::remove_file(&manifest).unwrap();
+    restore();
+
+    // A package named by a path outside `.af/workers`, its pipeline re-pinned: the reader
+    // refuses the name, and the hint names the pipeline, never the directory's malformed file.
+    let elsewhere = machine.path("elsewhere");
+    std::fs::create_dir_all(&elsewhere).unwrap();
+    std::fs::write(elsewhere.join("bad.toml"), "broken = [\n").unwrap();
+    std::fs::write(elsewhere.join("reviewer.toml"), "broken = [\n").unwrap();
+    for package in [
+        elsewhere.to_str().unwrap().to_owned(),
+        "../../../elsewhere".to_owned(),
+    ] {
+        let changed = kept_pipeline.replacen(
+            "package = \"correctness\"",
+            &format!("package = \"{package}\""),
+            1,
+        );
+        std::fs::write(&pipeline, &changed).unwrap();
+        repin(
+            "pipelines.review",
+            review_store::canonical::blob_content_id(changed.as_bytes()),
+        );
+        let hint = project_hint();
+        assert!(
+            hint.starts_with(&format!(
+                "correct {root}/.af/pipelines/review.toml by hand ("
+            )),
+            "{package}: {hint}"
+        );
+        assert!(
+            !hint.contains("bad.toml") && !hint.contains("line "),
+            "{hint}"
+        );
+        assert!(
+            onboard_says().contains("is not in the lockfile"),
+            "{package}"
+        );
+        restore();
+    }
+
+    // With every selected file whole, the reader goes on to the route, and so does the hint.
+    let hint = project_hint();
+    assert!(
+        hint.starts_with(&format!("{root}/.af/pipelines/docs.toml no longer matches")),
+        "{hint}"
+    );
+}
+
+/// `program doctor` on a terminal `columns` wide, from `dir`, in `machine`'s private home with
+/// `path` as PATH and `envs` on top: what the terminal shows.
+fn doctor_in_terminal(
+    machine: &Machine,
+    program: &Path,
+    dir: &Path,
+    columns: u16,
+    path: &std::ffi::OsStr,
+    envs: &[(&str, &str)],
+) -> String {
+    use portable_pty::{CommandBuilder, PtySize, native_pty_system};
+    use std::io::Read as _;
+    let pair = native_pty_system()
+        .openpty(PtySize {
+            rows: 60,
+            cols: columns,
+            pixel_width: 0,
+            pixel_height: 0,
+        })
+        .unwrap();
+    let home = machine.path("home");
+    let mut command = CommandBuilder::new(program);
+    command.arg("doctor");
+    command.cwd(dir);
+    command.env_clear();
+    for (name, value) in [
+        ("HOME", home.clone()),
+        ("XDG_CONFIG_HOME", home.join(".config")),
+        ("XDG_STATE_HOME", home.join(".local/state")),
+        ("XDG_CACHE_HOME", home.join(".cache")),
+        ("XDG_DATA_HOME", home.join(".local/share")),
+        ("XDG_BIN_HOME", home.join(".local/bin")),
+    ] {
+        command.env(name, value);
+    }
+    command.env("PATH", path);
+    command.env("AF_SELF_OFFLINE", "1");
+    // Doctor probes the Provider CLIs it finds: never the developer's own install directories.
+    command.env(crate::common::DETECT_SYSTEM_DIRS_SETTING, "");
+    command.env("AF_TEST_FREE_BYTES", (1_u64 << 40).to_string());
+    if let Some((name, value)) = crate::common::inherited_tmpdir() {
+        command.env(name, value);
+    }
+    for (name, value) in envs {
+        command.env(name, value);
+    }
+    let mut child = pair.slave.spawn_command(command).unwrap();
+    drop(pair.slave);
+    let mut reader = pair.master.try_clone_reader().unwrap();
+    let drained = std::thread::spawn(move || {
+        let mut bytes = Vec::new();
+        let _ = reader.read_to_end(&mut bytes);
+        bytes
+    });
+    child.wait().unwrap();
+    drop(pair.master);
+    String::from_utf8_lossy(&drained.join().unwrap()).replace("\r\n", "\n")
+}
+
+/// The lines of the `fix:` (or `hint:`, by `label`) under the row `id` in doctor's text, from
+/// the label on, with a shell's backslash-newline removed: the text a person pastes.
+fn printed(text: &str, id: &str, label: &str) -> String {
+    let row = |line: &str| {
+        ["ok    ", "warn  ", "fail  "]
+            .iter()
+            .any(|status| line.starts_with(status))
+            || line.starts_with("nothing failed")
+            || line.contains("check(s) failed")
+    };
+    let mut lines = text
+        .lines()
+        .skip_while(|line| {
+            !(row(line)
+                && line
+                    .get(6..)
+                    .is_some_and(|rest| rest.starts_with(&format!("{id} "))))
+        })
+        .skip(1)
+        .take_while(|line| !row(line));
+    let mut block = String::new();
+    let mut inside = false;
+    for line in lines.by_ref() {
+        let trimmed = line.trim_start();
+        if trimmed.starts_with("fix: ") || trimmed.starts_with("hint: ") {
+            inside = trimmed.starts_with(label);
+            if inside {
+                block.push_str(&trimmed[label.len()..]);
+                continue;
+            }
+        }
+        if inside {
+            block.push('\n');
+            block.push_str(line);
+        }
+    }
+    block.replace("\\\n", "")
+}
+
+/// #331 D4, D6 and D7 on a terminal 80 and 100 columns wide: no line doctor prints is wider. The
+/// onboarding preview in the project hint is the command to the repository, its `;` the
+/// sentence's; the install-first PATH fix run by this binary's own long path is cut into pieces
+/// a shell joins and installs first; and the elvish PATH line, its directory past the width,
+/// fits too and spells the directory.
+#[test]
+fn every_doctor_line_fits_the_terminal_and_its_commands_run_as_printed() {
+    let machine = Machine::new();
+    let repo = machine.path("work/repo");
+    std::fs::create_dir_all(&repo).unwrap();
+    git(&repo, &["init", "-q", "-b", "main"]);
+    // This binary at a path wider than either terminal, its name `af`.
+    let long = machine.path(&format!(
+        "work/{}bin",
+        "a-long-download-directory/".repeat(5)
+    ));
+    std::fs::create_dir_all(&long).unwrap();
+    let program = long.join("af");
+    if std::fs::hard_link(crate::common::af_binary(), &program).is_err() {
+        std::fs::copy(crate::common::af_binary(), &program).unwrap();
+    }
+    let program_text = program.to_str().unwrap().to_owned();
+    assert!(program_text.chars().count() > 100);
+    let tools = machine.path("tools-path");
+    std::fs::create_dir_all(&tools).unwrap();
+    std::os::unix::fs::symlink(on_path("git"), tools.join("git")).unwrap();
+    // The default link's directory below HOME, a long fixed directory in it so that the elvish
+    // line is wider than 100 columns whatever the temporary root is (`/tmp/.tmpXXXXXX` on
+    // Linux, longer on macOS): the cut form is proved on every platform.
+    let bin =
+        machine.path("home/.local/a-fixed-directory-long-enough-that-the-elvish-line-is-cut/bin");
+    let bin_env = bin.to_str().unwrap().to_owned();
+    let version = crate::common::VERSION;
+    for columns in [80_u16, 100] {
+        let fits = |text: &str| {
+            for line in text.lines() {
+                assert!(
+                    line.chars().count() <= usize::from(columns),
+                    "{columns}: {line:?}\n{text}"
+                );
+            }
+        };
+        let text = doctor_in_terminal(
+            &machine,
+            &program,
+            &repo,
+            columns,
+            tools.as_os_str(),
+            &[("SHELL", "/bin/zsh"), ("XDG_BIN_HOME", &bin_env)],
+        );
+        fits(&text);
+        // The preview, from `af onboard` to the sentence's `;`: the repository, as it is.
+        let hint = printed(&text, "project", "hint: ");
+        let start = hint
+            .find("af onboard --repo")
+            .unwrap_or_else(|| panic!("{text}"));
+        let end = start + hint[start..].find("then").unwrap();
+        let preview = hint[start..end].trim_end();
+        let preview = preview
+            .strip_suffix(';')
+            .unwrap_or_else(|| panic!("{columns}: {preview:?}\n{text}"));
+        assert_eq!(
+            shell_words::split(preview).unwrap(),
+            ["af", "onboard", "--repo", canonical(&repo).as_str()],
+            "{columns}\n{text}"
+        );
+        // The install-first fix, by this binary's path: pieces a shell joins.
+        let fix = printed(&text, "path", "fix: ");
+        let words = shell_words::split(&fix).unwrap_or_else(|_| panic!("{text}"));
+        assert_eq!(
+            words[..5],
+            [program_text.as_str(), "self", "install", version, "&&"],
+            "{columns}\n{text}"
+        );
+        assert_eq!(
+            words[5..],
+            ["export", format!("PATH={}:$PATH", bin.display()).as_str()][..],
+            "{columns}\n{text}"
+        );
+        // As printed, line breaks included, sh parses it: `&&` ends a line, never starts one.
+        let parses = |command: &str| {
+            let parsed = Command::new("/bin/sh")
+                .args(["-n", "-c", command])
+                .output()
+                .unwrap();
+            assert!(
+                parsed.status.success(),
+                "{columns}: {command:?}: {}\n{text}",
+                String::from_utf8_lossy(&parsed.stderr)
+            );
+        };
+        parses(&fix);
+        // The binary row's install alone, by the same path: one command too, never prose.
+        let install = printed(&text, "binary", "fix: ");
+        assert_eq!(
+            shell_words::split(&install).unwrap_or_else(|_| panic!("{text}")),
+            [program_text.as_str(), "self", "install", version],
+            "{columns}\n{text}"
+        );
+        assert!(!install.contains('\n'), "{columns}: {install:?}\n{text}");
+        parses(&install);
+
+        // Elvish, the default link present and its directory off PATH.
+        std::fs::create_dir_all(&bin).unwrap();
+        std::os::unix::fs::symlink(&program, bin.join("af")).unwrap();
+        let text = doctor_in_terminal(
+            &machine,
+            &program,
+            &repo,
+            columns,
+            tools.as_os_str(),
+            &[("SHELL", "/usr/bin/elvish"), ("XDG_BIN_HOME", &bin_env)],
+        );
+        fits(&text);
+        let fix = printed(&text, "path", "fix: ");
+        let lines: Vec<&str> = fix.lines().collect();
+        assert_eq!(lines[0], "use str; set paths = [(str:join '' [", "{text}");
+        assert_eq!(lines.last().copied(), Some("]) $@paths]"), "{text}");
+        let dir: String = lines[1..lines.len() - 1]
+            .iter()
+            .map(|piece| {
+                let piece = piece.trim();
+                piece[1..piece.len() - 1].replace("''", "'")
+            })
+            .collect();
+        assert_eq!(dir, bin.to_str().unwrap(), "{text}");
+        std::fs::remove_file(bin.join("af")).unwrap();
+    }
+}
+
+/// #331 D7, the dispatch: the default link's directory is on PATH but holds no link yet, and
+/// another `af` is found later on PATH. Putting the empty directory first finds no `af` there,
+/// so the fix installs first and then puts it first; run as printed, it does both in order.
+#[test]
+fn the_path_fix_installs_first_when_the_directory_is_on_path_but_empty() {
+    let machine = Machine::new();
+    let bin = machine.path("home/.local/bin");
+    std::fs::create_dir_all(&bin).unwrap();
+    let other = machine.path("other-bin");
+    std::fs::create_dir_all(&other).unwrap();
+    std::fs::write(other.join("af"), "#!/bin/sh\necho \"$*\" > \"$0.args\"\n").unwrap();
+    use std::os::unix::fs::PermissionsExt as _;
+    std::fs::set_permissions(other.join("af"), std::fs::Permissions::from_mode(0o755)).unwrap();
+    let path = std::env::join_paths([
+        bin.clone(),
+        other.clone(),
+        PathBuf::from("/usr/bin"),
+        PathBuf::from("/bin"),
+    ])
+    .unwrap();
+    let output = machine.doctor_at(
+        &machine.path("home"),
+        &machine.path("work"),
+        &["--json"],
+        Some(path.as_os_str()),
+        &[("SHELL", "/bin/zsh")],
+    );
+    let document = document(&output);
+    let row = check(&document, "path");
+    assert_eq!(row["status"], "warn", "{document}");
+    assert!(
+        row["detail"]
+            .as_str()
+            .unwrap()
+            .contains("does not exist yet"),
+        "{document}"
+    );
+    let fix = row["fix"].as_str().unwrap();
+    let version = crate::common::VERSION;
+    assert_eq!(
+        fix,
+        format!(
+            "af self install {version} && export PATH='{}':\"$PATH\"",
+            bin.display()
+        ),
+        "{document}"
+    );
+    let ran = Command::new("/bin/sh")
+        .args(["-c", &format!("{fix}\nprintf %s \"$PATH\"")])
+        .env("PATH", &path)
+        .output()
+        .unwrap();
+    assert!(ran.status.success(), "{ran:?}");
+    assert_eq!(
+        std::fs::read_to_string(other.join("af.args")).unwrap(),
+        format!("self install {version}\n")
+    );
+    assert!(
+        String::from_utf8(ran.stdout)
+            .unwrap()
+            .starts_with(&format!("{}:", bin.display()))
+    );
+}
+
+/// #331 D1: an `AF_RELEASE_SOURCE` that is a regular file stops `af self update --check` with
+/// the same error the update row reports, so the row offers no fix; its hint says what to change.
+#[test]
+fn a_release_source_that_is_a_file_offers_no_update_fix() {
+    let machine = Machine::new();
+    let work = machine.path("work");
+    let source = machine.path("releases.txt");
+    std::fs::write(&source, "not a directory\n").unwrap();
+    let source_env = source.to_str().unwrap().to_owned();
+    let envs = [("AF_RELEASE_SOURCE", source_env.as_str())];
+    let home = machine.path("home");
+    let document = document(&machine.doctor_at(&home, &work, &["--json"], None, &envs));
+    let update = check(&document, "update");
+    assert_eq!(update["status"], "warn", "{document}");
+    assert_eq!(update["fix"], serde_json::Value::Null, "{document}");
+    let detail = update["detail"].as_str().unwrap();
+    assert!(
+        detail.starts_with(&format!(
+            "AF_RELEASE_SOURCE {source_env} is not a directory"
+        )),
+        "{detail}"
+    );
+    assert!(
+        update["hint"]
+            .as_str()
+            .unwrap()
+            .starts_with("point AF_RELEASE_SOURCE at the directory that holds the releases"),
+        "{document}"
+    );
+    // The command the row used to offer fails on that very source.
+    for args in [
+        &["self", "update", "--check"][..],
+        &["self", "status", "--refresh"],
+    ] {
+        let output = crate::common::af()
+            .args(args)
+            .env("HOME", &home)
+            .env("XDG_CONFIG_HOME", home.join(".config"))
+            .env("XDG_STATE_HOME", home.join(".local/state"))
+            .env("XDG_CACHE_HOME", home.join(".cache"))
+            .env("XDG_DATA_HOME", home.join(".local/share"))
+            .env_remove("AF_SELF_OFFLINE")
+            .envs(envs)
+            .output()
+            .unwrap();
+        let said = format!("{}{}", out(&output), err(&output));
+        assert!(said.contains(&source_env), "af {args:?}: {said}");
+    }
 }
 
 /// `path` as git names its top level: canonical, without a trailing `/`.

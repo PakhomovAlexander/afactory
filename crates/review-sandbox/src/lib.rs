@@ -401,6 +401,9 @@ pub struct SandboxTemplate {
     /// Present for a temporary template, removed with the handle. A Warm Workspace template
     /// lives at a stable root the handle does not own, so nothing is removed with it.
     _dir: Option<tempfile::TempDir>,
+    /// Every entry of a temporary template as materialized, so [`SandboxTemplate::intact`] can
+    /// tell a template something changed since from one that still holds its manifest.
+    stats: Option<BTreeMap<PathBuf, EntryStat>>,
 }
 
 impl SandboxTemplate {
@@ -410,9 +413,20 @@ impl SandboxTemplate {
         materialize(manifest, cas, &root).map_err(std::io::Error::other)?;
         Ok(SandboxTemplate {
             manifest: Arc::new(manifest.clone()),
+            stats: Some(entry_stats(&root)?),
             root,
             _dir: Some(dir),
         })
+    }
+
+    /// Whether every entry of a temporary template has the inode, size, mode and times it was
+    /// materialized with: one `stat` per entry, no hashing. A write, a `chmod`, a rename or a
+    /// removal since then answers `false`, so a caller clones only what it materialized.
+    pub fn intact(&self) -> std::io::Result<bool> {
+        match &self.stats {
+            Some(stats) => Ok(entry_stats(&self.root).is_ok_and(|now| &now == stats)),
+            None => Ok(true),
+        }
     }
 
     /// Where the template's tree is, read-only to every clone of it.
@@ -432,6 +446,7 @@ impl SandboxTemplate {
             manifest: Arc::new(manifest),
             root,
             _dir: None,
+            stats: None,
         }
     }
 }
@@ -567,18 +582,24 @@ impl Sandbox {
     }
 
     /// [`Self::attach_base`] from a materialized `template` of the base: a copy-on-write clone
-    /// of it, so a second judge of the same change does not build the base tree again. The
-    /// sandbox keeps the template alive until it is sealed or dropped.
+    /// of it, so a second judge of the same change does not build the base tree again. A clone
+    /// keeps the template's modification times, so every regular file is stamped now, as a
+    /// materialization stamps it, within `budget`. The sandbox keeps the template alive until it
+    /// is sealed or dropped.
     pub fn attach_base_template(
         &self,
         template: &Arc<SandboxTemplate>,
         beside: &[(&str, &[u8])],
+        budget: Duration,
     ) -> std::io::Result<PathBuf> {
         self.attach(
             template.manifest.as_ref(),
             beside,
             Some(Arc::clone(template)),
-            |base| clone_tree(&template.root, base, Mode::ReadOnly).map(|_| ()),
+            |base| {
+                clone_tree(&template.root, base, Mode::ReadOnly)?;
+                refresh_source_mtimes(base, &template.manifest, None, None, budget).map(|_| ())
+            },
         )
     }
 

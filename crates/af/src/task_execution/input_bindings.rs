@@ -104,13 +104,23 @@ impl RecordedTasks for EventStore {
 
 /// Root ports no binding may supply, whatever a Pipeline declares. Named so the refusal can say
 /// why.
-const NOT_BINDABLE: [&str; 4] = ["requirements", "base", "continuation", "findings"];
+const NOT_BINDABLE: [&str; 5] = [
+    "requirements",
+    "base",
+    "continuation",
+    "findings",
+    "acceptance",
+];
 
 /// Why each of [`NOT_BINDABLE`] stays refused (ADR-0117).
 fn not_bindable_reason(port: &str) -> &'static str {
     match port {
         "requirements" => "the Task file's goal is the requirements the Task is judged against",
         "base" => "a bound base would make the Subject a diff outside the Review selector rules",
+        "acceptance" => {
+            "the Task file's `acceptance` list fills it, as one record its evaluator judges by \
+             item ID (ADR-0255)"
+        }
         "findings" => {
             "a continuation fills it from the continued Task's review round; write a `continue` \
              table or run `af task run NEW --from TASK`"

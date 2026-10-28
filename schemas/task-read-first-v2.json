@@ -1,12 +1,13 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "$id": "urn:af:schema:task-read-first:1",
-  "title": "TaskReadFirst af/TaskReadFirst@1",
-  "$comment": "What a Task's Worker is told to read before its goal (ADR-0212): the project's standing rules, `.af/rules.md` of the Authority Snapshot, and the files the Task file's `context` names, each bound by the digest of the bytes the Task captured. Referenced from TaskRevisionV1.provenance.input_artifact_ids, written only when there is something to read, and listed at the end of the Task's requirements text, so a changed file is a changed plan.",
+  "$id": "urn:af:schema:task-read-first:2",
+  "title": "TaskReadFirst af/TaskReadFirst@2",
+  "$comment": "What a Task's Worker is told to read before its goal (ADR-0212, ADR-0254): the tree it was read from, the project's standing rules (`.af/rules.md` of that tree) and the files the Task file's `context` names, each bound by the digest of its bytes in that tree. The tree is the Snapshot the Task's Worker reads, so a continued Task lists its candidate's rules. Referenced from TaskRevisionV1.provenance.input_artifact_ids, written only when there is something to read, and listed at the end of the Task's requirements text, so a changed file is a changed plan. af/TaskReadFirst@1, which named no tree, is neither written nor read.",
   "type": "object",
   "additionalProperties": false,
   "required": [
-    "schema"
+    "schema",
+    "snapshot_id"
   ],
   "anyOf": [
     {
@@ -22,7 +23,11 @@
   ],
   "properties": {
     "schema": {
-      "const": "af.task-read-first/1"
+      "const": "af.task-read-first/2"
+    },
+    "snapshot_id": {
+      "description": "The Snapshot every entry was read from: the tree the Task's Worker reads.",
+      "$ref": "urn:af:schema:task-contracts:1#/$defs/digest"
     },
     "rules": {
       "$ref": "#/$defs/entry"
@@ -61,7 +66,8 @@
           "$ref": "#/$defs/line"
         },
         "digest": {
-          "$ref": "urn:af:schema:task-contracts:1#/$defs/digest"
+          "$ref": "urn:af:schema:task-contracts:1#/$defs/digest",
+          "description": "The content digest of the path in the record's tree."
         }
       }
     }

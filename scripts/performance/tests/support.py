@@ -6,6 +6,7 @@ import shutil
 import subprocess
 import sys
 import tempfile
+import time
 import unittest
 
 from perflab import suite, synthetic
@@ -20,6 +21,49 @@ CLI = os.path.join(ROOT, "scripts/performance/cli.py")
 def read(path):
     with open(path, "rb") as stream:
         return stream.read()
+
+
+# A fixture's own child that outlives what started it on purpose (a deaf supervisor's sample):
+# it never spawns, writes its pid to the marker given (atomically), and ends by itself once the
+# marker's `.release` file exists, or after 60 s, saying so in the marker's `.ended` file. The
+# test that owns it ends it by `release_recorded`, never by a signal: a pid read from a marker
+# names the fixture only until its parent reaps it, and on a gate host that ID soon names another
+# test's process, or the leader of another test's whole group (issue #331 item 7).
+HELD_CHILD = (
+    "import os, sys, time\n"
+    "marker = sys.argv[1]\n"
+    "open(marker + '.tmp', 'w').write(str(os.getpid()))\n"
+    "os.rename(marker + '.tmp', marker)\n"
+    "end = time.monotonic() + 60\n"
+    "while not os.path.exists(marker + '.release') and time.monotonic() < end:\n"
+    "    time.sleep(0.02)\n"
+    "open(marker + '.ended', 'w').close()\n"
+)
+
+
+def held_child_argv(marker):
+    """The argv of a `HELD_CHILD` that records itself in `marker`."""
+    return [sys.executable, "-I", "-c", HELD_CHILD, marker]
+
+
+def release_recorded(marker, timeout=30):
+    """Ask the `HELD_CHILD` recorded in `marker` to end, and wait up to `timeout` seconds until
+    it says it did. Nothing is signalled, whatever process the marker's ID names now: the only
+    authority to signal a process is holding it as an unreaped child, which this test is not.
+    Returns whether it ended; a child that never recorded itself has nothing to end (False), and
+    one still running at the timeout is reported on stderr and left to end by itself."""
+    if not os.path.exists(marker):
+        return False
+    open(marker + ".release", "w").close()
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        if os.path.exists(marker + ".ended"):
+            return True
+        time.sleep(0.01)
+    sys.stderr.write("left running: the fixture child recorded in %s did not end within %d s; "
+                     "it is not this test's child, so it is not signalled, and it ends by "
+                     "itself within 60 s\n" % (marker, timeout))
+    return False
 
 
 def synthetic_suite(edit=None):
@@ -234,6 +278,7 @@ def observe_json(selectors, data):
 
 FAKE_SUPERVISOR = r'''
 import json, os, subprocess, sys, time
+# HELD_CHILD
 request = json.loads(sys.stdin.buffer.read())
 assert request["schema"] == "af.perf-supervisor-request/4"
 # Test hooks: every invocation is counted beside this file, and `overrides.json` there may
@@ -255,12 +300,12 @@ if action == "garbage":
 if action == "deaf":
     # A supervisor that took SIGTERM over, launched an owned nonspawning child in its own
     # session and never replies: nothing confirms that its sample ended. The child records its
-    # pid beside this file so the test that owns it can end it.
+    # pid beside this file and ends when the test that owns it releases it
+    # (`support.release_recorded`), never by a signal.
     import signal
     signal.signal(signal.SIGTERM, signal.SIG_IGN)
     marker = os.path.join(here, "deaf-child")
-    subprocess.Popen(["/bin/sh", "-c", "echo $$ > '%s.tmp' && mv '%s.tmp' '%s'; exec sleep 60"
-                      % (marker, marker, marker)], start_new_session=True,
+    subprocess.Popen([sys.executable, "-I", "-c", HELD_CHILD, marker], start_new_session=True,
                      cwd=request["cwd"])
     time.sleep(120)
     sys.exit(1)
@@ -271,50 +316,9 @@ NOTHING = {"observation": "pipes_only", "descendants_at_exit": 0, "remaining_aft
            "pipes_held": False, "status": "clean", "detail": "nothing was launched"}
 
 
-import signal
-running, cancelled = [None], [False]
-
-
-def cancel(signum, frame):
-    # A cancellation is forwarded to the child's whole session, as the real supervisor does.
-    cancelled[0] = True
-    if running[0] is not None:
-        try:
-            os.killpg(running[0].pid, signal.SIGKILL)
-        except OSError:
-            pass
-
-
+import signal, threading
+# EXECUTE
 signal.signal(signal.SIGTERM, cancel)
-
-
-def execute(argv, stdin, environment, cwd, timeout_ms):
-    started = time.monotonic_ns()
-    kind, code, out, err, detail = "exited", None, b"", b"", ""
-    try:
-        child = subprocess.Popen(argv, stdin=subprocess.PIPE, stdout=subprocess.PIPE,
-                                 stderr=subprocess.PIPE, env=environment, cwd=cwd,
-                                 start_new_session=True)
-        running[0] = child
-        try:
-            out, err = child.communicate(stdin, timeout=timeout_ms / 1000.0)
-            code = child.returncode
-            if code < 0:
-                kind = "signalled"
-        except subprocess.TimeoutExpired:
-            os.killpg(child.pid, signal.SIGKILL)
-            out, err = child.communicate()
-            kind = "timeout"
-    except OSError as error:
-        kind, detail = "launch_failed", str(error)
-    if cancelled[0] and kind != "launch_failed":
-        kind, code = "cancelled", None
-    termination = {"kind": kind, "code": code if kind == "exited" else None,
-                   "signal": (-code if kind == "signalled" else 15 if kind == "cancelled"
-                              else None), "detail": detail}
-    wall = str(time.monotonic_ns() - started) if kind in ("exited", "signalled") else None
-    observation = "none" if kind == "launch_failed" else "unreaped"
-    return termination, wall, observation, out, err
 
 
 setup_record = None
@@ -392,6 +396,104 @@ sys.stdout.buffer.write(json.dumps(result).encode() + b"\n" + kept_out + kept_er
 '''
 
 
+# How the fake supervisor runs one command and forwards a cancellation to it (issue #331). Only
+# the holder of an unreaped child may signal its group: once a child is reaped its group ID is
+# free and soon names another test's group. `execute` alone reaps, with SIGTERM blocked in every
+# thread of the process, and clears `running` before unblocking it, so `cancel` (SIGTERM's
+# handler, run between bytecodes of the main thread) reads `running` set exactly while its child
+# is unreaped. The child is launched with SIGTERM unblocked (a signal mask survives exec) and its
+# pipes are pumped by threads started while it is blocked, which inherit the block.
+FAKE_SUPERVISOR_EXECUTE = r'''
+running, cancelled = [None], [False]
+TERM = {signal.SIGTERM}
+
+
+def cancel(signum, frame):
+    # A cancellation is forwarded to the child's whole session, as the real supervisor does.
+    cancelled[0] = True
+    if running[0] is not None:
+        try:
+            os.killpg(running[0].pid, signal.SIGKILL)
+        except ProcessLookupError:
+            pass  # only the unreaped leader is left of its group: nothing to end
+
+
+def pump(child, stdin, deadline):
+    kept = {}
+
+    def feed():
+        try:
+            child.stdin.write(stdin)
+            child.stdin.close()
+        except BrokenPipeError:
+            pass
+
+    def drain(name, stream):
+        kept[name] = stream.read()
+        stream.close()
+
+    signal.pthread_sigmask(signal.SIG_BLOCK, TERM)
+    threads = [threading.Thread(target=feed),
+               threading.Thread(target=drain, args=("out", child.stdout)),
+               threading.Thread(target=drain, args=("err", child.stderr))]
+    for thread in threads:
+        thread.start()
+    timed_out = False
+    while True:
+        signal.pthread_sigmask(signal.SIG_UNBLOCK, TERM)
+        if not timed_out and time.monotonic_ns() >= deadline:
+            timed_out = True
+            cancel_group(child)
+        time.sleep(0.002)
+        signal.pthread_sigmask(signal.SIG_BLOCK, TERM)
+        if any(thread.is_alive() for thread in threads):
+            continue
+        pid, status = os.waitpid(child.pid, os.WNOHANG)
+        if pid == child.pid:
+            child.returncode = os.waitstatus_to_exitcode(status)
+            running[0] = None
+            signal.pthread_sigmask(signal.SIG_UNBLOCK, TERM)
+            return kept["out"], kept["err"], timed_out
+
+
+def cancel_group(child):
+    # Called only while `child` is unreaped: its group ID cannot name anyone else yet.
+    try:
+        os.killpg(child.pid, signal.SIGKILL)
+    except ProcessLookupError:
+        pass
+
+
+def execute(argv, stdin, environment, cwd, timeout_ms):
+    started = time.monotonic_ns()
+    kind, code, out, err, detail = "exited", None, b"", b"", ""
+    try:
+        child = subprocess.Popen(argv, stdin=subprocess.PIPE, stdout=subprocess.PIPE,
+                                 stderr=subprocess.PIPE, env=environment, cwd=cwd,
+                                 start_new_session=True)
+    except OSError as error:
+        kind, detail = "launch_failed", str(error)
+    else:
+        running[0] = child
+        if cancelled[0]:
+            cancel_group(child)  # a SIGTERM taken before `running` named it
+        out, err, timed_out = pump(child, stdin, started + timeout_ms * 1000000)
+        code = child.returncode
+        kind = "timeout" if timed_out else "signalled" if code < 0 else "exited"
+    if cancelled[0] and kind != "launch_failed":
+        kind, code = "cancelled", None
+    termination = {"kind": kind, "code": code if kind == "exited" else None,
+                   "signal": (-code if kind == "signalled" else 15 if kind == "cancelled"
+                              else None), "detail": detail}
+    wall = str(time.monotonic_ns() - started) if kind in ("exited", "signalled") else None
+    observation = "none" if kind == "launch_failed" else "unreaped"
+    return termination, wall, observation, out, err
+'''
+
+
+FAKE_SUPERVISOR = FAKE_SUPERVISOR.replace("# HELD_CHILD\n",
+                                          "HELD_CHILD = %r\n" % HELD_CHILD)
+FAKE_SUPERVISOR = FAKE_SUPERVISOR.replace("# EXECUTE\n", FAKE_SUPERVISOR_EXECUTE)
 FAKE_SUPERVISOR = FAKE_SUPERVISOR.replace("# OBSERVE_JSON\n",
                                           inspect.getsource(observe_json))
 

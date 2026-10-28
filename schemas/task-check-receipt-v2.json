@@ -1,0 +1,102 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:af:schema:task-check-receipt:2",
+  "title": "task-check-receipt@2",
+  "description": "What a Task check node recorded for one plan on one Snapshot (ADR-0255): each check's result artifact by name, each check the kernel stopped with its cause, its wall and how long it ran, and the Task's acceptance items when its Task file stated them. `af/TaskCheckReceipt@1` is neither written nor read: a port declaring it is refused by name.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "plan_id",
+    "snapshot_id",
+    "policy_id",
+    "outcome",
+    "checks"
+  ],
+  "properties": {
+    "plan_id": {
+      "$ref": "urn:af:schema:task-contracts:1#/$defs/digest"
+    },
+    "snapshot_id": {
+      "$ref": "urn:af:schema:task-contracts:1#/$defs/digest"
+    },
+    "policy_id": {
+      "$ref": "urn:af:schema:task-contracts:1#/$defs/digest"
+    },
+    "outcome": {
+      "enum": [
+        "passed",
+        "failed",
+        "inconclusive"
+      ]
+    },
+    "checks": {
+      "type": "object",
+      "minProperties": 1,
+      "propertyNames": {
+        "$ref": "urn:af:schema:task-contracts:1#/$defs/name"
+      },
+      "additionalProperties": {
+        "$ref": "urn:af:schema:task-contracts:1#/$defs/digest"
+      }
+    },
+    "stopped": {
+      "description": "Each check the kernel stopped after it started, by name; every name is one of `checks`. Absent when none was: a check that ended on its own, or never started, has no entry.",
+      "type": "object",
+      "minProperties": 1,
+      "propertyNames": {
+        "$ref": "urn:af:schema:task-contracts:1#/$defs/name"
+      },
+      "additionalProperties": {
+        "$ref": "#/$defs/stop"
+      }
+    },
+    "acceptance": {
+      "description": "The Task's `af/TaskAcceptance@1` record and its items, verbatim; absent for a Task file that states no `acceptance`.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "record_id",
+        "items"
+      ],
+      "properties": {
+        "record_id": {
+          "$ref": "urn:af:schema:task-contracts:1#/$defs/digest"
+        },
+        "items": {
+          "$ref": "urn:af:schema:task-acceptance:1#/$defs/items"
+        }
+      }
+    }
+  },
+  "$defs": {
+    "stop": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "cause",
+        "wall_ms",
+        "elapsed_ms"
+      ],
+      "properties": {
+        "cause": {
+          "description": "`wall`: the check ran until its wall (the per-check wall, the check Attempt's wall or a warm phase deadline, whichever bound its process) and the kernel killed it there.",
+          "enum": [
+            "wall"
+          ]
+        },
+        "wall_ms": {
+          "description": "The wall the check's process ran under, in milliseconds.",
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 9007199254740991
+        },
+        "elapsed_ms": {
+          "description": "How long the check ran before it was stopped, as the host measured it.",
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 9007199254740991
+        }
+      }
+    }
+  }
+}

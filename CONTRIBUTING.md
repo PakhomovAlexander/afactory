@@ -130,6 +130,51 @@ python3 scripts/nextest-gate.py --repeat 20 --profile ci --test-threads 7 \
 `--repeat N` (`NEXTEST_REPEAT` for `make test-repeat`, 20 by default) runs the whole selection N
 times and stops at the first run that fails, naming its failed tests; it never reruns anything.
 
+The recurring load flakes of issue #331 have a stress proof of their own that brings its load
+with it, so anyone can repeat it on any machine:
+
+```sh
+make stress-proof                    # 20 runs; STRESS_RUNS, STRESS_LOAD, STRESS_SPAWN change it
+python3 -I scripts/stress-proof.py --runs 5 \
+  --test task_repair::interrupted_fix_verification_resumes_same_continuation_and_charges_the_lost_attempt
+```
+
+It runs every named test (by default the seven families it lists) N times through the gate's
+profile and scheduling, `--profile ci`, never stopping early and never rerunning a failure.
+Beside the runs it starts one CPU-bound worker per CPU (`--load-workers`) and two workers that
+spawn and reap `/usr/bin/true` without pause (`--spawn-workers`), so process IDs are recycled
+within minutes as on a shared gate host. It starts each worker itself and kills only those
+pids, on a normal end, an error, Ctrl-C, SIGTERM or SIGHUP; a worker whose parent is gone, even
+after a SIGKILL of the driver, exits by itself. It ends with one row per test: the passes, the
+range of the 1-minute load average sampled while the test ran, and the wall time (minimum,
+median, maximum). The JUnit of a run with a failure stays below `target/stress-proof/` with the
+failure's output, and the exit status is 0 only when every test passed every one of the N runs
+under the whole load: a skipped case and a run nextest ended nonzero count as not passed, and a
+load worker that ends on its own (its exit status and the end of its stderr are printed, its
+stderr kept below `target/stress-proof/`) ends the proof unproven, without counting the run it
+ended in.
+
+A test signals only processes it holds as its own unreaped children. `Child::kill` is exact
+because the test is the parent and has not reaped the child: a zombie keeps its ID and its
+process group reserved. A process the test only read the ID of — a detached run, a Worker af
+started, a fixture that wrote its pid to a marker — can be reaped by its own parent at any time,
+and on a gate host that ID soon names another process; nextest makes every test the leader of
+its own process group, so a `killpg` of a stale ID can end a whole sibling test with its children
+(issue #331 item 7). Checking the ID first does not help: between the last look and the signal
+the process can end, be reaped and its ID be reused, which no start time can rule out. So such a
+process is never signalled. A test ends what it holds (an `af` it holds ends the Worker groups
+that `af` holds); a fixture it does not hold ends by itself, a Worker or a parked `git` once the
+process that started it is gone, a fixture's escaped child when the test asks it to; and what the
+test recorded is only watched through `crate::common::recorded` (`Recorded::now`,
+`Recorded::from_marker`, `Recorded::ended_within`, the `Leftovers` guard, which reports what is
+still running and signals nothing; `crates/review-process/tests/support/recorded.rs`), or in the
+performance laboratory's Python tests `tests.support.held_child_argv` and
+`tests.support.release_recorded`. The laboratory's docker stand-in ends a container from the
+init process that started it, never from `docker rm` by a recorded ID. A holder's signal can
+still find the group already gone (`ProcessLookupError`): that group has ended, and its leader is
+still reaped. A holder that reaps its child forgets it first, with the signal that would use it
+blocked, as the fake supervisor's cancellation does (`tests.support.FAKE_SUPERVISOR_EXECUTE`).
+
 A test whose assertion depends on wall-clock time cannot be made deterministic: split it into
 the deterministic part, which keeps the name and runs in parallel, and a part that keeps the
 real-time assertions and is listed in the exclusive override of `.config/nextest.toml` with the

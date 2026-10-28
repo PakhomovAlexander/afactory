@@ -1,6 +1,6 @@
-//! The one Task state every rendering prints (`schemas/task-state-v1.json`) and the documents
-//! that carry it: `af/task-list@3` with its `af/task-list-entry@3`, `af/task-checks@2`,
-//! `af/task-collected-inspection@2` and the `state` of `af/task-inspection@13`. The Rust
+//! The one Task state every rendering prints (`schemas/task-state-v2.json`) and the documents
+//! that carry it: `af/task-list@4` with its `af/task-list-entry@4`, `af/task-checks@3`,
+//! `af/task-collected-inspection@3` and the `state` of `af/task-inspection@14`. The Rust
 //! validator and the schema accept exactly the same states, and the previous versions fail
 //! closed.
 use super::{assert_invalid, assert_valid, validator};
@@ -18,9 +18,9 @@ fn state_valid(state: &Value) -> bool {
 }
 
 fn state_validator() -> jsonschema::Validator {
-    let wrapper = json!({"$ref": "urn:af:schema:task-state:1#/$defs/state"});
+    let wrapper = json!({"$ref": "urn:af:schema:task-state:2#/$defs/state"});
     let mut registry = jsonschema::Registry::new();
-    for name in ["task-state-v1.json", "task-contracts-v1.json"] {
+    for name in ["task-state-v2.json", "task-contracts-v1.json"] {
         let value = super::schema(name);
         let id = String::from(value["$id"].as_str().unwrap());
         registry = registry
@@ -94,7 +94,7 @@ fn the_schema_and_the_rust_validator_accept_the_same_states() {
 
 fn entry() -> Value {
     json!({
-        "schema": "af/task-list-entry@3",
+        "schema": "af/task-list-entry@4",
         "task_id": "pagination-cli",
         "kind": "implement",
         "phase": {"kind": "finished", "result_id": id('1')},
@@ -111,18 +111,18 @@ fn entry() -> Value {
 
 #[test]
 fn a_list_document_carries_each_task_s_state_and_gate() {
-    let document = json!({"schema": "af/task-list@3", "tasks": [entry()]});
-    assert_valid("task-list-v3.json", &document);
+    let document = json!({"schema": "af/task-list@4", "tasks": [entry()]});
+    assert_valid("task-list-v4.json", &document);
     let mut planned = entry();
     planned["phase"] = json!({"kind": "ready"});
     planned["state"] = json!({"phase":"planned","outcome":null,"cause":null,
         "next_action": format!("af task run pagination-cli --confirm-plan {}", id('3'))});
     planned["derived_snapshot_id"] = Value::Null;
     planned.as_object_mut().unwrap().remove("gate");
-    assert_valid("task-list-entry-v3.json", &planned);
+    assert_valid("task-list-entry-v4.json", &planned);
     for (edit, why) in [
         (
-            Box::new(|v: &mut Value| v["schema"] = json!("af/task-list-entry@2"))
+            Box::new(|v: &mut Value| v["schema"] = json!("af/task-list-entry@3"))
                 as Box<dyn Fn(&mut Value)>,
             "the previous entry version",
         ),
@@ -151,17 +151,17 @@ fn a_list_document_carries_each_task_s_state_and_gate() {
     ] {
         let mut changed = entry();
         edit(&mut changed);
-        assert_invalid("task-list-entry-v3.json", &changed, why);
+        assert_invalid("task-list-entry-v4.json", &changed, why);
     }
     let mut old = document.clone();
-    old["schema"] = json!("af/task-list@2");
-    assert_invalid("task-list-v3.json", &old, "the previous list version");
+    old["schema"] = json!("af/task-list@3");
+    assert_invalid("task-list-v4.json", &old, "the previous list version");
 }
 
 #[test]
 fn the_checks_document_names_each_check_s_failing_tests_and_stderr_tail() {
     let document = json!({
-        "schema": "af/task-checks@2",
+        "schema": "af/task-checks@3",
         "task_id": "pagination-cli",
         "state": {"phase":"finished","outcome":"gate_failed","cause":"check_failed",
             "next_action":"af task run pagination-cli --retry-gate"},
@@ -174,7 +174,7 @@ fn the_checks_document_names_each_check_s_failing_tests_and_stderr_tail() {
             "stdout_id":id('5'),"stderr_id":id('6'),
             "stderr_tail":["        FAIL [   0.004s] af::it alpha::one"]}]}
     });
-    assert_valid("task-checks-v2.json", &document);
+    assert_valid("task-checks-v3.json", &document);
     // Under a warm layer each started check carries its `af/TaskCheckLayer@1` entry.
     let mut layered = document.clone();
     layered["receipt"]["checks"][0]["layer"] = json!({
@@ -186,32 +186,40 @@ fn the_checks_document_names_each_check_s_failing_tests_and_stderr_tail() {
             "tests_ms": 1530000, "elapsed_ms": 2342000},
         "evicted": {"phase": "build", "by": "storage_sweep", "at_unix_ms": 5}
     });
-    assert_valid("task-checks-v2.json", &layered);
+    assert_valid("task-checks-v3.json", &layered);
     layered["receipt"]["checks"][0]["layer"]["lock"] = json!("held");
     assert_invalid(
-        "task-checks-v2.json",
+        "task-checks-v3.json",
         &layered,
         "a holder of a layer held at once",
     );
     let mut old = document.clone();
-    old["schema"] = json!("af/task-checks@1");
-    assert_invalid("task-checks-v2.json", &old, "the previous checks version");
+    old["schema"] = json!("af/task-checks@2");
+    assert_invalid("task-checks-v3.json", &old, "the previous checks version");
+    // A check the kernel stopped at its wall carries its receipt's stop (ADR-0255).
+    let mut walled = document.clone();
+    walled["receipt"]["checks"][0]["status"] = json!("not_run");
+    walled["receipt"]["checks"][0]["stop"] =
+        json!({"cause": "wall", "wall_ms": 5_400_000, "elapsed_ms": 5_280_000});
+    assert_valid("task-checks-v3.json", &walled);
+    walled["receipt"]["checks"][0]["stop"]["cause"] = json!("never_started");
+    assert_invalid("task-checks-v3.json", &walled, "a stop is only `wall`");
     let mut empty = document.clone();
     empty["receipt"] = Value::Null;
     empty["gate"] = Value::Null;
-    assert_valid("task-checks-v2.json", &empty);
+    assert_valid("task-checks-v3.json", &empty);
     let mut long = document.clone();
     long["receipt"]["checks"][0]["stderr_tail"] = json!(vec!["x"; 41]);
-    assert_invalid("task-checks-v2.json", &long, "more than 40 stderr lines");
+    assert_invalid("task-checks-v3.json", &long, "more than 40 stderr lines");
     let mut step = document;
     step["receipt"]["checks"][0]["stopped_step"]["step"] = json!("a b");
-    assert_invalid("task-checks-v2.json", &step, "a step label with a space");
+    assert_invalid("task-checks-v3.json", &step, "a step label with a space");
 }
 
 #[test]
 fn a_collected_inspection_states_the_collection_as_its_cause() {
     let document = json!({
-        "schema": "af/task-collected-inspection@2",
+        "schema": "af/task-collected-inspection@3",
         "task_id": "pagination-cli",
         "phase": {"kind": "finished", "result_id": id('1')},
         "state": {"phase":"finished","outcome":"changes_requested","cause":"collected","next_action":null},
@@ -221,7 +229,7 @@ fn a_collected_inspection_states_the_collection_as_its_cause() {
             "last_event_unix_ms": 1, "collected_unix_ms": 2, "collected_bytes": 3
         }
     });
-    let validator = validator("task-collected-inspection-v2.json");
+    let validator = validator("task-collected-inspection-v3.json");
     let errors: Vec<String> = validator
         .iter_errors(&document)
         .map(|e| format!("{e} at {}", e.instance_path()))
@@ -236,7 +244,7 @@ fn a_collected_inspection_states_the_collection_as_its_cause() {
         "a collected Task names its collection"
     );
     let mut old = document;
-    old["schema"] = json!("af/task-collected-inspection@1");
+    old["schema"] = json!("af/task-collected-inspection@2");
     assert!(
         !validator.is_valid(&old),
         "the previous version fails closed"
@@ -246,7 +254,7 @@ fn a_collected_inspection_states_the_collection_as_its_cause() {
 #[test]
 fn an_inspection_carries_the_state_its_failures_and_its_gate() {
     let value = json!({
-        "schema":"af/task-inspection@13", "task_id":"pagination-cli", "revision_id":id('1'),
+        "schema":"af/task-inspection@14", "task_id":"pagination-cli", "revision_id":id('1'),
         "phase":{"kind":"running"},
         "state":{"phase":"abandoned","outcome":"cancelled","cause":"host_cancelled",
             "next_action":"af task run pagination-cli"},
@@ -260,11 +268,11 @@ fn an_inspection_carries_the_state_its_failures_and_its_gate() {
             "diagnostic_id":id('4')}],
         "history":[], "execution_records":[], "run_reports":[]
     });
-    assert_valid("task-inspection-v13.json", &value);
+    assert_valid("task-inspection-v14.json", &value);
     for (pointer, replacement, why) in [
         (
             "/schema",
-            json!("af/task-inspection@12"),
+            json!("af/task-inspection@13"),
             "the previous version",
         ),
         (
@@ -291,14 +299,126 @@ fn an_inspection_carries_the_state_its_failures_and_its_gate() {
     ] {
         let mut changed = value.clone();
         *changed.pointer_mut(pointer).unwrap() = replacement;
-        assert_invalid("task-inspection-v13.json", &changed, why);
+        assert_invalid("task-inspection-v14.json", &changed, why);
     }
     let mut stateless = value;
     stateless.as_object_mut().unwrap().remove("state");
     assert_invalid(
-        "task-inspection-v13.json",
+        "task-inspection-v14.json",
         &stateless,
         "an inspection without its state",
+    );
+}
+
+/// `af/task-inspection@14` (ADR-0257): an implementer its Attempt wall ended reads
+/// `exhausted/attempt_wall`, lists its wall end with the partial tree it kept, a plan lists each
+/// Worker slot's Attempt wall beside its model, and a Task that continues a partial tree names
+/// it; a wall end that names its partial tree by anything but a digest, a slot without its wall
+/// field and a model slot without its model are refused.
+#[test]
+fn an_inspection_names_the_attempt_wall_its_partial_tree_and_each_slots_wall() {
+    use review_core::task::attempt_wall::*;
+    let end = TaskAttemptWallEndV1 {
+        schema: TASK_ATTEMPT_WALL_END_SCHEMA.into(),
+        task_id: "pagination-cli".into(),
+        node: "root.nodes.implement".into(),
+        attempt_id: "01AAAAAAAAAAAAAAAAAAAAAAAA".into(),
+        wall_ms: 1_800_000,
+        elapsed_ms: 1_800_412,
+        partial_candidate_id: Some(id('5')),
+    };
+    let partial = TaskPartialCandidateV1 {
+        schema: TASK_PARTIAL_CANDIDATE_SCHEMA.into(),
+        parent_snapshot_id: id('6'),
+        snapshot_id: id('7'),
+        source_tree_id: id('8'),
+        changed_paths: 2,
+    };
+    let value = json!({
+        "schema":"af/task-inspection@14", "task_id":"pagination-cli", "revision_id":id('1'),
+        "phase":{"kind":"running"},
+        "state":{"phase":"finished","outcome":"exhausted","cause":"attempt_wall",
+            "next_action":"af task run NEW_TASK_ID --from pagination-cli"},
+        "clock":{"wall_ms":60000,"started_unix_ms":5,"deadline_unix_ms":60005},
+        "plan_id":id('2'), "chargeable_tokens":"0", "attempts":1,
+        "failures":[{"node":"root.nodes.implement","cause":"attempt_wall",
+            "first_line":"implementer reached its Attempt wall of 30 min after 30 min",
+            "diagnostic_id":id('3')}],
+        "attempt_wall_ends":[{"artifact_id":id('4'),"record":end,"partial_candidate":partial}],
+        "slots":[
+            {"slot":"root.slots.implementer","worker":"kernel/implementer","execution":"model",
+             "provider":"claude","model":"claude-opus-5","effort":"high",
+             "attempt_wall_ms":1_800_000},
+            {"slot":"root.slots.check","worker":null,"execution":"command",
+             "attempt_wall_ms":null}],
+        "continues":{"task_id":"first","node":"root.nodes.implement",
+            "attempt_id":"01BBBBBBBBBBBBBBBBBBBBBBBB","wall_end_id":id('a'),
+            "partial_candidate_id":id('b'),"snapshot_id":id('c')},
+        "history":[], "execution_records":[], "run_reports":[]
+    });
+    assert_valid("task-inspection-v14.json", &value);
+    let mut environment = value.clone();
+    environment["state"] = json!({"phase":"finished","outcome":"provider_failed",
+        "cause":"provider_environment","next_action":"af provider status"});
+    environment["failures"][0]["cause"] = json!("provider_environment");
+    assert_valid("task-inspection-v14.json", &environment);
+    for (pointer, replacement, why) in [
+        (
+            "/attempt_wall_ends/0/record/partial_candidate_id",
+            json!("tree"),
+            "a partial tree named by anything but its digest",
+        ),
+        (
+            "/attempt_wall_ends/0/partial_candidate/changed_paths",
+            json!(-1),
+            "a negative count of changed paths",
+        ),
+        (
+            "/slots/0/attempt_wall_ms",
+            json!(0),
+            "a slot whose Attempt wall is zero",
+        ),
+        (
+            "/slots/1/provider",
+            json!("claude"),
+            "a command Worker named with a Provider",
+        ),
+        (
+            "/state/cause",
+            json!("provider_environment"),
+            "an environment failure read as an exhausted limit",
+        ),
+        (
+            "/continues/wall_end_id",
+            json!(1),
+            "a partial continuation without its wall end",
+        ),
+    ] {
+        let mut changed = value.clone();
+        match changed.pointer_mut(pointer) {
+            Some(field) => *field = replacement,
+            // An absent field is added to its parent object.
+            None => {
+                let (parent, name) = pointer.rsplit_once('/').unwrap();
+                changed.pointer_mut(parent).unwrap()[name] = replacement;
+            }
+        }
+        assert_invalid("task-inspection-v14.json", &changed, why);
+    }
+    for (field, why) in [
+        ("attempt_wall_ms", "a slot without its Attempt wall field"),
+        ("model", "a model slot without its model"),
+    ] {
+        let mut changed = value.clone();
+        changed["slots"][0].as_object_mut().unwrap().remove(field);
+        assert_invalid("task-inspection-v14.json", &changed, why);
+    }
+    let mut provider_cause = value;
+    provider_cause["state"]["outcome"] = json!("provider_failed");
+    assert_invalid(
+        "task-inspection-v14.json",
+        &provider_cause,
+        "an Attempt wall read as a Provider failure",
     );
 }
 

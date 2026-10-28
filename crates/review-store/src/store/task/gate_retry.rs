@@ -87,7 +87,7 @@ impl TaskProjection {
             else {
                 continue;
             };
-            let receipt = envelope(cas, receipt, task::verification::TASK_CHECK_RECEIPT_V1)?;
+            let receipt = envelope(cas, receipt, task::verification::TASK_CHECK_RECEIPT_V2)?;
             if receipt.payload.get("outcome") == Some(&json!("passed")) {
                 continue;
             }

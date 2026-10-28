@@ -24,8 +24,8 @@ from unittest import mock
 from fractions import Fraction
 
 from perflab import (clicases, contracts, counters, diagcontracts, diagnostics, flamegraph,
-                     gitrefs, oracle, perfcapture, phasetrace, planning, runner, stats, svgsafe,
-                     toolrun)
+                     gitrefs, oracle, perfcapture, phasetrace, planning, runner, stats, supervise,
+                     svgsafe, toolrun)
 from perflab import suite as suite_module
 from perflab.values import ContractError, sha256_bytes
 from tests import build_fixtures
@@ -1874,6 +1874,60 @@ class UncertainCleanup(ChildRunBase):
                                           "scratch-fs", "docker"):
                             path = self.path(directory)
                             if os.path.isdir(path): shutil.rmtree(path)
+
+    def test_only_a_typed_confirmed_removal_releases_a_contained_namespace(self):
+        # Issue #388: a failed launch's removal was confirmed by its text, so an OSError whose
+        # message ends in "removed" cleared uncertainty and the namespace was removed. Now the
+        # removal's typed outcome decides; its wording never does.
+        for raised in ("container was not removed", "removal failed"):
+            with self.subTest(raised=raised):
+                for directory in ("child", "probe-bin", "supervisor", "perf", "scratch-fs",
+                                  "docker"):
+                    path = self.path(directory)
+                    if os.path.isdir(path): shutil.rmtree(path)
+                perf = fakes.perf(self.path("perf"), phase_file=self.path("probe-bin", "phase"))
+                tools = diagnostics.configured_tools(perf=perf)
+                root = self.path("scratch-fs")
+                os.mkdir(root, 0o700)
+                place = dict(scratch_root=root, docker=fakes.docker(self.path("docker")))
+                actual_launch, actual_remove = supervise.launch, oracle.Namespace.remove
+                lost, launched, removed = [], [], []
+
+                def launch(argv, request, **kwargs):
+                    launched.append(request)
+                    if not lost and request["cwd"].startswith(os.path.realpath(root)):
+                        lost.append(request)
+                        raise supervise.SupervisorFailure("lost supervisor reply", uncertain=True)
+                    return actual_launch(argv, request, **kwargs)
+
+                def remove_container(docker, name, deadline=None, clock=time.monotonic):
+                    raise OSError(raised)
+
+                def remove_namespace(namespace):
+                    removed.append(namespace.path)
+                    return actual_remove(namespace)
+
+                actual_run = diagnostics.Profile.run
+
+                def run(profile):
+                    os.makedirs(os.path.join(profile.output, diagnostics.WORK_DIR), exist_ok=True)
+                    return actual_run(profile)
+
+                with mock.patch.object(supervise, "launch", launch), \
+                        mock.patch.object(supervise, "remove_container", remove_container), \
+                        mock.patch.object(oracle.Namespace, "remove", remove_namespace), \
+                        mock.patch.object(diagnostics.Profile, "run", run):
+                    doc, output = self.profile("linux_gnu_cpu_profile", [SMALL], tools, {},
+                                               contained=place, work_removed=False)
+                profile = self.profile_object
+                self.assertEqual(len(lost), 1)
+                self.assertIs(launched[-1], lost[0], "nothing launches after the lost reply")
+                self.assertEqual(removed, [], "the namespace is kept, never removed")
+                self.assertEqual(profile.retained, [lost[0]["cwd"]])
+                self.assertTrue(os.path.isdir(lost[0]["cwd"]))
+                self.assertTrue(any(item["omission"]["reason"] == "cleanup_uncertain"
+                                    for item in doc["captures"]))
+                self.assertFalse(os.path.exists(os.path.join(output, "manifest.json")))
 
     def test_proven_decoder_prelaunch_refusal_allows_next_side_and_final_cleanup(self):
         from tests.supervision_faults import fault
