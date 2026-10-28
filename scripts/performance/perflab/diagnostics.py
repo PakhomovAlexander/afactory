@@ -679,20 +679,23 @@ class Profile(object):
         os.chmod(self.work, 0o700)
         return oracle.Namespace(self.work)
 
-    def release(self, namespace, uncertain=False):
+    def release(self, namespace, uncertain=False, why=None):
         """End one execution's namespace. Its lifecycle is checked before anything is removed:
         when a process the run started may still be live, the namespace and every byte in it
         are kept for the operator, its handles closed and nothing of it removed, and the run
-        stops launching (`halted`). Only a confirmed end lets the namespace be removed, and a
-        removal that is not confirmed keeps what is left the same way."""
+        stops launching (`halted`); `why`, when the caller knows it, names what left the end
+        unconfirmed. Only a confirmed end lets the namespace be removed, and a removal that
+        is not confirmed keeps what is left the same way."""
         if uncertain or self.retained or getattr(namespace, "reader_uncertain", False):
             path = namespace.keep()
             if path not in self.retained:
                 self.retained.append(path)
-            raise perfcapture.CaptureError(
-                "cleanup_uncertain", ("a process the run started may still be live, so its "
-                                      "scratch %s was kept for recovery and nothing more of "
-                                      "this run is launched" % namespace.path)[:4096])
+            detail = ("a process the run started may still be live, so its scratch %s was "
+                      "kept for recovery and nothing more of this run is launched"
+                      % namespace.path)
+            if why is not None:
+                detail = "%s; %s" % (why, detail)
+            raise perfcapture.CaptureError("cleanup_uncertain", detail[:4096])
         problems = namespace.remove()
         if problems:
             # Kept for the operator, never removed beneath a live process.
@@ -1425,7 +1428,7 @@ class Profile(object):
         namespace before it is removed."""
         entry = self.cli_entry(side, case)
         namespace = self.namespace()
-        result = staged = room = None
+        result = staged = room = unconfirmed = None
         try:
             scratch = namespace.path
             probe = self.probes[side][0] if side in self.probes else None
@@ -1473,6 +1476,17 @@ class Profile(object):
             if failure is not None:
                 raise perfcapture.CaptureError("cli_failed", "%s: %s" % (what, failure))
             reply = result.supervised.result
+            if (case["timing"]["boundary"] == "reported_interval"
+                    and supervise.returncode(reply) == clicases.DRIVER_UNCONFIRMED_EXIT):
+                # The PTY driver owns the browser's session outside the supervisor's group: a
+                # cleanup it could not confirm is this execution's, whatever the supervisor
+                # confirmed of its own group (ADR-0258). Nothing of the run is judged or
+                # removed: the namespace is kept and nothing more is launched.
+                result.uncertain = True
+                unconfirmed = ("%s: the PTY driver could not confirm that the browser's "
+                               "session ended: %s"
+                               % (what, result.stderr.decode("utf-8", "replace")[-512:]))
+                raise perfcapture.CaptureError("cleanup_uncertain", unconfirmed[:4096])
             passed, why, _ = clicases.judge(entry, values, result.code, result.stdout,
                                             reply["stdout"]["truncated"],
                                             reply["stdout_pattern_counts"],
@@ -1490,7 +1504,7 @@ class Profile(object):
                 self.discard_trace(staged, LAUNCHING if getattr(
                     namespace, "reader_uncertain", False) else result)
             finally:
-                self.release(namespace, _uncertain(result))
+                self.release(namespace, _uncertain(result), unconfirmed)
 
     def trace_stage(self, namespace):
         """(path, room) of the raw trace one traced execution exports: a new file below the

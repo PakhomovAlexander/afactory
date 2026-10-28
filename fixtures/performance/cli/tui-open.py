@@ -9,7 +9,9 @@ after its last clear. A pseudo-terminal carries no write boundaries, so the inst
 line reaches the terminal is the earliest the browser frame is shown on it; a status line that
 a clear erased never counts, whether the clear came before it or after it: the terminal is
 read through the browser's exit, a clear after the line that nothing repaints refuses the
-sample, and a line repainted after a clear is the frame.
+sample, and a line repainted after a clear is the frame. Every wait of the cleanup reads the
+terminal too, the reap included, since on macOS an exiting session leader's close of its
+terminal waits until its pending output is read.
 
 The session is this driver's to end. The child holds a duplicate of the driver's stderr, the
 supervisor's pipe, so a process of the session that keeps it cannot outlive the driver unseen by
@@ -143,15 +145,20 @@ def kill_group(group):
         pass
 
 
-def settle(group, deadline):
-    """Kill the group's live members until none runs, or until `deadline`; whether none runs.
-    Its leader is unreaped, so the group's id names nothing else."""
+def settle(group, deadline, wait):
+    """Kill the group's live members until none runs, or until `deadline`: whether none runs,
+    and whether any ran. Its leader is unreaped, so the group's id names nothing else. The
+    settlement's own probes say what ran: a member born between two listings, whose parent
+    exited before the first read it, is one the kill finds, and it counts. `wait` is one step
+    of waiting (`Drain.step`), reading the terminal on the way."""
+    found = False
     while live_members(group):
+        found = True
         if time.monotonic() >= deadline:
-            return False
+            return False, found
         kill_group(group)
-        time.sleep(0.005)
-    return True
+        wait()
+    return True, found
 
 
 def proc_started(name, proc):
@@ -237,9 +244,10 @@ def listed(token, exclude, born):
     return found
 
 
-def settle_listed(token, exclude, seconds, born):
+def settle_listed(token, exclude, seconds, born, wait):
     """Kill every process `listed` names until none is: whether one was found, and whether none
-    is left within `seconds` of the first kill. The listing has a bound of its own."""
+    is left within `seconds` of the first kill. The listing has a bound of its own; `wait` is
+    one step of waiting (`Drain.step`)."""
     found = False
     deadline = None
     while True:
@@ -256,32 +264,47 @@ def settle_listed(token, exclude, seconds, born):
                 os.kill(pid, signal.SIGKILL)
             except (ProcessLookupError, PermissionError):
                 pass
-        time.sleep(0.005)
+        wait()
 
 
-def reap(child):
-    _, status = os.waitpid(child.pid, 0)
+def reap(child, wait, deadline):
+    """Reap the exited leader: its status, or None when it is not reaped by `deadline`. The
+    reap waits with `wait` (`Drain.step`): on macOS an exiting session leader's close of its
+    terminal waits until its pending output is read, so a reap that only waited for the exit
+    could wait for itself."""
+    while True:
+        pid, status = os.waitpid(child.pid, os.WNOHANG)
+        if pid:
+            break
+        if time.monotonic() >= deadline:
+            return None
+        wait()
     child.returncode = os.waitstatus_to_exitcode(status) if hasattr(
         os, "waitstatus_to_exitcode") else (os.WEXITSTATUS(status) if os.WIFEXITED(status)
                                             else -os.WTERMSIG(status))
     return child.returncode
 
 
-def end(child, watch, token, deadline, born):
+def end(child, watch, drain, token, deadline, born):
     """Kill the running session, observe its leader's exit, settle its group, reap the leader,
     and, whether or not the leader was reaped before, clear what left the group; whether every
     step was confirmed, the group's before `deadline` and what left it within CLEANUP_SECONDS
-    of its first kill."""
+    of its first kill. `watch` is None when the leader's exit could not be watched (its
+    `Exit` was refused): the settlement observes it then, since the leader is a live member
+    of its group until it exits, and the reap confirms it. Every wait reads the terminal
+    (`drain`, a `Drain`): on macOS an exiting session leader's close of its terminal waits
+    until its pending output is read."""
     if child.returncode is None:
         kill_group(child.pid)
-        while not watch.seen():
+        while watch is not None and not watch.seen():
             if time.monotonic() >= deadline:
                 return False
-            time.sleep(0.005)
-        if not settle(child.pid, deadline):
+            drain.step()
+        if not settle(child.pid, deadline, drain.step)[0]:
             return False
-        reap(child)
-    return settle_listed(token, {child.pid}, CLEANUP_SECONDS, born)[1]
+        if reap(child, drain.step, deadline) is None:
+            return False
+    return settle_listed(token, {child.pid}, CLEANUP_SECONDS, born, drain.step)[1]
 
 
 def drain(master, screen, timeout):
@@ -297,6 +320,24 @@ def drain(master, screen, timeout):
         return False
     screen.feed(data, time.monotonic_ns())
     return True
+
+
+class Drain:
+    """The terminal's reader through the cleanup: `step` is one short wait that reads what the
+    terminal holds into `screen` while the terminal is open, and sleeps once it ended. On
+    macOS a killed process's exit waits until its pending terminal output is read, so no wait
+    of the cleanup leaves the terminal unread."""
+
+    def __init__(self, master, screen):
+        self.master = master
+        self.screen = screen
+        self.open = True
+
+    def step(self):
+        if self.open:
+            self.open = drain(self.master, self.screen, 0.005)
+        else:
+            time.sleep(0.005)
 
 
 def milliseconds(nanoseconds):
@@ -342,6 +383,8 @@ def measure(argv):
     fcntl.ioctl(slave, termios.TIOCSWINSZ, struct.pack("HHHH", 30, 100, 0, 0))
     witness = os.dup(2)
     child = watch = born = None
+    screen = Screen()
+    reader = Drain(master, screen)
     settled = False
     token = os.urandom(16).hex()
     mask = signal.pthread_sigmask(signal.SIG_BLOCK, ())
@@ -369,7 +412,6 @@ def measure(argv):
         slave = -1
         if os.path.isdir(PROC + "/self/task"):
             born = proc_started(child.pid, PROC)
-        screen = Screen()
         deadline = started + DEADLINE_SECONDS * 1000000000
         while screen.browser is None:
             remaining = (deadline - time.monotonic_ns()) / 1000000000
@@ -404,12 +446,17 @@ def measure(argv):
         # follows, so it stays pending until that is confirmed, and ends the sample then.
         signal.pthread_sigmask(signal.SIG_BLOCK, SIGNALS)
         cleanup_by = time.monotonic() + CLEANUP_SECONDS
-        stray = live_members(child.pid)
-        if not settle(child.pid, cleanup_by):
+        reader.open = open_terminal
+        settled_group, stray = settle(child.pid, cleanup_by, reader.step)
+        if not settled_group:
             raise Unconfirmed("a process of the browser's session survived its kill")
-        code = reap(child)
-        escaped, cleared = settle_listed(token, {child.pid}, CLEANUP_SECONDS, born)
+        code = reap(child, reader.step, cleanup_by)
+        if code is None:
+            raise Unconfirmed("the browser was not reaped after its exit")
+        escaped, cleared = settle_listed(token, {child.pid}, CLEANUP_SECONDS, born,
+                                         reader.step)
         settled = True
+        open_terminal = reader.open
         if not cleared:
             raise Unconfirmed("a process the browser started survived its kill")
         held_by = time.monotonic() + CLEANUP_SECONDS
@@ -436,7 +483,8 @@ def measure(argv):
         signal.pthread_sigmask(signal.SIG_BLOCK, SIGNALS)
         try:
             if child is not None and not settled:
-                if not end(child, watch, token, time.monotonic() + CLEANUP_SECONDS, born):
+                if not end(child, watch, reader, token, time.monotonic() + CLEANUP_SECONDS,
+                           born):
                     raise Unconfirmed("the browser's session did not end after its kill")
         finally:
             os.close(master)

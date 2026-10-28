@@ -274,7 +274,9 @@ omission names its reason and exact reproduction.
 
 - **CLI cases**: each execution runs the side's own AF binary, directly or through the declared
   PTY driver, in a private HOME, XDG and TMPDIR after its setup. The supervisor's observation of
-  the whole output is judged by the command's oracle. A CPU profile records each fresh process
+  the whole output is judged by the command's oracle; a PTY driver exit of 3 is a cleanup it
+  could not confirm, which keeps the execution's namespace and launches nothing more
+  (`cleanup_uncertain`, ADR-0258). A CPU profile records each fresh process
   whole; a trace's region is the startup of a discovery command or the dispatched command.
   Cases declared as requiring Linux containment run only with `--mode linux_container`.
 - **CPU profiles** (`linux_gnu_cpu_profile`, `linux_musl_cpu_profile`): `perf record` starts

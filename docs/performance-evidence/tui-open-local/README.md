@@ -101,12 +101,17 @@ After the run these paths changed, and nothing else: `docs/README.md`,
 `changelog.d/perf-tui-open-target.md`, `fixtures/performance/README.md`, this directory, the
 docstring of `scripts/performance/perflab/capability.py`, the driver
 `fixtures/performance/cli/tui-open.py`, the tests `scripts/performance/tests/test_tui_open.py`,
-`test_runner.py` and `support.py`, and the protected-harness inventory
+`test_runner.py`, `test_diagnostics.py` and `support.py`, the diagnostic child run
+`scripts/performance/perflab/diagnostics.py` (it reads the driver's unconfirmed exit as the
+shard does; this run took no diagnostic), and the protected-harness inventory
 `fixtures/performance/kernel-measure/code-policy-measures.toml` and `inventory.json`,
 re-rendered for them. No registry, setup, runner or product code changed. The driver did
 change after the run, in its cleanup and its reading of the terminal, not in what it
 measures: the review rounds after it made the driver find a process that left the browser's
-session by a token in its environment and fail closed on a listing it cannot confirm, hold a
+session by a token in its environment and fail closed on a listing it cannot confirm, count
+what its settlement finds, end the session when its exit watcher is refused and read the
+terminal through every wait of its cleanup (an exiting session leader's close of its terminal
+waits on macOS until its pending output is read), hold a
 cancellation that lands during the settlement until the settlement is confirmed, keep the
 first-byte and status-line arrivals in a `Screen` that a later clear erases, and read the
 terminal through the browser's exit. The measurements above were taken with the driver as it

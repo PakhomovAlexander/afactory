@@ -1201,6 +1201,9 @@ class Counters(TempDir):
 
 
 class ChildRunBase(TempDir):
+    PARENT_CASES = ["canonical_serialize_small", "canonical_validate_small", "cas_raw_get_small",
+                    "state_projection", "cli_discovery", "cli_state_read"]
+
     """A whole child run over stand-ins: the parent plan, the frozen child plan, captures,
     flamegraphs, traces and counters, profiles.json, the page and the manifest."""
 
@@ -1213,8 +1216,7 @@ class ChildRunBase(TempDir):
         self.parent = planning.plan(self.git, planning.Request(
             trigger="manual", tier="quick", scope="partial_scope", base=self.root,
             head=self.root, run_id="parent_run", seed=5, trusted_host_build=True,
-            cases=["canonical_serialize_small", "canonical_validate_small", "cas_raw_get_small",
-                   "state_projection", "cli_discovery", "cli_state_read"]))
+            cases=self.PARENT_CASES))
         with open(self.path("parent.json"), "wb") as stream:
             stream.write(contracts.write_bytes(self.parent, "run"))
         self.suite = suite_module.load(SUITE)
@@ -1230,7 +1232,8 @@ class ChildRunBase(TempDir):
 
     def profile(self, recipe, cases, tools, probe_config, parent_probes=None, duration_ms=300,
                 registry=None, af_config=None, parent_af_config=None, contained=None,
-                prior_bytes=0, work_removed=True, run_id="child_run", telemetry=None, distinct_candidate=False):
+                prior_bytes=0, work_removed=True, run_id="child_run", telemetry=None, distinct_candidate=False,
+                cli_version="0.12.0-rc.3"):
         plan = self.child(recipe, cases, duration_ms, run_id)
         output = self.path("child")
         os.makedirs(output)
@@ -1286,7 +1289,7 @@ class ChildRunBase(TempDir):
             afs = dict((side, (binary, sha256_bytes(read(binary))))
                        for side in diagcontracts.SIDES)
             cli_doc = clicases.load(os.path.join(ROOT, clicases.CLI_PATH))
-            versions = dict((side, "0.12.0-rc.3") for side in diagcontracts.SIDES)
+            versions = dict((side, cli_version) for side in diagcontracts.SIDES)
             cli = diagnostics.CliAuthority(
                 cli_doc, os.path.join(ROOT, "fixtures/performance/cli"), versions,
                 dict((side, clicases.choose_adapter(cli_doc, versions[side]))
@@ -1572,6 +1575,7 @@ class ChildRun(ChildRunBase):
 
 DISCOVERY = "cli_discovery__command_version"
 TASK_SHOW = "cli_state_read__command_task_show_state_cli_state_10000"
+TUI_EMPTY = "tui_open__registry_empty"
 
 
 class CliCases(ChildRunBase):
@@ -2092,6 +2096,56 @@ class UncertainCleanup(ChildRunBase):
                                        {"trace": ChildRun.TRACE}, work_removed=False)
         baseline, candidate = doc["traces"]
         self.assertEqual(baseline["omission"]["reason"], "cleanup_uncertain")
+        self.assertEqual(candidate["omission"]["reason"], "cleanup_uncertain")
+        self.assertIn("was not started", candidate["omission"]["detail"])
+        self.assertEqual(len(launched), 1, "nothing launched after the unconfirmed end")
+        [kept] = launched
+        self.assertIn(kept, baseline["omission"]["detail"])
+        self.assertEqual(read(os.path.join(kept, "live-data")), b"reachable")
+        self.assertEqual(doc["execution"]["retained_scratch"], 1)
+        self.assertEqual(self.profile_object.retained, [kept])
+
+
+class BrowserDiagnostic(ChildRunBase):
+    """The browser case under a diagnostic (ADR-0258): its PTY driver owns the browser's
+    session outside the supervisor's group, so a cleanup the driver could not confirm is the
+    execution's, whatever the supervisor confirmed of its own group."""
+
+    PARENT_CASES = ChildRunBase.PARENT_CASES + ["tui_open"]
+
+    def test_a_driver_that_cannot_confirm_the_sessions_end_keeps_the_scratch(self):
+        # The supervisor's reply is clean and the driver exited `DRIVER_UNCONFIRMED_EXIT`
+        # after it wrote below its namespace: the execution's cleanup is unconfirmed, the
+        # namespace and its data are kept, the other side never launches, and the run's work
+        # is not removed.
+        actual = toolrun.run
+        launched = []
+        held = b"tui-open: cleanup unconfirmed: held\n"
+
+        def unconfirmed(boss, argv, *args, **kwargs):
+            if not any(arg.endswith("/tui-open.py") for arg in argv):
+                return actual(boss, argv, *args, **kwargs)
+            with open(os.path.join(kwargs["cwd"], "live-data"), "w") as stream:
+                stream.write("reachable")
+            launched.append(kwargs["cwd"])
+            reply = {"termination": {"kind": "exited", "code": clicases.DRIVER_UNCONFIRMED_EXIT,
+                                     "signal": None, "detail": ""},
+                     "timing": {"child_wall_ns": 5000000},
+                     "stdout": {"retained": 0, "total": 0, "truncated": 0},
+                     "stdout_pattern_counts": {}, "stdout_json": None}
+            return toolrun.Result(argv, code=clicases.DRIVER_UNCONFIRMED_EXIT, stderr=held,
+                                  stderr_bytes=len(held), elapsed_ms=5,
+                                  supervised=supervise.Supervised(reply, b"", held, 5000000,
+                                                                  None))
+
+        with mock.patch.object(diagnostics.toolrun, "run", unconfirmed):
+            # The browser case is a command of the 0.13 adapter.
+            doc, output = self.profile("linux_gnu_trace", [TUI_EMPTY], {}, {}, af_config={},
+                                       work_removed=False, cli_version="0.13.0-rc.1")
+        baseline, candidate = doc["traces"]
+        self.assertEqual(baseline["omission"]["reason"], "cleanup_uncertain")
+        self.assertIn("could not confirm that the browser's session ended: tui-open: cleanup "
+                      "unconfirmed: held", baseline["omission"]["detail"])
         self.assertEqual(candidate["omission"]["reason"], "cleanup_uncertain")
         self.assertIn("was not started", candidate["omission"]["detail"])
         self.assertEqual(len(launched), 1, "nothing launched after the unconfirmed end")

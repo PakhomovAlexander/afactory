@@ -1,6 +1,7 @@
 """The PTY driver and its private registry fixture."""
 
 import contextlib
+import errno
 import importlib.util
 import io
 import json
@@ -43,7 +44,7 @@ BROWSER = (
     "def ready(*pids):\n"
     "    with open(sys.argv[2], 'w') as fifo:\n"
     "        fifo.write(' '.join(str(pid) for pid in pids) + '\\n')\n"
-    "if mode != 'late':\n"
+    "if mode not in ('late', 'escape-first'):\n"
     "    paint(b'splash')\n"
     "if mode == 'paint':\n"
     "    paint(b'\\x1b[2J')\n"
@@ -72,7 +73,7 @@ BROWSER = (
     "        os._exit(0)\n"
     "    ready(os.getpid(), stray)\n"
     "    time.sleep(30)\n"
-    "elif mode in ('escape', 'hidden'):\n"
+    "elif mode in ('escape', 'hidden', 'escape-first'):\n"
     "    done_r, done_w = os.pipe()\n"
     "    escaped = os.fork()\n"
     "    if escaped == 0:\n"
@@ -309,20 +310,81 @@ class TuiOpen(unittest.TestCase):
         # runner keeps a sample's scratch for (`DRIVER_UNCONFIRMED_EXIT`).
         if os.geteuid() == 0:
             self.skipTest("root lists every directory")
-        driver = load_driver()
+        driver = self.loaded()
         proc = os.path.join(self.root, "proc")
         os.makedirs(os.path.join(proc, "self", "task"))
         os.chmod(proc, 0o100)
         self.addCleanup(os.chmod, proc, 0o700)
         driver.PROC = proc
+        code, stdout, stderr = self.run_main(driver, "paint")
+        self.assertEqual(code, clicases.DRIVER_UNCONFIRMED_EXIT, stderr)
+        self.assertEqual(stdout, "")
+        self.assertIn("the process listing failed", stderr)
+
+    def loaded(self):
+        """The driver module for a run of `main` in this process, its signal handlers restored
+        after the test; a test patches what it needs on it."""
+        driver = load_driver()
         handlers = {number: signal.getsignal(number) for number in driver.SIGNALS}
         self.addCleanup(lambda: [signal.signal(n, h) for n, h in handlers.items()])
+        return driver
+
+    def run_main(self, driver, mode):
+        """`main` of `driver` on the browser in `mode`, in this process: (exit code, stdout,
+        stderr)."""
         stdout, stderr = io.StringIO(), io.StringIO()
         with contextlib.redirect_stdout(stdout), contextlib.redirect_stderr(stderr):
-            code = driver.main(self.argv("paint"))
-        self.assertEqual(code, clicases.DRIVER_UNCONFIRMED_EXIT, stderr.getvalue())
-        self.assertEqual(stdout.getvalue(), "")
-        self.assertIn("the process listing failed", stderr.getvalue())
+            code = driver.main(self.argv(mode))
+        return code, stdout.getvalue(), stderr.getvalue()
+
+    def test_a_member_the_settlement_finds_refuses_the_sample_whatever_a_probe_before_said(self):
+        # A member can be born between two listings of the group, its parent gone before the
+        # first read it: the settlement's own probes decide, not one probe before it. The first
+        # probe after the browser's exit finds a member here, the kill's does not; the sample
+        # is refused after the kill, with no document.
+        driver = self.loaded()
+        actual = driver.live_members
+        probes = []
+
+        def live_members(group):
+            probes.append(group)
+            return len(probes) == 1 or actual(group)
+
+        driver.live_members = live_members
+        code, stdout, stderr = self.run_main(driver, "paint")
+        self.assertEqual(code, 1, stderr)
+        self.assertEqual(stdout, "")
+        self.assertIn("outlived it; it was killed", stderr)
+        self.assertGreaterEqual(len(probes), 2)
+
+    def test_a_session_whose_exit_cannot_be_watched_is_still_ended_and_cleared(self):
+        # The watcher of the leader's exit is refused (a kqueue the process limit denies, say):
+        # the session is killed all the same, its group settled with the leader among the live
+        # members until it exits, the leader reaped, and what left the session found by its
+        # token and killed. The refusal is the ordinary failure, with no document, and nothing
+        # of the browser's is left. The refusal waits for the browser's readiness, so that the
+        # descendant that left its session exists when the cleanup begins; the browser paints
+        # nothing before it (`escape-first`), since `tcdrain` on this platform's terminal
+        # waits for a read of the driver's that comes after the watcher.
+        driver = self.loaded()
+        pids = []
+        fifo = self.fifo
+
+        class Refused(driver.Exit):
+            def __init__(self, pid):
+                with open(fifo, encoding="utf-8") as ready:
+                    pids.extend(int(word) for word in ready.readline().split())
+                raise OSError(errno.EMFILE, "too many open files")
+
+        driver.Exit = Refused
+        code, stdout, stderr = self.run_main(driver, "escape-first")
+        self.assertEqual(code, 1, stderr)
+        self.assertEqual(stdout, "")
+        self.assertIn("too many open files", stderr)
+        self.assertEqual(len(pids), 2, pids)
+        browser, escaped = pids
+        self.assert_not_running(escaped)
+        self.assert_not_running(browser)
 
     def test_the_interval_ends_when_the_status_line_arrives_not_at_an_earlier_clear(self):
         # The first output is a clear and a splash; the status line follows without another
@@ -467,8 +529,8 @@ class TuiOpen(unittest.TestCase):
         driver = load_driver()
         reap = driver.reap
 
-        def reap_then_cancel(child):
-            code = reap(child)
+        def reap_then_cancel(child, wait, deadline):
+            code = reap(child, wait, deadline)
             os.kill(os.getpid(), signal.SIGTERM)
             return code
 
