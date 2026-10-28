@@ -1527,3 +1527,48 @@ fn the_runner_row_follows_the_catalogs_as_they_arrive() {
     let row = runner(&pane);
     assert!(row.ends_with("verdict (static rules): ok"), "{row}");
 }
+
+/// A Worker's STATE counts the Attempts in every checkout of the Project: the Tasks pane's
+/// discovery runs on the read's thread here too, so a worktree's own Store is counted beside
+/// this checkout's.
+#[test]
+fn a_workers_state_counts_the_attempts_of_every_checkout_of_the_project() {
+    let temp = tempfile::tempdir().unwrap();
+    let root = std::fs::canonicalize(temp.path()).unwrap();
+    let (repo, _state) = crate::tui::tests::hub_with_tasks(&root);
+    let worktree = root.join("hub-wt-branch");
+    let args = [
+        "worktree",
+        "add",
+        "-q",
+        "-b",
+        "branch",
+        worktree.to_str().unwrap(),
+    ];
+    git(&repo, &args).unwrap();
+    let branch_state =
+        crate::task_execution::default_task_state(&root.join("state"), &worktree).unwrap();
+    crate::tui::tests::record_task(&root, &worktree, &branch_state, "pagination-branch");
+    let scope = crate::tui::tests::hub_scope(&root, &repo);
+    let id = ".af/task-packages/fixture/implementer/worker.toml";
+    let mut pane = WorkersPane::default();
+    pane.load(&scope).unwrap();
+    assert_eq!(
+        pane.targets.len(),
+        1,
+        "the load resolves the own Store alone"
+    );
+    pane.settle();
+    assert_eq!(
+        pane.stores.len(),
+        2,
+        "the read discovered the worktree's Store"
+    );
+    assert!(pane.warning.is_none());
+    pane.open(Some(id));
+    pane.settle();
+    let rows = texts(pane.rows());
+    let attempts = rows.iter().find(|row| row.starts_with("attempts")).unwrap();
+    // One Attempt under `HEAD`'s digest in this checkout, one in the worktree.
+    assert!(attempts.contains("settled ok 2"), "{attempts}");
+}

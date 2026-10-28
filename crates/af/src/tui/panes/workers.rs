@@ -616,6 +616,9 @@ struct Loaded {
     /// On a failed read of `HEAD`: for each kept entry, in order, its drifted files.
     drifts: Vec<Vec<String>>,
     stores: Vec<Store>,
+    /// Why the Stores are not every one of the Project's: its checkouts could not all be
+    /// discovered, so the Attempts counted are this checkout's own Store's.
+    warning: Option<String>,
 }
 
 struct Job {
@@ -644,10 +647,16 @@ pub(crate) struct WorkersPane {
     named: BTreeMap<usize, String>,
     /// Why the last read of `HEAD` failed; the entries shown are the previous read's.
     error: Option<String>,
-    /// The Task state directories the Tasks pane reads for this scope.
+    /// The Task state directories the Tasks pane resolves for this scope at load: this
+    /// checkout's own Store.
     targets: Vec<Target>,
+    /// What the read discovers on its thread: the Project's other checkouts' Stores, which
+    /// count beside the own one (docs/design/tui.md section 5.3).
+    discover: Option<tasks::Discovery>,
     /// Why the scope names no Task state.
     no_state: Option<String>,
+    /// Why the last read counted this checkout's Store alone.
+    warning: Option<String>,
     stores: Vec<Store>,
     selected: Option<String>,
     rows: Vec<Row>,
@@ -718,6 +727,7 @@ impl WorkersPane {
             return;
         };
         let targets = self.targets.clone();
+        let project = self.discover.clone();
         let commit = self.commit.clone();
         // The kept entries still show the working tree's drift from their commit.
         let kept: Vec<(String, String, bool)> = self
@@ -744,11 +754,19 @@ impl WorkersPane {
                     drift(&root, &commit, &shown)
                 }
             };
+            // The Project's checkouts, discovered here as the Tasks pane discovers them; a
+            // discovery that fails leaves the own Store counted and says so.
+            let (targets, warning) = match project.as_ref().map(tasks::Discovery::targets) {
+                Some(Ok(found)) => (found.targets, found.warning),
+                Some(Err(error)) => (targets, Some(error)),
+                None => (targets, None),
+            };
             let stores = targets.iter().map(read_store).collect();
             let _ = sender.send(Loaded {
                 discovered,
                 drifts,
                 stores,
+                warning,
             });
         });
         self.job = Some(Job { receiver });
@@ -780,6 +798,7 @@ impl WorkersPane {
             }
         }
         self.stores = loaded.stores;
+        self.warning = loaded.warning;
         self.job = None;
         // An opened Worker the read no longer finds: the folder shows, and the browser follows
         // (`App::poll` falls back to the folder when the opened entry is gone).
@@ -872,6 +891,10 @@ impl WorkersPane {
         let mut rows = Vec::new();
         if let Some(error) = &self.no_state {
             rows.push(Row::error("error", error));
+        }
+        if let Some(warning) = &self.warning {
+            let warning = format!("the Project's other checkouts are not counted: {warning}");
+            rows.push(Row::error("warning", warning));
         }
         for store in &self.stores {
             if let Err(error) = &store.tallies {
@@ -1186,6 +1209,7 @@ impl Pane for WorkersPane {
             Ok(targets) => (targets, None),
             Err(error) => (Vec::new(), Some(error)),
         };
+        self.discover = tasks::Discovery::of(scope, self.targets.first().cloned());
         // A project scope's folder lists its Workers from the start: the read is recorded here
         // and starts at the first poll after the frame, never before the browser's first frame.
         self.wanted = self.root.is_some();

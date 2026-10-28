@@ -9,6 +9,14 @@
 //! runs on a thread: the one a load or `R` starts, and the one that reads the opened running
 //! Task again about once a second. The event loop collects each Store as it is read, so the bar
 //! fills Store by Store and the browser never waits on one (ADR-0240).
+//!
+//! The project scope lists the Project's Tasks, not this directory's alone: beside this
+//! checkout's own Store, the default Store of every other checkout of the Project (`project`:
+//! the Workspaces the Project Store registers and the worktrees git lists), each a bar group
+//! named by its Workspace label or directory, discovered by the read as the user scope's
+//! repositories are.
+
+mod project;
 
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
@@ -730,9 +738,12 @@ struct Store {
     dir: PathBuf,
     /// The directory as the pane prints it, `~` for the home directory.
     shown: String,
-    /// The bar group: the user scope's opaque repository name, or an explicit Store's path.
+    /// The bar group: the user scope's opaque repository name, a checkout's name, or an
+    /// explicit Store's path.
     repo: Option<String>,
     origin: Origin,
+    /// What the folder says beside the path, as the target carries it.
+    note: Option<String>,
     tasks: Result<Vec<Listed>, String>,
     /// Who wrote the Store, when its event log refused itself as another release's: set where
     /// the Store is read, from that read's own error and the Store's writer markers, never from
@@ -783,6 +794,7 @@ fn read_store(dir: &Path, shown: &str, repo: Option<String>, cache: &mut Cache) 
         shown: shown.to_owned(),
         repo,
         origin,
+        note: None,
     };
     read_target(&target, cache)
 }
@@ -842,6 +854,7 @@ fn read_target(target: &Target, cache: &mut Cache) -> Store {
         shown: shown.to_owned(),
         repo,
         origin: target.origin,
+        note: target.note.clone(),
         tasks,
         release,
     }
@@ -1086,11 +1099,12 @@ fn verb(
 
 /// One message of a read: a Store as soon as it is read, then the end of the read.
 enum Read {
-    /// The user scope's targets, discovered on the read's thread: every repository's Store
-    /// under the state root, then the explicit targets that are no repository's. The Stores
-    /// after this message are theirs, in this order. An error names the state root that cannot
-    /// be listed; the explicit targets are read all the same.
-    Targets(Result<Vec<Target>, String>),
+    /// The targets as the read's discovery answered them: the user scope's repositories'
+    /// Stores, or the Project's checkouts', then the explicit targets that are none of those.
+    /// The Stores after this message are theirs, in this order, and the warning says why they
+    /// are not all there are. An error names what could not be listed; the load's targets are
+    /// read all the same.
+    Targets(Result<(Vec<Target>, Option<String>), String>),
     /// One target's Store, read; with the opened Task's detail when this is its Store, read
     /// from the same Store state as its row, so the bar and the main pane never disagree
     /// about it.
@@ -1103,9 +1117,10 @@ enum Read {
 }
 
 /// Read every Store, and the opened Task again, on the calling thread: each Store goes through
-/// `sender` the moment it is read, the cache last. In the user scope the repositories' Stores
-/// are discovered first, here, never by the load (ADR-0240); `explicit` are the targets the
-/// load resolved. A receiver gone away ends the read early, since nobody waits for the rest.
+/// `sender` the moment it is read, the cache last. The user scope's repositories' Stores and
+/// the Project's checkouts' are discovered first, here, never by the load (ADR-0240);
+/// `explicit` are the targets the load resolved, listed after them, each once. A receiver
+/// gone away ends the read early, since nobody waits for the rest.
 fn read(
     discover: Option<Discovery>,
     explicit: Vec<Target>,
@@ -1116,16 +1131,33 @@ fn read(
     let targets = match discover {
         None => explicit,
         Some(discovery) => match discovery.targets() {
-            Ok(mut found) => {
-                let explicit: Vec<Target> = explicit
-                    .into_iter()
-                    .filter(|target| !found.iter().any(|repo| same_store(&repo.dir, &target.dir)))
-                    .collect();
-                found.extend(explicit);
-                if sender.send(Read::Targets(Ok(found.clone()))).is_err() {
+            Ok(found) => {
+                let Found {
+                    mut targets,
+                    notes,
+                    warning,
+                } = found;
+                for mut target in explicit {
+                    if targets
+                        .iter()
+                        .any(|known| same_store(&known.dir, &target.dir))
+                    {
+                        continue;
+                    }
+                    if let Some((_, note)) =
+                        notes.iter().find(|(dir, _)| same_store(dir, &target.dir))
+                    {
+                        target.note = Some(note.clone());
+                    }
+                    targets.push(target);
+                }
+                if sender
+                    .send(Read::Targets(Ok((targets.clone(), warning))))
+                    .is_err()
+                {
                     return;
                 }
-                found
+                targets
             }
             Err(error) => {
                 if sender.send(Read::Targets(Err(error))).is_err() {
@@ -1167,6 +1199,35 @@ fn refuse(stores: &mut [Store], dir: &Path, task_id: &str, error: &str) {
     }
 }
 
+/// A Store's folder heading. A checkout's default Store is named by its checkout, this one or
+/// a Workspace or worktree of the Project, with its opaque path after; an explicit Store by
+/// its path, with how it came to be listed, `--state` or `:state`, and the Workspaces that
+/// name it.
+fn heading(store: &Store) -> String {
+    match (store.origin, &store.note) {
+        (Origin::Scope | Origin::Repository, None) => store.shown.clone(),
+        (Origin::Scope | Origin::Repository | Origin::Checkout, Some(note)) => {
+            format!("{note}  {}", store.shown)
+        }
+        (Origin::Checkout, None) => format!("another checkout  {}", store.shown),
+        (Origin::Registered, note) => {
+            let how = noted("--state, in stores.toml", note.as_deref());
+            format!("{}  ({how})", store.shown)
+        }
+        (Origin::Session, note) => {
+            let how = noted(":state, this session", note.as_deref());
+            format!("{}  ({how})", store.shown)
+        }
+    }
+}
+
+fn noted(how: &str, note: Option<&str>) -> String {
+    match note {
+        Some(note) => format!("{how}; {note}"),
+        None => how.to_owned(),
+    }
+}
+
 /// Where a Task Store the pane reads comes from, which decides how a command reaches it.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
 pub(crate) enum Origin {
@@ -1175,6 +1236,9 @@ pub(crate) enum Origin {
     /// A repository's default Store the user scope lists by its opaque name: no command run
     /// from the home directory names it.
     Repository,
+    /// The default Store of another checkout of the Project: a registered Workspace's or a
+    /// worktree's. A command reaches it with `--state DIR`.
+    Checkout,
     /// A `--state DIR` Store the Store registry (`stores.toml`) records.
     Registered,
     /// A Store `:state DIR` listed for this session.
@@ -1184,7 +1248,10 @@ pub(crate) enum Origin {
 impl Origin {
     /// Whether a command reaches the Store only with `--state DIR`.
     fn explicit(self) -> bool {
-        matches!(self, Origin::Registered | Origin::Session)
+        matches!(
+            self,
+            Origin::Checkout | Origin::Registered | Origin::Session
+        )
     }
 }
 
@@ -1193,16 +1260,20 @@ impl Origin {
 pub(crate) struct Target {
     pub(crate) dir: PathBuf,
     pub(crate) shown: String,
-    /// The group the bar lists it under: the user scope's opaque repository name, or an
-    /// explicit Store's path.
+    /// The group the bar lists it under: the user scope's opaque repository name, a
+    /// checkout's Workspace label or directory name, or an explicit Store's path.
     repo: Option<String>,
     origin: Origin,
+    /// What the folder says beside the Store's path when its origin alone does not: this
+    /// checkout and its Workspace, the Workspace or worktree the Store belongs to, or the
+    /// Workspaces that name a `--state` Store.
+    note: Option<String>,
 }
 
 /// The Task state directories a scope resolves on the calling thread, or why it names none:
 /// the project scope's own Store, the directory `af task` resolves for the repository without
-/// `--state`. The user scope reads every repository's Store, a walk of the state root that the
-/// read makes on its thread (`Discovery`), never a load: the user scope resolves none here.
+/// `--state`. The Project's other checkouts and the user scope's repositories are the read's
+/// discovery on its thread (`Discovery`), never a load's: the user scope resolves none here.
 pub(crate) fn targets(scope: &Scope) -> Result<Vec<Target>, String> {
     let Some(root) = &scope.state else {
         return Err("no Task state: neither XDG_STATE_HOME nor HOME is set".to_owned());
@@ -1219,44 +1290,148 @@ pub(crate) fn targets(scope: &Scope) -> Result<Vec<Target>, String> {
         shown,
         repo: None,
         origin: Origin::Scope,
+        note: None,
     }])
 }
 
-/// The user scope's state root, whose repositories' Stores the read discovers on its thread:
-/// a directory walk, with a `metadata` call behind every symlink, that no load makes.
+/// The Stores a read discovers on its thread, never a load (ADR-0240).
 #[derive(Clone)]
-struct Discovery {
-    root: PathBuf,
-    /// The directory paths are abbreviated against, as the scope shows them.
-    home: Option<PathBuf>,
+pub(crate) enum Discovery {
+    /// The user scope: every repository's Store under the state root, a directory walk with
+    /// a `metadata` call behind every symlink.
+    User {
+        root: PathBuf,
+        /// The directory paths are abbreviated against, as the scope shows them.
+        home: Option<PathBuf>,
+    },
+    /// The project scope: the default Stores of the Project's other checkouts (`project`),
+    /// from the Project Store and git, listed after this checkout's `own`.
+    Project {
+        state: PathBuf,
+        toplevel: PathBuf,
+        home: Option<PathBuf>,
+        own: Target,
+    },
+}
+
+/// What a discovery answered.
+pub(crate) struct Found {
+    /// The targets, in order: this checkout's own Store first in the project scope.
+    pub(crate) targets: Vec<Target>,
+    /// What the folder says beside a `--state` Store the registry lists, by Store: the
+    /// Workspaces that name it.
+    notes: Vec<(PathBuf, String)>,
+    /// Why the targets are not all there are.
+    pub(crate) warning: Option<String>,
 }
 
 impl Discovery {
-    /// `None` in a project scope, whose one target `targets` resolves.
-    fn of(scope: &Scope) -> Option<Discovery> {
-        if scope.toplevel().is_some() {
-            return None;
+    /// `None` without a state root, or in a project scope whose own target `own` did not
+    /// resolve.
+    pub(crate) fn of(scope: &Scope, own: Option<Target>) -> Option<Discovery> {
+        let root = scope.state.clone()?;
+        let home = scope.home.clone();
+        match (scope.toplevel(), own) {
+            (Some(toplevel), Some(own)) => Some(Discovery::Project {
+                state: root,
+                toplevel: toplevel.to_path_buf(),
+                home,
+                own,
+            }),
+            (Some(_), None) => None,
+            (None, _) => Some(Discovery::User { root, home }),
         }
-        scope.state.clone().map(|root| Discovery {
-            root,
-            home: scope.home.clone(),
-        })
     }
 
-    /// Every repository's Store under the root, as the user scope lists them.
-    fn targets(&self) -> Result<Vec<Target>, String> {
-        let mut targets = Vec::new();
-        for (dir, name) in user_targets(&self.root)? {
-            let shown = crate::tui::scope::abbreviate(self.home.as_deref(), &dir);
-            targets.push(Target {
-                dir,
-                shown,
-                repo: Some(name),
-                origin: Origin::Repository,
-            });
+    /// Every Store the scope discovers, as it lists them: the user scope's repositories, or
+    /// the Project's checkouts, each a bar group when there is more than this checkout's own.
+    pub(crate) fn targets(&self) -> Result<Found, String> {
+        match self {
+            Discovery::User { root, home } => {
+                let mut targets = Vec::new();
+                for (dir, name) in user_targets(root)? {
+                    let shown = crate::tui::scope::abbreviate(home.as_deref(), &dir);
+                    targets.push(Target {
+                        dir,
+                        shown,
+                        repo: Some(name),
+                        origin: Origin::Repository,
+                        note: None,
+                    });
+                }
+                Ok(Found {
+                    targets,
+                    notes: Vec::new(),
+                    warning: None,
+                })
+            }
+            Discovery::Project {
+                state,
+                toplevel,
+                home,
+                own,
+            } => {
+                let project = project::discover(state, toplevel)?;
+                let grouped = !project.checkouts.is_empty();
+                let mut taken = Vec::new();
+                let mut own = own.clone();
+                let name = project.label.clone().unwrap_or_else(|| {
+                    crate::projects::label_from_name(toplevel.file_name().unwrap_or_default())
+                });
+                own.note = Some(match &project.label {
+                    Some(label) => format!("this checkout (Workspace {label})"),
+                    None => "this checkout".to_owned(),
+                });
+                own.repo = grouped.then(|| unique(name, &mut taken));
+                let mut targets = vec![own];
+                for checkout in project.checkouts {
+                    let note = if checkout.registered {
+                        format!("Workspace {}", checkout.name)
+                    } else {
+                        format!("worktree {} (not a Workspace)", checkout.name)
+                    };
+                    let shown = crate::tui::scope::abbreviate(home.as_deref(), &checkout.dir);
+                    targets.push(Target {
+                        dir: checkout.dir,
+                        shown,
+                        repo: Some(unique(checkout.name, &mut taken)),
+                        origin: Origin::Checkout,
+                        note: Some(note),
+                    });
+                }
+                let notes = project
+                    .named
+                    .into_iter()
+                    .map(|(dir, labels)| {
+                        let word = if labels.len() == 1 {
+                            "Workspace"
+                        } else {
+                            "Workspaces"
+                        };
+                        (dir, format!("{word} {}", labels.join(", ")))
+                    })
+                    .collect();
+                Ok(Found {
+                    targets,
+                    notes,
+                    warning: project.warning,
+                })
+            }
         }
-        Ok(targets)
     }
+}
+
+/// `name`, or `name-2`, `name-3`, … when a checkout listed before took it: two checkouts of
+/// one directory name under two parents.
+fn unique(name: String, taken: &mut Vec<String>) -> String {
+    let mut candidate = name.clone();
+    let mut n = 1;
+    while taken.contains(&candidate) {
+        n += 1;
+        candidate = format!("{name}-{n}");
+    }
+    taken.push(candidate.clone());
+    candidate
 }
 
 /// The Task Stores beyond the scope's own: every `--state DIR` Store the Store registry records
@@ -1302,6 +1477,7 @@ fn explicit_targets(
             dir,
             shown,
             origin,
+            note: None,
         });
     }
     (targets, warning)
@@ -1310,7 +1486,7 @@ fn explicit_targets(
 /// Whether two Store paths name one Store: the same path, or two that both resolve to one
 /// directory. Two paths that cannot be resolved (each missing or unreadable) are two Stores,
 /// each listed with its own refusal.
-fn same_store(a: &Path, b: &Path) -> bool {
+pub(super) fn same_store(a: &Path, b: &Path) -> bool {
     if a == b {
         return true;
     }
@@ -1380,12 +1556,15 @@ pub(crate) struct TasksPane {
     /// The targets as the last read answered them (`loaded`, and the discovered Stores in
     /// the user scope): the order the Stores stand in, and what `Done` prunes them by.
     targets: Vec<Target>,
-    /// The user scope's state root, whose repositories' Stores the read discovers.
+    /// What the read discovers: the user scope's repositories' Stores, or the Project's
+    /// checkouts'.
     discover: Option<Discovery>,
     /// Why the scope names no Task state.
     error: Option<String>,
     /// Why the Store registry added no Store.
     warning: Option<String>,
+    /// Why the discovery listed less than there is: the Project Store cannot be read.
+    discovered: Option<String>,
     /// The Stores `:state DIR` added; they stay listed while the browser runs.
     session: Vec<PathBuf>,
     stores: Vec<Store>,
@@ -1668,17 +1847,19 @@ impl TasksPane {
         match read {
             // The targets as this read answers them: the Stores retained from the last read
             // follow their order at once, before the read answers for any of them.
-            Read::Targets(Ok(targets)) => {
+            Read::Targets(Ok((targets, warning))) => {
                 self.targets = targets;
                 self.order();
                 self.error = None;
+                self.discovered = warning;
             }
             Read::Targets(Err(error)) => {
-                // The walk failed: this read answers the load's targets alone, so the Stores
-                // discovered before go when it is done, and the folder shows why.
+                // The discovery failed: this read answers the load's targets alone, so the
+                // Stores discovered before go when it is done, and the folder shows why.
                 self.targets = self.loaded.clone();
                 self.order();
                 self.error = Some(error);
+                self.discovered = None;
             }
             Read::Store { store, detail } => {
                 let mut store = *store;
@@ -1775,7 +1956,7 @@ impl TasksPane {
         } else if self.stores.is_empty() {
             rows.push(Row::plain("No Task state is recorded here yet."));
         }
-        if let Some(warning) = &self.warning {
+        for warning in [&self.warning, &self.discovered].into_iter().flatten() {
             rows.extend(Row::errors("warning", bounded(warning, MAIN - 10, "")));
             rows.push(Row::blank());
         }
@@ -1815,12 +1996,8 @@ impl TasksPane {
             rows.push(Row::blank());
         }
         for store in self.stores.iter().filter(|s| !earlier(s)) {
-            // Each Store under its path, and how an explicit one came to be listed.
-            let dir = &match store.origin {
-                Origin::Scope | Origin::Repository => store.shown.clone(),
-                Origin::Registered => format!("{}  (--state, in stores.toml)", store.shown),
-                Origin::Session => format!("{}  (:state, this session)", store.shown),
-            };
+            // Each Store under its path, and how it came to be listed.
+            let dir = &heading(store);
             match &store.tasks {
                 Err(error) => {
                     // The location, then the cause on rows of its own: a long state path must
@@ -1955,7 +2132,8 @@ impl Pane for TasksPane {
             self.cache = Cache::default();
         }
         self.place = Some(place);
-        self.discover = Discovery::of(scope);
+        let own = targets.iter().find(|t| t.origin == Origin::Scope).cloned();
+        self.discover = Discovery::of(scope, own);
         self.loaded = targets.clone();
         self.targets = targets;
         // The Stores retained from the last read follow the targets as they stand now, before

@@ -27,3 +27,10 @@
   same way (one row per node with its slot's Worker and Attempt bounds, a `call` expanded into
   the pinned callee with the call's bindings applied, the contract, then the refusal). The
   status line names the highlighted row's Worker.
+- The project scope is the Project's view, not the directory's: the bar's root and the panes'
+  titles carry the `[project] name` the repository declares, and `tasks/` lists, after this
+  checkout's own Store, the default Store of every other worktree of the Project that holds
+  Tasks (its registered Workspaces by label, then the worktrees git lists by name), each a bar
+  group of its own; a registry Store a Workspace uses is listed once, with the Workspaces beside
+  it. A Worker's STATE counts the Attempts of every checkout's Store. The checkouts are
+  discovered on the read's thread, never at startup.

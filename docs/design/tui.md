@@ -19,7 +19,7 @@ mouse support.
 | invocation | scope | root of the left bar |
 |---|---|---|
 | `af` outside a git repository | **user** | `~` — user layer, provider registry, every Task in `$XDG_STATE_HOME/af` |
-| `af` inside a repository | **project** | `<toplevel basename>` — project + local layers, `.af/` packages, this repository's Tasks |
+| `af` inside a repository | **project** | the `[project] name` it declares, else `<toplevel basename>` — project + local layers, `.af/` packages at `HEAD`, the Project's Tasks across every worktree |
 | `af --repo DIR` | project | as above, for `DIR` |
 | `af` with stdout not a tty | — | prints help, exit 2 (today's behaviour) |
 
@@ -244,9 +244,12 @@ Main pane, three sections separated by rules:
 1. **Identity** — `name`, `version`, `schema`, source path, lock pin from `af.lock` (or
    `unpinned`), runner (`program` + args as `af.lock` records them), attempt bounds
    (`signature.attempt.tokens`, `wall_ms`), effects and roles.
-2. **State** — derived only from Store records for this scope: how many Attempts of this Worker
-   are `reserved`, `started`, `settled ok`, `settled failed`, `abandoned`, plus tokens charged
-   and wall time across those Attempts. Empty when the Store has no Attempt naming the Worker.
+2. **State** — derived only from Store records for this scope, this checkout's own Store and
+   the default Store of every other checkout of the Project the Tasks pane discovers (§5.5):
+   how many Attempts of this Worker are `reserved`, `started`, `settled ok`, `settled failed`,
+   `abandoned`, plus tokens charged and wall time across those Attempts. Empty when no Store
+   has an Attempt naming the Worker; a discovery that fails is a warning, and the own Store
+   still counts.
 3. **Prompt** — the file the kernel sends: `reviewer.md` for a reviewer Worker,
    `instructions.md` for a Task Worker package (§8), rendered as plain text, scrollable, with
    `gf` to edit. If a package has no prompt file the section says so instead of guessing.
@@ -309,12 +312,28 @@ The bar groups by state: `running/`, `awaiting approval/`, `done/`, `failed/`; u
 one level for the repository. Row text is `task-id  outcome  progress%` where progress is
 `settled stages / stages in graph.order`.
 
-Beside the scope's own Stores, the pane lists every Task Store the Store registry
-(`$XDG_STATE_HOME/af/stores.toml`) records, the Stores `af task … --state DIR` made, and the
-ones `:state DIR` added for the session. Each is one more bar level named by the end of its path,
-and its main-pane heading is its path with `(--state, in stores.toml)` or `(:state, this
-session)`. `r` and `D` on its Tasks add `--state DIR` to the line. A registry this release cannot
-read is a warning above the Stores; the scope's own Stores are still listed.
+The project scope lists the Project's Tasks, not this directory's alone (ADR-0158: a Project
+is one repository across its worktrees and clones, and every checkout af worked in is a
+Workspace of it). Beside this checkout's own Store, headed `this checkout (Workspace LABEL)`
+when it is registered, the pane lists the default Store of every other checkout of the Project
+that has one: the registered Workspaces, from the Project Store read under its shared lock, by
+label, then the worktrees `git worktree list` names that no Workspace covers, by directory
+name. Each is a bar level named by that label (`hub-wt-branch/ (3)`), and its heading is
+`Workspace LABEL  PATH` or `worktree NAME (not a Workspace)  PATH`, the opaque Store path last.
+With no other checkout the own Store stands ungrouped as before. The read discovers them, never
+the load (ADR-0240), on every read, so a worktree added or a Task run meanwhile shows at the
+next `R`; a Project Store that cannot be read is a warning above the Stores, and the worktrees
+are still listed. A checkout that is no repository, has no commit or is a shallow clone has no
+Project to list.
+
+Then come every Task Store the Store registry (`$XDG_STATE_HOME/af/stores.toml`) records, the
+Stores `af task … --state DIR` made, and the ones `:state DIR` added for the session, each
+once, never one a checkout above already lists. Each is one more bar level named by the end of
+its path, and its main-pane heading is its path with `(--state, in stores.toml)` or `(:state,
+this session)`, and the Workspaces that name it when the Project has such: `(--state, in
+stores.toml; Workspaces wt-346, wt-363)`. `r` and `D` on the Tasks of any Store but this
+checkout's own add `--state DIR` to the line. A registry this release cannot read is a warning
+above the Stores; the scope's own Stores are still listed.
 
 Every read of the Stores runs on a thread, the one a load, `R` or `:state DIR` records as much
 as the live read of an opened running Task, each started at the first poll after it, which the

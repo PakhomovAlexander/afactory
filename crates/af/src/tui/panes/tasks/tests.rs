@@ -2,6 +2,7 @@
 
 use serde_json::json;
 
+use super::super::pipelines::git;
 use super::*;
 
 #[test]
@@ -890,6 +891,7 @@ fn opening_a_task_rebuilds_its_bar_row_from_the_same_read() {
             shown: "state".into(),
             repo: None,
             origin: Origin::Scope,
+            note: None,
         }],
         ..TasksPane::default()
     };
@@ -1172,6 +1174,7 @@ fn stores_an_earlier_release_wrote_are_listed_once_and_other_refusals_each() {
         shown: format!("~/.local/state/af/task/local/{name}"),
         repo: Some(name.to_owned()),
         origin: Origin::Repository,
+        note: None,
         release:
             matches!(&tasks, Err(error) if error.contains(review_core::event::ANOTHER_RELEASE))
                 .then(|| {
@@ -1243,6 +1246,7 @@ fn a_long_state_path_keeps_every_row_within_the_pane() {
         shown: format!("{root}/{name}"),
         repo: Some(name.to_owned()),
         origin: Origin::Repository,
+        note: None,
         release:
             matches!(&tasks, Err(error) if error.contains(review_core::event::ANOTHER_RELEASE))
                 .then(|| {
@@ -1475,6 +1479,7 @@ fn stores_are_listed_one_by_one_as_each_is_read() {
         shown: repo.to_owned(),
         repo: Some(repo.to_owned()),
         origin: Origin::Registered,
+        note: None,
     };
     let mut pane = TasksPane {
         targets: vec![target("one"), target("two")],
@@ -1551,6 +1556,7 @@ fn the_opened_tasks_detail_comes_with_its_stores_message() {
         shown: "state".to_owned(),
         repo: None,
         origin: Origin::Scope,
+        note: None,
     };
     let mut pane = TasksPane {
         loaded: vec![target.clone()],
@@ -1604,6 +1610,7 @@ fn a_refused_store_is_listed_before_the_stores_after_it() {
         shown: shown.to_owned(),
         repo: Some(shown.to_owned()),
         origin: Origin::Registered,
+        note: None,
     };
     let mut pane = TasksPane {
         targets: vec![target(&broken, "broken"), target(&state, "good")],
@@ -1668,6 +1675,7 @@ fn a_refusal_taken_on_open_restarts_a_read_in_flight() {
         shown: "state".to_owned(),
         repo: None,
         origin: Origin::Scope,
+        note: None,
     };
     let mut pane = TasksPane {
         loaded: vec![target.clone()],
@@ -1868,6 +1876,7 @@ fn a_task_opened_during_a_read_has_its_detail_read_again_when_its_store_answers(
         shown: "state".to_owned(),
         repo: None,
         origin: Origin::Scope,
+        note: None,
     };
     let mut pane = TasksPane {
         loaded: vec![target.clone()],
@@ -1955,6 +1964,7 @@ fn a_reads_detail_from_an_earlier_opening_never_stands_over_a_newer_inspection()
         shown: "state".to_owned(),
         repo: None,
         origin: Origin::Scope,
+        note: None,
     };
     let mut pane = TasksPane {
         loaded: vec![target.clone()],
@@ -2024,12 +2034,14 @@ fn a_targets_message_reorders_the_retained_stores_before_any_store_answers() {
         shown: "repository".to_owned(),
         repo: Some("repository".to_owned()),
         origin: Origin::Repository,
+        note: None,
     };
     let explicit = Target {
         dir: registered.clone(),
         shown: "~/elsewhere/registered".to_owned(),
         repo: Some("~/elsewhere/registered".to_owned()),
         origin: Origin::Registered,
+        note: None,
     };
     let mut pane = TasksPane {
         loaded: vec![explicit.clone()],
@@ -2059,10 +2071,10 @@ fn a_targets_message_reorders_the_retained_stores_before_any_store_answers() {
     assert_eq!(dirs(&pane), [registered.clone(), state.clone()]);
     let sender = pane.fed();
     sender
-        .send(Read::Targets(Ok(vec![
-            discovered.clone(),
-            explicit.clone(),
-        ])))
+        .send(Read::Targets(Ok((
+            vec![discovered.clone(), explicit.clone()],
+            None,
+        ))))
         .unwrap();
     assert!(pane.poll());
     assert!(pane.busy().is_some(), "no Store answered yet");
@@ -2098,12 +2110,14 @@ fn a_changed_target_list_keeps_a_store_listed_until_its_read_answers() {
         shown: "state".to_owned(),
         repo: None,
         origin: Origin::Scope,
+        note: None,
     };
     let other = Target {
         dir: root.join("elsewhere"),
         shown: "elsewhere".to_owned(),
         repo: Some("elsewhere".to_owned()),
         origin: Origin::Registered,
+        note: None,
     };
     let mut pane = TasksPane {
         targets: vec![own.clone()],
@@ -2185,6 +2199,7 @@ fn a_refusal_taken_on_a_history_row_restarts_a_read_in_flight() {
         shown: "state".to_owned(),
         repo: None,
         origin: Origin::Scope,
+        note: None,
     };
     let mut pane = TasksPane {
         loaded: vec![target.clone()],
@@ -2256,4 +2271,197 @@ fn a_refusal_taken_on_a_history_row_restarts_a_read_in_flight() {
         "read after the refusal, the Store refuses again: {:?}",
         pane.stores[0].tasks.as_ref().err()
     );
+}
+
+/// Register `label` as a Workspace of the hub at `repo`, with `path` as its checkout and
+/// `state` as its Store, in the Project Store under `xdg`.
+fn register_workspace(xdg: &Path, repo: &Path, label: &str, path: &Path, state: &Path) {
+    use crate::projects::{self, Located, ProjectStore, WorkspacePaths};
+    let Located::Checkout(checkout) = projects::locate(repo).unwrap() else {
+        panic!("{} is not a checkout", repo.display());
+    };
+    let pin = |home: Option<PathBuf>| {
+        crate::config::STATE_HOME_FOR_TESTS.with(|pinned| *pinned.borrow_mut() = home);
+    };
+    pin(Some(xdg.to_path_buf()));
+    let mut store = ProjectStore::open(xdg, &checkout.project_id).unwrap();
+    let paths = WorkspacePaths {
+        id: projects::workspace_id(&checkout.project_id, path),
+        label: label.to_owned(),
+        path: path.to_path_buf(),
+        state: state.to_path_buf(),
+        bindings: None,
+        tasks: None,
+    };
+    let origin = review_core::project::WorkspaceOriginV1::Adopted;
+    projects::register_in(&mut store, &checkout, origin, label, true, paths).unwrap();
+    drop(store);
+    pin(None);
+}
+
+/// The project scope lists the Project's Tasks, not this directory's alone: the default Store
+/// of every other checkout of the Project, a worktree's named by its directory and a
+/// registered Workspace's by its label, each a bar group beside this checkout's own, and a
+/// `--state` Store a Workspace names as the registry lists it, with the Workspace beside it.
+/// A checkout whose Store was never made is not listed. All of it is the read's discovery,
+/// never the load's (ADR-0240).
+#[test]
+fn the_project_scope_lists_the_default_stores_of_every_checkout_of_the_project() {
+    let temp = tempfile::tempdir().unwrap();
+    let root = std::fs::canonicalize(temp.path()).unwrap();
+    let (repo, state) = crate::tui::tests::hub_with_tasks(&root);
+    let xdg = root.join("state");
+    // A worktree with a Task in its own default Store, and one that never ran a Task.
+    let worktree = root.join("hub-wt-branch");
+    let add = |path: &Path, branch: &str| {
+        let args = [
+            "worktree",
+            "add",
+            "-q",
+            "-b",
+            branch,
+            path.to_str().unwrap(),
+        ];
+        git(&repo, &args).unwrap();
+    };
+    add(&worktree, "branch");
+    let branch_state = task_execution::default_task_state(&xdg, &worktree).unwrap();
+    crate::tui::tests::record_task(&root, &worktree, &branch_state, "pagination-branch");
+    let idle = root.join("hub-wt-idle");
+    add(&idle, "idle");
+    // This checkout is the Workspace `hub` with its default Store; the idle worktree is the
+    // Workspace `labelled`, whose Store is a `--state` one the registry lists.
+    let registered = root.join("elsewhere/registered");
+    crate::tui::tests::copy_store(&state, &registered);
+    let registry = crate::storage::registry::location(&xdg);
+    std::fs::create_dir_all(registry.parent().unwrap()).unwrap();
+    std::fs::write(
+        &registry,
+        format!(
+            "version = 2\n\n[[store]]\npath = {:?}\nkind = \"task\"\nfirst_use_unix_ms = 1\n\
+             last_use_unix_ms = 1\n",
+            registered.display().to_string()
+        ),
+    )
+    .unwrap();
+    register_workspace(&xdg, &repo, "hub", &repo, &state);
+    register_workspace(&xdg, &repo, "labelled", &idle, &registered);
+
+    let scope = crate::tui::tests::hub_scope(&root, &repo);
+    let mut pane = TasksPane::default();
+    pane.load(&scope).unwrap();
+    let dirs =
+        |pane: &TasksPane| -> Vec<PathBuf> { pane.targets.iter().map(|t| t.dir.clone()).collect() };
+    // The load resolves this checkout's Store and the registry's; the read finds the rest.
+    assert_eq!(dirs(&pane), [state.clone(), registered.clone()]);
+    assert!(
+        pane.busy().is_some(),
+        "the read discovers the Project's checkouts"
+    );
+    pane.settle();
+    assert_eq!(
+        dirs(&pane),
+        [state.clone(), branch_state.clone(), registered.clone()]
+    );
+    let described: Vec<(Option<&str>, Origin, Option<&str>)> = pane
+        .targets
+        .iter()
+        .map(|t| (t.repo.as_deref(), t.origin, t.note.as_deref()))
+        .collect();
+    assert_eq!(
+        described,
+        [
+            (
+                Some("hub"),
+                Origin::Scope,
+                Some("this checkout (Workspace hub)")
+            ),
+            (
+                Some("hub-wt-branch"),
+                Origin::Checkout,
+                Some("worktree hub-wt-branch (not a Workspace)")
+            ),
+            (
+                Some("~/elsewhere/registered"),
+                Origin::Registered,
+                Some("Workspace labelled")
+            ),
+        ]
+    );
+    assert!(pane.error.is_none() && pane.discovered.is_none());
+    // Every Store is read and grouped in the bar by its checkout; a command on another
+    // checkout's Task names its Store.
+    let listed: Vec<(String, usize)> = pane
+        .stores
+        .iter()
+        .map(|store| {
+            let count = store.tasks.as_ref().map_or(0, Vec::len);
+            (store.repo.clone().unwrap_or_default(), count)
+        })
+        .collect();
+    assert_eq!(
+        listed,
+        [
+            ("hub".to_owned(), 2),
+            ("hub-wt-branch".to_owned(), 1),
+            ("~/elsewhere/registered".to_owned(), 2)
+        ]
+    );
+    let groups: Vec<String> = pane.items().iter().map(|item| item.label.clone()).collect();
+    assert_eq!(
+        groups,
+        ["hub/ (2)", "hub-wt-branch/ (1)", "..here/registered/ (2)"]
+    );
+    assert!(Origin::Checkout.explicit());
+    pane.open(None);
+    let rows: Vec<String> = pane.rows().iter().map(Row::text).collect();
+    let headings = [
+        format!(
+            "this checkout (Workspace hub)  {}",
+            scope.abbreviate(&state)
+        ),
+        format!(
+            "worktree hub-wt-branch (not a Workspace)  {}",
+            scope.abbreviate(&branch_state)
+        ),
+        "~/elsewhere/registered  (--state, in stores.toml; Workspace labelled)".to_owned(),
+    ];
+    for heading in &headings {
+        assert!(rows.contains(heading), "{heading} not in {rows:#?}");
+    }
+    assert!(
+        !rows.iter().any(|row| row.contains("hub-wt-idle")),
+        "a checkout without a Store is not listed: {rows:#?}"
+    );
+}
+
+/// A Project with no other checkout lists this checkout's Store alone, ungrouped as before,
+/// named as this checkout.
+#[test]
+fn a_project_of_one_checkout_lists_its_store_ungrouped() {
+    let temp = tempfile::tempdir().unwrap();
+    let root = std::fs::canonicalize(temp.path()).unwrap();
+    let (repo, state) = crate::tui::tests::hub_with_tasks(&root);
+    let scope = crate::tui::tests::hub_scope(&root, &repo);
+    let mut pane = TasksPane::default();
+    pane.load(&scope).unwrap();
+    pane.settle();
+    let described: Vec<(&Path, Option<&str>, Origin, Option<&str>)> = pane
+        .targets
+        .iter()
+        .map(|t| {
+            (
+                t.dir.as_path(),
+                t.repo.as_deref(),
+                t.origin,
+                t.note.as_deref(),
+            )
+        })
+        .collect();
+    assert_eq!(
+        described,
+        [(state.as_path(), None, Origin::Scope, Some("this checkout"))]
+    );
+    let ids: Vec<String> = pane.items().iter().map(|item| item.id.clone()).collect();
+    assert_eq!(ids, ["done/", "failed/"]);
 }

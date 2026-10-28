@@ -2535,7 +2535,7 @@ fn the_tasks_pane_lists_every_registered_store_and_a_state_dir_for_the_session()
     let rows = main_texts(&app);
     let own = rows
         .iter()
-        .position(|row| row.starts_with("~/state/af/task/local/"));
+        .position(|row| row.starts_with("this checkout  ~/state/af/task/local/"));
     let theirs = rows
         .iter()
         .position(|row| row == "~/elsewhere/registered  (--state, in stores.toml)");

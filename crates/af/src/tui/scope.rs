@@ -91,13 +91,34 @@ impl Scope {
         (self.kind == ScopeKind::Project).then_some(self.root.as_path())
     }
 
-    /// The scope as the bar and the status line name it: the toplevel's basename, or `~`.
+    /// The scope as the bar and the status line name it: the `[project] name` the project
+    /// declares, else the toplevel's basename; `~` for the user scope. The Project is one
+    /// across its worktrees, so every checkout of it is named alike.
     pub(crate) fn name(&self) -> String {
+        if let Some(name) = self.declared_name() {
+            return name;
+        }
         match (self.kind, self.root.file_name()) {
             (ScopeKind::Project, Some(name)) => name.to_string_lossy().into_owned(),
             (ScopeKind::Project, None) => self.root.display().to_string(),
             (ScopeKind::User, _) => "~".to_owned(),
         }
+    }
+
+    /// The `[project] name` of the project scope's effective configuration, its first line,
+    /// when there is one.
+    fn declared_name(&self) -> Option<String> {
+        if self.kind != ScopeKind::Project {
+            return None;
+        }
+        let name = self
+            .config
+            .effective
+            .get("project")?
+            .get("name")?
+            .as_str()?;
+        let line = name.lines().next()?.trim();
+        (!line.is_empty()).then(|| line.to_owned())
     }
 
     pub(crate) fn word(&self) -> &'static str {
