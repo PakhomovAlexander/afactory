@@ -68,15 +68,15 @@ on a token budget, and never publishes: `af review` folds what reviewers find in
 `af task` turns a Task file into a verified change you deliver to a new local worktree.
 
 Start here (`af help start` explains each step):
-  1. af provider detect           find the claude/codex logins on this machine and register them
+  1. af provider detect           preview claude/codex logins; --apply registers them
   2. af onboard                   in a repository: preview `.af/` (token-free); --apply writes it
   3. git add .af && git commit    review that authority, then commit it
   4. af review plan --policy-rev HEAD --base HEAD --uncommitted
-                                  token-free; `af review` with --provider NODE=ID runs it
+                                  token-free; pass --provider NODE=ID for each model Worker
   af doctor                       check this machine and repository, token-free
 
 Task, Worker, Attempt, Snapshot, Provider and the other words are explained in \
-`af help concepts`; `af help` lists every topic (config, layers, environment, exit-codes, json, \
+`af help concepts`; `af help` lists every topic (config, layers, environment, exit-codes, json, errors, \
 providers, task-states, task-file, agents, self, storage, telemetry). `af` alone at a terminal \
 opens a read-first browser over this scope's settings, Providers, Workers, pipelines, Tasks and \
 review Campaigns: `?` there lists its keys, and `:` runs any af command.";
@@ -89,6 +89,7 @@ Exit codes (`af help exit-codes`):
 Examples:
   # preview `.af/` for this repository, token-free\n  af onboard
   af onboard --apply             # needs: a repository without `.af/`
+  # needs: one registered Provider for every model Worker
   af review plan --policy-rev HEAD --base HEAD --uncommitted
   # needs: Providers claude-main and codex-main (af provider setup)
   af review --policy-rev HEAD --base HEAD --uncommitted \\
@@ -159,7 +160,8 @@ ledger; the remaining commands read or resolve that ledger. Flags given directly
 are shorthand for `af review run`.",
         after_long_help = "HEAD must contain trusted, committed `.af/`; make candidate changes first. To \
 execute, also supply --provider NODE=ID for every model Worker the policy names; `af review plan` \
-lists them.\n\nExamples:\n  af review plan --policy-rev HEAD --base HEAD --uncommitted --json\n  \
+lists them.\n\nExamples:\n  # needs: one registered Provider for every model Worker\n  \
+af review plan --policy-rev HEAD --base HEAD --uncommitted --json\n  \
 # needs: Providers claude-main and codex-main (af provider setup)\n  \
 af review --policy-rev HEAD --base HEAD --uncommitted \\\n    \
 --provider correctness=claude-main --provider architecture=codex-main\n  \
@@ -300,7 +302,7 @@ fits `max_bytes`. `af project brief` prints the exact bytes a plan would bind, t
 Never: writes inside a checkout, commits, pushes, or removes a Store. Results go to stdout \
 (`--json` prints `af/project@1`, `af/project-workspaces@1`, `af/ProjectSurvey@2`, \
 `af/project-history@2` or `af/project-brief-preview@1`); warnings go to stderr. Exit codes: 0 success, 1 failure (the message \
-names the next action; `af/error@1` under --json), 2 usage error.",
+names the next action; `af/error@2` under --json), 2 usage error.",
         after_long_help = "Examples:\n  \
 af project show\n  \
 af project refresh\n  \
@@ -451,6 +453,9 @@ command fixes, or whose command a file that does not load would stop (an `.af/` 
 config.toml, the Provider registry), has only a hint, naming the file and the parse error's line. \
 The PATH fix is the line for the shell $SHELL names, the directory quoted so nothing in it is \
 expanded.\n\n\
+  harness    the driving agent harness, if detected from environment markers\n\
+  sandbox    whether agent sandbox markers are present\n\
+  network    whether the agent sandbox reports network access; unknown without a marker\n\
   binary     the running af, its version, install receipt and how it was verified, the default link\n\
   path       the default link's directory on PATH, and whether `af` on PATH is that link\n\
   shell      completions and man pages for $SHELL\n\
@@ -468,11 +473,21 @@ or path continues on indented lines and is never cut short, and a fix command st
 its line or is broken between its arguments with ` \\`.\n\n\
 It never calls a model, logs in, installs, or writes a file, and it schedules no update check; \
 the charged end-to-end Provider check is `af provider doctor`. Exit codes: 0 nothing failed \
-(warnings allowed), 1 at least one check failed, 2 usage error. --json prints one `af/doctor@2` \
+(warnings allowed), 1 at least one check failed, 2 usage error. --json prints one `af/doctor@3` \
 document, each check with its `fix` and `hint`.",
         after_long_help = "Examples:\n  af doctor\n  af doctor --repo ../other-checkout   # needs: a checkout at ../other-checkout\n  af doctor --json | jq '.checks[] | select(.status != \"ok\")'"
     )]
     Doctor(MachineDoctorArgs),
+    /// Preview or install the af agent pointer and skills in a Git repository
+    #[command(
+        display_order = 8,
+        subcommand_required = true,
+        arg_required_else_help = true
+    )]
+    Setup {
+        #[command(subcommand)]
+        command: SetupCommand,
+    },
     /// Explain a topic or a command; `af help` lists every topic
     #[command(
         display_order = 7,
@@ -480,12 +495,31 @@ document, each check with its `fix` and `hint`.",
 `af help` alone lists every topic with what it explains; start with `af help start` and \
 `af help concepts`. A word that is not a topic is a command path, so `af help review run` \
 equals `af review run --help`.",
-        after_long_help = "Examples:\n  af help start\n  af help concepts\n  af help layers\n  af help exit-codes\n  af help review ledger"
+        after_long_help = "Examples:\n  af help start\n  af help concepts\n  af help layers\n  af help exit-codes\n  af help errors\n  af help errors no_task_catalog\n  af help review ledger"
     )]
     Help {
         /// A topic name or a command path
         #[arg(value_name = "TOPIC|COMMAND")]
         words: Vec<String>,
+        /// Print only the AGENTS.md pointer (agents topic only)
+        #[arg(long)]
+        snippet: bool,
+    },
+}
+
+#[derive(Debug, Subcommand)]
+pub(crate) enum SetupCommand {
+    /// Preview the af agent pointer and skills; write them only with --write
+    #[command(
+        long_about = "Preview the AGENTS.md pointer and both af skills in this Git repository.\n\n--write appends or updates only the marked af block in AGENTS.md and writes .claude/skills/af/SKILL.md and .agents/skills/af/SKILL.md. A foreign skill is refused. No file is written by default."
+    )]
+    Agents {
+        /// Git repository to update [default: .]
+        #[arg(long, value_name = "DIR", default_value = ".")]
+        repo: PathBuf,
+        /// Write the previewed files
+        #[arg(long)]
+        write: bool,
     },
 }
 
@@ -495,7 +529,7 @@ pub(crate) struct MachineDoctorArgs {
     /// The repository whose `.af/`, pin and Gates to check [default: .]
     #[arg(long, value_name = "DIR", default_value = ".")]
     pub(crate) repo: PathBuf,
-    /// One `af/doctor@2` document on stdout instead of text
+    /// One `af/doctor@3` document on stdout instead of text
     #[arg(long)]
     pub(crate) json: bool,
 }
@@ -761,8 +795,11 @@ af review run --campaign pr-42 --policy-rev main --base main \\\n    --candidate
 plan.\n\nToken-free and stateless: no sandbox, no model call, no Campaign directory. The plan is \
 exactly what `run` would admit, so it is the right pre-flight for agents and CI.",
         override_usage = "af review plan [--heavy] [OPTIONS]",
-        after_long_help = "Examples:\n  af review plan --policy-rev HEAD --base HEAD --uncommitted\n  \
+        after_long_help = "Examples:\n  # needs: one registered Provider for every model Worker\n  \
+af review plan --policy-rev HEAD --base HEAD --uncommitted\n  \
+# needs: one registered Provider for every model Worker\n  \
 af review plan --policy-rev HEAD --base HEAD --uncommitted --json\n  \
+# needs: one registered Provider for every model Worker\n  \
 af review plan --policy-rev HEAD --base HEAD~1 --candidate HEAD"
     )]
     Plan(RunArgs),
@@ -1193,12 +1230,13 @@ the kind prefix (~/.config/claude-work is claude-work, ~/.codex-gridgain is code
 the env directory follows the sibling rule when its name is a sibling name, else claude-env or \
 codex-env; --dir follows the sibling rule, and needs one --id per --dir when \
 more than one names the same kind; a taken ID gets -2, -3; *-ambient is never generated.\n\n\
---json prints one af/provider-detect@3 document; its `install` names the install command and \
+--json prints one af/provider-detect@4 document; its `install` names the install command and \
 documentation of each kind whose CLI was not found, and `next_action` the scan to run again once \
 one is installed (null when a CLI was found). Exit codes: 0 the scan completed, 1 \
 unclassified failure, 2 usage error, 4 a found CLI cannot start or is incompatible, or a login \
 was left unregistered because its CLI is off PATH (the rows are still printed), 5 a registry \
-conflict stopped --apply.",
+conflict stopped --apply, 8 the host denied a capability probe before compatibility or login \
+could be established.",
         after_long_help = "Examples:\n  af provider detect\n  af provider detect --apply\n  af provider detect --json\n  af provider detect --dir /secure/claude-team --kind claude --apply\n  af provider detect --all"
     )]
     Detect {
@@ -1217,7 +1255,7 @@ conflict stopped --apply.",
         /// Register every authenticated, unregistered directory found
         #[arg(long)]
         apply: bool,
-        /// Emit the versioned `af/provider-detect@3` document instead of the table
+        /// Emit the versioned `af/provider-detect@4` document instead of the table
         #[arg(long)]
         json: bool,
         /// Add the account label each CLI reported (terminal only, never with --json)
@@ -1254,18 +1292,20 @@ authenticated Provider — it exits 7 and says so. End-to-end usability stays wi
 A Provider whose official CLI is missing, not executable, or exits non-zero on its own version \
 check is reported as an installation failure, with the CLI's own first error line and the fix \
 it suggests on stderr. One whose help page does not declare every option af passes is reported \
-as incompatible, with its version, the missing options and the upgrade command on stderr.\n\n\
+as incompatible, with its version, the missing options and the upgrade command on stderr. A \
+host permission denial is `probe_denied`, exit 8: retry outside the sandbox or with \
+host-approved permissions.\n\n\
 A context that does not exist or holds no login marker is not probed: its CLI would create \
 files there. Each row that needs a login names one fix, `af provider setup ID --kind KIND \
 --auth-dir DIR --login`; --verbose adds the CLI's own login command. With no registry entry, \
 directories `af provider detect` would list are named on one line, unprobed; with no CLI at \
 all, the install commands are printed.\n\n\
 Exit codes: 0 fine, 4 a Provider CLI cannot start or is incompatible, 7 optional usage \
-unavailable.",
+unavailable, 8 a host-denied probe.",
         after_long_help = "Examples:\n  af provider status\n  af provider status --json\n  af provider status --usage\n  af provider status --verbose"
     )]
     Status {
-        /// Emit the versioned `af/provider-status@3` document instead of the table
+        /// Emit the versioned `af/provider-status@4` document instead of the table
         #[arg(long)]
         json: bool,
         /// Also probe subscription and quota windows (slower, and may be unavailable)
@@ -1328,7 +1368,8 @@ credentials in transit and must never reach a pipe, chat, an agent transcript, o
 needs a home.\n\n\
 Exit codes: 0 registered, 3 human action required, 4 Provider CLI missing, cannot start or \
 incompatible, 5 \
-registry conflict, 6 authentication failed. Re-running setup for the same binding is safe.",
+registry conflict, 6 authentication failed, 8 host-denied capability probe. Re-running setup \
+for the same binding is safe.",
         after_long_help = "Examples:\n  \
 af provider setup codex-main --kind codex   # needs: the codex CLI, logged in\n  \
 # needs: the codex CLI, logged in\n  af provider setup codex-main --kind codex --json\n  \
@@ -1347,7 +1388,7 @@ af provider setup claude-work --kind claude --auth-dir /secure/claude-work \\\n 
         /// Opt in to starting the official Provider CLI login in this private terminal
         #[arg(long)]
         login: bool,
-        /// Emit the versioned non-interactive `af/provider-setup@1` document
+        /// Emit the versioned non-interactive `af/provider-setup@2` document
         #[arg(long, conflicts_with = "login")]
         json: bool,
     },

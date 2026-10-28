@@ -389,7 +389,7 @@ fn a_report_binds_an_experiments_comparison_measurements_and_tree_and_runs_to_ve
     let inputs = json!({"sources": {"task": "release-notes", "port": "document"}});
     let file = chain.task_file("from-notes", &report_task(&chain, "from-notes", inputs));
     let refused = chain.json(&["task", "plan", "--file", &file], 1);
-    assert_eq!(refused["schema"], "af/error@1");
+    assert_eq!(refused["schema"], "af/error@2");
     let error = refused["error"].as_str().unwrap();
     assert!(
         error.contains(

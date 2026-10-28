@@ -242,11 +242,22 @@ fn task_states_topic_and_the_state_flags_describe_the_commands() {
         "af/task-list-entry@3",
         "af/task-report@2",
         "af/task-selection@3",
-        "af/error@1",
+        "af/error@2",
         "recovery_exhausted",
         "planning_diagnostic.required_limits",
     ] {
         assert!(json.contains(needle), "{needle}:\n{json}");
+    }
+    let errors = out(&af(&["help", "errors"]));
+    for cause in ["no_task_catalog", "review_binding_missing", "plan_mismatch"] {
+        assert!(errors.contains(cause), "{errors}");
+        let one = out(&af(&["help", "errors", cause]));
+        assert!(one.starts_with(&format!("{cause}: ")), "{one}");
+        let listed = errors.split_whitespace().collect::<Vec<_>>().join(" ");
+        assert!(
+            listed.contains(one.trim_start_matches(&format!("{cause}: ")).trim()),
+            "{errors}"
+        );
     }
     for (command, flags) in [
         (
@@ -515,11 +526,11 @@ fn provider_detect_help_and_the_providers_topic_describe_the_commands() {
             "A registry conflict stops it at that row with exit 5; the rows before it stay registered",
             "~/.config/claude-work is claude-work, ~/.codex-gridgain is codex-gridgain",
             "*-ambient is never generated",
-            "af/provider-detect@3",
+            "af/provider-detect@4",
             "its `install` names the install command and documentation of each kind whose CLI was not found",
             "`next_action` the scan to run again once one is installed",
             "the default ~/.claude may instead have a ~/.claude.json file beside it",
-            "Exit codes: 0 the scan completed, 1 unclassified failure, 2 usage error, 4 a found CLI cannot start or is incompatible, or a login was left unregistered because its CLI is off PATH (the rows are still printed), 5 a registry conflict stopped --apply.",
+            "Exit codes: 0 the scan completed, 1 unclassified failure, 2 usage error, 4 a found CLI cannot start or is incompatible, or a login was left unregistered because its CLI is off PATH (the rows are still printed), 5 a registry conflict stopped --apply, 8 the host denied a capability probe before compatibility or login could be established.",
             "never registers a login whose CLI is off PATH",
             "the row suggests the retry with a free ID",
             "A registry that cannot be read refuses --apply (exit 1)",
@@ -562,7 +573,7 @@ fn provider_detect_help_and_the_providers_topic_describe_the_commands() {
     ] {
         assert!(text.contains(needle), "`{needle}` missing:\n{text}");
     }
-    assert!(out(&af(&["help", "json"])).contains("af/provider-detect@3"));
+    assert!(out(&af(&["help", "json"])).contains("af/provider-detect@4"));
     assert!(out(&af(&["help"])).contains("providers"));
 
     let add = out(&af(&["provider", "add", "--help"]))
@@ -638,7 +649,7 @@ fn project_help_and_the_workspace_flag_describe_the_commands() {
             "--workspace LABEL",
             "Never: writes inside a checkout, commits, pushes, or removes a Store.",
             "af/project@1",
-            "af/error@1",
+            "af/error@2",
             "af project workspace new triage --branch agent/triage",
             "af project workspace remove triage --delete-worktree",
         ] {
@@ -1208,7 +1219,7 @@ fn json_errors_are_one_document_on_stdout() {
     assert_eq!(failed.status.code(), Some(1));
     let document: serde_json::Value = serde_json::from_slice(&failed.stdout)
         .unwrap_or_else(|_| panic!("not JSON: {}", out(&failed)));
-    assert_eq!(document["schema"], "af/error@1");
+    assert_eq!(document["schema"], "af/error@2");
     assert!(
         document["error"].as_str().unwrap().contains("HOME"),
         "{document}"
@@ -1260,7 +1271,7 @@ fn the_surface_documents_verbose_storage_canonical_markdown_and_the_provider_lis
     // GA second fix item 4: a fix is a command, what it cannot say is its hint.
     assert!(
         machine.contains(
-            "--json prints one `af/doctor@2` document, each check with its `fix` and `hint`."
+            "--json prints one `af/doctor@3` document, each check with its `fix` and `hint`."
         ),
         "{machine}"
     );
@@ -1385,6 +1396,7 @@ fn root_help_has_one_command_list_and_every_named_topic_resolves() {
             "environment",
             "exit-codes",
             "json",
+            "errors",
             "providers",
             "task-states",
             "task-file",
@@ -1576,7 +1588,11 @@ fn the_agent_loop_verbs_and_the_agents_topic_describe_the_commands() {
             (Some(&"task"), None) => continue,
             (Some(&"task"), Some(verb)) if verb.ends_with(':') => continue,
             (Some(&"task"), Some(verb)) => af(&["task", verb, "--help"]),
+            (Some(&"provider"), Some(verb)) => af(&["provider", verb, "--help"]),
+            (Some(&"onboard"), None) => af(&["onboard", "--help"]),
+            (Some(&"doctor"), None) => af(&["doctor", "--help"]),
             (Some(&"help"), Some(topic)) => af(&["help", topic]),
+            (Some(&"setup"), Some(verb)) => af(&["setup", verb, "--help"]),
             _ => panic!("docs/agents.md names `{span}`, which is not an af task command"),
         };
         assert!(help.status.success(), "`{span}`: {}", err(&help));
@@ -1590,6 +1606,29 @@ fn the_agent_loop_verbs_and_the_agents_topic_describe_the_commands() {
         named += 1;
     }
     assert!(named >= 15, "only {named} commands named");
+    let table = page
+        .split("## Replace your scripts")
+        .nth(1)
+        .unwrap()
+        .split("\n## ")
+        .next()
+        .unwrap();
+    for command in [
+        "af task findings TASK_ID --json",
+        "af task materialize TASK_ID --into DIR",
+        "af task show TASK_ID --checks --json",
+        "af task plan --file TASK_FILE --json",
+        "af task run NEW --from OLD",
+        "af task report TASK_ID --pr-body",
+        "[storage] min_free_bytes",
+        "af task run TASK_ID --retry-gate",
+    ] {
+        assert!(table.contains(command), "{command}: {table}");
+    }
+    let materialize = out(&af(&["task", "materialize", "--help"]));
+    for flag in ["--force", "--allow-unverified", "--snapshot <SHA>"] {
+        assert!(materialize.contains(flag), "{flag}: {materialize}");
+    }
     // GA final fix item 5: step 6 teaches the continuation command, which carries the findings
     // and the verdict, and the hand-made source binding only as the form that does not.
     let step = page
@@ -1638,6 +1677,121 @@ fn the_agent_loop_verbs_and_the_agents_topic_describe_the_commands() {
         assert!(page.contains(document), "docs/agents.md lacks {document}");
     }
     assert!(out(&af(&["help", "exit-codes"])).contains("124"));
+}
+
+#[test]
+fn agent_setup_previews_writes_once_and_refuses_foreign_skills() {
+    use sha2::{Digest, Sha256};
+    let temp = tempfile::tempdir().unwrap();
+    let root = temp.path();
+    assert!(
+        std::process::Command::new("git")
+            .arg("init")
+            .arg(root)
+            .output()
+            .unwrap()
+            .status
+            .success()
+    );
+    std::fs::write(root.join("AGENTS.md"), "foreign instructions\n").unwrap();
+    let repo = root.to_str().unwrap();
+    let preview = af(&["setup", "agents", "--repo", repo]);
+    assert!(preview.status.success(), "{}", err(&preview));
+    assert!(out(&preview).contains("would write"));
+    assert_eq!(
+        std::fs::read_to_string(root.join("AGENTS.md")).unwrap(),
+        "foreign instructions\n"
+    );
+    assert!(!root.join(".claude/skills/af/SKILL.md").exists());
+    let written = af(&["setup", "agents", "--repo", repo, "--write"]);
+    assert!(written.status.success(), "{}", err(&written));
+    let snippet = out(&af(&["help", "agents", "--snippet"]));
+    let agents = std::fs::read_to_string(root.join("AGENTS.md")).unwrap();
+    assert!(agents.starts_with("foreign instructions\n\n"));
+    assert!(agents.contains(&snippet));
+    assert_eq!(snippet.lines().count(), 9);
+    let claude = std::fs::read_to_string(root.join(".claude/skills/af/SKILL.md")).unwrap();
+    let codex = std::fs::read_to_string(root.join(".agents/skills/af/SKILL.md")).unwrap();
+    assert_eq!(claude, codex);
+    assert!(claude.contains(&snippet));
+    let again = af(&["setup", "agents", "--repo", repo, "--write"]);
+    assert!(again.status.success(), "{}", err(&again));
+    assert_eq!(
+        std::fs::read_to_string(root.join("AGENTS.md")).unwrap(),
+        agents
+    );
+    assert_eq!(
+        std::fs::read_to_string(root.join(".claude/skills/af/SKILL.md")).unwrap(),
+        claude
+    );
+    assert!(
+        out(&again)
+            .lines()
+            .filter(|line| line.starts_with("unchanged "))
+            .count()
+            == 3
+    );
+    let old_body = "---\nname: af\ndescription: Previous af agent skill.\n---\n";
+    let digest = Sha256::digest(old_body.as_bytes());
+    let digest: String = digest.iter().map(|byte| format!("{byte:02x}")).collect();
+    let old_skill = format!("<!-- af-generated-skill:sha256:{digest} -->\n{old_body}");
+    std::fs::write(root.join(".agents/skills/af/SKILL.md"), old_skill).unwrap();
+    let upgraded = af(&["setup", "agents", "--repo", repo, "--write"]);
+    assert!(upgraded.status.success(), "{}", err(&upgraded));
+    assert_eq!(
+        std::fs::read_to_string(root.join(".agents/skills/af/SKILL.md")).unwrap(),
+        claude
+    );
+    std::fs::write(root.join(".agents/skills/af/SKILL.md"), "foreign skill\n").unwrap();
+    let refused = af(&["setup", "agents", "--repo", repo, "--write"]);
+    assert!(!refused.status.success());
+    assert!(
+        err(&refused).contains("foreign SKILL.md"),
+        "{}",
+        err(&refused)
+    );
+    assert_eq!(
+        std::fs::read_to_string(root.join("AGENTS.md")).unwrap(),
+        agents
+    );
+    std::fs::write(root.join(".agents/skills/af/SKILL.md"), "").unwrap();
+    let empty_skill = af(&["setup", "agents", "--repo", repo, "--write"]);
+    assert!(!empty_skill.status.success());
+    assert!(err(&empty_skill).contains("foreign SKILL.md"));
+    let empty = root.join("empty");
+    std::fs::create_dir(&empty).unwrap();
+    assert!(
+        std::process::Command::new("git")
+            .arg("init")
+            .arg(&empty)
+            .output()
+            .unwrap()
+            .status
+            .success()
+    );
+    let fresh = af(&[
+        "setup",
+        "agents",
+        "--repo",
+        empty.to_str().unwrap(),
+        "--write",
+    ]);
+    assert!(fresh.status.success(), "{}", err(&fresh));
+    assert_eq!(
+        std::fs::read_to_string(empty.join("AGENTS.md")).unwrap(),
+        snippet
+    );
+}
+
+#[test]
+fn provider_detect_help_and_installer_describe_preview() {
+    let help = out(&af(&["--help"]));
+    assert!(help.contains("preview claude/codex logins; --apply registers them"));
+    let workspace = std::env::var_os("AF_WORKSPACE_ROOT")
+        .map(std::path::PathBuf::from)
+        .unwrap_or_else(|| std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../.."));
+    let installer = std::fs::read_to_string(workspace.join("install.sh")).unwrap();
+    assert!(installer.contains("preview claude/codex logins; --apply registers them"));
 }
 
 /// `af task run NEW --from TASK` (ADR-0212) says what it plans and from what in `--help` and in
@@ -1699,7 +1853,7 @@ fn task_run_help_and_the_task_file_topic_describe_continuation() {
     }
 }
 
-/// A usage error under `--json` is the one `af/error@1` document `af help json` promises, with
+/// A usage error under `--json` is the one `af/error@2` document `af help json` promises, with
 /// clap's message and exit 2, beside clap's own lines on stderr; without `--json` stdout stays
 /// empty, and `--help` and `--version` under `--json` are no errors.
 #[test]
@@ -1743,8 +1897,8 @@ fn usage_errors_under_json_print_one_error_document() {
         assert_eq!(json.status.code(), Some(2), "{args:?}: {}", err(&json));
         let document: serde_json::Value = serde_json::from_slice(&json.stdout)
             .unwrap_or_else(|_| panic!("{args:?}: not one document: {}", out(&json)));
-        crate::schemas::valid(&crate::schemas::validator("error-v1.json"), &document);
-        assert_eq!(document["schema"], "af/error@1", "{args:?}");
+        crate::schemas::valid(&crate::schemas::validator("error-v2.json"), &document);
+        assert_eq!(document["schema"], "af/error@2", "{args:?}");
         assert_eq!(document["exit_code"], 2, "{args:?}");
         assert_eq!(document["cause"], "usage", "{args:?}");
         let message = document["error"].as_str().unwrap();
@@ -1765,7 +1919,7 @@ fn usage_errors_under_json_print_one_error_document() {
         let shown = af(args);
         assert!(shown.status.success(), "{args:?}: {}", err(&shown));
         assert!(
-            !out(&shown).contains("af/error@1"),
+            !out(&shown).contains("af/error@2"),
             "{args:?}: {}",
             out(&shown)
         );

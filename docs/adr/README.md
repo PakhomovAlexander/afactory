@@ -451,6 +451,12 @@ future readers need.
   read](0240-open-the-browser-before-any-store-is-read.md)
 - [0240 — Execute performance experiments independently on a locked
   VM](0240-execute-performance-experiments-independently-on-a-locked-vm.md)
+- [0241 — Install an agent entry point from the help
+  page](0241-install-an-agent-entry-point-from-the-help-page.md)
+- [0242 — Classify first-run refusals and suggest only explicit trusted review
+  commands](0242-classify-first-run-refusals.md)
+- [0249 — Distinguish host-denied Provider probes from incompatible
+  CLIs](0249-distinguish-host-denied-provider-probes.md)
 - [0251 — Run the Task gate on the fast validation
   profile](0251-run-the-task-gate-on-the-fast-validation-profile.md)
 - [0252 — Keep the kernel experiment measurement out of every

@@ -190,7 +190,7 @@ fn setup_requires_an_explicit_opt_in_before_any_login() {
     assert_eq!(code(&output), 3, "{}", err(&output));
     assert!(!auth.join("login-log").exists());
     let value = document(&output);
-    valid("provider-setup-v1.json", &value);
+    valid("provider-setup-v2.json", &value);
     assert_eq!(value["result"], "human_action_required");
     assert_eq!(value["login_launched"], false);
     assert_eq!(value["next_action"]["kind"], "interactive_login");
@@ -213,10 +213,10 @@ fn setup_refuses_json_with_interactive_login() {
     let output = af(root.path(), &bin, &borrowed(&args));
 
     assert_eq!(code(&output), 2, "{}", err(&output));
-    // Under --json the usage error is the one `af/error@1` document, and nothing else.
+    // Under --json the usage error is the one `af/error@2` document, and nothing else.
     let document: serde_json::Value = serde_json::from_slice(&output.stdout)
         .unwrap_or_else(|_| panic!("not one document: {}", out(&output)));
-    assert_eq!(document["schema"], "af/error@1", "{document}");
+    assert_eq!(document["schema"], "af/error@2", "{document}");
     assert_eq!(document["exit_code"], 2, "{document}");
     let stderr = err(&output);
     assert!(stderr.contains("cannot be used with"), "{stderr}");
@@ -241,7 +241,7 @@ fn an_authenticated_context_registers_without_a_login() {
     );
     assert!(err(&output).is_empty(), "{}", err(&output));
     let value = document(&output);
-    valid("provider-setup-v1.json", &value);
+    valid("provider-setup-v2.json", &value);
     assert_eq!(value["result"], "registered");
     assert_eq!(value["provider"]["registered"], true);
     assert_eq!(value["provider"]["auth"], "authenticated");
@@ -276,7 +276,7 @@ fn documents_redact_identity_and_provider_output() {
         &["provider", "status", "--json", "--usage"],
     );
     let reported = document(&status);
-    valid("provider-status-v3.json", &reported);
+    valid("provider-status-v4.json", &reported);
 
     for rendered in [out(&setup), out(&status)] {
         for leaked in [
@@ -500,7 +500,7 @@ exit 64
     let fast = run(&["provider", "status", "--json"]);
     assert_eq!(code(&fast), 0, "{}", err(&fast));
     let reported = document(&fast);
-    valid("provider-status-v3.json", &reported);
+    valid("provider-status-v4.json", &reported);
     assert_eq!(reported["usage_requested"], false);
     let provider = reported["providers"][0].clone();
     assert_eq!(provider["id"], "codex-main");
@@ -515,7 +515,7 @@ exit 64
     let probed = run(&["provider", "status", "--json", "--usage"]);
     assert_eq!(code(&probed), 7, "{}", err(&probed));
     let reported = document(&probed);
-    valid("provider-status-v3.json", &reported);
+    valid("provider-status-v4.json", &reported);
     assert_eq!(reported["usage_requested"], true);
     assert_eq!(reported["exit_code"], 7);
     let provider = reported["providers"][0].clone();

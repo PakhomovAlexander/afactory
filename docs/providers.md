@@ -64,7 +64,7 @@ command that registers it; `--apply` runs those commands
 ```sh
 af provider detect              # what is here; writes nothing
 af provider detect --apply      # register every logged-in directory not registered yet
-af provider detect --json       # the same scan, as af/provider-detect@3
+af provider detect --json       # the same scan, as af/provider-detect@4
 ```
 
 On a machine whose `CLAUDE_CONFIG_DIR` is `~/.config/claude-personal`, with logins in
@@ -140,7 +140,7 @@ What it looks at:
   token-free login check per directory, at most four at a time, in the probe environment, each
   cut at 10 seconds whatever the kind. A row whose login is not known says why: in the table as
   `unavailable: provider status probe timed out after 10 seconds`, and in the document as
-  `auth_cause` (`timeout`, `unstartable`, `incompatible`, `unparsable`, `output_too_large`,
+  `auth_cause` (`timeout`, `unstartable`, `incompatible`, `probe_denied`, `unparsable`, `output_too_large`,
   `cancelled`, `unchecked`, `other`) with `auth_detail`, af's own words for it. LOGIN
   shows the plan or method — `Claude Max (claude.ai)`, `ChatGPT`, `API key`, `not logged in` —
   never an email or an organization. The Codex plan is not part of that check's answer, so it
@@ -186,7 +186,7 @@ carries as `found_unregistered` with `next_action` `af provider detect`. `af doc
 onboard` list the same directories from the same scan.
 
 Exit codes: 0 the scan completed, 1 unclassified failure, an `--apply` refused for an unreadable
-registry among them, 2 usage error (both as one `af/error@1` document under `--json`), 4 a found
+registry among them, 2 usage error (both as one `af/error@2` document under `--json`), 4 a found
 CLI cannot start or is incompatible, or a login was left unregistered because its CLI is off
 `PATH` (the rows are still printed), 5 a registry conflict stopped `--apply`. Never 3 and never
 6: detect starts no login.
@@ -272,7 +272,7 @@ Each new lookup compares the current wall clock to the stored absolute Unix time
 nanoseconds: the Provider is available at the expiry instant, across restarts and downtime.
 Changing the system clock changes the remaining suspension. No background process is needed.
 Status shows a disabled row, the RFC3339 UTC expiry and `af provider enable ID` without probing
-that Provider, even with `--usage`. JSON is `af/provider-status@3`, with `disabled_until` and `enable_command`
+that Provider, even with `--usage`. JSON is `af/provider-status@4`, with `disabled_until` and `enable_command`
 (non-null only while disabled), `auth = "not_probed"` and `usability = "unusable"`.
 
 Review and model preflights, Task admission and every captured or resumed Task private send
@@ -369,7 +369,7 @@ Enter runs it.
 
 ```sh
 af provider status                 # fast: the registry, the CLI capability check and one authentication check per context
-af provider status --json          # the same, as af/provider-status@3
+af provider status --json          # the same, as af/provider-status@4
 af provider status --usage         # additionally probe subscription and quota windows
 af provider doctor --campaign NAME --provider correctness=codex-main
 ```
@@ -651,10 +651,16 @@ discards stdout still shows the operator what happened.
 | 5 | registry conflict | `setup`, `add`, `detect --apply` |
 | 6 | authentication failed; for `add`, a context that is not logged in | `setup`, `add` |
 | 7 | optional usage unavailable; a model catalog unavailable | `status --usage`; `models` |
+| 8 | host denied a capability probe; compatibility and login are unknown | `status`, `detect`, `setup`, `add` |
 
-The versioned documents are [`provider-detect-v3.json`](../schemas/provider-detect-v3.json),
-[`provider-status-v3.json`](../schemas/provider-status-v3.json),
-[`provider-setup-v1.json`](../schemas/provider-setup-v1.json) and
+A denied probe reports `probe_denied` in the versioned status, detect and setup documents. Its stderr
+names the denied operation. Retry outside the agent sandbox or with host-approved permissions;
+reinstalling the CLI cannot grant a host permission. `af doctor` reports the detected agent
+harness, sandbox and network context without treating markers as proof of CLI compatibility.
+
+The versioned documents are [`provider-detect-v4.json`](../schemas/provider-detect-v4.json),
+[`provider-status-v4.json`](../schemas/provider-status-v4.json),
+[`provider-setup-v2.json`](../schemas/provider-setup-v2.json) and
 [`provider-models-v1.json`](../schemas/provider-models-v1.json). They are closed vocabularies; the
 models document carries model IDs, aliases, effort levels and bounded display names only. None
 can represent an account email, an organization or account identity, a credential, OAuth material,

@@ -2017,12 +2017,12 @@ fn history_survey_and_refresh_refuse_a_mismatched_event_and_history_an_older_one
     // An older event no longer describing its record: the history refuses it, in text and in
     // JSON, so no mismatched event is printed; the newest Survey is still read.
     mismatch_refs_digest(&machine, sequences[0]);
-    // Under --json the refusal is the `af/error@1` document, never a history.
+    // Under --json the refusal is the `af/error@2` document, never a history.
     let refused = |args: &[&str], sequence: i64| {
         let (stdout, stderr) = machine.expect(&repo, &[], args, 1);
         let said = if args.contains(&"--json") {
             let error: Value = serde_json::from_str(&stdout).unwrap();
-            assert_eq!(error["schema"], "af/error@1", "{args:?}: {stdout}");
+            assert_eq!(error["schema"], "af/error@2", "{args:?}: {stdout}");
             error["error"].as_str().unwrap().to_string()
         } else {
             assert!(stdout.is_empty(), "{args:?}: {stdout}");
@@ -2467,9 +2467,9 @@ fn section_is_text_only_and_json_prints_the_complete_record() {
         &["project", "survey", "--section", "tree", "--json"],
         2,
     );
-    // Under --json the usage error is the one `af/error@1` document, exit 2.
+    // Under --json the usage error is the one `af/error@2` document, exit 2.
     let refused: serde_json::Value = serde_json::from_str(stdout.trim()).unwrap();
-    assert_eq!(refused["schema"], "af/error@1", "{stdout}");
+    assert_eq!(refused["schema"], "af/error@2", "{stdout}");
     assert_eq!(refused["exit_code"], 2, "{stdout}");
     assert!(stderr.contains("cannot be used with"), "{stderr}");
     let (json, _) = machine.expect(&repo, &[], &["project", "survey", "--json"], 0);
@@ -2685,13 +2685,13 @@ fn survey_object(machine: &Machine, survey_id: &str) -> PathBuf {
     object
 }
 
-/// What `af` said refusing `args` with exit 1: stderr, or under `--json` the `af/error@1`
+/// What `af` said refusing `args` with exit 1: stderr, or under `--json` the `af/error@2`
 /// document's error, the only thing on stdout.
 fn refusal(machine: &Machine, repo: &Path, env: &[(&str, &str)], args: &[&str]) -> String {
     let (stdout, stderr) = machine.expect(repo, env, args, 1);
     if args.contains(&"--json") {
         let error: Value = serde_json::from_str(&stdout).unwrap();
-        assert_eq!(error["schema"], "af/error@1", "{args:?}: {stdout}");
+        assert_eq!(error["schema"], "af/error@2", "{args:?}: {stdout}");
         error["error"].as_str().unwrap().to_string()
     } else {
         assert!(stdout.is_empty(), "{args:?}: {stdout}");

@@ -24,6 +24,11 @@ pub(crate) const TOPICS: &[(&str, &str, &str)] = &[
     ("exit-codes", "What every exit code means", EXIT_CODES),
     ("json", "The --json contract", JSON),
     (
+        "errors",
+        "Stable error causes and their next steps",
+        "Run `af help errors CAUSE` for one explanation.",
+    ),
+    (
         "providers",
         "Provider logins: the registry, detect, setup, add, status and doctor",
         PROVIDERS,
@@ -95,6 +100,10 @@ pub(crate) fn body(topic: &str, text: &str) -> String {
         // the binary cannot say different things.
         "task-states" => format!("{text}\n\n{}", task_state_tables()),
         "exit-codes" => format!("{text}\n\n{}", task_exit_codes()),
+        "errors" => format!(
+            "{text}\n\n{}",
+            crate::error_document::explain(None).expect("cause table")
+        ),
         _ => text.to_string(),
     }
 }
@@ -229,6 +238,52 @@ once they read the Store: the state they print is data, not their outcome.",
 /// `af help agents` is `docs/agents.md`, byte for byte: the page and the binary cannot say
 /// different things (ADR-0211).
 const AGENTS: &str = include_str!("../../../docs/agents.md");
+
+const SNIPPET_START: &str = "<!-- af-agent-snippet:start -->\n";
+const SNIPPET_END: &str = "<!-- af-agent-snippet:end -->";
+
+/// The repository pointer is extracted from the help page, so help and installed files share
+/// exactly one source. The inner markers are also the replacement boundary in AGENTS.md.
+pub(crate) fn agent_snippet() -> &'static str {
+    AGENTS
+        .split_once(SNIPPET_START)
+        .expect("agents page has snippet start")
+        .1
+        .split_once(SNIPPET_END)
+        .expect("agents page has snippet end")
+        .0
+}
+
+pub(crate) fn agent_skill() -> String {
+    let body = format!(
+        "---\nname: af\ndescription: Drive Afactory from a coding agent.\n---\n\n# Afactory\n\n{}\nRun `af help agents` for the full loop.\n",
+        agent_snippet()
+    );
+    generated_agent_skill(&body)
+}
+
+pub(crate) fn generated_agent_skill(body: &str) -> String {
+    use sha2::{Digest, Sha256};
+    let digest = Sha256::digest(body.as_bytes());
+    let digest: String = digest.iter().map(|byte| format!("{byte:02x}")).collect();
+    format!("<!-- af-generated-skill:sha256:{digest} -->\n{body}")
+}
+
+pub(crate) fn is_generated_agent_skill(text: &str) -> bool {
+    use sha2::{Digest, Sha256};
+    let Some((marker, body)) = text.split_once('\n') else {
+        return false;
+    };
+    let Some(expected) = marker
+        .strip_prefix("<!-- af-generated-skill:sha256:")
+        .and_then(|marker| marker.strip_suffix(" -->"))
+    else {
+        return false;
+    };
+    let digest = Sha256::digest(body.as_bytes());
+    let digest: String = digest.iter().map(|byte| format!("{byte:02x}")).collect();
+    expected.len() == 64 && expected == digest
+}
 
 /// What the same table says about a captured Snapshot, and the one knob over it.
 const UNDECLARED: &str = "\
@@ -399,6 +454,8 @@ const EXIT_CODES: &str = "  0    pass — the command succeeded; for `review run
        refuses a context that is not logged in with 6 unless --unverified
   7    usage unavailable — `provider status --usage` only: an authenticated Provider's optional
        subscription or quota probe did not answer. Authentication is unaffected
+  8    Provider probe denied — the host refused the CLI probe before compatibility or login
+       could be established; retry outside the sandbox or with host-approved permissions
 
 Under --json the same codes apply and the document on stdout carries the typed outcome.
 
@@ -409,7 +466,7 @@ Examples:
 const JSON: &str = "\
 stdout is the result, stderr is progress. With --json every reading command prints exactly one
 JSON document on stdout — no banner, no trailing text — so `af … --json | jq` always works.
-Errors under --json are one af/error@1 document on stdout (schemas/error-v1.json) with the same
+Errors under --json are one af/error@2 document on stdout (schemas/error-v2.json) with the same
 exit code: `command`, `error` (the sentence stderr prints) and `exit_code`. A usage error is one
 too, exit 2, with clap's message; `--help` and `--version` are not errors. A refusal af
 classifies adds `cause`, `next_action` (the one af command to run next, with the --repo, --state
@@ -423,11 +480,16 @@ the cause:
   task_file_invalid    a Task file field af refuses: file, field, value
   input_unreadable     a file the command names cannot be read: file, what
 
+Other first-run causes are `task_not_found`, `no_task_catalog`, `no_authority`,
+`not_repository`, `provider_not_registered`, `unknown_review_node`, `plan_mismatch`,
+`dirty_source`, `review_selectors_missing` and `review_binding_missing`. Run
+`af help errors` for the full cause table and `af help errors CAUSE` for one explanation.
+
 A command that classifies its own outcomes — `af provider status` and `af provider setup` — prints
 its own versioned document instead, carrying that exit code and an af-authored `diagnostic`;
 stderr still gets one diagnostic line, so discarding stdout never hides a refusal. The Provider
-documents are af/provider-detect@3 (`af provider detect`), af/provider-status@3,
-af/provider-setup@1 and af/provider-models@1; none carries an account, a credential or the
+documents are af/provider-detect@4 (`af provider detect`), af/provider-status@4,
+af/provider-setup@2 and af/provider-models@1; none carries an account, a credential or the
 Provider CLI's own words.
 
 Documents carry `kind@version` identifiers where they describe persisted records; a payload shape

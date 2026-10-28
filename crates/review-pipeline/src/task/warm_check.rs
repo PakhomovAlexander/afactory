@@ -3630,7 +3630,9 @@ mod tests {
         let temp = tempfile::tempdir_in(target_root).unwrap();
         let cas = Cas::open(temp.path().join("cas")).unwrap();
         let home = temp.path().join("home");
+        let child_tmp = temp.path().join("tmp");
         std::fs::create_dir_all(&home).unwrap();
+        std::fs::create_dir_all(&child_tmp).unwrap();
         let rustup = RustupHome::of_kernel();
         let mut environment = vec![
             (
@@ -3640,6 +3642,7 @@ mod tests {
             ("LC_ALL".into(), "C".into()),
             ("TZ".into(), "UTC".into()),
             ("HOME".into(), home.display().to_string()),
+            ("TMPDIR".into(), child_tmp.display().to_string()),
             ("CARGO_INCREMENTAL".into(), "0".into()),
         ];
         environment.extend(rustup.environment());
