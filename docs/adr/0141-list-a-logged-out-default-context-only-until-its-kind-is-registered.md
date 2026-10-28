@@ -2,7 +2,7 @@
 
 **Status:** accepted (2026-10-05). Narrows when `af provider status` lists an ambient discovery
 label, the rule [ADR-0136](0136-remove-a-registered-provider-by-id.md) records. Narrowed further
-by [ADR-0254](0254-leave-out-a-default-context-that-holds-a-registered-login.md): a default
+by [ADR-0260](0260-leave-out-a-default-context-that-holds-a-registered-login.md): a default
 context whose login a registered Provider of its kind holds is left out too.
 
 ## Context

@@ -1,4 +1,4 @@
-# ADR-0254: Leave out a default context that holds a registered login
+# ADR-0260: Leave out a default context that holds a registered login
 
 **Status:** proposed (2026-10-28). Narrows further the rule
 [ADR-0141](0141-list-a-logged-out-default-context-only-until-its-kind-is-registered.md) records

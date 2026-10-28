@@ -302,7 +302,7 @@ pub fn discover_with_cancel(cancelled: &AtomicBool, usage: UsageProbe) -> Provid
 /// has set up the logins they use, and the default directory is one they do not, or a second
 /// door to one they did. Before one is registered, the row and its `setup … --login` fix are how
 /// a new machine starts, and a default context with a login of its own stays, since it is a
-/// login the operator may register (ADR-0141, ADR-0254). A default context left unprobed because
+/// login the operator may register (ADR-0141, ADR-0260). A default context left unprobed because
 /// it holds no login marker (ADR-0206) is one with no login too. Each row comes with the login
 /// its probe answered with, when the answer names one.
 fn drop_unused_ambient_contexts(
@@ -7918,7 +7918,7 @@ auth_dir = "{}"
     }
 
     /// A default context whose login a registered Provider of its kind already holds is a
-    /// second door to the same account, not a login to register: it is left out (ADR-0254).
+    /// second door to the same account, not a login to register: it is left out (ADR-0260).
     #[test]
     fn a_default_context_holding_a_registered_login_is_left_out() {
         fn row(id: &str, kind: &str, login: Option<&str>) -> (ProviderStatus, Option<String>) {

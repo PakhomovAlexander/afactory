@@ -15,7 +15,7 @@
   keep their own.
 - `af provider status` and the Providers pane leave out a CLI default context whose login a
   registered Provider of its kind already holds (the Claude CLI's `~/.claude` reading the same
-  Keychain login as a registered directory), as they leave out a logged-out one (ADR-0254).
+  Keychain login as a registered directory), as they leave out a logged-out one (ADR-0260).
 - The Workers folder lists its Workers from the start in a project scope, read on its thread
   after the first frame like the other folders; it no longer waits for an open.
 - `Enter` on a Worker or a Pipeline listed in the main pane of its folder opens it, as the bar
