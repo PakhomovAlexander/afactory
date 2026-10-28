@@ -527,12 +527,10 @@ fn inventory_rows(
         .max()
         .unwrap_or(0);
     let mut any_catalog = false;
-    let mut listed = 0;
-    for provider in inventory.providers.iter().filter(shown) {
+    for (listed, provider) in inventory.providers.iter().filter(shown).enumerate() {
         if listed > 0 {
             rows.push(Row::blank());
         }
-        listed += 1;
         provider_rows(
             provider,
             selected.is_some(),
