@@ -484,3 +484,5 @@ future readers need.
   field](0256-carry-the-recovery-of-an-interrupted-command-as-a-typed-field.md)
 - [0257 — Seal the implementer's tree when its Attempt wall ends
   it](0257-seal-the-implementers-tree-when-its-attempt-wall-ends-it.md)
+- [0258 — Bound bare af's first browser
+  frame](0258-bound-bare-afs-first-browser-frame.md)

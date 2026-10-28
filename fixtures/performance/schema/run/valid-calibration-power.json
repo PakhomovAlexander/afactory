@@ -1,5 +1,5 @@
 {
-  "schema": "af.perf-run/6",
+  "schema": "af.perf-run/7",
   "run_id": "gh7101_a1_primary",
   "parent_run_id": null,
   "scope": "calibration",
@@ -400,5 +400,5 @@
   },
   "diagnostic": null,
   "required_check_eligible": false,
-  "plan_digest": "sha256:6d92f6fba85d6b099c0d32b30100365068a2eebf594c5022a1558e1d4238ed2b"
+  "plan_digest": "sha256:82e08770c2b69f56210aee288768e001c7c9dff6d773d1bb69760de88f7909be"
 }

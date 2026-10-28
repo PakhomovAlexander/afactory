@@ -237,6 +237,11 @@ def cmd_list(args):
             print("  %-64s %-8s N=%-3d %s, oracle %s" % (
                 row["instance_id"], row["criticality"], row["pairs"], row["execution"],
                 row["oracle"]))
+    print("\nbudgets:")
+    for budget_id, budget in sorted(doc["budgets"].items()):
+        cases = sorted(case_id for case_id, case in doc["cases"].items()
+                       if budget_id in case["budgets"])
+        print("  %s  %s  cases %s" % (budget_id, budget["state"], ", ".join(cases)))
     return 0
 
 
@@ -532,7 +537,7 @@ def cmd_compare(args):
 def cmd_run(args):
     if args.trusted_local == args.container:
         sys.stderr.write("refused: choose exactly one of --trusted-local (macOS, a process "
-                         "group, discovery and nonspawning library cases) and --container (a "
+                         "group, cases declared without Linux containment) and --container (a "
                          "pinned Linux sample container per sample)\n")
         return EXIT_INVALID
     try:

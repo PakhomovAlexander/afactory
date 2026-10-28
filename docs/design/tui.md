@@ -16,6 +16,9 @@ mouse support.
 
 ## 2. Entry and scope
 
+Bare `af` targets its first browser status-line frame strictly below 200 ms from process launch
+in a 100x30 pseudo-terminal, including a registry of 20 large Task Stores (ADR-0258).
+
 | invocation | scope | root of the left bar |
 |---|---|---|
 | `af` outside a git repository | **user** | `~` — user layer, provider registry, every Task in `$XDG_STATE_HOME/af` |

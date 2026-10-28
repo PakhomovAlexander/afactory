@@ -1,13 +1,15 @@
 """Whole-CLI cases of the laboratory (`fixtures/performance/cli.toml`, ADR-0168).
 
 The authority's CLI registry names, per CLI adapter and per instance of a registry `process`
-case, the actual AF binary's argv, the untimed fixture setup before it and the oracle rules its
-output must satisfy. This module loads and cross-checks that registry, reads each side's own
+case, the actual AF binary's argv or the reviewed PTY driver's argv, the untimed fixture setup
+before it and the oracle rules its output must satisfy. This module loads and cross-checks that
+registry, reads each side's own
 package version from the side's Cargo.lock in the plan's Git objects (bound by the plan's
 digest, never by the binary's own output), chooses each side's adapter, expands the declared
 placeholders and judges an execution. A rule is the authority's, written from the declared
 fixture and the product's documented commands; the oracle never learns from candidate output.
 """
+from fractions import Fraction
 import json
 import os
 import re
@@ -271,6 +273,26 @@ def expand(text, values):
         require(name in values, "placeholder {%s} has no value here" % name)
         return values[name]
     return _PLACEHOLDER.sub(substitute, text)
+
+
+def tui_interval(stdout, field):
+    """Read the closed driver document before admitting its reported interval."""
+    try:
+        doc = json.loads(stdout.decode("utf-8"), object_pairs_hook=_unique_pairs)
+    except (UnicodeError, ValueError) as error:
+        raise ContractError("PTY driver did not report one JSON document: %s" % error)
+    contracts.validate_tui_open(doc, "PTY driver")
+    require(field == "browser_ms", "PTY driver reports only browser_ms as its primary interval")
+    return Fraction(str(doc[field]))
+
+
+def tui_home_environment(scratch):
+    """The browser sample's private HOME and XDG roots, created by its setup."""
+    home = os.path.join(scratch, "home")
+    return {"HOME": home, "XDG_STATE_HOME": os.path.join(home, "state"),
+            "XDG_CONFIG_HOME": os.path.join(home, "config"),
+            "XDG_CACHE_HOME": os.path.join(home, "cache"),
+            "XDG_DATA_HOME": os.path.join(home, "data")}
 
 
 def patterns(entry):

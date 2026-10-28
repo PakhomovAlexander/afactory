@@ -591,9 +591,8 @@ def sample(doc, golden, supervisor, binary, instance_id, scratch_root, timeout_s
     item, _, _ = _contract(doc, instance_id)
     case = doc["cases"].get(item["case_id"])
     if case is not None and case["requires_linux_containment"]:
-        raise Unsupported("%s spawns processes and requires Linux namespace containment; "
-                          "trusted local mode runs only discovery and nonspawning library "
-                          "cases" % instance_id)
+        raise Unsupported("%s requires Linux namespace containment; trusted local mode runs "
+                          "only cases declared without that requirement" % instance_id)
     namespace = Namespace(scratch_root, boundary)
     uncertain = []
 

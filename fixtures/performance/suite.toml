@@ -26,7 +26,7 @@
 # change like any other. `criticality = "advisory"` cases are measured and reported as
 # exploratory and never enter the corrected gate family.
 
-schema = "af.perf-suite/3"
+schema = "af.perf-suite/4"
 suite_id = "af_performance"
 description = "Paired same-host comparisons of the AF product's critical operations."
 
@@ -162,6 +162,18 @@ environments = ["linux_x86_64_musl_hosted"]
 recipes = ["linux_musl_shipping"]
 description = "State reads of 10,000 relevant events under 200 ms; macOS coverage is unavailable in v1."
 
+[budgets.tui_browser_under_200ms]
+metric = "wall_ms"
+limit = "200"
+unit = "ms"
+comparison = "every_sample_strictly_below"
+minimum_samples = 20
+state = "pending_calibration"
+tiers = ["nightly", "release"]
+environments = ["linux_x86_64_musl_hosted", "macos_arm64_local"]
+recipes = ["linux_musl_shipping", "macos_arm64_native_release"]
+description = "Bare af from launch to the first frame painting NORMAL on the last row of a 100x30 pseudo-terminal: shipping binary, 20 fresh processes, private HOME, warm OS page cache, both an empty registry and a registry of 20 copies of the 10,000-event Task seed; every sample strictly below 200 ms."
+
 # Workload fixtures: descriptors. The probe generates the bytes through the product's writers;
 # perflab.reference derives the golden entries independently (golden/native.json). ------------
 
@@ -212,6 +224,17 @@ golden = "pending_native_oracle"
 [fixtures.cli_task_roots]
 kind = "cli_task"
 description = "A Task with RootInputs and a check of `true`; each side creates it through its supported writers."
+golden = "pending_native_oracle"
+
+[fixtures.empty]
+kind = "cli_registry"
+description = "Private HOME and XDG directories with no registered Store."
+golden = "pending_native_oracle"
+
+[fixtures.stores_20x10000]
+kind = "cli_registry"
+events = 10000
+description = "Twenty private copies of the 10,000-event Task seed registered through the side's af task list --state."
 golden = "pending_native_oracle"
 
 # Recipes -------------------------------------------------------------------------------------
@@ -420,6 +443,26 @@ pairs = { quick = 40, nightly = 40, release = 40 }
 warmup_pairs = 2
 sample_timeout_seconds = 30
 budgets = ["cli_discovery_under_50ms"]
+
+[cases.tui_open]
+family = "tui"
+description = "Bare af from launch to the first browser status-line frame in a 100x30 pseudo-terminal."
+kind = "process"
+requires_linux_containment = false
+timing = { boundary = "reported_interval", field = "browser_ms", description = "The reviewed PTY driver reports launch to first browser frame; its interpreter startup and quit are excluded." }
+cache = { process = "fresh", store = "fresh", projection = "application_cold", os_page_cache = "warm" }
+oracle = { kind = "cli_version_and_usage_tokens", state = "available", description = "The driver reports its versioned JSON, a browser frame and clean child exit." }
+execution = { state = "supported", pending = "" }
+parameters = { registry = { kind = "fixture", values = ["empty", "stores_20x10000"] } }
+tiers = ["quick", "nightly", "release"]
+criticality = "critical"
+primary_metric = "wall_ms"
+optional_metrics = []
+policy = "wall_time_default"
+pairs = { quick = 20, nightly = 40, release = 40 }
+warmup_pairs = 2
+sample_timeout_seconds = 120
+budgets = ["tui_browser_under_200ms"]
 
 [cases.canonical_serialize_small]
 family = "canonical_data"

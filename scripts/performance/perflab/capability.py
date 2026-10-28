@@ -427,7 +427,7 @@ def docker_info(docker, timeout=TOOL_TIMEOUT_SECONDS):
 
 
 def report(suite_doc, docker="docker", scratch=None, verify_enforcement=False):
-    """The validated `af.perf-capabilities/2` report of this host."""
+    """The validated `af.perf-capabilities/3` report of this host."""
     system = host_platform()
     machine = platform.machine()
     arch = {"arm64": "aarch64", "amd64": "x86_64"}.get(machine.lower(), machine)
@@ -474,7 +474,7 @@ def report(suite_doc, docker="docker", scratch=None, verify_enforcement=False):
                     "python": platform.python_version()},
            "tools": tools,
            "trusted_local": {"capability": trusted,
-                             "scope": "discovery_and_nonspawning_library_cases",
+                             "scope": "declared_cases_without_linux_containment",
                              "same_user_isolation": "not_provided"},
            "linux_container": {"capability": container, "scratch": scratch_record},
            "environments": environments}

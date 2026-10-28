@@ -1,13 +1,13 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "$id": "urn:af:schema:performance-suite:3",
-  "title": "af.perf-suite/3",
+  "$id": "urn:af:schema:performance-suite:4",
+  "title": "af.perf-suite/4",
   "description": "The reviewed performance registry fixtures/performance/suite.toml, as parsed TOML (ADR-0162). Workload, policy, recipe and environment stay separate; every reference, parameter domain and resource bound is also checked by the reader.",
   "type": "object",
   "additionalProperties": false,
   "properties": {
     "schema": {
-      "const": "af.perf-suite/3"
+      "const": "af.perf-suite/4"
     },
     "suite_id": {
       "$ref": "#/$defs/id"
@@ -428,7 +428,8 @@
                 "event_log",
                 "file_tree",
                 "cli_state",
-                "cli_task"
+                "cli_task",
+                "cli_registry"
               ]
             },
             "description": {
@@ -875,6 +876,27 @@
                     "boundary",
                     "region",
                     "setup_excluded",
+                    "description"
+                  ]
+                },
+                {
+                  "type": "object",
+                  "additionalProperties": false,
+                  "properties": {
+                    "boundary": {
+                      "const": "reported_interval"
+                    },
+                    "field": {
+                      "$ref": "#/$defs/id"
+                    },
+                    "description": {
+                      "type": "string",
+                      "maxLength": 4096
+                    }
+                  },
+                  "required": [
+                    "boundary",
+                    "field",
                     "description"
                   ]
                 }

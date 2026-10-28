@@ -238,6 +238,7 @@ class ShardEvidence:
 MODES = {"trusted_local_process_group": "trusted_local", "linux_container": "linux_container"}
 # The scope a case's primary metric must have: what its timing boundary measures.
 PRIMARY_SCOPES = {"child_process_lifetime": "child_process_lifetime",
+                  "reported_interval": "probe_reported",
                   "library_region": "library_region"}
 
 

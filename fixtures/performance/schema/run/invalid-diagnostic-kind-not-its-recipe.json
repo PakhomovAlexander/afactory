@@ -1,5 +1,5 @@
 {
-  "schema": "af.perf-run/6",
+  "schema": "af.perf-run/7",
   "run_id": "schema_fixture_diagnostic",
   "parent_run_id": null,
   "scope": "diagnostic",
@@ -390,5 +390,5 @@
     }
   },
   "required_check_eligible": false,
-  "plan_digest": "sha256:de630e8b9d2a2a0eecc88c4e0399df3a2c4c60248056730a1f74897f2cabb220"
+  "plan_digest": "sha256:a27719d3c330863a668082d86f35db10af9ffc1a0ffe7b55f34603b9e0bae49e"
 }

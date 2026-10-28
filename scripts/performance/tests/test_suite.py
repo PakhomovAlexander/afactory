@@ -31,7 +31,10 @@ class Registry(unittest.TestCase):
         ids = dict((tier, [item["instance_id"] for item in self.suite.instances(tier)])
                    for tier in suite.TIERS)
         self.assertEqual((len(ids["quick"]), len(ids["nightly"]), len(ids["release"])),
-                         (28, 31, 9))
+                         (30, 33, 11))
+        for registry in ("empty", "stores_20x10000"):
+            for tier in suite.TIERS:
+                self.assertIn("tui_open__registry_" + registry, ids[tier])
         for command in ("version", "help", "task_help", "review_run_help"):
             for tier in suite.TIERS:
                 self.assertIn("cli_discovery__command_" + command, ids[tier])
@@ -69,6 +72,25 @@ class Registry(unittest.TestCase):
         self.assertEqual((policy["relative_tolerance"], policy["absolute_tolerance"]),
                          ("0.05", "1"))
 
+    def test_browser_budget_cannot_be_redirected_to_splash(self):
+        self.refuses('field = "browser_ms"', 'field = "splash_ms"',
+                     "only tui_open reports browser_ms")
+
+    def test_browser_budget_covers_both_registry_instances(self):
+        case = self.suite.doc["cases"]["tui_open"]
+        budget = self.suite.doc["budgets"]["tui_browser_under_200ms"]
+        self.assertEqual(case["parameters"]["registry"]["values"],
+                         ["empty", "stores_20x10000"])
+        self.assertEqual(case["budgets"], ["tui_browser_under_200ms"])
+        self.assertEqual(case["timing"]["boundary"], "reported_interval")
+        self.assertEqual(case["timing"]["field"], "browser_ms")
+        self.assertEqual(case["sample_timeout_seconds"], 120)
+        self.assertEqual((budget["limit"], budget["comparison"], budget["minimum_samples"]),
+                         ("200", "every_sample_strictly_below", 20))
+        self.assertEqual(budget["state"], "pending_calibration")
+        self.assertEqual(budget["environments"],
+                         ["linux_x86_64_musl_hosted", "macos_arm64_local"])
+
     def test_executable_states_are_exactly_the_validated_paths(self):
         # p3b (ADR-0169): every recipe, environment and case is implemented and executable
         # where a host provides it; a host that cannot refuses at run time, never through a
@@ -92,7 +114,7 @@ class Registry(unittest.TestCase):
         self.assertEqual(spawning, ["cli_state_read", "cli_task_run_check", "cli_task_start",
                                     "source_capture"])
         for key, fixture in doc["fixtures"].items():
-            pending = fixture["kind"] in ("cli_state", "cli_task")
+            pending = fixture["kind"] in ("cli_state", "cli_task", "cli_registry")
             self.assertEqual(fixture["golden"], "pending_native_oracle" if pending
                              else "available", key)
         for key, budget in doc["budgets"].items():
@@ -164,11 +186,10 @@ class Registry(unittest.TestCase):
                      "TOML floats are not allowed")
         self.refuses('suite_id = "af_performance"', 'suite_id = "af_performance"\n'
                      "when = 2026-01-01", "dates and times are not allowed")
-        # Version 3 names native seeds and speaks probe-request/2; nothing reads an earlier
-        # shape (ADR-0145, ADR-0170).
-        for earlier in ("1", "2"):
-            self.refuses('schema = "af.perf-suite/3"', 'schema = "af.perf-suite/%s"' % earlier,
-                         "expected 'af.perf-suite/3'")
+        # Version 4 admits the browser's reported interval; earlier shapes fail closed.
+        for earlier in ("1", "2", "3"):
+            self.refuses('schema = "af.perf-suite/4"', 'schema = "af.perf-suite/%s"' % earlier,
+                         "expected 'af.perf-suite/4'")
         self.refuses('request = "af.perf-probe-request/2"', 'request = "af.perf-probe-request/1"',
                      "expected 'af.perf-probe-request/2'")
 

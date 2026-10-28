@@ -1,4 +1,4 @@
-schema = "af.perf-cli/5"
+schema = "af.perf-cli/6"
 description = "A minimal CLI registry."
 setup_script = "cli/setup.sh"
 
