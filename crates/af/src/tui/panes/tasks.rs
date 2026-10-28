@@ -469,8 +469,10 @@ pub(crate) fn duration(ms: u64) -> String {
         format!("{}.{}s", ms / 1_000, ms % 1_000 / 100)
     } else if ms < 3_600_000 {
         format!("{}m {:02}s", ms / 60_000, ms / 1_000 % 60)
-    } else {
+    } else if ms < 86_400_000 {
         format!("{}h {:02}m", ms / 3_600_000, ms / 60_000 % 60)
+    } else {
+        format!("{}d {:02}h", ms / 86_400_000, ms / 3_600_000 % 24)
     }
 }
 
@@ -2119,13 +2121,26 @@ fn started(task: &Listed) -> Option<u64> {
 }
 
 /// Where a Task runs, as the `f` view names it beside the row: the bar group (a checkout's
-/// name, an explicit Store's path), else what the heading says of this checkout's own Store.
+/// name; the end of an explicit Store's path, `workstreams/default/state`, since the row has
+/// little room and the status line carries the whole heading), else what the heading says of
+/// this checkout's own Store.
 fn place(store: &Store) -> String {
-    match (&store.repo, &store.note) {
+    let name = match (&store.repo, &store.note) {
         (Some(repo), _) => repo.clone(),
         (None, Some(note)) => note.clone(),
         (None, None) => store.shown.clone(),
+    };
+    match store.origin {
+        Origin::Registered | Origin::Session => tail(&name, 3),
+        Origin::Scope | Origin::Repository | Origin::Checkout => name,
     }
+}
+
+/// The last `count` components of a path.
+fn tail(path: &str, count: usize) -> String {
+    let mut parts: Vec<&str> = path.rsplit('/').take(count).collect();
+    parts.reverse();
+    parts.join("/")
 }
 
 /// An unreadable Store in the folder: the location, then the cause on rows of its own, as a

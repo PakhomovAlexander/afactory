@@ -677,6 +677,7 @@ fn masked(frame: &str) -> String {
         let unit = |word: &str, unit: char| word.strip_suffix(unit).is_some_and(digits);
         (unit(word, 'm') && next.len() == 3 && unit(next, 's'))
             || (unit(word, 'h') && next.len() == 3 && unit(next, 'm'))
+            || (unit(word, 'd') && next.len() == 3 && unit(next, 'h'))
     };
     let mut text = String::new();
     for line in frame.lines() {
@@ -737,6 +738,8 @@ fn masking_folds_durations_and_hides_ids_and_times() {
     let row = "  [ok]  check                 46ms        0 tok\n";
     let wider = "  [ok]  check               1.3s        0 tok\n";
     assert_eq!(masked(row), masked(wider));
+    let days = "  [ok]  check              6d 02h        0 tok\n";
+    assert_eq!(masked(row), masked(days));
     assert_eq!(masked(row), "  [ok]  check  <t>        0 tok\n");
 }
 

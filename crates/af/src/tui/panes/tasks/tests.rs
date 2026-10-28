@@ -157,6 +157,12 @@ fn a_bar_row_fits_its_width_cutting_the_outcome_first() {
     assert_eq!(duration(1_250), "1.2s");
     assert_eq!(duration(123_000), "2m 03s");
     assert_eq!(duration(7_380_000), "2h 03m");
+    assert_eq!(duration(525_600_000), "6d 02h");
+    assert_eq!(
+        tail("~/.local/state/af/workstreams/default/state", 3),
+        "workstreams/default/state"
+    );
+    assert_eq!(tail("~/two", 3), "~/two");
     assert_eq!(clock(1_790_263_060_692), "15:17:40Z");
     assert_eq!(short(Some("sha256:0123456789abcdef")), "01234567");
     assert_eq!(short(None), "-");
