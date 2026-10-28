@@ -1884,15 +1884,26 @@ fn agent_setup_previews_writes_once_and_refuses_foreign_skills() {
     );
 }
 
+/// Issue #358: the first step `af --help` and the installer name is the one that registers,
+/// `af provider detect --apply`, and each says it registers what it finds; plain `detect` only
+/// lists (ADR-0206).
 #[test]
-fn provider_detect_help_and_installer_describe_preview() {
+fn provider_detect_help_and_installer_name_the_registering_step() {
     let help = out(&af(&["--help"]));
-    assert!(help.contains("preview claude/codex logins; --apply registers them"));
+    assert!(
+        help.contains(
+            "1. af provider detect --apply   find the claude/codex logins on this machine and \
+             register them"
+        ),
+        "{help}"
+    );
     let workspace = std::env::var_os("AF_WORKSPACE_ROOT")
         .map(std::path::PathBuf::from)
         .unwrap_or_else(|| std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../.."));
     let installer = std::fs::read_to_string(workspace.join("install.sh")).unwrap();
-    assert!(installer.contains("preview claude/codex logins; --apply registers them"));
+    assert!(installer.contains(
+        r#""af provider detect --apply" "find your claude/codex logins and register them""#
+    ));
 }
 
 /// `af task run NEW --from TASK` (ADR-0212) says what it plans and from what in `--help` and in
@@ -2090,6 +2101,196 @@ fn task_report_help_describes_the_whole_lines_added_block() {
         "{report}"
     );
     assert!(!flat.contains("title first inside"), "{report}");
+}
+
+/// Issue #358: `af review campaigns --json` is `--format json`, the same `af/review-campaigns@1`
+/// document byte for byte; text stays the default; and `--json` beside an explicit `--format`
+/// is a usage error under `--json`'s own contract, one `af/error@2` document on stdout.
+#[test]
+fn review_campaigns_json_is_the_format_json_document() {
+    let dir = tempfile::tempdir().unwrap();
+    let root = dir.path().join("campaigns");
+    let root = root.to_str().unwrap();
+    let listing = |root: &str, extra: &[&str]| {
+        let mut args = vec!["review", "campaigns", "--state-root", root];
+        args.extend_from_slice(extra);
+        crate::common::af()
+            .current_dir(dir.path())
+            .args(&args)
+            .env("NO_COLOR", "1")
+            .output()
+            .unwrap()
+    };
+    let campaigns = |extra: &[&str]| listing(root, extra);
+    let shorthand = campaigns(&["--json"]);
+    let format = campaigns(&["--format", "json"]);
+    assert_eq!(shorthand.status.code(), Some(0), "{}", err(&shorthand));
+    assert_eq!(format.status.code(), Some(0), "{}", err(&format));
+    assert_eq!(out(&shorthand), out(&format));
+    let document: serde_json::Value = serde_json::from_slice(&shorthand.stdout).unwrap();
+    assert_eq!(
+        document,
+        serde_json::json!({"schema": "af/review-campaigns@1", "campaigns": [], "problems": []})
+    );
+    assert_eq!(out(&campaigns(&["--json", "--sizes"])), out(&format));
+    // The document is the shipped schema's, which `af schema show` prints and `af help json`
+    // names: empty, and with a directory listed as a problem.
+    let schema = crate::schemas::validator("review-campaigns-v1.json");
+    crate::schemas::valid(&schema, &document);
+    let shown = af(&["schema", "show", "af/review-campaigns@1"]);
+    assert_eq!(shown.status.code(), Some(0), "{}", err(&shown));
+    assert_eq!(
+        out(&shown),
+        std::fs::read_to_string(workspace_schemas().join("review-campaigns-v1.json")).unwrap()
+    );
+    assert!(out(&af(&["help", "json"])).contains(
+        "af review campaigns --json           af/review-campaigns@1 \
+             (schemas/review-campaigns-v1.json)"
+    ));
+    std::fs::create_dir_all(Path::new(root).join("broken/events.sqlite")).unwrap();
+    let shorthand = campaigns(&["--json"]);
+    assert_eq!(shorthand.status.code(), Some(0), "{}", err(&shorthand));
+    assert_eq!(out(&shorthand), out(&campaigns(&["--format", "json"])));
+    let populated: serde_json::Value = serde_json::from_slice(&shorthand.stdout).unwrap();
+    crate::schemas::valid(&schema, &populated);
+    assert_eq!(
+        populated["problems"][0]["directory"], "broken",
+        "{populated}"
+    );
+    std::fs::remove_dir_all(Path::new(root).join("broken")).unwrap();
+
+    // The text listing names the root `--state-root` resolves to, whole: its existing ancestor
+    // canonicalized (a macOS `/var/folders` temporary root reads `/private/var/folders`), on the
+    // sentence's line where it fits in 100 columns, else on a line of its own, and as the
+    // `--state` of the command that starts a Campaign there. Controls: this root (short when
+    // `TMPDIR` is), one wider than a line, one with spaces, one reached through a symlink, and
+    // on Unix ones holding a tab, a newline and a terminal escape sequence.
+    let base = std::fs::canonicalize(dir.path()).unwrap();
+    let long = Path::new("x".repeat(120).as_str()).join("campaigns");
+    let spaced = Path::new("with  spaces").join("campaigns");
+    std::fs::create_dir_all(dir.path().join(&spaced)).unwrap();
+    #[cfg_attr(not(unix), allow(unused_mut))]
+    let mut controls = vec![
+        (dir.path().join("campaigns"), base.join("campaigns")),
+        (dir.path().join(&long), base.join(&long)),
+        (dir.path().join(&spaced), base.join(&spaced)),
+    ];
+    #[cfg(unix)]
+    {
+        std::fs::create_dir_all(dir.path().join("real").join("campaigns")).unwrap();
+        std::os::unix::fs::symlink("real", dir.path().join("alias")).unwrap();
+        controls.push((
+            dir.path().join("alias").join("campaigns"),
+            base.join("real").join("campaigns"),
+        ));
+        for name in ["tab\there", "new\nline", "red\u{1b}[31mtext"] {
+            let control = Path::new(name).join("campaigns");
+            std::fs::create_dir_all(dir.path().join(name)).unwrap();
+            controls.push((dir.path().join(&control), base.join(&control)));
+        }
+    }
+    for (requested, resolved) in &controls {
+        let root = requested.to_str().unwrap();
+        // Text output shows every control character as a visible `\u{…}` escape, so a root
+        // with a tab or a newline (a `TMPDIR` may hold one) cannot forge a line.
+        let shown = terminal_safe(resolved.to_str().unwrap());
+        let listed = listing(root, &[]);
+        assert_eq!(listed.status.code(), Some(0), "{}", err(&listed));
+        let text = out(&listed);
+        assert!(
+            !text.chars().any(|c| c.is_control() && c != '\n'),
+            "{text:?}"
+        );
+        assert_eq!(text, out(&listing(root, &["--format", "text"])));
+        let lines: Vec<&str> = text.lines().collect();
+        let head = format!("No Campaigns under {shown}; start one there with");
+        let command_at = if head.chars().count() <= 100 {
+            assert_eq!(lines[0], head, "{text}");
+            1
+        } else {
+            let alone = format!("  {shown}");
+            assert_eq!(
+                lines[..3],
+                ["No Campaigns under", alone.as_str(), "Start one there with"],
+                "{text}"
+            );
+            3
+        };
+        let command = lines[command_at..]
+            .iter()
+            .map(|line| line.trim().trim_end_matches('\\').trim_end())
+            .collect::<Vec<_>>()
+            .join(" ");
+        let state = resolved.join("NAME");
+        let state = state.to_str().unwrap();
+        let words = shell_words::split(&command).unwrap();
+        assert_eq!(
+            words[..6],
+            ["af", "review", "run", "--campaign", "NAME", "--state"],
+            "{text}"
+        );
+        assert_eq!(words.len(), 7, "{text}");
+        if !state.chars().any(char::is_control) {
+            // The command pastes into a shell as the one that starts a Campaign there.
+            assert_eq!(words[6], state, "{text}");
+        } else if shell_words::quote(state) != state {
+            // A root the shell must quote (a tab or a newline is one) keeps its quotes, and
+            // the escapes inside them, so the command shows the root as the sentence does.
+            assert_eq!(words[6], terminal_safe(state), "{text}");
+            assert_eq!(command, shell_words::join(&words), "{text}");
+        }
+        // A root whose only unusual characters are controls the shell need not quote (a lone
+        // BEL in a `TMPDIR`) is held to the checks above: the sentence shows it exactly, and no
+        // raw control reaches the command.
+        let document: serde_json::Value =
+            serde_json::from_slice(&listing(root, &["--json"]).stdout).unwrap();
+        assert_eq!(document["campaigns"], serde_json::json!([]), "{document}");
+        assert_eq!(document["problems"], serde_json::json!([]), "{document}");
+    }
+
+    for extra in [
+        ["--json", "--format", "text"],
+        ["--format", "json", "--json"],
+    ] {
+        let refused = campaigns(&extra);
+        assert_eq!(
+            refused.status.code(),
+            Some(2),
+            "{extra:?}: {}",
+            err(&refused)
+        );
+        let error: serde_json::Value = serde_json::from_slice(&refused.stdout)
+            .unwrap_or_else(|_| panic!("{extra:?}: not one document: {}", out(&refused)));
+        crate::schemas::valid(&crate::schemas::validator("error-v2.json"), &error);
+        assert_eq!(error["cause"], "usage", "{error}");
+        assert!(
+            error["error"]
+                .as_str()
+                .unwrap()
+                .contains("cannot be used with"),
+            "{error}"
+        );
+        assert_eq!(error["next_action"], "af review campaigns --help");
+    }
+
+    let help = out(&af(&["review", "campaigns", "--help"]));
+    assert!(help.contains("--json"), "{help}");
+    assert!(help.contains("af review campaigns --json"), "{help}");
+}
+
+/// `value` as af's text output shows it: every control character (C0, DEL and C1) as a visible
+/// `\u{…}` escape, everything else unchanged.
+fn terminal_safe(value: &str) -> String {
+    value
+        .chars()
+        .map(|c| {
+            if c.is_control() {
+                format!("\\u{{{:x}}}", u32::from(c))
+            } else {
+                c.to_string()
+            }
+        })
+        .collect()
 }
 
 #[test]

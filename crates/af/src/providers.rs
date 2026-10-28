@@ -242,6 +242,14 @@ pub(crate) fn registered() -> Result<Registered, String> {
 }
 
 pub fn discover_with_cancel(cancelled: &AtomicBool, usage: UsageProbe) -> ProviderInventory {
+    let mut inventory = discover_every_context(cancelled, usage);
+    drop_unused_ambient_contexts(&mut inventory.providers);
+    inventory
+}
+
+/// Every context [`discover_with_cancel`] probes, the logged-out ambient ones it then leaves out
+/// of the table included.
+fn discover_every_context(cancelled: &AtomicBool, usage: UsageProbe) -> ProviderInventory {
     let (specs, registry, warning) = load_specs();
     // The ID each row's one `af provider setup … --login` fix names: a registered Provider's own,
     // and for an ambient context the first free `<kind>-main`.
@@ -279,7 +287,6 @@ pub fn discover_with_cancel(cancelled: &AtomicBool, usage: UsageProbe) -> Provid
         providers.extend(specs[providers.len()..].iter().map(unprobed_status));
     }
     cross_reference_logged_in_siblings(&mut providers);
-    drop_unused_ambient_contexts(&mut providers);
     ProviderInventory {
         providers,
         registry,
@@ -540,10 +547,15 @@ pub(crate) struct RegistryRead {
     /// The auth directories found on this machine that no registry entry names, by
     /// [`unregistered_dirs`]: what status, doctor and onboarding list as found but not registered.
     pub(crate) unregistered: Vec<PathBuf>,
-    /// The logins `af provider detect --apply` would register, each with its kind
-    /// ([`registrable_logins`]): the only case `af doctor` offers it as a fix (#331 D5). Probing
-    /// runs the CLIs, so only doctor fills it; [`read_registry_entries`] leaves it empty.
+    /// The logins `af provider detect --apply` would register that the one status probe doctor
+    /// runs already established, each with its kind ([`RegistryRead::learn`]): the only case
+    /// `af doctor` offers it as a fix (#331 D5). Nothing is probed to fill it, so a sibling
+    /// directory no status probe asks about is never in it (ADR-0206); [`read_registry_entries`]
+    /// leaves it empty.
     pub(crate) registrable: Vec<(PathBuf, &'static str)>,
+    /// Those of `unregistered` an ambient context of that status probe names: what it asked a CLI
+    /// about, or found no login marker in, as against a sibling directory nothing asked about.
+    pub(crate) asked: Vec<PathBuf>,
 }
 
 /// The auth directories a names-only scan finds (the selector variables', the CLIs' defaults and
@@ -562,6 +574,34 @@ pub(crate) fn unregistered_dirs<'a>(named: impl IntoIterator<Item = &'a Path>) -
 }
 
 impl RegistryRead {
+    /// What `statuses`, the status probe doctor already ran, learned about the directories found
+    /// but not registered: each one an ambient context names is `asked`, and one its CLI on
+    /// `PATH` reports logged in, in a private directory, is `registrable`, as `af provider detect
+    /// --apply` registers it. It starts no CLI and reads no credential: a sibling directory stays
+    /// neither (ADR-0206).
+    pub(crate) fn learn(&mut self, statuses: &[ProviderStatus]) {
+        for status in statuses
+            .iter()
+            .filter(|status| is_ambient_candidate(status))
+        {
+            let dir = Path::new(&status.auth_context);
+            if !self.unregistered.iter().any(|found| found == dir)
+                || self.asked.iter().any(|asked| asked == dir)
+            {
+                continue;
+            }
+            self.asked.push(dir.to_path_buf());
+            let kind = match status.kind.as_str() {
+                "claude" => "claude",
+                "codex" => "codex",
+                _ => continue,
+            };
+            if status.status == "authenticated" && validate_private_auth_directory(dir).is_ok() {
+                self.registrable.push((dir.to_path_buf(), kind));
+            }
+        }
+    }
+
     /// The registered IDs of one kind, in registry order.
     pub(crate) fn ids_of(&self, kind: &str) -> Vec<&str> {
         self.registered
@@ -600,23 +640,21 @@ pub(crate) fn read_registry_entries() -> RegistryRead {
         candidates,
         unregistered,
         registrable: Vec::new(),
+        asked: Vec::new(),
     }
-}
-
-/// The logins `af provider detect --apply` would register now, each with its kind: an
-/// authenticated login, probed by an available CLI of its kind on `PATH`, in a safe directory
-/// no registry entry names. A login marker alone is not one (#331 D5).
-pub(crate) fn registrable_logins() -> Vec<(PathBuf, &'static str)> {
-    detect::registrable_logins()
-        .into_iter()
-        .map(|(dir, kind)| (dir, kind.name()))
-        .collect()
 }
 
 /// Every Provider's status as `af provider status` probes it, token-free, without the usage
 /// probe: what `af onboard --probe` and `af doctor` show.
 pub(crate) fn probed_statuses() -> Vec<ProviderStatus> {
     discover_with_cancel(&AtomicBool::new(false), UsageProbe::Skip).providers
+}
+
+/// [`probed_statuses`] with the logged-out ambient contexts the status table leaves out kept
+/// (ADR-0141): `af doctor` says what the one probe it ran learned about a directory found but not
+/// registered, and probes nothing more for it (ADR-0206).
+pub(crate) fn probed_statuses_with_ambient() -> Vec<ProviderStatus> {
+    discover_every_context(&AtomicBool::new(false), UsageProbe::Skip).providers
 }
 
 /// The line a successful `setup` or `add` ends with: the next step of a first run.
@@ -7325,6 +7363,69 @@ auth_dir = "{}"
             thread::sleep(Duration::from_millis(20));
         }
         panic!("Codex app-server descendant {process} survived probe cleanup");
+    }
+
+    /// Issue #358 review: what doctor learns from its one status probe starts no CLI. Only an
+    /// ambient context's row says anything about a directory found but not registered: a logged-in
+    /// one in a private directory is registrable, any other it names is asked, and a sibling no
+    /// row names stays neither, whatever a status row of another kind or a registered Provider says.
+    #[test]
+    fn registry_learns_only_what_the_ambient_status_probe_said() {
+        let temp = tempfile::tempdir().unwrap();
+        let root = fs::canonicalize(temp.path()).unwrap();
+        let dir = |name: &str, mode: u32| {
+            let dir = root.join(name);
+            fs::create_dir(&dir).unwrap();
+            fs::set_permissions(&dir, fs::Permissions::from_mode(mode)).unwrap();
+            dir
+        };
+        let (ambient, shared, sibling) = (
+            dir("codex-home", 0o700),
+            dir("claude-shared", 0o777),
+            dir(".codex-spare", 0o700),
+        );
+        let row = |id: &str, kind: &str, context: &Path, status: &str| ProviderStatus {
+            id: id.into(),
+            kind: kind.into(),
+            auth_context: context.display().to_string(),
+            source: if id.ends_with("-ambient") {
+                "ambient CLI candidate; unstable local context label".into()
+            } else {
+                "registry".into()
+            },
+            status: status.into(),
+            auth_type: "-".into(),
+            subscription: "-".into(),
+            limits: Vec::new(),
+            usage: UsageState::NotRequested,
+            detail: String::new(),
+            disabled_until: None,
+        };
+        let mut registry = RegistryRead {
+            path: None,
+            warning: None,
+            registered: Vec::new(),
+            candidates: Vec::new(),
+            unregistered: vec![ambient.clone(), shared.clone(), sibling.clone()],
+            registrable: Vec::new(),
+            asked: Vec::new(),
+        };
+        registry.learn(&[
+            row("codex-ambient", "codex", &ambient, "authenticated"),
+            row("claude-ambient", "claude", &shared, "authenticated"),
+            row("codex-main", "codex", &sibling, "authenticated"),
+        ]);
+        assert_eq!(registry.registrable, [(ambient.clone(), "codex")]);
+        assert_eq!(registry.asked, [ambient.clone(), shared]);
+
+        let mut registry = RegistryRead {
+            registrable: Vec::new(),
+            asked: Vec::new(),
+            ..registry
+        };
+        registry.learn(&[row("codex-ambient", "codex", &ambient, "not authenticated")]);
+        assert!(registry.registrable.is_empty());
+        assert_eq!(registry.asked, [ambient]);
     }
 
     #[test]

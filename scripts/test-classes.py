@@ -772,6 +772,10 @@ def main():
     elif args.command == 'build-inventory':
         build_inventory(read(args.plan), args.kind, Path(args.output), args.build_scope)
     elif args.command == 'execute':
+        # Local entry (check-classes, verify.sh --profile fast): every selected class, never the
+        # live container probes. The validate.yml container-probes job runs them for every e2e
+        # selection and aggregate requires its success; `make review-kernel-container-probes`
+        # runs them explicitly and fails without a container runtime.
         plan = validate_plan(read(args.plan))
         evidence_root = (Path(os.environ['AF_GATE_NEXTEST_RUN']) / 'classes'
                          if os.getenv('AF_GATE_NEXTEST_RUN') else ROOT / 'target/test-classes/local')
@@ -780,8 +784,6 @@ def main():
                   '--class', kind, '--output', str(evidence_root / kind),
                   '--threads', str(args.threads), '--build-scope', 'plan'], 'class-' + kind)
             print(summary(read(evidence_root / kind / 'report.json')))
-        if 'e2e' in plan['selected']:
-            call(['make', 'review-kernel-container-probes'], 'container-probes')
     elif args.command == 'release-plan':
         write(args.output, release_plan(Path(args.annotation).read_text(), args.sha, args.version))
     elif args.command == 'aggregate':

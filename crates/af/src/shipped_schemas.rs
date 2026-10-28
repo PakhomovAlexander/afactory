@@ -29,6 +29,7 @@ pub(crate) const SCHEMAS: &[(&str, &str, &str)] = &[
     schema!("provider-models", 1),
     schema!("provider-setup", 2),
     schema!("provider-status", 4),
+    schema!("review-campaigns", 1),
     schema!("review-ledger", 1),
     schema!("review-render", 2),
     schema!("review-report", 5),
@@ -48,6 +49,7 @@ pub(crate) const SCHEMAS: &[(&str, &str, &str)] = &[
     schema!("task-report", 3),
     schema!("task-selection", 3),
     schema!("task-status", 2),
+    schema!("telemetry-tail", 1),
 ];
 
 /// `af schema show [ID]`: the schema `id` names, byte for byte, or without an id every id with
@@ -170,6 +172,114 @@ mod tests {
             assert_eq!(constant, *id, "{file}");
             assert!(!title(text).is_empty(), "{file} has no title");
         }
+    }
+
+    /// The shipped schema of `id`, resolved against every schema under `schemas/`.
+    fn validator(id: &str) -> jsonschema::Validator {
+        let directory = std::env::var_os("AF_WORKSPACE_ROOT")
+            .map(std::path::PathBuf::from)
+            .unwrap_or_else(|| std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../.."))
+            .join("schemas");
+        let mut registry = jsonschema::Registry::new();
+        for entry in std::fs::read_dir(directory).unwrap() {
+            let path = entry.unwrap().path();
+            if path.extension().and_then(|extension| extension.to_str()) != Some("json") {
+                continue;
+            }
+            let value: serde_json::Value =
+                serde_json::from_slice(&std::fs::read(path).unwrap()).unwrap();
+            let Some(resource) = value["$id"].as_str().map(str::to_owned) else {
+                continue;
+            };
+            registry = registry
+                .add(resource, jsonschema::Resource::from_contents(value))
+                .unwrap();
+        }
+        let (_, _, text) = SCHEMAS
+            .iter()
+            .find(|(shipped, _, _)| *shipped == id)
+            .unwrap();
+        let registry = registry.prepare().unwrap();
+        jsonschema::options()
+            .with_registry(&registry)
+            .build(&serde_json::from_str(text).unwrap())
+            .unwrap()
+    }
+
+    /// Issue #358: the `af/review-campaigns@1` document `af review campaigns --json` prints is
+    /// the shipped schema's, empty and populated: Campaigns new, open and closed with a Round, the
+    /// optional fields present and absent, and a problem. A field the document does not have, or
+    /// another document's id, is refused.
+    #[test]
+    fn the_campaigns_listing_is_valid_against_its_shipped_schema() {
+        let schema = validator("af/review-campaigns@1");
+        let temp = tempfile::tempdir().unwrap();
+        let root = std::fs::canonicalize(temp.path())
+            .unwrap()
+            .join("campaigns");
+        crate::option_tests::write_campaign_rounds(&root.join("pr-42"), "pr-42", &[(1, 1)]);
+        crate::option_tests::write_campaign_opening(&root.join("fresh"), "fresh");
+        std::fs::create_dir_all(root.join("broken/events.sqlite")).unwrap();
+        let enumeration = crate::enumerate_campaigns(&root, true).unwrap();
+        let mut view = crate::CampaignListView {
+            schema: "af/review-campaigns@1",
+            campaigns: enumeration.campaigns,
+            problems: enumeration.problems,
+        };
+        assert_eq!(view.campaigns.len(), 2);
+        assert_eq!(view.problems.len(), 1);
+        // What a fixture Store cannot record without running reviewers: a closed Round.
+        let closed = &mut view.campaigns[1];
+        closed.rounds = vec![crate::ReportRoundView {
+            run: 1,
+            round: Some(1),
+            epoch: Some(1),
+            verdict: "pass".into(),
+            task_chargeable_tokens_at_report: 1_234_u128.into(),
+            task_accounting: review_core::TaskReviewAccountingV1 {
+                task_id: "review".into(),
+                task_revision_id: format!("sha256:{}", "a".repeat(64)),
+                plan_id: format!("sha256:{}", "b".repeat(64)),
+                task_report_id: format!("sha256:{}", "c".repeat(64)),
+                through_sequence: 7,
+            },
+        }];
+        closed.last_closed_round = Some(1);
+        closed.last_closed_epoch = Some(1);
+        closed.verdict = Some("pass".into());
+        closed.wall_ms = Some(4_250);
+        let document = serde_json::to_value(&view).unwrap();
+        for field in ["state_bytes", "last_subject_id", "rounds", "verdict"] {
+            assert!(
+                document["campaigns"][1].get(field).is_some(),
+                "{field}: {document}"
+            );
+        }
+        assert!(
+            document["campaigns"][0].get("verdict").is_none(),
+            "{document}"
+        );
+        let errors: Vec<String> = schema
+            .iter_errors(&document)
+            .map(|e| e.to_string())
+            .collect();
+        assert!(errors.is_empty(), "{errors:?}\n{document}");
+        let empty =
+            serde_json::json!({"schema": "af/review-campaigns@1", "campaigns": [], "problems": []});
+        assert!(schema.is_valid(&empty));
+
+        let mut extra = document.clone();
+        extra["campaigns"][0]["latest_round"] = serde_json::json!(1);
+        assert!(!schema.is_valid(&extra));
+        let mut other = empty.clone();
+        other["schema"] = serde_json::json!("af/review-report@5");
+        assert!(!schema.is_valid(&other));
+        let mut unnamed = document;
+        unnamed["problems"][0]
+            .as_object_mut()
+            .unwrap()
+            .remove("reason");
+        assert!(!schema.is_valid(&unnamed));
     }
 
     #[test]

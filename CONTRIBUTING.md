@@ -82,8 +82,9 @@ If you touch `crates/review-sandbox`, also run the live probes:
 make review-kernel-container-probes
 ```
 
-They need a usable Docker daemon and stay outside `make check` because a missing daemon must
-fail loudly there, never skip.
+They need a usable Docker daemon and stay outside `make check` and the local class execution
+because a missing daemon must fail loudly there, never skip. CI runs them in its own
+`container-probes` job for every e2e selection; a local gate pass says nothing about them.
 
 ## Flaky tests and the isolation rerun
 
@@ -368,7 +369,11 @@ selective development use `make check-fast` (functional, e2e, uix), `make check-
 including perf), or `make test-plan TEST_LABEL_FILE=event.json`
 then `make check-classes`. The JSON file has the GitHub event shape
 `{"pull_request":{"labels":[{"name":"test:functional"},{"name":"test:e2e"}]}}`.
-Selective e2e includes live containers and requires Docker. Fmt/lint and policy checks always run.
+Local class execution (`make check-classes`, `make check-fast`, `make check-full` and the Task
+gate) runs every selected class but never the live container probes, so it needs no Docker. CI's
+`container-probes` job runs them whenever e2e is selected, and validation fails unless it
+succeeds; run `make review-kernel-container-probes` yourself for local probe evidence. Fmt/lint
+and policy checks always run.
 
 Every PR defaults to functional + e2e + uix, including AF gate and release PRs. Any positive
 `test:functional`, `test:e2e`, `test:uix`, `test:perf`

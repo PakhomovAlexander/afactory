@@ -1,0 +1,60 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:af:schema:review-campaigns-view:1",
+  "title": "af/review-campaigns@1 Campaign listing",
+  "description": "Every Campaign Store under one state root, by label, and each directory there that could not be read as one. A Campaign's rounds are the Rounds its Run Reports closed, each with the Task's frozen cumulative charge at that report, never summed; findings is absent when its Ledger does not rebuild, state_bytes unless --sizes asked for it.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema", "campaigns", "problems"],
+  "properties": {
+    "schema": {"const": "af/review-campaigns@1"},
+    "campaigns": {"type": "array", "items": {"$ref": "#/$defs/campaign"}},
+    "problems": {"type": "array", "items": {"$ref": "#/$defs/problem"}}
+  },
+  "$defs": {
+    "count": {"type": "integer", "minimum": 0},
+    "digest": {"$ref": "urn:af:schema:task-contracts:1#/$defs/digest"},
+    "campaign": {
+      "type": "object", "additionalProperties": false,
+      "required": ["id", "label", "authority_snapshot_id", "campaign_manifest_id", "subject_kind", "rounds", "state_dir"],
+      "properties": {
+        "id": {"type": "string", "pattern": "^c-[0-9a-f]{64}$"},
+        "label": {"type": "string", "minLength": 1},
+        "authority_snapshot_id": {"$ref": "#/$defs/digest"},
+        "campaign_manifest_id": {"$ref": "#/$defs/digest"},
+        "subject_kind": {"enum": ["diff", "whole-tree"]},
+        "base_snapshot_id": {"$ref": "#/$defs/digest"},
+        "last_subject_id": {"$ref": "#/$defs/digest"},
+        "last_closed_round": {"$ref": "#/$defs/count"},
+        "last_closed_epoch": {"$ref": "#/$defs/count"},
+        "verdict": {"type": "string"},
+        "rounds": {"type": "array", "items": {"$ref": "urn:af:schema:review-report-view:5#/$defs/round"}},
+        "wall_ms": {"$ref": "#/$defs/count"},
+        "findings": {
+          "type": "object", "additionalProperties": false,
+          "required": ["open", "pending_verification", "fixed", "rejected", "wontfix", "contested"],
+          "properties": {
+            "open": {"$ref": "#/$defs/count"},
+            "pending_verification": {"$ref": "#/$defs/count"},
+            "fixed": {"$ref": "#/$defs/count"},
+            "rejected": {"$ref": "#/$defs/count"},
+            "wontfix": {"$ref": "#/$defs/count"},
+            "contested": {"$ref": "#/$defs/count"}
+          }
+        },
+        "state_dir": {"type": "string"},
+        "state_bytes": {"$ref": "#/$defs/count"},
+        "last_activity_unix_ms": {"$ref": "#/$defs/count"}
+      },
+      "$comment": "The state directory's name beneath the root; last_activity_unix_ms is the newest write to its event store, what af review gc ages by."
+    },
+    "problem": {
+      "type": "object", "additionalProperties": false,
+      "required": ["directory", "reason"],
+      "properties": {
+        "directory": {"type": "string"},
+        "reason": {"type": "string"}
+      }
+    }
+  }
+}

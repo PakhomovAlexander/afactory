@@ -1544,7 +1544,7 @@ fn status_doctor_and_onboarding_list_the_same_unregistered_directories() {
         providers["detail"]
             .as_str()
             .unwrap()
-            .ends_with(&format!("; found but not registered: {shown}")),
+            .ends_with(&format!("; found but not registered (not probed): {shown}")),
         "{providers}"
     );
 
@@ -1728,4 +1728,370 @@ fn detect_names_the_missing_kind_and_the_rerun_as_typed_fields() {
         ),
         "{document}"
     );
+}
+
+/// The `providers` row of `af doctor --json`, the document valid against the published schema,
+/// with `CODEX_HOME` set when one is given.
+fn doctor_providers(machine: &Machine, codex_home: Option<&Path>) -> Value {
+    let mut command = machine.command(&["doctor", "--json"]);
+    if let Some(dir) = codex_home {
+        command.env("CODEX_HOME", dir);
+    }
+    let output = command.output().unwrap();
+    let document: Value = serde_json::from_str(out(&output).trim())
+        .unwrap_or_else(|error| panic!("{error}: {}\n{}", out(&output), err(&output)));
+    crate::schemas::valid(&crate::schemas::validator("doctor-v3.json"), &document);
+    document["checks"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|check| check["id"] == "providers")
+        .unwrap()
+        .clone()
+}
+
+fn detail(check: &Value) -> &str {
+    check["detail"].as_str().unwrap()
+}
+
+/// One check of `af doctor --json` run by `command`, the document valid against its schema.
+fn doctor_check(mut command: Command, id: &str) -> Value {
+    let output = command.output().unwrap();
+    let document: Value = serde_json::from_str(out(&output).trim())
+        .unwrap_or_else(|error| panic!("{error}: {}\n{}", out(&output), err(&output)));
+    crate::schemas::valid(&crate::schemas::validator("doctor-v3.json"), &document);
+    document["checks"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|check| check["id"] == id)
+        .unwrap_or_else(|| panic!("no {id} check: {document}"))
+        .clone()
+}
+
+/// Issue #358 review: names-only discovery never probes a sibling directory to decide whether
+/// to offer `af provider detect --apply`, with no Provider registered, with a Worker needing a
+/// kind none is, or with a registry that does not read. A sibling holding a login the fake
+/// Codex would report is `not probed`, left to `af provider detect`, which does ask about it;
+/// `--apply` is offered only for an ambient login the one status probe doctor runs established.
+/// The fake Codex logs every directory it is asked about.
+#[test]
+fn doctor_never_probes_a_sibling_context_to_offer_detect_apply() {
+    let machine = Machine::new();
+    machine.install("codex", CODEX);
+    let spare = machine.dir(".codex-spare", &["auth.json", "logged-in"]);
+    let never_probed = |when: &str| {
+        assert!(
+            !spare.join("probed").exists(),
+            "{when}: doctor asked the CLI about {}, which only a names-only scan found",
+            spare.display()
+        );
+    };
+
+    // An empty registry: no fix doctor can promise, and the sibling is named as not probed.
+    let providers = doctor_check(machine.command(&["doctor", "--json"]), "providers");
+    never_probed("empty registry");
+    assert_eq!(providers["status"], "warn", "{providers}");
+    assert_eq!(providers["fix"], Value::Null, "{providers}");
+    assert_eq!(
+        providers["hint"],
+        "no login was found to register: ~/.codex-spare not probed (af provider detect inspects \
+         them); log in and register one yourself at a private terminal: af provider setup \
+         codex-main --kind codex --login",
+        "{providers}"
+    );
+    // The inspection doctor names asks about it, and finds the login.
+    let document = detected(&machine.af(&["provider", "detect", "--json"]));
+    assert_eq!(candidate(&document, &spare)["auth"], "authenticated");
+    std::fs::remove_file(spare.join("probed")).unwrap();
+
+    // Control: a logged-in CODEX_HOME, which the status probe asks about, is what --apply is
+    // offered for; the sibling is still never asked.
+    let ambient = machine.dir("ambient/codex", &["auth.json", "logged-in"]);
+    let mut command = machine.command(&["doctor", "--json"]);
+    command.env("CODEX_HOME", &ambient);
+    let providers = doctor_check(command, "providers");
+    never_probed("logged-in CODEX_HOME");
+    assert!(ambient.join("probed").exists(), "{providers}");
+    assert_eq!(
+        providers["fix"], "af provider detect --apply",
+        "{providers}"
+    );
+    // Logged out there, nothing is offered, and doctor says which directory it asked.
+    std::fs::remove_file(ambient.join("logged-in")).unwrap();
+    let mut command = machine.command(&["doctor", "--json"]);
+    command.env("CODEX_HOME", &ambient);
+    let providers = doctor_check(command, "providers");
+    never_probed("logged-out CODEX_HOME");
+    assert_eq!(providers["fix"], Value::Null, "{providers}");
+    assert!(
+        providers["hint"].as_str().unwrap().starts_with(
+            "no login was found to register: no CLI on PATH reports a login in ~/ambient/codex; \
+             ~/.codex-spare not probed (af provider detect inspects them)"
+        ),
+        "{providers}"
+    );
+
+    // A registry that does not read: it fails, no fix, and still no sibling is probed.
+    let registry = machine.home.join(".config/af/providers.toml");
+    std::fs::create_dir_all(registry.parent().unwrap()).unwrap();
+    std::fs::write(&registry, "version = 1\n[[providers]\n").unwrap();
+    let providers = doctor_check(machine.command(&["doctor", "--json"]), "providers");
+    never_probed("unreadable registry");
+    assert_eq!(providers["status"], "fail", "{providers}");
+    assert_eq!(providers["fix"], Value::Null, "{providers}");
+    std::fs::remove_file(&registry).unwrap();
+
+    // A Worker needing codex, with only a working claude Provider registered: the project
+    // check names the sibling as not probed and offers no --apply it cannot promise.
+    machine.install("claude", CLAUDE);
+    machine.link("git");
+    let claude = machine.dir(".config/claude-main", &[".claude.json", "logged-in"]);
+    let added = machine.af(&[
+        "provider",
+        "add",
+        "claude-main",
+        "--kind",
+        "claude",
+        "--auth-dir",
+        claude.to_str().unwrap(),
+    ]);
+    assert_eq!(code(&added), 0, "{}", err(&added));
+    let repo = machine.root.join("repo");
+    std::fs::create_dir_all(&repo).unwrap();
+    let mut init = Command::new(machine.bin.join("git"));
+    init.args(["init", "-q", "-b", "main"])
+        .current_dir(&repo)
+        .env("HOME", &machine.home)
+        .env("GIT_CONFIG_NOSYSTEM", "1");
+    assert!(init.status().unwrap().success());
+    let mut onboard = machine.command(&[
+        "onboard",
+        "--apply",
+        "--gate",
+        "check=git --version",
+        "--runner",
+        "codex",
+    ]);
+    onboard.current_dir(&repo);
+    let onboarded = onboard.output().unwrap();
+    assert_eq!(code(&onboarded), 0, "{}", err(&onboarded));
+    let doctor_in_repo = |codex_home: Option<&Path>| {
+        let mut command = machine.command(&["doctor", "--json"]);
+        command.current_dir(&repo);
+        if let Some(dir) = codex_home {
+            command.env("CODEX_HOME", dir);
+        }
+        command
+    };
+    let project = doctor_check(doctor_in_repo(None), "project");
+    never_probed("Worker needing codex");
+    assert_eq!(project["fix"], Value::Null, "{project}");
+    let hint = project["hint"].as_str().unwrap();
+    assert!(
+        hint.contains(
+            "needs a codex Provider and no codex login was found to register: ~/.codex-spare not \
+             probed (af provider detect inspects them); log in and register one yourself at a \
+             private terminal: af provider setup codex-main --kind codex --login"
+        ),
+        "{hint}"
+    );
+    let providers = doctor_check(doctor_in_repo(None), "providers");
+    assert_eq!(providers["status"], "ok", "{providers}");
+    assert!(
+        detail(&providers).contains("~/.codex-spare (not probed)"),
+        "{providers}"
+    );
+    never_probed("Worker needing codex, providers row");
+    // Control: a logged-in CODEX_HOME is the codex login --apply registers.
+    std::fs::write(ambient.join("logged-in"), "").unwrap();
+    let project = doctor_check(doctor_in_repo(Some(&ambient)), "project");
+    never_probed("Worker needing codex, logged-in CODEX_HOME");
+    assert_eq!(project["fix"], "af provider detect --apply", "{project}");
+}
+
+/// Issue #358: two registered Providers that work, and a `CODEX_HOME` that names a separate
+/// context holding only `config.toml`, logged out. `detect --apply` rightly leaves that context
+/// alone, so doctor must not warn about it with that same fix for ever: the row is `ok`, and the
+/// context is listed as optional and logged out, as the status probe doctor already ran found it.
+/// A marked sibling no probe asked about is `not probed`, and doctor does not hand it to its CLI
+/// (ADR-0206); nor an empty sibling or one another user may write. The command doctor names for
+/// them is an inspection, and what it says that command does is what detect does: the marked
+/// sibling is asked, the empty one only under `--all`, the unsafe one never. The controls: a logged-in `CODEX_HOME` is named with the `--apply` that registers
+/// it, and a registered Provider that is logged out, has lost its marker, or whose CLI is gone
+/// still warns, each with the fix that clears it or none when no login can.
+#[test]
+fn doctor_lists_optional_unregistered_contexts_without_a_warning_loop() {
+    let machine = Machine::new();
+    machine.install("claude", CLAUDE);
+    let codex_cli = machine.install("codex", CODEX);
+    let claude = machine.dir(".config/claude-main", &[".claude.json", "logged-in"]);
+    let codex = machine.dir(".codex-main", &["auth.json", "logged-in"]);
+    for (id, kind, dir) in [
+        ("claude-main", "claude", &claude),
+        ("codex-main", "codex", &codex),
+    ] {
+        let added = machine.af(&[
+            "provider",
+            "add",
+            id,
+            "--kind",
+            kind,
+            "--auth-dir",
+            dir.to_str().unwrap(),
+        ]);
+        assert_eq!(code(&added), 0, "{}", err(&added));
+    }
+    let ambient = machine.dir("ambient/codex", &["config.toml"]);
+    let spare = machine.dir(".codex-spare", &["auth.json"]);
+    let fresh = machine.dir(".codex-new", &[]);
+    let shared = machine.dir(".codex-shared", &["auth.json", "logged-in"]);
+    std::fs::set_permissions(&shared, std::fs::Permissions::from_mode(0o777)).unwrap();
+    let ambient_shown = "~/ambient/codex";
+
+    let providers = doctor_providers(&machine, Some(&ambient));
+    assert_eq!(providers["status"], "ok", "{providers}");
+    assert_eq!(providers["fix"], Value::Null, "{providers}");
+    assert_eq!(providers["hint"], Value::Null, "{providers}");
+    assert_eq!(
+        detail(&providers),
+        format!(
+            "claude-main (claude, authenticated), codex-main (codex, authenticated); optional, \
+             found but not registered: {ambient_shown} (logged out), ~/.codex-new, \
+             ~/.codex-shared, ~/.codex-spare (not probed); to inspect the not-probed ones: af \
+             provider detect, which asks a CLI only about a safe directory holding a login \
+             marker; to also ask about a safe empty one: af provider detect --all; an unsafe or \
+             missing one is never asked"
+        ),
+        "{providers}"
+    );
+    for dir in [&spare, &fresh, &shared] {
+        assert!(
+            !dir.join("probed").exists(),
+            "doctor asked the CLI about {}, which only a names-only scan found",
+            dir.display()
+        );
+    }
+
+    // The inspection doctor names: detect asks about the marked sibling and leaves the empty one
+    // to `--all`, which still never asks about the unsafe one.
+    let mut inspect = machine.command(&["provider", "detect", "--json"]);
+    inspect.env("CODEX_HOME", &ambient);
+    let document = detected(&inspect.output().unwrap());
+    assert_eq!(candidate(&document, &spare)["auth"], "not_authenticated");
+    assert!(spare.join("probed").exists());
+    let empty = candidate(&document, &fresh);
+    assert_eq!(empty["auth"], "not_probed", "{empty}");
+    assert_eq!(empty["suggested"]["command"], "af provider detect --all");
+    assert!(entries(&fresh).is_empty(), "{:?}", entries(&fresh));
+    let unsafe_row = candidate(&document, &shared);
+    assert_eq!(unsafe_row["safe"], false, "{unsafe_row}");
+    assert_eq!(unsafe_row["auth"], "not_probed", "{unsafe_row}");
+    assert_eq!(unsafe_row["suggested"]["action"], "fix_safety");
+    assert!(!shared.join("probed").exists());
+    let mut all = machine.command(&["provider", "detect", "--all", "--json"]);
+    all.env("CODEX_HOME", &ambient);
+    let document = detected(&all.output().unwrap());
+    assert_eq!(candidate(&document, &fresh)["auth"], "not_authenticated");
+    assert_eq!(entries(&fresh), ["probed"]);
+    assert_eq!(candidate(&document, &shared)["auth"], "not_probed");
+    assert!(!shared.join("probed").exists());
+    assert_eq!(machine.registered(), ["claude-main", "codex-main"]);
+    // The inspection registered nothing and changed no answer: doctor's row is the same.
+    let inspected = doctor_providers(&machine, Some(&ambient));
+    assert_eq!(inspected["status"], "ok", "{inspected}");
+    assert_eq!(detail(&inspected), detail(&providers), "{inspected}");
+
+    // detect --apply registers nothing here, and doctor says the same thing again: no loop.
+    let mut apply = machine.command(&["provider", "detect", "--apply"]);
+    apply.env("CODEX_HOME", &ambient);
+    let applied = apply.output().unwrap();
+    assert_eq!(code(&applied), 0, "{}\n{}", out(&applied), err(&applied));
+    assert_eq!(machine.registered(), ["claude-main", "codex-main"]);
+    let again = doctor_providers(&machine, Some(&ambient));
+    assert_eq!(again["status"], "ok", "{again}");
+    assert!(
+        detail(&again).contains(&format!("{ambient_shown} (logged out)")),
+        "{again}"
+    );
+
+    // Control: a logged-in CODEX_HOME is a login detect --apply registers, and once it has, the
+    // row no longer lists it.
+    std::fs::write(ambient.join("logged-in"), "").unwrap();
+    let found = doctor_providers(&machine, Some(&ambient));
+    assert_eq!(found["status"], "ok", "{found}");
+    assert!(
+        detail(&found).contains(&format!("{ambient_shown} (logged in)"))
+            && detail(&found)
+                .ends_with("; to register the logged-in ones: af provider detect --apply"),
+        "{found}"
+    );
+    let mut apply = machine.command(&["provider", "detect", "--apply"]);
+    apply.env("CODEX_HOME", &ambient);
+    let applied = apply.output().unwrap();
+    assert_eq!(code(&applied), 0, "{}\n{}", out(&applied), err(&applied));
+    assert_eq!(machine.registered().len(), 3, "{}", machine.registry());
+    let registered = doctor_providers(&machine, Some(&ambient));
+    assert_eq!(registered["status"], "ok", "{registered}");
+    assert!(!detail(&registered).contains(ambient_shown), "{registered}");
+
+    // Control: a registered Provider that is logged out is the warning, with its login.
+    std::fs::remove_file(claude.join("logged-in")).unwrap();
+    let logged_out = doctor_providers(&machine, None);
+    assert_eq!(logged_out["status"], "warn", "{logged_out}");
+    assert!(
+        detail(&logged_out).contains("claude-main (claude, not authenticated)"),
+        "{logged_out}"
+    );
+    assert_eq!(
+        logged_out["fix"],
+        "af provider setup claude-main --kind claude --login"
+    );
+    std::fs::write(claude.join("logged-in"), "").unwrap();
+
+    // Control: a registered directory that lost its login marker is not probed, and logging in
+    // there is its fix.
+    for marker in ["auth.json", "logged-in"] {
+        std::fs::remove_file(codex.join(marker)).unwrap();
+    }
+    let unmarked = doctor_providers(&machine, None);
+    assert_eq!(unmarked["status"], "warn", "{unmarked}");
+    assert!(
+        detail(&unmarked).contains("codex-main (codex, not probed)"),
+        "{unmarked}"
+    );
+    assert_eq!(
+        unmarked["fix"],
+        "af provider setup codex-main --kind codex --login"
+    );
+    for marker in ["auth.json", "logged-in"] {
+        std::fs::write(codex.join(marker), "").unwrap();
+    }
+
+    // Control: with the codex CLI gone no login fixes codex-main, and none is offered.
+    std::fs::remove_file(&codex_cli).unwrap();
+    let missing = doctor_providers(&machine, None);
+    assert_eq!(missing["status"], "warn", "{missing}");
+    assert!(
+        detail(&missing).contains("codex-main (codex, installation failed)"),
+        "{missing}"
+    );
+    assert_eq!(missing["fix"], Value::Null, "{missing}");
+    assert!(
+        missing["hint"]
+            .as_str()
+            .unwrap()
+            .starts_with("the codex CLI is not on PATH or does not start, so no login fixes it"),
+        "{missing}"
+    );
+
+    // Control: an unreadable registry fails, and no command is offered that it would stop.
+    std::fs::write(
+        machine.home.join(".config/af/providers.toml"),
+        "version = 1\n[[providers]\n",
+    )
+    .unwrap();
+    let unreadable = doctor_providers(&machine, None);
+    assert_eq!(unreadable["status"], "fail", "{unreadable}");
+    assert_eq!(unreadable["fix"], Value::Null, "{unreadable}");
 }

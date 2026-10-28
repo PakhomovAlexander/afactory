@@ -32,8 +32,9 @@ your change --> your checks -+                            +--> verdict and findi
 - **The pipeline is shared like code.** af reads `.af/` only from a commit and pins every Worker
   and its own release by digest, so the whole team runs the same review and a change to it is a
   diff you review.
-- **Agents can drive it.** Most commands print one JSON document with `--json`, exit codes are
-  stable, and a Task's state names the next command: see [For agents](#for-agents).
+- **Agents can drive it.** A command whose `--help` lists `--json` prints JSON for scripts,
+  exit codes are stable, and a Task's state names the next command. [For agents](#for-agents)
+  says what each prints: one document, or JSON Lines from `af telemetry tail --json`.
 
 **Status:** public alpha. A release reads only the state and configuration it writes itself, so
 finish or discard running Campaigns and Tasks before you upgrade. Each release's entry in
@@ -59,8 +60,12 @@ are at any point, token-free.
    Releases are built for macOS on Apple silicon and for Linux on x86_64 and arm64.
    `curl … | sh -s -- --rc` (or `curl … | AF_INSTALL_CHANNEL=rc sh`) installs the newest
    release, pre-releases included, and `curl … | AF_INSTALL_VERSION=X.Y.Z sh` an exact one. The
-   installer ends with the next steps and, when its bin directory is not on `PATH`, the line that
-   puts it there for your shell. Signatures, updates, source builds and removal are in
+   installer ends with the next steps and, when its bin directory is not on `PATH`, says how to
+   put it there: a line to paste for fish, bash or zsh, the directory to add for another shell.
+   A bin directory with a `:` gets no such line, since a `:` separates `PATH` entries, and one
+   with a control character gets none either, since the installer will not print a line it
+   cannot show legibly: for both, set `XDG_BIN_HOME` to another directory and install again.
+   Signatures, updates, source builds and removal are in
    [docs/self-management.md](docs/self-management.md).
 
 2. **Connect a Provider**, the `claude` or `codex` CLI login that model Workers run under:
@@ -126,6 +131,22 @@ for convergence review, lets the same Campaign review your fixes in further Roun
 pipeline's convergence policy is met or its Round limit is reached
 ([ADR-0037](docs/adr/0037-default-campaigns-to-one-round-light-review.md)). `af help concepts`
 explains Task, Worker, Attempt, Snapshot and the other words in two sentences each.
+
+### Findings that look alike
+
+Two reviewers may report the same line with different titles or severities. Looking alike does
+not make them one Finding: a Finding's identity comes from its first Report, never from its path
+or title, and af never merges claims that only look alike
+([ADR-0006](docs/adr/0006-finding-identity-is-path-independent.md)). A path, a line, a title or
+similar wording is never enough for another Report to join a Finding, so such Reports stay
+separate Findings unless one of two things attaches them: an explicit relation, such as a
+reviewer corroborating that Finding's ID, or the exact `rule_id` and `occurrence_key` of one of
+its Reports, from any reviewer in any Round; the Finding then keeps every Report. When you judge
+two remaining Findings to be one defect, list them with `af review ledger --campaign NAME`,
+then, after the Round closes, run `af review group --campaign NAME FROM INTO`. Both IDs, every
+Report and each Report's own verification stay; the ledger lists one Finding under INTO with the higher
+severity, `af review show --campaign NAME FROM` shows the group, and
+`af review ungroup --campaign NAME FROM INTO` undoes it.
 
 ### Updating and removing
 
@@ -217,12 +238,18 @@ Rules for a coding agent, or a script, that drives af for someone:
 - **Plan first.** `af review plan …` and `af task plan --file …` are token-free. A review plan
   needs no login; a Task plan with model Workers checks that their Providers are logged in.
   Show the plan before anything spends.
-- **Read JSON, not prose.** Most commands take `--json` and print one document on stdout, with
-  progress on stderr; `af review report` and `af review campaigns` take `--format json`, and a
-  command's `--help` names its output flags. Branch on the document's `schema`: most refusals
-  are `af/error@2`, while `af provider` commands and a refused Task plan print their own
-  documents (`af help json`). `af telemetry tail --json` prints one object per line, and
-  `af config show --json` a document with no `schema`.
+- **Read JSON, not prose.** A command whose `--help` lists `--json` prints one document on stdout
+  under it, with progress on stderr, except `af telemetry tail --json`: it streams JSON Lines,
+  one `af/telemetry-tail@1` object per line. A tail that fails with an error, such as a segment
+  it cannot read, even after records, ends the stream with one `af/error@2` line carrying its
+  exit code, so tell each line by its `schema`. A run two Stores record is no such error: shared
+  when tail starts or by a second Store that appears while it follows, tail exits 2 with no
+  further line on stdout and names both Stores for `--store` on stderr, so check the exit code
+  too. `af review report` and `af review campaigns` also take `--format json`, the same document
+  as `--json`; giving both is a usage error. Some commands, such as `af config paths`, print text
+  only. Branch on the document's `schema`: most refusals are `af/error@2`, while
+  `af provider` commands and a refused Task plan print their own documents (`af help json`), and
+  `af config show --json` prints a document with no `schema`.
 - **Branch on the exit code.** `af review run` exits 0 pass, 3 fail, 4 incomplete. A foreground
   `af task run` exits 0 verified, 3 changes requested, 4 cancelled, exhausted or waiting for a
   person, 5 gate failed, 6 Provider failed, 7 expired. With `--detach`, 0 only means the run

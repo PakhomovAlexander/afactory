@@ -475,8 +475,18 @@ Examples:
   af help nonsense   # exit 2";
 
 const JSON: &str = "\
-stdout is the result, stderr is progress. With --json every reading command prints exactly one
-JSON document on stdout — no banner, no trailing text — so `af … --json | jq` always works.
+stdout is the result, stderr is progress. A command whose --help lists --json prints exactly one
+JSON document on stdout under it — no banner, no trailing text — so `af … --json | jq` works,
+with one exception: `af telemetry tail --json` streams JSON Lines, one af/telemetry-tail@1 object
+per line as each record is written, until the segments it follows are sealed; read it line by
+line (`jq -c`), never as one document. A tail that fails with an error, such as a segment it
+cannot read, even after records, ends the stream with one af/error@2 line carrying its exit code,
+so tell each line by its `schema`. A run two Stores record is no such error: shared when tail
+starts or by a second Store that appears while it follows, tail exits 2 with no further line on
+stdout and names both Stores for --store on stderr, so check the exit code too.
+`af review report` and `af review campaigns` also take --format json, the same document as
+--json; giving both is a usage error. Not every command has a JSON form: `af config paths`, for
+example, prints text only.
 Errors under --json are one af/error@2 document on stdout (schemas/error-v2.json) with the same
 exit code: `command`, `error` (the sentence stderr prints) and `exit_code`. A usage error is one
 too, exit 2, with clap's message; `--help` and `--version` are not errors. A refusal af
@@ -519,6 +529,8 @@ Review reading commands:
 
   af review render --json              af/review-render@2 (schemas/review-render-v2.json),
                                        with the reply schema a model Worker's dispatch passes
+  af review campaigns --json           af/review-campaigns@1 (schemas/review-campaigns-v1.json)
+                                       --json is --format json; combining them is a usage error
   af review ledger --json              af/review-ledger@1 (schemas/review-ledger-v1.json)
   af review show KEY --json            af/review-show@1 (schemas/review-show-v1.json)
   af review report --json              af/review-report@5 (schemas/review-report-v5.json)

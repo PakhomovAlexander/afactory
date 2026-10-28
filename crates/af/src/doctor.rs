@@ -467,7 +467,6 @@ fn layout(
 fn checks(repo: &Path) -> Vec<Check> {
     let installation = selfmgmt::installation();
     let mut registry = crate::providers::read_registry_entries();
-    registry.registrable = crate::providers::registrable_logins();
     // The machine's own configuration, which `af self` and `af storage` read before anything
     // else: when it does not load, no fix that runs one of them can clear its check.
     let machine = crate::config::load_machine_naming()
@@ -478,6 +477,13 @@ fn checks(repo: &Path) -> Vec<Check> {
         .as_deref()
         .filter(|toplevel| toplevel.join(".af").exists())
         .map(crate::onboard::authority_facts);
+    // The one status probe doctor runs: each registered Provider and each ambient context, the
+    // logged-out ones the status table leaves out kept. `af provider detect --apply` is offered
+    // only for a login it established (#331 D5); a sibling directory the names-only scan found is
+    // never probed to decide that, with no Provider registered or a Worker needing a kind none
+    // is (ADR-0206).
+    let statuses = crate::providers::probed_statuses_with_ambient();
+    registry.learn(&statuses);
     let mut checks = vec![
         agent_harness(),
         agent_sandbox(),
@@ -490,7 +496,7 @@ fn checks(repo: &Path) -> Vec<Check> {
             toplevel.as_deref(),
             authority.as_ref().and_then(|a| a.as_ref().ok()),
         ),
-        providers(&registry),
+        providers(&registry, &statuses),
         storage(&installation, machine.as_ref()),
     ];
     match &toplevel {
@@ -1001,8 +1007,9 @@ pub(crate) fn path_fix(
         return (
             None,
             Some(format!(
-                "no PATH entry can hold {shown}, which has a `:` or a control character; set \
-                 XDG_BIN_HOME to a directory without one, then run af self install {}",
+                "af prints no PATH line for {shown}: a `:` separates PATH entries, and a control \
+                 character cannot be shown legibly on one line; set XDG_BIN_HOME to a directory \
+                 without either, then run af self install {}",
                 selfmgmt::VERSION
             )),
         );
@@ -1233,8 +1240,8 @@ fn path_line_parts(text: &str) -> Option<(&str, String, &str, PathStyle)> {
     (again == quoted).then_some((head, dir, tail, style))
 }
 
-/// Whether `dir` can be one PATH entry spelled on one line: no `:`, which separates entries,
-/// and no control character, which a pasted line would not carry.
+/// Whether af writes a PATH line for `dir`: no `:`, which separates entries, so no PATH entry
+/// holds one, and no control character, which af declines to put in a line it prints to paste.
 fn path_literal(dir: &str) -> bool {
     !dir.contains(':') && !dir.chars().any(char::is_control)
 }
@@ -1737,7 +1744,10 @@ fn install_command(program: &str) -> Result<String, String> {
 // ------------------------------------------------------------------------------------------
 // providers · storage · project
 
-fn providers(registry: &crate::providers::RegistryRead) -> Check {
+fn providers(
+    registry: &crate::providers::RegistryRead,
+    statuses: &[crate::providers::ProviderStatus],
+) -> Check {
     if let Some(warning) = &registry.warning {
         // Every command that reads the registry stops on it, and `af provider status` only says
         // it again: no command clears it, so the hint names the file and the line.
@@ -1760,14 +1770,8 @@ fn providers(registry: &crate::providers::RegistryRead) -> Check {
             hint,
         );
     }
-    // The same names-only scan `af provider status` and `af onboard` list (ADR-0206).
-    let found = found_dirs(registry);
-    let found_text = if found.is_empty() {
-        String::new()
-    } else {
-        format!("; found but not registered: {}", found.join(", "))
-    };
-    let statuses = crate::providers::probed_statuses();
+    // A denied probe in the one status probe doctor ran is never left out, and establishes
+    // neither compatibility nor login (ADR-0249), so it is said before anything is suggested.
     if let Some(denied) = statuses
         .iter()
         .find(|status| status.status == "probe denied")
@@ -1783,7 +1787,18 @@ fn providers(registry: &crate::providers::RegistryRead) -> Check {
                 .into(),
         );
     }
+    // The same names-only scan `af provider status` and `af onboard` list (ADR-0206). It reads
+    // no marker and probes nothing: a directory it names is not known to hold a login.
     if registry.registered.is_empty() {
+        let found = found_dirs(registry);
+        let found_text = if found.is_empty() {
+            String::new()
+        } else {
+            format!(
+                "; found but not registered (not probed): {}",
+                found.join(", ")
+            )
+        };
         let kind = registry
             .candidates
             .first()
@@ -1794,9 +1809,10 @@ fn providers(registry: &crate::providers::RegistryRead) -> Check {
             .map(|path| format!(" in {}", path.display()))
             .unwrap_or_default();
         let detail = format!("no Provider registered{registry_text}{found_text}");
-        // `af provider detect --apply` registers only a login an available CLI on PATH reports
-        // logged in: with none, a marker alone or a logged-out context included, it cannot
-        // clear this check, so there is no fix (#331 D5).
+        // `af provider detect --apply` is a fix only for a login the status probe found an
+        // available CLI on PATH reports logged in: with none, a marker alone, a logged-out
+        // context or a sibling nothing probed included, doctor cannot say it clears this check,
+        // so there is no fix (#331 D5).
         if registry.registrable.is_empty() {
             return Check::advise(
                 Status::Warn,
@@ -1804,68 +1820,175 @@ fn providers(registry: &crate::providers::RegistryRead) -> Check {
                 detail,
                 format!(
                     "{}; log in and register one yourself at a private terminal: {}",
-                    no_login(&found),
+                    no_login(registry),
                     setup_login(kind)
                 ),
             );
         }
         return Check::warn("providers", detail, "af provider detect --apply").hint(format!(
-            "it registers the logins it finds; or, at a private terminal: {}",
+            "it registers the logins it finds and none that is logged out; or, at a private \
+             terminal: {}",
             setup_login(kind)
         ));
     }
+    let (ambient, statuses): (Vec<_>, Vec<_>) = statuses
+        .iter()
+        .partition(|status| crate::providers::is_ambient_candidate(status));
     let mut good = Vec::new();
     let mut bad = Vec::new();
     for entry in &registry.registered {
         let status = statuses
             .iter()
             .find(|status| status.id == entry.id)
-            .map_or("not probed", |status| status.status.as_str());
+            .map_or(NOT_PROBED, |status| status.status.as_str());
         let line = format!("{} ({}, {status})", entry.id, entry.kind);
         if status == "authenticated" {
             good.push(line);
         } else {
-            bad.push((entry, line));
+            bad.push((entry, status, line));
         }
     }
     let mut detail = good
         .iter()
-        .chain(bad.iter().map(|(_, line)| line))
+        .chain(bad.iter().map(|(_, _, line)| line))
         .cloned()
         .collect::<Vec<_>>()
         .join(", ");
-    detail.push_str(&found_text);
+    detail.push_str(&found_unregistered(&registry.unregistered, &ambient));
     match bad.first() {
-        Some((entry, _)) => Check::warn(
-            "providers",
-            detail,
-            format!(
-                "af provider setup {} --kind {} --login",
-                shell_words::quote(&entry.id),
-                entry.kind
-            ),
-        )
-        .hint("at your terminal, where it logs in; af provider status shows why first"),
-        None if !registry.registrable.is_empty() => {
-            Check::warn("providers", detail, "af provider detect --apply")
-                .hint("it registers what it finds")
-        }
+        Some((entry, status, _)) => registered_problem(entry, status, detail),
+        // Another login on this machine is the operator's to register or not: a registered
+        // Provider that works needs nothing more, so nothing found beside it is a warning.
         None => Check::ok("providers", detail),
     }
 }
 
-/// Why no login can be registered: none was found, or no CLI on PATH reports one logged in in
-/// the directories found (no marker, a logged-out context, no CLI of its kind), so `af provider
-/// detect --apply` would register none of them.
-fn no_login(found: &[String]) -> String {
+/// The status a registered Provider has when the probe returned no row for it.
+const NOT_PROBED: &str = "not probed";
+
+/// The directories the names-only scan found that no registry entry names, and what the one
+/// status probe doctor already ran learned about each: only an ambient context
+/// (`CLAUDE_CONFIG_DIR`, `CODEX_HOME` or a CLI's default directory) is ever asked, and nothing is
+/// probed for this line. Each is optional; the commands are what an operator who wants one runs.
+fn found_unregistered(found: &[PathBuf], ambient: &[&crate::providers::ProviderStatus]) -> String {
     if found.is_empty() {
-        "no login was found to register".to_owned()
-    } else {
-        format!(
-            "no login was found to register: no CLI on PATH reports a login in {}",
-            found.join(", ")
-        )
+        return String::new();
     }
+    let (mut logged_in, mut logged_out, mut unprobed) = (Vec::new(), Vec::new(), Vec::new());
+    for dir in found {
+        let shown = crate::providers::detect::display_path(dir);
+        let answer = ambient
+            .iter()
+            .find(|status| Path::new(&status.auth_context) == dir.as_path())
+            .map(|status| status.status.as_str());
+        match answer {
+            Some("authenticated") => logged_in.push(shown),
+            Some("not authenticated") => logged_out.push(shown),
+            _ => unprobed.push(shown),
+        }
+    }
+    let mut text = String::from("; optional, found but not registered:");
+    for (dirs, state) in [
+        (&logged_in, "logged in"),
+        (&logged_out, "logged out"),
+        (&unprobed, "not probed"),
+    ] {
+        if !dirs.is_empty() {
+            text.push_str(&format!(" {} ({state}),", dirs.join(", ")));
+        }
+    }
+    text.pop();
+    if !logged_in.is_empty() {
+        text.push_str("; to register the logged-in ones: af provider detect --apply");
+    } else if !unprobed.is_empty() {
+        // Doctor read no marker, so it cannot say which of them detect will ask about.
+        text.push_str(UNPROBED_GUIDANCE);
+    }
+    text
+}
+
+/// What `af provider detect` does with a directory doctor did not probe (ADR-0206): it asks a
+/// CLI only about a safe directory holding a login marker, `--all` also about a safe empty one,
+/// and never about an unsafe or missing one.
+const UNPROBED_GUIDANCE: &str = "; to inspect the not-probed ones: af provider detect, which asks \
+     a CLI only about a safe directory holding a login marker; to also ask about a safe empty \
+     one: af provider detect --all; an unsafe or missing one is never asked";
+
+/// A registered Provider that is not authenticated, by what its status probe said: a login af can
+/// see is missing, its CLI cannot be used (no login fixes that), or af disabled it for a while.
+fn registered_problem(entry: &crate::providers::Declared, status: &str, detail: String) -> Check {
+    let id = shell_words::quote(&entry.id);
+    let kind = entry.kind;
+    let setup = format!("af provider setup {id} --kind {kind} --login");
+    match status {
+        "not authenticated" => Check::warn("providers", detail, setup)
+            .hint("at your terminal, where it logs in; af provider status shows why first"),
+        NOT_PROBED => Check::warn("providers", detail, setup).hint(
+            "its directory holds no login yet, so its CLI was not asked; at your terminal, where \
+             it logs in",
+        ),
+        "disabled" => Check::warn("providers", detail, format!("af provider enable {id}"))
+            .hint("af set it aside after a Provider failure; this makes it selectable again"),
+        "installation failed" => Check::advise(
+            Status::Warn,
+            "providers",
+            detail,
+            format!(
+                "the {kind} CLI is not on PATH or does not start, so no login fixes it: install \
+                 or repair it, then recheck: af provider status"
+            ),
+        ),
+        "incompatible" => Check::advise(
+            Status::Warn,
+            "providers",
+            detail,
+            format!(
+                "the {kind} CLI does not accept af's invocation, so no login fixes it: upgrade \
+                 it, then recheck: af provider status"
+            ),
+        ),
+        _ => Check::advise(
+            Status::Warn,
+            "providers",
+            detail,
+            format!(
+                "its status probe gave no answer about the login ({status}): af provider status \
+                 names the cause"
+            ),
+        ),
+    }
+}
+
+/// Why doctor offers no login to register: none was found; no CLI on PATH reports one logged in
+/// in the directories its status probe covered (no marker, a logged-out context, a CLI that
+/// cannot be used); and the sibling directories nothing probed, which `af provider detect`
+/// inspects (ADR-0206).
+fn no_login(registry: &crate::providers::RegistryRead) -> String {
+    let (asked, unprobed): (Vec<&PathBuf>, Vec<&PathBuf>) = registry
+        .unregistered
+        .iter()
+        .partition(|dir| registry.asked.contains(dir));
+    let shown = |dirs: &[&PathBuf]| {
+        dirs.iter()
+            .map(|dir| crate::providers::detect::display_path(dir))
+            .collect::<Vec<_>>()
+            .join(", ")
+    };
+    let mut text = "no login was found to register".to_owned();
+    if !asked.is_empty() {
+        text.push_str(&format!(
+            ": no CLI on PATH reports a login in {}",
+            shown(&asked)
+        ));
+    }
+    if !unprobed.is_empty() {
+        text.push_str(if asked.is_empty() { ": " } else { "; " });
+        text.push_str(&format!(
+            "{} not probed (af provider detect inspects them)",
+            shown(&unprobed)
+        ));
+    }
+    text
 }
 
 /// Why no `kind` login can be registered, for a Worker that needs one. A login of another kind
@@ -1880,11 +2003,7 @@ fn no_login_of(kind: &str, registry: &crate::providers::RegistryRead) -> String 
     others.sort_unstable();
     others.dedup();
     if others.is_empty() {
-        return no_login(&found_dirs(registry)).replacen(
-            "no login",
-            &format!("no {kind} login"),
-            1,
-        );
+        return no_login(registry).replacen("no login", &format!("no {kind} login"), 1);
     }
     format!(
         "no {kind} login was found to register; af provider detect --apply registers only the {} \
@@ -3235,17 +3354,157 @@ esac
         );
     }
 
+    fn ambient(dir: &str, status: &str) -> crate::providers::ProviderStatus {
+        crate::providers::ProviderStatus {
+            id: "codex-ambient".into(),
+            kind: "codex".into(),
+            auth_context: dir.into(),
+            source: "ambient CLI candidate; unstable local context label".into(),
+            status: status.into(),
+            auth_type: "-".into(),
+            subscription: "-".into(),
+            limits: Vec::new(),
+            usage: crate::providers::UsageState::NotRequested,
+            detail: String::new(),
+            disabled_until: None,
+        }
+    }
+
+    /// Issue #358: a directory the names-only scan found is called logged in or logged out only
+    /// when the status probe doctor ran answered for it, and `not probed` otherwise; only a
+    /// logged-in one is named with the `--apply` that registers it, so the line never promises a
+    /// registration that detect leaves undone.
+    #[test]
+    fn found_directories_say_only_what_the_probe_already_learned() {
+        assert_eq!(found_unregistered(&[], &[]), "");
+        let found = [
+            PathBuf::from("/w/codex-home"),
+            PathBuf::from("/w/codex-spare"),
+            PathBuf::from("/w/codex-team"),
+        ];
+        let logged_out = ambient("/w/codex-home", "not authenticated");
+        let text = found_unregistered(&found, &[&logged_out]);
+        assert_eq!(
+            text,
+            "; optional, found but not registered: /w/codex-home (logged out), /w/codex-spare, \
+             /w/codex-team (not probed); to inspect the not-probed ones: af provider detect, \
+             which asks a CLI only about a safe directory holding a login marker; to also ask \
+             about a safe empty one: af provider detect --all; an unsafe or missing one is \
+             never asked"
+        );
+        assert!(!text.contains("--apply"), "{text}");
+        // Detect is an inspection, not a promise that every directory's CLI is asked.
+        assert!(!text.contains("ask their CLI"), "{text}");
+
+        let logged_in = ambient("/w/codex-home", "authenticated");
+        assert_eq!(
+            found_unregistered(&found[..1], &[&logged_in]),
+            "; optional, found but not registered: /w/codex-home (logged in); to register the \
+             logged-in ones: af provider detect --apply"
+        );
+        // An answer that is not a login state is no claim about one.
+        let unprobed = ambient("/w/codex-home", "unavailable");
+        assert_eq!(
+            found_unregistered(&found[..1], &[&unprobed]),
+            format!(
+                "; optional, found but not registered: /w/codex-home (not probed){UNPROBED_GUIDANCE}"
+            )
+        );
+        // Only logged-out ones: nothing to run.
+        assert_eq!(
+            found_unregistered(&found[..1], &[&logged_out]),
+            "; optional, found but not registered: /w/codex-home (logged out)"
+        );
+
+        // In a row, the command stays whole on its line at every width.
+        let check = Check::ok(
+            "providers",
+            format!("claude-main (claude, authenticated), codex-main (codex, authenticated){text}"),
+        );
+        for width in [100, 80, 60] {
+            let rendered = render(std::slice::from_ref(&check), width, false);
+            for command in ["af provider detect,", "af provider detect --all;"] {
+                assert!(
+                    rendered.lines().any(|line| line.contains(command)),
+                    "{width}: {command}\n{rendered}"
+                );
+            }
+            for line in rendered.lines() {
+                assert!(
+                    line.chars().count() <= width,
+                    "{width}: `{line}`\n{rendered}"
+                );
+            }
+        }
+    }
+
+    /// Issue #358 review: with nothing doctor can offer to register, the hint says which found
+    /// directories the status probe covered and which nothing probed, leaving those to `af
+    /// provider detect`; it never claims a CLI reported on a directory no CLI was asked about.
+    #[test]
+    fn no_login_names_what_the_status_probe_did_not_ask_about() {
+        let mut registry = crate::providers::RegistryRead {
+            path: None,
+            warning: None,
+            registered: Vec::new(),
+            candidates: Vec::new(),
+            unregistered: Vec::new(),
+            registrable: Vec::new(),
+            asked: Vec::new(),
+        };
+        assert_eq!(no_login(&registry), "no login was found to register");
+        registry.unregistered = vec![PathBuf::from("/w/codex-home"), PathBuf::from("/w/.codex-a")];
+        assert_eq!(
+            no_login(&registry),
+            "no login was found to register: /w/codex-home, /w/.codex-a not probed (af provider \
+             detect inspects them)"
+        );
+        registry.asked = vec![PathBuf::from("/w/codex-home")];
+        assert_eq!(
+            no_login(&registry),
+            "no login was found to register: no CLI on PATH reports a login in /w/codex-home; \
+             /w/.codex-a not probed (af provider detect inspects them)"
+        );
+        registry.unregistered.pop();
+        assert_eq!(
+            no_login(&registry),
+            "no login was found to register: no CLI on PATH reports a login in /w/codex-home"
+        );
+        assert_eq!(
+            no_login_of("claude", &registry),
+            "no claude login was found to register: no CLI on PATH reports a login in \
+             /w/codex-home"
+        );
+    }
+
     /// GA second fix item 4: the `af` fixes of the states an integration fixture cannot reach
     /// (a pinned release, a receipt verified by digest only, a Provider whose login lapsed, a
     /// newer release, a full disk) parse with the CLI's own parser, each command of a fix.
     #[test]
     fn every_af_fix_parses_with_the_cli() {
         use clap::Parser as _;
+        let entry = crate::providers::Declared {
+            id: "claude-main".into(),
+            kind: "claude",
+            auth_dir: None,
+        };
+        let registered = [
+            "not authenticated",
+            NOT_PROBED,
+            "disabled",
+            "installation failed",
+            "incompatible",
+            "unavailable",
+        ]
+        .map(|status| registered_problem(&entry, status, "claude-main".into()).fix);
         // Parse the command for the empty-registry branch directly. `providers()` probes the
         // host's real Provider state even with a synthetic RegistryRead, so calling it here
         // makes this parser fixture depend on the machine running the test.
-        let fixes: [String; 12] = [
+        let fixes: [String; 15] = [
             "af provider detect --apply".into(),
+            registered[0].clone().unwrap(),
+            registered[1].clone().unwrap(),
+            registered[2].clone().unwrap(),
             "af self remove 0.1.0 && af self install 0.1.0".into(),
             "af onboard --repo '/w x' --refresh-lock --af 0.1.0".into(),
             "af provider setup claude-main --kind claude --login".into(),
@@ -3258,6 +3517,11 @@ esac
             "af provider status".into(),
             "af self setup-shell --shell powershell --write".into(),
         ];
+        // No login fixes a CLI af cannot start or use: those rows offer no command.
+        assert!(
+            registered[3..].iter().all(Option::is_none),
+            "{registered:?}"
+        );
         for fix in fixes {
             let words = shell_words::split(&fix).unwrap();
             for command in words.split(|word| word == "&&") {

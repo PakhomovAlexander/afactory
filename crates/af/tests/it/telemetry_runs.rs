@@ -2842,6 +2842,16 @@ fn telemetry_a_run_two_stores_share_asks_for_the_store() {
             "{stderr}"
         );
     }
+    // Under `--json` tail's ambiguity prints nothing on stdout, no `af/error@2` either: exit 2,
+    // the Stores on stderr.
+    let refused = machine.af(at, &[], &["telemetry", "tail", GOLDEN_RUN, "--json"]);
+    assert_eq!(refused.status.code(), Some(2));
+    let (stdout, stderr) = text(&refused);
+    assert_eq!(stdout, "", "{stderr}");
+    assert!(
+        stderr.contains("--store") && stderr.contains(GOLDEN_STORE) && stderr.contains(&other),
+        "{stderr}"
+    );
     let one = json(&machine.af(
         at,
         &[],
@@ -2936,6 +2946,14 @@ fn telemetry_tail_refuses_a_second_store_that_appears_while_following() {
         assert!(
             lines.iter().all(|line| line["segment_id"] == a_segment),
             "A's records only: {lines:?}"
+        );
+        // The ambiguity is no `af/error@2` line: stdout ends with A's last record, and the
+        // Stores to choose from are on stderr only.
+        assert!(
+            lines
+                .iter()
+                .all(|line| line["schema"] == "af/telemetry-tail@1"),
+            "no error line: {lines:?}"
         );
     };
 

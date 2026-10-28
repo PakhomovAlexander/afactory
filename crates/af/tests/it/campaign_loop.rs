@@ -10,6 +10,8 @@ use std::process::Command;
 
 #[path = "campaign_loop/contracts.rs"]
 mod contracts;
+#[path = "campaign_loop/duplicate_findings.rs"]
+mod duplicate_findings;
 #[path = "campaign_loop/heartbeat.rs"]
 mod heartbeat;
 #[path = "campaign_loop/provider_admission.rs"]
@@ -483,6 +485,23 @@ fn campaign_enumeration_reads_label_named_explicit_state_and_round_history() {
     assert_eq!(code, 0, "{stdout}\n{stderr}");
     let sized: serde_json::Value = serde_json::from_str(&stdout).unwrap();
     assert!(sized["campaigns"][0]["state_bytes"].as_u64().unwrap() > 0);
+    // `--json` is `--format json`: the same populated document (issue #358).
+    let (_, listed, _) = af(
+        &repo,
+        &home,
+        &["campaigns", "--state-root", &root, "--format", "json"],
+    );
+    let (code, shorthand, stderr) = af(
+        &repo,
+        &home,
+        &["campaigns", "--state-root", &root, "--json"],
+    );
+    assert_eq!(code, 0, "{shorthand}\n{stderr}");
+    assert_eq!(shorthand, listed);
+    assert_eq!(
+        serde_json::from_str::<serde_json::Value>(&shorthand).unwrap()["campaigns"][0]["label"],
+        "loop"
+    );
 
     let (code, stdout, stderr) = af(
         &repo,

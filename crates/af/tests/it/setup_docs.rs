@@ -218,3 +218,437 @@ fn catalog_destination_must_be_an_absent_project_relative_path() {
     assert!(created.status.success(), "{}", stderr(&created));
     assert!(root.path().join("demo").is_dir());
 }
+
+/// Issue #358: the README's install step promises a line to paste only to the shells `install.sh`
+/// writes one for, and says what a bin directory it writes none for gets instead: no line, but
+/// the advice to install with another `XDG_BIN_HOME`
+/// (`install_sh_gives_no_path_line_for_a_bin_directory_no_path_entry_can_hold`).
+#[test]
+fn readme_install_step_promises_a_path_line_only_where_the_installer_prints_one() {
+    let installer = workspace_file("install.sh");
+    for arm in [
+        "      fish) ",
+        "      zsh|bash) ",
+        "      *) printf '  add %s to PATH",
+    ] {
+        assert!(installer.contains(arm), "install.sh: {arm}");
+    }
+    let remedy = "set XDG_BIN_HOME to a directory without one, then install again";
+    assert_eq!(installer.matches(remedy).count(), 2, "install.sh");
+
+    let readme = workspace_file("README.md");
+    let install = collapsed(
+        readme
+            .split("<a id=\"install\"></a>")
+            .nth(1)
+            .unwrap()
+            .split("2. **Connect a Provider**")
+            .next()
+            .unwrap(),
+    );
+    let path = &install[install.find("not on `PATH`").expect("the PATH guidance")..];
+    for shell in ["fish", "bash", "zsh", "another shell"] {
+        assert!(path.contains(shell), "{shell}\n{path}");
+    }
+    for unfit in [
+        "`:`",
+        "control character",
+        "no such line",
+        "`XDG_BIN_HOME`",
+        "install again",
+    ] {
+        assert!(path.contains(unfit), "{unfit}\n{path}");
+    }
+    assert!(!install.contains("for your shell"), "{install}");
+    // A `:` is why no PATH entry holds a directory; a control character is only why the
+    // installer prints no line, since a PATH entry may hold one.
+    assert!(!path.contains("fits in no `PATH` entry"), "{path}");
+    assert!(path.contains("a `:` separates `PATH` entries"), "{path}");
+    assert!(path.contains("will not print a line"), "{path}");
+}
+
+/// Issue #358: the README's guidance on Findings that look alike names commands that exist with
+/// the arguments it gives them, says that they stay apart until an operator groups them unless an
+/// explicit corroboration or one exact rule occurrence attaches them, and agrees with
+/// `af review group --help`. Each command runs against a Campaign that does not
+/// exist: an error (exit 1), never a usage error (exit 2).
+#[test]
+fn readme_explains_findings_that_look_alike_with_commands_that_parse() {
+    let readme = workspace_file("README.md");
+    let section = readme
+        .split("### Findings that look alike\n")
+        .nth(1)
+        .unwrap()
+        .split("\n### ")
+        .next()
+        .unwrap();
+    let flat = collapsed(section);
+    for statement in [
+        "Looking alike does not make them one Finding: a Finding's identity comes from its first \
+         Report, never from its path or title, and af never merges claims that only look alike",
+        "such Reports stay separate Findings unless one of two things attaches them",
+        "docs/adr/0006-finding-identity-is-path-independent.md",
+        "every Report and each Report's own verification stay",
+    ] {
+        assert!(flat.contains(statement), "{statement}\n{flat}");
+    }
+    // Look-alike presentation never joins Reports, but the two attachments the reducer makes
+    // without an operator do (`canonical_stage_keys`): an explicit corroboration, and one exact
+    // rule occurrence from any reviewer
+    // (`reviewers_naming_one_rule_occurrence_share_a_finding_and_keep_every_report`). The guidance
+    // names both and never claims the relation is the only way in.
+    let never_enough = flat
+        .split(". ")
+        .find(|sentence| sentence.contains("never enough"))
+        .unwrap_or_else(|| panic!("no sentence says what is never enough\n{flat}"));
+    for presentation in ["path", "line", "title"] {
+        assert!(never_enough.contains(presentation), "{never_enough}");
+    }
+    for attachment in [
+        "corroborat",
+        "`rule_id`",
+        "`occurrence_key`",
+        "any reviewer",
+    ] {
+        assert!(flat.contains(attachment), "{attachment}\n{flat}");
+    }
+    // Nor does the opening promise that look-alike Reports always stay apart: the attachments
+    // above are the exceptions it names.
+    for unqualified in [
+        "only through an explicit relation",
+        "They stay two Findings",
+    ] {
+        assert!(!flat.contains(unqualified), "{unqualified}\n{flat}");
+    }
+    let commands: Vec<&str> = flat
+        .split('`')
+        .skip(1)
+        .step_by(2)
+        .filter(|span| span.starts_with("af review "))
+        .collect();
+    assert_eq!(
+        commands,
+        [
+            "af review ledger --campaign NAME",
+            "af review group --campaign NAME FROM INTO",
+            "af review show --campaign NAME FROM",
+            "af review ungroup --campaign NAME FROM INTO",
+        ]
+    );
+    let home = tempfile::tempdir().unwrap();
+    for command in commands {
+        let output = crate::common::af()
+            .args(command.split(' ').skip(1))
+            .current_dir(home.path())
+            .output()
+            .unwrap();
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        assert_eq!(output.status.code(), Some(1), "{command}: {stderr}");
+        assert!(stderr.contains("not found"), "{command}: {stderr}");
+    }
+    let group = help(&["review", "group", "--help"]);
+    assert!(
+        group.contains(
+            "af never groups Findings by itself: two Reports at the same place with different \
+             titles or severities stay two Findings until an operator groups them, unless"
+        ),
+        "{group}"
+    );
+    for attachment in [
+        "`rule_id`",
+        "`occurrence_key`",
+        "corroborates",
+        "(ADR-0006)",
+    ] {
+        assert!(group.contains(attachment), "{attachment}\n{group}");
+    }
+    assert!(
+        group.contains("`af review ungroup FROM INTO` undoes it"),
+        "{group}"
+    );
+}
+
+/// Issue #358: `af telemetry tail --json` is the one command whose `--json` streams JSON Lines,
+/// one `af/telemetry-tail@1` object per line, and the README and `af help json` name it as the
+/// exception to the one-document rule instead of promising one document for every `--json`.
+/// Every other `--help` describes its `--json` as one document; the recorded tail stream
+/// (`telemetry_golden/tail.jsonl`) is several lines, each its own object, and not one document.
+/// A tail that fails with an error ends the stream with one `af/error@2` line after the records
+/// it printed (`telemetry_tail_refuses_interior_corruption_of_a_live_segment`); a run two Stores
+/// record exits 2 with no further stdout line, the Stores named on stderr
+/// (`telemetry_tail_refuses_a_second_store_that_appears_while_following`). Both surfaces say
+/// which is which, as `docs/telemetry.md` does, and none promises the error line for every
+/// failure.
+#[test]
+fn json_guidance_names_telemetry_tail_as_the_one_json_lines_stream() {
+    let mut streams = Vec::new();
+    let mut documents = 0;
+    for (page, text) in crate::help_examples::pages() {
+        let lines: Vec<&str> = text.lines().collect();
+        let Some(at) = lines.iter().position(|line| {
+            let option = line.trim_start();
+            line.starts_with(' ') && (option == "--json" || option.starts_with("--json "))
+        }) else {
+            continue;
+        };
+        let mut described = lines[at]
+            .trim_start()
+            .trim_start_matches("--json")
+            .to_owned();
+        for line in &lines[at + 1..] {
+            let continued = line.trim_start();
+            if continued.is_empty() || continued.starts_with('-') {
+                break;
+            }
+            described.push(' ');
+            described.push_str(continued);
+        }
+        let described = collapsed(&described);
+        if described.contains("per line") {
+            streams.push(page);
+        } else {
+            documents += 1;
+        }
+    }
+    assert_eq!(streams, ["af telemetry tail --help"]);
+    assert!(
+        documents >= 20,
+        "only {documents} one-document --json pages"
+    );
+
+    let recorded = workspace_file("crates/af/tests/it/telemetry_golden/tail.jsonl");
+    assert!(serde_json::from_str::<serde_json::Value>(&recorded).is_err());
+    let records: Vec<serde_json::Value> = recorded
+        .lines()
+        .map(|line| serde_json::from_str(line).unwrap())
+        .collect();
+    assert!(records.len() > 1, "{recorded}");
+    for record in &records {
+        assert_eq!(record["schema"], "af/telemetry-tail@1", "{record}");
+    }
+
+    let readme = workspace_file("README.md");
+    // The opening summary promises no one document for every `--json`: it names the stream and
+    // points to the rules below.
+    let intro = collapsed(
+        readme
+            .split("- **Agents can drive it.**")
+            .nth(1)
+            .unwrap()
+            .split("\n\n")
+            .next()
+            .unwrap(),
+    );
+    assert!(intro.contains("`af telemetry tail --json`"), "{intro}");
+    assert!(intro.contains("JSON Lines"), "{intro}");
+    assert!(intro.contains("(#for-agents)"), "{intro}");
+    assert!(!intro.contains("prints one JSON document"), "{intro}");
+    let agents = collapsed(
+        readme
+            .split("## For agents\n")
+            .nth(1)
+            .unwrap()
+            .split("\n## ")
+            .next()
+            .unwrap(),
+    );
+    assert!(
+        agents.contains(
+            "A command whose `--help` lists `--json` prints one document on stdout under it, with \
+             progress on stderr, except `af telemetry tail --json`: it streams JSON Lines, one \
+             `af/telemetry-tail@1` object per line"
+        ),
+        "{agents}"
+    );
+    // The flags the README names for the commands that print JSON another way are the ones their
+    // `--help` lists, and no surface promises `--json` to most commands.
+    assert!(
+        agents.contains(
+            "`af review report` and `af review campaigns` also take `--format json`, the same \
+             document as `--json`; giving both is a usage error. Some commands, such as \
+             `af config paths`, print text only."
+        ),
+        "{agents}"
+    );
+    for command in ["report", "campaigns"] {
+        let page = help(&["review", command, "--help"]);
+        assert!(
+            page.contains("--json") && page.contains("--format"),
+            "{page}"
+        );
+        let both = crate::common::af()
+            .args(["review", command, "--json", "--format", "json"])
+            .output()
+            .unwrap();
+        assert_eq!(both.status.code(), Some(2), "af review {command}");
+        assert!(
+            String::from_utf8_lossy(&both.stderr)
+                .contains("'--json' cannot be used with '--format <FORMAT>'"),
+            "af review {command}"
+        );
+    }
+    // The text-only examples print no JSON form, and the review reading commands that do are
+    // never named as text only.
+    assert!(!help(&["config", "paths", "--help"]).contains("--json"));
+    for command in ["ledger", "show"] {
+        assert!(help(&["review", command, "--help"]).contains("--json"));
+    }
+    assert!(!collapsed(&readme).contains("Most commands"), "README.md");
+    assert!(
+        agents.contains(
+            "A tail that fails with an error, such as a segment it cannot read, even after \
+             records, ends the stream with one `af/error@2` line carrying its exit code, so tell \
+             each line by its `schema`. A run two Stores record is no such error: shared when \
+             tail starts or by a second Store that appears while it follows, tail exits 2 with \
+             no further line on stdout and names both Stores for `--store` on stderr, so check \
+             the exit code too."
+        ),
+        "{agents}"
+    );
+    let topic = help(&["help", "json"]);
+    assert!(
+        topic.contains(
+            "A command whose --help lists --json prints exactly one JSON document on stdout \
+             under it — no banner, no trailing text — so `af … --json | jq` works, with one \
+             exception: `af telemetry tail --json` streams JSON Lines, one \
+             af/telemetry-tail@1 object per line"
+        ),
+        "{topic}"
+    );
+    assert!(
+        collapsed(&topic).contains(
+            "A tail that fails with an error, such as a segment it cannot read, even after \
+             records, ends the stream with one af/error@2 line carrying its exit code, so tell \
+             each line by its `schema`. A run two Stores record is no such error: shared when \
+             tail starts or by a second Store that appears while it follows, tail exits 2 with \
+             no further line on stdout and names both Stores for --store on stderr, so check the \
+             exit code too."
+        ),
+        "{topic}"
+    );
+    assert!(
+        topic.contains(
+            "`af review report` and `af review campaigns` also take --format json, the same \
+             document as --json; giving both is a usage error. Not every command has a JSON \
+             form: `af config paths`, for example, prints text only."
+        ),
+        "{topic}"
+    );
+    for (surface, text) in [("README.md", agents.as_str()), ("af help json", &topic)] {
+        for command in ["`af review ledger`", "`af review show`"] {
+            assert!(
+                !text
+                    .split(". ")
+                    .any(|sentence| sentence.contains(command) && sentence.contains("text only")),
+                "{surface} calls {command} text only"
+            );
+        }
+    }
+    let telemetry = collapsed(&workspace_file("docs/telemetry.md"));
+    assert!(
+        telemetry.contains(
+            "a tail that fails with an error, such as a segment it cannot read, even after \
+             records, ends the stream with one `af/error@2` line \
+             ([`schemas/error-v2.json`](../schemas/error-v2.json)) carrying its exit code. A run \
+             two Stores record is no such error: tail exits 2 with no further line on stdout and \
+             names both Stores for `--store` on stderr."
+        ),
+        "docs/telemetry.md"
+    );
+    // No surface promises the error line for every failed tail.
+    for (surface, text) in [
+        ("README.md", agents.as_str()),
+        ("af help json", collapsed(&topic).as_str()),
+        ("docs/telemetry.md", telemetry.as_str()),
+    ] {
+        assert!(
+            !text.contains("A tail that fails, even after records")
+                && !text.contains("a tail that fails, even after records"),
+            "{surface}"
+        );
+    }
+    assert!(!topic.contains("always works"), "{topic}");
+}
+
+/// Issue #358 review: the test-class guide says what local class execution does with the live
+/// container probes, as the code does it. `scripts/test-classes.py execute`, behind the local
+/// `make` targets and the fast Task gate, runs every selected class and never the probes; the
+/// separate CI job runs them for every e2e selection; the explicit target runs them locally.
+/// The guide no longer says local e2e selection includes them.
+#[test]
+fn test_class_guide_says_local_execution_omits_the_live_container_probes() {
+    let guide = collapsed(&workspace_file("docs/test-classes.md"));
+    for claim in [
+        "Local class execution (`scripts/test-classes.py execute`, behind `make check-classes`, \
+         `make check-fast`, `make check-full` and `scripts/verify.sh --profile fast`) runs every \
+         selected class but omits the live probes, e2e included, so it needs no daemon and a \
+         local pass is no evidence that they passed.",
+        "CI's separate `container-probes` job runs them for every e2e selection, and the \
+         aggregate requires its success.",
+        "Run `make review-kernel-container-probes` to run them locally; it fails without a \
+         container runtime.",
+    ] {
+        assert!(guide.contains(claim), "{claim}");
+    }
+    assert!(
+        !guide.contains("selective e2e execution includes them"),
+        "{guide}"
+    );
+
+    // What the guide states, where it is decided.
+    let execute = workspace_file("scripts/test-classes.py");
+    let execute = execute
+        .split("elif args.command == 'execute':")
+        .nth(1)
+        .unwrap()
+        .split("elif args.command ==")
+        .next()
+        .unwrap();
+    assert!(
+        execute.contains("for kind in plan['selected']:"),
+        "{execute}"
+    );
+    let code: String = execute
+        .lines()
+        .filter(|line| !line.trim_start().starts_with('#'))
+        .collect();
+    assert!(!code.contains("container"), "{execute}");
+    let makefile = workspace_file("Makefile");
+    for target in ["check-fast:", "check-full:"] {
+        let recipe = makefile.split(target).nth(1).unwrap();
+        let recipe = recipe.split("\n\n").next().unwrap();
+        assert!(recipe.contains("$(MAKE) check-classes"), "{target}{recipe}");
+    }
+    let classes = makefile.split("\ncheck-classes:").nth(1).unwrap();
+    assert!(
+        classes
+            .split("\n\n")
+            .next()
+            .unwrap()
+            .contains("scripts/test-classes.py execute"),
+        "{classes}"
+    );
+    let probes = makefile
+        .split("\nreview-kernel-container-probes:")
+        .nth(1)
+        .unwrap();
+    assert!(
+        probes
+            .contains("cargo test --locked -p review-sandbox --test container_probes -- --ignored"),
+        "{probes}"
+    );
+    let workflow = workspace_file(".github/workflows/validate.yml");
+    let job = workflow
+        .split("\n  container-probes:\n")
+        .nth(1)
+        .unwrap()
+        .split("\n  lint:\n")
+        .next()
+        .unwrap();
+    assert!(
+        job.contains("if: needs.resolve.outputs.e2e == 'true'"),
+        "{job}"
+    );
+    assert!(job.contains("run: docker info"), "{job}");
+    assert!(job.contains("make review-kernel-container-probes"), "{job}");
+}

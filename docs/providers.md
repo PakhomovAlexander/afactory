@@ -23,9 +23,19 @@ every first-run surface points at it:
   when only that kind is registered, and its `providers` block names, for every model Worker, a
   registered Provider of its kind and the `--provider NODE=ID` binding to pass, or the command
   that registers one. `--probe` adds each Provider's login state from the status probe.
-- `af doctor` lists every registered Provider's login state from the same probe, and the logins
-  it found where the CLIs look by default that no registry entry names; it never charges, and
-  `af provider doctor` stays the charged end-to-end check.
+- `af doctor` lists every registered Provider's login state from the same probe, and the
+  directories found that no registry entry names; it never charges, and `af provider doctor`
+  stays the charged end-to-end check. Its `providers` row warns only about what needs a fix: no
+  Provider registered (`af provider detect --apply`), a registered one logged out (its
+  `af provider setup ID --kind KIND --login`), one whose CLI is missing, cannot start or refuses
+  af's invocation (no login fixes that, and none is offered), or a registry that cannot be read.
+  Beside a registered Provider that works, the unregistered directories are optional and the row
+  stays `ok`: each is `logged in` or `logged out` only when the probe already asked about it as a
+  CLI's default or `CLAUDE_CONFIG_DIR`/`CODEX_HOME` context, and `not probed` otherwise; doctor
+  probes nothing more for them. For the `not probed` ones it names `af provider detect` to
+  inspect them, which asks a CLI only about a safe directory holding a login marker;
+  `af provider detect --all` also asks about a safe empty one, and neither asks about an unsafe
+  or missing one.
 - `af` alone at a terminal opens on the Providers pane while nothing is registered.
 
 ## The default terminal boundary

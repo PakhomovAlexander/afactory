@@ -68,7 +68,7 @@ on a token budget, and never publishes: `af review` folds what reviewers find in
 `af task` turns a Task file into a verified change you deliver to a new local worktree.
 
 Start here (`af help start` explains each step):
-  1. af provider detect           preview claude/codex logins; --apply registers them
+  1. af provider detect --apply   find the claude/codex logins on this machine and register them
   2. af onboard                   in a repository: preview `.af/` (token-free); --apply writes it
   3. git add .af && git commit    review that authority, then commit it
   4. af review plan --policy-rev HEAD --base HEAD --uncommitted
@@ -940,9 +940,7 @@ af review export --campaign pr-42 --finding F-01H… --allow-stale"
         json: bool,
     },
     /// List Campaigns under the state root
-    #[command(
-        after_long_help = "Examples:\n  af review campaigns\n  af review campaigns --format json"
-    )]
+    #[command(after_long_help = "Examples:\n  af review campaigns\n  af review campaigns --json")]
     Campaigns {
         /// State root to enumerate (default: XDG state)
         #[arg(long, value_name = "DIR")]
@@ -950,6 +948,9 @@ af review export --campaign pr-42 --finding F-01H… --allow-stale"
         /// Output format
         #[arg(long, value_enum, default_value_t = ListFormatArg::Text, help_heading = "Output")]
         format: ListFormatArg,
+        /// Machine-readable af/review-campaigns@1: the same document as --format json
+        #[arg(long, conflicts_with = "format", help_heading = "Output")]
+        json: bool,
         /// Walk each state directory for its size on disk (seconds on a large root)
         #[arg(long)]
         sizes: bool,
@@ -1108,6 +1109,14 @@ af review challenge-resolution --campaign pr-42 F-01H… --kind new-evidence \\\
     },
     /// Group one finding under another
     #[command(
+        long_about = "Record, after a closed Round, that FROM and INTO are one defect.\n\naf never \
+groups Findings by itself: two Reports at the same place with different titles or severities stay \
+two Findings until an operator groups them, unless they carry one exact `rule_id` and \
+`occurrence_key` or one corroborates the other's Finding (ADR-0006). Grouping keeps both Finding IDs, every \
+Report and each Report's own verification; `af review ledger` then lists one Finding under INTO, \
+with FROM as its alias, the higher severity and the status that blocks more, and `af review show` \
+on either ID shows that group. FROM must not be grouped already and INTO must not be an alias. \
+`af review ungroup FROM INTO` undoes it.",
         after_long_help = "Examples:\n  # needs: Campaign pr-42 and both findings\n  af review group --campaign pr-42 F-02H… F-01H…"
     )]
     Group {
@@ -1119,6 +1128,12 @@ af review challenge-resolution --campaign pr-42 F-01H… --kind new-evidence \\\
         into: String,
     },
     /// Undo a grouping
+    #[command(
+        long_about = "Undo the grouping of FROM under INTO: both Findings are listed apart again, \
+each with its own Reports, severity and status. A group whose Resolution is terminal is \
+challenged first.",
+        after_long_help = "Examples:\n  # needs: Campaign pr-42 and F-02H… grouped into F-01H…\n  af review ungroup --campaign pr-42 F-02H… F-01H…"
+    )]
     Ungroup {
         #[command(flatten)]
         selector: CampaignSelector,
