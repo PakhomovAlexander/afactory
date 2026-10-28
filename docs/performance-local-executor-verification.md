@@ -554,3 +554,99 @@ benchmarks and live common-lock exclusion remain coordinator-owned and are not c
 missing `--zigbuild-bin` in generated diagnostic reproduction commands remains a follow-up.
 The scratch Git copy, patch copy and loader stayed under the temporary directory, outside the
 source.
+
+## Scratch enforcement sync batching (2026-10-28)
+
+Recorded in the AF implementation sandbox on macOS (Darwin, Python 3.15.0). This section records
+source checks only. It is not a VM verification or measurement.
+
+**The blocker.** The Claw telemetry original `exp_15f8e705d9ae31b774e8f15fd7ca67c0ec3284b52671dc16`
+refused before any candidate build. Its error was "enforcement not verified: the fill did not
+finish within its time bound (1458569216 bytes written)". `telemetrybuild.run` checks its 8-GiB
+build scratch with a 120 s deadline. `capability.fill` keeps 30 s of that for cleanup, which
+leaves 90 s to write. The fill synced its file after every 1-MiB write, so it paid one durable
+flush per MiB. That original stays terminal and uncertain, and its artifacts stay as they are.
+This change does not authorize replaying it.
+
+**The change** (`scripts/performance/perflab/capability.py`). The fill still writes one reused
+1-MiB buffer at a time and counts every byte a write accepted, partial writes included. It now
+syncs after every `FILL_SYNC_BYTES` (64 MiB) written. After the filesystem refuses a write with
+ENOSPC or EDQUOT, it syncs once more before it reads `statvfs`. A refused write alone does not
+show that the data before it was committed. That last sync's own error is the fill's stop: a
+delayed ENOSPC or EDQUOT stays a capacity refusal at `fsync`, and EIO or any other errno refuses
+as an error. A sync answered after the fill's bound is the deadline's, and the refused write's
+errno is cleared. Unchanged:
+
+- `fill_refusal`: progress, the byte limit, under two chunks free, and a clean removal.
+- `af.perf-capabilities/2` and its reader.
+- `FILL_SECONDS_MAX` (600 s), `FILL_CLEANUP_SECONDS` (30 s) and the 120 s telemetry cap.
+- The 8-GiB build ceiling, every run, sample and container limit, and the machine lock and
+  fence.
+- The abandoned worker's close-only rule.
+
+The guarded harness inventory was re-pinned with the unchanged generator.
+
+**Focused commands**, from the sandbox root:
+
+```sh
+python3 -I -B -c 'import sys,unittest; sys.path.insert(0,"scripts/performance"); unittest.main(module=None,argv=["unittest","tests.test_supervise","tests.test_contracts","tests.test_kernelguard","tests.test_runner.Preflight","tests.test_runner.HostCancellation","tests.test_continuous.HostedScratch","tests.test_telemetry_build_bounds","tests.test_telemetry_cleanup"],verbosity=1)'
+python3 -I scripts/performance/cli.py harness-digest --write
+python3 -I scripts/performance/cli.py harness-digest --check
+python3 -I -B scripts/performance/schemas.py
+python3 -I scripts/test-classes.py audit
+python3 -I -B scripts/changelog-notes.py --check
+cargo nextest run --workspace --locked --profile ci -E 'binary_id(af::it) & test(/^perf_kernel_measure::/)'
+```
+
+**Results.**
+
+- **Capability tests.** The 17 `test_supervise.Capabilities` tests pass. On the base
+  `capability.py`, 9 of them fail: every new test and the two updated ones.
+- **The regression.**
+  `test_one_sync_per_mib_misses_an_8_gib_check_that_batched_syncs_verify` models the Claw
+  scratch without storing anything. A sync costs 60.7 ms plus its unsynced bytes at 250 MB/s,
+  and the filesystem holds 160 MiB less than its 8 GiB.
+  - The old per-MiB sync stops at the fill's time bound. Run unpatched on the base, it wrote
+    1,454,374,912 bytes, within 0.3% of the observed figure.
+  - The new fill reaches the virtual capacity by ENOSPC. It verifies the bound after
+    41 virtual seconds, inside the 90 s it has.
+- **Adversarial tests.** Further tests cover:
+  - a final-sync ENOSPC or EDQUOT, which verifies, and an EIO, which refuses;
+  - delayed refusals at a periodic sync;
+  - a partial last write;
+  - the byte limit, with one periodic sync before it;
+  - a late periodic sync and a late final sync;
+  - a final sync blocked at the deadline, after which the worker only closes its descriptor.
+- **Inventory and schema checks.** `harness-digest --check`, `schemas.py`, `test-classes.py
+  audit` and `changelog-notes.py --check` exited 0. The new digest is
+  `sha256:45c9f615e81fc95661e362bb39ee0028c44d283876b97970053e385410b13a85`.
+- **Rust checks.** No Rust source changed. `cargo fmt --all --check` and `cargo clippy
+  --workspace --all-targets -- -D warnings` passed on the pinned 1.88.0. Homebrew's cargo
+  1.94 was first on `PATH`, and its clippy fails in the unchanged `review-process` crate.
+- **Kernel guard.** The `perf_kernel_measure` filter: **8 passed**, including
+  `guarded_kernel_experiments_refuse_every_tampered_harness` (95.3 s) over the re-pinned
+  inventory.
+- **One failure that is not this change.**
+  `ContainedSample.test_a_late_confirmation_in_real_time_is_unconfirmed` failed here. It
+  failed alone and twice on a scratch copy of the base. It tests `supervise.remove_container`
+  with a 0.2 s real-time allowance at a load of about 14, and this change does not touch it.
+- **A flake.** `HostCancellation.test_a_seed_writer_that_never_confirms_its_end_keeps_the_seed_store`
+  failed once in the combined run, as `run_deadline`, and passed alone.
+
+**Not claimed.** The model's rates are illustrative. If Claw's real flush bandwidth is far
+below 100 MB/s, no sync schedule fills 8 GiB in 90 s. Still owned by the coordinator after
+acceptance:
+
+- an unchanged-budget 8-GiB fill on Linux;
+- a new telemetry original on Claw, clearly distinguished from the first.
+
+No VM, SSH, benchmark, `make check` or whole suite ran here.
+
+**Integration with a newer main.** The accepted change was later applied to a newer main.
+`capability.py` and `test_supervise.py` match the accepted bytes exactly. The two kernel-measure
+fixtures were the only conflicts. They were regenerated with that main's unchanged
+`harness-digest --write`, and `--check` exited 0. The digest above belongs to the accepted
+source only. The integrated tree's digest is
+`sha256:9363f32dc9397b388178adc1b423a9bc676c2a9a77db366c52644bbcdda54f9b`. The 17
+`test_supervise.Capabilities` tests, `test_kernelguard`, `test_contracts`, `schemas.py`,
+`test-classes.py audit` and `changelog-notes.py --check` passed there.
