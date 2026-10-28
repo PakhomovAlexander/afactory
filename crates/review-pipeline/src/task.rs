@@ -29,6 +29,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::sync::{Mutex, atomic::AtomicBool};
 use std::time::{Instant, SystemTime, UNIX_EPOCH};
 
+use review_core::task::diff_subject::{DIFF_SUBJECT_PORT, DIFF_SUBJECT_V1};
 use review_core::task::execution::*;
 use review_core::task::{ArtifactInputV1, TaskRevisionV1};
 use review_core::{ArtifactEnvelope, Producer};
@@ -237,6 +238,15 @@ fn refuse_billing<T>(outputs: &mut Result<T, String>, refusal: &str) {
         Ok(_) => refusal.into(),
     };
     *outputs = Err(error);
+}
+
+/// Whether the Attempt wall ended a failed Worker (ADR-0257): its runner killed it at the
+/// deadline it was given, which is the remaining Attempt wall, or that wall has passed on the
+/// Store's clock, the clock that stamped the reservation's deadline. A wall end is not a
+/// malformed reply or a Provider failure, whatever words the Worker's failure carries.
+pub(crate) fn attempt_wall_reached(attempt: &PreparedTaskAttempt, error: &str) -> bool {
+    let now = review_store::store::task::now().unwrap_or(0);
+    review_runner::model::names_timed_out(error) || now >= attempt.reservation().deadline_unix_ms
 }
 
 fn artifact_map(values: &BTreeMap<String, ArtifactInputV1>) -> ArtifactMap {
@@ -674,6 +684,21 @@ impl<'store, 'host> TaskRuntime<'store, 'host> {
             value.validate()?;
             typed.insert(port.name.clone(), value);
         }
+        // A judging Worker's Diff Subject is the kernel's to supply, never a Pipeline's: the
+        // change between the base it reads at `../base` and its source (ADR-0254).
+        let declares = resolved
+            .definition
+            .contract
+            .inputs
+            .get(DIFF_SUBJECT_PORT)
+            .is_some_and(|port| port.artifact_type == DIFF_SUBJECT_V1);
+        if declares
+            && let Some(source) = typed.get("source")
+            && let Some(subject) =
+                source::kernel_diff_subject(self.cas, &self.plan_id, &node.id, source)?
+        {
+            typed.insert(DIFF_SUBJECT_PORT.into(), subject);
+        }
         Ok(typed)
     }
 
@@ -791,6 +816,85 @@ fn starts_a_worker(operator: &CompiledOperator) -> bool {
 }
 
 impl TaskRuntime<'_, '_> {
+    /// Record the end of an Attempt its wall stopped (ADR-0257): one
+    /// `af/TaskAttemptWallEnd@1` among the Attempt's raw evidence, naming the partial tree the
+    /// host kept, and the Attempt's error led by what happened in those words. Returns the
+    /// record's ID.
+    fn record_wall_end(
+        &self,
+        input: &TaskInvocationV1,
+        attempt: &PreparedTaskAttempt,
+        wall_ms: u64,
+        elapsed_ms: u64,
+        worker: Option<&str>,
+        result: &mut TaskWorkOutput,
+    ) -> Result<String, String> {
+        use review_core::task::attempt_wall::*;
+        let mut partial = None;
+        for id in &result.raw_artifact_ids {
+            // Raw captures share this list with typed records and need not be envelopes.
+            let Ok(Some(envelope)) = self.cas.get_optional_artifact(id) else {
+                continue;
+            };
+            if envelope.artifact_type == TASK_PARTIAL_CANDIDATE_V1 {
+                let record: TaskPartialCandidateV1 =
+                    serde_json::from_value(envelope.payload).map_err(|e| e.to_string())?;
+                record.validate()?;
+                partial = Some((id.clone(), record));
+            }
+        }
+        let end = TaskAttemptWallEndV1 {
+            schema: TASK_ATTEMPT_WALL_END_SCHEMA.into(),
+            task_id: self.lease.task_id().into(),
+            node: input.node.clone(),
+            attempt_id: attempt.id().into(),
+            wall_ms,
+            elapsed_ms,
+            partial_candidate_id: partial.as_ref().map(|(id, _)| id.clone()),
+        };
+        end.validate()?;
+        let (id, _) = self
+            .cas
+            .put_artifact(
+                TASK_ATTEMPT_WALL_END_V1,
+                Producer::Attempt {
+                    run_id: task_run_id(self.lease.task_id()).map_err(|e| e.to_string())?,
+                    node_id: input.node.clone(),
+                    attempt_id: attempt.id().into(),
+                },
+                end.partial_candidate_id.iter().cloned().collect(),
+                None,
+                serde_json::to_value(&end).map_err(|e| e.to_string())?,
+            )
+            .map_err(|e| e.to_string())?;
+        // Durable before the rest of the Attempt is published: a writer lost from here on
+        // leaves its successor this record to settle the Attempt from (ADR-0257).
+        self.cas.flush().map_err(|e| e.to_string())?;
+        self.store
+            .lock()
+            .expect("Task Store")
+            .record_task_attempt_wall_end(
+                &task_run_id(self.lease.task_id()).map_err(|e| e.to_string())?,
+                attempt.id(),
+                &id,
+            )
+            .map_err(|error| format!("Cannot keep the Attempt wall end: {error}"))?;
+        result.raw_artifact_ids.push(id.clone());
+        if let Err(error) = &mut result.outputs {
+            let kept = match &partial {
+                Some((partial_id, record)) => format!(
+                    "; its edits ({} path{}) are kept as partial candidate {partial_id}, never \
+                     accepted, verified or delivered on its own; a continuation starts from them",
+                    record.changed_paths,
+                    if record.changed_paths == 1 { "" } else { "s" }
+                ),
+                None => String::new(),
+            };
+            *error = format!("{}{kept}; {error}", end.describe(worker));
+        }
+        Ok(id)
+    }
+
     fn capture_invocation(&self, input: &TaskInvocationV1) -> Result<String, String> {
         input.validate()?;
         if input.plan_id != self.plan_id {
@@ -970,6 +1074,26 @@ impl TaskRuntime<'_, '_> {
             if let (Err(error), Some(slot)) = (&mut result.outputs, slot.as_deref()) {
                 *error = review_runner::model::name_timed_out_worker(error, slot);
             }
+            // A Worker Attempt its wall ended says so first, with the wall and the time it took,
+            // and records it as typed raw evidence beside the partial tree a writer left
+            // (ADR-0257). The Attempt is still a failed one: charged and counted as every
+            // failed Attempt is.
+            // The record is written once the Attempt's usage is retained, so a CAS failure
+            // while it is written cannot lose the counters the Worker reported (ADR-0068).
+            let wall_reached = match (&attempt, &result.outputs, allowance) {
+                (Some(attempt), Err(error), Some(allowance))
+                    if slot.is_some()
+                        && attempt_wall_reached(attempt, error)
+                        && control::check(self.cancellation).is_ok() =>
+                {
+                    Some((
+                        allowance.wall_ms_per_attempt,
+                        timer.elapsed().as_millis() as u64,
+                    ))
+                }
+                _ => None,
+            };
+            let mut wall_ended = None;
             let refused_input = result.refused_input;
             // The kernel's accounting of the Attempt's usage, one `af.usage.account` span.
             let usage_span = if attempt.is_some() {
@@ -1058,6 +1182,18 @@ impl TaskRuntime<'_, '_> {
                     None => store.record_task_attempt_wall(&wall),
                 }
                 .map_err(|error| format!("Cannot retain Task usage before publication: {error}"))?;
+                drop(store);
+                if let Some((wall_ms, elapsed_ms)) = wall_reached {
+                    wall_ended = Some(self.record_wall_end(
+                        input,
+                        attempt,
+                        wall_ms,
+                        elapsed_ms,
+                        slot.as_deref(),
+                        &mut result,
+                    )?);
+                }
+                let store = self.store.lock().expect("Task Store");
                 // SQL-only reads remain available through CAS failure. A repeated measurement
                 // cannot erase earlier incompleteness or lower the effective sidecar floor.
                 let observation = store
@@ -1214,7 +1350,17 @@ impl TaskRuntime<'_, '_> {
                         TaskAttemptResultV1::Abandoned { diagnostic_id }
                     }
                     Err(error) => {
-                        let diagnostic_id = self.cas.put_json(&serde_json::json!({"schema":"af.task-diagnostic/1", "error":error})).map_err(|e| e.to_string())?;
+                        // The closed class of a failure af knows better than its words: the
+                        // Attempt wall, or the Provider's environment (ADR-0257).
+                        let mut diagnostic =
+                            serde_json::json!({"schema":"af.task-diagnostic/1", "error":error});
+                        if wall_ended.is_some() {
+                            diagnostic["cause"] = "attempt_wall".into();
+                        } else if result.notes.environment {
+                            diagnostic["cause"] = "environment".into();
+                        }
+                        let diagnostic_id =
+                            self.cas.put_json(&diagnostic).map_err(|e| e.to_string())?;
                         TaskAttemptResultV1::Failed {
                             diagnostic_id,
                             feedback_id: result.feedback_id,

@@ -165,7 +165,7 @@ fn keeping_one_collects_the_older_task_and_removes_exactly_the_previewed_bytes()
 
     // Sizes: each Task's own bytes and the bytes it shares — the source Snapshot, at least.
     let sized = json_of(&repo, &state, &["task", "list", "--sizes"], 0);
-    let entries = schemas::validator("task-list-entry-v3.json");
+    let entries = schemas::validator("task-list-entry-v4.json");
     for task in sized["tasks"].as_array().unwrap() {
         schemas::valid(&entries, task);
         assert!(
@@ -303,7 +303,7 @@ fn keeping_one_collects_the_older_task_and_removes_exactly_the_previewed_bytes()
     );
     let shown = json_of(&repo, &state, &["task", "show", "gc-older"], 0);
     schemas::valid(
-        &schemas::validator("task-collected-inspection-v2.json"),
+        &schemas::validator("task-collected-inspection-v3.json"),
         &shown,
     );
     assert_eq!(shown["collected"], gone["collected"]);
@@ -433,7 +433,7 @@ fn a_bound_task_is_never_collected_and_the_preview_names_its_binder() {
     );
     assert_eq!(entry(&next, "chain-base")["disposition"]["kind"], "collect");
     let kept = json_of(&repo, &state, &["task", "show", "chain-base"], 0);
-    assert_eq!(kept["schema"], "af/task-inspection@13");
+    assert_eq!(kept["schema"], "af/task-inspection@14");
 }
 
 #[test]
@@ -476,7 +476,7 @@ fn a_sweep_stopped_after_the_tombstone_is_finished_by_the_next_run() {
     let cas = Cas::open_existing(state.join("cas")).unwrap();
     assert!(cas.is_filed(older["revision_id"].as_str().unwrap()));
     let shown = json_of(&repo, &state, &["task", "show", "gc-older"], 0);
-    assert_eq!(shown["schema"], "af/task-collected-inspection@2");
+    assert_eq!(shown["schema"], "af/task-collected-inspection@3");
     let listed = json_of(&repo, &state, &["task", "list"], 0);
     assert!(entry(&listed, "gc-older")["collected"].is_object());
 
@@ -565,5 +565,5 @@ fn a_campaign_keeps_every_object_its_records_reach_when_its_task_is_collected() 
     let store = review_store::EventStore::open_read_only(state.join("events.sqlite")).unwrap();
     assert_eq!(store.replay("campaign-keeps").unwrap().len(), 1);
     let shown = json_of(&repo, &state, &["task", "show", "gc-older"], 0);
-    assert_eq!(shown["schema"], "af/task-collected-inspection@2");
+    assert_eq!(shown["schema"], "af/task-collected-inspection@3");
 }

@@ -216,6 +216,32 @@ def side_versions(git, plan):
     return versions
 
 
+# The check receipt of ADR-0255. A side whose source holds this schema writes
+# `af/TaskCheckReceipt@2` and refuses `@1` by name; a source before it writes `@1`.
+RECEIPT_V2_SCHEMA = "schemas/task-check-receipt-v2.json"
+RECEIPTS = ("receipt-v1", "receipt-v2")
+
+
+def side_receipts(git, plan):
+    """Each measured side's check-receipt generation, from the source commit the plan resolved
+    for it, never from the binary's output: `receipt-v2` when that source holds the ADR-0255
+    receipt schema, `receipt-v1` before it. The task fixture's setup declares the receipt its
+    side's AF writes, so a pair across ADR-0255 measures the same Task on both sides."""
+    receipts = {}
+    for side, key in ((contracts.SIDES[0], "baseline_sha"), (contracts.SIDES[1], "candidate_sha")):
+        sha = plan["resolved"][key]
+        receipts[side] = RECEIPTS[git.read_file(sha, RECEIPT_V2_SCHEMA) is not None]
+    return receipts
+
+
+def setup_argument(entry, receipts, side, seed_argument):
+    """The fifth argument of `cli/setup.sh` for `entry`'s setup: the side's receipt generation
+    for a task-repository setup, which reads no seed; otherwise the seed's path or `-`."""
+    if entry["setup"] in ("task_repository", "task_started"):
+        return receipts.get(side, RECEIPTS[1])
+    return seed_argument
+
+
 def _version_key(text):
     return gitrefs.version_key(gitrefs.parse_version(text))
 

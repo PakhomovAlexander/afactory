@@ -20,10 +20,10 @@ fn review_continuation_inspection_preserves_exact_history_and_historical_plans()
         cli(repo.path(), state, &["task", "explain", "heavy-review"]),
         0,
     );
-    let schema = validator("task-inspection-v13.json");
+    let schema = validator("task-inspection-v14.json");
     for value in [&shown, &explained] {
         valid(&schema, value);
-        assert_eq!(value["schema"], "af/task-inspection@13");
+        assert_eq!(value["schema"], "af/task-inspection@14");
         assert_eq!(value["chargeable_tokens"], "5");
         assert_eq!(value["review_handoffs"].as_array().unwrap().len(), 1);
         assert!(
@@ -56,7 +56,7 @@ fn review_continuation_inspection_preserves_exact_history_and_historical_plans()
     assert_ne!(original["plan_id"], shown["plan_id"]);
     let listed = json_output(cli(repo.path(), state, &["task", "list"]), 0);
     assert_eq!(listed["tasks"].as_array().unwrap().len(), 1);
-    valid(&validator("task-list-entry-v3.json"), &listed["tasks"][0]);
+    valid(&validator("task-list-entry-v4.json"), &listed["tasks"][0]);
     assert_eq!(listed["tasks"][0]["chargeable_tokens"], "5");
     assert_eq!(store.replay(&task_run).unwrap(), before_task);
     assert_eq!(store.replay("review").unwrap(), before_review);

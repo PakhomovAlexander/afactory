@@ -25,20 +25,46 @@ from tests import telemetry_fixtures as fx
 from tests.support import TempDir, writable_copy
 from tests.telemetry_subreaper import state, thread_states
 
+# The stand-in container's init: it starts the command as the leader of a session of its own and
+# holds it as its unreaped child, so that group's ID stays reserved for it, and it alone ends that
+# group: when `rm` asks (the stop file) or when the `run` client that started it is gone (its pipe
+# closes). No other process signals the container, by a recorded ID or otherwise (issue #331).
+# A group whose every live member ended between the poll and the signal is gone already
+# (`ProcessLookupError`): the container has ended, so it is still reaped and said to be.
+INIT = r"""
+import os, select, signal, subprocess, sys
+pipe, stop, ended = int(sys.argv[1]), sys.argv[2], sys.argv[3]
+child = subprocess.Popen(sys.argv[4:], start_new_session=True)
+while child.poll() is None:
+    closed, _, _ = select.select([pipe], [], [], 0.05)
+    if closed or os.path.exists(stop):
+        try:
+            os.killpg(child.pid, signal.SIGKILL)
+        except ProcessLookupError:
+            pass
+        break
+code = child.wait()
+open(ended, "w").close()
+sys.exit(code)
+"""
+
 DOCKER = r'''
-import json, os, signal, subprocess, sys
+import json, os, subprocess, sys, time
 here = os.path.dirname(os.path.abspath(sys.argv[0]))
 args = sys.argv[1:]
+# INIT
 with open(os.path.join(here, "docker-calls.jsonl"), "a") as log:
     log.write(json.dumps(args) + "\n")
 if args[0] == "rm":
     name = args[-1]
-    marker = os.path.join(here, name + ".pid")
-    if os.path.exists(marker):
-        try:
-            os.killpg(int(open(marker).read()), signal.SIGKILL)
-        except OSError:
-            pass
+    base = os.path.join(here, name)
+    if os.path.exists(base + ".started"):
+        # Asked of the container's init, never signalled from here; `rm --force` returns once
+        # the container has ended, as docker's does.
+        open(base + ".stop", "w").close()
+        deadline = time.monotonic() + 30
+        while not os.path.exists(base + ".ended") and time.monotonic() < deadline:
+            time.sleep(0.01)
     sys.exit(0)
 if args[0] == "ps":
     # A removal the runtime cannot confirm: the container is still listed.
@@ -55,11 +81,16 @@ while "=" in rest[index] and not rest[index].startswith("/"):
     key, value = rest[index].split("=", 1)
     env[key] = value
     index += 1
-child = subprocess.Popen(rest[index:], env=env, cwd=workdir, start_new_session=True)
-with open(os.path.join(here, name + ".pid"), "w") as stream:
-    stream.write(str(child.pid))
-sys.exit(child.wait())
+base = os.path.join(here, name)
+read, write = os.pipe()
+init = subprocess.Popen([sys.executable, "-I", "-c", INIT, str(read), base + ".stop",
+                         base + ".ended"] + rest[index:], env=env, cwd=workdir,
+                        start_new_session=True, pass_fds=[read])
+os.close(read)
+open(base + ".started", "w").close()
+sys.exit(init.wait())
 '''
+DOCKER = DOCKER.replace("# INIT\n", "INIT = %r\n" % INIT)
 
 
 class Image(object):
@@ -455,6 +486,53 @@ class AncestorSubreaper(TempDir):
                             for _, status in evidence["final_threads"][1]), evidence)
         self.assertIn("cleanup was not confirmed", evidence["failure"])
         self.assertLess(elapsed, 20)
+
+
+def exited_unreaped(pid, bound=10):
+    """Return once our child `pid` has exited, leaving it unreaped for its own parent.
+
+    `os.waitid` is missing on macOS's Python 3.9 (ADR-0162): there the process state `Z`
+    observes the same thing, and a child can only read as a zombie while still unreaped.
+    """
+    if hasattr(os, "waitid"):
+        os.waitid(os.P_PID, pid, os.WEXITED | os.WNOWAIT)
+        return
+    until = time.monotonic() + bound
+    while True:
+        stat = subprocess.run(["ps", "-o", "stat=", "-p", str(pid)], stdout=subprocess.PIPE,
+                              universal_newlines=True, check=False).stdout.strip()
+        if stat.startswith("Z"):
+            return
+        if not stat:
+            raise AssertionError("child %d was reaped before its parent saw it end" % pid)
+        if time.monotonic() >= until:
+            raise TimeoutError("child %d did not exit within %ds" % (pid, bound))
+        time.sleep(0.01)
+
+
+class ContainerInit(TempDir):
+    """The stand-in container's init, run here as `docker run` runs it."""
+
+    def test_a_group_that_ended_before_the_signal_is_still_reaped_and_said_ended(self):
+        # The command exits between the init's poll and its signal: the group is gone
+        # (`ProcessLookupError`), and `rm` must still see the container end at once.
+        read, write = os.pipe()
+        self.addCleanup(os.close, read)
+        self.addCleanup(os.close, write)
+        stop, ended = self.path("x1.stop"), self.path("x1.ended")
+        open(stop, "w").close()
+
+        def raced(pgid, sent):
+            exited_unreaped(pgid)
+            raise ProcessLookupError(errno.ESRCH, "No such process")
+
+        argv = ["init", str(read), stop, ended, sys.executable, "-I", "-c", "pass"]
+        with mock.patch.object(sys, "argv", argv), \
+                mock.patch.object(os, "killpg", side_effect=raced) as sent, \
+                self.assertRaises(SystemExit) as exited:
+            exec(INIT, {"__name__": "__main__"})
+        self.assertEqual((sent.call_count, exited.exception.code), (1, 0))
+        self.assertTrue(os.path.exists(ended), "the init says the container ended")
 
 
 class ContainedBase(TempDir):

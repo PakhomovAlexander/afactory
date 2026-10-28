@@ -14,12 +14,12 @@ use super::usage::DecimalU128;
 use super::{is_name, require};
 use crate::is_digest;
 
-pub const TASK_FINDINGS_V1: &str = "af/task-findings@1";
+pub const TASK_FINDINGS_V2: &str = "af/task-findings@2";
 pub const TASK_MATERIALIZED_V1: &str = "af/task-materialized@1";
 pub const TASK_DIFF_V1: &str = "af/task-diff@1";
-pub const TASK_STATUS_V1: &str = "af/task-status@1";
-pub const TASK_DETACHED_V2: &str = "af/task-detached@2";
-pub const TASK_CANCELLED_V1: &str = "af/task-cancelled@1";
+pub const TASK_STATUS_V2: &str = "af/task-status@2";
+pub const TASK_DETACHED_V3: &str = "af/task-detached@3";
+pub const TASK_CANCELLED_V2: &str = "af/task-cancelled@2";
 pub const TASK_RUN_PROCESS_V1: &str = "af/task-run-process@1";
 pub const TASK_CANCEL_REQUEST_V1: &str = "af/task-cancel-request@1";
 
@@ -43,7 +43,7 @@ fn schema_is(actual: &str, expected: &str) -> Result<(), String> {
 /// `evaluation` when no evaluator recorded a verdict.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
-pub struct TaskFindingsV1 {
+pub struct TaskFindingsV2 {
     pub schema: String,
     pub task_id: String,
     pub state: TaskStateV1,
@@ -125,9 +125,9 @@ pub struct TaskFindingsEvaluationV1 {
     pub reason: String,
 }
 
-impl TaskFindingsV1 {
+impl TaskFindingsV2 {
     pub fn validate(&self) -> Result<(), String> {
-        schema_is(&self.schema, TASK_FINDINGS_V1)?;
+        schema_is(&self.schema, TASK_FINDINGS_V2)?;
         require(is_name(&self.task_id), "Findings name an exact Task")?;
         self.state.validate()?;
         if let Some(round) = &self.round {
@@ -383,7 +383,7 @@ impl TaskCancelRequestV1 {
 /// that stopped it.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
-pub struct TaskStatusV1 {
+pub struct TaskStatusV2 {
     pub schema: String,
     pub task_id: String,
     pub state: TaskStateV1,
@@ -398,9 +398,9 @@ pub struct TaskStatusV1 {
     pub cancel: Option<TaskCancelRequestV1>,
 }
 
-impl TaskStatusV1 {
+impl TaskStatusV2 {
     pub fn validate(&self) -> Result<(), String> {
-        schema_is(&self.schema, TASK_STATUS_V1)?;
+        schema_is(&self.schema, TASK_STATUS_V2)?;
         require(is_name(&self.task_id), "A status names an exact Task")?;
         self.state.validate()?;
         if let Some(run) = &self.run {
@@ -421,7 +421,7 @@ impl TaskStatusV1 {
 /// next command, or null, for a run that ended.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
-pub struct TaskDetachedV2 {
+pub struct TaskDetachedV3 {
     pub schema: String,
     pub task_id: String,
     pub run: u64,
@@ -434,9 +434,9 @@ pub struct TaskDetachedV2 {
     pub next_action: Option<String>,
 }
 
-impl TaskDetachedV2 {
+impl TaskDetachedV3 {
     pub fn validate(&self) -> Result<(), String> {
-        schema_is(&self.schema, TASK_DETACHED_V2)?;
+        schema_is(&self.schema, TASK_DETACHED_V3)?;
         require(
             is_name(&self.task_id)
                 && self.run >= 1
@@ -458,16 +458,16 @@ impl TaskDetachedV2 {
 /// `af task cancel ID --json`: the request it recorded and the state the Task is left in.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
-pub struct TaskCancelledV1 {
+pub struct TaskCancelledV2 {
     pub schema: String,
     pub task_id: String,
     pub request: TaskCancelRequestV1,
     pub state: TaskStateV1,
 }
 
-impl TaskCancelledV1 {
+impl TaskCancelledV2 {
     pub fn validate(&self) -> Result<(), String> {
-        schema_is(&self.schema, TASK_CANCELLED_V1)?;
+        schema_is(&self.schema, TASK_CANCELLED_V2)?;
         require(
             is_name(&self.task_id) && self.request.task_id == self.task_id,
             "A cancellation names its Task and that Task's request",
@@ -502,8 +502,8 @@ mod tests {
 
     #[test]
     fn a_round_counts_its_reviewers_findings_by_severity() {
-        let mut document = TaskFindingsV1 {
-            schema: TASK_FINDINGS_V1.into(),
+        let mut document = TaskFindingsV2 {
+            schema: TASK_FINDINGS_V2.into(),
             task_id: "t".into(),
             state: TaskStateV1::ended(TaskStatePhaseV1::Finished, TaskOutcomeV1::Verified, None),
             rounds: 1,

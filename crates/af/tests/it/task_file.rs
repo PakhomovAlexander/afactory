@@ -812,7 +812,7 @@ print(json.dumps({'type':'turn.failed','error':{'message':'fixture failed after 
             String::from_utf8_lossy(&output.stderr)
         );
         let result: Value = serde_json::from_slice(&output.stdout).unwrap();
-        assert_eq!(result["schema"], "af/task-inspection@13");
+        assert_eq!(result["schema"], "af/task-inspection@14");
         assert_eq!(result["chargeable_tokens"], exact.to_string());
         assert_eq!(result["result"]["domain_conclusion"], "incomplete");
         assert_eq!(std::fs::read_to_string(&calls).unwrap().lines().count(), 1);
@@ -823,8 +823,8 @@ print(json.dumps({'type':'turn.failed','error':{'message':'fixture failed after 
         let listed = run(&["task", "list"]);
         assert!(listed.status.success());
         let listed: Value = serde_json::from_slice(&listed.stdout).unwrap();
-        assert_eq!(listed["schema"], "af/task-list@3");
-        assert_eq!(listed["tasks"][0]["schema"], "af/task-list-entry@3");
+        assert_eq!(listed["schema"], "af/task-list@4");
+        assert_eq!(listed["tasks"][0]["schema"], "af/task-list-entry@4");
         assert_eq!(listed["tasks"][0]["chargeable_tokens"], exact.to_string());
         let text = crate::common::af()
             .current_dir(&repo)
@@ -1355,7 +1355,7 @@ fn plan_then_run_uses_captured_inputs_and_does_not_repeat_finished_attempts() {
     let temp = tempfile::tempdir().unwrap();
     let (repo, state) = fixture(temp.path());
     let planned = af(&repo, &state, &["plan", "--file", "ticket.json"]);
-    assert_eq!(planned["schema"], "af/task-inspection@13");
+    assert_eq!(planned["schema"], "af/task-inspection@14");
     assert_eq!(planned["attempts"], 0);
     assert!(planned["plan"].is_object());
     assert!(planned["graph"].is_object());

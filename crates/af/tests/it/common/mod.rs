@@ -10,6 +10,11 @@ use std::process::Command;
 #[path = "../../../../review-process/tests/support/executables.rs"]
 mod executables;
 
+/// A process a test only read the ID of, signalled only while that ID still names it (issue
+/// #331 item 7).
+#[path = "../../../../review-process/tests/support/recorded.rs"]
+pub mod recorded;
+
 /// The binary under test as this test process starts it: its own link to the `af` cargo built
 /// for these tests, taken under the boundary every test builder and launcher of a workspace
 /// output shares (ADR-0174). `review-pipeline`'s tests build `af` again, and every cargo build

@@ -1,8 +1,8 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "$id": "urn:af:schema:task-list-entry:3",
-  "title": "Task list entry af/task-list-entry@3",
-  "$comment": "One common Task entry in `af task list --json`, inside `af/task-list@3`. `state` is the one state every rendering prints (`af help task-states`); `phase` is the phase the Store recorded. An absent snapshot and an absent delivery are explicit nulls. Identity and charge consistency are checked by Store projection, not by this structural schema.",
+  "$id": "urn:af:schema:task-list-entry:4",
+  "title": "Task list entry af/task-list-entry@4",
+  "$comment": "One common Task entry in `af task list --json`, inside `af/task-list@4`. `state` is the one state every rendering prints (`af help task-states`); `phase` is the phase the Store recorded. An absent snapshot and an absent delivery are explicit nulls. Identity and charge consistency are checked by Store projection, not by this structural schema.",
   "type": "object",
   "additionalProperties": false,
   "required": [
@@ -19,7 +19,7 @@
   ],
   "properties": {
     "schema": {
-      "const": "af/task-list-entry@3"
+      "const": "af/task-list-entry@4"
     },
     "task_id": {
       "$ref": "urn:af:schema:task-contracts:1#/$defs/name"
@@ -31,11 +31,11 @@
       "$ref": "urn:af:schema:task-contracts:1#/$defs/taskPhase"
     },
     "state": {
-      "$ref": "urn:af:schema:task-state:1#/$defs/state"
+      "$ref": "urn:af:schema:task-state:2#/$defs/state"
     },
     "gate": {
       "description": "The last check receipt's summary, as `af task show --json` carries it; absent before a check recorded one and for a collected Task.",
-      "$ref": "urn:af:schema:task-state:1#/$defs/gate"
+      "$ref": "urn:af:schema:task-state:2#/$defs/gate"
     },
     "round": {
       "description": "The review round the Task is in: rounds handed to a successor plan plus the one its current execution recorded; 0 before a review recorded a round and for a collected Task.",
@@ -63,7 +63,7 @@
     "delivery": {
       "anyOf": [
         {
-          "$ref": "urn:af:schema:task-inspection:13#/$defs/deliveryReceipt"
+          "$ref": "urn:af:schema:task-inspection:14#/$defs/deliveryReceipt"
         },
         {
           "type": "null"

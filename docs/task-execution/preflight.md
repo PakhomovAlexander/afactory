@@ -29,7 +29,7 @@ None means accepted, approved or safe to dispatch. The tool does not execute ano
 based on its result. Use `--now-unix-ms` only to reproduce a report at an explicit historical
 clock; the real AF deadline still applies at dispatch.
 
-The helper consumes `af/task-inspection@13` with `plan` and `graph` present, as produced by
+The helper consumes `af/task-inspection@14` with `plan` and `graph` present, as produced by
 `af task explain --json`. `af task show` without these sections is insufficient. Unsupported
 formats are rejected rather than silently guessed. It validates the fields it uses, not the
 entire AF schema or CAS history.

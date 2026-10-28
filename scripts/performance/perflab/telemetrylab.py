@@ -59,8 +59,8 @@ from types import MappingProxyType
 
 from . import budget as deadlines
 from . import admission, bundle, contracts, host, jsonsubset, render, telemetryexec, tomlfile
-from .values import (ContractError, canonical_digest, check_relative_path, format_decimal,
-                     format_rational, require, sha256_bytes)
+from .values import (ContractError, add_note, canonical_digest, check_relative_path,
+                     format_decimal, format_rational, require, sha256_bytes)
 
 ROOT = jsonsubset.ROOT
 REGISTRY_PATH = "fixtures/performance/telemetry.toml"
@@ -1063,14 +1063,14 @@ def run(settings, machine_lease=None):
                     _sync(deadlines.Budget(deadline, settings.clock, 0),
                           "settling unused telemetry work", settings.scratch_owner.work_cleaned)
                 except BaseException as settlement:
-                    error.add_note("Unused work fence settlement unconfirmed: %s" % settlement)
+                    add_note(error, "Unused work fence settlement unconfirmed: %s" % settlement)
             if preparation.no_work and machine_lease is None:
                 locks[-1].confirm_clean()
             recovery = "Recovery work: %s" % work
             if settings.scratch_owner is not None:
                 recovery += "; ownership: %s; mount: %s" % (
                     settings.scratch_owner.path, settings.scratch_owner.mount)
-            error.add_note(recovery)
+            add_note(error, recovery)
             # A torn terminal write is never an admitted complete bundle.
             terminal = deadlines.Budget(deadline, settings.clock, 0)
             def rollback():
@@ -1100,7 +1100,7 @@ def run(settings, machine_lease=None):
                 try:
                     _sync(terminal, "confirming stopped telemetry ownership", stopped_and_removed)
                 except BaseException as settlement:
-                    error.add_note("Machine cleanup remains unconfirmed: %s" % settlement)
+                    add_note(error, "Machine cleanup remains unconfirmed: %s" % settlement)
             raise
     finally:
         for lock in locks:

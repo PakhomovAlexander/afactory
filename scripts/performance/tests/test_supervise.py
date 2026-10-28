@@ -6,8 +6,10 @@ Rust integration test `crates/review-process/tests/perf_supervisor.rs`.
 import collections
 import copy
 import errno
+import io
 import json
 import os
+import signal
 import subprocess
 import sys
 import threading
@@ -17,7 +19,8 @@ from unittest import mock
 from perflab import capability, contracts, supervise
 from perflab import suite as suite_module
 from perflab.values import ContractError
-from tests.support import CLI, ROOT, SUITE, TempDir, fake_supervisor, read
+from tests.support import (CLI, FAKE_SUPERVISOR_EXECUTE, ROOT, SUITE, TempDir, fake_supervisor,
+                           held_child_argv, read, release_recorded)
 
 FIXTURES = os.path.join(ROOT, "fixtures/performance/schema")
 
@@ -240,6 +243,9 @@ class HostBackstop(TempDir):
         self.assertIs(caught.exception, interruption)
         self.assertIs(interruption.__cause__, original)
         self.assertTrue(interruption.supervisor_failure.uncertain)
+        # Python 3.9 has no `add_note` (ADR-0162); the note is carried the same way there.
+        self.assertEqual(original.__notes__,
+                         ["Supervisor cancellation unconfirmed: cleanup deadline"])
 
     def slow(self, seconds):
         fake = fake_supervisor(self.path("fake-supervisor"))
@@ -354,10 +360,8 @@ class HostBackstop(TempDir):
             stream.write("#!%s -I\nimport signal, subprocess, sys, time\n"
                          "signal.signal(signal.SIGTERM, signal.SIG_IGN)\n"
                          "sys.stdin.buffer.read()\n"
-                         "subprocess.Popen(['/bin/sh', '-c', 'echo $$ > %s.tmp && mv %s.tmp %s; "
-                         "exec sleep 60'], start_new_session=True)\n"
-                         "time.sleep(120)\n" % (sys.executable, child_marker, child_marker,
-                                                child_marker))
+                         "subprocess.Popen(%r, start_new_session=True)\n"
+                         "time.sleep(120)\n" % (sys.executable, held_child_argv(child_marker)))
         os.chmod(path, 0o755)
         started = time.monotonic()
         with self.assertRaises(supervise.SupervisorFailure) as caught:
@@ -372,7 +376,7 @@ class HostBackstop(TempDir):
             child = int(read(child_marker))
             os.kill(child, 0)
         finally:
-            end_owned_group(child_marker)
+            release_recorded(child_marker)
 
     def test_a_contained_launch_keeps_its_removal_time_before_the_deadline(self):
         # The cancellation reserve is 0.5 s; with a container, its removal's allowance is kept
@@ -407,24 +411,92 @@ class HostBackstop(TempDir):
         self.assertFalse(supervise.cleanup_confirmed(uncertain))
 
 
-def end_owned_group(marker):
-    """End the process group a test fixture started and recorded in `marker`, and wait until
-    its leader is gone; nothing else is signalled."""
-    try:
-        pid = int(read(marker))
-    except (OSError, ValueError):
-        return
-    try:
-        os.killpg(pid, 9)
-    except OSError:
-        return
-    deadline = time.monotonic() + 30
-    while time.monotonic() < deadline:
-        try:
-            os.kill(pid, 0)
-        except OSError:
-            return
-        time.sleep(0.01)
+class RecordedChild(TempDir):
+    """A fixture's child that this test does not hold is ended by asking it, never by a signal
+    to the ID its marker names: that ID may name another test's process by then (#331)."""
+
+    def test_a_released_child_ends_by_itself_and_nothing_is_signalled(self):
+        marker = self.path("marker")
+        # Started by another process, as a fixture's is: launchd or init reaps it.
+        subprocess.run([sys.executable, "-c", "import subprocess, sys; subprocess.Popen("
+                        "sys.argv[1:], start_new_session=True)"] + held_child_argv(marker),
+                       check=True)
+        deadline = time.monotonic() + 30
+        while not os.path.exists(marker) and time.monotonic() < deadline:
+            time.sleep(0.01)
+        with mock.patch.object(os, "kill") as kill, mock.patch.object(os, "killpg") as killpg:
+            release_recorded(marker)
+        self.assertEqual((kill.call_count, killpg.call_count), (0, 0))
+
+    def test_a_marker_naming_a_live_process_never_gets_it_signalled(self):
+        # The marker's ID names a live process this test holds, as a recycled ID would name
+        # another test's: it is left running, reported, and only its holder ends it.
+        held = subprocess.Popen(["sleep", "30"], start_new_session=True)
+        self.addCleanup(held.wait)
+        self.addCleanup(held.kill)
+        marker = self.path("marker")
+        with open(marker, "w") as stream:
+            stream.write(str(held.pid))
+        with mock.patch.object(sys, "stderr", io.StringIO()) as said:
+            self.assertFalse(release_recorded(marker, timeout=0.2))
+        self.assertIn("is not signalled", said.getvalue())
+        self.assertIsNone(held.poll(), "the process under the marker's ID still runs")
+        # A child that never recorded itself has nothing to end.
+        self.assertFalse(release_recorded(self.path("never-written")))
+
+
+class FakeSupervisorCancel(TempDir):
+    """The fake supervisor forwards a SIGTERM to its child's group only while it holds that
+    child unreaped: after the reap the group ID is free for another test's group (#331)."""
+
+    def setUp(self):
+        TempDir.setUp(self)
+        self.fake = {"os": os, "signal": signal, "subprocess": subprocess,
+                     "threading": threading, "time": time}
+        exec(FAKE_SUPERVISOR_EXECUTE, self.fake)
+        previous = signal.signal(signal.SIGTERM, self.fake["cancel"])
+        self.addCleanup(signal.signal, signal.SIGTERM, previous)
+        self.addCleanup(signal.pthread_sigmask, signal.SIG_UNBLOCK, {signal.SIGTERM})
+
+    def execute(self, code):
+        return self.fake["execute"]([sys.executable, "-I", "-c", code], b"",
+                                    {"PATH": "/usr/bin:/bin"}, self.path(), 30000)
+
+    def test_a_cancel_after_the_reap_signals_nothing(self):
+        termination = self.execute("pass")[0]
+        self.assertEqual(termination["kind"], "exited")
+        self.assertIsNone(self.fake["running"][0])
+        with mock.patch.object(os, "killpg") as sent:
+            self.fake["cancel"](signal.SIGTERM, None)
+        self.assertEqual(sent.call_count, 0)
+
+    def test_a_sigterm_raised_during_the_reap_runs_after_the_child_is_released(self):
+        reap, seen = os.waitpid, []
+
+        def reaped_then_cancelled(pid, options):
+            found = reap(pid, options)
+            if found[0] == pid:
+                # Pending until the reap is recorded, however it is scheduled.
+                signal.pthread_kill(threading.main_thread().ident, signal.SIGTERM)
+            return found
+
+        with mock.patch.object(os, "waitpid", side_effect=reaped_then_cancelled), \
+                mock.patch.object(os, "killpg", side_effect=lambda *a: seen.append(a)):
+            termination = self.execute("pass")[0]
+        self.assertTrue(self.fake["cancelled"][0], "the SIGTERM was handled")
+        self.assertEqual(termination["kind"], "cancelled")
+        self.assertEqual(seen, [], "a reaped child's group is never signalled")
+
+    def test_a_cancel_while_the_child_runs_ends_its_group(self):
+        main = threading.main_thread().ident
+        timer = threading.Timer(0.3, signal.pthread_kill, (main, signal.SIGTERM))
+        timer.start()
+        self.addCleanup(timer.cancel)
+        started = time.monotonic()
+        termination = self.execute("import time; time.sleep(30)")[0]
+        self.assertEqual(termination["kind"], "cancelled")
+        self.assertLess(time.monotonic() - started, 20)
+        self.assertIsNone(self.fake["running"][0])
 
 
 class Container(TempDir):

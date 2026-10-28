@@ -3,7 +3,7 @@
 //! with no usage report at capacity, ADR-0143), two
 //! Tasks of one Store (one of them later collected, and reported alone), and two Tasks under two
 //! pipelines, one whose review round recorded a major and a minor finding. Every `--json` document validates against
-//! `schemas/task-report-v2.json`, every Markdown block passes `scripts/check-pr-report.py` (beside
+//! `schemas/task-report-v3.json`, every Markdown block passes `scripts/check-pr-report.py` (beside
 //! the lines added block a description also carries, ADR-0195), and
 //! neither carries a Provider label, a path or an account the Store or the machine holds.
 
@@ -54,7 +54,7 @@ fn stdout(output: &Output) -> String {
 /// The `--json` document, validated against the published schema.
 fn document(repo: &Path, state: &Path, ids: &[&str]) -> Value {
     let value: Value = serde_json::from_str(&stdout(&report(repo, state, ids, true))).unwrap();
-    schemas::valid(&schemas::validator("task-report-v2.json"), &value);
+    schemas::valid(&schemas::validator("task-report-v3.json"), &value);
     value
 }
 
@@ -457,7 +457,7 @@ fn fixture_report(f: &Fixture, json: bool) -> String {
     let text = stdout(&command.output().unwrap());
     if json {
         let value: Value = serde_json::from_str(&text).unwrap();
-        schemas::valid(&schemas::validator("task-report-v2.json"), &value);
+        schemas::valid(&schemas::validator("task-report-v3.json"), &value);
     }
     text
 }
@@ -646,7 +646,7 @@ fn a_capacity_failure_without_usage_is_charged_zero_and_reported_as_unknown() {
     // `af task show --json`: the settlement carries the marker and a closed diagnostic.
     let shown = f.cli(&["task", "show", "release-notes"]);
     let shown: Value = serde_json::from_slice(&shown.stdout).unwrap();
-    schemas::valid(&schemas::validator("task-inspection-v13.json"), &shown);
+    schemas::valid(&schemas::validator("task-inspection-v14.json"), &shown);
     assert_eq!(shown["unknown_usage_attempts"], 1, "{shown:#}");
     let settled = shown["execution_records"]
         .as_array()
@@ -679,7 +679,7 @@ fn a_capacity_failure_without_usage_is_charged_zero_and_reported_as_unknown() {
     assert!(listed.contains("5712 (+1 unknown)"), "{listed}");
     let listed: Value = serde_json::from_slice(&f.cli(&["task", "list"]).stdout).unwrap();
     schemas::valid(
-        &schemas::validator("task-list-entry-v3.json"),
+        &schemas::validator("task-list-entry-v4.json"),
         &listed["tasks"][0],
     );
     assert_eq!(
@@ -790,7 +790,7 @@ fn a_collected_task_keeps_its_unknown_usage_count() {
     assert!(row.contains("collected "), "{row}");
     let listed: Value = serde_json::from_slice(&f.cli(&["task", "list"]).stdout).unwrap();
     let entry = &listed["tasks"][0];
-    schemas::valid(&schemas::validator("task-list-entry-v3.json"), entry);
+    schemas::valid(&schemas::validator("task-list-entry-v4.json"), entry);
     assert_eq!(entry["unknown_usage_attempts"], 1, "{entry:#}");
     assert_eq!(entry["collected"]["unknown_usage_attempts"], 1, "{entry:#}");
     schemas::valid(
@@ -891,17 +891,9 @@ fn a_path_valued_model_is_refused_at_planning_and_never_printed() {
     }
 }
 
-/// Kills the Worker's process group when the test ends, however it ends.
-struct WorkerGroup(i32);
-impl Drop for WorkerGroup {
-    fn drop(&mut self) {
-        let _ = nix::sys::signal::killpg(nix::unistd::Pid::from_raw(self.0), Signal::SIGKILL);
-    }
-}
-
 /// `af task start --file ticket.json --execute`, killed outright once its Worker has written
 /// its process ID, the leader of its process group, to `ready`: nothing settles that Worker's
-/// Attempt, and the Worker's group is killed with it.
+/// Attempt, and the Worker, af's child, ends by itself once af is gone.
 fn start_and_kill(af: &dyn Fn(&[&str]) -> Command, ready: &Path) {
     use std::time::{Duration, Instant};
     let mut af = af(&[
@@ -934,7 +926,13 @@ fn start_and_kill(af: &dyn Fn(&[&str]) -> Command, ready: &Path) {
         assert!(Instant::now() < until, "Worker readiness deadline");
         std::thread::sleep(Duration::from_millis(10));
     };
-    let _group = WorkerGroup(leader);
+    // The Worker is af's child, never signalled here: once af is killed it ends by itself, and
+    // it is reported if it does not (issue #331 item 7).
+    let _leftovers = crate::common::recorded::Leftovers(
+        crate::common::recorded::Recorded::now(leader)
+            .into_iter()
+            .collect(),
+    );
     af.kill().unwrap();
     af.wait().unwrap();
 }
@@ -1143,8 +1141,8 @@ fn a_refresh_that_recovers_a_pending_attempt_is_neither_a_run_nor_active_time() 
 }
 
 /// A local Codex substitute: it answers the account probe and the Provider admission call, and
-/// holds every other call until it is killed, first writing its process ID and process group to
-/// the path its home names as `ready-path`.
+/// holds every other call until it is killed or the af that started it is gone, first writing
+/// its process ID and process group to the path its home names as `ready-path`.
 const HOLDING_CODEX: &str = r#"#!/usr/bin/python3 -B
 import json,os,sys,time
 home=os.environ['CODEX_HOME']
@@ -1159,7 +1157,9 @@ if request!=PROBE_INPUT:
  ready=open(home+'/ready-path').read()
  open(ready+'.tmp','w').write('%d %d' % (os.getpid(), os.getpgrp()))
  os.rename(ready+'.tmp',ready)
- time.sleep(120)
+ parent=os.getppid()
+ end=time.monotonic()+120
+ while os.getppid()==parent and time.monotonic()<end: time.sleep(0.05)
  sys.exit(1)
 usage={'input_tokens':16331,'cached_input_tokens':10624,'output_tokens':5,'reasoning_output_tokens':0,'cache_write_input_tokens':0}
 if '-o' in sys.argv:

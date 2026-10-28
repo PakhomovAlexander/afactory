@@ -954,12 +954,18 @@ impl ReleaseSource for DirSource {
 }
 
 fn source(policy: &SelfPolicy) -> Box<dyn ReleaseSource> {
-    match std::env::var_os(SOURCE_ENV) {
-        Some(root) if !root.is_empty() => Box::new(DirSource {
-            root: PathBuf::from(root),
-        }),
-        _ => Box::new(GithubSource::new(policy.source.clone())),
+    match release_source_override() {
+        Some(root) => Box::new(DirSource { root }),
+        None => Box::new(GithubSource::new(policy.source.clone())),
     }
+}
+
+/// The local release directory `AF_RELEASE_SOURCE` names in place of GitHub, when it is set:
+/// every release check, install and update reads it.
+pub(crate) fn release_source_override() -> Option<PathBuf> {
+    std::env::var_os(SOURCE_ENV)
+        .filter(|root| !root.is_empty())
+        .map(PathBuf::from)
 }
 
 fn offline() -> bool {
@@ -3688,8 +3694,7 @@ pub(crate) fn update_facts() -> Result<UpdateFacts, String> {
 /// read, or GitHub's releases API anonymously over HTTPS. One bounded request whose answer is
 /// discarded; nothing is written. `Err` says why the anonymous route is closed.
 pub(crate) fn release_source_reachability(policy: &SelfPolicy) -> Result<String, String> {
-    if let Some(root) = std::env::var_os(SOURCE_ENV).filter(|root| !root.is_empty()) {
-        let root = PathBuf::from(root);
+    if let Some(root) = release_source_override() {
         return if root.is_dir() {
             Ok(format!(
                 "{SOURCE_ENV} {} is a readable directory",

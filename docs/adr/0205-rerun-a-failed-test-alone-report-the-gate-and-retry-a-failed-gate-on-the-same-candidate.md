@@ -3,6 +3,9 @@
 **Status:** accepted (2026-10-23). Supersedes in part
 [ADR-0124](0124-run-tests-in-parallel-processes-and-link-them-once.md): the consequence of its
 `retries = 0` that a test failing once in the parallel run always fails the gate.
+Superseded in part by
+[ADR-0255](0255-say-a-check-stopped-at-its-wall-and-carry-typed-acceptance-in-the-check-receipt.md):
+its rejection of a new `af/TaskCheckReceipt` version; the receipt is `af/TaskCheckReceipt@2`.
 
 ## Context
 

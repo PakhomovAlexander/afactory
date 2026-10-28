@@ -21,7 +21,7 @@ from perflab import schedule, supervise
 from perflab import suite as suite_module
 from perflab.values import ContractError, sha256_bytes
 from tests.support import CLI, ROOT, Repo, SUITE, TempDir, fake_supervisor, observe_json
-from tests.support import read, writable_copy
+from tests.support import read, release_recorded, writable_copy
 
 VERSION = "0.12.0-rc.3"
 LOCK = ('version = 4\n\n[[package]]\nname = "af"\nversion = "%s"\n\n[[package]]\n'
@@ -1124,7 +1124,7 @@ class HostCancellation(SeedHarness):
             self.assertTrue(os.path.isdir(kept))
             self.assertEqual((doc["record_count"], self.calls(build)), (0, 1))
         finally:
-            end_owned_group(marker)
+            release_recorded(marker)
 
     def test_a_seed_writer_that_never_confirms_its_end_keeps_the_seed_store(self):
         plan, plan_path, build = self.seeded("deaf_seed", cases=(COLD,))
@@ -1149,7 +1149,7 @@ class HostCancellation(SeedHarness):
                               doc["failure"]["detail"])
             os.kill(int(read(marker)), 0)
         finally:
-            end_owned_group(marker)
+            release_recorded(marker)
 
 
 class Preflight(ShardHarness):
@@ -1378,25 +1378,6 @@ class SamplingDeadline(ShardHarness):
             runner._remove_work(shard.work)
 
 
-def end_owned_group(marker):
-    """End the process group a fixture started and recorded in `marker`; nothing else."""
-    try:
-        pid = int(read(marker))
-    except (OSError, ValueError):
-        return
-    try:
-        os.killpg(pid, 9)
-    except OSError:
-        return
-    deadline = time.monotonic() + 30
-    while time.monotonic() < deadline:
-        try:
-            os.kill(pid, 0)
-        except OSError:
-            return
-        time.sleep(0.01)
-
-
 def plan_minutes():
     """The nightly tier's frozen run_total_minutes, which these plans take."""
     return suite_module.load(SUITE).doc["tiers"]["nightly"]["run_total_minutes"]
@@ -1462,6 +1443,66 @@ class CliRegistry(TempDir):
                                             "task.json")))
         doc = clicases.load(os.path.join(ROOT, "fixtures/performance/cli.toml"))
         self.assertEqual(task["task_id"], doc["task_fixture"]["task_id"])
+
+    def test_a_side_before_adr_0255_runs_the_task_fixture_with_the_receipt_its_af_writes(self):
+        # Each side's receipt generation comes from its own source, never from its binary.
+        class Source(object):
+            def __init__(self, holding):
+                self.holding = holding
+
+            def read_file(self, sha, path):
+                return b"{}" if (sha, path) in self.holding else None
+
+        plan = {"resolved": {"baseline_sha": "a" * 40, "candidate_sha": "b" * 40}}
+        across = Source({("b" * 40, clicases.RECEIPT_V2_SCHEMA)})
+        receipts = clicases.side_receipts(across, plan)
+        self.assertEqual(receipts, {"baseline": "receipt-v1", "candidate": "receipt-v2"})
+        both = Source({("a" * 40, clicases.RECEIPT_V2_SCHEMA),
+                       ("b" * 40, clicases.RECEIPT_V2_SCHEMA)})
+        self.assertEqual(clicases.side_receipts(both, plan),
+                         {"baseline": "receipt-v2", "candidate": "receipt-v2"})
+        for setup in ("task_repository", "task_started"):
+            self.assertEqual(clicases.setup_argument({"setup": setup}, receipts, "baseline",
+                                                     "-"), "receipt-v1")
+            self.assertEqual(clicases.setup_argument({"setup": setup}, receipts, "candidate",
+                                                     "-"), "receipt-v2")
+        self.assertEqual(clicases.setup_argument({"setup": "seed_copy"}, receipts, "baseline",
+                                                 "/seed"), "/seed")
+        # The overlay pins its package as exactly as the repository does, and changes nothing
+        # but the receipt the evaluator declares.
+        fixtures = os.path.join(ROOT, "fixtures/performance/cli/task-roots")
+        overlay = os.path.join(fixtures, "receipt-v1")
+        copy = writable_copy(os.path.join(fixtures, "repo"), self.path("v1-repo"))
+        for directory, _, files in os.walk(overlay):
+            for name in files:
+                relative = os.path.relpath(os.path.join(directory, name), overlay)
+                original = read(os.path.join(fixtures, "repo", relative))
+                replaced = read(os.path.join(overlay, relative))
+                if not relative.endswith("task-catalog.toml"):
+                    self.assertEqual(replaced, original.replace(b"af/TaskCheckReceipt@2",
+                                                                b"af/TaskCheckReceipt@1"))
+                with open(os.path.join(copy, relative), "wb") as stream:
+                    stream.write(replaced)
+        self.assertEqual(clicases.catalog_problems(copy), [])
+        # The setup lays it over a fresh repository for that side, and refuses a generation
+        # it does not know.
+        environment = dict(clicases.ENVIRONMENT, HOME=self.path("home"))
+        setup = os.path.join(ROOT, "fixtures/performance/cli/setup.sh")
+        for receipt, declared in (("receipt-v1", b"af/TaskCheckReceipt@1"),
+                                  ("receipt-v2", b"af/TaskCheckReceipt@2")):
+            scratch = self.path("scratch-" + receipt)
+            os.mkdir(scratch)
+            subprocess.run(["/bin/sh", setup, "task_repository", scratch, "-", "-", receipt],
+                           env=environment, check=True, capture_output=True)
+            worker = read(os.path.join(scratch, "repo/.af/task-packages/perf/accept/worker.toml"))
+            self.assertIn(declared, worker)
+            self.assertEqual(clicases.catalog_problems(os.path.join(scratch, "repo")), [])
+        scratch = self.path("scratch-unknown")
+        os.mkdir(scratch)
+        refused = subprocess.run(["/bin/sh", setup, "task_repository", scratch, "-", "-", "-"],
+                                 env=environment, capture_output=True, text=True)
+        self.assertNotEqual(refused.returncode, 0)
+        self.assertIn("unknown check-receipt generation", refused.stderr)
 
     def test_each_side_s_version_comes_from_its_own_bound_cargo_lock(self):
         self.assertEqual(clicases.package_version(LOCK.encode("utf-8")), VERSION)

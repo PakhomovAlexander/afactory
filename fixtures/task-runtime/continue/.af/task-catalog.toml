@@ -10,7 +10,7 @@
 
 ["packages"."fixture/correctness"]
 "version" = "1.0.0"
-"digest" = "sha256:8452ce09583da8062989de40d2ca96ac3645f97b1c1e8b5d17aaaa5a72d38a75"
+"digest" = "sha256:e0a32e48a29d1af8608bf3b882b9040ace3666883c4a68f5e27572af37bf90e8"
 "path" = ".af/task-packages/fixture/correctness"
 
 # Placeholders: this repository is `bound-inputs` with the optional `findings` input on the
@@ -28,7 +28,7 @@
 
 ["packages"."fixture/review"]
 "version" = "1.0.0"
-"digest" = "sha256:dbe057cc236174bc9b3a0fc2d019905d4a7e24f91bbc73aae9c03556f4ca64ab"
+"digest" = "sha256:85bb29f01d00211a55e01b14b2c008e1ed4f6bea9291ebcbcc749ebb074ff447"
 "path" = ".af/task-packages/fixture/review"
 
 ["packages"."fixture/evaluator"]

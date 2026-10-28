@@ -66,8 +66,8 @@ fn node(name: &str, worker: Option<TaskReportWorkerV1>) -> TaskReportNodeV1 {
     }
 }
 
-fn entry(task_id: &str, worker: &str) -> TaskReportEntryV2 {
-    TaskReportEntryV2 {
+fn entry(task_id: &str, worker: &str) -> TaskReportEntryV3 {
+    TaskReportEntryV3 {
         round: 0,
         task_id: task_id.into(),
         kind: "implement".into(),
@@ -125,8 +125,8 @@ fn state_of(task_id: &str, outcome: &str) -> review_core::task::state::TaskState
 }
 
 /// The report over `tasks`, which all run `fixture/plain@1.0.0` with `gpt-6-sol`.
-fn report(tasks: Vec<TaskReportEntryV2>) -> TaskReportV2 {
-    TaskReportV2::new(vec![plain("gpt-6-sol")], tasks).unwrap()
+fn report(tasks: Vec<TaskReportEntryV3>) -> TaskReportV3 {
+    TaskReportV3::new(vec![plain("gpt-6-sol")], tasks).unwrap()
 }
 
 #[test]
@@ -156,8 +156,8 @@ fn round(
     runs: u64,
     (total, failure): (u64, Option<(TaskReportFailureClassV1, u128)>),
     node: TaskReportNodeV1,
-) -> TaskReportEntryV2 {
-    TaskReportEntryV2 {
+) -> TaskReportEntryV3 {
+    TaskReportEntryV3 {
         round: 0,
         task_id: task_id.into(),
         kind: kind.into(),
@@ -392,7 +392,7 @@ fn five_rounds_render_their_pipelines_first_then_one_row_each_and_the_total() {
             ),
         ),
     ];
-    let report = TaskReportV2::new(vec![reviewed, verification], tasks).unwrap();
+    let report = TaskReportV3::new(vec![reviewed, verification], tasks).unwrap();
     let expected = "\
 <!-- af-task-report:v1 -->
 ### af task report
@@ -755,7 +755,7 @@ fn token_counts_read_with_thousands_separators_in_markdown_only() {
 #[test]
 fn only_a_model_identity_is_copied_into_the_report() {
     let with =
-        |model: &str| TaskReportV2::new(vec![plain(model)], vec![entry("a", model)]).unwrap();
+        |model: &str| TaskReportV3::new(vec![plain(model)], vec![entry("a", model)]).unwrap();
     let unknown = with(TASK_REPORT_UNKNOWN_MODEL);
     for (recorded, identity) in TASK_REPORT_MODEL_CASES {
         let shown = report_model(recorded);
@@ -1253,7 +1253,7 @@ fn a_task_without_a_retained_plan_gets_the_unknown_pipeline_line_once() {
         task
     };
     let only = markdown(
-        &TaskReportV2::new(Vec::new(), vec![collected("old"), collected("older")]).unwrap(),
+        &TaskReportV3::new(Vec::new(), vec![collected("old"), collected("older")]).unwrap(),
     );
     assert_eq!(
         only.lines()
@@ -1294,7 +1294,7 @@ fn the_checked_in_fixture_is_what_the_renderer_prints_for_its_document() {
     let directory = workspace().join("fixtures/task-report");
     let document: serde_json::Value =
         serde_json::from_slice(&std::fs::read(directory.join("report.json")).unwrap()).unwrap();
-    let report: TaskReportV2 = serde_json::from_value(document.clone()).unwrap();
+    let report: TaskReportV3 = serde_json::from_value(document.clone()).unwrap();
     report.validate().unwrap();
     assert_eq!(serde_json::to_value(&report).unwrap(), document);
     assert_eq!(

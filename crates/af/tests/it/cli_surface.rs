@@ -236,14 +236,16 @@ fn task_states_topic_and_the_state_flags_describe_the_commands() {
     }
     let json = out(&af(&["help", "json"]));
     for needle in [
-        "af/task-inspection@13",
-        "af/task-checks@2",
-        "af/task-list@3",
-        "af/task-list-entry@3",
-        "af/task-report@2",
+        "af/task-inspection@14",
+        "af/task-checks@3",
+        "af/task-list@4",
+        "af/task-list-entry@4",
+        "af/task-report@3",
         "af/task-selection@3",
         "af/error@2",
         "recovery_exhausted",
+        // #331 item 10: an interrupted command's recovery is a typed field.
+        "interrupted          exit 130 or 143",
         "planning_diagnostic.required_limits",
     ] {
         assert!(json.contains(needle), "{needle}:\n{json}");
@@ -262,15 +264,22 @@ fn task_states_topic_and_the_state_flags_describe_the_commands() {
     for (command, flags) in [
         (
             &["task", "show", "--help"][..],
-            &["--checks", "af/task-checks@2", "next"][..],
+            &[
+                "--checks",
+                "af/task-checks@3",
+                "next",
+                "stopped at its 90 min wall",
+                "never started",
+            ][..],
         ),
         (&["task", "plan", "--help"], &["--fit", "--replace"]),
     ] {
         let help = af(command);
         assert!(help.status.success(), "{}", err(&help));
+        let flat = out(&help).split_whitespace().collect::<Vec<_>>().join(" ");
         for flag in flags {
             assert!(
-                out(&help).contains(flag),
+                flat.contains(flag),
                 "{command:?} lacks {flag}:\n{}",
                 out(&help)
             );
@@ -296,7 +305,7 @@ fn task_report_help_and_man_page_describe_the_command() {
             "<TASK_ID>...",
             "<!-- af-task-report:v1 -->",
             "<!-- /af-task-report -->",
-            "af/task-report@2",
+            "af/task-report@3",
             "Never:",
             "--repo <DIR>",
             "--state <DIR>",
@@ -1279,6 +1288,17 @@ fn the_surface_documents_verbose_storage_canonical_markdown_and_the_provider_lis
         machine.contains("A problem's `fix:` is the one command that fixes it, as a shell runs it"),
         "{machine}"
     );
+    // #331 D4-D7: the help states which commands are never a fix, and how the PATH fix is laid
+    // out.
+    for needle in [
+        "while the default link does not exist it installs first, on PATH or not",
+        "a line wider than the terminal is cut where that shell joins it again",
+        "`af onboard` only previews, and `af provider detect --apply` registers only a login it \
+         finds, an auth directory with a login marker: neither is offered as a fix that cannot \
+         clear its check.",
+    ] {
+        assert!(machine.contains(needle), "{needle}\n{machine}");
+    }
     // The pointer for `af review tui` is no command of the namespace.
     let review = collapsed(&["review", "--help"]);
     assert!(!review.contains(" tui "), "{review}");
@@ -1448,7 +1468,7 @@ fn the_agent_loop_verbs_and_the_agents_topic_describe_the_commands() {
             &["task", "findings", "--help"][..],
             &[
                 "--round <N>",
-                "af/task-findings@1",
+                "af/task-findings@2",
                 "severity, confidence, title, location, the quoted evidence",
                 "evaluator's verdict",
                 "Never:",
@@ -1484,23 +1504,23 @@ fn the_agent_loop_verbs_and_the_agents_topic_describe_the_commands() {
                 "only that recorded pid is signalled",
                 "another host is refused with its pid and host",
                 "abandoned/cancelled/host_cancelled",
-                "af/task-cancelled@1",
+                "af/task-cancelled@2",
             ],
         ),
         (
             &["task", "wait", "--help"],
-            &["--timeout <S>", "exits 124", "af/task-status@1"],
+            &["--timeout <S>", "exits 124", "af/task-status@2"],
         ),
         (
             &["task", "status", "--help"],
-            &["af/task-status@1", "without waiting"],
+            &["af/task-status@2", "without waiting"],
         ),
         (
             &["task", "run", "--help"],
             &[
                 "--detach",
                 "--quiet",
-                "af/task-detached@2",
+                "af/task-detached@3",
                 "not admitted within 2 minutes exits 4",
                 "every 5 minutes a heartbeat",
                 "runs/<TASK_ID>-<N>.log",
@@ -1666,12 +1686,12 @@ fn the_agent_loop_verbs_and_the_agents_topic_describe_the_commands() {
     }
     let json = out(&af(&["help", "json"]));
     for document in [
-        "af/task-findings@1",
+        "af/task-findings@2",
         "af/task-diff@1",
         "af/task-materialized@1",
-        "af/task-status@1",
-        "af/task-detached@2",
-        "af/task-cancelled@1",
+        "af/task-status@2",
+        "af/task-detached@3",
+        "af/task-cancelled@2",
     ] {
         assert!(json.contains(document), "{document}:\n{json}");
         assert!(page.contains(document), "docs/agents.md lacks {document}");
@@ -1796,8 +1816,8 @@ fn provider_detect_help_and_installer_describe_preview() {
 
 /// `af task run NEW --from TASK` (ADR-0212) says what it plans and from what in `--help` and in
 /// `af help task run`; `--round`, `--goal` and `--bindings` need `--from`, which conflicts with
-/// `--confirm-plan` and `--detach`; and `af help task-file` describes defaults, context and
-/// continuation.
+/// `--confirm-plan` and `--detach`; `af help task-file` describes defaults, context,
+/// continuation and acceptance; and `af help task-states` names a check stopped at its wall.
 #[test]
 fn task_run_help_and_the_task_file_topic_describe_continuation() {
     for help in [af(&["task", "run", "--help"]), af(&["help", "task", "run"])] {
@@ -1809,6 +1829,7 @@ fn task_run_help_and_the_task_file_topic_describe_continuation() {
             "--round <N>",
             "--goal <FILE>",
             "continues the finished Task TASK from its reviewed candidate",
+            "continues from the partial tree the kernel kept of it (ADR-0257)",
             "the implementer's `findings` input",
             "af task run NEW_ID --from TASK_ID",
         ] {
@@ -1848,8 +1869,24 @@ fn task_run_help_and_the_task_file_topic_describe_continuation() {
         ".af/rules.md",
         "af/TaskReviewFindings@1",
         "af task run NEW --from TASK [--round N] [--goal FILE]",
+        // Structured acceptance (ADR-0255).
+        "`\"acceptance\": [{\"id\": \"bounds\", \"text\": \"Negative offsets are refused\"}]`",
+        "af/TaskAcceptance@1",
+        "af/TaskCheckReceipt@2",
+        "the Pipeline's optional `acceptance` input",
+        "names every item ID in its reason",
     ] {
         assert!(flat.contains(needle), "`{needle}` missing:\n{text}");
+    }
+    // A check stopped at its wall is named so in `af help task-states` (ADR-0255).
+    let states = out(&af(&["help", "task-states"]));
+    let flat = states.split_whitespace().collect::<Vec<_>>().join(" ");
+    for needle in [
+        "A check the kernel stopped at its wall is `check_failed`, never `preflight_failed`",
+        "`check NAME stopped at its 90 min wall after 90 min`",
+        "only a check that did not start says `never started`",
+    ] {
+        assert!(flat.contains(needle), "`{needle}` missing:\n{states}");
     }
 }
 
