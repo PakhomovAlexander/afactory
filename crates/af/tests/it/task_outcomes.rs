@@ -270,24 +270,73 @@ fn attention_group(fixture: &Fixture, entry: &Value, label: &str, next: Option<&
     };
     assert_eq!(lines[at - 1], format!("{title} (1)"), "{text}");
     assert_eq!(lines[at].split_whitespace().nth(1), Some(label), "{text}");
-    // The `next:` line as a shell reads it: a line ending in `\` continues on the next, an
-    // indented continuation after a space, one at column 0 inside a word the width split
-    // (a `--state` path under a long temporary directory, as the gate's on macOS).
-    let mut continued = String::new();
-    let mut continues = false;
-    for line in &lines[at + 1..] {
-        if !(continues || line.starts_with("    ")) {
-            break;
-        }
-        if !continued.is_empty() && line.starts_with(' ') {
-            continued.push(' ');
-        }
-        let line = line.trim_end();
-        continues = line.ends_with('\\');
-        continued.push_str(line.trim_end_matches('\\').trim());
-    }
-    assert_eq!(continued, format!("next: {}", next.unwrap()), "{text}");
+    // The `next:` line as a shell reads it (`shell_words`): a line ending in `\` continues on
+    // the next, indented between arguments or at column 0 inside a word the width split (a
+    // `--state` path under a long temporary directory, as the gate's on macOS).
+    let command = shell_words(&lines[at + 1..]).unwrap_or_else(|error| panic!("{error}: {text}"));
+    let expected = format!("    next: {}", next.unwrap());
+    assert_eq!(
+        command,
+        shell_words(&[expected.as_str()]).unwrap(),
+        "{text}"
+    );
     group
+}
+
+/// The words a shell reads from the command the first of `lines` starts: a backslash at the
+/// end of a line is deleted with the line end, so that the next line continues the command,
+/// its indentation the whitespace it is; a line without one ends the command, and a backslash
+/// with no line after it is an error. Nothing else changes: `tas \` and `k` read `tas k`.
+fn shell_words(lines: &[&str]) -> Result<Vec<String>, String> {
+    let mut command = String::new();
+    let mut rest = lines.iter();
+    loop {
+        let line = rest
+            .next()
+            .ok_or("a backslash ends the output with no line after it")?;
+        match line.strip_suffix('\\') {
+            Some(before) => command.push_str(before),
+            None => {
+                command.push_str(line);
+                break;
+            }
+        }
+    }
+    Ok(command.split_whitespace().map(str::to_owned).collect())
+}
+
+#[test]
+fn a_wrapped_next_line_is_read_as_a_shell_reads_it() {
+    let words = |lines: &[&str]| shell_words(lines).map(|words| words.join(" "));
+    // Wrapped between arguments, indented; inside a word, at column 0; then another line.
+    assert_eq!(
+        words(&[
+            "    next: af task run t \\",
+            "        --state /s",
+            "  other"
+        ]),
+        Ok("next: af task run t --state /s".to_owned())
+    );
+    assert_eq!(
+        words(&[
+            "    next: af task run t --state /long/af-\\",
+            "check/tmp/s",
+            "  other"
+        ]),
+        Ok("next: af task run t --state /long/af-check/tmp/s".to_owned())
+    );
+    // Without the backslash the indented line is another line, as for a shell.
+    assert_eq!(
+        words(&["    next: af task run t", "        --state /s"]),
+        Ok("next: af task run t".to_owned())
+    );
+    // A split inside a word that kept a space is two words, as for a shell.
+    assert_eq!(
+        words(&["    next: af tas \\", "k run t"]),
+        Ok("next: af tas k run t".to_owned())
+    );
+    // A backslash with no line after it is a defect, not a command.
+    assert!(words(&["    next: af task run t \\"]).is_err());
 }
 
 /// Each outcome the fixture pipeline reaches, driven through the CLI: the run's own output, its
