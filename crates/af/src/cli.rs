@@ -924,7 +924,7 @@ af review export --campaign pr-42 --finding F-01H… --allow-stale"
     /// Render the Campaign report
     #[command(
         long_about = "Render the Campaign report. --json selects the af/review-report@5 document, the same as --format json: each finding with the prompt that hands it to the agent that will fix it, and what the last Round covered per reviewer and per path, so a reviewer that did not run is never read as one that found nothing. --format sarif prints the findings as one SARIF 2.1.0 log for code-scanning tools. --json cannot be combined with --format, even when --format names json.",
-        after_long_help = "Examples:\n  af review report --campaign pr-42   # needs: Campaign pr-42\n  af review report --campaign pr-42 --json   # needs: Campaign pr-42\n  af review report --campaign pr-42 --format sarif > review.sarif   # needs: Campaign pr-42"
+        after_long_help = "Examples:\n  af review report --campaign pr-42   # needs: Campaign pr-42\n  af review report --campaign pr-42 --json   # needs: Campaign pr-42\n  # needs: Campaign pr-42\n  af review report --campaign pr-42 --format sarif > review.sarif"
     )]
     Report {
         #[command(flatten)]
@@ -2174,7 +2174,7 @@ contacts a Provider or writes the Store.",
         after_long_help = "Examples:\n  \
 af task findings TASK_ID   # needs: a reviewed Task\n  \
 af task findings TASK_ID --round 1 --json   # needs: a reviewed Task\n  \
-af task findings TASK_ID --format sarif > findings.sarif   # needs: a reviewed Task"
+# needs: a reviewed Task\n  af task findings TASK_ID --format sarif > findings.sarif"
     )]
     Findings {
         /// Task id
