@@ -30,9 +30,12 @@ class Git:
     """`budget`, when given (`perflab.budget.Budget`), bounds every Git command by the run's
     remaining deadline and refuses one that has no time left (ADR-0171)."""
 
-    def __init__(self, repo, budget=None):
+    def __init__(self, repo, budget=None, trusted_repository=False):
         self.repo = os.path.abspath(repo)
         self.budget = budget
+        # An installed operator controller may explicitly trust its read-only mirror, owned
+        # by a separate credential-holding account. Never widen this to a wildcard or env.
+        self.trusted_repository = trusted_repository
 
     def _run(self, args, check=True, stdin=None):
         env = {"PATH": os.environ.get("PATH", "/usr/bin:/bin"), "LC_ALL": "C",
@@ -42,7 +45,9 @@ class Git:
         step = "git " + " ".join(args[:1])
         timeout = self.budget.seconds(step) if self.budget is not None else None
         try:
-            result = subprocess.run(["git", "-C", self.repo] + args, input=stdin,
+            trusted = (["-c", "safe.directory=" + self.repo, "-c", "core.hooksPath=/dev/null"]
+                       if self.trusted_repository else [])
+            result = subprocess.run(["git", *trusted, "-C", self.repo] + args, input=stdin,
                                     stdout=subprocess.PIPE, stderr=subprocess.PIPE, env=env,
                                     timeout=timeout)
         except subprocess.TimeoutExpired:
