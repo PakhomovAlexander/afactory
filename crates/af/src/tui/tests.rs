@@ -172,6 +172,26 @@ pub(crate) fn hub_scope(root: &Path, repo: &Path) -> Scope {
     }
 }
 
+/// The user scope rooted at `root`: the machine-owned configuration layers, the Provider
+/// registry and the state root all under it, so the read's walk of the state root finds the
+/// fixture's Stores alone and no file of the machine running the test is read.
+pub(crate) fn user_scope(root: &Path) -> Scope {
+    let roots = MachineRoots {
+        system: root.join("etc/af"),
+        user: root.join("config/af"),
+        environment: Vec::new(),
+    };
+    let config = config::load_rooted(Some(root), true, &roots).unwrap();
+    Scope {
+        kind: ScopeKind::User,
+        root: root.to_path_buf(),
+        config,
+        home: Some(root.to_path_buf()),
+        registry: Some(root.join("config/af/providers.toml")),
+        state: Some(root.join("state")),
+    }
+}
+
 fn limit(name: &str, window: u64, used: u8) -> ProviderLimit {
     ProviderLimit {
         name: name.to_owned(),
@@ -2744,7 +2764,7 @@ fn a_history_refusal_with_a_read_in_flight_falls_back_to_the_folder_at_once() {
     assert!(bar.contains("! Store unreadable"), "{bar}");
 }
 
-fn copy_store(from: &Path, to: &Path) {
+pub(crate) fn copy_store(from: &Path, to: &Path) {
     std::fs::create_dir_all(to).unwrap();
     for entry in std::fs::read_dir(from).unwrap() {
         let entry = entry.unwrap();

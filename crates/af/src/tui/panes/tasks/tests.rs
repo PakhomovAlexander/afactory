@@ -1736,9 +1736,7 @@ fn the_user_scopes_stores_are_discovered_by_the_read_never_by_the_load() {
     let temp = tempfile::tempdir().unwrap();
     let root = std::fs::canonicalize(temp.path()).unwrap();
     let (_repo, state) = crate::tui::tests::hub_with_tasks(&root);
-    let mut scope = Scope::user().unwrap();
-    scope.home = Some(root.clone());
-    scope.state = Some(root.join("state"));
+    let scope = crate::tui::tests::user_scope(&root);
     let mut pane = TasksPane::default();
     pane.load(&scope).unwrap();
     assert!(
@@ -1762,6 +1760,56 @@ fn the_user_scopes_stores_are_discovered_by_the_read_never_by_the_load() {
     assert_eq!(pane.stores.len(), 1);
     let listed = pane.stores[0].tasks.as_ref().unwrap();
     assert!(listed.iter().any(|task| task.task_id == "pagination-cli"));
+}
+
+/// A repository's Store the user scope discovered and that went between two reads: the read
+/// after answers without it, so it goes when that read is done, never to come back as a
+/// target of the load's own, while the Store that stays is listed as before.
+#[test]
+fn a_discovered_store_that_went_between_two_reads_goes_when_the_read_is_done() {
+    let temp = tempfile::tempdir().unwrap();
+    let root = std::fs::canonicalize(temp.path()).unwrap();
+    let (_repo, state) = crate::tui::tests::hub_with_tasks(&root);
+    let other = state.parent().unwrap().join("other");
+    crate::tui::tests::copy_store(&state, &other);
+    let scope = crate::tui::tests::user_scope(&root);
+    let mut pane = TasksPane::default();
+    pane.load(&scope).unwrap();
+    pane.settle();
+    let mut dirs: Vec<&Path> = pane
+        .targets
+        .iter()
+        .map(|target| target.dir.as_path())
+        .collect();
+    dirs.sort();
+    let mut both = [state.as_path(), other.as_path()];
+    both.sort();
+    assert_eq!(dirs, both);
+    assert_eq!(pane.stores.len(), 2);
+    assert!(
+        pane.loaded.is_empty(),
+        "nothing registered: the load resolves no target"
+    );
+    std::fs::remove_dir_all(&other).unwrap();
+    pane.read_now();
+    pane.settle();
+    let dirs: Vec<&Path> = pane
+        .targets
+        .iter()
+        .map(|target| target.dir.as_path())
+        .collect();
+    assert_eq!(
+        dirs,
+        [state.as_path()],
+        "the read answers without the Store that went"
+    );
+    assert_eq!(pane.stores.len(), 1);
+    assert_eq!(pane.stores[0].dir, state);
+    assert!(pane.stores[0].tasks.is_ok());
+    assert!(
+        pane.loaded.is_empty(),
+        "a discovered Store is never a target of the load's"
+    );
 }
 
 /// A target list that changed within the scope (a Store registered meanwhile, `:state DIR`)

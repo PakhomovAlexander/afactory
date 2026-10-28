@@ -1370,6 +1370,12 @@ pub(crate) struct TasksPane {
     /// The scope loaded last, by what makes it another one: another scope lists nothing of
     /// the old; the same scope with other targets keeps its Stores until the read answers.
     place: Option<(ScopeKind, PathBuf)>,
+    /// The targets the load resolved: the scope's own Store, the registered Stores and the
+    /// session's. What a read starts from; in the user scope, what it adds the discovered
+    /// repositories' Stores to, so a Store discovered once is never a target of the load's.
+    loaded: Vec<Target>,
+    /// The targets as the last read answered them (`loaded`, and the discovered Stores in
+    /// the user scope): the order the Stores stand in, and what `Done` prunes them by.
     targets: Vec<Target>,
     /// The user scope's state root, whose repositories' Stores the read discovers.
     discover: Option<Discovery>,
@@ -1522,7 +1528,7 @@ impl TasksPane {
     /// only, never for a Store (ADR-0240). Nothing interrupts the read: it holds no key, and
     /// `q` quits without waiting for it.
     fn start(&mut self, explicit: bool) {
-        let (discover, targets) = (self.discover.clone(), self.targets.clone());
+        let (discover, targets) = (self.discover.clone(), self.loaded.clone());
         let (opened, cache) = (self.opened_task(), self.cache.clone());
         let (sender, receiver) = mpsc::channel();
         std::thread::spawn(move || read(discover, targets, opened, cache, &sender));
@@ -1888,6 +1894,7 @@ impl Pane for TasksPane {
         }
         self.place = Some(place);
         self.discover = Discovery::of(scope);
+        self.loaded = targets.clone();
         self.targets = targets;
         self.error = error;
         self.title = format!("TASKS  {}: {}", scope.word(), scope.name());

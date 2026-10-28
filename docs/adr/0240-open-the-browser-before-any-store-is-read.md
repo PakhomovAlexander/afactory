@@ -72,10 +72,14 @@ taking the place of what the last read listed for the Store wherever it was, a h
 Campaign included when a source reports the Store unreadable; a Store no source answered yet
 stays from the last read until one does or the read is done. A refusal taken on the key loop
 (the opened Task can no longer be inspected, or an artifact of its HISTORY cannot be given
-back) falls back to the folder on that key, with the refusal's cause on the status line since
-the cause says more than the fallback's message would, whether or not a read is in flight,
-and restarts a read in flight, so that a Store message read before the refusal never lists
-the Task again over it.
+back) falls back to the folder on that key, whether or not a read is in flight, and restarts a
+read in flight, so that a Store message read before the refusal never lists the Task again
+over it; the status line names the HISTORY refusal's cause, since it says more than the
+fallback's message would, and for the opening the entry found gone, as when opening finds one
+gone, with the cause on the Store's row in the folder. In the user scope the targets the load
+resolved (the registered Stores and the session's) stay apart from what a read discovers, so a
+discovered Store that went between two reads goes when the read after is done, never to come
+back as a target of the load's.
 
 ## Consequences
 

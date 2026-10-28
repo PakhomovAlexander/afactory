@@ -285,8 +285,9 @@ or the splash (opening one Task still inspects that Task on the key loop, as bef
 interrupts the read, since it holds no key; `q` quits without waiting for it. The opened Task's
 detail arrives with its own Store, so its bar row and its pane never disagree; a Task whose
 Store refuses when opened, or whose HISTORY artifact cannot be given back, falls back to its
-folder on that key, with the refusal's cause on the status line, and restarts a read in flight,
-so nothing read before the refusal lists it again. An opened Task or Worker that a read no
+folder on that key and restarts a read in flight, so nothing read before the refusal lists it
+again: the status line carries the HISTORY refusal's cause, and for the opening the message of
+an entry found gone, its cause on the Store's row in the folder. An opened Task or Worker that a read no
 longer lists falls back to its folder with the same message as when opening finds it gone;
 never one whose Store is merely unread: a target list that changed within the scope (a Store
 registered meanwhile, `:state DIR`) keeps every Store listed until the read answers for it, and
