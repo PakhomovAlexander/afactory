@@ -126,6 +126,63 @@ pub(crate) fn page(topic: &str, text: &str) -> String {
     body.replace(START_BINDINGS, &start_bindings(&registry))
 }
 
+/// The `schema` of the document `af help TOPIC --json` prints (`schemas/help-topic-v1.json`).
+pub(crate) const HELP_TOPIC_SCHEMA: &str = "af/help-topic@1";
+
+/// One page `af help` prints as text: a topic, or `af help errors CAUSE`. The text form and
+/// `af help WORDS --json` both render it from here, so the two cannot drift (ADR-0258).
+pub(crate) struct HelpPage {
+    /// The words after `af help` that name the page: `agents`, `errors CAUSE`.
+    name: String,
+    /// The description of the title line `af help NAME — DESCRIPTION`; `af help errors CAUSE`
+    /// prints no title line.
+    description: Option<&'static str>,
+    /// The page below its title line and the blank line after it.
+    text: String,
+}
+
+/// The page `words` name, resolved as the text form resolves them: `errors CAUSE`, then a
+/// topic. `None` when they name no page; an error when `errors` is followed by no known cause.
+pub(crate) fn help_page(words: &[String]) -> Option<Result<HelpPage, String>> {
+    match words {
+        [errors, cause] if errors == "errors" => Some(
+            crate::error_document::explain(Some(cause)).map(|text| HelpPage {
+                name: format!("errors {cause}"),
+                description: None,
+                text,
+            }),
+        ),
+        [word] => find(word).map(|(topic, about, text)| {
+            Ok(HelpPage {
+                name: (*topic).to_owned(),
+                description: Some(about),
+                text: page(topic, text),
+            })
+        }),
+        _ => None,
+    }
+}
+
+impl HelpPage {
+    /// What `af help NAME` prints, without the final newline.
+    pub(crate) fn text_form(&self) -> String {
+        match self.description {
+            Some(about) => format!("af help {} — {about}\n\n{}", self.name, self.text),
+            None => self.text.clone(),
+        }
+    }
+
+    /// What `af help NAME --json` prints: one `af/help-topic@1` document.
+    pub(crate) fn document(&self) -> serde_json::Value {
+        serde_json::json!({
+            "schema": HELP_TOPIC_SCHEMA,
+            "name": self.name,
+            "description": self.description,
+            "text": self.text,
+        })
+    }
+}
+
 /// The `start` page's bindings line for `registry`: the IDs `af onboard` would bind, or the
 /// placeholder with the reason none can be named.
 fn start_bindings(registry: &crate::providers::RegistryRead) -> String {
@@ -580,12 +637,16 @@ selectors the command was given (a report, pasted into a pull request, names no 
 diff, the materialized candidate and the refused selection describe no Task state. A previous
 version is refused, never read.
 
-The command catalog and the schemas:
+The command catalog, the help pages and the schemas:
 
   af help --json                       af/command-catalog@1 (schemas/command-catalog-v1.json):
                                        every command with its usage, arguments and effects
-  af help COMMAND... --json            the same document for that command and those below it;
-                                       a path that names no command is exit 2
+  af help COMMAND... --json            the same document for that command and those below it
+  af help TOPIC --json                 af/help-topic@1 (schemas/help-topic-v1.json): a page the
+                                       text form prints, `af help errors CAUSE` too, when the
+                                       words name no command: its `name`, `description` (null
+                                       for an error cause) and `text`, the page below its title
+                                       line; words that name neither are exit 2
   af schema show ID                    the JSON Schema of any document this page names, by its
                                        ID; `af schema show` lists the IDs
 
@@ -1215,5 +1276,41 @@ mod tests {
                 .collect::<Vec<_>>(),
             &["start", "concepts"]
         );
+    }
+
+    /// ADR-0258: a page's `af/help-topic@1` document and its text form are one rendering: the
+    /// text form is the title line from the document's name and description, a blank line and
+    /// the document's text; `af help errors CAUSE` has no title line. `start` is left out: its
+    /// page reads this machine's Provider registry, which a unit test does not touch.
+    #[test]
+    fn a_help_page_document_is_its_text_form_below_the_title_line() {
+        for (name, about, _) in TOPICS.iter().filter(|(name, _, _)| *name != "start") {
+            let page = help_page(&[name.to_string()]).unwrap().unwrap();
+            let document = page.document();
+            assert_eq!(document["schema"], HELP_TOPIC_SCHEMA);
+            assert_eq!(document["name"], *name);
+            assert_eq!(document["description"], *about);
+            assert_eq!(
+                page.text_form(),
+                format!(
+                    "af help {name} — {about}\n\n{}",
+                    document["text"].as_str().unwrap()
+                )
+            );
+        }
+        let words = ["errors".to_owned(), "review_binding_missing".to_owned()];
+        let page = help_page(&words).unwrap().unwrap();
+        let document = page.document();
+        assert_eq!(document["name"], "errors review_binding_missing");
+        assert_eq!(document["description"], serde_json::Value::Null);
+        assert_eq!(
+            page.text_form(),
+            crate::error_document::explain(Some("review_binding_missing")).unwrap()
+        );
+        assert_eq!(document["text"], page.text_form());
+        let unknown = ["errors".to_owned(), "nope".to_owned()];
+        assert!(help_page(&unknown).unwrap().is_err());
+        assert!(help_page(&["review".to_owned()]).is_none());
+        assert!(help_page(&[]).is_none());
     }
 }

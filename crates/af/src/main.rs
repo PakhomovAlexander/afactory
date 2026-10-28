@@ -1203,7 +1203,10 @@ fn review_next_command(subcommand: &str, extra: &[String]) -> String {
 }
 
 /// Local Git metadata and isolated captures. Never consult the candidate's `.af/` to choose
-/// authority.
+/// authority. When the default branch is found and the selectors af would choose from it
+/// resolve, the refusal names the command with them, and with `--provider NODE=ID` only when
+/// every unbound model Worker has exactly one enabled candidate; otherwise it says why it names
+/// none, and only a default branch it cannot find leaves the policy revision to the person.
 fn review_selector_refusal(options: &Options, subcommand: &str) -> Result<(), String> {
     if options.policy_rev.is_some()
         || subcommand == "run"
@@ -1274,91 +1277,148 @@ fn review_selector_refusal(options: &Options, subcommand: &str) -> Result<(), St
             })
             .map(|commit| (name, commit))
         });
+    // The selectors af would choose from the default branch, then the bindings: each part on
+    // its own, so a binding that remains open never hides the selectors (#363, ADR-0258).
     let mut candidate_details = serde_json::Map::new();
-    let next = chosen.as_ref().and_then(|(branch, commit)| {
-        let on_default = current.as_deref() == Some(branch.as_str());
-        let scratch = tempfile::tempdir().ok()?;
-        let cas = Cas::open(scratch.path().join("cas")).ok()?;
-        let git_home = scratch.path().join("git-home");
-        std::fs::create_dir_all(&git_home).ok()?;
-        let repo = Repo::open(&options.repo, &git_home);
-        let policy = if on_default {
-            "HEAD".to_owned()
-        } else {
-            commit.clone()
-        };
-        let mut flags = vec!["--policy-rev".into(), policy.clone()];
-        if options.base.is_none() {
-            flags.extend(["--base".to_owned(), policy.clone()]);
-        }
-        let mut uncommitted = options.uncommitted;
-        let mut candidate = options.candidate.clone();
-        if on_default {
-            // Capture reads worktree bytes directly. Git sees only isolated plumbing, so a
-            // candidate-selected clean filter cannot run before review has a sandbox.
-            let capture = review_source_git::Capture::new(&repo, &cas);
-            let dirty = capture
-                .committed("HEAD")
-                .and_then(|head| {
-                    capture
-                        .dirty()
-                        .map(|worktree| head.content_digest != worktree.content_digest)
-                })
-                .unwrap_or(false);
-            if !dirty && candidate.is_none() && !uncommitted {
-                return None;
-            }
-            if candidate.is_none() && !uncommitted {
-                flags.push("--uncommitted".into());
-                uncommitted = true;
-            }
-        } else if candidate.is_none() && !uncommitted {
-            flags.extend(["--candidate".to_owned(), "HEAD".to_owned()]);
-            candidate = Some("HEAD".to_owned());
-        }
-        let mut selected = options.clone();
-        selected.campaign = None;
-        selected.restart_round = false;
-        selected.policy_rev = Some(policy.clone());
-        selected.base = options.base.clone().or(Some(policy));
-        selected.candidate = candidate;
-        selected.uncommitted = uncommitted;
-        let resolved = authority::resolve_plan(&selected, &cas, &repo).ok()?;
-        let registered = providers::registered().ok()?.0;
-        let mut unique = true;
-        for (node, kind) in authority::model_workers(&resolved.loaded) {
-            if selected.provider_bindings.contains_key(&node) {
-                continue;
-            }
-            let ids = binding_candidates(&registered, &kind);
-            if ids.len() == 1 {
-                flags.extend(["--provider".to_owned(), format!("{node}={}", ids[0])]);
+    let mut registry_unread = None;
+    let suggestion = match chosen.as_ref() {
+        None => Err(None),
+        Some((branch, commit)) => (|| -> Result<(String, bool), Option<String>> {
+            let unresolved = |reason: String| Err(Some(reason));
+            let on_default = current.as_deref() == Some(branch.as_str());
+            let scratch = tempfile::tempdir().map_err(|error| Some(error.to_string()))?;
+            let cas =
+                Cas::open(scratch.path().join("cas")).map_err(|error| Some(error.to_string()))?;
+            let git_home = scratch.path().join("git-home");
+            std::fs::create_dir_all(&git_home).map_err(|error| Some(error.to_string()))?;
+            let repo = Repo::open(&options.repo, &git_home);
+            let policy = if on_default {
+                "HEAD".to_owned()
             } else {
-                unique = false;
+                commit.clone()
+            };
+            let mut flags = vec!["--policy-rev".into(), policy.clone()];
+            if options.base.is_none() {
+                flags.extend(["--base".to_owned(), policy.clone()]);
             }
-            candidate_details.insert(node, serde_json::json!(ids));
-        }
-        unique
-            .then(|| review_next_command(subcommand, &flags))
-            .filter(|command| command.len() <= 4095 && !command.chars().any(char::is_control))
-    });
-    let message = if let Some(command) = &next {
-        format!(
-            "af review {subcommand} needs --policy-rev REV and an explicit Subject; run:\n{command}"
-        )
-    } else {
-        let candidates = if candidate_details.is_empty() {
-            String::new()
-        } else {
-            format!(
-                "; Provider candidates: {}",
-                candidate_words(&candidate_details)
-            )
-        };
-        format!(
-            "af review {subcommand} needs --policy-rev REV; the trusted policy revision must be chosen when the default branch cannot be determined, and Provider bindings must be chosen when ambiguous{candidates}"
-        )
+            let mut uncommitted = options.uncommitted;
+            let mut candidate = options.candidate.clone();
+            if on_default {
+                // Capture reads worktree bytes directly. Git sees only isolated plumbing, so a
+                // candidate-selected clean filter cannot run before review has a sandbox.
+                let capture = review_source_git::Capture::new(&repo, &cas);
+                let dirty = capture
+                    .committed("HEAD")
+                    .and_then(|head| {
+                        capture
+                            .dirty()
+                            .map(|worktree| head.content_digest != worktree.content_digest)
+                    })
+                    .unwrap_or(false);
+                if !dirty && candidate.is_none() && !uncommitted {
+                    return unresolved(format!(
+                        "HEAD is the default branch {} and the worktree has no uncommitted \
+                         change, so there is no change to review; change files and review them \
+                         with --uncommitted, or name other revisions with --base REV and \
+                         --candidate REV",
+                        terminal_text(branch)
+                    ));
+                }
+                if candidate.is_none() && !uncommitted {
+                    flags.push("--uncommitted".into());
+                    uncommitted = true;
+                }
+            } else if candidate.is_none() && !uncommitted {
+                flags.extend(["--candidate".to_owned(), "HEAD".to_owned()]);
+                candidate = Some("HEAD".to_owned());
+            }
+            let mut selected = options.clone();
+            selected.campaign = None;
+            selected.restart_round = false;
+            selected.policy_rev = Some(policy.clone());
+            selected.base = options.base.clone().or(Some(policy));
+            selected.candidate = candidate;
+            selected.uncommitted = uncommitted;
+            let resolved = match authority::resolve_plan(&selected, &cas, &repo) {
+                Ok(resolved) => resolved,
+                Err(error) => {
+                    return unresolved(format!(
+                        "the selectors af would choose from the default branch {}, {}, do not \
+                         resolve: {error}",
+                        terminal_text(branch),
+                        terminal_text(&shell_words::join(&flags))
+                    ));
+                }
+            };
+            // `--provider NODE=ID` only when every unbound model Worker has exactly one enabled
+            // candidate; otherwise the command's own `review_binding_missing` names the next step.
+            let registered = match providers::registered() {
+                Ok((registered, _)) => Some(registered),
+                Err(error) => {
+                    registry_unread = Some(error);
+                    None
+                }
+            };
+            let mut bindings = Vec::new();
+            let mut unique = true;
+            for (node, kind) in authority::model_workers(&resolved.loaded) {
+                if selected.provider_bindings.contains_key(&node) {
+                    continue;
+                }
+                let Some(registered) = &registered else {
+                    unique = false;
+                    continue;
+                };
+                let ids = binding_candidates(registered, &kind);
+                if let [id] = ids.as_slice() {
+                    bindings.extend(["--provider".to_owned(), format!("{node}={id}")]);
+                } else {
+                    unique = false;
+                }
+                candidate_details.insert(node, serde_json::json!(ids));
+            }
+            if unique {
+                flags.extend(bindings);
+            }
+            let command = review_next_command(subcommand, &flags);
+            if command.len() > 4095 || command.chars().any(char::is_control) {
+                return unresolved(
+                    "the command af would suggest is not one line a person can paste".to_owned(),
+                );
+            }
+            Ok((command, unique))
+        })(),
     };
+    let message = match &suggestion {
+        Ok((command, true)) => format!(
+            "af review {subcommand} needs --policy-rev REV and an explicit Subject; run:\n{command}"
+        ),
+        Ok((command, false)) => {
+            let open = match &registry_unread {
+                Some(error) => format!("the Provider registry cannot be read ({error})"),
+                None => format!(
+                    "Provider candidates: {}",
+                    candidate_words(&candidate_details)
+                ),
+            };
+            format!(
+                "af review {subcommand} needs --policy-rev REV and an explicit Subject; this \
+                 command chooses them, and its refusal then names how to bind the reviewers that \
+                 still need a Provider ({open}); run:\n{command}"
+            )
+        }
+        Err(Some(reason)) => {
+            format!(
+                "af review {subcommand} needs --policy-rev REV and an explicit Subject; {reason}"
+            )
+        }
+        Err(None) => format!(
+            "af review {subcommand} needs --policy-rev REV; the default branch cannot be \
+             determined (none of origin/HEAD, init.defaultBranch, main and master names a branch \
+             with a commit), so the trusted policy revision must be chosen"
+        ),
+    };
+    let next = suggestion.ok().map(|(command, _)| command);
     let mut detail = error_document::Detail::new(error_document::Cause::ReviewSelectorsMissing)
         .with("repo", options.repo.display().to_string())
         .with("selector", "--policy-rev");
@@ -1536,15 +1596,8 @@ fn help_command(words: &[String], snippet: bool, json: bool) -> Result<i32, Stri
         println!("\n{}", topics::listing());
         return Ok(0);
     }
-    if words.first().is_some_and(|word| word == "errors") && words.len() == 2 {
-        println!("{}", error_document::explain(Some(&words[1]))?);
-        return Ok(0);
-    }
-    if words.len() == 1
-        && let Some((topic, about, text)) = topics::find(&words[0])
-    {
-        let body = topics::page(topic, text);
-        println!("af help {topic} — {about}\n\n{body}");
+    if let Some(page) = topics::help_page(words) {
+        println!("{}", page?.text_form());
         return Ok(0);
     }
     let mut current = &mut root;
@@ -1573,23 +1626,32 @@ fn help_command(words: &[String], snippet: bool, json: bool) -> Result<i32, Stri
     Ok(0)
 }
 
-/// `af help [COMMAND...] --json`: the command catalog (ADR-0247), or for a path that names no
-/// command one `af/error@2` document with the usage exit code the text form also exits with.
+/// `af help [WORDS...] --json`: the command catalog of the command the words name (ADR-0247);
+/// for words that name no command but a page the text form prints, a topic or `errors CAUSE`,
+/// that page as one `af/help-topic@1` document (ADR-0258); for words that name neither, one
+/// `af/error@2` document with the usage exit code the text form also exits with.
 fn help_catalog(words: &[String]) -> Result<i32, String> {
-    match command_catalog::document(words) {
-        Ok(document) => {
-            println!(
-                "{}",
-                serde_json::to_string_pretty(&document).map_err(|error| error.to_string())?
-            );
-            Ok(0)
-        }
-        Err(error) => {
-            println!("{}", error_document::document("af help", &error, 2, None));
-            eprintln!("af help: {error}");
-            Ok(2)
-        }
-    }
+    let document = match command_catalog::document(words) {
+        Ok(document) => document,
+        Err(_) => match topics::help_page(words) {
+            Some(page) => page?.document(),
+            None => {
+                let error = format!(
+                    "no command or help page named {}; run af help for every page, or af help \
+                     --json for every command",
+                    terminal_text(&words.join(" "))
+                );
+                println!("{}", error_document::document("af help", &error, 2, None));
+                eprintln!("af help: {error}");
+                return Ok(2);
+            }
+        },
+    };
+    println!(
+        "{}",
+        serde_json::to_string_pretty(&document).map_err(|error| error.to_string())?
+    );
+    Ok(0)
 }
 
 fn main() {

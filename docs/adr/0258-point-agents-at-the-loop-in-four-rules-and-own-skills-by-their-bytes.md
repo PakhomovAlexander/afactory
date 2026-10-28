@@ -5,7 +5,10 @@
 the rule that decides which skill af owns. Amends
 [ADR-0242](0242-classify-first-run-refusals.md): the binding refusal names
 `af provider detect` when a Worker's kind has no registered Provider, and `af review plan`'s
-refusal carries the plan it computed. Keeps
+refusal carries the plan it computed; its selectors refusal names the selectors af would choose
+whenever it finds the default branch. Supersedes in part
+[ADR-0247](0247-generate-a-machine-readable-command-catalog.md): under `--json`, words that name
+no command but a help page print that page as `af/help-topic@1`. Keeps
 [ADR-0145](0145-read-only-what-this-release-writes-and-version-every-changed-shape.md) and
 [ADR-0148](0148-discover-provider-models-and-validate-every-binding-before-a-charge.md).
 
@@ -37,6 +40,22 @@ causes:
   directory existed but was logged out: it counted only rows waiting to be registered (#394
   finding 3).
 
+The experiment then ran again with decisions 1 to 5 installed: every answer was complete and
+correct, but the Task jobs took 13 and 9 commands and the review jobs 19 and 19. Three defects
+caused it:
+
+- `af help agents --json` exited 2: under `--json` every word was a command path (ADR-0247).
+  The pointer's second rule says to add `--json` to each command, so every session ran it first,
+  and three of the four concluded the page did not exist and looked commands up one by one.
+- On the default branch with an uncommitted change and no Provider registered,
+  `af review plan --json` refused with `review_selectors_missing`, a null `next_action` and the
+  sentence that the default branch cannot be determined, although af had found it: the whole
+  suggested command was dropped whenever a binding was not unique.
+- `af review plan --uncommitted --policy-rev HEAD --json` failed with an internal capture error
+  (`committed snapshot has no resolved tree authority`): the dirty worktree's Snapshot was
+  published before the check that refuses a diff plan without `--base`, which `af review run`
+  passes correctly.
+
 ## Options considered
 
 - Keep the six commands and make each succeed inside a sandbox: the readiness commands are
@@ -48,6 +67,11 @@ causes:
   explicit binding, and the suggested command already spells it.
 - Print the plan beside the refusal as a second document: under `--json` a command prints
   exactly one document, so the plan travels inside the error's `details`.
+- Print a help page under `--json` as the command catalog's document, or resolve a topic before
+  a command: the catalog describes commands, and `af help COMMAND --json` must not change for
+  the words that are both (`config`, `self`, `storage`, `telemetry`).
+- Suggest bindings for the Workers that have one candidate and leave the rest out: the command
+  would bind part of the review, and ADR-0242 names bindings only when all of them are known.
 
 ## Decision
 
@@ -92,6 +116,29 @@ causes:
    budgets, before the refusal, whose last line is the next command when there is one. `af
    review run`'s refusal carries no plan. `af/error@2` is unreleased, so `schemas/error-v2.json`
    gains the optional `plan` without a version bump; nothing binds a Provider implicitly.
+6. **Help pages under `--json`.** `af help WORDS --json` prints the command catalog when the
+   words name a command, as before. Words that name no command but a page `af help` prints as
+   text, a topic or `errors CAUSE`, print exactly one new document, `af/help-topic@1`
+   (`schemas/help-topic-v1.json`): the page's `name`, its one-line `description` (null for
+   `errors CAUSE`, whose text form has no title line) and `text`, the page as the text form
+   prints it below its title line. One function renders both forms, so they cannot drift.
+   Words that name neither exit 2 with one `af/error@2` document that names both the pages and
+   the commands. `af help --json`, `af help COMMAND... --json` and `af help agents --snippet`
+   are unchanged.
+7. **The selectors refusal names its selectors.** When af finds the default branch and the
+   selectors it would choose resolve, the `review_selectors_missing` refusal's `next_action` is
+   the command with them: `--policy-rev`, `--base` when not given, `--uncommitted` or
+   `--candidate` as before, and `--provider NODE=ID` for the unbound model Workers only when
+   every one of them has exactly one enabled candidate. The message names that command and,
+   while bindings remain open, each reviewer that still needs one in words; that command's own
+   `review_binding_missing` refusal then names the fix (decision 5). The message says the
+   default branch cannot be determined only when it cannot, and the policy revision stays the
+   person's choice then; when the selectors af would choose do not resolve, it gives the
+   reason, such as a clean worktree on the default branch, with no command.
+8. **A diff plan without a Base.** `af review plan --uncommitted` without `--base` is refused
+   before the worktree's Snapshot is captured, as `af review run` refuses it:
+   `review_selectors_missing`, `details.selector` `--base`, and a `next_action` that adds
+   `--base` to the command as given. No capture error reaches the person.
 
 ## Consequences
 
@@ -100,4 +147,6 @@ where readiness is learned, and the commands it names are the fix. A review refu
 the review would run without a second command. A skill af did not write byte for byte is never
 overwritten, and a new skill version must carry the one it replaces in code, or an installed
 skill is refused as foreign on upgrade. `af help errors review_binding_missing` states the three
-cases.
+cases. The pointer's `--json` rule holds for `af help agents` too, and `af/help-topic@1` is one
+more shipped schema `af schema show` prints. A review preview with missing selectors and
+bindings takes two refusals, each naming the next command, instead of a dead end.

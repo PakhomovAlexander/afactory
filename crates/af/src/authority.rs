@@ -228,15 +228,17 @@ pub(super) fn resolve_plan(
         }
         None => (None, None),
     };
-    let (candidate, candidate_snapshot_id, change_set) = capture_candidate(
-        options,
-        repo,
-        cas,
-        &policy,
-        base.as_ref().zip(base_snapshot_id.as_deref()),
-    )?;
-    let changed_paths: Vec<String> = change_set
+    // With a Base the candidate is captured now, for its Change Set. Without one routing sees
+    // no changed path, and the candidate is captured only after a diff pipeline's missing Base
+    // is refused: a dirty worktree's Snapshot has no tree until it is diffed against a Base, so
+    // capturing it first fails with a capture error instead of that refusal (#363).
+    let captured = match base.as_ref().zip(base_snapshot_id.as_deref()) {
+        Some(base) => Some(capture_candidate(options, repo, cas, &policy, Some(base))?),
+        None => None,
+    };
+    let changed_paths: Vec<String> = captured
         .as_ref()
+        .and_then(|(_, _, change_set)| change_set.as_ref())
         .map(|change_set| change_set.changed_paths.clone())
         .unwrap_or_default();
     let mut route = if options.pipeline_explicit {
@@ -265,6 +267,10 @@ pub(super) fn resolve_plan(
         }
         _ => {}
     }
+    let (candidate, candidate_snapshot_id, change_set) = match captured {
+        Some(captured) => captured,
+        None => capture_candidate(options, repo, cas, &policy, None)?,
+    };
     let (pipeline, input_sizes) = apply_oversized_policy(
         cas,
         &project,

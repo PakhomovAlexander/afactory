@@ -464,7 +464,8 @@ future readers need.
 - [0246 — Carry the Reviewer Result schema natively on the Campaign
   path](0246-carry-the-reviewer-result-schema-natively-on-the-campaign-path.md)
 - [0247 — Generate a machine-readable command catalog and ship the
-  schemas](0247-generate-a-machine-readable-command-catalog.md)
+  schemas](0247-generate-a-machine-readable-command-catalog.md) (superseded in part by
+  [ADR-0258](0258-point-agents-at-the-loop-in-four-rules-and-own-skills-by-their-bytes.md))
 - [0248 — Hand review findings to the agent that will fix
   them](0248-hand-review-findings-to-the-agent-that-will-fix-them.md)
 - [0249 — Distinguish host-denied Provider probes from incompatible

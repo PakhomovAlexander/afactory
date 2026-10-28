@@ -1,0 +1,37 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:af:schema:help-topic:1",
+  "title": "Help page af/help-topic@1",
+  "$comment": "What `af help TOPIC --json` and `af help errors CAUSE --json` print when the words name no command but a page `af help` prints as text (ADR-0258): the page's name, its one-line description and its text, rendered by the same function as the text form. Words that name a command print af/command-catalog@1 instead.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema",
+    "name",
+    "description",
+    "text"
+  ],
+  "properties": {
+    "schema": {
+      "const": "af/help-topic@1"
+    },
+    "name": {
+      "description": "The words after `af help` that name the page: a topic (`agents`), or `errors CAUSE`.",
+      "type": "string",
+      "pattern": "^[a-z][a-z0-9-]*( [a-z][a-z0-9_]*)?$"
+    },
+    "description": {
+      "description": "The one-line description the text form's title line `af help NAME — DESCRIPTION` carries, as `af help` lists it; null for `af help errors CAUSE`, whose text form has no title line.",
+      "type": [
+        "string",
+        "null"
+      ],
+      "minLength": 1
+    },
+    "text": {
+      "description": "The page exactly as `af help NAME` prints it: below its title line and the blank line after it (all of it when it has no title line), without the final newline.",
+      "type": "string",
+      "minLength": 1
+    }
+  }
+}

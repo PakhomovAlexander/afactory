@@ -2067,6 +2067,23 @@ fn the_agents_page_starts_at_step_one_and_says_what_a_review_refusal_names() {
     assert!(!prose.contains("Read a command's `effects` before you run it for the first time"));
 }
 
+/// #363 round 3: the page says that a page under `--json` is one `af/help-topic@1` document,
+/// and that the selectors refusal names the command with the selectors af would choose.
+#[test]
+fn the_agents_page_names_the_help_topic_document_and_the_selectors_command() {
+    let page = out(&af(&["help", "agents"]));
+    let prose = page.split_whitespace().collect::<Vec<_>>().join(" ");
+    for sentence in [
+        "`af help agents --json` prints this page as one `af/help-topic@1` document whose \
+         `text` is the page `af help agents` prints, and so does every other topic and \
+         `af help errors CAUSE` with `--json` added",
+        "When af finds the default branch, the selectors refusal names the command with the \
+         selectors af would choose, even while reviewers still need a Provider",
+    ] {
+        assert!(prose.contains(sentence), "{sentence}\n{page}");
+    }
+}
+
 #[test]
 fn provider_detect_help_and_installer_describe_preview() {
     let help = out(&af(&["--help"]));
@@ -2292,8 +2309,9 @@ fn workspace_schemas() -> std::path::PathBuf {
 
 /// #374: `af help --json` is one `af/command-catalog@1` document generated from the binary's
 /// own command tree, every runnable command with its effects; `af help COMMAND --json` is the
-/// same document for that command's subtree, an alias naming its command; a path that names no
-/// command is one `af/error@2` document with exit 2, never a topic.
+/// same document for that command's subtree, an alias naming its command; words that name no
+/// command and no help page are one `af/error@2` document with exit 2 (#363: a page prints
+/// `af/help-topic@1`, `help_json_prints_a_page_the_text_form_prints`).
 #[test]
 fn help_json_prints_the_generated_command_catalog() {
     let catalog = crate::schemas::validator("command-catalog-v1.json");
@@ -2361,7 +2379,7 @@ fn help_json_prints_the_generated_command_catalog() {
 
     for words in [
         &["help", "nope", "--json"][..],
-        &["help", "json", "--json"][..],
+        &["help", "task", "nope", "--json"][..],
     ] {
         let refused = af(words);
         assert_eq!(refused.status.code(), Some(2), "{words:?}");
@@ -2372,15 +2390,90 @@ fn help_json_prints_the_generated_command_catalog() {
             error["error"]
                 .as_str()
                 .unwrap()
-                .ends_with("; run af help --json for every command"),
+                .ends_with("; run af help for every page, or af help --json for every command"),
             "{error}"
         );
         assert!(
-            err(&refused).starts_with("af help: no command af "),
+            err(&refused).starts_with("af help: no command or help page named "),
             "{}",
             err(&refused)
         );
     }
+}
+
+/// #363: words that name no command but a page `af help` prints as text, a topic or
+/// `errors CAUSE`, print that page under `--json` as one `af/help-topic@1` document whose `text`
+/// is what the text form prints after its title line; a word that is also a command keeps its
+/// catalog, and words that name neither are one `af/error@2` document, exit 2, that no longer
+/// says only commands exist.
+#[test]
+fn help_json_prints_a_page_the_text_form_prints() {
+    let topic = crate::schemas::validator("help-topic-v1.json");
+    for name in ["agents", "exit-codes"] {
+        let shown = af(&["help", name, "--json"]);
+        assert_eq!(shown.status.code(), Some(0), "{name}: {}", err(&shown));
+        let document: serde_json::Value = serde_json::from_slice(&shown.stdout)
+            .unwrap_or_else(|_| panic!("{name}: not one document: {}", out(&shown)));
+        crate::schemas::valid(&topic, &document);
+        assert_eq!(document["schema"], "af/help-topic@1");
+        assert_eq!(document["name"], name);
+        let text = out(&af(&["help", name]));
+        let (title, rest) = text.split_once('\n').unwrap();
+        assert_eq!(
+            title,
+            format!(
+                "af help {name} — {}",
+                document["description"].as_str().unwrap()
+            )
+        );
+        assert_eq!(
+            rest,
+            format!("\n{}\n", document["text"].as_str().unwrap()),
+            "{name}"
+        );
+    }
+
+    let shown = af(&["help", "errors", "review_binding_missing", "--json"]);
+    assert_eq!(shown.status.code(), Some(0), "{}", err(&shown));
+    let document: serde_json::Value = serde_json::from_slice(&shown.stdout).unwrap();
+    crate::schemas::valid(&topic, &document);
+    assert_eq!(document["schema"], "af/help-topic@1");
+    assert_eq!(document["name"], "errors review_binding_missing");
+    assert_eq!(document["description"], serde_json::Value::Null);
+    // `af help errors CAUSE` prints no title line: the whole page is its text.
+    let text = out(&af(&["help", "errors", "review_binding_missing"]));
+    assert_eq!(
+        text,
+        format!("{}\n", document["text"].as_str().unwrap()),
+        "{document}"
+    );
+    assert!(text.starts_with("review_binding_missing: "), "{text}");
+
+    // `config` is a topic and a command: under --json the command's catalog, as before.
+    let catalog = af(&["help", "config", "--json"]);
+    let catalog: serde_json::Value = serde_json::from_slice(&catalog.stdout).unwrap();
+    assert_eq!(catalog["schema"], "af/command-catalog@1", "{catalog}");
+    assert_eq!(catalog["scope"], "af config", "{catalog}");
+
+    let refused = af(&["help", "no-such-page", "--json"]);
+    assert_eq!(refused.status.code(), Some(2), "{}", err(&refused));
+    let error: serde_json::Value = serde_json::from_slice(&refused.stdout)
+        .unwrap_or_else(|_| panic!("not one document: {}", out(&refused)));
+    crate::schemas::valid(&crate::schemas::validator("error-v2.json"), &error);
+    assert_eq!(error["schema"], "af/error@2");
+    let message = error["error"].as_str().unwrap();
+    assert!(
+        message
+            .starts_with("no command or help page named no-such-page; run af help for every page"),
+        "{message}"
+    );
+
+    let shipped = af(&["schema", "show", "af/help-topic@1"]);
+    assert!(shipped.status.success(), "{}", err(&shipped));
+    assert_eq!(
+        shipped.stdout,
+        std::fs::read(workspace_schemas().join("help-topic-v1.json")).unwrap()
+    );
 }
 
 /// #374: `af schema show` lists exactly the document IDs `af help json` names, and prints each

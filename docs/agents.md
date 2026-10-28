@@ -65,7 +65,9 @@ steps before work: `af help json`, `af help exit-codes`, `af help task-file`,
 A review outside a Task starts the same way: `af review plan --json` previews it token-free,
 and when selectors or Provider bindings are missing, its refusal's `next_action` names the next
 command when one command fixes it, and a refusal for missing bindings carries in `details.plan`
-what the review would run.
+what the review would run. When af finds the default branch, the selectors refusal names the
+command with the selectors af would choose, even while reviewers still need a Provider: the
+refusal of that command then names how to bind them.
 
 ## Running af from inside an agent
 
@@ -85,8 +87,12 @@ state it may write (`store`, `files`, `machine`, `remote`) and what it needs fro
 (`login`, `approval`, `terminal`), each with the flag that turns it on. `af help task run --json`
 prints one command. A command this page describes, or one a `next_action` names, needs no such
 lookup first. Before you run any other command for the first time, read its `effects`: one with
-`tokens` `free`, no `writes` and no `human` only reads. `af schema show ID` prints the schema of
-any document `af help json` names, and `af schema show` lists the IDs.
+`tokens` `free`, no `writes` and no `human` only reads. Every page is a document too:
+`af help agents --json` prints this page as one `af/help-topic@1` document whose `text` is the
+page `af help agents` prints, and so does every other topic and `af help errors CAUSE` with
+`--json` added; a word that is also a command, such as `config`, prints the command's catalog.
+`af schema show ID` prints the schema of any document `af help json` names, and `af schema show`
+lists the IDs.
 
 ## 1. Plan
 
