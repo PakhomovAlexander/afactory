@@ -1551,6 +1551,19 @@ fn the_agent_loop_verbs_and_the_agents_topic_describe_the_commands() {
             &["af/task-status@2", "without waiting"],
         ),
         (
+            &["task", "events", "--help"],
+            &[
+                "--after <N>",
+                "--timeout <S>",
+                "af/task-event@1",
+                "gap-free from 0",
+                "exactly once, last",
+                "--after N prints only the events after sequence N",
+                "There is no --json",
+                "Never: starts, resumes or changes a Task",
+            ],
+        ),
+        (
             &["task", "run", "--help"],
             &[
                 "--detach",
@@ -1602,6 +1615,7 @@ fn the_agent_loop_verbs_and_the_agents_topic_describe_the_commands() {
         "cancel",
         "wait",
         "status",
+        "events",
     ] {
         assert!(
             task.lines()
@@ -1616,10 +1630,20 @@ fn the_agent_loop_verbs_and_the_agents_topic_describe_the_commands() {
         (&["task", "report", "t", "--base", "origin/main"], 2),
         (&["task", "findings", "t", "--round", "0"], 2),
         (&["task", "wait", "t", "--timeout", "0"], 2),
+        (&["task", "events", "t", "--timeout", "0"], 2),
+        (&["task", "events", "t", "--json"], 2),
         (&["task", "materialize", "t"], 2),
     ] {
         assert_eq!(af(args).status.code(), Some(code), "{args:?}");
     }
+    // `af task events` prints JSON lines without --json, so its usage error is an
+    // `af/error@2` line on stdout too (ADR-0250).
+    let refused = af(&["task", "events", "t", "--after", "x"]);
+    assert_eq!(refused.status.code(), Some(2), "{}", err(&refused));
+    let document: serde_json::Value = serde_json::from_slice(&refused.stdout)
+        .unwrap_or_else(|_| panic!("not one document: {}", out(&refused)));
+    crate::schemas::valid(&crate::schemas::validator("error-v2.json"), &document);
+    assert_eq!(document["cause"], "usage");
 
     // `af help agents` is the page, and the page names only commands and flags af has.
     let workspace = std::env::var_os("AF_WORKSPACE_ROOT")
@@ -2072,6 +2096,7 @@ fn help_json_prints_the_generated_command_catalog() {
         "af onboard",
         "af review ledger",
         "af task wait",
+        "af task events",
         "af task findings",
         "af schema show",
         "af help",

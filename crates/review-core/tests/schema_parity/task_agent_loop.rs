@@ -1,9 +1,9 @@
-//! The agent loop's documents and records (ADR-0211, ADR-0248): `af/task-findings@2`,
+//! The agent loop's documents and records (ADR-0211, ADR-0248, ADR-0250): `af/task-findings@2`,
 //! `af/task-materialized@1`, `af/task-diff@1`, `af/task-status@2`, `af/task-detached@2`,
-//! `af/task-cancelled@1`, the `runs/` records `af/task-run-process@1` and
-//! `af/task-cancel-request@1`, and the `af/TaskDeliveryProof@1` a verification Task's delivery
-//! references. A typed value the Rust validator accepts satisfies its schema, both reject the
-//! same broken shapes, and another version fails closed.
+//! `af/task-cancelled@1`, the lines of `af task events` (`af/task-event@1`), the `runs/` records
+//! `af/task-run-process@1` and `af/task-cancel-request@1`, and the `af/TaskDeliveryProof@1` a
+//! verification Task's delivery references. A typed value the Rust validator accepts satisfies
+//! its schema, both reject the same broken shapes, and another version fails closed.
 use super::{assert_invalid, assert_valid};
 use review_core::task::agent_loop::*;
 use review_core::task::delivery::TaskDeliveryProofV1;
@@ -519,4 +519,147 @@ fn detached_cancelled_and_the_delivery_proof_are_closed() {
     let mut same = proof;
     same.candidate_task_id = same.verification_task_id.clone();
     assert!(same.validate().is_err(), "a Task cannot prove itself");
+}
+
+/// `af task events` (ADR-0250): an event line names its Store sequence, event ID and change,
+/// with a result and charge only on a settled Attempt; the terminal record carries a settled
+/// state and that state's exit code. Both fail closed on another version or a broken shape.
+#[test]
+fn event_stream_lines_are_closed() {
+    let settled = TaskEventV1::Event(TaskEventEntryV1 {
+        schema: TASK_EVENT_V1.into(),
+        task_id: "pagination-cli".into(),
+        sequence: 12,
+        event_id: "0123456789abcdef0123456789".into(),
+        event_type: "TaskTransition@5".into(),
+        at_unix_ms: 1_700_000_000_000,
+        change: TaskEventChangeV1::ExecutionRecorded,
+        detail: Some("settled".into()),
+        node: Some("implement".into()),
+        attempt_id: Some("a".repeat(26)),
+        result: Some(TaskEventResultV1::Succeeded),
+        charged_tokens: Some(41_200u128.into()),
+    });
+    both(
+        "task-event-v1.json",
+        &settled,
+        TaskEventV1::validate,
+        vec![
+            (
+                Box::new(|v: &mut Value| v["schema"] = json!("af/task-event@2")),
+                "another version",
+            ),
+            (
+                Box::new(|v: &mut Value| v["charged_tokens"] = json!(41200)),
+                "a charge that is not decimal text",
+            ),
+            (
+                Box::new(|v: &mut Value| v["result"] = Value::Null),
+                "a settlement without its result",
+            ),
+            (
+                Box::new(|v: &mut Value| v["event_type"] = json!("TaskProviderEvent@1")),
+                "an execution record the Provider event type does not record",
+            ),
+            (
+                Box::new(|v: &mut Value| v["event_id"] = json!("not-an-event-id")),
+                "an event ID the Store does not derive",
+            ),
+            (
+                Box::new(|v: &mut Value| v["change"] = json!("teleported")),
+                "a change the Store does not record",
+            ),
+            (
+                Box::new(|v: &mut Value| {
+                    v.as_object_mut().unwrap().remove("sequence");
+                }),
+                "an event without its sequence",
+            ),
+        ],
+    );
+    let lease = TaskEventV1::Event(TaskEventEntryV1 {
+        schema: TASK_EVENT_V1.into(),
+        task_id: "pagination-cli".into(),
+        sequence: 0,
+        event_id: "fedcba9876543210fedcba9876".into(),
+        event_type: "TaskTransition@5".into(),
+        at_unix_ms: 1_700_000_000_000,
+        change: TaskEventChangeV1::LeaseTaken,
+        detail: None,
+        node: None,
+        attempt_id: None,
+        result: None,
+        charged_tokens: None,
+    });
+    both(
+        "task-event-v1.json",
+        &lease,
+        TaskEventV1::validate,
+        vec![
+            (
+                Box::new(|v: &mut Value| v["detail"] = json!("started")),
+                "a detail on a change that records none",
+            ),
+            (
+                Box::new(|v: &mut Value| v["result"] = json!("succeeded")),
+                "a result on an event that settles nothing",
+            ),
+        ],
+    );
+    let terminal = TaskEventV1::Terminal(TaskEventTerminalV1 {
+        schema: TASK_EVENT_V1.into(),
+        task_id: "pagination-cli".into(),
+        last_sequence: 57,
+        state: TaskStateV1::ended(
+            TaskStatePhaseV1::Abandoned,
+            TaskOutcomeV1::Cancelled,
+            Some(TaskCauseV1::HostCancelled),
+        )
+        .with_next("af task run pagination-cli"),
+        exit_code: 4,
+    });
+    both(
+        "task-event-v1.json",
+        &terminal,
+        TaskEventV1::validate,
+        vec![
+            (
+                Box::new(|v: &mut Value| v["exit_code"] = json!(1)),
+                "an exit code no settled Task ends with",
+            ),
+            (
+                Box::new(|v: &mut Value| {
+                    v["state"] = json!({"phase":"running","outcome":null,"cause":null,
+                        "next_action":null});
+                }),
+                "a terminal record of a Task that still runs",
+            ),
+            (
+                Box::new(|v: &mut Value| v["record"] = json!("last")),
+                "a record that is neither an event nor the terminal",
+            ),
+            (
+                Box::new(|v: &mut Value| {
+                    v.as_object_mut().unwrap().remove("last_sequence");
+                }),
+                "a terminal record that does not say where the stream ends",
+            ),
+        ],
+    );
+    let verified_terminal = TaskEventV1::Terminal(TaskEventTerminalV1 {
+        schema: TASK_EVENT_V1.into(),
+        task_id: "pagination-cli".into(),
+        last_sequence: 0,
+        state: verified().with_next("af task deliver pagination-cli"),
+        exit_code: 0,
+    });
+    both(
+        "task-event-v1.json",
+        &verified_terminal,
+        TaskEventV1::validate,
+        vec![(
+            Box::new(|v: &mut Value| v["exit_code"] = json!(4)),
+            "a verified Task that exits as cancelled",
+        )],
+    );
 }

@@ -47,6 +47,7 @@ mod continuation;
 pub(crate) mod defaults;
 pub(super) mod developer;
 pub(crate) mod domain;
+pub(crate) mod events;
 pub(super) mod export;
 pub(super) mod findings;
 mod gate_history;

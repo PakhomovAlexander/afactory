@@ -222,6 +222,7 @@ pub(crate) const EFFECTS: &[(&str, Effects)] = &[
     ),
     ("af task wait", READS),
     ("af task status", READS),
+    ("af task events", READS),
     ("af task cancel", writes(&[(Store, None)])),
     ("af task findings", READS),
     ("af task materialize", writes(&[(Files, None)])),

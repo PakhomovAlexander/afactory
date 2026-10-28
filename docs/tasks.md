@@ -208,6 +208,7 @@ process there as `runs/ID-N.json` before it takes the Task
 af task run pagination-cli --confirm-plan PLAN_ID --detach
 af task status pagination-cli
 af task wait pagination-cli --timeout 3600
+af task events pagination-cli --after 41
 af task cancel pagination-cli
 ```
 
@@ -225,7 +226,12 @@ writer lease names: it finds the process by the lease's writer in the run record
 another host with its pid and host, records who asked in `runs/ID-N.cancel.json`, and signals that
 recorded pid only, which stops its Worker processes as Ctrl-C does. The Task is then
 `abandoned/cancelled/host_cancelled`, `af task show` names who cancelled it, and `af task run ID`
-resumes it. [docs/agents.md](agents.md) walks the whole loop as an agent runs it.
+resumes it. `af task events ID` follows the Task as JSON lines, one `af/task-event@1` document per
+event of its log with the Store's own gap-free `sequence`, and once the Task settles one terminal
+record with its state and exit code; `--after N` prints only the events after sequence N, so a
+follower that reconnects gets the rest, and the command takes no `--json`
+([ADR-0250](adr/0250-follow-a-task-as-a-stream-of-its-store-events.md)).
+[docs/agents.md](agents.md) walks the whole loop as an agent runs it.
 
 ## Task states
 

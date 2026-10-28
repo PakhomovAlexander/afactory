@@ -464,6 +464,8 @@ future readers need.
   schemas](0247-generate-a-machine-readable-command-catalog.md)
 - [0248 — Hand review findings to the agent that will fix
   them](0248-hand-review-findings-to-the-agent-that-will-fix-them.md)
+- [0250 — Follow a Task as a stream of its Store
+  events](0250-follow-a-task-as-a-stream-of-its-store-events.md)
 - [0251 — Run the Task gate on the fast validation
   profile](0251-run-the-task-gate-on-the-fast-validation-profile.md)
 - [0252 — Keep the kernel experiment measurement out of every

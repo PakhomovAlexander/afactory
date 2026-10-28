@@ -237,8 +237,8 @@ Where such a code's result goes to stdout alone (under --json, `af task explain`
 of a Task that already finished), stderr ends with `Task ID: phase/outcome/cause; next: COMMAND`,
 so a non-zero exit always says why there.
 
-`af task wait` ends with the same code once the Task settles (4 for a Task that was cancelled or
-waits for a person), and with 124 when its --timeout passes first.
+`af task wait` and `af task events` end with the same code once the Task settles (4 for a Task
+that was cancelled or waits for a person), and with 124 when their --timeout passes first.
 
 `af task show`, `af task list`, `af task report`, `af task status` and `af task findings` exit 0
 once they read the Store: the state they print is data, not their outcome.",
@@ -503,6 +503,10 @@ documents are af/provider-detect@4 (`af provider detect`), af/provider-status@4,
 af/provider-setup@2 and af/provider-models@1; none carries an account, a credential or the
 Provider CLI's own words.
 
+One command prints JSON lines instead and takes no --json: `af task events ID` writes one
+af/task-event@1 document per line while it follows a Task, and its refusal or usage error is one
+af/error@2 line with the same exit code.
+
 Documents carry `kind@version` identifiers where they describe persisted records; a payload shape
 change bumps the version rather than reinterpreting an old one. Nothing af prints under --json is
 affected by a TTY, colours, or the update check: its notice goes to stderr, only on a TTY, and
@@ -534,6 +538,10 @@ The Task documents, each named by its `schema`:
   af task diff --json                  af/task-diff@1
   af task materialize --json           af/task-materialized@1
   af task status --json, wait --json   af/task-status@2
+  af task events                       JSON lines, no --json: one af/task-event@1 per event
+                                       of the Task's log, with the Store's gap-free
+                                       `sequence` (--after N resumes), then one terminal
+                                       record with the Task's state and exit_code
   af task run --detach --json          af/task-detached@2
   af task cancel --json                af/task-cancelled@1
   af task plan --json, refused         af/task-selection@3, exit 1, with `error`, `exit_code`
@@ -542,10 +550,11 @@ The Task documents, each named by its `schema`:
 
 af/task-inspection@13, af/task-collected-inspection@2, af/task-checks@2, each
 af/task-list-entry@3, the groups of af/task-attention@1, af/task-report@2, af/task-findings@2,
-af/task-status@2, af/task-detached@2 and af/task-cancelled@1 carry the Task's `state` (`af help
-task-states`), its `next_action` carrying the selectors the command was given (a report, pasted
-into a pull request, names no Store path); the diff, the materialized candidate and the refused
-selection describe no Task state. A previous version is refused, never read.
+af/task-status@2, af/task-detached@2, af/task-cancelled@1 and the terminal record of
+af/task-event@1 carry the Task's `state` (`af help task-states`), its `next_action` carrying the
+selectors the command was given (a report, pasted into a pull request, names no Store path); the
+diff, the materialized candidate and the refused selection describe no Task state. A previous
+version is refused, never read.
 
 The command catalog and the schemas:
 
@@ -614,7 +623,8 @@ check's failing and flaky tests and the end of its stderr.
 `af task status ID` prints the state in one line without waiting, with the node that runs and the
 reserved, charged and remaining tokens (plus unknown usage). It shows the last comparable Gate
 duration when recorded. `af task wait ID` blocks until the Task settles and exits with its
-outcome's code.
+outcome's code; `af task events ID` follows it as JSON lines, one per event of its log, and ends
+with one terminal record that carries the same state.
 A run `af task cancel ID` stopped is `abandoned/cancelled/host_cancelled`, and `af task show`
 names who cancelled it. `af help agents` walks the whole loop.
 

@@ -30,6 +30,7 @@ Never add `--login` inside an agent session; ask the person to log in privately.
 | Check disk before launch | `[storage] min_free_bytes` |
 | Retry a failed Gate | `af task run TASK_ID --retry-gate` |
 | Find the Tasks that need you | `af task list --attention --json` |
+| Poll a running Task in a loop | `af task events TASK_ID` |
 
 The findings command reads a recorded review round; an absent round appears in state.
 Materialize requires a clean Git worktree unless `--force`; add `--allow-unverified` for an
@@ -40,7 +41,9 @@ the exact new plan. The PR body requires the repository template and a valid lin
 prints no partial body. The machine's free-disk floor refuses work before spend. Gate retry needs
 an eligible failed check on the same sealed candidate and remains bound by approval, deadline and
 budgets; it does not decide that a failure was flaky. The attention list groups every Task of
-the Store by what it waits for and names each one's next command.
+the Store by what it waits for and names each one's next command. The event stream prints each
+event the Store records as one JSON line and ends with one terminal record; `--after N` resumes
+it.
 
 This is the loop a coding agent, or a script, runs to get a change made through af: plan a
 Task, run it, read how it ended, read its findings, look at its change, run another round
@@ -108,6 +111,18 @@ the wait result if the notifier is unavailable. `af task cancel TASK_ID --json` 
 its Worker processes, recording who asked, and prints `af/task-cancelled@1`; the Task stays
 resumable with
 `af task run TASK_ID`.
+
+To follow the run instead of only waiting for it, `af task events TASK_ID` prints JSON lines on
+stdout, one `af/task-event@1` document per event of the Task's log: its `sequence`, the Store's
+own, gap-free from 0, what changed (`change`, and `detail` for an execution record, a wait or a
+Provider event), the node and Attempt it concerns, and a settled Attempt's `result` and exact
+`charged_tokens`. Once the Task settles it prints exactly one terminal record, `record:
+terminal`, with the Task's `state` (its outcome and `next_action`) and `exit_code`, and exits
+with that code as `af task wait` does. A follower that lost its connection passes the last
+`sequence` it read, `af task events TASK_ID --after N`, and gets only the rest; `--timeout S`
+stops without a terminal record, exit 124, and names on stderr the `--after` that continues.
+The command takes no `--json`: every other command's `--json` stays one document, and a refusal
+here is one `af/error@2` line.
 
 ## 3. Read how it ended
 

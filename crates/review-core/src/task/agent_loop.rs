@@ -1,6 +1,6 @@
 //! The agent loop's documents (ADR-0211): what `af task findings`, `af task materialize`, `af
 //! task diff`, `af task status`, `af task run --detach` and `af task cancel` print under
-//! `--json`, and the two records a run of `af task run` leaves in its Store's `runs/` directory:
+//! `--json`, the lines of `af task events` (ADR-0250), and the two records a run of `af task run` leaves in its Store's `runs/` directory:
 //! the process that runs it, and a request to cancel it.
 //!
 //! Every field of a printed document is present, `null` where absent, so a reader never has to
@@ -22,6 +22,7 @@ pub const TASK_DETACHED_V2: &str = "af/task-detached@2";
 pub const TASK_CANCELLED_V1: &str = "af/task-cancelled@1";
 pub const TASK_RUN_PROCESS_V1: &str = "af/task-run-process@1";
 pub const TASK_CANCEL_REQUEST_V1: &str = "af/task-cancel-request@1";
+pub const TASK_EVENT_V1: &str = "af/task-event@1";
 
 /// The longest text a document carries in one field: a reviewer's evidence, an evaluator's
 /// reason or a host name. Longer text is cut by its writer, never refused by its reader.
@@ -535,6 +536,243 @@ impl TaskCancelledV1 {
         )?;
         self.request.validate()?;
         self.state.validate()
+    }
+}
+
+/// One line of `af task events ID` (ADR-0250): an event of the Task's log as the Store recorded
+/// it, or the one terminal record that ends the stream once the Task settled. A line is one
+/// document; `record` says which of the two it is.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "record", rename_all = "snake_case")]
+pub enum TaskEventV1 {
+    Event(TaskEventEntryV1),
+    Terminal(TaskEventTerminalV1),
+}
+
+impl TaskEventV1 {
+    pub fn validate(&self) -> Result<(), String> {
+        match self {
+            Self::Event(entry) => entry.validate(),
+            Self::Terminal(terminal) => terminal.validate(),
+        }
+    }
+}
+
+/// What one event of a Task's log records: the `kind` of its `TaskTransition@5` change, or the
+/// log's three other event kinds. Every kind the Store can record maps to exactly one.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum TaskEventChangeV1 {
+    RecordingResumed,
+    ReviewIntegrationSelected,
+    ReviewIntegrationFinished,
+    ReviewContinued,
+    AdoptionObservationRecorded,
+    Opened,
+    LeaseTaken,
+    LeaseRenewed,
+    LeaseReleased,
+    SourceRefreshed,
+    PlanProposed,
+    PlanningCompleted,
+    PlanDecided,
+    ApprovalRevoked,
+    PlanAdmitted,
+    Waiting,
+    Resumed,
+    Finished,
+    ExecutionRecorded,
+    RunReported,
+    DeliveryRecorded,
+    TaskCollected,
+    GateCleanup,
+    StorageSweep,
+    /// `TaskExecutionStarted@1`: a lease began executing the plan.
+    ExecutionStarted,
+    /// `TaskGateRetried@1`: a gate retry reopened the finished Task.
+    GateRetried,
+    /// `TaskProviderEvent@1`: an Attempt waited, re-asked or probed its Provider again.
+    ProviderEvent,
+}
+
+impl TaskEventChangeV1 {
+    /// The kind of a `TaskTransition@5` change.
+    pub fn of(change: &super::event::TaskChangeV1) -> Self {
+        use super::event::TaskChangeV1 as C;
+        match change {
+            C::RecordingResumed { .. } => Self::RecordingResumed,
+            C::ReviewIntegrationSelected { .. } => Self::ReviewIntegrationSelected,
+            C::ReviewIntegrationFinished { .. } => Self::ReviewIntegrationFinished,
+            C::ReviewContinued { .. } => Self::ReviewContinued,
+            C::AdoptionObservationRecorded { .. } => Self::AdoptionObservationRecorded,
+            C::Opened { .. } => Self::Opened,
+            C::LeaseTaken { .. } => Self::LeaseTaken,
+            C::LeaseRenewed { .. } => Self::LeaseRenewed,
+            C::LeaseReleased {} => Self::LeaseReleased,
+            C::SourceRefreshed { .. } => Self::SourceRefreshed,
+            C::PlanProposed { .. } => Self::PlanProposed,
+            C::PlanningCompleted { .. } => Self::PlanningCompleted,
+            C::PlanDecided { .. } => Self::PlanDecided,
+            C::ApprovalRevoked { .. } => Self::ApprovalRevoked,
+            C::PlanAdmitted { .. } => Self::PlanAdmitted,
+            C::Waiting { .. } => Self::Waiting,
+            C::Resumed {} => Self::Resumed,
+            C::Finished { .. } => Self::Finished,
+            C::ExecutionRecorded { .. } => Self::ExecutionRecorded,
+            C::RunReported { .. } => Self::RunReported,
+            C::DeliveryRecorded { .. } => Self::DeliveryRecorded,
+            C::TaskCollected { .. } => Self::TaskCollected,
+            C::GateCleanup { .. } => Self::GateCleanup,
+            C::StorageSweep { .. } => Self::StorageSweep,
+        }
+    }
+
+    /// The Store event type that records this kind.
+    pub fn event_type(self) -> &'static str {
+        match self {
+            Self::ExecutionStarted => "TaskExecutionStarted@1",
+            Self::GateRetried => "TaskGateRetried@1",
+            Self::ProviderEvent => "TaskProviderEvent@1",
+            _ => "TaskTransition@5",
+        }
+    }
+
+    /// Whether an event of this kind names what happened within it in `detail`: the execution
+    /// record's kind, the reason a Task waits, or the Provider event's kind.
+    fn has_detail(self) -> bool {
+        matches!(
+            self,
+            Self::ExecutionRecorded | Self::Waiting | Self::ProviderEvent
+        )
+    }
+}
+
+/// How a settled Attempt ended, as its execution record says.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum TaskEventResultV1 {
+    Succeeded,
+    Failed,
+    Abandoned,
+}
+
+/// One event of the Task's log. `sequence` is the Store's own sequence of it in the Task's log,
+/// gap-free from 0; `event_id` the Store's ID of it; `at_unix_ms` the policy time it records.
+/// `detail` is the kind of what an `execution_recorded`, `waiting` or `provider_event` change
+/// records and null on every other; `node` and `attempt_id` name the node and Attempt it
+/// concerns, when it concerns one; `result` is how a `settled` Attempt ended, and
+/// `charged_tokens` the exact charge a `settled` or `usage_observed` record carries.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct TaskEventEntryV1 {
+    pub schema: String,
+    pub task_id: String,
+    pub sequence: u64,
+    pub event_id: String,
+    pub event_type: String,
+    pub at_unix_ms: u64,
+    pub change: TaskEventChangeV1,
+    #[serde(deserialize_with = "Option::deserialize")]
+    pub detail: Option<String>,
+    #[serde(deserialize_with = "Option::deserialize")]
+    pub node: Option<String>,
+    #[serde(deserialize_with = "Option::deserialize")]
+    pub attempt_id: Option<String>,
+    #[serde(deserialize_with = "Option::deserialize")]
+    pub result: Option<TaskEventResultV1>,
+    #[serde(deserialize_with = "Option::deserialize")]
+    pub charged_tokens: Option<DecimalU128>,
+}
+
+impl TaskEventEntryV1 {
+    pub fn validate(&self) -> Result<(), String> {
+        schema_is(&self.schema, TASK_EVENT_V1)?;
+        require(
+            is_name(&self.task_id)
+                && self.sequence <= crate::json::SAFE_INTEGER_MAX as u64
+                && self.event_id.len() == 26
+                && self
+                    .event_id
+                    .bytes()
+                    .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b))
+                && self.at_unix_ms > 0
+                && self.at_unix_ms <= crate::json::SAFE_INTEGER_MAX as u64,
+            "A Task event names its Task, its sequence, the Store's event ID and its time",
+        )?;
+        require(
+            self.event_type == self.change.event_type(),
+            "A Task event's change is one its Store event type records",
+        )?;
+        require(
+            self.detail.is_some() == self.change.has_detail()
+                && self.detail.as_deref().is_none_or(|detail| {
+                    detail.len() <= 64
+                        && detail.starts_with(|c: char| c.is_ascii_lowercase())
+                        && detail
+                            .bytes()
+                            .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'_')
+                }),
+            "An execution record, a wait or a Provider event names its kind in `detail`, and \
+             no other change does",
+        )?;
+        require(
+            [&self.node, &self.attempt_id]
+                .into_iter()
+                .flatten()
+                .all(|text| bounded(text) && text.chars().count() <= 255),
+            "A Task event's node and Attempt are bounded names",
+        )?;
+        let settled = self.change == TaskEventChangeV1::ExecutionRecorded
+            && self.detail.as_deref() == Some("settled");
+        let charged = settled
+            || (self.change == TaskEventChangeV1::ExecutionRecorded
+                && self.detail.as_deref() == Some("usage_observed"));
+        require(
+            self.result.is_some() == settled && self.charged_tokens.is_some() == charged,
+            "Only a settled Attempt has a result, and only a settlement or a usage observation \
+             a charge",
+        )
+    }
+}
+
+/// The last line of `af task events ID`, written once when the Task settled (no run holds it
+/// and none of this host is starting). `last_sequence` is the sequence of the last event the
+/// stream covered, so `af task events ID --after LAST_SEQUENCE` prints only what the Task
+/// records later; `state` carries the outcome and `next_action`, and `exit_code` is the code
+/// the command exits with, as `af task wait` does.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct TaskEventTerminalV1 {
+    pub schema: String,
+    pub task_id: String,
+    pub last_sequence: u64,
+    pub state: TaskStateV1,
+    pub exit_code: u8,
+}
+
+impl TaskEventTerminalV1 {
+    /// The exit code a follower of a settled Task ends with: its outcome's, 4 for a Task that
+    /// waits for a person, 0 for one that neither ended nor waits.
+    pub fn exit_code_of(state: &TaskStateV1) -> u8 {
+        match state.outcome {
+            Some(outcome) => outcome.exit_code(),
+            None if state.phase == super::state::TaskStatePhaseV1::Waiting => 4,
+            None => 0,
+        }
+    }
+
+    pub fn validate(&self) -> Result<(), String> {
+        schema_is(&self.schema, TASK_EVENT_V1)?;
+        require(
+            is_name(&self.task_id) && self.last_sequence <= crate::json::SAFE_INTEGER_MAX as u64,
+            "A terminal record names its Task and the last sequence it covers",
+        )?;
+        self.state.validate()?;
+        require(
+            self.state.phase != super::state::TaskStatePhaseV1::Running
+                && self.exit_code == Self::exit_code_of(&self.state),
+            "A terminal record ends a settled Task with that Task's exit code",
+        )
     }
 }
 

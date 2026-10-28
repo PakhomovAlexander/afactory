@@ -1685,6 +1685,13 @@ fn main() {
         cli::Command::Onboard(args) if args.apply => Some((args.repo.clone(), args.json)),
         _ => None,
     };
+    // `af task events` prints JSON lines with no --json: its refusal is an `af/error@2` line too.
+    let json_lines = matches!(
+        &command,
+        cli::Command::Task {
+            command: cli::TaskCommand::Events { .. }
+        }
+    );
     drop(startup);
     let dispatched = perf_trace::span(Phase::CliCommand);
     let (prefix, outcome): (&str, Result<i32, String>) = match command {
@@ -2010,7 +2017,7 @@ fn main() {
         Err(error) => {
             // A classified refusal adds its cause, next command and facts (`af help json`).
             let detail = error_document::take(&error);
-            if argv.iter().skip(1).any(|word| word == "--json") {
+            if json_lines || argv.iter().skip(1).any(|word| word == "--json") {
                 let document = error_document::document(prefix, &error, 1, detail.as_ref());
                 println!("{document}");
             }
@@ -2222,6 +2229,12 @@ fn task_command(command: cli::TaskCommand) -> Result<i32, String> {
         cli::TaskCommand::Status { task_id, inspect } => {
             task_execution::runs::status(&task_id, &inspect)
         }
+        cli::TaskCommand::Events {
+            task_id,
+            after,
+            timeout,
+            store,
+        } => task_execution::events::events(&task_id, after, timeout, &store),
         cli::TaskCommand::Cancel { task_id, inspect } => {
             task_execution::runs::cancel(&task_id, &inspect)
         }

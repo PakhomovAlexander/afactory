@@ -285,7 +285,7 @@ fn running_node(task: &TaskProjection) -> Option<(String, u64)> {
 
 /// The exit code a settled Task gives a script that waited for it: its outcome's, 4 for a Task
 /// that waits for a person.
-fn settled_code(state: &TaskStateV1) -> i32 {
+pub(super) fn settled_code(state: &TaskStateV1) -> i32 {
     match state.outcome {
         Some(outcome) => i32::from(outcome.exit_code()),
         None if state.phase == TaskStatePhaseV1::Waiting => 4,
@@ -506,7 +506,7 @@ pub(crate) fn status(id: &str, inspect: &crate::cli::TaskInspectArgs) -> Result<
 /// Whether a run of `task` is on its way here though it holds no lease yet: its newest record
 /// names a live process of this host, recorded within the window a detached run has to take the
 /// Task.
-fn starting_run(state: &Path, task: &TaskProjection) -> Option<TaskRunProcessV1> {
+pub(super) fn starting_run(state: &Path, task: &TaskProjection) -> Option<TaskRunProcessV1> {
     let record = records(state, &task.task_id).pop()?;
     (record.host == this_host()
         && alive(record.pid)

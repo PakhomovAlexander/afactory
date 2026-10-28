@@ -39,6 +39,7 @@ pub(crate) const SCHEMAS: &[(&str, &str, &str)] = &[
     schema!("task-collected-inspection", 2),
     schema!("task-detached", 2),
     schema!("task-diff", 1),
+    schema!("task-event", 1),
     schema!("task-findings", 2),
     schema!("task-inspection", 13),
     schema!("task-list-entry", 3),

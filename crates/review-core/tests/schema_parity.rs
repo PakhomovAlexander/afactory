@@ -30,7 +30,7 @@ use review_core::{
 };
 use serde_json::{Value, json};
 
-const SCHEMAS: [&str; 233] = [
+const SCHEMAS: [&str; 234] = [
     "error-v2.json",
     "findings-sarif-v1.json",
     "task-findings-v2.json",
@@ -40,6 +40,7 @@ const SCHEMAS: [&str; 233] = [
     "task-status-v2.json",
     "task-detached-v2.json",
     "task-cancelled-v1.json",
+    "task-event-v1.json",
     "task-run-process-v1.json",
     "task-cancel-request-v1.json",
     "task-delivery-proof-v1.json",

@@ -1993,7 +1993,8 @@ in the background and returns once it holds the Task and its plan is admitted, p
 and its log, `runs/<TASK_ID>-<N>.log` in the Task Store (`af/task-detached@2` under --json); a \
 run not admitted within 2 minutes exits 4 with `admitted: false`, and `af task status` is next. \
 The run has no terminal, survives the shell that started it, and is the same process a \
-foreground run is; `af task wait`, `af task status` and `af task cancel` follow it. Every run \
+foreground run is; `af task wait`, `af task status`, `af task events` and `af task cancel` \
+follow it. Every run \
 records its process in the Store, `runs/<TASK_ID>-<N>.json`, before it takes the Task.\n\n\
 --from TASK plans NEW_ID as a new Task that continues the finished Task TASK from its reviewed \
 candidate (ADR-0212): the candidate Snapshot of its last review round (--round N for another) is \
@@ -2133,6 +2134,42 @@ af task status TASK_ID --json   # needs: a Task"
         task_id: String,
         #[command(flatten)]
         inspect: TaskInspectArgs,
+    },
+    /// Follow a Task as JSON lines: each event of its log, then one terminal record
+    #[command(
+        long_about = "Print the events a Task's log records as JSON lines on stdout, one \
+`af/task-event@1` document per line, and follow the Task until it settles — no writer holds it \
+and no run of this host is starting — then print one terminal record and exit with the Task's \
+exit code, as `af task wait` does: its outcome's (`af help exit-codes`), 4 for a Task that waits \
+for a person.\n\nAn event line (`record: event`) is one event of the Task's log, in the order \
+the Store recorded it: its `sequence`, the Store's own, gap-free from 0; what changed (`change`, \
+and `detail` for an execution record, a wait or a Provider event); the node and Attempt it \
+concerns; a settled Attempt's `result` and exact `charged_tokens`. The terminal record (`record: \
+terminal`) comes exactly once, last: `last_sequence`, the Task's `state` with its outcome and \
+`next_action`, and `exit_code`.\n\n--after N prints only the events after sequence N: a follower \
+that lost its connection passes the last sequence it read and gets the rest, nothing twice. \
+With --timeout S it stops after S seconds without a terminal record, exits 124 and says on \
+stderr the --after that continues. A planned Task with no run in progress is refused (exit 1), \
+as by `af task wait`. A refusal is one `af/error@2` line on stdout and the same exit code. There \
+is no --json: the stream is many documents, and every other command's --json stays one.\n\n\
+Never: starts, resumes or changes a Task.",
+        after_long_help = "Examples:\n  \
+af task events TASK_ID   # needs: a Task af task run --detach started\n  \
+af task events TASK_ID --after 41   # needs: a Task that recorded event 41\n  \
+# needs: a running Task\n  \
+af task events TASK_ID --timeout 540 | jq -c 'select(.record == \"terminal\")'"
+    )]
+    Events {
+        /// Task id
+        task_id: String,
+        /// Print only the events after sequence N, the last one a follower read
+        #[arg(long, value_name = "N")]
+        after: Option<u64>,
+        /// Stop after S seconds without a terminal record and exit 124
+        #[arg(long, value_name = "S", value_parser = clap::value_parser!(u64).range(1..))]
+        timeout: Option<u64>,
+        #[command(flatten)]
+        store: TaskStoreArgs,
     },
     /// Stop a running Task's `af task run` and its Worker processes; the Task stays resumable
     #[command(
@@ -2803,6 +2840,30 @@ pub(crate) struct TaskInspectArgs {
     /// One JSON document on stdout instead of text
     #[arg(long, help_heading = "Output")]
     pub(crate) json: bool,
+}
+
+/// The Store selectors of a command whose output is JSON lines, which takes no `--json`.
+#[derive(Debug, Args, Clone)]
+pub(crate) struct TaskStoreArgs {
+    /// Repository the Task belongs to
+    #[arg(
+        long,
+        value_name = "DIR",
+        default_value = ".",
+        help_heading = "Selector"
+    )]
+    pub(crate) repo: PathBuf,
+    /// Explicit state directory
+    #[arg(long, value_name = "DIR", help_heading = "Selector")]
+    pub(crate) state: Option<PathBuf>,
+    /// The Workspace whose Store to use, by label (`af project workspaces` lists them)
+    #[arg(
+        long,
+        value_name = "LABEL",
+        conflicts_with = "state",
+        help_heading = "Selector"
+    )]
+    pub(crate) workspace: Option<String>,
 }
 
 // ------------------------------------------------------------------------------------------
