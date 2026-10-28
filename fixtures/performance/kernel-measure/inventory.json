@@ -157,8 +157,8 @@
   },
   {
    "path": "fixtures/performance/README.md",
-   "sha256": "sha256:09262ebba36b732aad218a8659855c5d6167695a7a1273bf9889a90d4086aca9",
-   "size": 25579
+   "sha256": "sha256:953361f71d174f39522bec0a4a2f7072c6b66a87e2559218ce73723bc434a5c7",
+   "size": 25847
   },
   {
    "path": "fixtures/performance/adapters.toml",
@@ -272,8 +272,8 @@
   },
   {
    "path": "fixtures/performance/cli/tui-open.py",
-   "sha256": "sha256:1891ed1903bf7b4e60874fcb48372c7c98e4ad0bcd0aca3fab7b11db8ee9eee3",
-   "size": 14107
+   "sha256": "sha256:3d09b756f12d2b667c95c13b06fbd6c77a1ff48a67dc87cbbdebacc34318b9af",
+   "size": 17852
   },
   {
    "path": "fixtures/performance/cohort-quick-20261023-hosted-v6.json",
@@ -3072,8 +3072,8 @@
   },
   {
    "path": "scripts/performance/tests/test_runner.py",
-   "sha256": "sha256:9834758155f1b07ea89177c4e19760ff342a5c11c6da0870c9bb9d8c0622f468",
-   "size": 123395
+   "sha256": "sha256:51f14b8cef9d4b058e38011bb8b50d1b7b6e57148988d68b4e7ae603afb3fcf6",
+   "size": 123585
   },
   {
    "path": "scripts/performance/tests/test_sdlc.py",
@@ -3182,8 +3182,8 @@
   },
   {
    "path": "scripts/performance/tests/test_tui_open.py",
-   "sha256": "sha256:63d9df213163dba02801e2b5e5c498d84e852653580152b7f7ccffa5d77dc45f",
-   "size": 15175
+   "sha256": "sha256:ac96fce27084d46cf1715352a422a1a4cfec4ae5bb72b0f0586d4acf58f1ff28",
+   "size": 25250
   },
   {
    "path": "scripts/performance/tests/test_values.py",
@@ -3206,7 +3206,7 @@
    "size": 6777
   }
  ],
- "harness_digest": "sha256:d3f8c02be7dcff6361d4367c5b31b3e7244b7be6f966d14b59123dd8426001d6",
+ "harness_digest": "sha256:01780003adc776059f2de968d5b05444d22747f7d41c9e08638bf82b429b079e",
  "inner_metric": "pending",
  "inner_metric_reason": "the inner wall_ms metric is recorded in every Measurement but no staged objective selects it until the guard's real kernel integration and tampered-candidate tests are accepted on the sealed source and a reviewed human change installs and selects it",
  "objective_metric": "elapsed_ms",

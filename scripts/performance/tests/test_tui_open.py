@@ -18,12 +18,19 @@ from tests.support import ROOT
 DRIVER = os.path.join(ROOT, "fixtures/performance/cli/tui-open.py")
 SETUP = os.path.join(ROOT, "fixtures/performance/cli/setup.sh")
 
-# A stand-in for the browser. `tcdrain` returns once the driver has read what was written, so
-# every sequence reaches the driver in the order written without a sleep. `ready` writes the
-# pids to the FIFO the test reads, the test's only synchronization.
+# A stand-in for the browser. `tcdrain` returns once what was written left the terminal's
+# output queue, so every sequence reaches the driver in the order written; it does not say the
+# driver read one before the next was written, so what needs two reads apart is proved on the
+# driver's `Screen` with chunks of the test's own. `ready` writes the pids to the FIFO the
+# test reads, the test's only synchronization; `record` names the session leaders the test
+# releases itself when the driver's own cleanup could not.
 BROWSER = (
     "import fcntl, os, signal, struct, sys, termios, time, tty\n"
     "mode = sys.argv[1]\n"
+    "def record(*pids):\n"
+    "    with open(sys.argv[0] + '.pids', 'a') as kept:\n"
+    "        kept.write(''.join('%d\\n' % pid for pid in pids))\n"
+    "record(os.getpid())\n"
     "assert os.isatty(0) and os.isatty(1)\n"
     "size = fcntl.ioctl(0, termios.TIOCGWINSZ, b'\\x00' * 8)\n"
     "assert struct.unpack('HHHH', size)[:2] == (30, 100)\n"
@@ -59,15 +66,34 @@ BROWSER = (
     "        os._exit(0)\n"
     "    ready(os.getpid(), stray)\n"
     "    time.sleep(30)\n"
-    "elif mode == 'escape':\n"
+    "elif mode in ('escape', 'hidden'):\n"
+    "    done_r, done_w = os.pipe()\n"
     "    escaped = os.fork()\n"
     "    if escaped == 0:\n"
     "        os.setsid()\n"
-    "        os.closerange(0, 1024)\n"
+    "        os.closerange(0, done_w)\n"
+    "        os.closerange(done_w + 1, 1024)\n"
+    "        if mode == 'hidden':\n"
+    "            import ctypes\n"
+    "            assert ctypes.CDLL(None).prctl(4, 0, 0, 0, 0) == 0\n"
+    "        os.write(done_w, b'x')\n"
+    "        os.close(done_w)\n"
     "        time.sleep(30)\n"
     "        os._exit(0)\n"
+    "    os.close(done_w)\n"
+    "    assert os.read(done_r, 1) == b'x'\n"
+    "    os.close(done_r)\n"
+    "    assert os.getsid(escaped) != os.getsid(0)\n"
+    "    record(escaped)\n"
     "    ready(os.getpid(), escaped)\n"
     "    paint(b'\\x1b[2J\\x1b[30;1HNORMAL')\n"
+    "elif mode == 'orphan':\n"
+    "    stray = os.fork()\n"
+    "    if stray == 0:\n"
+    "        os.setsid()\n"
+    "        os.execve('/bin/sleep', ['sleep', '30'], {})\n"
+    "    record(stray)\n"
+    "    sys.exit(1)\n"
     "elif mode == 'deaf':\n"
     "    signal.signal(signal.SIGHUP, signal.SIG_IGN)\n"
     "    ready(os.getpid())\n"
@@ -96,6 +122,7 @@ class TuiOpen(unittest.TestCase):
                         signal.pthread_sigmask(signal.SIG_BLOCK, ()))
         self.root = tempfile.mkdtemp(prefix="af-tui-open-")
         self.addCleanup(lambda: subprocess.run(["rm", "-rf", self.root]))
+        self.addCleanup(self.release_recorded)
         self.browser = os.path.join(self.root, "browser.py")
         with open(self.browser, "w", encoding="utf-8") as output:
             output.write(BROWSER)
@@ -113,25 +140,77 @@ class TuiOpen(unittest.TestCase):
         return process
 
     def end(self, process, session):
-        """Whatever a failed step left of the driver: killed, with its group when it led one,
-        reaped, its pipes closed."""
+        """Whatever a failed step left of the driver: asked to end its session (SIGTERM, which
+        its cleanup answers within its bounds), killed with its group when it led one if it
+        did not, reaped, its pipes closed."""
         if process.poll() is None:
+            self.signal(process, session, signal.SIGTERM)
             try:
-                if session:
-                    os.killpg(process.pid, signal.SIGKILL)
-                else:
-                    process.kill()
-            except ProcessLookupError:
-                pass
-            process.wait(timeout=10)
+                process.wait(timeout=10)
+            except subprocess.TimeoutExpired:
+                self.signal(process, session, signal.SIGKILL)
+                process.wait(timeout=10)
         for stream in (process.stdout, process.stderr):
             stream.close()
+
+    def signal(self, process, session, number):
+        try:
+            if session:
+                os.killpg(process.pid, number)
+            else:
+                process.send_signal(number)
+        except ProcessLookupError:
+            pass
 
     def release(self, pid):
         try:
             os.kill(pid, signal.SIGKILL)
         except ProcessLookupError:
             pass
+
+    def recorded(self):
+        """The pids the browser recorded, in order: itself first, then what it started that
+        leads a session of its own."""
+        try:
+            with open(self.browser + ".pids", encoding="utf-8") as kept:
+                return [int(line) for line in kept.read().split()]
+        except OSError:
+            return []
+
+    def release_recorded(self):
+        """Whatever the browser recorded that still leads a session, with its group: the
+        fallback for a driver that could not end the session itself."""
+        for pid in self.recorded():
+            try:
+                leader = os.getsid(pid) == pid
+            except OSError:
+                continue
+            if leader:
+                try:
+                    os.killpg(pid, signal.SIGKILL)
+                except (ProcessLookupError, PermissionError):
+                    pass
+
+    def stderr_so_far(self, process, seconds=1):
+        """What the driver wrote to its stderr so far, read for at most `seconds` so that a
+        process left holding the pipe cannot hold the test."""
+        source = process.stderr.fileno()
+        chunks = []
+        deadline = time.monotonic() + seconds
+        while True:
+            ready, _, _ = select.select([source], [], [], max(deadline - time.monotonic(), 0))
+            if not ready:
+                break
+            data = os.read(source, 65536)
+            if not data:
+                break
+            chunks.append(data)
+        return b"".join(chunks).decode("utf-8", "replace")
+
+    def consume(self, number):
+        """A pending `number` a test left blocked, taken before its handler is restored."""
+        if number in signal.sigpending():
+            signal.sigwait({number})
 
     def run_driver(self, mode):
         process = self.drive(mode)
@@ -148,7 +227,7 @@ class TuiOpen(unittest.TestCase):
             while b"\n" not in line:
                 if process.poll() is not None:
                     self.fail("the driver exited %d before the browser was ready: %s"
-                              % (process.returncode, process.stderr.read()))
+                              % (process.returncode, self.stderr_so_far(process)))
                 if time.monotonic() >= deadline:
                     self.fail("the browser was not ready within 10 s")
                 ready, _, _ = select.select([fifo], [], [], 0.05)
@@ -164,14 +243,17 @@ class TuiOpen(unittest.TestCase):
             self.addCleanup(self.release, pid)
         return pids
 
+    def state(self, pid):
+        """`pid`'s process state as `ps` prints it; empty once it is gone."""
+        return subprocess.run(["ps", "-o", "stat=", "-p", str(pid)], stdout=subprocess.PIPE,
+                              stderr=subprocess.DEVNULL, text=True).stdout.strip()
+
     def assert_not_running(self, pid):
         """`pid` is gone or a zombie its parent has yet to reap; within 2 s, since the
         reparenting and reaping of a killed orphan are the init's to time."""
         deadline = time.monotonic() + 2
         while True:
-            state = subprocess.run(["ps", "-o", "stat=", "-p", str(pid)],
-                                   stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
-                                   text=True).stdout.strip()
+            state = self.state(pid)
             if state == "" or state.startswith("Z"):
                 return
             if time.monotonic() >= deadline:
@@ -184,7 +266,8 @@ class TuiOpen(unittest.TestCase):
         result = json.loads(stdout)
         self.assertEqual(result["schema"], "af.perf-tui-open/1")
         self.assertEqual(result["exit_code"], 0)
-        self.assertGreater(float(result["browser_ms"]), float(result["splash_ms"]))
+        # The splash and the frame may reach one read: the terminal keeps no write apart.
+        self.assertGreaterEqual(float(result["browser_ms"]), float(result["splash_ms"]))
         browser, splash = clicases.tui_report(stdout.encode())
         self.assertEqual((float(browser), float(splash)),
                          (float(result["browser_ms"]), float(result["splash_ms"])))
@@ -205,13 +288,68 @@ class TuiOpen(unittest.TestCase):
         self.assertIn("before browser status-line frame", stderr)
 
     def test_the_interval_ends_when_the_status_line_arrives_not_at_an_earlier_clear(self):
-        # The first output is a clear and a splash; the status line arrives only after the
-        # driver read them, without another clear. Timed from that clear, the browser would
-        # equal the splash; it ends when the status line reaches the terminal.
+        # The first output is a clear and a splash; the status line follows without another
+        # clear. Timed from that clear, the browser would equal the splash; it ends when the
+        # status line reaches the terminal. On the terminal the two writes may reach one
+        # read, so the arrivals apart are proved on the screen below with chunks of the
+        # test's own: a clear and a splash at 5 and the status line at 12 end at 12.
         code, stdout, stderr = self.run_driver("late")
         self.assertEqual(code, 0, stderr)
         browser, splash = clicases.tui_report(stdout.encode())
-        self.assertGreater(browser, splash)
+        self.assertGreaterEqual(browser, splash)
+        driver = load_driver()
+        status = b"\x1b[30;1H\x1b[0;7mNORMAL  browser"
+        for name, chunks, first, frame in (
+                ("apart", [(b"splash", 5), (driver.CLEAR, 7), (status, 12)], 5, 12),
+                ("late clear", [(driver.CLEAR + b"splash", 5), (status, 12)], 5, 12),
+                ("one read", [(b"splash" + driver.CLEAR + status, 9)], 9, 9),
+                ("split line", [(status[:10], 3), (status[10:], 8)], 3, 8),
+                ("erased", [(status + driver.CLEAR, 4), (b"more", 6)], 4, None)):
+            with self.subTest(name):
+                screen = driver.Screen()
+                for data, at in chunks:
+                    screen.feed(data, at)
+                self.assertEqual((screen.first, screen.browser), (first, frame))
+
+    def test_the_proc_listing_skips_the_gone_and_other_users_and_refuses_what_it_cannot_read(
+            self):
+        # A `/proc` of the test's own: one environment carries the token, one another's, one
+        # is root's to read (another user's process), one this user's that started before the
+        # browser, one is gone. A process of this user's that started no earlier than the
+        # browser and whose environment cannot be read leaves the listing unconfirmed.
+        if os.geteuid() == 0:
+            self.skipTest("root reads every environment")
+        driver = load_driver()
+        proc = os.path.join(self.root, "proc")
+        uid = os.getuid()
+
+        def process(pid, environ, owner, started, readable=True):
+            os.makedirs(os.path.join(proc, str(pid)))
+            with open(os.path.join(proc, str(pid), "status"), "wb") as output:
+                output.write(b"Name:\tx\nUid:\t%d\t%d\t%d\t%d\n" % ((owner,) * 4))
+            with open(os.path.join(proc, str(pid), "stat"), "wb") as output:
+                output.write(b"%d (x y) S 1 1 1 0 -1 0 0 0 0 0 0 0 0 0 20 0 1 0 %d 0 0\n"
+                             % (pid, started))
+            if environ is not None:
+                with open(os.path.join(proc, str(pid), "environ"), "wb") as output:
+                    output.write(environ)
+                if not readable:
+                    os.chmod(os.path.join(proc, str(pid), "environ"), 0)
+
+        marker = b"AF_PERF_TUI_OPEN_SESSION=t0ken"
+        process(101, b"A=1\0" + marker + b"\0", uid, 500)
+        process(102, b"A=1\0AF_PERF_TUI_OPEN_SESSION=other\0", uid, 500)
+        process(103, b"", 0, 500, readable=False)
+        process(104, b"", uid, 300, readable=False)
+        process(105, None, uid, 500)
+        self.assertEqual(driver.proc_listed(marker, set(), 400, proc), {101})
+        self.assertEqual(driver.proc_listed(marker, {101}, 400, proc), set())
+        process(106, b"", uid, 400, readable=False)
+        with self.assertRaisesRegex(driver.Unconfirmed, "process 106, this user's, cannot"):
+            driver.proc_listed(marker, set(), 400, proc)
+        # Without the browser's start, what this user's started before it is suspect too.
+        with self.assertRaisesRegex(driver.Unconfirmed, "process 10[46], this user's, cannot"):
+            driver.proc_listed(marker, set(), None, proc)
 
     def test_a_descendant_that_outlives_the_browser_is_killed_and_fails_the_sample(self):
         # The stray sleeps for 30 s holding the driver's stderr: the pipe ends within the
@@ -232,6 +370,67 @@ class TuiOpen(unittest.TestCase):
         self.assertIn("outlived it; it was killed", stderr)
         self.assert_not_running(escaped)
         self.assert_not_running(browser)
+
+    @unittest.skipUnless(sys.platform.startswith("linux"),
+                         "an undumpable process keeps its environment from its user on Linux")
+    def test_a_process_of_this_user_whose_environment_cannot_be_read_is_unconfirmed(self):
+        # The escaped process made itself undumpable, so its `/proc` environment is root's to
+        # read; it started after the browser, so it may be the browser's doing: the cleanup
+        # is unconfirmed, no document is printed, and the test releases it.
+        if os.geteuid() == 0:
+            self.skipTest("root reads every environment")
+        process = self.drive("hidden")
+        browser, hidden = self.pids(process)
+        stdout, stderr = process.communicate(timeout=10)
+        self.assertEqual(process.returncode, 3, stderr)
+        self.assertEqual(stdout, "")
+        self.assertIn("process %d, this user's, cannot be read" % hidden, stderr)
+        self.assertNotIn(self.state(hidden), ("", "Z"))
+        self.release(hidden)
+        self.assert_not_running(hidden)
+        self.assert_not_running(browser)
+
+    def test_a_cancellation_during_the_settlement_waits_for_it_and_ends_the_sample(self):
+        # The leader is reaped, and only then does the cancellation land: it stays pending
+        # while the process that left the session is found and killed, and ends the sample
+        # after that, as a cancellation, not a document.
+        driver = load_driver()
+        reap = driver.reap
+
+        def reap_then_cancel(child):
+            code = reap(child)
+            os.kill(os.getpid(), signal.SIGTERM)
+            return code
+
+        driver.reap = reap_then_cancel
+        self.addCleanup(signal.signal, signal.SIGTERM,
+                        signal.signal(signal.SIGTERM, driver.cancelled))
+        self.addCleanup(self.consume, signal.SIGTERM)
+        fifo = os.open(self.fifo, os.O_RDONLY | os.O_NONBLOCK)
+        self.addCleanup(os.close, fifo)
+        with self.assertRaises(driver.Cancelled) as caught:
+            driver.measure(self.argv("escape"))
+        self.assertEqual(caught.exception.args[0], signal.SIGTERM)
+        self.assertNotIn(signal.SIGTERM, signal.sigpending())
+        browser, escaped = [int(pid) for pid in os.read(fifo, 4096).split()]
+        self.assert_not_running(escaped)
+        self.assert_not_running(browser)
+
+    def test_a_driver_that_exits_before_readiness_fails_within_its_bound_and_releases(self):
+        # The browser exits before it is ready, leaving a process of a session of its own, with
+        # an environment of its own, holding the driver's stderr: the driver reports the exit
+        # without finding it, the readiness wait fails without reading that pipe to its end,
+        # and the browser's record is what releases the process.
+        process = self.drive("orphan")
+        started = time.monotonic()
+        with self.assertRaises(AssertionError) as caught:
+            self.pids(process)
+        self.assertLess(time.monotonic() - started, 5)
+        self.assertIn("before browser status-line frame", str(caught.exception))
+        stray = self.recorded()[-1]
+        self.assertNotIn(self.state(stray), ("", "Z"))
+        self.release_recorded()
+        self.assert_not_running(stray)
 
     def test_cancellation_while_the_browser_runs_ends_its_whole_session(self):
         # As the trusted-local supervisor does: the driver leads its own process group, and

@@ -63,11 +63,16 @@ member outlived the browser or a process still holds its terminal. A process of 
 doing that left its group by `setsid` and closed every descriptor it inherited is found all the
 same: the browser runs with a token of the run in `AF_PERF_TUI_OPEN_SESSION`, and once the
 session is settled every live process whose environment carries the token (`/proc` on Linux,
-`ps -E` elsewhere) is killed and fails the sample. SIGTERM, SIGINT and SIGHUP, the supervisor's
-cancellation, end the session the same way before the driver exits with 128 plus the signal. A
-cleanup it cannot confirm, the listing included, exits 3, which stops the shard and keeps the
-sample's scratch, as any uncertain cleanup does (ADR-0171). A Linux sample container's PID
-namespace ends every process regardless.
+`ps -E` elsewhere) is killed and fails the sample. On Linux a process of this user's whose
+environment cannot be read, one that made itself undumpable, and that started no earlier than
+the browser leaves the listing unconfirmed; another user's, or one that predates the browser,
+is not the browser's. SIGTERM, SIGINT and SIGHUP, the supervisor's cancellation, end the
+session the same way before the driver exits with 128 plus the signal; a cancellation that
+lands once the session is already being settled stays pending until the settlement, the token
+listing included, is confirmed, and ends the sample then with the same exit. A cleanup it
+cannot confirm, the listing included, exits 3, which stops the shard and keeps the sample's
+scratch, as any uncertain cleanup does (ADR-0171). A Linux sample container's PID namespace
+ends every process regardless.
 
 The supervisor runs only an absolute program, so the driver's interpreter is the placeholder
 `{python}`, named only as that driver's program: the laboratory's own interpreter in trusted

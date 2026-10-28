@@ -745,8 +745,10 @@ class BrowserShard(ShardHarness):
             self.assertEqual(record["metric_scopes"],
                              {"wall_ms": "probe_reported", "splash_ms": "probe_reported"})
             self.assertEqual(record["unavailable_metrics"], {})
-            self.assertGreater(Fraction(record["metrics"]["wall_ms"]["value"]),
-                               Fraction(record["metrics"]["splash_ms"]["value"]))
+            # The real sample's two reads may be one, when the splash and the frame arrived
+            # together; the driver's `Screen` test proves them apart when they did not.
+            self.assertGreaterEqual(Fraction(record["metrics"]["wall_ms"]["value"]),
+                                    Fraction(record["metrics"]["splash_ms"]["value"]))
         # Every reported sample's pair of values is its own, kept exactly: invocation `call`
         # reports a frame of `100 + call` and a half and a splash of `10 + call` and a
         # quarter, so the pairs are distinct and each differs by 90.25; the real sample's are

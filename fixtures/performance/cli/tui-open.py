@@ -19,11 +19,16 @@ by `setsid`, and closed every descriptor it inherited is found all the same: the
 with a token of this run in `AF_PERF_TUI_OPEN_SESSION`, and once its session is settled every
 live process whose environment carries the token (`/proc` on Linux, `ps -E` elsewhere) is
 killed and fails the sample; one that also replaced its environment before `exec` is beyond
-the driver, as beyond any process-group sample. SIGTERM, SIGINT and SIGHUP, the supervisor's
-cancellation, end the session the same way before the driver exits. A cleanup that cannot be
-confirmed, a listing included, exits 3, and the processes left still hold the supervisor's pipe.
+the driver, as beyond any process-group sample. On Linux a process of this user's whose
+environment cannot be read, one that made itself undumpable, and that started no earlier than
+the browser leaves the listing unconfirmed. SIGTERM, SIGINT and SIGHUP, the supervisor's
+cancellation, end the session the same way before the driver exits; one that lands once the
+session is already being settled stays pending until that settlement is confirmed, and ends the
+sample then. A cleanup that cannot be confirmed, a listing included, exits 3, and the processes
+left still hold the supervisor's pipe.
 """
 
+import errno
 import fcntl
 from decimal import Decimal
 import json
@@ -45,6 +50,7 @@ CLEANUP_SECONDS = 2
 LISTING_SECONDS = 10
 UNCONFIRMED_EXIT = 3
 SESSION_VARIABLE = "AF_PERF_TUI_OPEN_SESSION"
+PROC = "/proc"
 CLEAR = b"\x1b[2J"
 STATUS = re.compile(rb"\x1b\[30;[0-9]+H(?:\x1b\[[0-9;]*m|[^\x1b])*?NORMAL")
 SCREEN_MAX = 131072
@@ -130,25 +136,73 @@ def settle(group, deadline):
     return True
 
 
-def listed(token, exclude):
+def proc_started(name, proc=PROC):
+    """When process `name` under `proc` started, in clock ticks since boot, from its `stat`,
+    which is readable whatever the process did to itself; None once it is gone."""
+    try:
+        with open("%s/%s/stat" % (proc, name), "rb") as source:
+            stat = source.read()
+    except OSError:
+        return None
+    return int(stat[stat.rindex(b")") + 2:].split()[19])
+
+
+def proc_owned(name, proc=PROC):
+    """Whether process `name` under `proc` runs as this user: its `status`, readable by anyone,
+    names its uids. One that is gone is nobody's; one whose status cannot be read, or names no
+    uid, is taken as this user's."""
+    try:
+        with open("%s/%s/status" % (proc, name), "rb") as source:
+            status = source.read()
+    except FileNotFoundError:
+        return False
+    except OSError:
+        return True
+    for line in status.splitlines():
+        if line.startswith(b"Uid:"):
+            return str(os.getuid()).encode("utf-8") in line.split()[1:]
+    return True
+
+
+def proc_listed(marker, exclude, born, proc=PROC):
+    """`listed` on Linux: the environments under `proc`. A process that is gone is skipped, and
+    so is one whose environment another user's permissions keep, since the browser runs as
+    this user, or one of this user's that started before the browser did (`born`, its start
+    in clock ticks; None when unknown). One of this user's that started no earlier and whose
+    environment cannot be read, as a process that made itself undumpable, may be the
+    browser's doing: the listing is unconfirmed."""
+    found = set()
+    for name in os.listdir(proc):
+        if not name.isdigit() or int(name) in exclude:
+            continue
+        try:
+            with open("%s/%s/environ" % (proc, name), "rb") as source:
+                environment = source.read()
+        except FileNotFoundError:
+            continue
+        except OSError as error:
+            if error.errno == errno.ESRCH or not proc_owned(name, proc):
+                continue
+            started = proc_started(name, proc)
+            if started is None or (born is not None and started < born):
+                continue
+            raise Unconfirmed("the environment of process %s, this user's, cannot be read"
+                              % name) from error
+        if marker in environment.split(b"\0"):
+            found.add(int(name))
+    return found
+
+
+def listed(token, exclude, born):
     """The pids, `exclude` apart, of every live process whose environment carries `token` in
     `SESSION_VARIABLE`: the browser's doing, whatever session, group or descriptors it has now,
-    unless it replaced its environment before `exec`. Linux reads `/proc`; elsewhere `ps -E`
-    lists the user's processes with their environments."""
+    unless it replaced its environment before `exec`. Linux reads `/proc` (`born`, the
+    browser's start there); elsewhere `ps -E` lists the user's processes with their
+    environments."""
     marker = "%s=%s" % (SESSION_VARIABLE, token)
     found = set()
-    if os.path.isdir("/proc/self/task"):
-        for name in os.listdir("/proc"):
-            if not name.isdigit() or int(name) in exclude:
-                continue
-            try:
-                with open("/proc/%s/environ" % name, "rb") as source:
-                    environment = source.read()
-            except OSError:
-                continue
-            if marker.encode("utf-8") in environment.split(b"\0"):
-                found.add(int(name))
-        return found
+    if os.path.isdir(PROC + "/self/task"):
+        return proc_listed(marker.encode("utf-8"), exclude, born)
     try:
         listing = subprocess.run(["ps", "-E", "-ww", "-ax", "-o", "pid=", "-o", "command="],
                                  stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
@@ -163,12 +217,12 @@ def listed(token, exclude):
     return found
 
 
-def settle_listed(token, exclude, deadline):
+def settle_listed(token, exclude, deadline, born):
     """Kill every process `listed` names until none is, or until `deadline`: whether one was
     found, and whether none is left."""
     found = False
     while True:
-        pids = listed(token, exclude)
+        pids = listed(token, exclude, born)
         if not pids:
             return found, True
         found = True
@@ -190,18 +244,20 @@ def reap(child):
     return child.returncode
 
 
-def end(child, watch, token, deadline):
-    """Kill the running session, observe its leader's exit, settle its group, reap the leader
-    and clear what left the group; whether every step was confirmed before `deadline`."""
-    kill_group(child.pid)
-    while not watch.seen():
-        if time.monotonic() >= deadline:
+def end(child, watch, token, deadline, born):
+    """Kill the running session, observe its leader's exit, settle its group, reap the leader,
+    and, whether or not the leader was reaped before, clear what left the group; whether every
+    step was confirmed before `deadline`."""
+    if child.returncode is None:
+        kill_group(child.pid)
+        while not watch.seen():
+            if time.monotonic() >= deadline:
+                return False
+            time.sleep(0.005)
+        if not settle(child.pid, deadline):
             return False
-        time.sleep(0.005)
-    if not settle(child.pid, deadline):
-        return False
-    reap(child)
-    return settle_listed(token, {child.pid}, deadline)[1]
+        reap(child)
+    return settle_listed(token, {child.pid}, deadline, born)[1]
 
 
 def drain(master, timeout):
@@ -220,6 +276,32 @@ def milliseconds(nanoseconds):
     return value.rstrip("0").rstrip(".") if "." in value else value
 
 
+class Screen:
+    """What the terminal shows since its last clear, and when: `first`, the arrival of the
+    first byte of any output, and `browser`, the arrival of the read that completed the status
+    line on the screen the last clear left. A status line an earlier clear erased never counts,
+    and a read that holds the splash and the frame at once gives both one instant, since
+    nothing separates them on the terminal either."""
+
+    def __init__(self):
+        self.shown = b""
+        self.first = None
+        self.browser = None
+
+    def feed(self, data, observed):
+        """Take the bytes read at `observed`; whether the status line is on the screen now."""
+        if self.first is None:
+            self.first = observed
+        self.shown += data
+        clear = self.shown.rfind(CLEAR)
+        if clear >= 0:
+            self.shown = self.shown[clear + len(CLEAR):]
+        self.shown = self.shown[-SCREEN_MAX:]
+        if self.browser is None and STATUS.search(self.shown):
+            self.browser = observed
+        return self.browser is not None
+
+
 def measure(argv):
     """The driver's document for one run of `argv`; it returns, or raises, with SIGTERM, SIGINT
     and SIGHUP blocked once the session's cleanup began."""
@@ -228,7 +310,8 @@ def measure(argv):
     master, slave = pty.openpty()
     fcntl.ioctl(slave, termios.TIOCSWINSZ, struct.pack("HHHH", 30, 100, 0, 0))
     witness = os.dup(2)
-    child = watch = None
+    child = watch = born = None
+    settled = False
     token = os.urandom(16).hex()
     mask = signal.pthread_sigmask(signal.SIG_BLOCK, ())
     try:
@@ -253,11 +336,11 @@ def measure(argv):
             signal.pthread_sigmask(signal.SIG_SETMASK, mask)
         os.close(slave)
         slave = -1
-        first = None
-        browser = None
-        screen = b""
+        if os.path.isdir(PROC + "/self/task"):
+            born = proc_started(child.pid)
+        screen = Screen()
         deadline = started + DEADLINE_SECONDS * 1000000000
-        while browser is None:
+        while screen.browser is None:
             remaining = (deadline - time.monotonic_ns()) / 1000000000
             if remaining <= 0:
                 raise TimeoutError("browser status-line frame missing at 100-second deadline")
@@ -272,18 +355,7 @@ def measure(argv):
                 raise RuntimeError("PTY closed before browser status-line frame") from error
             if not data:
                 raise RuntimeError("PTY ended before browser status-line frame")
-            observed = time.monotonic_ns()
-            if first is None:
-                first = observed
-            # Only what the last clear left on the screen counts: an earlier status line is
-            # gone, and the line must arrive for the frame that paints it to be shown.
-            screen += data
-            clear = screen.rfind(CLEAR)
-            if clear >= 0:
-                screen = screen[clear + len(CLEAR):]
-            screen = screen[-SCREEN_MAX:]
-            if STATUS.search(screen):
-                browser = observed
+            screen.feed(data, time.monotonic_ns())
         os.write(master, b"q")
         quit_by = time.monotonic() + QUIT_SECONDS
         open_terminal = True
@@ -294,33 +366,41 @@ def measure(argv):
                 open_terminal = drain(master, 0.02)
             else:
                 time.sleep(0.005)
+        # The session is ending: a cancellation from here on asks for the settlement that
+        # follows, so it stays pending until that is confirmed, and ends the sample then.
+        signal.pthread_sigmask(signal.SIG_BLOCK, SIGNALS)
         cleanup_by = time.monotonic() + CLEANUP_SECONDS
         stray = live_members(child.pid)
         if not settle(child.pid, cleanup_by):
             raise Unconfirmed("a process of the browser's session survived its kill")
         code = reap(child)
         escaped, cleared = settle_listed(token, {child.pid},
-                                         time.monotonic() + CLEANUP_SECONDS)
+                                         time.monotonic() + CLEANUP_SECONDS, born)
+        settled = True
         if not cleared:
             raise Unconfirmed("a process the browser started survived its kill")
-        if stray or escaped:
-            raise RuntimeError("a process the browser started outlived it; it was killed")
         while open_terminal:
             if time.monotonic() >= cleanup_by:
                 raise Unconfirmed("a process outside the browser's group still holds its "
                                   "terminal")
             open_terminal = drain(master, 0.02)
+        # The settlement is confirmed: a cancellation that waited for it ends the sample now.
+        pending = signal.sigpending() & set(SIGNALS)
+        if pending:
+            raise Cancelled(int(signal.sigwait(pending)))
+        if stray or escaped:
+            raise RuntimeError("a process the browser started outlived it; it was killed")
         if code != 0:
             raise RuntimeError("child exited with status %d after browser frame" % code)
-        return {"schema": SCHEMA, "browser_ms": milliseconds(browser - started),
-                "splash_ms": milliseconds(first - started), "exit_code": code}
+        return {"schema": SCHEMA, "browser_ms": milliseconds(screen.browser - started),
+                "splash_ms": milliseconds(screen.first - started), "exit_code": code}
     finally:
         # From here on a cancellation stays pending: the cleanup is what it would ask for, and
         # it never replaces the outcome the cleanup reached.
         signal.pthread_sigmask(signal.SIG_BLOCK, SIGNALS)
         try:
-            if child is not None and child.returncode is None:
-                if not end(child, watch, token, time.monotonic() + CLEANUP_SECONDS):
+            if child is not None and not settled:
+                if not end(child, watch, token, time.monotonic() + CLEANUP_SECONDS, born):
                     raise Unconfirmed("the browser's session did not end after its kill")
         finally:
             os.close(master)

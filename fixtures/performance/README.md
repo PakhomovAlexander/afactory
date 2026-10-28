@@ -33,8 +33,11 @@ The data of the continuous performance laboratory
   optional metric. The driver leads the browser's session: the child holds the driver's
   stderr, its exit is observed unreaped, every live member of its group is killed before it is
   reaped, a process that left the group is found by the run's token in its environment
-  (`AF_PERF_TUI_OPEN_SESSION`) and killed, a survivor fails the sample and a cancellation ends
-  the session first. Its private registry setup registers all 20 copied Stores through each
+  (`AF_PERF_TUI_OPEN_SESSION`) and killed (one that also replaced its environment before
+  `exec` is beyond the driver, as beyond any process-group sample; on Linux an environment of
+  this user's that it cannot read leaves the cleanup unconfirmed), a survivor fails the sample
+  and a cancellation ends the session first, pending while a settlement already under way is
+  confirmed. Its private registry setup registers all 20 copied Stores through each
   side's own `af task gc --state` preview, which records the Store it names and writes nothing
   else (ADR-0258).
 - `adapters.toml` — the reviewed native probe adapters (`af.perf-adapters/1`): each a fixed
