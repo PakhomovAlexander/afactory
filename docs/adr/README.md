@@ -463,3 +463,5 @@ future readers need.
   gate](0252-keep-the-kernel-experiment-measurement-out-of-every-gate.md)
 - [0253 — The default Task pipeline lives in the
   catalog](0253-the-default-task-pipeline-lives-in-the-catalog.md)
+- [0254 — Leave out a default context that holds a registered
+  login](0254-leave-out-a-default-context-that-holds-a-registered-login.md)

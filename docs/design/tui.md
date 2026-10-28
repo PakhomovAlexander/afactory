@@ -215,7 +215,9 @@ browser's environment sets the variable, else `ambient (~/.codex): the codex CLI
 directory, not in the registry`; then `register it: af provider add codex-main --kind codex`
 with the first free id, `unsetting CODEX_HOME lists ~/.codex instead` when the variable is set
 (the row is listed while the CLI is on `PATH` and its directory is not registered, so registering
-it is what makes it go), and the `af provider setup` hint the CLI prints (ADR-0141).
+it is what makes it go), and the `af provider setup` hint the CLI prints (ADR-0141). A default
+context whose login a registered Provider of its kind already holds is not listed at all
+(ADR-0254).
 
 `d` on a registered Provider, on the bar or in its opened pane, fills the `:` line with
 `provider remove ID` and does not submit it; Enter runs it, handing the terminal over as

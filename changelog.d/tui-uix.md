@@ -13,3 +13,6 @@
 - With Caps Lock on the browser still answers: an upper-case letter with no binding of its own
   (`Q`, `J`, `K`, ...) is read as its lower-case key; `G`, `N`, `R`, `Z` and the Tasks pane's `D`
   keep their own.
+- `af provider status` and the Providers pane leave out a CLI default context whose login a
+  registered Provider of its kind already holds (the Claude CLI's `~/.claude` reading the same
+  Keychain login as a registered directory), as they leave out a logged-out one (ADR-0254).

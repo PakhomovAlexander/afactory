@@ -246,7 +246,9 @@ pub fn discover_with_cancel(cancelled: &AtomicBool, usage: UsageProbe) -> Provid
     // The ID each row's one `af provider setup … --login` fix names: a registered Provider's own,
     // and for an ambient context the first free `<kind>-main`.
     let ids: BTreeSet<String> = specs.iter().map(|spec| spec.id.clone()).collect();
-    let mut providers = Vec::with_capacity(specs.len());
+    // Each row with the login it holds, as `drop_unused_ambient_contexts` tells two contexts of
+    // one login apart; the login never leaves this function.
+    let mut probed = Vec::with_capacity(specs.len());
     for chunk in specs.chunks(MAX_CONCURRENT_PROBES) {
         if cancelled.load(Ordering::Acquire) {
             break;
@@ -268,18 +270,26 @@ pub fn discover_with_cancel(cancelled: &AtomicBool, usage: UsageProbe) -> Provid
                     )
                 })
                 .collect();
-            providers.extend(handles.into_iter().map(|(spec, handle)| {
-                handle
-                    .join()
-                    .unwrap_or_else(|_| unavailable_status(&spec, "provider status probe panicked"))
+            probed.extend(handles.into_iter().map(|(spec, handle)| {
+                handle.join().unwrap_or_else(|_| {
+                    (
+                        unavailable_status(&spec, "provider status probe panicked"),
+                        None,
+                    )
+                })
             }));
         });
     }
     if cancelled.load(Ordering::Acquire) {
-        providers.extend(specs[providers.len()..].iter().map(unprobed_status));
+        probed.extend(
+            specs[probed.len()..]
+                .iter()
+                .map(|spec| (unprobed_status(spec), None)),
+        );
     }
+    // A context left out is never named as a logged-in sibling.
+    let mut providers = drop_unused_ambient_contexts(probed);
     cross_reference_logged_in_siblings(&mut providers);
-    drop_unused_ambient_contexts(&mut providers);
     ProviderInventory {
         providers,
         registry,
@@ -287,23 +297,54 @@ pub fn discover_with_cancel(cancelled: &AtomicBool, usage: UsageProbe) -> Provid
     }
 }
 
-/// Leave out a CLI's default context that has no login once a Provider of its kind is registered:
-/// the operator has set up the logins they use, and the default directory is one they do not.
-/// Before one is registered, the row and its `setup … --login` fix are how a new machine starts,
-/// and a default context with a login stays, since it is a login the operator may register
-/// (ADR-0141). A default context left unprobed because it holds no login marker (ADR-0206) is one
-/// with no login too.
-fn drop_unused_ambient_contexts(providers: &mut Vec<ProviderStatus>) {
-    let registered: BTreeSet<String> = providers
+/// Leave out a CLI's default context once a Provider of its kind is registered when it has no
+/// login, or when its login is one a registered Provider of its kind already holds: the operator
+/// has set up the logins they use, and the default directory is one they do not, or a second
+/// door to one they did. Before one is registered, the row and its `setup … --login` fix are how
+/// a new machine starts, and a default context with a login of its own stays, since it is a
+/// login the operator may register (ADR-0141, ADR-0254). A default context left unprobed because
+/// it holds no login marker (ADR-0206) is one with no login too. Each row comes with the login
+/// its probe answered with, when the answer names one.
+fn drop_unused_ambient_contexts(
+    probed: Vec<(ProviderStatus, Option<String>)>,
+) -> Vec<ProviderStatus> {
+    let registered: BTreeSet<String> = probed
         .iter()
-        .filter(|provider| !is_ambient_candidate(provider))
-        .map(|provider| provider.kind.clone())
+        .filter(|(provider, _)| !is_ambient_candidate(provider))
+        .map(|(provider, _)| provider.kind.clone())
         .collect();
-    providers.retain(|provider| {
-        !(is_ambient_candidate(provider)
-            && (provider.status == "not authenticated" || provider.status == UNMARKED)
-            && registered.contains(&provider.kind))
-    });
+    let registered_logins: BTreeSet<(String, String)> = probed
+        .iter()
+        .filter(|(provider, _)| !is_ambient_candidate(provider))
+        .filter_map(|(provider, login)| Some((provider.kind.clone(), login.clone()?)))
+        .collect();
+    let unused = |(provider, login): &(ProviderStatus, Option<String>)| {
+        is_ambient_candidate(provider)
+            && registered.contains(&provider.kind)
+            && (provider.status == "not authenticated"
+                || provider.status == UNMARKED
+                || login.as_ref().is_some_and(|login| {
+                    registered_logins.contains(&(provider.kind.clone(), login.clone()))
+                }))
+    };
+    probed
+        .into_iter()
+        .filter(|row| !unused(row))
+        .map(|(provider, _)| provider)
+        .collect()
+}
+
+/// The login a status answer names, as discovery tells two contexts of one login apart: for
+/// Claude the account and the organization its `auth status` reports, as one opaque string; the
+/// Codex answer names none. Never shown: a context's login is not part of any surface.
+fn login_identity(status: &ProviderStatus, answer: &str) -> Option<String> {
+    if status.kind != "claude" || status.status != "authenticated" {
+        return None;
+    }
+    let parsed: serde_json::Value = serde_json::from_str(answer).ok()?;
+    let field = |name: &str| parsed.get(name).and_then(serde_json::Value::as_str);
+    let account = field("email")?;
+    Some(format!("{account}\n{}", field("orgId").unwrap_or_default()))
 }
 
 /// Point each logged-out context at the same-kind contexts on this machine that are logged in.
@@ -4130,12 +4171,25 @@ fn safe_id(id: &str) -> Result<(), String> {
     Ok(())
 }
 
+/// One context's row, and the login its answer names (`login_identity`), for discovery alone.
 fn probe_provider(
     spec: ProviderSpec,
     setup_id: &str,
     cancelled: &AtomicBool,
     usage: UsageProbe,
-) -> ProviderStatus {
+) -> (ProviderStatus, Option<String>) {
+    let (status, answer) = probe_provider_answer(spec, setup_id, cancelled, usage);
+    let login = login_identity(&status, &answer);
+    (status, login)
+}
+
+/// One context's row and the probe's raw answer, empty when nothing was asked.
+fn probe_provider_answer(
+    spec: ProviderSpec,
+    setup_id: &str,
+    cancelled: &AtomicBool,
+    usage: UsageProbe,
+) -> (ProviderStatus, String) {
     match availability::until(&spec.id) {
         Ok(Some(expiry)) => {
             let mut status = unprobed_status(&spec);
@@ -4143,9 +4197,9 @@ fn probe_provider(
             status.disabled_until = Some(expiry);
             status.detail = expiry.diagnostic(&spec.id);
             status.usage = UsageState::NotApplicable;
-            return status;
+            return (status, String::new());
         }
-        Err(error) => return unavailable_status(&spec, &error),
+        Err(error) => return (unavailable_status(&spec, &error), String::new()),
         Ok(None) => {}
     }
     if spec
@@ -4153,28 +4207,31 @@ fn probe_provider(
         .as_ref()
         .is_some_and(|path| spec.explicit_selector && !path.is_absolute())
     {
-        return unavailable_status(&spec, "provider auth selector must be absolute");
+        return (
+            unavailable_status(&spec, "provider auth selector must be absolute"),
+            String::new(),
+        );
     }
     if spec.explicit_selector
         && let Some(auth_dir) = spec.auth_dir.as_deref()
         && let Err(error) = validate_private_auth_directory(auth_dir)
     {
-        return unavailable_status(&spec, &error);
+        return (unavailable_status(&spec, &error), String::new());
     }
     let program = match locate_cli(&spec) {
         Ok(program) => program,
-        Err(failure) => return installation_failed_status(&spec, &failure),
+        Err(failure) => return (installation_failed_status(&spec, &failure), String::new()),
     };
     // A CLI asked about a directory it has never used creates its home there (`codex login
     // status` does on first contact): a context with no login marker is never handed to it.
     if let Some(reason) = detect::unmarked_context(&spec) {
-        return unmarked_status(&spec, setup_id, &reason);
+        return (unmarked_status(&spec, setup_id, &reason), String::new());
     }
     let probe_path = sanitized_path();
     // Whatever the CLI would say about a login, af cannot dispatch to one that refuses its
     // invocation (ADR-0146).
     if let Err(refusal) = check_invocation(&program, &spec, &probe_path, cancelled, None) {
-        return refused_status(&spec, refusal);
+        return (refused_status(&spec, refusal), String::new());
     }
     probe_checked(
         &program,
@@ -4185,7 +4242,6 @@ fn probe_provider(
         usage,
         None,
     )
-    .0
 }
 
 /// The authentication probe of one context whose CLI `program` already passed the capability
@@ -7840,24 +7896,118 @@ auth_dir = "{}"
                 .map(|provider| provider.id.clone())
                 .collect()
         };
-        let mut providers = vec![
+        let probed = |rows: Vec<ProviderStatus>| -> Vec<(ProviderStatus, Option<String>)> {
+            rows.into_iter().map(|row| (row, None)).collect()
+        };
+        let providers = drop_unused_ambient_contexts(probed(vec![
             status("claude-ambient", "claude", true, "not authenticated"),
             status("claude-personal", "claude", false, "not authenticated"),
             status("codex-ambient", "codex", true, "not authenticated"),
-        ];
-        drop_unused_ambient_contexts(&mut providers);
+        ]));
         // No Codex Provider is registered: its default context is how setup starts. A registered
         // Provider stays whatever its login.
         assert_eq!(ids(&providers), ["claude-personal", "codex-ambient"]);
         // A default context with a login stays: it is a login the operator may register.
-        let mut providers = vec![
+        let providers = drop_unused_ambient_contexts(probed(vec![
             status("claude-ambient", "claude", true, "authenticated"),
             status("claude-work", "claude", false, "authenticated"),
             status("codex-ambient", "codex", true, "unavailable"),
             status("codex-main", "codex", false, "authenticated"),
-        ];
-        drop_unused_ambient_contexts(&mut providers);
+        ]));
         assert_eq!(ids(&providers).len(), 4);
+    }
+
+    /// A default context whose login a registered Provider of its kind already holds is a
+    /// second door to the same account, not a login to register: it is left out (ADR-0254).
+    #[test]
+    fn a_default_context_holding_a_registered_login_is_left_out() {
+        fn row(id: &str, kind: &str, login: Option<&str>) -> (ProviderStatus, Option<String>) {
+            let ambient = id.ends_with("-ambient");
+            let status = ProviderStatus {
+                disabled_until: None,
+                id: id.to_string(),
+                kind: kind.to_string(),
+                auth_context: "-".to_string(),
+                source: if ambient {
+                    "ambient CLI candidate; unstable local context label".to_string()
+                } else {
+                    "registry".to_string()
+                },
+                status: "authenticated".to_string(),
+                auth_type: "claude.ai".to_string(),
+                subscription: "Claude Max".to_string(),
+                limits: Vec::new(),
+                usage: UsageState::NotRequested,
+                detail: String::new(),
+            };
+            (status, login.map(str::to_owned))
+        }
+        let ids = |providers: &[ProviderStatus]| -> Vec<String> {
+            providers
+                .iter()
+                .map(|provider| provider.id.clone())
+                .collect()
+        };
+        let same = Some("me@example.test\norg-1");
+        // The same account and organization as a registered Provider: left out.
+        let providers = drop_unused_ambient_contexts(vec![
+            row("claude-ambient", "claude", same),
+            row("claude-personal", "claude", same),
+            row("claude-work", "claude", Some("work@example.test\norg-2")),
+        ]);
+        assert_eq!(ids(&providers), ["claude-personal", "claude-work"]);
+        // The same account in another organization is another login: it stays.
+        let providers = drop_unused_ambient_contexts(vec![
+            row("claude-ambient", "claude", Some("me@example.test\norg-2")),
+            row("claude-personal", "claude", same),
+        ]);
+        assert_eq!(ids(&providers), ["claude-ambient", "claude-personal"]);
+        // An answer that names no login, or a kind with no registered Provider, keeps the row.
+        let providers = drop_unused_ambient_contexts(vec![
+            row("claude-ambient", "claude", None),
+            row("claude-personal", "claude", same),
+            row("codex-ambient", "codex", same),
+        ]);
+        assert_eq!(
+            ids(&providers),
+            ["claude-ambient", "claude-personal", "codex-ambient"]
+        );
+    }
+
+    #[test]
+    fn a_login_identity_is_claudes_account_and_organization_or_nothing() {
+        let mut status = ProviderStatus {
+            disabled_until: None,
+            id: "claude-main".to_string(),
+            kind: "claude".to_string(),
+            auth_context: "CLI default".to_string(),
+            source: "registry".to_string(),
+            status: "authenticated".to_string(),
+            auth_type: "claude.ai".to_string(),
+            subscription: "Claude Max".to_string(),
+            limits: Vec::new(),
+            usage: UsageState::NotRequested,
+            detail: String::new(),
+        };
+        let answer = r#"{"loggedIn":true,"authMethod":"claude.ai","email":"me@example.test","orgId":"org-1","orgName":"Me"}"#;
+        assert_eq!(
+            login_identity(&status, answer).as_deref(),
+            Some("me@example.test\norg-1")
+        );
+        // Without an organization the account alone is the login.
+        let bare = r#"{"loggedIn":true,"authMethod":"claude.ai","email":"me@example.test"}"#;
+        assert_eq!(
+            login_identity(&status, bare).as_deref(),
+            Some("me@example.test\n")
+        );
+        // No account, no answer, a logged-out row or a Codex row name nothing.
+        assert_eq!(login_identity(&status, r#"{"loggedIn":true}"#), None);
+        assert_eq!(login_identity(&status, ""), None);
+        status.status = "not authenticated".to_string();
+        assert_eq!(login_identity(&status, answer), None);
+        status.status = "authenticated".to_string();
+        status.kind = "codex".to_string();
+        assert_eq!(login_identity(&status, "Logged in using ChatGPT"), None);
     }
 
     #[test]
