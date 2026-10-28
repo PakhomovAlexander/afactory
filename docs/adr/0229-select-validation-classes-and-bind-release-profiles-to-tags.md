@@ -85,3 +85,7 @@ trade more runner/build work for separation of class critical paths; no guarante
 Tag annotations preserve the release decision across squash/merge/tag/rerun paths. Repository label
 management and human publishing authority stay with operators. Historical measurements remain supplied
 observations until real JUnit/step evidence is replayed; missing evidence never becomes a zero.
+
+**Amended 2026-10-27 by [ADR-0251](0251-run-the-task-gate-on-the-fast-validation-profile.md):**
+This repository's local Task gate now selects the fast validation profile; local `make check`
+remains full.

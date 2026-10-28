@@ -533,7 +533,7 @@ sealed. `--json` prints one
 `af/telemetry-tail@1` object per line
 ([`schemas/telemetry-tail-v1.json`](../schemas/telemetry-tail-v1.json)); a tail that fails with
 an error, such as a segment it cannot read, even after records, ends the stream with one
-`af/error@1` line ([`schemas/error-v1.json`](../schemas/error-v1.json)) carrying its exit code.
+`af/error@2` line ([`schemas/error-v2.json`](../schemas/error-v2.json)) carrying its exit code.
 A run two Stores record is no such error: tail exits 2 with no further line on stdout and names
 both Stores for `--store` on stderr. With `RUN` tail first
 looks the run up, within `--store ID` when given: a run no Store records there exits 1 naming

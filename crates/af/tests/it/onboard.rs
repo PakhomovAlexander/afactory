@@ -52,6 +52,14 @@ fn preview_detects_gate_and_writes_nothing() {
     assert!(output.status.success(), "{}", stderr(&output));
     let report: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
     assert_eq!(report["status"], "preview");
+    assert!(
+        report["next_steps"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|step| step.as_str().unwrap().contains("af setup agents --write")),
+        "{report}"
+    );
     assert_eq!(report["gates"][0]["program"], "make");
     assert_eq!(report["reviewers"].as_array().unwrap().len(), 2);
     assert!(

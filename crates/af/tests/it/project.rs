@@ -320,7 +320,7 @@ fn a_shallow_clone_is_refused_and_a_repository_without_commits_registers_nothing
     assert!(stderr.contains("git fetch --unshallow"), "{stderr}");
     let refused = machine.af(&shallow, &["project", "show", "--json"]);
     let document: Value = serde_json::from_slice(&refused.stdout).unwrap();
-    assert_eq!(document["schema"], "af/error@1");
+    assert_eq!(document["schema"], "af/error@2");
     assert!(
         document["error"]
             .as_str()

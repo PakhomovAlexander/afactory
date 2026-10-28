@@ -663,7 +663,7 @@ next: {show_checks}
 }
 
 /// Every refusal before any state exists exits non-zero with its reason on stderr, in text and
-/// under `--json`, where stdout carries the one `af/error@1` document.
+/// under `--json`, where stdout carries the one `af/error@2` document.
 #[test]
 fn a_refusal_names_its_reason_on_stderr_in_text_and_json() {
     let fixture = fixture("pagination");
@@ -706,8 +706,8 @@ fn a_refusal_names_its_reason_on_stderr_in_text_and_json() {
             );
             if json {
                 let document: Value = serde_json::from_slice(&refused.stdout).unwrap();
-                schemas::valid(&schemas::validator("error-v1.json"), &document);
-                assert_eq!(document["schema"], "af/error@1", "{args:?}");
+                schemas::valid(&schemas::validator("error-v2.json"), &document);
+                assert_eq!(document["schema"], "af/error@2", "{args:?}");
                 assert_eq!(document["cause"], "task_file_invalid", "{args:?}");
                 assert_eq!(document["next_action"], again.as_str(), "{args:?}");
                 assert_eq!(
@@ -1084,6 +1084,11 @@ fn not_found_errors_name_the_task_the_store_and_what_it_holds() {
             err(&missing)
         );
     }
+    let missing_json = fixture.af(&["task", "show", "nope", "--json"]);
+    let document: serde_json::Value = serde_json::from_slice(&missing_json.stdout).unwrap();
+    assert_eq!(document["cause"], "task_not_found", "{document}");
+    assert_eq!(document["details"]["task_id"], "nope");
+    crate::schemas::valid(&crate::schemas::validator("error-v2.json"), &document);
     let absent = fixture.root.join("absent.json");
     let unreadable = fixture.af(&["task", "plan", "--file", absent.to_str().unwrap()]);
     assert_eq!(unreadable.status.code(), Some(1));

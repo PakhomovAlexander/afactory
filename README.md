@@ -96,7 +96,7 @@ are at any point, token-free.
    the onboard preview printed:
 
    ```sh
-   af review plan --policy-rev HEAD --base HEAD --uncommitted
+   af review plan --policy-rev HEAD --base HEAD --uncommitted --provider correctness=PROVIDER --provider architecture=PROVIDER
    af review --policy-rev HEAD --base HEAD --uncommitted --provider correctness=PROVIDER --provider architecture=PROVIDER
    ```
 
@@ -241,13 +241,13 @@ Rules for a coding agent, or a script, that drives af for someone:
 - **Read JSON, not prose.** A command whose `--help` lists `--json` prints one document on stdout
   under it, with progress on stderr, except `af telemetry tail --json`: it streams JSON Lines,
   one `af/telemetry-tail@1` object per line. A tail that fails with an error, such as a segment
-  it cannot read, even after records, ends the stream with one `af/error@1` line carrying its
+  it cannot read, even after records, ends the stream with one `af/error@2` line carrying its
   exit code, so tell each line by its `schema`. A run two Stores record is no such error: shared
   when tail starts or by a second Store that appears while it follows, tail exits 2 with no
   further line on stdout and names both Stores for `--store` on stderr, so check the exit code
   too. `af review report` takes `--format json` instead, and `af review campaigns` either flag
   for the same document. Some commands, such as `af review ledger` and `af review show`, print
-  text only. Branch on the document's `schema`: most refusals are `af/error@1`, while
+  text only. Branch on the document's `schema`: most refusals are `af/error@2`, while
   `af provider` commands and a refused Task plan print their own documents (`af help json`), and
   `af config show --json` prints a document with no `schema`.
 - **Branch on the exit code.** `af review run` exits 0 pass, 3 fail, 4 incomplete. A foreground
@@ -269,7 +269,7 @@ Rules for a coding agent, or a script, that drives af for someone:
 - **One review, then fix.** A review that finds defects exits non-zero by design: fix the
   Findings, run the project's Gate, and stop. Do not start another Campaign to check your fix;
   `--heavy` is for when a human asks for convergence review.
-- **Ask the doctor.** `af doctor --json` prints one `af/doctor@2` document: every check with its
+- **Ask the doctor.** `af doctor --json` prints one `af/doctor@3` document: every check with its
   status, a `fix` command where one command fixes it, and a `hint` otherwise.
 
 The whole Task loop (plan, run or `--detach`, wait, findings, diff, materialize, deliver, and
@@ -337,7 +337,8 @@ pull request apart from Dependabot's and the release pull requests carries their
 
 ```sh
 make prereqs                         # what make check needs, with the command for each missing tool
-make check                           # preflight, fmt, clippy, the test suite and the release checks
+make check                           # full preflight, fmt, clippy, tests and release checks
+bash scripts/verify.sh --profile fast # Task gate profile: functional, e2e, uix
 make review-kernel-container-probes  # live container probes; needs a usable runtime
 ```
 
@@ -349,7 +350,7 @@ opening a pull request, and [AGENTS.md](AGENTS.md) if you are an agent working h
 
 `make release VERSION=X.Y.Z COMPAT="…"` opens the release pull request: the version bump and the
 `CHANGELOG.md` section, written from the merged pull requests and their `changelog.d/` notes.
-Merging it tags the commit, runs `make check` on Linux and macOS, builds every target, signs
+Merging it tags the commit, runs full `make check` on Linux and macOS, builds every target, signs
 `SHA256SUMS` and publishes the release
 ([ADR-0045](docs/adr/0045-one-release-train-and-a-pin-that-binds-bytes.md)). A `pin` job then
 moves this repository's `.af/af.lock` to the new release, so `af` here runs the newest one;

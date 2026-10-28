@@ -1942,6 +1942,8 @@ fn committed_and_dirty_diff_subjects_execute_the_wired_change_set() {
             "HEAD",
             "--candidate",
             "HEAD",
+            "--provider",
+            "reviewer=test-codex",
             "--json",
         ],
         None,
@@ -1970,6 +1972,8 @@ fn committed_and_dirty_diff_subjects_execute_the_wired_change_set() {
             "HEAD",
             "--candidate",
             "HEAD",
+            "--provider",
+            "reviewer=test-codex",
         ],
         None,
     );
@@ -2023,7 +2027,7 @@ fn committed_and_dirty_diff_subjects_execute_the_wired_change_set() {
     );
     assert_eq!(code, 1, "{missing_stdout}\n{missing_stderr}");
     assert!(
-        missing_stderr.contains("requires explicit `--provider reviewer=PROVIDER_ID`"),
+        missing_stderr.contains("need explicit Provider bindings"),
         "{missing_stderr}"
     );
 

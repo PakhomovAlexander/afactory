@@ -70,6 +70,7 @@ struct Installer {
 impl Installer {
     fn new() -> Self {
         let sandbox = Sandbox::new();
+        std::fs::create_dir_all(sandbox.path("tmp")).unwrap();
         let tools = tool_dir(&sandbox.path("fakes"), TOOLS);
         executable(&tools.join("curl"), FAKE_CURL);
         let minisign = sandbox.path("fakes/minisign");
@@ -94,6 +95,7 @@ impl Installer {
             .env_clear()
             .env("PATH", path)
             .env("HOME", self.sandbox.path("home"))
+            .env("TMPDIR", self.sandbox.path("tmp"))
             .env("XDG_DATA_HOME", self.sandbox.path("data"))
             .env("XDG_BIN_HOME", self.sandbox.path("bin"))
             .env("AF_REPO", "owner/repo")

@@ -1,4 +1,4 @@
-.PHONY: prereqs release-check preflight-check check fmt lint test test-repeat release review-kernel-container-probes
+.PHONY: prereqs release-check preflight-check check fmt lint test-build test test-repeat release review-kernel-container-probes
 
 # What this machine needs before `make check`, one line per tool with the command that installs
 # a missing one (issue #161): python3, git 2.30+, the rustup toolchain rust-toolchain.toml pins,
@@ -37,12 +37,13 @@ lint:
 	$(CI_STEP) --stage lint lint cargo clippy --all-targets --locked -- -D warnings
 	$(CI_STEP) --stage lint lint-diagnostic-features cargo clippy --locked -p review-pipeline -p af --example perf-probe --bin af --features review-pipeline/perf-trace,review-pipeline/perf-control,review-pipeline/perf-calibration,af/perf-trace,af/perf-control,af/perf-calibration -- -D warnings
 
-test:
-ifeq ($(TEST_RUNNER),nextest)
+test-build:
 	$(CI_STEP) --stage build test-build cargo test --locked --no-run
+
+test: test-build
+ifeq ($(TEST_RUNNER),nextest)
 	$(CI_STEP) --stage tests test python3 scripts/nextest-gate.py --locked --profile ci --test-threads $(TEST_THREADS)
 else ifeq ($(TEST_RUNNER),cargo)
-	$(CI_STEP) --stage build test-build cargo test --locked --no-run
 	$(CI_STEP) --stage tests test cargo test --locked -- --test-threads=$(TEST_THREADS)
 else
 	$(error TEST_RUNNER must be nextest or cargo)
@@ -113,15 +114,22 @@ preflight-check:
 perf-python-tests: test
 	$(CI_STEP) --stage tests performance-lab python3 scripts/test-performance.py
 
-# Shared selective entry points. Full `check` above remains the AF gate default. Labels are
+# Shared selective entry points. Full `check` above is what main validation, unbound releases
+# and `make check` run; the Task gate runs `scripts/verify.sh --profile fast` (ADR-0251) and
+# every pull request defaults to the same fast selection (ADR-0239). Labels are
 # JSON data in a file; no Make/shell expansion of label strings is permitted.
-.PHONY: base-check check-fast check-full check-classes test-plan perf-feature-tests
+.PHONY: base-check check-fast check-full check-classes test-plan perf-feature-tests perf-kernel-measure
 TEST_PLAN ?= target/test-classes/plan.json
 TEST_LABEL_FILE ?=
 base-check: release-check
 	$(CI_STEP) --stage preflight gate-owner python3 scripts/test-class-python.py test-gate-owner.py "$(BASE_EVIDENCE)/test-gate-owner.py.xml"
 	$(CI_STEP) --stage preflight test-classes python3 scripts/test-class-python.py test-test-classes.py "$(BASE_EVIDENCE)/test-test-classes.py.xml"
 	$(CI_STEP) --stage preflight test-catalog python3 scripts/test-classes.py audit
+
+# Run before a PR changing scripts/performance/, crates/review-pipeline/examples/perf-probe/,
+# crates/review-pipeline/build.rs, the experiment runtime, or kernel receipts (ADR-0252).
+perf-kernel-measure:
+	$(CI_STEP) --stage tests perf-kernel-measure cargo nextest run --workspace --locked --profile ci --run-ignored only -E 'test(=perf_kernel_measure::guarded_kernel_experiments_measure_one_judged_sample)'
 
 perf-feature-tests:
 	$(CI_STEP) --stage tests test-perf-trace cargo test --locked -p review-core --features perf-trace,perf-calibration --lib perf_

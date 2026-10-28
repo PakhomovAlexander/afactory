@@ -169,8 +169,8 @@ pub(crate) fn wanted() -> bool {
 }
 
 /// `af` with no subcommand on a terminal: browse the scope until `q`. The terminal is entered and
-/// the splash painted first, before anything is read; the scope and every pane load on a thread
-/// of their own while it animates.
+/// the splash painted first, before anything is read; the scope resolves and every pane loads
+/// on a thread of their own while it animates, and the Stores are read behind the browser.
 pub(crate) fn launch(repo: Option<&Path>) -> Result<i32, String> {
     let mut session = term::Session::open()?;
     let palette = paint::Palette::from_env();
@@ -217,7 +217,9 @@ pub(crate) fn launch(repo: Option<&Path>) -> Result<i32, String> {
     }
 }
 
-/// The scope and every pane, read: what the splash waits for.
+/// The scope, resolved, and every pane loaded: what the splash waits for. No Store is read
+/// here: the Tasks, Campaigns and Workers panes read theirs on threads of their own once the
+/// browser shows, so this takes milliseconds whatever the machine holds (ADR-0240).
 fn load(repo: Option<&Path>) -> Result<App, String> {
     let scope = match repo {
         Some(dir) => {
@@ -458,7 +460,9 @@ impl App {
         app
     }
 
-    /// Read every pane for the scope and put what they found in the bar.
+    /// Load every pane for the scope and put what they found in the bar. A pane that reads
+    /// Stores starts that read on a thread here and lists them as `poll` collects them: the
+    /// event loop paints before it polls, so the first frame never waits on a Store.
     fn load(&mut self) {
         for tab in PANES {
             let loaded = self.panes.get_mut(tab).load(&self.scope);
@@ -471,6 +475,17 @@ impl App {
         self.show(opened);
     }
 
+    /// Wait for every read in flight and list what it found: a test's event loop, where the
+    /// real one would collect the Stores a few frames later.
+    #[cfg(test)]
+    pub(crate) fn settle(&mut self) {
+        self.panes.tasks.settle();
+        self.panes.campaigns.settle();
+        self.panes.workers.settle();
+        self.sync();
+        self.follow_listing();
+    }
+
     fn sync(&mut self) {
         for tab in Tab::ALL {
             let items = self.panes.get(Some(tab)).items();
@@ -478,15 +493,36 @@ impl App {
         }
     }
 
-    /// Collect background work; the bar follows what it found.
+    /// Collect background work; the bar follows what it found. An opened entry a read no
+    /// longer lists (a Worker whose declaration went, a Task whose Store refused) falls back
+    /// to its folder with the message `show` gives, as it does when opening finds it gone.
     pub(crate) fn poll(&mut self) {
         let mut changed = false;
         for tab in PANES {
             changed |= self.panes.get_mut(tab).poll();
         }
-        if changed {
-            self.sync();
+        if !changed {
+            return;
         }
+        self.sync();
+        self.follow_listing();
+    }
+
+    /// The opened entry, if a read no longer lists it, falls back to its folder with the
+    /// message `show` gives when opening finds it gone.
+    fn follow_listing(&mut self) {
+        let Opened::Item(tab, id) = &self.opened else {
+            return;
+        };
+        let (tab, id) = (*tab, id.clone());
+        if listed(&self.panes.get(Some(tab)).items(), &id) {
+            return;
+        }
+        self.panes.get_mut(Some(tab)).open(None);
+        self.say_error(format!("{id} is no longer listed; showing the folder"));
+        self.opened = Opened::Folder(tab);
+        self.main = View::default();
+        self.sync();
     }
 
     fn say(&mut self, text: impl Into<String>) {
@@ -887,8 +923,13 @@ impl App {
     fn pane_key(&mut self, key: Key) -> Option<Effect> {
         let (tab, row) = (self.opened_tab(), self.main.cursor);
         let outcome = self.panes.get_mut(tab).key(key, row);
-        // A pane key may change what the pane lists (a Store refused on a failed read).
+        // A pane key may change what the pane lists (a Store refused because an artifact of
+        // the opened Task cannot be given back): the bar follows at once, and so does the
+        // opened entry, which falls back to its folder here, not at a later read's message,
+        // since no read may follow. The key's own error stays on the status line: it names
+        // the cause, where the fallback's message would only name the effect.
         self.sync();
+        self.follow_listing();
         match outcome {
             Ok(effect) => effect,
             Err(error) => {
@@ -1661,7 +1702,10 @@ fn handoff(command: Option<cli::Command>) -> Handoff {
         Some(cli::Command::Config {
             command: cli::ConfigCommand::Edit { layer, repo },
         }) => Handoff::Edit(layer, repo),
-        Some(cli::Command::Help { words }) => Handoff::Help(words),
+        Some(cli::Command::Help {
+            words,
+            snippet: false,
+        }) => Handoff::Help(words),
         _ => Handoff::Other,
     }
 }

@@ -60,8 +60,8 @@ digest = "sha256:1356e5cfe8f8444f0244b4a74686536d9340aefd8b0d7f289222fe66cbcf9f3
 path = ".af/task-packages/warm/verification-kind"
 
 [packages."kernel/implementer"]
-version = "1.7.0"
-digest = "sha256:04e4940461ac6d666ad8ec295770925f34edc1c617ba1e7a16a9678c5c78b312"
+version = "1.8.2"
+digest = "sha256:e5cb9efb3c85c50702ca17de8e77a590dc4978aecc9df6acf8d5a80501a50415"
 path = ".af/task-packages/kernel/implementer"
 
 [packages."kernel/correctness"]
@@ -95,8 +95,8 @@ digest = "sha256:99d7378b178c9b8cba9c08d4984f21a6bcf9973915ef3a48886ef7a8512f297
 path = ".af/task-packages/kernel/implementation-ux"
 
 [packages."kernel/implementer-long"]
-version = "1.2.0"
-digest = "sha256:579cef2e467f872f7f6afadcd181486431cb90e3540709fe91a5dbc38089e91a"
+version = "1.3.2"
+digest = "sha256:65bf8dd722d607883fae5c4e8ba0fa900465534f81d7c0fcbd23220be195b28d"
 path = ".af/task-packages/kernel/implementer-long"
 
 [packages."kernel/review-light"]
@@ -191,6 +191,46 @@ version = "1.1.0"
 digest = "sha256:579f0f912f7bb51f86f0bd7115afb1593774e95aad48e65eec8670a1a537ff23"
 path = ".af/task-packages/kernel/review-code-remote"
 
+# The repository's default Task pipeline (owner's decision, 27 October 2026): one implementing
+# iteration by Opus 5.5, two required reviewers (bugs: gpt-5.6-terra, correctness: gpt-6-sol), one
+# advisory reviewer for gate time and quality in the `uix` slot (gpt-6-astra medium) and an
+# evaluator (gpt-6-astra high); `default/verification` judges an existing candidate the same way.
+
+[packages."default/implementer"]
+version = "1.0.0"
+digest = "sha256:e7112e57284398f86883227607b30fb74a10b1e3c2d980ea64a840e64a6dda61"
+path = ".af/task-packages/default/implementer"
+
+[packages."default/bugs"]
+version = "1.0.0"
+digest = "sha256:fa6bd3b6a26c3ff6f38af55457d67953eecde159d69499a730e48db6209f8695"
+path = ".af/task-packages/default/bugs"
+
+[packages."default/correctness"]
+version = "1.0.0"
+digest = "sha256:a50d89425234ab759533e9e63c5798471b2cc63749434860cc8b55c4af6952a0"
+path = ".af/task-packages/default/correctness"
+
+[packages."default/advisor"]
+version = "1.0.0"
+digest = "sha256:9bea08d881828f0cd2d07af7e482df770f0be684fb361c4acf8d5a2e1b731e57"
+path = ".af/task-packages/default/advisor"
+
+[packages."default/evaluator"]
+version = "1.0.0"
+digest = "sha256:53f4590e23df30e604142fe3358b0351e5006855a41b0256ab492943c2773176"
+path = ".af/task-packages/default/evaluator"
+
+[packages."default/implementation"]
+version = "1.0.0"
+digest = "sha256:56819b9abe80fe1b0409c032f90ba3654d07e0f816fd0a900d49ccf6305cb27c"
+path = ".af/task-packages/default/implementation"
+
+[packages."default/verification"]
+version = "1.0.0"
+digest = "sha256:595fd743b703967b3b4b0c28cf15046d9f4d15b0fa2d0b3a376ad1fdd229fe1f"
+path = ".af/task-packages/default/verification"
+
 [independence]
 command_workers_by_package = true
 distinct_principals = false
@@ -210,6 +250,11 @@ distinct_models = true
 "kernel/experiment-evaluator" = "codex-main"
 "kernel/analyst" = "claude-main"
 "kernel/report-verifier" = "codex-main"
+"default/implementer" = "claude-main"
+"default/bugs" = "codex-main"
+"default/correctness" = "codex-main"
+"default/advisor" = "codex-main"
+"default/evaluator" = "codex-main"
 
 [provider_admission]
 tokens = 32768

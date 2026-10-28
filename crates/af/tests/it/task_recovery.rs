@@ -491,7 +491,7 @@ fn a_node_past_its_recovery_allowance_cannot_continue_and_says_why_on_line_one()
     let typed = af(&f, &["task", "run", TASK, "--json"]).output().unwrap();
     assert_eq!(typed.status.code(), Some(1));
     let document: Value = serde_json::from_slice(&typed.stdout).unwrap();
-    schemas::valid(&schemas::validator("error-v1.json"), &document);
+    schemas::valid(&schemas::validator("error-v2.json"), &document);
     assert_eq!(document["cause"], "recovery_exhausted", "{document:#}");
     assert_eq!(document["exit_code"], 1);
     assert_eq!(document["next_action"], start.as_str());
@@ -565,7 +565,7 @@ fn a_declared_recovery_allowance_dispatches_the_node_again_as_often_as_it_allows
 }
 
 /// Interrupted a second time, the node has used its one recovery: the interruption's
-/// `af/error@1` names the next command `af task show --json` names, never `af task run ID`,
+/// `af/error@2` names the next command `af task show --json` names, never `af task run ID`,
 /// which would refuse.
 #[test]
 fn a_second_sigterm_names_the_next_command_the_task_state_names() {
@@ -583,7 +583,7 @@ fn a_second_sigterm_names_the_next_command_the_task_state_names() {
     );
     let second = sigterm(&f, &["task", "run", TASK, "--json"]);
     let error = json(&second);
-    assert_eq!(error["schema"], "af/error@1", "{error:#}");
+    assert_eq!(error["schema"], "af/error@2", "{error:#}");
     let message = error["error"].as_str().unwrap();
     let shown = abandoned_inspection(&f);
     let next = shown["state"]["next_action"].as_str().unwrap();

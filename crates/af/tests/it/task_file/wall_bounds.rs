@@ -68,7 +68,7 @@ fn zero_file_wall_refuses_before_state_and_does_not_consume_the_task_id() {
             "{printed}"
         );
         let document: Value = serde_json::from_slice(&out.stdout).expect(&printed);
-        assert_eq!(document["schema"], "af/error@1", "{printed}");
+        assert_eq!(document["schema"], "af/error@2", "{printed}");
         assert!(
             document["error"]
                 .as_str()
@@ -169,6 +169,37 @@ fn task_timeout_zero_is_a_usage_error_but_review_file_is_validated_by_its_adapte
     assert_ne!(out.status.code(), Some(2));
     assert!(String::from_utf8_lossy(&out.stderr).contains("must be positive"));
     assert!(!state.exists());
+}
+
+#[test]
+fn review_file_plan_names_the_whole_task_timeout_scope() {
+    let dir = tempfile::tempdir().unwrap();
+    let (repo, state) = fixture_named(dir.path(), "review");
+    let output = crate::common::af()
+        .current_dir(&repo)
+        .args([
+            "review",
+            "plan",
+            "--file",
+            "review.json",
+            "--timeout-secs",
+            "37",
+        ])
+        .arg("--state")
+        .arg(&state)
+        .output()
+        .unwrap();
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert!(
+        String::from_utf8_lossy(&output.stdout)
+            .contains("timeout --timeout-secs 37: whole Task cap"),
+        "{}",
+        String::from_utf8_lossy(&output.stdout)
+    );
 }
 
 #[test]

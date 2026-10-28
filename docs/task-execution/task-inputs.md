@@ -87,7 +87,7 @@ exact equality of the recorded and the destination cardinality: a `many` output 
 `one` port, however many artifacts it currently holds, and a `one` output binds a `many` port only
 as a list. A list binds only a `many` port; each listed output must carry the port's type, and
 their artifacts, in order, must be distinct. A refusal is an ordinary Task-file input error that
-names the port, the reference and both types where they differ: exit 1 with the `af/error@1`
+names the port, the reference and both types where they differ: exit 1 with the `af/error@2`
 document under `--json`, and no Task is recorded.
 
 ## Root defaults

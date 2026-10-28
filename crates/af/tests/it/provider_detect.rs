@@ -172,13 +172,13 @@ fn code(output: &Output) -> i32 {
     output.status.code().unwrap()
 }
 
-/// stdout as the one `af/provider-detect@3` document, valid against the published schema.
+/// stdout as the one `af/provider-detect@4` document, valid against the published schema.
 fn detected(output: &Output) -> Value {
     let stdout = out(output);
     let document: Value = serde_json::from_str(stdout.trim())
         .unwrap_or_else(|error| panic!("stdout is not one document: {error}\n{stdout}"));
     crate::schemas::valid(
-        &crate::schemas::validator("provider-detect-v3.json"),
+        &crate::schemas::validator("provider-detect-v4.json"),
         &document,
     );
     assert_eq!(document["exit_code"], code(output), "{document}");
@@ -264,6 +264,24 @@ fn detect_with_nothing_found_prints_the_install_guidance() {
     );
     // Detection writes nothing, not even a registry.
     assert!(machine.registry().is_empty());
+}
+
+#[test]
+fn detect_with_a_cli_but_no_login_does_not_claim_any_login_registered() {
+    let machine = Machine::new();
+    machine.install("claude", CLAUDE);
+    let output = machine.af(&["provider", "detect"]);
+    assert_eq!(code(&output), 0, "{}", err(&output));
+    let stdout = out(&output);
+    assert!(stdout.contains("No auth directory was found."), "{stdout}");
+    assert!(
+        stdout.contains("No login was found to register."),
+        "{stdout}"
+    );
+    assert!(
+        !stdout.contains("every authenticated login found here is registered"),
+        "{stdout}"
+    );
 }
 
 /// Item 7: `af provider status` with no CLI and no registry entry prints the same guidance, and
@@ -1074,7 +1092,7 @@ fn exit_codes_follow_the_documented_table() {
             let output = machine.af(&json);
             assert_eq!(code(&output), 2, "{json:?}");
             let document: Value = serde_json::from_str(out(&output).trim()).unwrap();
-            assert_eq!(document["schema"], "af/error@1", "{document}");
+            assert_eq!(document["schema"], "af/error@2", "{document}");
             assert_eq!(document["exit_code"], 2);
             assert!(err(&output).contains("try: af provider detect --help"));
         }
@@ -1196,7 +1214,7 @@ fn setup_creates_a_missing_auth_directory_only_with_login() {
     let refused = machine.af(&json);
     assert_eq!(code(&refused), 1);
     let document: Value = serde_json::from_str(out(&refused).trim()).unwrap();
-    assert_eq!(document["schema"], "af/error@1");
+    assert_eq!(document["schema"], "af/error@2");
     assert!(!fresh.exists());
 
     // With `--login` the directory is created for the login, which this pipe never starts.
@@ -1293,7 +1311,7 @@ fn status_and_detect_leave_a_fresh_home_without_a_codex_directory() {
     assert_eq!(code(&json), 0, "{}", err(&json));
     let document: Value = serde_json::from_str(out(&json).trim()).unwrap();
     crate::schemas::valid(
-        &crate::schemas::validator("provider-status-v3.json"),
+        &crate::schemas::validator("provider-status-v4.json"),
         &document,
     );
     assert_eq!(document["providers"][0]["auth"], "not_probed");
@@ -1398,7 +1416,7 @@ fn apply_leaves_a_login_whose_cli_is_off_path_unregistered_with_the_path_fix() {
 
 /// C3 item 11: a registry that cannot be read is unknown, never empty: every row's registration
 /// says so, the note is in every output (the empty scan's included), and `--apply` refuses with
-/// exit 1 and one `af/error@1` document.
+/// exit 1 and one `af/error@2` document.
 #[test]
 fn an_unreadable_registry_is_unknown_and_refuses_apply() {
     let machine = Machine::new();
@@ -1440,7 +1458,7 @@ fn an_unreadable_registry_is_unknown_and_refuses_apply() {
     let refused = machine.af(&["provider", "detect", "--apply", "--json"]);
     assert_eq!(code(&refused), 1, "{}", err(&refused));
     let error: Value = serde_json::from_str(out(&refused).trim()).unwrap();
-    assert_eq!(error["schema"], "af/error@1");
+    assert_eq!(error["schema"], "af/error@2");
     assert_eq!(error["exit_code"], 1);
     assert!(
         error["error"]
@@ -1505,7 +1523,7 @@ fn status_doctor_and_onboarding_list_the_same_unregistered_directories() {
     assert_eq!(code(&status), 0, "{}", err(&status));
     let document: Value = serde_json::from_str(out(&status).trim()).unwrap();
     crate::schemas::valid(
-        &crate::schemas::validator("provider-status-v3.json"),
+        &crate::schemas::validator("provider-status-v4.json"),
         &document,
     );
     assert_eq!(
@@ -1642,7 +1660,7 @@ fn detect_recognizes_the_default_claude_context_that_status_accepts() {
     assert_eq!(code(&status), 0, "{}", err(&status));
     let status: Value = serde_json::from_str(out(&status).trim()).unwrap();
     crate::schemas::valid(
-        &crate::schemas::validator("provider-status-v3.json"),
+        &crate::schemas::validator("provider-status-v4.json"),
         &status,
     );
     let main = status["providers"]
@@ -1722,7 +1740,7 @@ fn doctor_providers(machine: &Machine, codex_home: Option<&Path>) -> Value {
     let output = command.output().unwrap();
     let document: Value = serde_json::from_str(out(&output).trim())
         .unwrap_or_else(|error| panic!("{error}: {}\n{}", out(&output), err(&output)));
-    crate::schemas::valid(&crate::schemas::validator("doctor-v2.json"), &document);
+    crate::schemas::valid(&crate::schemas::validator("doctor-v3.json"), &document);
     document["checks"]
         .as_array()
         .unwrap()

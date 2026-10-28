@@ -200,7 +200,7 @@ fn a_missing_goal_file_names_its_path_and_the_fix() {
     let json = af(&repo, &[&args[..], &["--json"]].concat());
     assert_eq!(json.status.code(), Some(1));
     let document: Value = serde_json::from_slice(&json.stdout).unwrap();
-    crate::schemas::valid(&crate::schemas::validator("error-v1.json"), &document);
+    crate::schemas::valid(&crate::schemas::validator("error-v2.json"), &document);
     assert_eq!(document["cause"], "input_unreadable", "{document}");
     assert_eq!(
         document["details"],

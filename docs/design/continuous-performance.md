@@ -1023,3 +1023,22 @@ checked 2026-10-25, states “GitHub ignores case when comparing strings.” The
 `inputs.dispatch_head == github.sha` and Python's full-hex case normalization agree. The
 workflow and scheduler stay unchanged; their executable test models platform equality on the
 original uppercase input. This local model is not a hosted dispatch or a calibration original.
+
+Independent VM execution (ADR-0240) adds `cli.py executor`, a bounded operator controller over
+these same components. It freezes local sources, environment and workload before contained
+build/measurement, runs shards sequentially, keeps native reports/archives and retains original
+Git objects for offline admission. Local requests/claims/results have their own identities;
+Actions remains a selectable dispatch backend and preserves original hosted receipts. Separate
+dedicated Claw profiles and a local telemetry history keep persistent VM evidence distinct.
+The common machine lock covers preparation through terminal evidence and retains a crash fence
+when owned cleanup is uncertain, including a diagnostic build container whose removal is
+unconfirmed even with clean diagnostic scratch. Executor configuration v2 freezes the pinned
+image's Zig/cargo-zigbuild directory for shipping and diagnostic builders. Service invocations
+drain admitted work before polling; calibration launch decisions recheck the frozen member day
+after capacity and source preparation. Missed originals retire as non-executed `expired` in
+state/result v2 and remain off schedule in readiness with their original denominator.
+The [operator guide](../performance-local-executor.md) describes
+reviewed-main polling, explicit trusted PR/release submissions, separately declared seven-day
+local calibration originals, the parameter review checkpoint and systemd examples. Hosted
+event workflows and calibration declarations stay unchanged. Tests establish orchestration,
+not deployment, empirical calibration, a speedup or a passing required-check claim.

@@ -11,6 +11,12 @@ walkthroughs; the decisions themselves are
 See [preview and confirmation](task-execution/preview.md) for the compact ASCII view,
 expanded tree, Claude/Codex workflow and the automation boundary.
 
+Beside the `kernel/*` and `warm/*` Pipelines, this repository's catalog pins its default Task
+pipeline, `default/implementation` and, for a `verification` Task, `default/verification`:
+one implementing iteration, two required reviewers, one advisory reviewer for gate time and
+quality, and an independent evaluator ([the default pipeline](tasks.md#the-default-pipeline),
+[ADR-0253](adr/0253-the-default-task-pipeline-lives-in-the-catalog.md)).
+
 The trusted `.af/code-policy.toml` sets `check_wall_ms`, the whole check Attempt's wall.
 Without `check_process_wall_ms`, positive values through `5400000` (90 minutes) are admitted.
 With an explicit per-process cap, that cap remains at most `3600000` (60 minutes) and no larger
@@ -178,7 +184,7 @@ What it never grants:
 |---|---|
 | Task, Pipeline, plan, result and decision wire contracts | `crates/review-core/src/task/`, [`task-contracts-v1`](../schemas/task-contracts-v1.json), `fixtures/task-contracts/` |
 | Task file, catalogs, bindings and developers | [`task-file-v1`](../schemas/task-file-v1.json), [`task-catalog-v2`](../schemas/task-catalog-v2.json), [`shared-task-catalog-v1`](../schemas/shared-task-catalog-v1.json), [`task-developers-v1`](../schemas/task-developers-v1.json) |
-| Inspection and listing | [`task-state-v1`](../schemas/task-state-v1.json), [`task-inspection-v13`](../schemas/task-inspection-v13.json), [`task-list-v3`](../schemas/task-list-v3.json), [`task-list-entry-v3`](../schemas/task-list-entry-v3.json), [`task-checks-v2`](../schemas/task-checks-v2.json), [`task-selection-v3`](../schemas/task-selection-v3.json), [`error-v1`](../schemas/error-v1.json), [`task-plan-inspection-v1`](../schemas/task-plan-inspection-v1.json), [`compiled-task-v1`](../schemas/compiled-task-v1.json), [`compiled-task-v2`](../schemas/compiled-task-v2.json), [`task-report-v2`](../schemas/task-report-v2.json) ([ADR-0142](adr/0142-carry-the-af-task-report-in-every-pull-request.md)) |
+| Inspection and listing | [`task-state-v1`](../schemas/task-state-v1.json), [`task-inspection-v13`](../schemas/task-inspection-v13.json), [`task-list-v3`](../schemas/task-list-v3.json), [`task-list-entry-v3`](../schemas/task-list-entry-v3.json), [`task-checks-v2`](../schemas/task-checks-v2.json), [`task-selection-v3`](../schemas/task-selection-v3.json), [`error-v2`](../schemas/error-v2.json), [`task-plan-inspection-v1`](../schemas/task-plan-inspection-v1.json), [`compiled-task-v1`](../schemas/compiled-task-v1.json), [`compiled-task-v2`](../schemas/compiled-task-v2.json), [`task-report-v2`](../schemas/task-report-v2.json) ([ADR-0142](adr/0142-carry-the-af-task-report-in-every-pull-request.md)) |
 | Recovery of a lost or interrupted run ([ADR-0209](adr/0209-recover-a-lost-or-interrupted-attempt-without-charging-its-reservation.md)) | `crates/review-pipeline/src/task/lease.rs`, `crates/review-attempt/src/task_budget.rs`, `crates/af/src/task_execution/recovery.rs`, [`pipeline-definition-v3`](../schemas/pipeline-definition-v3.json) |
 | Run diagnostics and delivery | [`task-run-report-v2`](../schemas/task-run-report-v2.json), [`task-diagnostic-v1`](../schemas/task-diagnostic-v1.json), [`task-delivery-record-v1`](../schemas/task-delivery-record-v1.json) |
 | The agent loop ([ADR-0211](adr/0211-give-the-agent-loop-its-verbs-and-deliver-a-verified-verification.md), [agents](agents.md)) | `crates/review-core/src/task/agent_loop.rs`, `crates/af/src/task_execution/{findings,candidate,runs,pr_body}.rs`, [`task-findings-v1`](../schemas/task-findings-v1.json), [`task-diff-v1`](../schemas/task-diff-v1.json), [`task-materialized-v1`](../schemas/task-materialized-v1.json), [`task-status-v1`](../schemas/task-status-v1.json), [`task-detached-v2`](../schemas/task-detached-v2.json), [`task-cancelled-v1`](../schemas/task-cancelled-v1.json), [`task-run-process-v1`](../schemas/task-run-process-v1.json), [`task-cancel-request-v1`](../schemas/task-cancel-request-v1.json), [`task-delivery-proof-v1`](../schemas/task-delivery-proof-v1.json) |

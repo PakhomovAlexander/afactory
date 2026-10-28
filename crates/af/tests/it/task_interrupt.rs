@@ -271,7 +271,7 @@ fn sigint_stops_the_worker_group_records_a_cancelled_attempt_and_the_task_resume
     assert!(stderr.contains(&format!("af task run {TASK}")), "{stderr}");
     let document: serde_json::Value = serde_json::from_slice(&out.stdout)
         .unwrap_or_else(|_| panic!("not JSON: {}", String::from_utf8_lossy(&out.stdout)));
-    assert_eq!(document["schema"], "af/error@1");
+    assert_eq!(document["schema"], "af/error@2");
     assert_eq!(document["exit_code"], 130);
 
     let cas = Cas::open_existing(state.join("cas")).unwrap();

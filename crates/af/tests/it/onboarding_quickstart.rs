@@ -25,6 +25,7 @@ fn shell(root: &Path, script: &str) -> std::process::Output {
         .env("TMPDIR", root)
         .env("XDG_STATE_HOME", root.join("state"))
         .env("XDG_CONFIG_HOME", root.join("config"))
+        .env("AF_PROVIDERS_FILE", root.join("providers.toml"))
         .env("GIT_CONFIG_GLOBAL", "/dev/null")
         .env("GIT_CONFIG_NOSYSTEM", "1")
         .env("GIT_AUTHOR_NAME", "Quickstart fixture")
@@ -99,7 +100,8 @@ fn readme_quickstart_reaches_a_plan_with_local_committed_authority() {
     let (plan, run) = review.trim().split_once('\n').unwrap();
     assert_eq!(
         plan,
-        "af review plan --policy-rev HEAD --base HEAD --uncommitted"
+        "af review plan --policy-rev HEAD --base HEAD --uncommitted --provider correctness=PROVIDER \
+         --provider architecture=PROVIDER"
     );
     // No machine's Provider IDs: the placeholder, and where the exact command comes from.
     assert_eq!(
@@ -137,6 +139,9 @@ fn readme_quickstart_reaches_a_plan_with_local_committed_authority() {
     assert!(readme.contains("AF_INSTALL_CHANNEL=rc"));
 
     let root = tempfile::tempdir().unwrap();
+    let executable_plan = plan
+        .replace("correctness=PROVIDER", "correctness=claude-main")
+        .replace("architecture=PROVIDER", "architecture=codex-main");
     let script = format!(
         r#"
 af() {{
@@ -155,8 +160,12 @@ git commit -qm 'Initial source'
 {onboard}
 # The guide asks the operator to make a real source change after committing the policy.
 printf '\nA candidate change.\n' >> README.md
-{plan} > ../plan.txt
-{plan} --json > ../plan.json
+mkdir -p ../claude-auth ../codex-auth
+AF_AUTH_ROOT=$(cd .. && pwd)
+"$AF_BIN" provider add claude-main --kind claude --auth-dir "$AF_AUTH_ROOT/claude-auth" --unverified
+"$AF_BIN" provider add codex-main --kind codex --auth-dir "$AF_AUTH_ROOT/codex-auth" --unverified
+{executable_plan} > ../plan.txt
+{executable_plan} --json > ../plan.json
 {doctor} > ../doctor.txt
 test ! -e ../gate-ran
 test -z "$(git remote)"

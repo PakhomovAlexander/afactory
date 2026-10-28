@@ -184,8 +184,7 @@ pub(super) fn resolve_plan(
         );
     }
     let policy_ref = options.policy_rev.as_deref().ok_or(
-        "af review plan needs --policy-rev REV, the commit whose committed .af/ governs the \
-         review (usually HEAD); try: af review plan --policy-rev HEAD --base HEAD --uncommitted",
+        "af review plan needs --policy-rev REV, the commit whose committed .af/ governs the review",
     )?;
     let capture = Capture::new(repo, cas);
     let policy = capture
@@ -249,7 +248,18 @@ pub(super) fn resolve_plan(
     let pipeline = load(&route.pipeline_path)?;
     validate_af_project(&project_bytes, &pipeline.path)?;
     match (pipeline.loaded.subject_kind(), base.is_some()) {
-        (SubjectKind::Diff, false) => return Err("diff review plan requires `--base REV`".into()),
+        (SubjectKind::Diff, false) => {
+            let command = crate::review_next_command("plan", &["--base".into(), policy_ref.into()]);
+            return Err(crate::error_document::typed(
+                format!("diff review plan requires `--base REV`; run:\n{command}"),
+                crate::error_document::Detail::new(
+                    crate::error_document::Cause::ReviewSelectorsMissing,
+                )
+                .next(command)
+                .with("repo", options.repo.display().to_string())
+                .with("selector", "--base"),
+            ));
+        }
         (SubjectKind::WholeTree, true) => {
             return Err("whole-tree review plan does not accept `--base`".into());
         }
@@ -478,14 +488,27 @@ pub(super) fn check_provider_bindings(
             } else {
                 format!("Node {node} not found in {pipeline_path}")
             };
-            return Err(format!("{what}; {names}"));
+            return Err(crate::error_document::typed(
+                format!("{what}; {names}"),
+                crate::error_document::Detail::new(crate::error_document::Cause::UnknownReviewNode)
+                    .with("node", node.as_str())
+                    .with("pipeline", pipeline_path),
+            ));
         };
         match registered.iter().find(|(registered, _)| registered == id) {
             None => {
-                return Err(format!(
-                    "Provider {id} not found in {registry}; af provider status lists the \
+                return Err(crate::error_document::typed(
+                    format!(
+                        "Provider {id} not found in {registry}; af provider status lists the \
                      registry, and af provider setup {} --kind {kind} registers it",
-                    shell_words::quote(id)
+                        shell_words::quote(id)
+                    ),
+                    crate::error_document::Detail::new(
+                        crate::error_document::Cause::ProviderNotRegistered,
+                    )
+                    .next("af provider status")
+                    .with("provider", id.as_str())
+                    .with("kind", kind.as_str()),
                 ));
             }
             Some((_, other)) if other != kind => {
@@ -1009,7 +1032,17 @@ fn open_new(
     let pipeline = load(&route.pipeline_path)?;
     match (pipeline.loaded.subject_kind(), base.is_some()) {
         (SubjectKind::Diff, false) => {
-            return Err("a new diff Campaign requires `--base REV`".into());
+            let command =
+                crate::review_next_command("run", &["--base".into(), authority_ref.into()]);
+            return Err(crate::error_document::typed(
+                format!("a new diff Campaign requires `--base REV`; run:\n{command}"),
+                crate::error_document::Detail::new(
+                    crate::error_document::Cause::ReviewSelectorsMissing,
+                )
+                .next(command)
+                .with("repo", options.repo.display().to_string())
+                .with("selector", "--base"),
+            ));
         }
         (SubjectKind::WholeTree, true) => {
             return Err(
@@ -1823,9 +1856,14 @@ fn require_authority(manifest: &Manifest, revision: &str) -> Result<(), String> 
     {
         return Ok(());
     }
-    Err(format!(
-        "this repository has no .af/ authority at {revision}; fix: af onboard (preview), then \
+    Err(crate::error_document::typed(
+        format!(
+            "this repository has no .af/ authority at {revision}; fix: af onboard (preview), then \
          af onboard --apply, commit, and retry"
+        ),
+        crate::error_document::Detail::new(crate::error_document::Cause::NoAuthority)
+            .next("af onboard")
+            .with("revision", revision),
     ))
 }
 
@@ -1838,6 +1876,16 @@ fn capture_refusal(
     error: &impl std::fmt::Display,
 ) -> String {
     let error = error.to_string();
+    if error.contains("not a git repository") {
+        return crate::error_document::typed(
+            format!(
+                "{} is not a Git repository; choose a repository with a commit",
+                crate::terminal_text(&options.repo.display().to_string())
+            ),
+            crate::error_document::Detail::new(crate::error_document::Cause::NotRepository)
+                .with("repo", options.repo.display().to_string()),
+        );
+    }
     if !error.contains("rev-parse") {
         return format!("capturing {what} {revision}: {error}");
     }

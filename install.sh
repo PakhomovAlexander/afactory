@@ -53,7 +53,7 @@ case "$(uname -s):$(uname -m)" in
   *) echo "af: unsupported platform $(uname -s)/$(uname -m)" >&2; exit 1 ;;
 esac
 
-tmp=$(mktemp -d)
+tmp=$(mktemp -d "${TMPDIR:-/tmp}/af-install.XXXXXXXX")
 trap 'rm -rf "$tmp"' EXIT HUP INT TERM
 
 # How releases are reached: anonymously over HTTPS with curl, or through an authenticated

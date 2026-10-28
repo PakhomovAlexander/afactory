@@ -17,7 +17,7 @@
   usage error. The README and `af help json` claim `--json` only for commands whose `--help` lists
   it, promise one document only where one is printed, and name `af telemetry tail --json` as a
   JSON Lines stream, one `af/telemetry-tail@1` object per line, that a tail failing with an error
-  ends with one `af/error@1` line, while a run two Stores record exits 2 with only stderr to say
+  ends with one `af/error@2` line, while a run two Stores record exits 2 with only stderr to say
   so. The README's install step says which PATH guidance each shell gets, and that a bin
   directory with a `:` or a control character gets none but the advice to install elsewhere. The
   README, with `af review group --help`, explains that looking alike, at one path or line or with

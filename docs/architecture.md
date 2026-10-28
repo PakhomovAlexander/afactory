@@ -180,9 +180,12 @@ The same premise holds wherever af runs git against a checkout, not only in capt
 browser that bare `af` opens and the Task file advice run git through
 `review_source_git::git::isolated_command`, the cleared environment and full `-c` override set
 capture uses. The browser marks drift by comparing `ls-tree`/`cat-file` blobs with working-tree
-bytes itself, never through `git diff` or `git hash-object`. `crates/af/tests/it/tui.rs` pins
-it with an fsmonitor and a required clean filter configured in `.git/config`. A tree that names a
-path git itself refuses (`.git` in any ASCII case or NTFS/HFS+ spelling, a symlinked
+bytes itself, never through `git diff` or `git hash-object`. Review selector suggestions compare
+committed and worktree captures through that same isolated path; their default-branch metadata
+reads never inspect worktree bytes. `crates/af/tests/it/tui.rs` and
+`crates/af/tests/it/review_plan_refusals.rs` pin these paths with hostile filters and an
+fsmonitor configured in `.git/config`. A tree that names a path git itself refuses (`.git` in
+any ASCII case or NTFS/HFS+ spelling, a symlinked
 `.gitmodules`) is refused at capture, materialization and Task binding through one predicate,
 `git_refuses_path`. Otherwise its `.git/config` would configure every `git` run in the sandbox.
 
@@ -307,6 +310,10 @@ the preserved sandbox path rather than sealing or deleting the possibly live bin
 timeout/reap probe, ownership assertion, and a v3 container Gate on the Task host; they stay
 outside `make check` because a missing daemon must be a hard failure there, never a skip
 disguised as success.
+
+This repository's local Task gate selects functional, e2e and uix through
+`scripts/verify.sh --profile fast`, as every pull request does by default (ADR-0239); the full
+check remains in `make check`, main validation and unbound releases.
 
 The distinction is enforced, not documented. Pipeline format v3 requires an explicit `[gate]`
 Execution Binding. `provider = "container"` requires an OCI image pinned by digest and can

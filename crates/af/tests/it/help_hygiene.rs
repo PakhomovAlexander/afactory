@@ -229,6 +229,7 @@ fn human_text_prints_figures_in_units_and_json_keeps_them_raw() {
             .env("NO_COLOR", "1")
             .env("TZ", "UTC")
             .env("PATH", "/usr/bin:/bin:/usr/sbin:/sbin")
+            .env("AF_PROVIDERS_FILE", root.path().join("providers.toml"))
             .output()
             .unwrap()
     };
@@ -243,6 +244,19 @@ fn human_text_prints_figures_in_units_and_json_keeps_them_raw() {
     assert!(onboard.status.success(), "{onboard:?}");
     git(&["add", "-A"]);
     git(&["commit", "-q", "-m", "policy"]);
+    let auth = root.path().join("codex-auth");
+    std::fs::create_dir_all(&auth).unwrap();
+    let added = in_repo(&[
+        "provider",
+        "add",
+        "codex-main",
+        "--kind",
+        "codex",
+        "--auth-dir",
+        auth.to_str().unwrap(),
+        "--unverified",
+    ]);
+    assert!(added.status.success(), "{added:?}");
 
     // A Store's use is local time with its zone, to the minute; its size in units.
     let listed = out(&in_repo(&["storage"]));
@@ -281,6 +295,10 @@ fn human_text_prints_figures_in_units_and_json_keeps_them_raw() {
         "HEAD~1",
         "--candidate",
         "HEAD",
+        "--provider",
+        "architecture=codex-main",
+        "--provider",
+        "correctness=codex-main",
     ]));
     assert!(
         plan.contains("provider admission  32768 tokens, 45.0 s per capability"),
@@ -302,6 +320,10 @@ fn human_text_prints_figures_in_units_and_json_keeps_them_raw() {
             "HEAD~1",
             "--candidate",
             "HEAD",
+            "--provider",
+            "architecture=codex-main",
+            "--provider",
+            "correctness=codex-main",
             "--json",
         ])
         .stdout,

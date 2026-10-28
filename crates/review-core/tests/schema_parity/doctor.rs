@@ -1,4 +1,4 @@
-//! `af doctor --json` (`af/doctor@2`, ADR-0210).
+//! `af doctor --json` (`af/doctor@3`, ADR-0210).
 //!
 //! It carries no Rust type: the binary builds it from what it reads of the machine. The schema is
 //! the contract, and these cases pin both halves of it: the checks an agent may branch on, and
@@ -10,7 +10,7 @@ use serde_json::{Value, json};
 
 fn doctor() -> Value {
     json!({
-        "schema": "af/doctor@2",
+        "schema": "af/doctor@3",
         "token_free": true,
         "exit_code": 1,
         "checks": [
@@ -30,21 +30,28 @@ fn doctor() -> Value {
              "fix": null, "hint": "add it in System Settings > Spotlight > Search Privacy"},
             {"id": "project", "status": "warn", "detail": "/w has no .af/",
              "fix": "af onboard --repo /w", "hint": "a token-free preview"},
+            {"id": "harness", "status": "ok", "detail": "driving agent harness: Codex",
+             "fix": null, "hint": null},
+            {"id": "sandbox", "status": "ok", "detail": "agent sandbox: detected",
+             "fix": null, "hint": null},
+            {"id": "network", "status": "ok", "detail": "agent sandbox network: blocked",
+             "fix": null, "hint": null},
         ],
     })
 }
 
 #[test]
 fn doctor_checks_are_closed_and_every_problem_carries_its_fix() {
-    assert_valid("doctor-v2.json", &doctor());
+    assert_valid("doctor-v3.json", &doctor());
     let mut outside = doctor();
-    outside["checks"].as_array_mut().unwrap().pop();
+    outside["checks"].as_array_mut().unwrap().remove(7);
     outside["exit_code"] = json!(0);
-    assert_valid("doctor-v2.json", &outside);
+    assert_valid("doctor-v3.json", &outside);
 
     for (why, edit) in [
         ("an older kind", json!({"schema": "af/doctor@0"})),
         ("the retired version 1", json!({"schema": "af/doctor@1"})),
+        ("the retired version 2", json!({"schema": "af/doctor@2"})),
         ("a charge", json!({"token_free": false})),
         (
             "an exit code the command never uses",
@@ -56,7 +63,7 @@ fn doctor_checks_are_closed_and_every_problem_carries_its_fix() {
         for (key, value) in edit.as_object().unwrap() {
             invalid[key] = value.clone();
         }
-        assert_invalid("doctor-v2.json", &invalid, why);
+        assert_invalid("doctor-v3.json", &invalid, why);
     }
     for (why, index, key, value) in [
         ("a fix on an ok check", 0, "fix", json!("af self update")),
@@ -66,24 +73,24 @@ fn doctor_checks_are_closed_and_every_problem_carries_its_fix() {
         ("a problem without its advice", 6, "hint", Value::Null),
         ("an empty hint", 2, "hint", json!("")),
         ("an unknown status", 2, "status", json!("skipped")),
-        ("an unknown check", 3, "id", json!("network")),
+        ("an unknown check", 3, "id", json!("unexpected")),
         ("an empty detail", 6, "detail", json!("")),
     ] {
         let mut invalid = doctor();
         invalid["checks"][index][key] = value;
-        assert_invalid("doctor-v2.json", &invalid, why);
+        assert_invalid("doctor-v3.json", &invalid, why);
     }
     let mut extra = doctor();
     extra["checks"][0]["severity"] = json!("low");
-    assert_invalid("doctor-v2.json", &extra, "an unknown check field");
+    assert_invalid("doctor-v3.json", &extra, "an unknown check field");
     let mut without = doctor();
     without["checks"][1].as_object_mut().unwrap().remove("hint");
     assert_invalid(
-        "doctor-v2.json",
+        "doctor-v3.json",
         &without,
         "a version 1 check, without its hint",
     );
     let mut short = doctor();
     short["checks"] = json!([]);
-    assert_invalid("doctor-v2.json", &short, "a report without its checks");
+    assert_invalid("doctor-v3.json", &short, "a report without its checks");
 }

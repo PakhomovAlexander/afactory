@@ -15,7 +15,7 @@ use serde::Serialize;
 use crate::selfmgmt;
 
 /// The `--json` document's kind.
-pub(crate) const SCHEMA: &str = "af/doctor@2";
+pub(crate) const SCHEMA: &str = "af/doctor@3";
 /// The text output's first line.
 pub(crate) const FIRST_LINE: &str =
     "token-free; the charged end-to-end Provider check is af provider doctor";
@@ -392,6 +392,9 @@ fn checks(repo: &Path) -> Vec<Check> {
         .filter(|toplevel| toplevel.join(".af").exists())
         .map(crate::onboard::authority_facts);
     let mut checks = vec![
+        agent_harness(),
+        agent_sandbox(),
+        agent_network(),
         binary(&installation),
         path(&installation),
         shell(),
@@ -435,6 +438,41 @@ fn checks(repo: &Path) -> Vec<Check> {
     .collect();
     withhold(&mut checks, &blockers);
     checks
+}
+
+fn agent_harness() -> Check {
+    let context = crate::providers::compatibility::AgentEnvironment::detect();
+    Check::ok(
+        "harness",
+        format!(
+            "driving agent harness: {}",
+            context.harness.unwrap_or("none detected")
+        ),
+    )
+}
+
+fn agent_sandbox() -> Check {
+    let context = crate::providers::compatibility::AgentEnvironment::detect();
+    Check::ok(
+        "sandbox",
+        if context.sandboxed {
+            "agent sandbox: detected"
+        } else {
+            "agent sandbox: not detected"
+        },
+    )
+}
+
+fn agent_network() -> Check {
+    let context = crate::providers::compatibility::AgentEnvironment::detect();
+    Check::ok(
+        "network",
+        match context.network_allowed {
+            Some(true) => "agent sandbox network: allowed",
+            Some(false) => "agent sandbox network: blocked",
+            None => "agent sandbox network: unknown",
+        },
+    )
 }
 
 // ------------------------------------------------------------------------------------------
@@ -1287,6 +1325,25 @@ fn providers(registry: &crate::providers::RegistryRead) -> Check {
             hint,
         );
     }
+    // The one status probe doctor runs, the logged-out ambient contexts the status table leaves
+    // out kept; a denied probe is never left out, and establishes neither compatibility nor
+    // login (ADR-0249), so it is said before anything is suggested.
+    let statuses = crate::providers::probed_statuses_with_ambient();
+    if let Some(denied) = statuses
+        .iter()
+        .find(|status| status.status == "probe denied")
+    {
+        return Check::advise(
+            Status::Warn,
+            "providers",
+            format!(
+                "provider {}: host denied a capability probe; compatibility and login could not be established",
+                denied.id
+            ),
+            "retry outside the sandbox or with host-approved permissions; then run af doctor"
+                .into(),
+        );
+    }
     // The same names-only scan `af provider status` and `af onboard` list (ADR-0206). It reads
     // no marker and probes nothing: a directory it names is not known to hold a login.
     if registry.registered.is_empty() {
@@ -1322,7 +1379,6 @@ fn providers(registry: &crate::providers::RegistryRead) -> Check {
              terminal: af provider setup {kind}-main --kind {kind} --login"
         ));
     }
-    let statuses = crate::providers::probed_statuses_with_ambient();
     let (ambient, statuses): (Vec<_>, Vec<_>) = statuses
         .iter()
         .partition(|status| crate::providers::is_ambient_candidate(status));
