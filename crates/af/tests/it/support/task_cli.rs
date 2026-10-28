@@ -95,6 +95,14 @@ pub fn copy_tree(source: &Path, destination: &Path) {
 /// release pin moves to the release that carries ADR-0255; until then a test that copies them
 /// to run them under this `af` takes it on its copy.
 pub fn migrate_check_receipt(repo: &Path, trees: &[&str], catalogs: &[&str]) {
+    // A gate's sealed candidate supplies read-only files, and a copy made with `cp -R` keeps
+    // their modes: every file this migration rewrites takes its owner-write bit first.
+    fn writable(path: &Path) {
+        use std::os::unix::fs::PermissionsExt;
+        let mut permissions = std::fs::metadata(path).unwrap().permissions();
+        permissions.set_mode(permissions.mode() | 0o200);
+        std::fs::set_permissions(path, permissions).unwrap();
+    }
     let mut stack: Vec<PathBuf> = trees.iter().map(|tree| repo.join(tree)).collect();
     while let Some(path) = stack.pop() {
         if path.is_dir() {
@@ -107,6 +115,7 @@ pub fn migrate_check_receipt(repo: &Path, trees: &[&str], catalogs: &[&str]) {
             continue;
         };
         if text.contains("af/TaskCheckReceipt@1") {
+            writable(&path);
             std::fs::write(
                 &path,
                 text.replace("af/TaskCheckReceipt@1", "af/TaskCheckReceipt@2"),
@@ -131,6 +140,7 @@ pub fn migrate_check_receipt(repo: &Path, trees: &[&str], catalogs: &[&str]) {
             }
         }
         if changed {
+            writable(&path);
             std::fs::write(&path, toml::to_string(&value).unwrap()).unwrap();
         }
     }

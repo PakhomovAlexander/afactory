@@ -270,12 +270,22 @@ fn attention_group(fixture: &Fixture, entry: &Value, label: &str, next: Option<&
     };
     assert_eq!(lines[at - 1], format!("{title} (1)"), "{text}");
     assert_eq!(lines[at].split_whitespace().nth(1), Some(label), "{text}");
-    let continued = lines[at + 1..]
-        .iter()
-        .take_while(|line| line.starts_with("    "))
-        .map(|line| line.trim().trim_end_matches('\\').trim())
-        .collect::<Vec<_>>()
-        .join(" ");
+    // The `next:` line as a shell reads it: a line ending in `\` continues on the next, an
+    // indented continuation after a space, one at column 0 inside a word the width split
+    // (a `--state` path under a long temporary directory, as the gate's on macOS).
+    let mut continued = String::new();
+    let mut continues = false;
+    for line in &lines[at + 1..] {
+        if !(continues || line.starts_with("    ")) {
+            break;
+        }
+        if !continued.is_empty() && line.starts_with(' ') {
+            continued.push(' ');
+        }
+        let line = line.trim_end();
+        continues = line.ends_with('\\');
+        continued.push_str(line.trim_end_matches('\\').trim());
+    }
     assert_eq!(continued, format!("next: {}", next.unwrap()), "{text}");
     group
 }
