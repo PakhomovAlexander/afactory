@@ -354,7 +354,7 @@ fn findings_print_each_reviewers_findings_by_severity_and_the_evaluators_verdict
     let previous = document(
         &af(&repo, &state, &["task", "report", "chain-base", "--json"]),
         0,
-        Some("task-report-v2.json"),
+        Some("task-report-v3.json"),
     );
     let recorded_check = previous["tasks"][0]["nodes"]
         .as_array()
@@ -1249,16 +1249,15 @@ fn alive(pid: u32) -> bool {
     .is_ok()
 }
 
-/// Kills the background run and its Worker group if the test fails before `cancel` did.
-struct Leftovers(Vec<u32>);
-impl Drop for Leftovers {
-    fn drop(&mut self) {
-        for pid in &self.0 {
-            let target = nix::unistd::Pid::from_raw(i32::try_from(*pid).unwrap());
-            let _ = nix::sys::signal::killpg(target, nix::sys::signal::Signal::SIGKILL);
-            let _ = nix::sys::signal::kill(target, nix::sys::signal::Signal::SIGKILL);
-        }
-    }
+/// Reports the background run and its Worker if the test fails before `cancel` stopped them.
+/// Neither is this test's child, so neither is signalled here: the Worker ends by itself once
+/// the run is gone, and the run ends at its Attempt walls (issue #331 item 7).
+fn leftovers(pids: &[u32]) -> crate::common::recorded::Leftovers {
+    crate::common::recorded::Leftovers(
+        pids.iter()
+            .filter_map(|pid| crate::common::recorded::Recorded::now(i32::try_from(*pid).ok()?))
+            .collect(),
+    )
 }
 
 /// The lines of `af task events`, each one `af/task-event@1` document, its events numbered
@@ -1331,7 +1330,7 @@ fn a_detached_run_is_followed_cancelled_and_resumed() {
         .env("AF_TEST_HEARTBEAT_MS", "300")
         .output()
         .unwrap();
-    let value = document(&detached, 0, Some("task-detached-v2.json"));
+    let value = document(&detached, 0, Some("task-detached-v3.json"));
     assert!(
         started.elapsed() < Duration::from_secs(60),
         "returned at once"
@@ -1339,7 +1338,7 @@ fn a_detached_run_is_followed_cancelled_and_resumed() {
     assert_eq!(value["admitted"], true, "{value:#}");
     assert_eq!(value["next_action"], format!("af task wait {task}"));
     let pid = u32::try_from(value["pid"].as_u64().unwrap()).unwrap();
-    let mut leftovers = Leftovers(vec![pid]);
+    let mut leftovers = leftovers(&[pid]);
     let log = PathBuf::from(value["log"].as_str().unwrap());
     assert!(log.ends_with(format!("runs/{task}-1.log")), "{log:?}");
     assert!(log.is_file(), "{log:?}");
@@ -1362,7 +1361,9 @@ fn a_detached_run_is_followed_cancelled_and_resumed() {
         );
         std::thread::sleep(Duration::from_millis(20));
     };
-    leftovers.0.push(worker[0]);
+    leftovers.0.extend(crate::common::recorded::Recorded::now(
+        i32::try_from(worker[0]).unwrap(),
+    ));
     assert!(alive(pid), "the run outlived the shell that started it");
     // A follower of the running Task, ended by the cancel below.
     let follower = crate::common::af()
@@ -1374,7 +1375,9 @@ fn a_detached_run_is_followed_cancelled_and_resumed() {
         .spawn()
         .unwrap();
     let follower_pid = follower.id();
-    leftovers.0.push(follower_pid);
+    leftovers.0.extend(crate::common::recorded::Recorded::now(
+        i32::try_from(follower_pid).unwrap(),
+    ));
 
     let status = expect(&af(&repo, &state, &["task", "status", task]), 0);
     assert!(
@@ -1477,7 +1480,7 @@ fn a_detached_run_is_followed_cancelled_and_resumed() {
     let cancelled = document(
         &af(&repo, &state, &["task", "cancel", task, "--json"]),
         0,
-        Some("task-cancelled-v1.json"),
+        Some("task-cancelled-v2.json"),
     );
     assert_eq!(cancelled["request"]["pid"], pid);
     assert_eq!(
@@ -1510,7 +1513,9 @@ fn a_detached_run_is_followed_cancelled_and_resumed() {
     );
     // The follower saw the cancel: every event from 0, then the one terminal record.
     let followed = follower.wait_with_output().unwrap();
-    leftovers.0.retain(|pid| *pid != follower_pid);
+    leftovers
+        .0
+        .retain(|recorded| recorded.pid() != i32::try_from(follower_pid).unwrap());
     assert_eq!(followed.status.code(), Some(4), "{}", err(&followed));
     let lines = event_lines(&out(&followed), 0);
     let terminal = lines.last().unwrap();
@@ -1720,9 +1725,9 @@ fn a_detached_run_not_admitted_in_time_is_not_claimed_to_run() {
         .env("AF_TEST_DETACHED_START_DELAY_MS", "3000")
         .output()
         .unwrap();
-    let value = document(&detached, 4, Some("task-detached-v2.json"));
+    let value = document(&detached, 4, Some("task-detached-v3.json"));
     let pid = u32::try_from(value["pid"].as_u64().unwrap()).unwrap();
-    let _leftovers = Leftovers(vec![pid]);
+    let _leftovers = leftovers(&[pid]);
     assert_eq!(value["admitted"], false, "{value:#}");
     assert_eq!(value["next_action"], format!("af task status {task}"));
     assert_ne!(value["state"]["phase"], "running", "{value:#}");

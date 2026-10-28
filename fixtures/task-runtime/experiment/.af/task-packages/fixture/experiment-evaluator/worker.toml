@@ -10,7 +10,7 @@ worker_output_type = "af/TaskEvaluation@1"
 outcome_port = "result"
 
 [signature.contract.inputs.checks]
-artifact_type = "af/TaskCheckReceipt@1"
+artifact_type = "af/TaskCheckReceipt@2"
 cardinality = "one"
 optional = false
 covers = []

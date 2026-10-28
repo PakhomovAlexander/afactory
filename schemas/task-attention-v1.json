@@ -2,7 +2,7 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "urn:af:schema:task-attention:1",
   "title": "Task attention af/task-attention@1",
-  "$comment": "What `af task list --attention --json` prints: every Task of the Store, collected Tasks included, in exactly one group by what it waits for, read from its `state` alone (`af help task-states`) each time the Store is read, never persisted. All seven groups are present, in this order; a group's Tasks are in Task ID order, each one `af/task-list-entry@3` whose `state.next_action` is the one command to run next. `needs_you` is true for the five groups that wait for a person and false for `running` and `nothing`.",
+  "$comment": "What `af task list --attention --json` prints: every Task of the Store, collected Tasks included, in exactly one group by what it waits for, read from its `state` alone (`af help task-states`) each time the Store is read, never persisted. All seven groups are present, in this order; a group's Tasks are in Task ID order, each one `af/task-list-entry@4` whose `state.next_action` is the one command to run next. `needs_you` is true for the five groups that wait for a person and false for `running` and `nothing`.",
   "type": "object",
   "additionalProperties": false,
   "required": [
@@ -69,7 +69,7 @@
         "tasks": {
           "type": "array",
           "items": {
-            "$ref": "urn:af:schema:task-list-entry:3"
+            "$ref": "urn:af:schema:task-list-entry:4"
           }
         }
       }

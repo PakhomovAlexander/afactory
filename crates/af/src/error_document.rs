@@ -2,6 +2,7 @@
 //! (`af help json`, `schemas/error-v2.json`): the command, the error sentence and the exit code,
 //! and for a refusal af classifies, a `cause` from a closed vocabulary, the one command to run
 //! next and the facts behind the cause, so a script branches on fields rather than on prose.
+//! Version 2 adds `interrupted`, a command SIGINT or SIGTERM stopped (ADR-0256).
 
 use serde_json::{Map, Value, json};
 
@@ -31,11 +32,13 @@ pub(crate) enum Cause {
     DirtySource,
     ReviewSelectorsMissing,
     ReviewBindingMissing,
+    /// SIGINT or SIGTERM stopped the command (exit 130 or 143).
+    Interrupted,
 }
 
 impl Cause {
     /// Every cause, as `schemas/error-v2.json` lists them.
-    pub(crate) const ALL: [Self; 15] = [
+    pub(crate) const ALL: [Self; 16] = [
         Self::Usage,
         Self::RecoveryExhausted,
         Self::RefreshRefused,
@@ -51,6 +54,7 @@ impl Cause {
         Self::DirtySource,
         Self::ReviewSelectorsMissing,
         Self::ReviewBindingMissing,
+        Self::Interrupted,
     ];
 
     pub(crate) fn as_str(self) -> &'static str {
@@ -70,6 +74,7 @@ impl Cause {
             Self::DirtySource => "dirty_source",
             Self::ReviewSelectorsMissing => "review_selectors_missing",
             Self::ReviewBindingMissing => "review_binding_missing",
+            Self::Interrupted => "interrupted",
         }
     }
 
@@ -119,6 +124,9 @@ impl Cause {
             }
             Self::ReviewBindingMissing => {
                 "A model Worker needs an explicit Provider binding. Use the suggested command only when each kind has exactly one enabled Provider."
+            }
+            Self::Interrupted => {
+                "SIGINT or SIGTERM stopped the command. Run the next action to resume or continue the Task it was running."
             }
         }
     }
@@ -207,7 +215,21 @@ pub(crate) fn take(error: &str) -> Option<Detail> {
     error.contains(&noted.0).then_some(noted.1)
 }
 
-/// One `af/error@2` document.
+/// The longest `next_action` `schemas/error-v2.json` admits, in characters.
+pub(crate) const MAX_NEXT_ACTION: usize = 4096;
+
+/// Whether `command` can be a document's `next_action`, a line a person pastes: an `af`
+/// command of at most [`MAX_NEXT_ACTION`] characters with no control character (a tab or a
+/// newline in a Store selector, say), as `schemas/error-v2.json` requires.
+pub(crate) fn pasteable(command: &str) -> bool {
+    command.len() > "af ".len()
+        && command.starts_with("af ")
+        && command.chars().count() <= MAX_NEXT_ACTION
+        && !command.chars().any(char::is_control)
+}
+
+/// One `af/error@2` document. A `next_action` no pasted line can carry ([`pasteable`]) is
+/// null, whichever writer composed it (ADR-0256).
 pub(crate) fn document(
     command: &str,
     error: &str,
@@ -222,7 +244,12 @@ pub(crate) fn document(
     });
     if let Some(detail) = detail {
         document["cause"] = json!(detail.cause.as_str());
-        document["next_action"] = json!(detail.next_action);
+        document["next_action"] = json!(
+            detail
+                .next_action
+                .as_deref()
+                .filter(|command| pasteable(command))
+        );
         if !detail.details.is_empty() {
             document["details"] = Value::Object(detail.details.clone());
         }
@@ -304,6 +331,54 @@ mod tests {
             schema_causes(),
             Cause::ALL.map(|cause| cause.as_str().to_owned())
         );
+    }
+
+    /// #331 item 10, every writer: a `next_action` no pasted line carries (a Store selector
+    /// with a tab or a newline, or a line past 4096 characters, which `--state ./././...`
+    /// reaches) is null in the document, which then validates against `error-v2.json`, as the
+    /// interrupted Task branch's `af task run ID --state DIR` does; one that fits is kept.
+    #[test]
+    fn a_next_action_no_line_can_carry_is_null_and_the_document_validates() {
+        let schema: Value =
+            serde_json::from_str(include_str!("../../../schemas/error-v2.json")).unwrap();
+        let validator = jsonschema::validator_for(&schema).unwrap();
+        let interrupted = |next: &str| {
+            let mut detail = Detail::new(Cause::Interrupted)
+                .with("signal", "SIGINT")
+                .with("task", "interrupted-ux");
+            detail.next_action = Some(next.to_owned());
+            document("af task", "interrupted by SIGINT", 130, Some(&detail))
+        };
+        let long = format!(
+            "af task run interrupted-ux --state {}../state",
+            "./".repeat(2100)
+        );
+        for next in [
+            "af task run interrupted-ux --state '../state\twith-tab'",
+            "af task run interrupted-ux --state '../state\nwith-newline'",
+            "af task run interrupted-ux --state '../state\u{7f}'",
+            long.as_str(),
+            "af ",
+            "rm -rf x",
+        ] {
+            let document = interrupted(next);
+            assert_eq!(document["next_action"], Value::Null, "{next:?}");
+            assert!(validator.is_valid(&document), "{document}");
+        }
+        let at_limit = format!("af task run t --state {}", "x".repeat(4096 - 22));
+        assert_eq!(at_limit.chars().count(), MAX_NEXT_ACTION);
+        for next in ["af task run interrupted-ux --state '../a b'", &at_limit] {
+            let document = interrupted(next);
+            assert_eq!(document["next_action"], json!(next));
+            assert!(validator.is_valid(&document), "{document}");
+        }
+        let past = format!("{at_limit}x");
+        assert_eq!(interrupted(&past)["next_action"], Value::Null);
+        assert!(!validator.is_valid(&json!({
+            "schema": "af/error@2", "command": "af task", "error": "e", "exit_code": 130,
+            "cause": "interrupted", "next_action": past,
+            "details": {"signal": "SIGINT", "task": null}
+        })));
     }
 
     #[test]

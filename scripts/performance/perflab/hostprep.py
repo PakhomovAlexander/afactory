@@ -237,6 +237,9 @@ class TelemetryOwner:
             os.fsync(fd)
             os.replace(name, "state.json", src_dir_fd=self.directory,
                        dst_dir_fd=self.directory)
+            # A failure from here leaves the new record in place, only its durability unproven:
+            # every transition is written once it holds, and a lost one returns the earlier,
+            # fenced record (issue #388, docs/performance-telemetry.md).
             os.fsync(self.directory)
         finally:
             with defer_alarm():

@@ -251,7 +251,7 @@ fn a_model_at_capacity_is_waited_out_in_its_attempt_and_show_names_the_wait() {
     let shown = fixture.show(true);
     let shown: Value = serde_json::from_slice(&shown.stdout).unwrap();
     crate::schemas::valid(
-        &crate::schemas::validator("task-inspection-v13.json"),
+        &crate::schemas::validator("task-inspection-v14.json"),
         &shown,
     );
     let events = shown["provider_events"].as_array().unwrap();

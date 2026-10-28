@@ -481,7 +481,8 @@ Errors under --json are one af/error@2 document on stdout (schemas/error-v2.json
 exit code: `command`, `error` (the sentence stderr prints) and `exit_code`. A usage error is one
 too, exit 2, with clap's message; `--help` and `--version` are not errors. A refusal af
 classifies adds `cause`, `next_action` (the one af command to run next, with the --repo, --state
-or --workspace the command was given; null when there is none) and `details`, the facts behind
+or --workspace the command was given; null when there is none, or when no pasted line carries
+it: a word with a control character, or past 4096 characters) and `details`, the facts behind
 the cause:
 
   usage                exit 2; next_action is the command's --help
@@ -490,6 +491,8 @@ the cause:
   refresh_refused      exit 4: no Pipeline can run the refreshed source; decision
   task_file_invalid    a Task file field af refuses: file, field, value
   input_unreadable     a file the command names cannot be read: file, what
+  interrupted          exit 130 or 143: SIGINT or SIGTERM stopped it; signal, task (null
+                       when it ran none); next_action resumes or continues it
 
 Other first-run causes are `task_not_found`, `no_task_catalog`, `no_authority`,
 `not_repository`, `provider_not_registered`, `unknown_review_node`, `plan_mismatch`,
@@ -525,13 +528,13 @@ Review reading commands:
 
 The Task documents, each named by its `schema`:
 
-  af task show --json                  af/task-inspection@13; a collected Task:
-                                       af/task-collected-inspection@2
-  af task show --checks --json         af/task-checks@2
-  af task list --json                  af/task-list@3, one af/task-list-entry@3 per Task
+  af task show --json                  af/task-inspection@14; a collected Task:
+                                       af/task-collected-inspection@3
+  af task show --checks --json         af/task-checks@3
+  af task list --json                  af/task-list@4, one af/task-list-entry@4 per Task
   af task list --attention --json      af/task-attention@1: seven groups by what each Task
-                                       waits for, each Task its af/task-list-entry@3
-  af task report --json                af/task-report@2
+                                       waits for, each Task its af/task-list-entry@4
+  af task report --json                af/task-report@3
   af task findings --json              af/task-findings@2, each finding with its agent_prompt,
                                        the round with its coverage and verified_fixed
   af task findings --format sarif      SARIF 2.1.0, profile af/findings-sarif@1
@@ -542,15 +545,15 @@ The Task documents, each named by its `schema`:
                                        of the Task's log, with the Store's gap-free
                                        `sequence` (--after N resumes), then one terminal
                                        record with the Task's state and exit_code
-  af task run --detach --json          af/task-detached@2
-  af task cancel --json                af/task-cancelled@1
+  af task run --detach --json          af/task-detached@3
+  af task cancel --json                af/task-cancelled@2
   af task plan --json, refused         af/task-selection@3, exit 1, with `error`, `exit_code`
                                        and `next_action`; an infeasible plan carries
                                        planning_diagnostic.required_limits and .reserves
 
-af/task-inspection@13, af/task-collected-inspection@2, af/task-checks@2, each
-af/task-list-entry@3, the groups of af/task-attention@1, af/task-report@2, af/task-findings@2,
-af/task-status@2, af/task-detached@2, af/task-cancelled@1 and the terminal record of
+af/task-inspection@14, af/task-collected-inspection@3, af/task-checks@3, each
+af/task-list-entry@4, the groups of af/task-attention@1, af/task-report@3, af/task-findings@2,
+af/task-status@2, af/task-detached@3, af/task-cancelled@2 and the terminal record of
 af/task-event@1 carry the Task's `state` (`af help task-states`), its `next_action` carrying the
 selectors the command was given (a report, pasted into a pull request, names no Store path); the
 diff, the materialized candidate and the refused selection describe no Task state. A previous
@@ -617,8 +620,14 @@ again on the same candidate, `af task show ID --checks` after one it cannot, `af
 resume (`af task start --file TASK_FILE` once an interrupted node used up its recovery
 allowance), `af task plan --file TASK_FILE --fit` after a budget or deadline ran out (TASK_FILE
 with a new `task_id` once the Task ran), `af provider status` or `af provider setup ID --login`
-after a Provider failure. `af task show ID --checks` prints the gate's last check receipt: each
-check's failing and flaky tests and the end of its stderr.
+after a Provider failure (`af provider status` after `provider_environment`), and `af task run
+NEW_TASK_ID --from ID` after `attempt_wall` when the Worker its wall stopped left edits: they are
+kept as a partial candidate the new Task starts from, never delivered on their own. `af task show
+ID --checks` prints the gate's last check receipt: each check's failing and flaky tests and the
+end of its stderr. A check the kernel stopped at its wall is `check_failed`, never
+`preflight_failed`, and every rendering says `check NAME stopped at its 90 min wall after 90 min`
+with what to do: make the check faster, or raise its wall in .af/code-policy.toml and plan again;
+only a check that did not start says `never started`.
 
 `af task status ID` prints the state in one line without waiting, with the node that runs and the
 reserved, charged and remaining tokens (plus unknown usage). It shows the last comparable Gate
@@ -662,9 +671,20 @@ refuse) from .af/af.toml [task.defaults]`). Without `limits` in either place the
   wall_ms = 3600000
 
 Context: each `context` entry names a file of the Task's source tree, with an optional
-`#section`. The Worker's requirements end with a \"Read first\" list: the project's standing
-rules, `.af/rules.md` of the Authority Snapshot, then each context file, each with the digest of
-the bytes the Task captured. A changed file is a changed plan; a missing one is refused.
+`#section`. The Worker's requirements end with a \"Read first\" list naming the Snapshot the
+Worker reads: the project's standing rules, `.af/rules.md` of that tree, then each context file,
+each with the digest of its bytes there (af/TaskReadFirst@2). A changed file is a changed plan; a
+missing one is refused. A continued Task reads its candidate, so it lists the candidate's rules,
+and its plan says so when they differ from what TASK read.
+
+Acceptance: `\"acceptance\": [{\"id\": \"bounds\", \"text\": \"Negative offsets are refused\"}]` states
+1 to 32 items the result must meet, each ID once. They are captured as one af/TaskAcceptance@1
+record, carried in the check receipt (af/TaskCheckReceipt@2) and handed to the evaluator on the
+Pipeline's optional `acceptance` input; a Pipeline that does not declare it, or hands it to no
+`verify` evaluator node, is refused at plan time, and so is a kind other than an `implement`
+one, whose domain never judges the items. A passing evaluator names every item ID in its reason
+(`bounds: met`), or its reply is refused and the Task does not verify. A Task file without
+`acceptance` plans as before.
 
 Continuing a reviewed Task: `af task run NEW --from TASK [--round N] [--goal FILE]` plans NEW
 from TASK's own Task file. Its source is the candidate TASK's review round reviewed (the last
@@ -674,7 +694,9 @@ Pipeline's optional `findings` input; nothing is pasted into the goal. --goal re
 Without --execute it plans and waits for `af task run NEW --confirm-plan PLAN_ID`. A Task file
 says the same with `\"continue\": {\"task\": \"TASK\", \"round\": 1}`. `af task show NEW` prints
 `continues TASK round N`, `--json` carries it as `continues`, and `af task report` names it in the
-continued Task's row.
+continued Task's row. A TASK that recorded no review round, but whose implementer its Attempt wall
+stopped, continues from the partial tree the kernel sealed then (`exhausted/attempt_wall`): NEW's
+source is that tree, and no findings travel with it.
 
 Examples:
   # needs: a Task file ticket.json; stderr names the defaults

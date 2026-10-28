@@ -279,6 +279,21 @@ impl WorkerContract {
                 {
                     return Err("Worker input differs from its admitted type or Snapshot".into());
                 }
+                // The kernel's Diff Subject is delivered on its one port and describes the change
+                // to the Snapshot that port names (ADR-0254).
+                if value.artifact_type == review_core::task::diff_subject::DIFF_SUBJECT_V1 {
+                    let subject: review_core::task::diff_subject::DiffSubjectV1 =
+                        serde_json::from_value(value.payload.clone())
+                            .map_err(|e| format!("Worker input {port}: {e}"))?;
+                    subject.validate()?;
+                    if port != review_core::task::diff_subject::DIFF_SUBJECT_PORT
+                        || input.snapshot_id.as_deref() != Some(subject.snapshot_id.as_str())
+                    {
+                        return Err(format!(
+                            "Worker input {port} is not the Diff Subject of its port's Snapshot"
+                        ));
+                    }
+                }
                 // A Project Brief is the one input a pipeline adds for orientation alone, so
                 // its entry names the port that asked for it (ADR-0160).
                 let required_by =
@@ -473,6 +488,10 @@ pub struct CallNotes {
     /// The policy category of a safety-classifier refusal, when the native stream named one
     /// (`stop_details.category`).
     pub refusal_category: Option<String>,
+    /// The call failed because the Provider's machine environment failed af, not the model or
+    /// the login: its CLI could not start or serve its protocol, or its identity probes proved
+    /// nothing within their bounded retries (ADR-0208, ADR-0257).
+    pub environment: bool,
 }
 
 impl CallNotes {
@@ -481,6 +500,7 @@ impl CallNotes {
     pub fn then(mut self, later: CallNotes) -> CallNotes {
         self.events.extend(later.events);
         self.transient = later.transient;
+        self.environment = later.environment;
         self.refusal_category = later.refusal_category.or(self.refusal_category);
         self
     }
@@ -850,6 +870,64 @@ mod request_tests {
         // The payload sum is not the request: wrappers, protocol fields and escaping add bytes.
         let sum = instructions.len() + serde_json::to_vec(&request.inputs).unwrap().len();
         assert!(rendered.len() > sum);
+    }
+
+    /// ADR-0254: the kernel's Diff Subject is delivered like any typed input, on its one port,
+    /// and only when its document describes the Snapshot that port names.
+    #[test]
+    fn a_diff_subject_is_delivered_only_on_its_port_and_for_its_snapshot() {
+        use review_core::task::diff_subject::*;
+        let directory = tempfile::tempdir().unwrap();
+        let cas = Cas::open(directory.path()).unwrap();
+        let contract = WorkerContract::capture(
+            &cas,
+            serde_json::json!({"type": "object"}),
+            BTreeMap::from([("answer".to_string(), serde_json::json!({"type": "object"}))]),
+        )
+        .unwrap();
+        let digest = |byte: char| format!("sha256:{}", byte.to_string().repeat(64));
+        let document = |snapshot: char| {
+            serde_json::json!({"schema": DIFF_SUBJECT_SCHEMA, "base_snapshot_id": digest('1'),
+                "snapshot_id": digest(snapshot), "base": DIFF_SUBJECT_BASE,
+                "changes": [{"path": "lib.rs", "before": digest('3'), "after": digest('4')}]})
+        };
+        let prepare = |port: &str, snapshot: char| {
+            let (id, _) = cas
+                .put_artifact(
+                    DIFF_SUBJECT_V1,
+                    Producer::KernelOperation {
+                        run_id: "request-fixture".into(),
+                        node_id: Some("root.judge".into()),
+                        operation_id: DIFF_SUBJECT_OPERATION.into(),
+                    },
+                    vec![],
+                    Some(digest('2')),
+                    document(snapshot),
+                )
+                .unwrap();
+            let invocation = TaskInvocationV1 {
+                plan_id: cas.put(b"captured plan").unwrap(),
+                node: "root.judge".into(),
+                inputs: BTreeMap::from([(
+                    port.to_string(),
+                    ArtifactInputV1 {
+                        artifact_ids: vec![id],
+                        artifact_type: DIFF_SUBJECT_V1.into(),
+                        cardinality: PortCardinality::One,
+                        snapshot_id: Some(digest('2')),
+                    },
+                )]),
+            };
+            contract.prepare(&cas, &invocation, &[], "Judge it.")
+        };
+        let context = prepare(DIFF_SUBJECT_PORT, '2').unwrap();
+        let (_, rendered) = contract.read_context(&cas, &context).unwrap();
+        let request: WorkerRequest = serde_json::from_slice(&rendered).unwrap();
+        assert_eq!(request.inputs[DIFF_SUBJECT_PORT][0].payload, document('2'));
+        let elsewhere = prepare("change", '2').unwrap_err();
+        assert!(elsewhere.contains("not the Diff Subject"), "{elsewhere}");
+        let other = prepare(DIFF_SUBJECT_PORT, '5').unwrap_err();
+        assert!(other.contains("not the Diff Subject"), "{other}");
     }
 
     /// ADR-0208: an admitted retry feedback that names a draft validation receipt carries it to

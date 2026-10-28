@@ -154,7 +154,7 @@ pub(crate) fn start(repo: &Path, state: &Path, code: i32) -> Value {
         &["task", "start", "--execute", "--file", "report.json"],
         code,
     );
-    schemas::valid(&schemas::validator("task-inspection-v13.json"), &done);
+    schemas::valid(&schemas::validator("task-inspection-v14.json"), &done);
     done
 }
 
@@ -757,6 +757,9 @@ fn kernel_repository(root: &Path) -> PathBuf {
     );
     std::fs::write(repo.join("README.md"), "# Kernel\n\nA fixture copy.\n").unwrap();
     install_kernel_report(&repo);
+    // The committed packages name the receipt this release no longer reads; the copy takes
+    // ADR-0255's migration.
+    task_cli::migrate_check_receipt(&repo, &[".af"], &[".af/task-catalog.toml"]);
     git(&repo, &["init", "-q", "-b", "main"]);
     git(&repo, &["add", "-A"]);
     git(&repo, &["commit", "-qm", "kernel report"]);

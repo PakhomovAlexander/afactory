@@ -1,4 +1,4 @@
-//! `af/task-report@2` (ADR-0142): the Rust document and the published schema agree, the
+//! `af/task-report@3` (ADR-0142): the Rust document and the published schema agree, the
 //! checked-in fixture a test Store printed is valid, and the closed shape refuses a Provider
 //! label, a principal, a null for an unknown figure and Attempts on a collected Task.
 use super::{assert_invalid, assert_valid, validator, workspace_root};
@@ -7,7 +7,7 @@ use review_core::task::task_report::*;
 use review_core::task::usage::DecimalU128;
 use serde_json::{Value, json};
 
-fn report() -> TaskReportV2 {
+fn report() -> TaskReportV3 {
     let node = |name: &str, worker, failed| TaskReportNodeV1 {
         node: name.into(),
         role: "implement".into(),
@@ -30,7 +30,7 @@ fn report() -> TaskReportV2 {
         ],
         unknown_usage: 0,
     };
-    let task = TaskReportEntryV2 {
+    let task = TaskReportEntryV3 {
         round: 0,
         task_id: "implement-x".into(),
         kind: "implement".into(),
@@ -94,7 +94,7 @@ fn report() -> TaskReportV2 {
             node("root.nodes.check", None, 0),
         ]),
     };
-    let collected = TaskReportEntryV2 {
+    let collected = TaskReportEntryV3 {
         round: 0,
         task_id: "verify-x".into(),
         kind: "review".into(),
@@ -165,16 +165,16 @@ fn report() -> TaskReportV2 {
             ),
         ],
     };
-    TaskReportV2::new(vec![pipeline], vec![task, collected]).unwrap()
+    TaskReportV3::new(vec![pipeline], vec![task, collected]).unwrap()
 }
 
 #[test]
 fn task_report_document_and_schema_agree_in_both_directions() {
     let report = report();
     let value = serde_json::to_value(&report).unwrap();
-    assert_valid("task-report-v2.json", &value);
+    assert_valid("task-report-v3.json", &value);
     assert_eq!(
-        serde_json::from_value::<TaskReportV2>(value.clone()).unwrap(),
+        serde_json::from_value::<TaskReportV3>(value.clone()).unwrap(),
         report
     );
     assert!(
@@ -185,9 +185,9 @@ fn task_report_document_and_schema_agree_in_both_directions() {
     let invalid = |edit: &dyn Fn(&mut Value), why: &str| {
         let mut changed = value.clone();
         edit(&mut changed);
-        assert_invalid("task-report-v2.json", &changed, why);
+        assert_invalid("task-report-v3.json", &changed, why);
         assert!(
-            serde_json::from_value::<TaskReportV2>(changed.clone())
+            serde_json::from_value::<TaskReportV3>(changed.clone())
                 .map_err(|e| e.to_string())
                 .and_then(|r| r.validate())
                 .is_err(),
@@ -332,8 +332,8 @@ fn task_report_document_and_schema_agree_in_both_directions() {
     // An incomplete round: the review ran, its counts are unknown.
     let mut incomplete = value.clone();
     unknown_counts(&mut incomplete);
-    assert_valid("task-report-v2.json", &incomplete);
-    let parsed: TaskReportV2 = serde_json::from_value(incomplete.clone()).unwrap();
+    assert_valid("task-report-v3.json", &incomplete);
+    let parsed: TaskReportV3 = serde_json::from_value(incomplete.clone()).unwrap();
     parsed.validate().unwrap();
     assert_eq!(parsed.tasks[0].findings.as_ref().unwrap().major, None);
     assert_eq!(serde_json::to_value(&parsed).unwrap(), incomplete);
@@ -367,9 +367,9 @@ fn task_report_document_and_schema_agree_in_both_directions() {
         },
         "the version 1 outcome string",
     );
-    // A version 1 document fails closed: a changed shape is a new version (ADR-0145).
+    // A version 2 document fails closed: a changed shape is a new version (ADR-0145).
     invalid(
-        &|v| v["schema"] = json!("af/task-report@1"),
+        &|v| v["schema"] = json!("af/task-report@2"),
         "the previous version",
     );
 }
@@ -378,8 +378,8 @@ fn task_report_document_and_schema_agree_in_both_directions() {
 fn the_checked_in_fixture_is_a_valid_document() {
     let path = workspace_root().join("fixtures/task-report/report.json");
     let value: Value = serde_json::from_slice(&std::fs::read(path).unwrap()).unwrap();
-    assert_valid("task-report-v2.json", &value);
-    serde_json::from_value::<TaskReportV2>(value)
+    assert_valid("task-report-v3.json", &value);
+    serde_json::from_value::<TaskReportV3>(value)
         .unwrap()
         .validate()
         .unwrap();
@@ -398,12 +398,12 @@ fn the_model_pattern_and_the_rust_rule_agree() {
         let mut changed = value.clone();
         changed.pointer_mut("/tasks/0/nodes/0/worker").unwrap()["model"] = json!(model);
         assert_eq!(
-            validator("task-report-v2.json").is_valid(&changed),
+            validator("task-report-v3.json").is_valid(&changed),
             is_model_identity(model),
             "the schema and the Rust rule disagree on {model:?}"
         );
         assert_eq!(
-            serde_json::from_value::<TaskReportV2>(changed)
+            serde_json::from_value::<TaskReportV3>(changed)
                 .unwrap()
                 .validate()
                 .is_ok(),
@@ -438,16 +438,16 @@ fn unknown_usage_counts_add_up_and_carry_closed_causes() {
     ];
     tasks[0].nodes.as_mut().unwrap()[0].unknown_usage = 2;
     let pipelines = report().pipelines;
-    let unknown = TaskReportV2::new(pipelines, tasks).unwrap();
+    let unknown = TaskReportV3::new(pipelines, tasks).unwrap();
     assert_eq!(unknown.totals.unknown_usage, 3);
     let value = serde_json::to_value(&unknown).unwrap();
-    assert_valid("task-report-v2.json", &value);
+    assert_valid("task-report-v3.json", &value);
     assert_eq!(
         value["tasks"][0]["attempts"]["unknown_usage_causes"],
         json!([{"cause":"capacity","attempts":1},{"cause":"lease_expired","attempts":1}])
     );
     assert_eq!(
-        serde_json::from_value::<TaskReportV2>(value.clone()).unwrap(),
+        serde_json::from_value::<TaskReportV3>(value.clone()).unwrap(),
         unknown
     );
     // With every usage known the count is zero and the causes are absent.
@@ -463,7 +463,7 @@ fn unknown_usage_counts_add_up_and_carry_closed_causes() {
         let mut changed = value.clone();
         edit(&mut changed);
         assert!(
-            serde_json::from_value::<TaskReportV2>(changed)
+            serde_json::from_value::<TaskReportV3>(changed)
                 .map_err(|e| e.to_string())
                 .and_then(|report| report.validate())
                 .is_err(),
@@ -498,7 +498,7 @@ fn unknown_usage_counts_add_up_and_carry_closed_causes() {
     ] {
         let mut changed = value.clone();
         changed["tasks"][0]["attempts"]["unknown_usage_causes"][0] = edit;
-        assert_invalid("task-report-v2.json", &changed, why);
+        assert_invalid("task-report-v3.json", &changed, why);
     }
     let mut missing = value.clone();
     missing["totals"]
@@ -506,7 +506,7 @@ fn unknown_usage_counts_add_up_and_carry_closed_causes() {
         .unwrap()
         .remove("unknown_usage");
     assert_invalid(
-        "task-report-v2.json",
+        "task-report-v3.json",
         &missing,
         "the totals always carry the count",
     );

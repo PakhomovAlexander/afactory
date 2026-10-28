@@ -82,7 +82,7 @@ fn report_validator() -> jsonschema::Validator {
         include_str!("../../../../schemas/task-token-usage-v3.json"),
         include_str!("../../../../schemas/task-review-accounting-v1.json"),
         include_str!("../../../../schemas/task-findings-v2.json"),
-        include_str!("../../../../schemas/task-state-v1.json"),
+        include_str!("../../../../schemas/task-state-v2.json"),
     ] {
         let resource: serde_json::Value = serde_json::from_str(raw).unwrap();
         let id = resource["$id"].as_str().unwrap().to_owned();

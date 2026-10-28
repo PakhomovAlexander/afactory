@@ -58,7 +58,7 @@ def fault(match, exception=OSError, contained=False, prelaunch=False, callback=F
         result = actual_remove(*args, **kwargs)
         if state["faults"]:
             state["removals"].append(result)
-            return "container removal unconfirmed by fault injection"
+            return supervise.Removal(False, "container removal unconfirmed by fault injection")
         return result
 
     with mock.patch.object(supervise, "launch", launch), \

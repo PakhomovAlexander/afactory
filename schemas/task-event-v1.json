@@ -348,7 +348,7 @@
         "state": {
           "allOf": [
             {
-              "$ref": "urn:af:schema:task-state:1#/$defs/state"
+              "$ref": "urn:af:schema:task-state:2#/$defs/state"
             },
             {
               "properties": {

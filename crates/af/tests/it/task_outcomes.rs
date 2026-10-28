@@ -128,11 +128,11 @@ fn malformed_implementer(fixture: &Fixture) {
 /// they agree on are returned.
 fn agreed_state(fixture: &Fixture) -> (String, Option<String>, String) {
     let shown = fixture.json(&["task", "show", TASK]);
-    schemas::valid(&schemas::validator("task-inspection-v13.json"), &shown);
+    schemas::valid(&schemas::validator("task-inspection-v14.json"), &shown);
     let listed = fixture.json(&["task", "list"]);
-    schemas::valid(&schemas::validator("task-list-v3.json"), &listed);
+    schemas::valid(&schemas::validator("task-list-v4.json"), &listed);
     let reported = fixture.json(&["task", "report", TASK]);
-    schemas::valid(&schemas::validator("task-report-v2.json"), &reported);
+    schemas::valid(&schemas::validator("task-report-v3.json"), &reported);
     let state = shown["state"].clone();
     let entry = listed["tasks"]
         .as_array()
@@ -173,7 +173,8 @@ fn agreed_state(fixture: &Fixture) -> (String, Option<String>, String) {
     );
     let list = out(&fixture.af(&["task", "list"]));
     // A row names the next command by its verb; at a terminal too narrow for the table the
-    // command moves, whole, to an indented line of its own, and every line fits.
+    // command moves to an indented line of its own, and every line fits (#331 item 11): a long
+    // `--state` path is cut into quoted pieces a shell joins, never left over-wide.
     for columns in [100, 80] {
         let shown = crate::common::af()
             .current_dir(&fixture.repo)
@@ -183,25 +184,29 @@ fn agreed_state(fixture: &Fixture) -> (String, Option<String>, String) {
             .output()
             .unwrap();
         let shown = out(&shown);
-        // Every line fits, except one that holds a single word wider than the terminal (a long
-        // `--state` path cannot be broken): `fit_command` gives such a word a line of its own.
         for line in shown.lines() {
-            let unbreakable = !line.trim().trim_end_matches('\\').trim().contains(' ');
-            assert!(
-                line.chars().count() <= columns || unbreakable,
-                "{line:?}\n{shown}"
-            );
+            assert!(line.chars().count() <= columns, "{line:?}\n{shown}");
         }
         if let (Some(next), false) = (&next, shown.lines().next().unwrap().ends_with("NEXT")) {
             let lines: Vec<&str> = shown.lines().collect();
             let at = lines.iter().position(|l| l.starts_with(TASK)).unwrap();
-            let continued = lines[at + 1..]
-                .iter()
-                .take_while(|line| line.starts_with("  "))
-                .map(|line| line.trim().trim_end_matches('\\').trim())
-                .collect::<Vec<_>>()
-                .join(" ");
-            assert_eq!(continued, format!("next: {next}"), "{shown}");
+            // The command's lines: each but the last ends in the backslash a shell removes
+            // with the newline after it.
+            let mut command = String::new();
+            for line in &lines[at + 1..] {
+                command.push_str(line);
+                if !command.ends_with('\\') {
+                    break;
+                }
+                command.pop();
+            }
+            let words = shell_words::split(command.trim_start()).unwrap();
+            assert_eq!(words[0], "next:", "{shown}");
+            assert_eq!(
+                words[1..],
+                shell_words::split(next).unwrap()[..],
+                "{columns}\n{shown}"
+            );
         }
     }
     let row = list.lines().find(|l| l.starts_with(TASK)).unwrap();
@@ -681,8 +686,8 @@ next: {show_checks}
         )
     );
     let document = fixture.json(&["task", "show", TASK, "--checks"]);
-    schemas::valid(&schemas::validator("task-checks-v2.json"), &document);
-    assert_eq!(document["schema"], "af/task-checks@2");
+    schemas::valid(&schemas::validator("task-checks-v3.json"), &document);
+    assert_eq!(document["schema"], "af/task-checks@3");
     let check = &document["receipt"]["checks"][0];
     assert_eq!(
         check["failed_tests"],
@@ -1281,4 +1286,208 @@ fn the_documentation_states_every_phase_outcome_cause_and_attention_group_as_the
         );
         assert!(docs.contains(&row), "{row}");
     }
+}
+
+/// `af ARGS --state STATE` from the fixture's checkout with every standard stream on a
+/// pseudo-terminal `columns` wide, as a person runs it: what the terminal showed.
+fn in_terminal(fixture: &Fixture, args: &[&str], columns: u16) -> String {
+    let (status, text) = in_terminal_at(fixture, args, columns, &fixture.state);
+    assert_eq!(status, 0, "{args:?}: {text}");
+    text
+}
+
+/// [`in_terminal`] with `--state STATE` as given, and the exit code.
+fn in_terminal_at(
+    fixture: &Fixture,
+    args: &[&str],
+    columns: u16,
+    state: &std::path::Path,
+) -> (u32, String) {
+    use portable_pty::{CommandBuilder, PtySize, native_pty_system};
+    use std::io::Read as _;
+
+    let pair = native_pty_system()
+        .openpty(PtySize {
+            rows: 60,
+            cols: columns,
+            pixel_width: 0,
+            pixel_height: 0,
+        })
+        .unwrap();
+    let mut command = CommandBuilder::new(crate::common::af_binary());
+    command.args(args);
+    command.arg("--state");
+    command.arg(state);
+    command.cwd(&fixture.repo);
+    command.env_clear();
+    for (name, value) in crate::common::private_home_env() {
+        command.env(name, value);
+    }
+    command.env("PATH", std::env::var_os("PATH").unwrap_or_default());
+    command.env("AF_SELF_OFFLINE", "1");
+    if let Some((name, value)) = crate::common::inherited_tmpdir() {
+        command.env(name, value);
+    }
+    let mut child = pair.slave.spawn_command(command).unwrap();
+    drop(pair.slave);
+    let mut reader = pair.master.try_clone_reader().unwrap();
+    let drained = std::thread::spawn(move || {
+        let mut bytes = Vec::new();
+        let _ = reader.read_to_end(&mut bytes);
+        bytes
+    });
+    let status = child.wait().unwrap();
+    drop(pair.master);
+    let text = String::from_utf8_lossy(&drained.join().unwrap()).replace("\r\n", "\n");
+    (status.exit_code(), text)
+}
+
+/// Each `next:` command `text` prints, the line it starts on and those its ` \` continues.
+fn next_blocks(text: &str) -> Vec<String> {
+    let mut blocks = Vec::new();
+    let mut lines = text.lines().peekable();
+    while let Some(line) = lines.next() {
+        if !line.contains("next: af ") {
+            continue;
+        }
+        let mut block = line.to_owned();
+        let mut last = line;
+        while last.ends_with('\\')
+            && let Some(next) = lines.next()
+        {
+            block.push('\n');
+            block.push_str(next);
+            last = next;
+        }
+        blocks.push(block);
+    }
+    blocks
+}
+
+/// #331 item 11, the run log and `--detach`: with a Store selector wider than the terminal, the
+/// run log's last line (`Task ID: STATE; next: af ...`) and the log an immediately finished
+/// detached run replays are held to the terminal's width at 80 and 100 columns, and each, pasted,
+/// is the command `--json` names.
+#[test]
+fn the_run_log_and_a_detached_replay_fit_the_terminal() {
+    let fixture = fixture("pagination");
+    let long = fixture
+        .root
+        .join(format!("{}state", "long-state-selector-".repeat(8)));
+    std::fs::create_dir_all(&long).unwrap();
+    let file = fixture.task_file("ticket.json", |_| {});
+    let started = crate::common::af()
+        .current_dir(&fixture.repo)
+        .args(["task", "start", "--file", file.to_str().unwrap(), "--state"])
+        .arg(&long)
+        .output()
+        .unwrap();
+    assert!(started.status.success(), "{}", err(&started));
+    let shown = |state: &std::path::Path| -> Value {
+        let output = crate::common::af()
+            .current_dir(&fixture.repo)
+            .args(["task", "show", TASK, "--json", "--state"])
+            .arg(state)
+            .output()
+            .unwrap();
+        serde_json::from_slice(&output.stdout).unwrap()
+    };
+    let plan = shown(&long)["state"]["next_action"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    let confirm = shell_words::split(&plan).unwrap();
+    let confirm = confirm
+        .windows(2)
+        .find(|pair| pair[0] == "--confirm-plan")
+        .map(|pair| pair[1].clone())
+        .unwrap_or_else(|| panic!("{plan}"));
+    let fits = |columns: u16, text: &str, next: &str| {
+        let blocks = next_blocks(text);
+        assert!(!blocks.is_empty(), "{columns}: {text}");
+        for block in &blocks {
+            for line in block.lines() {
+                assert!(
+                    line.chars().count() <= usize::from(columns),
+                    "{columns}: {line:?}\n{text}"
+                );
+            }
+        }
+        let block = blocks.last().unwrap();
+        let joined = block.replace("\\\n", "");
+        let at = joined.find("next: af ").unwrap() + "next: ".len();
+        assert_eq!(
+            shell_words::split(&joined[at..]).unwrap(),
+            shell_words::split(next).unwrap(),
+            "{columns}\n{block}"
+        );
+    };
+    let (status, text) = in_terminal_at(
+        &fixture,
+        &["task", "run", TASK, "--confirm-plan", &confirm],
+        80,
+        &long,
+    );
+    let next = shown(&long)["state"]["next_action"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    assert!(next.contains("long-state-selector-"), "{next}");
+    assert!(next.chars().count() > 100, "{next}");
+    assert!(text.contains(&format!("Task {TASK}: ")), "{status}: {text}");
+    fits(80, &text, &next);
+    for columns in [80_u16, 100] {
+        let (status, text) =
+            in_terminal_at(&fixture, &["task", "run", TASK, "--detach"], columns, &long);
+        assert_eq!(status, 0, "{text}");
+        assert!(text.contains("its run ended at once"), "{text}");
+        // The replayed log's state line and the detached result's own `next:` both fit.
+        assert!(next_blocks(&text).len() >= 2, "{text}");
+        fits(columns, &text, &next);
+    }
+}
+
+/// #331 item 11: on a terminal the `next:` line of `af task show` is held to the terminal's
+/// width, continued between its arguments, and a Store selector or plan ID wider than a line is
+/// cut into quoted pieces a shell joins: pasted as printed, it is the command `--json` names.
+/// Without a terminal the line stays whole, for the script that reads it.
+#[test]
+fn a_next_line_fits_the_terminal_and_runs_as_printed() {
+    let planned = fixture("pagination");
+    let file = planned.task_file("ticket.json", |_| {});
+    planned.json(&["task", "plan", "--file", file.to_str().unwrap()]);
+    let shown = planned.json(&["task", "show", TASK]);
+    let next = shown["state"]["next_action"].as_str().unwrap().to_owned();
+    assert!(next.contains(" --confirm-plan sha256:"), "{next}");
+    for columns in [60_u16, 80] {
+        let text = in_terminal(&planned, &["task", "show", TASK], columns);
+        let at = text.rfind("next: af ").unwrap_or_else(|| panic!("{text}"));
+        let printed = text[at..].trim_end();
+        assert!(printed.lines().count() > 1, "{columns}\n{printed}");
+        for line in printed.lines() {
+            assert!(
+                line.chars().count() <= usize::from(columns),
+                "{columns}: {line:?}\n{printed}"
+            );
+        }
+        let words = shell_words::split(&printed.replace("\\\n", "")).unwrap();
+        assert_eq!(words[0], "next:", "{printed}");
+        assert_eq!(
+            words[1..],
+            shell_words::split(&next).unwrap()[..],
+            "{printed}"
+        );
+    }
+    // A terminal wide enough for the line shows it whole, wider than 100 columns too.
+    let text = in_terminal(&planned, &["task", "show", TASK], 250);
+    assert!(
+        text.lines().any(|line| line == format!("next: {next}")),
+        "{text}"
+    );
+    let piped = out(&planned.af(&["task", "show", TASK]));
+    assert_eq!(
+        piped.lines().last(),
+        Some(format!("next: {next}").as_str()),
+        "{piped}"
+    );
 }

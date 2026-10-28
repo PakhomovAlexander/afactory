@@ -21,7 +21,7 @@
       "$ref": "urn:af:schema:task-contracts:1#/$defs/name"
     },
     "state": {
-      "$ref": "urn:af:schema:task-state:1#/$defs/state"
+      "$ref": "urn:af:schema:task-state:2#/$defs/state"
     },
     "rounds": {
       "type": "integer",

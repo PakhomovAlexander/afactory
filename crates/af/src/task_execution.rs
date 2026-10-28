@@ -37,6 +37,7 @@ use review_store::store::task::{TaskLease, TaskProjection};
 use review_store::{Cas, EventStore, validate_envelope};
 use serde::{Deserialize, Serialize};
 use serde_json::json;
+mod acceptance;
 pub(crate) mod attention;
 mod bindings;
 pub(super) mod candidate;
@@ -106,6 +107,15 @@ struct TaskFile {
         deserialize_with = "present_option"
     )]
     requirements: Option<serde_json::Map<String, serde_json::Value>>,
+    /// The items the result must meet, each under the ID the evaluator judges it by, captured as
+    /// one `af/TaskAcceptance@1` record (ADR-0255). Absent by default, and absent on round
+    /// trip, so a Task file without it keeps its exact revision and plan.
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        deserialize_with = "present_option"
+    )]
+    acceptance: Option<Vec<review_core::task::acceptance::TaskAcceptanceItemV1>>,
     /// Root input ports bound to a recorded Task's output or to an exact artifact in the same
     /// Store, instead of being constructed by this adapter (ADR-0117), or — for any other root
     /// input the selected Pipeline declares — to one or several recorded outputs (ADR-0134). Absent by default, and
@@ -1644,8 +1654,6 @@ fn start_bytes(
         .as_ref()
         .map(|base| context::capture_base(&source_repo, &cas, base))
         .transpose()?;
-    // The standing rules are policy: read from the Authority Snapshot, like the catalog.
-    let rules = context::rules(&policy_source.manifest)?;
     let source = if options.uncommitted {
         Capture::new(&source_repo, &cas)
             .dirty()
@@ -1660,7 +1668,7 @@ fn start_bytes(
         started,
         cas,
         store,
-        (source, declared_base, rules),
+        (source, declared_base),
         authority,
         presentation,
         replace,
@@ -1675,11 +1683,7 @@ fn start_captured(
     started: u64,
     cas: Cas,
     mut store: EventStore,
-    (source, declared_base, rules): (
-        review_source_git::Snapshot,
-        Option<context::DeclaredBase>,
-        Option<review_core::task::findings::TaskReadFirstEntryV1>,
-    ),
+    (source, declared_base): (review_source_git::Snapshot, Option<context::DeclaredBase>),
     (authority_id, authority, mut compiler): (String, RunAuthority, TaskPlanCompiler),
     presentation: Presentation,
     replace: Option<Box<TaskProjection>>,
@@ -1747,9 +1751,13 @@ fn start_captured(
             return Err(format!(
                 "continue: a {} Task reads no source tree, so it cannot continue Task `{}`",
                 file.kind,
-                preview::text(&continued.findings.continues.task_id)
+                preview::text(&continued.task_id)
             ));
         }
+    }
+    // Only a reviewed continuation carries findings; a partial tree's continuation (ADR-0257)
+    // binds its source alone, and any Pipeline that takes a source can read it.
+    if continued.as_ref().is_some_and(|c| c.port().is_some()) {
         let named = file.pipeline.as_ref().map(|choice| choice.name.as_str());
         let declared = input_bindings::DeclaredPorts::of(compiler.pipelines(), &file.kind, named);
         let takes = declared
@@ -1773,6 +1781,21 @@ fn start_captured(
             ));
         }
     }
+    // The Task file's acceptance items (ADR-0255): the selected Pipeline hands them to its
+    // evaluator on its `acceptance` root port, so a Pipeline without it is refused here, before
+    // anything is recorded.
+    let acceptance = match &file.acceptance {
+        Some(items) => {
+            let record = acceptance::capture(items)?;
+            let named = file.pipeline.as_ref().map(|choice| choice.name.as_str());
+            let declared =
+                input_bindings::DeclaredPorts::of(compiler.pipelines(), &file.kind, named);
+            acceptance::require_port(&declared, named, &file.kind, &options.file, &record)?;
+            acceptance::require_judging_domain(profile, &file.kind, &options.file, &record)?;
+            Some(record)
+        }
+        None => None,
+    };
     // What the declared layout says about the Snapshot this Task will read. A pure function of
     // a recorded manifest: no working tree is walked, nothing is removed, and Snapshot identity
     // is whatever the capture already made it. The result is advice here and a receipt field
@@ -1782,9 +1805,6 @@ fn start_captured(
         (None, Some(bound)) => bound.source_manifest.as_ref().unwrap_or(&source.manifest),
         (None, None) => &source.manifest,
     };
-    // The rules and context the Worker reads first, bound by digest: the rules from the
-    // Authority Snapshot, the context from the tree the Task reads.
-    let read_first = context::capture(&file.context, rules, read)?;
     let undeclared = review_config::layout::classify_manifest(read).undeclared;
     if presentation == Presentation::Print {
         super::af_paths::warn(&undeclared);
@@ -1817,6 +1837,42 @@ fn start_captured(
             }
         }
     };
+    // The rules and context the Worker reads first, bound by digest in one named tree: the
+    // Snapshot the Task's Worker reads, read back from the Store, so every listed byte is one
+    // that tree holds (ADR-0254). A profile without a `source` port reads the captured checkout.
+    let read_first = if file.context.is_empty() && read.get(context::RULES).is_none() {
+        None
+    } else {
+        let tree_id = match &source_port {
+            Some(port) => port
+                .snapshot_id
+                .clone()
+                .ok_or("The Task's source names no Snapshot")?,
+            None => capture_snapshot(&cas, read, &origin, None)?,
+        };
+        let (_, tree) = review_source_git::task::read_snapshot(&cas, &tree_id)?;
+        context::capture(&file.context, &tree_id, &tree)?
+    };
+    // A continued Task reads its candidate's rules; its plan names that tree and says when the
+    // rules are not what the continued Task's Worker was given.
+    if let Some(continued) = &continued {
+        let revision: TaskRevisionV1 = artifact(
+            &cas,
+            &continued.task_revision_id,
+            review_core::task::TASK_REVISION_V1,
+        )?;
+        let before =
+            context::recorded(&cas, &revision).map_err(|error| format!("continue: {error}"))?;
+        if presentation == Presentation::Print {
+            for line in context::continued_rules_lines(
+                &continued.task_id,
+                before.as_ref(),
+                read_first.as_ref(),
+            ) {
+                eprintln!("{line}");
+            }
+        }
+    }
     // A profile without a `source` port records nothing a later presentation could classify
     // again, so the observation itself is kept: one typed artifact, referenced from the
     // revision's provenance, and only when there is something to report, so a Task over a
@@ -1886,6 +1942,10 @@ fn start_captured(
         }
         None => None,
     };
+    let acceptance = acceptance
+        .as_ref()
+        .map(|record| acceptance::record(&cas, record))
+        .transpose()?;
     let requirements = cas
         .put_artifact(
             "af/Requirements@1",
@@ -1924,7 +1984,7 @@ fn start_captured(
         inputs:BTreeMap::from([("requirements".into(),ArtifactInputV1 {artifact_ids:vec![requirements.clone()],artifact_type:"af/Requirements@1".into(),cardinality:PortCardinality::One,snapshot_id:None})]),
         required_outputs:serde_json::from_value(json!({"snapshot":{"artifact_type":SOURCE_TREE_V1,"cardinality":"one"},"verification":{"artifact_type":VERIFICATION_RESULT_V1,"cardinality":"one"}})).map_err(|e|e.to_string())?,
         acceptance:BTreeMap::from([("verified".into(),AcceptanceObligationV1 {evidence_type:VERIFICATION_RESULT_V1.into(),verifier_policy:authority.invocation_policy_id()?.into()})]),
-        provenance:TaskProvenanceV1 {adapter_id:adapter,input_artifact_ids:std::iter::once(requirements).chain(undeclared_record).chain(read_first_id).chain(base_id).chain(continued.as_ref().map(|continued|continued.findings_id.clone())).collect()},
+        provenance:TaskProvenanceV1 {adapter_id:adapter,input_artifact_ids:std::iter::once(requirements).chain(undeclared_record).chain(read_first_id).chain(base_id).chain(continued.as_ref().map(continuation::Continued::provenance_id)).chain(acceptance.as_ref().map(|(id,_)|id.clone())).collect()},
         authority:TaskAuthorityV1 {policy_id:authority_id,allowed_effects:BTreeSet::from(["read-source".into(),"write-source".into(),"execute-checks".into()]),data_destinations:BTreeSet::new()},
         limits:TaskLimitsV1 {tokens:limits.tokens,max_attempts:limits.max_attempts,deadline_unix_ms:deadline,verification:limits.verification},
         strategy,pipeline:file.pipeline,facts:file.facts,
@@ -1932,10 +1992,15 @@ fn start_captured(
     if let Some(source_port) = source_port {
         revision.inputs.insert("source".into(), source_port);
     }
-    if let Some(continued) = &continued {
+    if let Some(port) = continued.as_ref().and_then(continuation::Continued::port) {
         revision
             .inputs
-            .insert(continuation::FINDINGS_PORT.into(), continued.port());
+            .insert(continuation::FINDINGS_PORT.into(), port);
+    }
+    if let Some((_, port)) = acceptance {
+        revision
+            .inputs
+            .insert(review_core::task::acceptance::ACCEPTANCE_PORT.into(), port);
     }
     if profile == TaskKindProfile::Report {
         use review_core::task::report_task::*;
@@ -3287,7 +3352,19 @@ pub(crate) fn print_last_lines() {
             .unwrap_or_else(|poisoned| poisoned.into_inner()),
     );
     for line in lines {
-        eprintln!("{line}");
+        eprintln!("{}", next_line(&line, true));
+    }
+}
+
+/// `line` as printed: one that names the next command (`next: af ...`, the run log's `...; next:
+/// af ...`) is fitted to the terminal stdout, or stderr when `stderr`, is, between the
+/// command's arguments (#331 item 11); every other line, and every line on a stream that is no
+/// terminal, is printed whole.
+fn next_line(line: &str, stderr: bool) -> String {
+    if line.starts_with("next: af ") || line.contains("; next: af ") {
+        crate::human::fit_on_terminal(line, stderr)
+    } else {
+        line.to_owned()
     }
 }
 
@@ -3299,6 +3376,8 @@ pub(super) struct Presented {
     pub(super) code: i32,
     line: String,
     gate_tail: Vec<String>,
+    /// Each check the kernel stopped at its wall, in every format (ADR-0255).
+    wall_tail: Vec<String>,
 }
 
 impl Presented {
@@ -3307,6 +3386,7 @@ impl Presented {
             code,
             line: state_line(id, view),
             gate_tail: state::failed_gate_tail(id, view),
+            wall_tail: state::wall_lines(view),
         }
     }
 
@@ -3320,14 +3400,18 @@ impl Presented {
     }
 
     /// The run log's last lines: under `--json`, on stderr beside the document on stdout, the
-    /// failing tests of a failed gate (the text on stdout already named them); in both
-    /// formats the state line, so a run's log always ends with the state and the next command
-    /// (ADR-0211).
+    /// failing tests of a failed gate (the text on stdout already named them); in text, a
+    /// check the kernel stopped at its wall, so stderr never leaves a killed check unnamed
+    /// (ADR-0255); in both formats the state line, so a run's log always ends with the state
+    /// and the next command (ADR-0211).
     pub(super) fn tail(&self, json: bool) {
-        if json {
-            for line in &self.gate_tail {
-                defer_last_line(line.clone());
-            }
+        let lines = if json {
+            &self.gate_tail
+        } else {
+            &self.wall_tail
+        };
+        for line in lines {
+            defer_last_line(line.clone());
         }
         defer_last_line(self.line.clone());
     }
@@ -3419,7 +3503,7 @@ pub(super) fn show_if_common(
             );
         } else {
             for line in state::checks_lines(id, &view) {
-                println!("{line}");
+                println!("{}", next_line(&line, false));
             }
         }
         return Ok(true);
@@ -3730,7 +3814,7 @@ pub(super) fn list_common(state: &Path) -> Result<Vec<serde_json::Value>, String
         // The same state `af task show` prints, from the same derivation.
         let cancelled = runs::cancelled_epoch(Some(state), &task);
         let view = selected_view(&cas, &task, result.as_ref(), now, cancelled)?;
-        Ok(json!({"schema":TASK_LIST_ENTRY_V3,"task_id":task.task_id,"kind":task.revision.kind,"phase":task.phase,
+        Ok(json!({"schema":TASK_LIST_ENTRY_V4,"task_id":task.task_id,"kind":task.revision.kind,"phase":task.phase,
             "state":view.state,
             "round":review_round(&task),
             "chargeable_tokens":task.execution.as_ref().map_or(0,|e| e.budget.committed_tokens()).to_string(),
@@ -3772,7 +3856,7 @@ pub(super) fn list_common(state: &Path) -> Result<Vec<serde_json::Value>, String
 }
 
 /// One entry of `af task list --json`.
-pub(crate) const TASK_LIST_ENTRY_V3: &str = "af/task-list-entry@3";
+pub(crate) const TASK_LIST_ENTRY_V4: &str = "af/task-list-entry@4";
 
 /// The review round a Task is in: the rounds it handed off to a successor plan, plus the one its
 /// current execution recorded; 0 before a review recorded a round.
@@ -3953,7 +4037,7 @@ struct Inspection {
 }
 
 /// The document `af task show --json` and `af task explain --json` print.
-pub(crate) const TASK_INSPECTION_V13: &str = "af/task-inspection@13";
+pub(crate) const TASK_INSPECTION_V14: &str = "af/task-inspection@14";
 
 #[allow(clippy::too_many_arguments)]
 fn present_with_format(
@@ -3993,7 +4077,7 @@ fn present_with_format(
             bindings.as_ref(),
             &view,
         )? {
-            println!("{line}");
+            println!("{}", next_line(&line, false));
         }
         if explain {
             println!(
@@ -4358,18 +4442,18 @@ fn remote_check_records(
     state: &TaskProjection,
 ) -> Result<Vec<serde_json::Value>, String> {
     use review_core::task::remote_check::{REMOTE_CHECK_EVIDENCE_V1, RemoteCheckEvidenceV1};
-    use review_core::task::verification::{TASK_CHECK_RECEIPT_V1, TaskCheckReceiptV1};
+    use review_core::task::verification::{TASK_CHECK_RECEIPT_V2, TaskCheckReceiptV2};
     let mut records = Vec::new();
     let Some(execution) = &state.execution else {
         return Ok(records);
     };
     for (node, (_, output)) in &execution.outputs {
         for value in output.outputs.values() {
-            if value.artifact_type != TASK_CHECK_RECEIPT_V1 {
+            if value.artifact_type != TASK_CHECK_RECEIPT_V2 {
                 continue;
             }
             for id in &value.artifact_ids {
-                let receipt: TaskCheckReceiptV1 = artifact(cas, id, TASK_CHECK_RECEIPT_V1)?;
+                let receipt: TaskCheckReceiptV2 = artifact(cas, id, TASK_CHECK_RECEIPT_V2)?;
                 for (check, result_id) in &receipt.checks {
                     // The result's second shape names its evidence; a local result has none.
                     let result = cas.get_json(result_id).map_err(|e| e.to_string())?;
@@ -4914,7 +4998,7 @@ fn inspection(
     let store_dir = store.database_path();
     let cancelled = runs::cancelled_epoch(store_dir.as_deref().and_then(Path::parent), &state);
     let view = selected_view(cas, &state, result.as_ref(), clock()?, cancelled)?;
-    let mut value = json!({"schema":TASK_INSPECTION_V13,"task_id":state.task_id,"revision_id":state.revision_id,"phase":state.phase,"state":view.state,"plan_id":state.plan_id,
+    let mut value = json!({"schema":TASK_INSPECTION_V14,"task_id":state.task_id,"revision_id":state.revision_id,"phase":state.phase,"state":view.state,"plan_id":state.plan_id,
         "chargeable_tokens":state.execution.as_ref().map_or(0,|e|e.budget.committed_tokens()).to_string(),"attempts":state.execution.as_ref().map_or(0,|e|e.budget.begun_attempts())});
     // The wall clock starts at the first admission: the wall the Task has, when its clock
     // started, and the deadline it has since.
@@ -4963,6 +5047,7 @@ fn inspection(
     let mut runtime_attempt_ids = BTreeSet::new();
     let mut decisions = Vec::new();
     let mut provider_events = Vec::new();
+    let mut wall_ends = Vec::new();
     for event in events {
         // A lease's execution marker, a gate retry and a Provider event are their own event
         // kinds, not `TaskTransition@5`: the history lists the transitions only; the Provider
@@ -4999,6 +5084,27 @@ fn inspection(
                     let Ok(artifact) = cas.get_artifact(id) else {
                         continue;
                     };
+                    // The typed end of an Attempt its wall stopped, with the partial tree it
+                    // kept (ADR-0257).
+                    if artifact.artifact_type
+                        == review_core::task::attempt_wall::TASK_ATTEMPT_WALL_END_V1
+                    {
+                        let end: review_core::task::attempt_wall::TaskAttemptWallEndV1 =
+                            serde_json::from_value(artifact.payload.clone())
+                                .map_err(|e| e.to_string())?;
+                        end.validate()?;
+                        let mut entry = json!({"artifact_id": id, "record": end});
+                        if let Some(partial_id) = &end.partial_candidate_id {
+                            let partial: review_core::task::attempt_wall::TaskPartialCandidateV1 =
+                                self::artifact(
+                                    cas,
+                                    partial_id,
+                                    review_core::task::attempt_wall::TASK_PARTIAL_CANDIDATE_V1,
+                                )?;
+                            entry["partial_candidate"] = json!(partial);
+                        }
+                        wall_ends.push(entry);
+                    }
                     if artifact.artifact_type
                         == review_core::task::runtime::TASK_RUNTIME_EVIDENCE_V1
                     {
@@ -5082,6 +5188,9 @@ fn inspection(
     value["execution_records"] = json!(execution);
     if !provider_events.is_empty() {
         value["provider_events"] = json!(provider_events);
+    }
+    if !wall_ends.is_empty() {
+        value["attempt_wall_ends"] = json!(wall_ends);
     }
     if !runtime_observations.is_empty() {
         let run_id = review_store::store::task::task_run_id(id).map_err(|e| e.to_string())?;
@@ -5198,6 +5307,10 @@ fn inspection(
         value["input_bindings"] = serde_json::to_value(record).map_err(|e| e.to_string())?;
     }
     // The lineage of a continued Task (ADR-0212), read from its revision's provenance.
+    if let Some((wall_end_id, end, partial)) = continuation::recorded_partial(cas, &state.revision)?
+    {
+        value["continues"] = continuation::partial_inspection_value(&wall_end_id, &end, &partial);
+    }
     if let Some((findings_id, record)) = continuation::recorded(cas, &state.revision)? {
         value["continues"] = continuation::inspection_value(&findings_id, &record);
     }
@@ -5263,12 +5376,10 @@ fn inspection(
     }
     if explain && let Some(id) = &state.plan_id {
         let plan: ExecutionPlanV1 = artifact(cas, id, EXECUTION_PLAN_V1)?;
-        value["graph"] = serde_json::to_value(artifact::<CompiledTask>(
-            cas,
-            &plan.compiled_graph_id,
-            COMPILED_TASK_V1,
-        )?)
-        .map_err(|e| e.to_string())?;
+        let graph = artifact::<CompiledTask>(cas, &plan.compiled_graph_id, COMPILED_TASK_V1)?;
+        // Each Worker slot's binding beside its Attempt wall (ADR-0257).
+        value["slots"] = preview::slots_value(cas, &plan, &graph);
+        value["graph"] = serde_json::to_value(graph).map_err(|e| e.to_string())?;
         value["plan"] = serde_json::to_value(plan).map_err(|e| e.to_string())?;
     }
     Ok(Inspection {

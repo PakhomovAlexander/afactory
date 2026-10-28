@@ -201,6 +201,21 @@ fn interrupted(state: &TaskProjection) -> Vec<TaskNodeRecovery> {
 /// Refuse to continue a Task one of whose nodes used up its recovery allowance, or print the
 /// line saying which interrupted node a resumed run dispatches again. `before` is the Task
 /// before its new writer settled the lost writer's Attempts, `after` the Task after.
+/// The command that starts an exhausted Task's work again, from its Task file.
+const EXHAUSTED_NEXT: &str = "af task start --file TASK_FILE";
+
+/// An exhausted recovery always carries its fix (`schemas/error-v2.json`): `with_selectors`,
+/// the command with the selectors it was given, unless no pasted line can carry them (a control
+/// character, past 4096 characters), and then the command without them, which the sentence's
+/// own `fix:` completes.
+fn exhausted_next(with_selectors: String) -> String {
+    if crate::error_document::pasteable(&with_selectors) {
+        with_selectors
+    } else {
+        EXHAUSTED_NEXT.to_owned()
+    }
+}
+
 pub(super) fn announce(
     id: &str,
     before: &TaskProjection,
@@ -211,7 +226,7 @@ pub(super) fn announce(
         // node, how often it was abandoned, its allowance and the command that starts it again.
         use crate::error_document::{Cause, Detail};
         let detail = Detail::new(Cause::RecoveryExhausted)
-            .next(super::with_selectors("af task start --file TASK_FILE"))
+            .next(exhausted_next(super::with_selectors(EXHAUSTED_NEXT)))
             .with("node", recovery.node.clone())
             .with("count", recovery.abandoned())
             .with("writer_lost", recovery.writer_lost)
@@ -329,6 +344,49 @@ pub(super) fn writer_lost(id: &str, error: &str) -> Option<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// #331 UX close-out: the recovery_exhausted document carries a string fix whatever
+    /// selectors the command was given, so it validates against `error-v2.json`, which requires
+    /// one: a `--state` with a tab, or one past 4096 characters, falls back to the command
+    /// without selectors; a pasteable one is kept.
+    #[test]
+    fn an_exhausted_recovery_always_carries_a_fix_that_validates() {
+        let schema: serde_json::Value =
+            serde_json::from_str(include_str!("../../../../schemas/error-v2.json")).unwrap();
+        let validator = jsonschema::validator_for(&schema).unwrap();
+        let document = |next: String| {
+            let detail =
+                crate::error_document::Detail::new(crate::error_document::Cause::RecoveryExhausted)
+                    .next(next)
+                    .with("node", "root.nodes.implement")
+                    .with("count", 2)
+                    .with("writer_lost", 2)
+                    .with("host_cancelled", 0)
+                    .with("allowance", 1);
+            crate::error_document::document("af task", "recovery exhausted", 1, Some(&detail))
+        };
+        let long = format!("{EXHAUSTED_NEXT} --state {}s", "./".repeat(2100));
+        for unsafe_next in [format!("{EXHAUSTED_NEXT} --state '../a\tb'"), long] {
+            let next = exhausted_next(unsafe_next.clone());
+            assert_eq!(next, EXHAUSTED_NEXT, "{unsafe_next:?}");
+            let document = document(next);
+            assert_eq!(document["next_action"], EXHAUSTED_NEXT);
+            assert!(validator.is_valid(&document), "{document}");
+            // Unfiltered, the writer would print null, which the schema refuses.
+            assert!(!validator.is_valid(&document_with(&document, unsafe_next.as_str())));
+        }
+        let kept = format!("{EXHAUSTED_NEXT} --state ../state");
+        assert_eq!(exhausted_next(kept.clone()), kept);
+        assert!(validator.is_valid(&document(kept)));
+    }
+
+    /// `document` as the shared writer prints it with `next` as its fix.
+    fn document_with(document: &serde_json::Value, next: &str) -> serde_json::Value {
+        let mut document = document.clone();
+        document["next_action"] =
+            serde_json::json!(Some(next).filter(|next| crate::error_document::pasteable(next)));
+        document
+    }
 
     #[test]
     fn clock_of_is_the_utc_time_of_day() {

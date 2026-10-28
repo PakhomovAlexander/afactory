@@ -1,10 +1,12 @@
 //! `af/diff-subject@1`: the change a verifying Worker judges, as the paths it touched with their
-//! content before and after (ADR-0212).
+//! content before and after (ADR-0212, ADR-0254).
 //!
 //! A Worker that judges a candidate without writing it — a reviewer, an evaluator, a verifier —
-//! gets the tree before the change beside its own, read-only, at `../base`, and this document
-//! beside both at `../diff-subject.json`. Both are written by the kernel from Snapshots it
-//! recorded; neither is a port, so no Worker contract changes, and neither is sealed back.
+//! gets the tree before the change beside its own, read-only, at `../base`. The document reaches
+//! it as a typed input: one `af/DiffSubject@1` artifact on the optional `diff_subject` port its
+//! contract declares. The kernel builds it from Snapshots it recorded, never a Pipeline or a
+//! Worker, and checks before dispatch that the port holds exactly the change between the base it
+//! materializes and the Worker's source (ADR-0254).
 
 use serde::{Deserialize, Serialize};
 
@@ -12,10 +14,15 @@ use super::require;
 use crate::is_digest;
 
 pub const DIFF_SUBJECT_SCHEMA: &str = "af/diff-subject@1";
+/// The artifact type of the port that carries the document: kernel-built, `same_as source`.
+pub const DIFF_SUBJECT_V1: &str = "af/DiffSubject@1";
+/// The one port name a judging Worker's contract declares the Diff Subject on, optional because a
+/// root capture changed nothing the Store knows of and has none.
+pub const DIFF_SUBJECT_PORT: &str = "diff_subject";
+/// The `operation_id` of the kernel producer that builds it.
+pub const DIFF_SUBJECT_OPERATION: &str = "diff-subject@1";
 /// Where the tree before the change is, relative to the Worker's own tree.
 pub const DIFF_SUBJECT_BASE: &str = "../base";
-/// The file name of the document beside the Worker's tree.
-pub const DIFF_SUBJECT_FILE: &str = "diff-subject.json";
 /// The most changed paths one document lists; a larger change lists none and says so.
 pub const MAX_DIFF_PATHS: usize = 100_000;
 

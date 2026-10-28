@@ -6,8 +6,10 @@ Rust integration test `crates/review-process/tests/perf_supervisor.rs`.
 import collections
 import copy
 import errno
+import io
 import json
 import os
+import signal
 import subprocess
 import sys
 import threading
@@ -17,7 +19,8 @@ from unittest import mock
 from perflab import capability, contracts, supervise
 from perflab import suite as suite_module
 from perflab.values import ContractError
-from tests.support import CLI, ROOT, SUITE, TempDir, fake_supervisor, read
+from tests.support import (CLI, FAKE_SUPERVISOR_EXECUTE, ROOT, SUITE, TempDir, fake_supervisor,
+                           held_child_argv, read, release_recorded)
 
 FIXTURES = os.path.join(ROOT, "fixtures/performance/schema")
 
@@ -240,6 +243,9 @@ class HostBackstop(TempDir):
         self.assertIs(caught.exception, interruption)
         self.assertIs(interruption.__cause__, original)
         self.assertTrue(interruption.supervisor_failure.uncertain)
+        # Python 3.9 has no `add_note` (ADR-0162); the note is carried the same way there.
+        self.assertEqual(original.__notes__,
+                         ["Supervisor cancellation unconfirmed: cleanup deadline"])
 
     def slow(self, seconds):
         fake = fake_supervisor(self.path("fake-supervisor"))
@@ -354,10 +360,8 @@ class HostBackstop(TempDir):
             stream.write("#!%s -I\nimport signal, subprocess, sys, time\n"
                          "signal.signal(signal.SIGTERM, signal.SIG_IGN)\n"
                          "sys.stdin.buffer.read()\n"
-                         "subprocess.Popen(['/bin/sh', '-c', 'echo $$ > %s.tmp && mv %s.tmp %s; "
-                         "exec sleep 60'], start_new_session=True)\n"
-                         "time.sleep(120)\n" % (sys.executable, child_marker, child_marker,
-                                                child_marker))
+                         "subprocess.Popen(%r, start_new_session=True)\n"
+                         "time.sleep(120)\n" % (sys.executable, held_child_argv(child_marker)))
         os.chmod(path, 0o755)
         started = time.monotonic()
         with self.assertRaises(supervise.SupervisorFailure) as caught:
@@ -372,7 +376,7 @@ class HostBackstop(TempDir):
             child = int(read(child_marker))
             os.kill(child, 0)
         finally:
-            end_owned_group(child_marker)
+            release_recorded(child_marker)
 
     def test_a_contained_launch_keeps_its_removal_time_before_the_deadline(self):
         # The cancellation reserve is 0.5 s; with a container, its removal's allowance is kept
@@ -407,24 +411,92 @@ class HostBackstop(TempDir):
         self.assertFalse(supervise.cleanup_confirmed(uncertain))
 
 
-def end_owned_group(marker):
-    """End the process group a test fixture started and recorded in `marker`, and wait until
-    its leader is gone; nothing else is signalled."""
-    try:
-        pid = int(read(marker))
-    except (OSError, ValueError):
-        return
-    try:
-        os.killpg(pid, 9)
-    except OSError:
-        return
-    deadline = time.monotonic() + 30
-    while time.monotonic() < deadline:
-        try:
-            os.kill(pid, 0)
-        except OSError:
-            return
-        time.sleep(0.01)
+class RecordedChild(TempDir):
+    """A fixture's child that this test does not hold is ended by asking it, never by a signal
+    to the ID its marker names: that ID may name another test's process by then (#331)."""
+
+    def test_a_released_child_ends_by_itself_and_nothing_is_signalled(self):
+        marker = self.path("marker")
+        # Started by another process, as a fixture's is: launchd or init reaps it.
+        subprocess.run([sys.executable, "-c", "import subprocess, sys; subprocess.Popen("
+                        "sys.argv[1:], start_new_session=True)"] + held_child_argv(marker),
+                       check=True)
+        deadline = time.monotonic() + 30
+        while not os.path.exists(marker) and time.monotonic() < deadline:
+            time.sleep(0.01)
+        with mock.patch.object(os, "kill") as kill, mock.patch.object(os, "killpg") as killpg:
+            release_recorded(marker)
+        self.assertEqual((kill.call_count, killpg.call_count), (0, 0))
+
+    def test_a_marker_naming_a_live_process_never_gets_it_signalled(self):
+        # The marker's ID names a live process this test holds, as a recycled ID would name
+        # another test's: it is left running, reported, and only its holder ends it.
+        held = subprocess.Popen(["sleep", "30"], start_new_session=True)
+        self.addCleanup(held.wait)
+        self.addCleanup(held.kill)
+        marker = self.path("marker")
+        with open(marker, "w") as stream:
+            stream.write(str(held.pid))
+        with mock.patch.object(sys, "stderr", io.StringIO()) as said:
+            self.assertFalse(release_recorded(marker, timeout=0.2))
+        self.assertIn("is not signalled", said.getvalue())
+        self.assertIsNone(held.poll(), "the process under the marker's ID still runs")
+        # A child that never recorded itself has nothing to end.
+        self.assertFalse(release_recorded(self.path("never-written")))
+
+
+class FakeSupervisorCancel(TempDir):
+    """The fake supervisor forwards a SIGTERM to its child's group only while it holds that
+    child unreaped: after the reap the group ID is free for another test's group (#331)."""
+
+    def setUp(self):
+        TempDir.setUp(self)
+        self.fake = {"os": os, "signal": signal, "subprocess": subprocess,
+                     "threading": threading, "time": time}
+        exec(FAKE_SUPERVISOR_EXECUTE, self.fake)
+        previous = signal.signal(signal.SIGTERM, self.fake["cancel"])
+        self.addCleanup(signal.signal, signal.SIGTERM, previous)
+        self.addCleanup(signal.pthread_sigmask, signal.SIG_UNBLOCK, {signal.SIGTERM})
+
+    def execute(self, code):
+        return self.fake["execute"]([sys.executable, "-I", "-c", code], b"",
+                                    {"PATH": "/usr/bin:/bin"}, self.path(), 30000)
+
+    def test_a_cancel_after_the_reap_signals_nothing(self):
+        termination = self.execute("pass")[0]
+        self.assertEqual(termination["kind"], "exited")
+        self.assertIsNone(self.fake["running"][0])
+        with mock.patch.object(os, "killpg") as sent:
+            self.fake["cancel"](signal.SIGTERM, None)
+        self.assertEqual(sent.call_count, 0)
+
+    def test_a_sigterm_raised_during_the_reap_runs_after_the_child_is_released(self):
+        reap, seen = os.waitpid, []
+
+        def reaped_then_cancelled(pid, options):
+            found = reap(pid, options)
+            if found[0] == pid:
+                # Pending until the reap is recorded, however it is scheduled.
+                signal.pthread_kill(threading.main_thread().ident, signal.SIGTERM)
+            return found
+
+        with mock.patch.object(os, "waitpid", side_effect=reaped_then_cancelled), \
+                mock.patch.object(os, "killpg", side_effect=lambda *a: seen.append(a)):
+            termination = self.execute("pass")[0]
+        self.assertTrue(self.fake["cancelled"][0], "the SIGTERM was handled")
+        self.assertEqual(termination["kind"], "cancelled")
+        self.assertEqual(seen, [], "a reaped child's group is never signalled")
+
+    def test_a_cancel_while_the_child_runs_ends_its_group(self):
+        main = threading.main_thread().ident
+        timer = threading.Timer(0.3, signal.pthread_kill, (main, signal.SIGTERM))
+        timer.start()
+        self.addCleanup(timer.cancel)
+        started = time.monotonic()
+        termination = self.execute("import time; time.sleep(30)")[0]
+        self.assertEqual(termination["kind"], "cancelled")
+        self.assertLess(time.monotonic() - started, 20)
+        self.assertIsNone(self.fake["running"][0])
 
 
 class Container(TempDir):
@@ -1064,13 +1136,131 @@ class ContainedSample(TempDir):
                                                  clock=lambda: now[0])
         self.assertEqual(calls, [("rm", 0.0, 10.0)])
         self.assertEqual(now[0], 10.0)
-        self.assertIn("container c removal unconfirmed", removal)
+        self.assertFalse(removal.confirmed)
+        self.assertIn("container c removal unconfirmed", removal.detail)
         del calls[:]
         with mock.patch.object(supervise.subprocess, "run", docker_call):
             removal = supervise.remove_container(self.docker, "c", deadline=5.0,
                                                  clock=lambda: now[0])
         self.assertEqual(calls, [])
-        self.assertIn("no time was left for its removal", removal)
+        self.assertFalse(removal.confirmed)
+        self.assertIn("no time was left for its removal", removal.detail)
+
+    def test_a_removal_text_never_confirms_it(self):
+        # Issue #388, the reviewer's reproduction: the launch lost its reply and the removal
+        # raised an exception whose text ends in "removed". The failure was certain and the
+        # caller removed what a live process could reach. An exception confirms nothing.
+        lost = supervise.SupervisorFailure("lost supervisor reply", uncertain=True)
+        with mock.patch.object(supervise, "launch", side_effect=lost), \
+                mock.patch.object(supervise, "remove_container",
+                                  side_effect=OSError("container was not removed")):
+            with self.assertRaises(supervise.SupervisorFailure) as caught:
+                self.run_one()
+        failure = caught.exception
+        self.assertEqual((failure.launched, failure.uncertain, failure.supervised),
+                         (True, True, None))
+        self.assertIn("lost supervisor reply; container af-perf-run-0-1 removal unconfirmed: "
+                      "container was not removed", str(failure))
+        # The same through the tool boundary diagnostics use: the result stays uncertain.
+        from perflab import toolrun
+        outcome = toolrun._result(["x"], ("failure", failure), None, time.monotonic,
+                                  time.monotonic(), False)
+        self.assertTrue(outcome.uncertain)
+        # An unconfirmed outcome worded as a removal is unconfirmed too, on both paths.
+        worded = supervise.Removal(False, "container af-perf-run-0-1 removed")
+        with mock.patch.object(supervise, "launch", side_effect=lost), \
+                mock.patch.object(supervise, "remove_container", return_value=worded):
+            with self.assertRaises(supervise.SupervisorFailure) as caught:
+                self.run_one()
+        self.assertTrue(caught.exception.uncertain)
+        with mock.patch.object(supervise, "remove_container", return_value=worded):
+            contained = self.run_one()
+        self.assertFalse(contained.removed)
+        self.assertEqual(contained.removal, worded.detail)
+
+    def test_a_confirmed_removal_in_other_words_is_confirmed(self):
+        removal = supervise.Removal(True, "the runtime lists no container af-perf-run-0-1")
+        lost = supervise.SupervisorFailure("lost supervisor reply", uncertain=True)
+        with mock.patch.object(supervise, "launch", side_effect=lost), \
+                mock.patch.object(supervise, "remove_container", return_value=removal):
+            with self.assertRaises(supervise.SupervisorFailure) as caught:
+                self.run_one()
+        self.assertEqual((caught.exception.launched, caught.exception.uncertain), (True, False))
+        self.assertIn("the runtime lists no container", str(caught.exception))
+        with mock.patch.object(supervise, "remove_container", return_value=removal):
+            contained = self.run_one()
+        self.assertTrue(contained.removed)
+        self.assertEqual(contained.removal, removal.detail)
+        with self.assertRaises(ContractError):
+            supervise.Removal("container c removed", "a text is not a confirmation")
+
+    def startup(self, now, delays):
+        """Popen whose start consumes `delays` (one per docker client) of the controlled clock;
+        the clients are the real stand-in, so each one's own run is real."""
+        real = subprocess.Popen
+        started = []
+
+        def popen(argv, *args, **kwargs):
+            if argv[0] == self.docker:
+                started.append((argv[1], now[0]))
+                now[0] += delays[len(started) - 1]
+            return real(argv, *args, **kwargs)
+        return popen, started
+
+    def test_a_confirmation_after_the_allowance_is_unconfirmed(self):
+        # Issue #403 item 4: a relative timeout does not count a client's startup, and nothing
+        # read the clock after the final `ps`, so a removal whose clients took 59.5 s and 0.6 s
+        # to start, with its allowance ending at 160, was confirmed at 160.1.
+        for delays, confirmed in (((59.5, 0.6), False), ((59.5, 0.5), True), ((0.5, 0.6), True)):
+            with self.subTest(delays=delays):
+                now = [100.0]
+                popen, started = self.startup(now, delays)
+                with mock.patch.object(supervise.subprocess, "Popen", popen):
+                    removal = supervise.remove_container(self.docker, "c", deadline=160.0,
+                                                         clock=lambda: now[0])
+                self.assertEqual([command for command, _ in started], ["rm", "ps"])
+                self.assertEqual(removal.confirmed, confirmed, removal.detail)
+                if confirmed:
+                    self.assertLessEqual(now[0], 160.0)
+                    self.assertEqual(removal.detail, "container c removed")
+                else:
+                    self.assertGreater(now[0], 160.0)
+                    self.assertEqual(removal.detail, "container c removal unconfirmed: confirming "
+                                     "it ended 0.100 s after its 60.000 s allowance")
+        # A failed launch whose removal is confirmed late is uncertain, never certain.
+        open(self.path("bin", "fail"), "w").close()
+        now = [0.0]
+        popen, started = self.startup(now, (0.0, 59.5, 0.6))
+        with mock.patch.object(supervise.subprocess, "Popen", popen):
+            with self.assertRaises(supervise.SupervisorFailure) as caught:
+                self.run_one(deadline=90.0, clock=lambda: now[0])
+        self.assertEqual([command for command, _ in started], ["run", "rm", "ps"])
+        self.assertTrue(caught.exception.uncertain)
+        self.assertIn("after its 60.000 s allowance", str(caught.exception))
+
+    def test_a_late_confirmation_in_real_time_is_unconfirmed(self):
+        # The real-time form: 0.2 s of allowance, and the confirming client's start takes
+        # 0.3 s. The stand-in is a shell script that lists nothing, so only time can refuse.
+        docker = self.path("bin", "quiet-docker")
+        with open(docker, "w") as stream:
+            stream.write("#!/bin/sh\nexit 0\n")
+        os.chmod(docker, 0o755)
+        real, started = subprocess.Popen, []
+
+        def popen(argv, *args, **kwargs):
+            if argv[0] == docker:
+                started.append(argv[1])
+                if argv[1] == "ps":
+                    time.sleep(0.3)
+            return real(argv, *args, **kwargs)
+        with mock.patch.object(supervise.subprocess, "Popen", popen):
+            removal = supervise.remove_container(docker, "c", deadline=time.monotonic() + 0.2)
+        self.assertEqual(started, ["rm", "ps"])
+        self.assertFalse(removal.confirmed, removal.detail)
+        self.assertIn("container c removal unconfirmed: confirming it ended", removal.detail)
+        with mock.patch.object(supervise.subprocess, "Popen", real):
+            removal = supervise.remove_container(docker, "c", deadline=time.monotonic() + 5.0)
+        self.assertEqual(removal, (True, "container c removed"))
 
     def test_a_trusted_local_request_is_never_run_in_a_container(self):
         order = probe_request(containment="process_group", scratch=None)

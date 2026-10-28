@@ -52,7 +52,7 @@ covers = []
 kind = "unbound"
 
 [contract.outputs.checks]
-artifact_type = "af/TaskCheckReceipt@1"
+artifact_type = "af/TaskCheckReceipt@2"
 cardinality = "one"
 optional = false
 covers = []

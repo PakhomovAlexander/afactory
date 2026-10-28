@@ -657,6 +657,92 @@ impl CodeTaskPolicy {
 /// The reason every declared warm kind of a remote check records (ADR-0140).
 const REMOTE_SKIP: &str = "remote";
 
+/// Refuse an evaluation that passes a Task with acceptance items without naming each by its ID
+/// (ADR-0255): the reply breaks its output contract, so the evaluator answers again with this
+/// reason as its feedback, or its node fails. The items are the check receipt's the evaluator
+/// was handed; an evaluator that has none, or does not pass, judges nothing here.
+fn judged_by_id(
+    cas: &Cas,
+    input: &TaskInvocationV1,
+    evaluation: &TaskEvaluationV1,
+) -> Result<(), String> {
+    if evaluation.outcome != ReceiptOutcomeV1::Passed {
+        return Ok(());
+    }
+    let Some(id) = input
+        .inputs
+        .get("checks")
+        .and_then(|port| port.artifact_ids.first())
+    else {
+        return Ok(());
+    };
+    let artifact = envelope(cas, id)?;
+    refuse_retired_receipt(&artifact.artifact_type)?;
+    if artifact.artifact_type != TASK_CHECK_RECEIPT_V2 {
+        return Ok(());
+    }
+    let receipt: TaskCheckReceiptV2 =
+        serde_json::from_value(artifact.payload).map_err(|e| e.to_string())?;
+    let Some(acceptance) = &receipt.acceptance else {
+        return Ok(());
+    };
+    // The evaluator judges the items it was handed as its own input, never only the receipt's
+    // copy: the plan routes the Task's `acceptance` record to it.
+    let handed = input
+        .inputs
+        .get(review_core::task::acceptance::ACCEPTANCE_PORT)
+        .map(|port| port.artifact_ids.as_slice());
+    if handed != Some(std::slice::from_ref(&acceptance.record_id)) {
+        return Err(
+            "The evaluation passes a Task with acceptance items its evaluator was not handed on \
+             its `acceptance` input; the Pipeline's `verify` node must take that input"
+                .into(),
+        );
+    }
+    let unjudged = review_core::task::acceptance::unjudged(&acceptance.items, &evaluation.reason);
+    if unjudged.is_empty() {
+        return Ok(());
+    }
+    Err(format!(
+        "The evaluation passes the Task without judging acceptance item{} {} by ID; a passing \
+         reason names every item ID with its verdict, as `ID: met`",
+        if unjudged.len() == 1 { "" } else { "s" },
+        unjudged
+            .iter()
+            .map(|id| format!("`{id}`"))
+            .collect::<Vec<_>>()
+            .join(", ")
+    ))
+}
+
+/// The wall a started check was stopped at, when the kernel stopped it there (ADR-0255): a warm
+/// phase deadline (the build's, or the tests' from the build's end), or the timeout its process
+/// ran under, `process_wall_ms`. `None` for a check that never started, ended on its own or was
+/// cancelled.
+fn wall_stop(
+    elapsed_ms: Option<u64>,
+    ending: Option<review_check::CheckEnding>,
+    process_wall_ms: u64,
+    phases: Option<(&PhaseRecord, PhaseDeadlines)>,
+) -> Option<TaskCheckStopV2> {
+    let elapsed_ms = elapsed_ms?;
+    let phase_wall = phases.and_then(|(record, deadlines)| match record.deadline? {
+        TaskLayerPhaseV1::Build => deadlines.build,
+        TaskLayerPhaseV1::Tests => Some(record.build_end.unwrap_or_default() + deadlines.tests),
+        TaskLayerPhaseV1::After => None,
+    });
+    let wall_ms = match (phase_wall, ending?) {
+        (Some(wall), _) => wall.as_millis() as u64,
+        (None, review_check::CheckEnding::TimedOut) => process_wall_ms,
+        (None, _) => return None,
+    };
+    Some(TaskCheckStopV2 {
+        cause: TaskCheckStopCauseV2::Wall,
+        wall_ms: wall_ms.max(1),
+        elapsed_ms,
+    })
+}
+
 /// The Task's captured source for `candidate`: its root ancestor along `parent_snapshot_id`,
 /// or the candidate itself when it has no parent.
 fn root_snapshot(
@@ -746,7 +832,7 @@ pub fn code_signatures(
             "source".into(),
             port(SOURCE_TREE_V1, PortAffinityV1::Unbound {}),
         )]),
-        BTreeMap::from([("result".into(), port(TASK_CHECK_RECEIPT_V1, same("source")))]),
+        BTreeMap::from([("result".into(), port(TASK_CHECK_RECEIPT_V2, same("source")))]),
         BTreeSet::from(["execute-checks".into()]),
         BTreeMap::from([("result".into(), BTreeSet::from([policy_id.into()]))]),
         BTreeMap::new(),
@@ -764,7 +850,7 @@ pub fn code_signatures(
                 "source".into(),
                 port(SOURCE_TREE_V1, PortAffinityV1::Unbound {}),
             ),
-            ("checks".into(), port(TASK_CHECK_RECEIPT_V1, same("source"))),
+            ("checks".into(), port(TASK_CHECK_RECEIPT_V2, same("source"))),
             ("evaluation".into(), evaluator),
         ]),
         BTreeMap::from([
@@ -1108,7 +1194,7 @@ impl CodeTaskDomain {
     pub fn check_receipt_outcome(
         &self,
         cas: &Cas,
-        receipt: &TaskCheckReceiptV1,
+        receipt: &TaskCheckReceiptV2,
     ) -> Result<ReceiptOutcomeV1, String> {
         self.check_outcome(cas, receipt)
     }
@@ -1129,7 +1215,7 @@ impl CodeTaskDomain {
     fn check_outcome(
         &self,
         cas: &Cas,
-        receipt: &TaskCheckReceiptV1,
+        receipt: &TaskCheckReceiptV2,
     ) -> Result<ReceiptOutcomeV1, String> {
         receipt.validate()?;
         if receipt.policy_id != self.policy_id {
@@ -1220,6 +1306,12 @@ impl CodeTaskDomain {
             for id in result.stdout.iter().chain(result.stderr.iter()) {
                 cas.verify(id).map_err(|e| e.to_string())?;
             }
+            // Only a local check the kernel ran can be stopped at its wall, and it never passed.
+            if receipt.stopped.contains_key(name)
+                && (result.status == CheckStatus::Passed || result.remote.is_some())
+            {
+                return Err("Check receipt stops a check that passed or ran remotely".into());
+            }
             if definition.required {
                 required = true;
                 failed |= result.status == CheckStatus::Failed;
@@ -1286,6 +1378,8 @@ impl CodeTaskDomain {
         let mut check_runs = BTreeMap::new();
         // Under [warm], what each started check found of its layer (`af/TaskCheckLayer@1`).
         let mut layer_runs = BTreeMap::new();
+        // Each local check the kernel stopped at its wall (ADR-0255).
+        let mut stopped = BTreeMap::new();
         // Under [warm] every check has a build phase and then its tests, each with a deadline.
         let deadlines = self.policy.warm.as_ref().map(|warm| PhaseDeadlines {
             build: warm.build_wall_ms().map(Duration::from_millis),
@@ -1593,7 +1687,7 @@ impl CodeTaskDomain {
                     review_process::host::available_cpus(),
                 )
             });
-            let (mut result, timing) = if started {
+            let (mut result, timing, ending) = if started {
                 let execution = match (session.as_ref(), deadlines) {
                     // Every warm check runs monitored: its phases against their deadlines, and,
                     // whenever the key is held — even when every declared kind is superseded and
@@ -1626,6 +1720,7 @@ impl CodeTaskDomain {
                 (
                     execution.result,
                     Some((execution.started_unix_ms, execution.elapsed_ms)),
+                    Some(execution.ending),
                 )
             } else {
                 (
@@ -1650,6 +1745,7 @@ impl CodeTaskDomain {
                         remote: None,
                     },
                     None,
+                    None,
                 )
             };
             if let (Some(record), Some(deadlines)) = (&phases, deadlines)
@@ -1658,6 +1754,16 @@ impl CodeTaskDomain {
                 result.status = CheckStatus::NotRun;
                 result.exit_code = None;
                 result.reason = Some(reason);
+            }
+            // A check the kernel killed at its wall says so, with the wall and how long it ran
+            // (ADR-0255): never read as a check that did not start.
+            if let Some(stop) = wall_stop(
+                timing.map(|(_, elapsed)| elapsed),
+                ending,
+                remaining,
+                phases.as_ref().zip(deadlines),
+            ) {
+                stopped.insert(name.clone(), stop);
             }
             // Evicted after the check by the kernel itself: the bound or suspicion, with the
             // time the eviction happened.
@@ -2049,12 +2155,23 @@ AF_TOOLCHAIN_SNAPSHOT ",
                 remote_evidence.push(evidence_id);
             }
         }
-        let mut receipt = TaskCheckReceiptV1 {
+        // A stopped check never passed; one the seal or the layer failed afterwards is still
+        // the check its wall stopped.
+        stopped.retain(|name: &String, _| {
+            checks
+                .get(name)
+                .and_then(|id| cas.get_json(id).ok())
+                .is_some_and(|result| result["status"] != "passed")
+        });
+        let acceptance = super::source::task_acceptance(cas, &input.plan_id)?;
+        let mut receipt = TaskCheckReceiptV2 {
             plan_id: input.plan_id.clone(),
             snapshot_id: snapshot_id.clone(),
             policy_id: self.policy_id.clone(),
             outcome: ReceiptOutcomeV1::Inconclusive,
             checks,
+            stopped,
+            acceptance,
         };
         receipt.outcome = self.check_outcome(cas, &receipt)?;
         observed.checks = receipt.checks.len();
@@ -2067,13 +2184,19 @@ AF_TOOLCHAIN_SNAPSHOT ",
             .checks
             .values()
             .cloned()
+            .chain(
+                receipt
+                    .acceptance
+                    .iter()
+                    .map(|acceptance| acceptance.record_id.clone()),
+            )
             .chain(source.artifact_ids.iter().cloned())
             .chain([input.plan_id.clone(), self.policy_id.clone()])
             .chain(remote_evidence)
             .collect();
         let id = cas
             .put_artifact(
-                TASK_CHECK_RECEIPT_V1,
+                TASK_CHECK_RECEIPT_V2,
                 invocation_producer(cas, input, Some(attempt))?,
                 refs,
                 Some(snapshot_id.clone()),
@@ -2166,7 +2289,7 @@ AF_TOOLCHAIN_SNAPSHOT ",
         Ok((
             ArtifactInputV1 {
                 artifact_ids: vec![id],
-                artifact_type: TASK_CHECK_RECEIPT_V1.into(),
+                artifact_type: TASK_CHECK_RECEIPT_V2.into(),
                 cardinality: PortCardinality::One,
                 snapshot_id: Some(snapshot_id),
             },
@@ -2196,18 +2319,26 @@ AF_TOOLCHAIN_SNAPSHOT ",
             .ok_or("Empty check receipt")?
             .clone();
         let artifact = envelope(cas, &check_receipt_id)?;
-        if artifact.artifact_type != TASK_CHECK_RECEIPT_V1
+        // A receipt of the version before ADR-0255 is refused by name, never read as this one.
+        refuse_retired_receipt(&artifact.artifact_type)?;
+        if artifact.artifact_type != TASK_CHECK_RECEIPT_V2
             || checks.snapshot_id.as_ref() != Some(&snapshot_id)
         {
             return Err("Verification checks have stale type or Snapshot".into());
         }
-        let receipt: TaskCheckReceiptV1 =
+        let receipt: TaskCheckReceiptV2 =
             serde_json::from_value(artifact.payload).map_err(|e| e.to_string())?;
         if receipt.snapshot_id != snapshot_id
             || receipt.plan_id != input.plan_id
             || receipt.outcome != self.check_outcome(cas, &receipt)?
         {
             return Err("Verification check receipt has stale or invalid authority".into());
+        }
+        // The receipt carries exactly the acceptance its Task stated (ADR-0255).
+        if receipt.acceptance != super::source::task_acceptance(cas, &input.plan_id)? {
+            return Err(
+                "Verification check receipt carries other acceptance items than its Task's".into(),
+            );
         }
         // All mandatory policy checks must be retained, even if a Pipeline names a subset.
         if self
@@ -2234,7 +2365,20 @@ AF_TOOLCHAIN_SNAPSHOT ",
                 let evaluation: TaskEvaluationV1 =
                     serde_json::from_value(artifact.payload).map_err(|e| e.to_string())?;
                 evaluation.validate()?;
-                evaluation.outcome
+                // A pass that leaves an acceptance item unjudged verifies nothing (ADR-0255).
+                match &receipt.acceptance {
+                    Some(acceptance)
+                        if evaluation.outcome == ReceiptOutcomeV1::Passed
+                            && !review_core::task::acceptance::unjudged(
+                                &acceptance.items,
+                                &evaluation.reason,
+                            )
+                            .is_empty() =>
+                    {
+                        ReceiptOutcomeV1::Inconclusive
+                    }
+                    _ => evaluation.outcome,
+                }
             }
             (ReceiptOutcomeV1::Passed, None) => ReceiptOutcomeV1::Inconclusive,
             (other, _) => other,
@@ -2261,7 +2405,7 @@ AF_TOOLCHAIN_SNAPSHOT ",
         let mut checks_only = input.clone();
         checks_only.inputs.remove("evaluation");
         let validated = self.verification(cas, &checks_only)?;
-        let receipt: TaskCheckReceiptV1 =
+        let receipt: TaskCheckReceiptV2 =
             serde_json::from_value(envelope(cas, &validated.check_receipt_id)?.payload)
                 .map_err(|e| e.to_string())?;
         Ok(receipt.outcome)
@@ -2496,7 +2640,7 @@ AF_TOOLCHAIN_SNAPSHOT ",
             ("source".into(), source.clone()),
             (
                 "checks".into(),
-                receipt_port(&receipt.check_receipt_id, TASK_CHECK_RECEIPT_V1),
+                receipt_port(&receipt.check_receipt_id, TASK_CHECK_RECEIPT_V2),
             ),
         ]);
         for (id, evaluator) in std::iter::once((&receipt.check_receipt_id, false))
@@ -2823,7 +2967,7 @@ impl TaskDomain for CodeTaskDomain {
         match self.operator(input)? {
             TaskOperatorV1::Verify { .. } => {
                 let result = self.verification(cas, input)?;
-                let check: TaskCheckReceiptV1 =
+                let check: TaskCheckReceiptV2 =
                     serde_json::from_value(envelope(cas, &result.check_receipt_id)?.payload)
                         .map_err(|e| e.to_string())?;
                 if check.outcome != ReceiptOutcomeV1::Passed {
@@ -2857,7 +3001,7 @@ impl TaskDomain for CodeTaskDomain {
                 remote_checks,
             } => {
                 let value = &output.outputs["result"];
-                let receipt: TaskCheckReceiptV1 =
+                let receipt: TaskCheckReceiptV2 =
                     serde_json::from_value(envelope(cas, &value.artifact_ids[0])?.payload)
                         .map_err(|e| e.to_string())?;
                 if !receipt
@@ -2867,6 +3011,7 @@ impl TaskDomain for CodeTaskDomain {
                     || receipt.plan_id != input.plan_id
                     || receipt.snapshot_id != source_input(cas, &input.inputs["source"])?
                     || receipt.outcome != self.check_outcome(cas, &receipt)?
+                    || receipt.acceptance != super::source::task_acceptance(cas, &input.plan_id)?
                 {
                     return Err("Check receipt changed its invocation or results".into());
                 }
@@ -2909,6 +3054,7 @@ impl TaskDomain for CodeTaskDomain {
                         let value: TaskEvaluationV1 =
                             serde_json::from_value(artifact.payload).map_err(|e| e.to_string())?;
                         value.validate()?;
+                        judged_by_id(cas, input, &value)?;
                     }
                 }
                 Ok(())
@@ -2972,6 +3118,76 @@ impl TaskDomain for CodeTaskDomain {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A check the kernel killed at its wall records that wall and how long it ran (ADR-0255):
+    /// the timeout its process ran under, or the warm phase deadline that ended it; a check that
+    /// ended on its own, was cancelled or never started records nothing.
+    #[test]
+    fn a_check_stopped_at_its_wall_records_the_wall_it_ran_under() {
+        use review_check::CheckEnding;
+        let wall = |wall_ms, elapsed_ms| {
+            Some(TaskCheckStopV2 {
+                cause: TaskCheckStopCauseV2::Wall,
+                wall_ms,
+                elapsed_ms,
+            })
+        };
+        assert_eq!(
+            wall_stop(Some(2_013), Some(CheckEnding::TimedOut), 2_000, None),
+            wall(2_000, 2_013)
+        );
+        for ending in [
+            CheckEnding::Exited,
+            CheckEnding::Signaled,
+            CheckEnding::Cancelled,
+            CheckEnding::NotStarted,
+        ] {
+            assert_eq!(wall_stop(Some(5), Some(ending), 2_000, None), None);
+        }
+        assert_eq!(wall_stop(None, None, 2_000, None), None, "never started");
+        let deadlines = PhaseDeadlines {
+            build: Some(Duration::from_millis(2_400_000)),
+            tests: Duration::from_millis(5_400_000),
+        };
+        let build = PhaseRecord {
+            deadline: Some(TaskLayerPhaseV1::Build),
+            ..PhaseRecord::default()
+        };
+        assert_eq!(
+            wall_stop(
+                Some(2_400_100),
+                Some(CheckEnding::Cancelled),
+                7_800_000,
+                Some((&build, deadlines))
+            ),
+            wall(2_400_000, 2_400_100)
+        );
+        let tests = PhaseRecord {
+            build_end: Some(Duration::from_millis(600_000)),
+            deadline: Some(TaskLayerPhaseV1::Tests),
+            ..PhaseRecord::default()
+        };
+        assert_eq!(
+            wall_stop(
+                Some(6_000_050),
+                Some(CheckEnding::Cancelled),
+                7_800_000,
+                Some((&tests, deadlines))
+            ),
+            wall(6_000_000, 6_000_050)
+        );
+        // A warm check its phases did not end is stopped only by its process's timeout.
+        let ran = PhaseRecord::default();
+        assert_eq!(
+            wall_stop(
+                Some(10),
+                Some(CheckEnding::Exited),
+                7_800_000,
+                Some((&ran, deadlines))
+            ),
+            None
+        );
+    }
 
     #[test]
     fn admitted_check_wall_is_reserved_exactly_by_generic_and_named_operators() {

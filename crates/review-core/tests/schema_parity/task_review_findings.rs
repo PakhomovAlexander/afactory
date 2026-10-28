@@ -1,4 +1,4 @@
-//! `af/TaskReviewFindings@1` and `af/TaskReadFirst@1` (ADR-0212): the Rust types and the schemas
+//! `af/TaskReviewFindings@1` and `af/TaskReadFirst@2` (ADR-0212, ADR-0254): the Rust types and the schemas
 //! accept and refuse the same documents.
 
 use super::{assert_invalid, assert_valid};
@@ -102,38 +102,50 @@ fn task_review_findings_schema_and_type_agree() {
 
 #[test]
 fn task_read_first_schema_and_type_agree() {
-    let entry = |reference: &str, path: &str| TaskReadFirstEntryV1 {
+    let entry = |reference: &str, path: &str| TaskReadFirstEntryV2 {
         reference: reference.into(),
         path: path.into(),
         digest: id('a'),
     };
-    let record = TaskReadFirstV1 {
+    let record = TaskReadFirstV2 {
         schema: TASK_READ_FIRST_SCHEMA.into(),
+        snapshot_id: id('b'),
         rules: Some(entry(".af/rules.md", ".af/rules.md")),
         context: vec![entry("docs/design.md#items", "docs/design.md")],
     };
     record.validate().unwrap();
     let value = serde_json::to_value(&record).unwrap();
-    assert_valid("task-read-first-v1.json", &value);
+    assert_valid("task-read-first-v2.json", &value);
     assert_eq!(
-        serde_json::from_value::<TaskReadFirstV1>(value.clone()).unwrap(),
+        serde_json::from_value::<TaskReadFirstV2>(value.clone()).unwrap(),
         record
     );
-    let only_context = json!({"schema":"af.task-read-first/1","context":[value["context"][0]]});
-    assert_valid("task-read-first-v1.json", &only_context);
-    let empty = json!({"schema":"af.task-read-first/1"});
-    assert_invalid("task-read-first-v1.json", &empty, "never written empty");
-    let decoded: TaskReadFirstV1 = serde_json::from_value(empty).unwrap();
+    let only_context = json!({"schema":"af.task-read-first/2","snapshot_id":id('b'),
+        "context":[value["context"][0]]});
+    assert_valid("task-read-first-v2.json", &only_context);
+    let empty = json!({"schema":"af.task-read-first/2","snapshot_id":id('b')});
+    assert_invalid("task-read-first-v2.json", &empty, "never written empty");
+    let decoded: TaskReadFirstV2 = serde_json::from_value(empty).unwrap();
     assert!(decoded.validate().is_err());
     let mut digestless = value.clone();
     digestless["rules"]["digest"] = json!("rules.md");
-    assert_invalid("task-read-first-v1.json", &digestless, "bound by digest");
+    assert_invalid("task-read-first-v2.json", &digestless, "bound by digest");
     assert!(
-        serde_json::from_value::<TaskReadFirstV1>(digestless)
+        serde_json::from_value::<TaskReadFirstV2>(digestless)
             .unwrap()
             .validate()
             .is_err()
     );
+    // The tree is named: a record without it is the @1 shape, which neither side accepts.
+    let mut treeless = value.clone();
+    treeless.as_object_mut().unwrap().remove("snapshot_id");
+    assert_invalid("task-read-first-v2.json", &treeless, "names its tree");
+    assert!(serde_json::from_value::<TaskReadFirstV2>(treeless).is_err());
+    let mut first = value;
+    first.as_object_mut().unwrap().remove("snapshot_id");
+    first["schema"] = json!("af.task-read-first/1");
+    assert_invalid("task-read-first-v2.json", &first, "@1 is refused");
+    assert!(serde_json::from_value::<TaskReadFirstV2>(first).is_err());
 }
 
 #[test]

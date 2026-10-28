@@ -136,9 +136,13 @@ The wall bounds leave room for the compiled reviewers, evaluator and repository 
 
 A goal can stay short and point at what it needs. `context` names files of the Task's source
 tree, each with an optional `#section`; standing rules live in `.af/rules.md`. The Worker's
-requirements end with a "Read first" list, the rules first, each file with the digest of the bytes
-the Task captured, recorded as one `af/TaskReadFirst@1` artifact in the revision's provenance. A
-changed file is a changed plan, and a file the tree does not hold is refused by name.
+requirements end with a "Read first" list that names the Snapshot the Worker reads, then the rules
+and each context file of that tree with the digest of its bytes there, recorded as one
+`af/TaskReadFirst@2` artifact in the revision's provenance
+([ADR-0254](adr/0254-name-the-tree-of-a-workers-rules-and-deliver-the-diff-subject-as-a-typed-input.md)).
+A changed file is a changed plan, and a file the tree does not hold is refused by name. A
+continued Task reads its candidate, so it lists the candidate's rules; its plan names that
+Snapshot on stderr and says when the rules differ from what the continued Task read.
 
 ```json
 {
@@ -146,6 +150,37 @@ changed file is a changed plan, and a file the tree does not hold is refused by 
   "kind": "implement",
   "goal": "Document paginate; the design says how.",
   "context": ["docs/design.md#paginate", "pagination.py"]
+}
+```
+
+### Structured acceptance
+
+`acceptance` states, as typed items rather than prose in the goal, what the result must meet:
+1 to 32 items, each an `id` (a name, once) and its `text`
+([ADR-0255](adr/0255-say-a-check-stopped-at-its-wall-and-carry-typed-acceptance-in-the-check-receipt.md),
+[schema](../schemas/task-acceptance-v1.json)). The list is captured at plan time as one
+`af/TaskAcceptance@1` record in the revision's provenance, so a changed list is a changed plan.
+The check node carries the items verbatim in its `af/TaskCheckReceipt@2`, and the selected
+Pipeline hands the record to its evaluator on its optional `acceptance` root port. A Pipeline
+that does not declare that port, or a kind whose accepting Pipelines do not all declare it, is
+refused at plan time, before anything is recorded: its evaluator could never judge the items. So
+is a Pipeline that declares the port but hands it to no `verify` evaluator node as that node's
+own input, and a Task whose kind runs under a domain that does not judge items by ID (a
+document, report or optimization Task): only an `implement` Task's evaluator is held to them. An
+evaluation that passes the Task names every item ID as a word of its `reason`, `bounds: met`; one
+that leaves an item out is refused as a reply that broke its output contract, and the evaluator
+answers again or the Task does not verify. A Task file without `acceptance` plans and runs
+exactly as before, with the same revision, plan and receipt contents.
+
+```json
+{
+  "task_id": "pagination-bounds",
+  "kind": "implement",
+  "goal": "Refuse negative offsets and limits in paginate.",
+  "acceptance": [
+    {"id": "bounds", "text": "paginate refuses a negative offset or limit with ValueError"},
+    {"id": "past-end", "text": "an offset past the end returns an empty page"}
+  ]
 }
 ```
 
@@ -196,7 +231,7 @@ Task's state and next command, `Task ID: phase/outcome/cause; next: COMMAND`, in
 `--json`.
 
 `af task run ID --detach` runs the same command in the background and returns once that run holds
-the Task and its plan is admitted, printing its pid, its host and its log (`af/task-detached@2`
+the Task and its plan is admitted, printing its pid, its host and its log (`af/task-detached@3`
 under `--json`, `admitted: true`). A run that is not admitted within 2 minutes is not claimed to
 run: the command exits 4 with `admitted: false` and `af task status ID` as the next command. The
 run has no terminal, survives the shell that started it, and writes its
@@ -272,19 +307,21 @@ the `state` object: `phase`, `outcome`, `cause` and `next_action`, `null` where 
 | --- | --- | --- |
 | `reviewer_findings` | `changes_requested` | the review recorded findings at or above its gate |
 | `evaluator_rejected` | `changes_requested` | the independent evaluator did not accept the result |
-| `check_failed` | `gate_failed` | a required check ran and failed |
+| `check_failed` | `gate_failed` | a required check ran and failed, or the kernel stopped it at its wall |
 | `check_flaky_then_failed` | `gate_failed` | a required check failed; some of its tests were flaky before |
-| `preflight_failed` | `gate_failed` | a required check stopped before its tests ran, or never started |
+| `preflight_failed` | `gate_failed` | a required check stopped at a step before its tests, or never started |
 | `malformed_reply` | `provider_failed` | a Worker's process failed or its reply broke its output contract |
 | `provider_network` | `provider_failed` | a request to the Provider failed on the network |
 | `provider_capacity` | `provider_failed` | the Provider's model was at capacity or its rate limit was reached |
 | `provider_timeout` | `provider_failed` | a Worker or Provider call ran out of its Attempt time |
+| `provider_environment` | `provider_failed` | the Provider's environment on this machine failed, not the model or the login |
 | `identity_changed` | `provider_failed` | the Provider answered as another account, model or policy than the plan bound |
 | `identity_unverified` | `provider_failed` | the Provider's login could not be verified |
 | `model_refused` | `provider_failed` | the bound model refused, was switched or is unknown to its Provider |
 | `writer_lost` | `cancelled` | the writer lost its lease before the Task finished |
 | `deadline` | `expired` | the Task's wall clock ran out |
 | `budget` | `exhausted` | a token, Attempt or verification-reserve limit ran out |
+| `attempt_wall` | `exhausted` | a Worker reached its Attempt wall; a source-writing Worker's edits are kept |
 | `collected` | the one it retained | the Task was collected; only its summary remains |
 | `host_cancelled` | `cancelled` | the run was interrupted (Ctrl-C or a signal) |
 
@@ -295,8 +332,12 @@ Every state that ended names the one command to run next: the last line of `af t
 candidate ([Retry a failed gate](#retry-a-failed-gate)), whatever its cause, `af task show ID
 --checks` after one it cannot, `af task run ID` to resume a cancelled run (`af task start --file
 TASK_FILE` once its interrupted node used up its recovery allowance), `af task plan --file
-TASK_FILE --fit` after a budget or deadline ran out (with a new `task_id` once the Task ran), and
-`af provider status` or `af provider setup ID --login` after a Provider failure. A command given
+TASK_FILE --fit` after a budget or deadline ran out (with a new `task_id` once the Task ran),
+`af provider status` or `af provider setup ID --login` after a Provider failure (`af provider
+status` after `provider_environment`, an environment failure such as identity probes that proved
+nothing after their retries, never an account change), and `af task run NEW_TASK_ID --from ID`
+after `attempt_wall` when the Worker its wall stopped left edits
+([An Attempt wall keeps the edits](#an-attempt-wall-keeps-the-edits)), else `af task show ID`. A command given
 `--repo`, `--state` or `--workspace` prints an `af task` next command with them as typed, so it
 runs as printed against the same Store; under the default Store it carries none. `af task show`
 prints, per
@@ -312,9 +353,23 @@ warm or cold directories, its warm layer when the policy has `[warm]` (the key, 
 by it, the source groups it rebuilt, its build and test phases and an eviction with its cause,
 [Warm checks](task-execution/warm-checks.md)), the step that stopped it, its failing tests (named from the runner's
 `FAIL`, `TIMEOUT` and `SIGABRT` lines), its `flaky:` tests and the last 40 lines of its stderr;
-`--json` prints one [`af/task-checks@2`](../schemas/task-checks-v2.json) document. `af task list
+`--json` prints one [`af/task-checks@3`](../schemas/task-checks-v3.json) document. `af task list
 --json` rows carry the same `gate` summary, and after a failed gate `af task run` names the
 failing tests, at most 20, then `… and N more; af task show ID --checks`.
+
+A check the kernel stopped at its wall (its per-check wall, its check Attempt's wall or a warm
+phase deadline, whichever bound its process) is recorded as such in the
+[`af/TaskCheckReceipt@2`](../schemas/task-check-receipt-v2.json) under `stopped`: the cause
+`wall`, the wall it ran under and how long it ran
+([ADR-0255](adr/0255-say-a-check-stopped-at-its-wall-and-carry-typed-acceptance-in-the-check-receipt.md)).
+The Task ends `finished/gate_failed/check_failed`, never `preflight_failed`, and `af task show`
+(`why:`), `af task show --checks` (with `stop` under `--json`), `af task report` (the row's
+detail) and the run's stderr each say `check kernel stopped at its 90 min wall after 88 min` and
+what to do: make the check faster, or raise its wall in `.af/code-policy.toml`
+(`check_wall_ms`, `check_process_wall_ms` or `[warm] build_wall_ms`) and plan the Task again;
+`af task run ID --retry-gate` runs it again under the same wall. The wall is what the check's
+process ran under, so it is what was left of the check's wall after preparation. Only a check that
+did not start still says `never started`.
 
 A Task's wall clock starts at its first `af task run`, not when it is planned: the preview says
 `deadline starts when you run`, the Store moves the recorded deadline by the time the Task waited
@@ -386,7 +441,7 @@ Nothing to do (2): `af task list` shows every Task
 
 `--json` prints one [`af/task-attention@1`](../schemas/task-attention-v1.json) document with all
 seven groups in this order, the `running` and `nothing` groups included, each with its `group`,
-`needs_you` and `tasks`, every Task the same `af/task-list-entry@3` that `af task list --json`
+`needs_you` and `tasks`, every Task the same `af/task-list-entry@4` that `af task list --json`
 prints. `--attention` lists no sizes: with `--sizes` it is a usage error (exit 2). In the
 browser (`af` alone at a terminal) the Tasks folder opens on the same groups under `NEEDS YOU`
 ([TUI design](design/tui.md#55-tasks)).
@@ -504,11 +559,41 @@ af task run pagination-2 --from pagination-cli --round 1 --goal goal.md --execut
 
 A Task file says the same with `"continue": {"task": "pagination-cli", "round": 1}`; it excludes
 `inputs.source` and `inputs.findings`. TASK must be finished and must have recorded a review
-round, and the selected Pipeline must declare `findings` (the kernel's
+round, or have kept the edits of a Worker its Attempt wall stopped (below), and for a reviewed
+round the selected Pipeline must declare `findings` (the kernel's
 `kernel/implementation-reviewed`, `kernel/implementation-ux` and `kernel/review-light` do, and so
 does [`default/implementation`](#the-default-pipeline)), or the
 plan is refused with the reason. `af task show NEW` prints `continues TASK round N`, `--json`
-carries `continues` (`af/task-inspection@13`), and `af task report` names it in NEW's row.
+carries `continues` (`af/task-inspection@14`), and `af task report` names it in NEW's row.
+
+### An Attempt wall keeps the edits
+
+When a source-writing Worker, an implementer, reaches its Attempt wall before it answers, the
+kernel seals the tree it left exactly as it seals an implementer's candidate (the same scratch and
+ignore exclusions) and keeps it as a partial candidate, `af/TaskPartialCandidate@1`, named by the
+Attempt's `af/TaskAttemptWallEnd@1` with the node's Attempt wall and the time the Attempt took
+([ADR-0257](adr/0257-seal-the-implementers-tree-when-its-attempt-wall-ends-it.md)). Both are the
+failed Attempt's raw evidence, never an output: a partial candidate is never sealed into a
+result, checked, reviewed, accepted or delivered on its own. The Attempt is a failed one,
+charged what its Provider reported (or zero with its usage unknown) and counted against its
+node's Attempt limit, as before; it is no interruption, so no recovery allowance is spent.
+
+The Task ends `exhausted/attempt_wall`, never `malformed_reply` or a Provider failure. `af task
+show` prints `NODE: attempt_wall: implementer reached its Attempt wall of 30 min after 30 min;
+its edits (3 paths) are kept as partial candidate sha256:…`, `--json` lists the record under
+`attempt_wall_ends`, `af task run` prints `implement failed: its Attempt wall of 30 min ran out
+after 30 min; its edits are kept as a partial candidate`, and `af task report` names the wall in
+the Task's row. The next command continues from those edits:
+
+```sh
+af task run pagination-3 --from pagination-cli --execute   # starts from the partial tree
+```
+
+`--from` binds the partial tree as the new Task's source when TASK recorded no review round; the
+new Task runs its whole pipeline on it, and its own result is what can be delivered. `af task
+plan` prints each Worker slot's Attempt wall beside its model (`implementer: claude-opus-5/high
+via claude, Attempt wall 30 min`), and `--json` lists them as `slots`, so a wall too short for
+the goal is visible before the Task runs.
 
 ## The default pipeline
 
@@ -578,13 +663,20 @@ schema = "af.task-bindings/1"
 ## The tree before the change
 
 Every Worker that judges a candidate without writing it, a reviewer, an evaluator or a verifier,
-gets the tree before the change beside its own, read-only, at `../base`, and
-`../diff-subject.json` (`af/diff-subject@1`): each changed path with its content digest on each
-side. The base is the source Snapshot's recorded base: a sealed candidate's parent, or, for a bound
-tree, the parent of the tree it was bound from. A Task file may name it instead with `"base":
-{"commit": "SHA"}`, captured at plan time as `af/TaskBase@1`. Neither file is under the Worker's
-tree, so neither is sealed back or counts as an edit. A root capture with no declared base has no
-base, and its Workers get neither file.
+gets the tree before the change beside its own, read-only, at `../base`. A judging Worker whose
+contract declares the optional `diff_subject` input also gets the Diff Subject there: one
+`af/DiffSubject@1` artifact the kernel builds, whose `af/diff-subject@1` document lists each changed
+path with its content digest on each side. No Pipeline binds that port. Before the Worker starts,
+the kernel checks that the port holds exactly the change between the base and the Worker's source,
+and refuses the Attempt when it is absent or differs
+([ADR-0254](adr/0254-name-the-tree-of-a-workers-rules-and-deliver-the-diff-subject-as-a-typed-input.md)).
+The kernel's `bugs`, `correctness`, `evaluator`, `ux` and `uix` Workers declare it;
+`../diff-subject.json` is no longer written. The base is the source Snapshot's recorded base: a
+sealed candidate's parent, or, for a bound tree, the parent of the tree it was bound from. A Task
+file may name it instead with `"base": {"commit": "SHA"}`, captured at plan time as
+`af/TaskBase@1`. The base is not under the Worker's tree, so it is never sealed back or counted
+as an edit. A root capture with no declared base has no base, so its Workers get neither the base
+nor a Diff Subject.
 
 ### What an Attempt survives
 
@@ -612,9 +704,11 @@ adds up, and nothing is reset or refunded.
 - **An identity probe that proves nothing.** Before every private send af checks that the
   Provider's account is still the one the plan captured. A probe that times out or answers
   malformed is sent again, three probes in all; then the node fails with `(environment)` in its
-  line, as `identity_unverified`, not as an account change (`identity_changed`). A Provider CLI that updated itself, with the same account, passes; only
-  another account, authentication method or organization fails the check, with `run af task
-  plan again`.
+  line, as `provider_environment`, the environment's failure, not as an account change
+  (`identity_changed`) or an unverified login (`identity_unverified`), and its next command is
+  `af provider status`. A Provider CLI that updated itself, with the same account, passes; only
+  another account, authentication method or organization fails the check, as
+  `identity_changed`, with `run af task plan again`.
 - **A refused admission probe.** When the bound model's safety classifier refuses the short
   admission probe itself, af sends it once more in other words; the refusal category, when the
   CLI names one, is in the diagnostic. Every Provider admission is decided before any other node
@@ -813,7 +907,7 @@ in the parallel run and passed alone (`flaky`, with `"parallel": "failed", "isol
 "passed"`). This repository's `scripts/ci-step.py` and `scripts/nextest-gate.py` write them.
 
 After the check, af records an `af/TaskCheckReport@1`
-([schema](../schemas/task-check-report-v1.json)) beside its `af/TaskCheckReceipt@1`: for each
+([schema](../schemas/task-check-report-v1.json)) beside its `af/TaskCheckReceipt@2`: for each
 local check that started, the 1-minute load average when it started and ended and the CPUs
 available to af, which af measures itself, and what the check wrote, `admitted`, `absent` when it
 wrote nothing, or `refused` with the reason when its lines are not this contract. A check's own
@@ -999,7 +1093,7 @@ after a heading, a thematic break, a fence, an HTML block or a list item. Provid
 and a recorded model that is not a model identity (a path or a URL, say) reads `unknown`: the
 report never carries a Provider label, a path, a credential, a prompt or Worker output.
 `--json` prints the same figures as one
-[`af/task-report@2`](../schemas/task-report-v2.json) document, with exact decimal tokens and
+[`af/task-report@3`](../schemas/task-report-v3.json) document, with exact decimal tokens and
 times in milliseconds, the `pipelines` with their steps, and each Task's `round`, `state`,
 `detail` and `findings`;
 an unknown figure is absent there.

@@ -80,7 +80,7 @@ any document `af help json` names, and `af schema show` lists the IDs.
 ## 1. Plan
 
 `af task plan --file TASK_FILE --json` captures the Task file and the checkout and compiles the
-plan without running anything: one `af/task-inspection@13` document whose `plan_id` is the
+plan without running anything: one `af/task-inspection@14` document whose `plan_id` is the
 plan to confirm and whose `state.next_action` is the command that runs it. A plan that does
 not fit its limits is refused with `af/task-selection@3`, whose `next_action` is the `--fit`
 command that plans with the smallest limits that fit.
@@ -88,7 +88,7 @@ command that plans with the smallest limits that fit.
 ## 2. Run, or run in the background
 
 `af task run TASK_ID --confirm-plan PLAN_ID --json` runs exactly that plan and prints the
-finished Task as `af/task-inspection@13`. While it waits it prints on stderr one line per node
+finished Task as `af/task-inspection@14`. While it waits it prints on stderr one line per node
 that starts or finishes, with the time since the run started and the tokens charged so far
 (`af task run: implement finished (2 min elapsed, 41k tokens so far)`), and every 5 minutes a
 heartbeat (`af task run: implement running 23 min, 412k tokens, host load 11.2`); `--quiet`
@@ -96,7 +96,7 @@ keeps them back.
 
 An agent that must not hold a terminal for the whole run detaches it:
 `af task run TASK_ID --confirm-plan PLAN_ID --detach --json` returns once the run holds the
-Task, with one `af/task-detached@2` document naming its pid, its host and its log, a file under
+Task, with one `af/task-detached@3` document naming its pid, its host and its log, a file under
 the Store's `runs/` directory, and `admitted: true`. A run not admitted within 2 minutes is not
 claimed to run: exit 4, `admitted: false` and `next_action` `af task status TASK_ID`. The run
 survives the shell that started it. Then
@@ -108,7 +108,7 @@ check span from the same repository and code policy for a check in this plan, st
 its last recorded duration; with no such history they show no hint. `af task wait --bell` rings
 only on terminal stderr at completion. `--notify` requests an OS notification without changing
 the wait result if the notifier is unavailable. `af task cancel TASK_ID --json` stops the run and
-its Worker processes, recording who asked, and prints `af/task-cancelled@1`; the Task stays
+its Worker processes, recording who asked, and prints `af/task-cancelled@2`; the Task stays
 resumable with
 `af task run TASK_ID`.
 
@@ -134,7 +134,8 @@ stderr's last line is always `Task TASK_ID: phase/outcome/cause; next: COMMAND`.
 `--repo`, `--state` or `--workspace` the command was given, so it runs as printed. A refusal
 under `--json` is one `af/error@2` document with the same exit code; one af classifies, such as a
 node past its recovery allowance, also carries `cause`, `next_action` and `details`
-(`af help json`).
+(`af help json`). A run SIGINT or SIGTERM stopped is one too, exit 130 or 143, `cause`
+`interrupted`, and its `next_action` continues it.
 
 Across many Tasks, `af task list --attention --json` prints one `af/task-attention@1` document:
 every Task of the Store in exactly one group, read from its `state` alone. `approval`,
@@ -211,4 +212,4 @@ default). When the script cannot print its block, nothing is printed and the com
 naming `--base REF`; a block it prints incomplete, without its end marker or its title, is
 refused the same way, naming what is missing. `gh pr create --body-file body.md` takes it
 unchanged. `af task report TASK_ID... --json` prints the same figures as one
-`af/task-report@2` document.
+`af/task-report@3` document.

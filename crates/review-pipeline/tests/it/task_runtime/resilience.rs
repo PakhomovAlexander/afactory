@@ -24,6 +24,11 @@ enum Answer {
     Transient(TransientClassV1),
     /// A safety-classifier refusal naming this category.
     Refused(&'static str),
+    /// Identity probes that proved nothing three times: the Provider's environment failed.
+    Environment,
+    /// The runner killed the Worker at the deadline it was given, its remaining Attempt wall,
+    /// before the Provider reported any usage.
+    TimedOut,
 }
 
 /// Answers the admission probe with `admission` (then `OK` for its alternate), and each business
@@ -81,6 +86,8 @@ impl WorkerModelAdapter for Scripted {
             cas.put(format!("native capture {call}").as_bytes())
                 .unwrap(),
         ];
+        // A Worker killed at its wall reported no usage: the Attempt's usage is unknown.
+        let reported = !matches!(answer, Answer::TimedOut);
         let (message, native_failure, notes) = match answer {
             Answer::Reply(text) => (Ok(text.as_bytes().to_vec()), None, CallNotes::default()),
             Answer::Transient(class) => (
@@ -106,12 +113,34 @@ impl WorkerModelAdapter for Scripted {
                     ..CallNotes::default()
                 },
             ),
+            Answer::Environment => (
+                Err("identity recheck: probe timed out 3× (up to 30 s each); the account was \
+                     not verified as changed: the Provider's environment failed, not the model \
+                     or the login (environment); run the Task again with `af task run`"
+                    .into()),
+                Some(NativeFailureKind::Environment),
+                CallNotes {
+                    events: [2, 3]
+                        .map(|probe| ProviderEventV1::IdentityReprobed {
+                            cause: review_core::task::provider_event::ProbeSilenceV1::TimedOut,
+                            probe,
+                        })
+                        .to_vec(),
+                    ..CallNotes::default()
+                },
+            ),
+            Answer::TimedOut => (
+                Err("Claude Worker ended (reviewer did not answer within 900ms and was killed)"
+                    .into()),
+                None,
+                CallNotes::default(),
+            ),
         };
         ModelWorkerReturn {
             notes,
             usage_observation: None,
             message,
-            usage: Some(TaskTokenUsageV3::charge_only(7)),
+            usage: reported.then(|| TaskTokenUsageV3::charge_only(7)),
             raw_artifact_ids: raw,
             native_failure,
         }
@@ -514,5 +543,123 @@ fn a_second_refusal_fails_the_admission_and_starts_no_worker() {
             Some(review_graph::NodeOutcome::Suppressed { .. })
         ),
         "{report:?}"
+    );
+}
+
+/// Issue #331 item 9: identity probes that proved nothing after their bounded retries fail the
+/// Attempt as the Provider's environment, never as an account change: its diagnostic names the
+/// closed class `environment`, which `af task show` reads as `provider_environment`, and the
+/// re-probes it sent are the Attempt's recorded Provider events.
+#[test]
+fn an_exhausted_identity_reprobe_is_recorded_as_an_environment_failure() {
+    let model = Scripted::new(Answer::Reply("OK"), &[Answer::Environment]);
+    let mut ran = run(&model);
+    assert!(!ran.report.complete());
+    let projection = ran.projection();
+    let execution = projection.execution.as_ref().unwrap();
+    let failed: Vec<_> = execution
+        .attempt_accounting()
+        .into_iter()
+        .filter(|row| row.reservation.node == "root.nodes.write")
+        .collect();
+    assert!(!failed.is_empty());
+    for row in &failed {
+        let Some(TaskAttemptResultV1::Failed { diagnostic_id, .. }) = &row.result else {
+            panic!("{:?}", row.result);
+        };
+        let diagnostic = ran.f.cas.get_json(diagnostic_id).unwrap();
+        assert_eq!(diagnostic["cause"], "environment", "{diagnostic}");
+        assert!(
+            diagnostic["error"]
+                .as_str()
+                .unwrap()
+                .contains("the account was not verified as changed"),
+            "{diagnostic}"
+        );
+        assert!(
+            row.abandoned.is_none(),
+            "a failed Attempt, not an interrupted one"
+        );
+    }
+    let reprobes = projection
+        .provider_events
+        .iter()
+        .filter(|event| matches!(event.event, ProviderEventV1::IdentityReprobed { .. }))
+        .count();
+    assert_eq!(
+        reprobes,
+        2 * failed.len(),
+        "{:?}",
+        projection.provider_events
+    );
+}
+
+/// ADR-0257: a model Worker its runner killed at its Attempt wall fails with that cause first,
+/// the wall and the time it took, and one typed `af/TaskAttemptWallEnd@1` among its raw
+/// evidence. A Worker that writes no source keeps no partial tree. The Attempt is settled and
+/// charged as every failed Attempt is: it reported no usage, so it is charged zero with its
+/// usage unknown (ADR-0143), and it is not abandoned, so no recovery allowance is spent.
+#[test]
+fn a_worker_killed_at_its_attempt_wall_records_the_wall_end_and_is_charged_as_before() {
+    use review_core::task::attempt_wall::*;
+    let model = Scripted::new(Answer::Reply("OK"), &[Answer::TimedOut]);
+    let mut ran = run(&model);
+    assert!(!ran.report.complete());
+    let projection = ran.projection();
+    let execution = projection.execution.as_ref().unwrap();
+    let rows: Vec<_> = execution
+        .attempt_accounting()
+        .into_iter()
+        .filter(|row| row.reservation.node == "root.nodes.write")
+        .collect();
+    assert!(!rows.is_empty());
+    for row in &rows {
+        assert_eq!(row.charged_tokens, 0, "{row:?}");
+        assert_eq!(
+            row.unknown_usage,
+            Some(review_core::task::usage::TaskUnknownUsageCauseV1::Unreported)
+        );
+        assert!(row.abandoned.is_none());
+        let Some(TaskAttemptResultV1::Failed { diagnostic_id, .. }) = &row.result else {
+            panic!("{:?}", row.result);
+        };
+        let diagnostic = ran.f.cas.get_json(diagnostic_id).unwrap();
+        assert_eq!(diagnostic["cause"], "attempt_wall", "{diagnostic}");
+        let error = diagnostic["error"].as_str().unwrap();
+        assert!(
+            error.starts_with("author reached its Attempt wall of 5 s after ")
+                && error.ends_with("did not answer within 900ms and was killed)"),
+            "{error}"
+        );
+        let ends: Vec<TaskAttemptWallEndV1> = row
+            .raw_artifact_ids
+            .iter()
+            .filter_map(|id| ran.f.cas.get_optional_artifact(id).ok().flatten())
+            .filter(|envelope| envelope.artifact_type == TASK_ATTEMPT_WALL_END_V1)
+            .map(|envelope| serde_json::from_value(envelope.payload).unwrap())
+            .collect();
+        let [end] = ends.as_slice() else {
+            panic!("{ends:?}");
+        };
+        end.validate().unwrap();
+        assert_eq!(end.attempt_id, row.attempt_id);
+        assert_eq!(end.node, "root.nodes.write");
+        assert_eq!(end.task_id, ran.f.task.task_id);
+        assert_eq!(
+            end.partial_candidate_id, None,
+            "a writer of no source keeps no tree"
+        );
+        assert_eq!(
+            Some(end.wall_ms),
+            ran.f
+                .graph
+                .allowances
+                .get("root.nodes.write")
+                .map(|a| a.wall_ms_per_attempt)
+        );
+    }
+    assert!(
+        execution.recoveries().is_empty(),
+        "no Attempt was abandoned, so no recovery allowance is spent"
     );
 }

@@ -236,10 +236,19 @@ Every execution goes through one executor (`perflab/telemetryexec.py`, ADR-0215)
   may also settle it when the built-in path proves no work began: image inspection and
   read-only runtime checks precede the host enforcement probe. Entering that probe, any
   injected preparation hook or executor, or controller work withdraws this evidence.
-  Settlement uses the original absolute deadline before releasing the machine lock; failure
-  or expiry retains recovery authority without retrying the write. A `stopped`
-  container never clears this fence; failed reads, writes, replacement or sync leave cleanup
-  ineligible. Other failure handlers perform no compensating ownership I/O. Owner admission,
+  Settlement uses the original absolute deadline before releasing the machine lock and never
+  retries its write. A `stopped` container never clears this fence. Every ownership write
+  replaces `state.json` with a synced new file, then syncs the control directory. A read,
+  write, file sync or replacement that fails or expires leaves the earlier record and its
+  fence in place, so cleanup stays ineligible. A directory sync that fails after the
+  replacement leaves the new record in place. The run still reports the failure, and its
+  controller launches nothing more. But the record is one its transition already proved: a
+  settlement is published only once no work began or the final work root's removal is
+  confirmed. So the next controller and the workflow's cleanup are admitted, and nothing a
+  possibly live process could reach is deleted.
+  Only the record's durability is unproven. If the host stops before the directory reaches
+  disk, the earlier, fenced record can return, and cleanup then refuses until an operator
+  recovers it. Other failure handlers perform no compensating ownership I/O. Owner admission,
   transitions and terminal settlement share the original absolute deadline and reserve.
   Only `ready` or `stopped` ownership with no pending filesystem work permits unmount
   and image removal. Pending work or launches, a live controller, missing/corrupt/foreign evidence

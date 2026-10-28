@@ -414,8 +414,10 @@ class Shard(object):
             self.authority = Authority(self.git, plan, self.work)
             self.versions = {}
             self.adapters = {}
+            self.receipts = {}
             if self.authority.cli is not None:
                 self.versions = clicases.side_versions(self.git, plan)
+                self.receipts = clicases.side_receipts(self.git, plan)
                 for side, version in self.versions.items():
                     self.adapters[side] = clicases.choose_adapter(self.authority.cli, version)
             self.cpus = None
@@ -1120,8 +1122,9 @@ class Shard(object):
             cwd = clicases.expand(entry["cwd"], values)
             setup = None
             if entry["setup"] != "none":
+                argument = clicases.setup_argument(entry, self.receipts, side, seed_argument)
                 setup = (["/bin/sh", setup_script, entry["setup"], scratch, values["af"],
-                          values["probe"] or "-", seed_argument], environment, scratch,
+                          values["probe"] or "-", argument], environment, scratch,
                          SETUP_TIMEOUT_MS)
             log_cap = self.plan["limits"]["sample_log_bytes"]
             order = supervise.request(

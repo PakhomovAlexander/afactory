@@ -503,3 +503,219 @@ fn recovery_fixture_dispatch_refuses_deadline_and_later_after_cold_reopen() {
         }
     }
 }
+
+/// The wall-end evidence of one Attempt: its partial candidate and its wall end, produced by
+/// `attempt` at node `by`, kept in the sidecar under `attempt` (ADR-0257). Returns their IDs.
+fn keep_wall_end(f: &mut Fixture, lease: &TaskLease, attempt: &str, by: &str) -> (String, String) {
+    use review_core::task::attempt_wall::*;
+    let run = task_run_id(lease.task_id()).unwrap();
+    let producer = review_core::Producer::Attempt {
+        run_id: run.clone(),
+        node_id: by.into(),
+        attempt_id: attempt.into(),
+    };
+    let digest = |n: char| format!("sha256:{}", n.to_string().repeat(64));
+    let partial = TaskPartialCandidateV1 {
+        schema: TASK_PARTIAL_CANDIDATE_SCHEMA.into(),
+        parent_snapshot_id: digest('a'),
+        snapshot_id: digest('b'),
+        source_tree_id: digest('c'),
+        changed_paths: 2,
+    };
+    let (partial_id, _) = f
+        .cas
+        .put_artifact(
+            TASK_PARTIAL_CANDIDATE_V1,
+            producer.clone(),
+            vec![],
+            None,
+            serde_json::to_value(&partial).unwrap(),
+        )
+        .unwrap();
+    let end = TaskAttemptWallEndV1 {
+        schema: TASK_ATTEMPT_WALL_END_SCHEMA.into(),
+        task_id: lease.task_id().into(),
+        node: NODE.into(),
+        attempt_id: attempt.into(),
+        wall_ms: 1_000,
+        elapsed_ms: 1_001,
+        partial_candidate_id: Some(partial_id.clone()),
+    };
+    let (wall_end_id, _) = f
+        .cas
+        .put_artifact(
+            TASK_ATTEMPT_WALL_END_V1,
+            producer,
+            vec![partial_id.clone()],
+            None,
+            serde_json::to_value(&end).unwrap(),
+        )
+        .unwrap();
+    f.cas.flush().unwrap();
+    f.store
+        .record_task_attempt_wall_end(&run, attempt, &wall_end_id)
+        .unwrap();
+    // Recorded again it is the same record; another one is refused.
+    f.store
+        .record_task_attempt_wall_end(&run, attempt, &wall_end_id)
+        .unwrap();
+    assert!(
+        f.store
+            .record_task_attempt_wall_end(&run, attempt, &partial_id)
+            .is_err(),
+        "one Attempt keeps one wall end"
+    );
+    (partial_id, wall_end_id)
+}
+
+/// A writer lost after its Attempt wall ended an Attempt, and after it kept the wall end, leaves
+/// its successor that wall end (ADR-0257): the Attempt settles failed at its wall with the wall
+/// end and the partial tree it names, counts as a failed Attempt and spends no recovery
+/// allowance, where without it the Attempt reads abandoned by a lost writer.
+#[test]
+fn a_lost_writers_wall_ended_attempt_settles_failed_from_its_kept_wall_end() {
+    test_clock::with_time(1_000_000, |clock| {
+        let mut f = Fixture::new(false).with_execution_graph();
+        let lease = f
+            .store
+            .open_task(&f.cas, &f.revision_id, "writer-1", 3_000)
+            .unwrap();
+        f.propose(&lease);
+        f.store
+            .admit_task_plan(&f.cas, &lease, &f.authority)
+            .unwrap();
+        f.record_execution_inputs(&lease);
+        let walled = start(&mut f, &lease, "walled", clock);
+        let (partial_id, wall_end_id) = keep_wall_end(&mut f, &lease, walled.id(), NODE);
+        let _second = take_over(&mut f, &lease, "writer-2", clock);
+
+        let state = f.state();
+        let execution = state.execution.as_ref().unwrap();
+        let row = execution
+            .attempt_accounting()
+            .into_iter()
+            .find(|row| row.attempt_id == walled.id())
+            .unwrap();
+        let Some(TaskAttemptResultV1::Failed {
+            diagnostic_id,
+            feedback_id: None,
+        }) = &row.result
+        else {
+            panic!("a wall-ended Attempt settles failed: {:?}", row.result)
+        };
+        assert_eq!(
+            f.cas.get_json(diagnostic_id).unwrap()["cause"],
+            "attempt_wall"
+        );
+        assert_eq!(row.abandoned, None);
+        assert!(row.raw_artifact_ids.contains(&wall_end_id));
+        assert!(row.raw_artifact_ids.contains(&partial_id));
+        // Nothing was reported: charged zero, its usage unknown because its writer was lost.
+        assert_eq!(row.charged_tokens, 0);
+        assert_eq!(
+            row.unknown_usage,
+            Some(task::usage::TaskUnknownUsageCauseV1::LeaseExpired)
+        );
+        // A failed Attempt, counted as one; no recovery allowance is spent.
+        assert_eq!(execution.budget.chargeable_attempts(), 1);
+        assert!(execution.recoveries().is_empty());
+    });
+}
+
+/// A kept wall end roots its evidence against collection (ADR-0257): a writer lost after it kept
+/// the wall end, whose lease then expired, leaves a Task that `af task gc --apply` may sweep
+/// before anyone recovers it, and the sweep keeps the wall end and the partial tree it names,
+/// so the successor still settles the Attempt failed at its wall.
+#[test]
+fn a_kept_wall_end_and_its_partial_tree_survive_collection_before_recovery() {
+    test_clock::with_time(1_000_000, |clock| {
+        let mut f = Fixture::new(false).with_execution_graph();
+        let lease = f
+            .store
+            .open_task(&f.cas, &f.revision_id, "writer-1", 3_000)
+            .unwrap();
+        f.propose(&lease);
+        f.store
+            .admit_task_plan(&f.cas, &lease, &f.authority)
+            .unwrap();
+        f.record_execution_inputs(&lease);
+        let walled = start(&mut f, &lease, "walled", clock);
+        let (partial_id, wall_end_id) = keep_wall_end(&mut f, &lease, walled.id(), NODE);
+        // The writer is lost: its lease expires and collection runs before any successor.
+        clock.set(f.state().lease_until + 1);
+        std::thread::sleep(std::time::Duration::from_millis(5));
+        let outcome = f.store.apply_task_collection(&f.cas, 0, 0, false).unwrap();
+        assert!(outcome.swept);
+        assert!(outcome.tombstoned.is_empty(), "an unfinished Task is kept");
+        assert!(f.cas.is_filed(&wall_end_id), "the wall end was swept");
+        assert!(f.cas.is_filed(&partial_id), "the partial tree was swept");
+
+        let _second = take_over(&mut f, &lease, "writer-2", clock);
+        let state = f.state();
+        let row = state
+            .execution
+            .as_ref()
+            .unwrap()
+            .attempt_accounting()
+            .into_iter()
+            .find(|row| row.attempt_id == walled.id())
+            .unwrap();
+        assert!(
+            matches!(row.result, Some(TaskAttemptResultV1::Failed { .. })),
+            "{:?}",
+            row.result
+        );
+        assert!(row.raw_artifact_ids.contains(&wall_end_id));
+    });
+}
+
+/// A wall end kept under an Attempt that another node produced is not its evidence: the
+/// successor refuses to settle from it rather than reading it as this Attempt's wall.
+#[test]
+fn a_wall_end_another_attempt_produced_is_refused_at_recovery() {
+    test_clock::with_time(1_000_000, |clock| {
+        let mut f = Fixture::new(false).with_execution_graph();
+        let lease = f
+            .store
+            .open_task(&f.cas, &f.revision_id, "writer-1", 3_000)
+            .unwrap();
+        f.propose(&lease);
+        f.store
+            .admit_task_plan(&f.cas, &lease, &f.authority)
+            .unwrap();
+        f.record_execution_inputs(&lease);
+        let walled = start(&mut f, &lease, "walled", clock);
+        keep_wall_end(&mut f, &lease, walled.id(), "root.nodes.other");
+        clock.set(f.state().lease_until + 1);
+        let time = now().unwrap();
+        let epoch = lease.epoch + 1;
+        f.store
+            .append_task_transition(
+                &f.cas,
+                &lease.task_id,
+                TaskTransitionV1 {
+                    writer: "writer-2".into(),
+                    epoch,
+                    now_unix_ms: time,
+                    change: TaskChangeV1::LeaseTaken {
+                        lease_until_unix_ms: time + 1_000_000,
+                    },
+                },
+            )
+            .unwrap();
+        let next = TaskLease {
+            task_id: lease.task_id.clone(),
+            writer: "writer-2".into(),
+            epoch,
+        };
+        let refused = f
+            .store
+            .recover_task_attempts_at(&f.cas, &next, time)
+            .unwrap_err()
+            .to_string();
+        assert!(
+            refused.contains("not that Attempt's own record"),
+            "{refused}"
+        );
+    });
+}

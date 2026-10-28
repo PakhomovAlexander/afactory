@@ -1,6 +1,6 @@
 //! The agent loop's documents and records (ADR-0211, ADR-0248, ADR-0250): `af/task-findings@2`,
-//! `af/task-materialized@1`, `af/task-diff@1`, `af/task-status@2`, `af/task-detached@2`,
-//! `af/task-cancelled@1`, the lines of `af task events` (`af/task-event@1`), the `runs/` records
+//! `af/task-materialized@1`, `af/task-diff@1`, `af/task-status@2`, `af/task-detached@3`,
+//! `af/task-cancelled@2`, the lines of `af task events` (`af/task-event@1`), the `runs/` records
 //! `af/task-run-process@1` and `af/task-cancel-request@1`, and the `af/TaskDeliveryProof@1` a
 //! verification Task's delivery references. A typed value the Rust validator accepts satisfies
 //! its schema, both reject the same broken shapes, and another version fails closed.
@@ -406,6 +406,10 @@ fn materialized_diff_and_status_documents_are_closed() {
                 Box::new(|v: &mut Value| v["state"]["cause"] = Value::Null),
                 "an abandoned state without its cause",
             ),
+            (
+                Box::new(|v: &mut Value| v["schema"] = json!("af/task-status@1")),
+                "the previous version",
+            ),
         ],
     );
 }
@@ -413,8 +417,8 @@ fn materialized_diff_and_status_documents_are_closed() {
 #[test]
 fn detached_cancelled_and_the_delivery_proof_are_closed() {
     let running = TaskStateV1::new(TaskStatePhaseV1::Running);
-    let detached = TaskDetachedV2 {
-        schema: TASK_DETACHED_V2.into(),
+    let detached = TaskDetachedV3 {
+        schema: TASK_DETACHED_V3.into(),
         task_id: "pagination-cli".into(),
         run: 2,
         pid: 812,
@@ -425,9 +429,9 @@ fn detached_cancelled_and_the_delivery_proof_are_closed() {
         next_action: Some("af task wait pagination-cli".into()),
     };
     both(
-        "task-detached-v2.json",
+        "task-detached-v3.json",
         &detached,
-        TaskDetachedV2::validate,
+        TaskDetachedV3::validate,
         vec![
             (Box::new(|v: &mut Value| v["run"] = json!(0)), "run 0"),
             (Box::new(|v: &mut Value| v["log"] = json!("")), "no log"),
@@ -442,39 +446,39 @@ fn detached_cancelled_and_the_delivery_proof_are_closed() {
                 "a run that does not say whether it was admitted",
             ),
             (
-                Box::new(|v: &mut Value| v["schema"] = json!("af/task-detached@1")),
+                Box::new(|v: &mut Value| v["schema"] = json!("af/task-detached@2")),
                 "the earlier version",
             ),
         ],
     );
     // Still starting when the command gave up waiting: not admitted, and the next command
     // looks at it rather than claiming it runs.
-    let starting = TaskDetachedV2 {
+    let starting = TaskDetachedV3 {
         admitted: false,
         state: TaskStateV1::new(TaskStatePhaseV1::Planned).with_next("af task run pagination-cli"),
         next_action: Some("af task status pagination-cli".into()),
         ..detached.clone()
     };
     both(
-        "task-detached-v2.json",
+        "task-detached-v3.json",
         &starting,
-        TaskDetachedV2::validate,
+        TaskDetachedV3::validate,
         vec![],
     );
-    let ended = TaskDetachedV2 {
+    let ended = TaskDetachedV3 {
         admitted: false,
         state: verified(),
         next_action: None,
         ..detached
     };
     both(
-        "task-detached-v2.json",
+        "task-detached-v3.json",
         &ended,
-        TaskDetachedV2::validate,
+        TaskDetachedV3::validate,
         vec![],
     );
-    let cancelled = TaskCancelledV1 {
-        schema: TASK_CANCELLED_V1.into(),
+    let cancelled = TaskCancelledV2 {
+        schema: TASK_CANCELLED_V2.into(),
         task_id: "pagination-cli".into(),
         request: cancel_request(),
         state: TaskStateV1::ended(
@@ -485,13 +489,19 @@ fn detached_cancelled_and_the_delivery_proof_are_closed() {
         .with_next("af task run pagination-cli"),
     };
     both(
-        "task-cancelled-v1.json",
+        "task-cancelled-v2.json",
         &cancelled,
-        TaskCancelledV1::validate,
-        vec![(
-            Box::new(|v: &mut Value| v["request"]["pid"] = json!(0)),
-            "a request of no process",
-        )],
+        TaskCancelledV2::validate,
+        vec![
+            (
+                Box::new(|v: &mut Value| v["request"]["pid"] = json!(0)),
+                "a request of no process",
+            ),
+            (
+                Box::new(|v: &mut Value| v["schema"] = json!("af/task-cancelled@1")),
+                "the previous version",
+            ),
+        ],
     );
     let proof = TaskDeliveryProofV1 {
         verification_task_id: "chain-verify".into(),

@@ -1,8 +1,13 @@
 import json,os,sys
 r=json.load(sys.stdin)
-# The tree before the change is beside this one, read-only, with the change's paths (ADR-0212).
-subject=json.load(open('../diff-subject.json'))
+# The tree before the change is beside this one, read-only (ADR-0212), and the change's paths
+# are a typed input the kernel built (ADR-0254); nothing else is written beside the tree.
+assert not os.path.exists('../diff-subject.json')
+typed=r['inputs']['diff_subject'][0]
+assert typed['artifact_type']=='af/DiffSubject@1' and typed['snapshot_id']==r['inputs']['source'][0]['snapshot_id'], typed
+subject=typed['payload']
 assert subject['schema']=='af/diff-subject@1' and subject['base']=='../base', subject
+assert subject['snapshot_id']==typed['snapshot_id'], subject
 assert subject['changes'], subject
 for change in subject['changes']:
     assert ('before' in change)==os.path.exists('../base/'+change['path']), change

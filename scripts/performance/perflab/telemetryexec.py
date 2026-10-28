@@ -648,7 +648,8 @@ class Contained(Executor):
     removal = None
 
     def finish(self, process, execution, stopped):
-        removal = self.removal if stopped and self.removal else self._remove(execution)
+        removal = (self.removal if stopped and self.removal is not None
+                   else self._remove(execution))
         self.removal = None
         if process.returncode is None:
             process.kill()
@@ -657,8 +658,9 @@ class Contained(Executor):
             except subprocess.TimeoutExpired:
                 pass
         problems = []
-        if not removal.endswith(" removed"):
-            problems.append(removal)
+        # Only the removal's typed outcome confirms it, never its wording (issue #388).
+        if not removal.confirmed:
+            problems.append(removal.detail)
         if process.returncode is None:
             problems.append("the container client did not end")
         if self.inventory is not None:
@@ -668,4 +670,4 @@ class Contained(Executor):
         if problems:
             return None, "uncertain", "; ".join(problems)[:4096]
         self.pending = False
-        return None, "confirmed", removal
+        return None, "confirmed", removal.detail

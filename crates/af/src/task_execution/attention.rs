@@ -9,7 +9,7 @@ use serde_json::{Value, json};
 /// The document `af task list --attention --json` prints.
 pub(crate) const TASK_ATTENTION_V1: &str = "af/task-attention@1";
 
-/// Every group, in [`TaskAttentionV1::ALL`] order, with the `af/task-list-entry@3` entries whose
+/// Every group, in [`TaskAttentionV1::ALL`] order, with the `af/task-list-entry@4` entries whose
 /// state it holds, each group in the order the entries came.
 pub(crate) fn groups(entries: Vec<Value>) -> Result<Vec<(TaskAttentionV1, Vec<Value>)>, String> {
     let mut groups: Vec<(TaskAttentionV1, Vec<Value>)> = TaskAttentionV1::ALL
