@@ -220,8 +220,8 @@ enum Unit {
 
 /// `text` as words and commands. A command starts at one of [`COMMANDS`] — at the start of a
 /// fix (`leading`), or after a word ending in `:`, `,` or `;`, or `then`, `or`, `&&` — and runs
-/// to a word ending in `,` or `;` (kept), or before `&&`, `||`, a word opening `(` or a shell
-/// comment. A span between backticks is one word; `fish` as for [`af_words`].
+/// to a word ending in `,` or `;`, or to `&&` or `||` (kept), or before a word opening `(` or a
+/// shell comment. A span between backticks is one word; `fish` as for [`af_words`].
 fn units(text: &str, leading: bool, fish: bool) -> Vec<Unit> {
     // A PATH line quotes a directory that may hold spaces, quotes or backquotes: it is one
     // command, laid out by [`fit_path_line`] alone.
@@ -281,11 +281,14 @@ fn units(text: &str, leading: bool, fish: bool) -> Vec<Unit> {
         }
         let mut command: Vec<&str> = Vec::new();
         while let Some(word) = words.get(index) {
-            if !command.is_empty()
-                && (matches!(word.as_str(), "&&" | "||")
-                    || word.starts_with('(')
-                    || word.starts_with('#'))
-            {
+            if !command.is_empty() && (word.starts_with('(') || word.starts_with('#')) {
+                break;
+            }
+            // The `&&` or `||` that chains it to the next command ends it: kept on its last
+            // line, where a shell continues past the newline, never a line of its own.
+            if !command.is_empty() && matches!(word.as_str(), "&&" | "||") {
+                command.push(word);
+                index += 1;
                 break;
             }
             command.push(word);
@@ -336,10 +339,11 @@ fn layout(
                 }
                 // The `,` or `;` that ends a command in prose is the sentence's, not its last
                 // argument's: fitted apart, so a broken command never quotes it (`'/repo;'`).
-                // So is the `&&` that chains it to the next command: it ends the command's
-                // last line, where a shell continues past the newline.
+                // So is the `&&` or `||` that chains it to the next command: it ends the
+                // command's last line, where a shell continues past the newline.
                 let (command, tail) = match whole
                     .strip_suffix(" &&")
+                    .or_else(|| whole.strip_suffix(" ||"))
                     .or_else(|| whole.strip_suffix([',', ';']))
                 {
                     Some(command) if !command.is_empty() => {
@@ -2431,10 +2435,17 @@ esac
     const HOSTILE: &str = "a $TAG \"b' c`id`d$(touch x)e\u{2019}";
 
     /// A real directory with [`HOSTILE`] in its name, inside a fresh temporary directory that
-    /// also serves as the shell's working directory, so a `$(touch x)` that ran leaves `x`.
+    /// also serves as the shell's working directory, so a `$(touch x)` that ran leaves `x`. A
+    /// long fixed directory between them makes every PATH line for it wider than 100 columns
+    /// whatever the temporary root is (`/tmp/.tmpXXXXXX` on Linux, longer on macOS), so the
+    /// tests that cut the line at 100 columns cut it on every platform.
     fn hostile_dir() -> (tempfile::TempDir, PathBuf) {
         let root = tempfile::tempdir().unwrap();
-        let dir = root.path().join(HOSTILE).join("bin");
+        let dir = root
+            .path()
+            .join("a-fixed-directory-long-enough-that-every-path-line-is-cut")
+            .join(HOSTILE)
+            .join("bin");
         std::fs::create_dir_all(&dir).unwrap();
         (root, dir)
     }
@@ -2957,6 +2968,56 @@ esac
         )];
         assert_eq!(exit_code(&failed), 1);
         assert!(render(&failed, 100, false).contains("1 check(s) failed"));
+    }
+
+    /// #331, Linux CI review: the project check's chained fix for an unbound, uninstalled
+    /// release pin (`af onboard --repo PATH --refresh-lock --af V && af self install V`), wrapped
+    /// at 80 and 100 columns for every length of a long checkout path. No line is wider than the
+    /// terminal, its `&&` never starts a line, the printed lines parse in `sh -n`, and they are
+    /// the command's words.
+    #[test]
+    fn a_wrapped_chained_fix_keeps_its_operator_and_parses() {
+        for width in [80, 100] {
+            for length in 1..=120 {
+                let repo = format!("/r/{}", "x".repeat(length));
+                let onboard = format!("af onboard --repo {}", shell_words::quote(&repo));
+                let mut warns = Fixes::default();
+                warns.command(format!("{onboard} --refresh-lock --af 0.13.0"));
+                warns.hint("the lock binds no bytes for this target; --refresh-lock binds them");
+                warns.command("af self install 0.13.0");
+                warns.hint("the pinned release is not installed");
+                let check = warns.check(Status::Warn, "project", format!("{repo}/.af validates"));
+                let command = check.fix.clone().unwrap();
+                let text = render(&[check], width, false);
+                assert!(
+                    text.lines().all(|line| line.chars().count() <= width),
+                    "{width} {length}\n{text}"
+                );
+                let printed = printed_fix(&text);
+                assert!(
+                    printed
+                        .lines()
+                        .all(|line| !line.trim_start().starts_with("&&")),
+                    "{width} {length}\n{text}"
+                );
+                let parsed = std::process::Command::new("/bin/sh")
+                    .args(["-n", "-c", &printed])
+                    .env_clear()
+                    .output()
+                    .unwrap();
+                assert!(
+                    parsed.status.success(),
+                    "{width} {length}: {parsed:?}\n{text}"
+                );
+                // A shell removes each backslash and newline, and reads a newline after `&&`
+                // as a space.
+                assert_eq!(
+                    shell_words::split(&printed.replace("\\\n", "")).unwrap(),
+                    shell_words::split(&command).unwrap(),
+                    "{width} {length}\n{text}"
+                );
+            }
+        }
     }
 
     /// GA final fix item 7: every row of the text form fits the width, at 100, 80 and 60

@@ -1595,7 +1595,19 @@ fn tilde(path: &Path, home: Option<&Path>) -> String {
 
 /// A directory as af prints it to a person: `~/…` below `HOME`.
 pub(crate) fn display_path(path: &Path) -> String {
-    tilde(path, home_dir().as_deref())
+    display_below(path, home_dir().as_deref())
+}
+
+/// [`tilde`] below `home` as given or as its canonical path: the scan's directories are
+/// canonical, so one below a `home` reached through a symbolic link (macOS's `/var`, say) reads
+/// `~/…` as it does below any other `home` (#331).
+fn display_below(path: &Path, home: Option<&Path>) -> String {
+    let shown = tilde(path, home);
+    if shown.starts_with("~/") {
+        return shown;
+    }
+    let canonical = home.and_then(|home| fs::canonicalize(home).ok());
+    tilde(path, canonical.as_deref())
 }
 
 fn quoted(path: &Path) -> String {
@@ -2854,6 +2866,27 @@ mod tests {
             tilde(Path::new("/home/someone/My Tools"), Some(home)),
             "'/home/someone/My Tools'"
         );
+    }
+
+    /// #331: a canonical directory below a HOME reached through a symbolic link reads `~/…`,
+    /// as it does below a canonical HOME; one outside HOME is printed whole.
+    #[test]
+    fn a_directory_below_a_linked_home_reads_as_below_home() {
+        let root = tempfile::tempdir().unwrap();
+        let real = fs::canonicalize(root.path()).unwrap().join("real-home");
+        fs::create_dir_all(real.join(".claude")).unwrap();
+        let linked = root.path().join("linked-home");
+        std::os::unix::fs::symlink(&real, &linked).unwrap();
+        let found = real.join(".claude");
+        for home in [&real, &linked] {
+            assert_eq!(display_below(&found, Some(home)), "~/.claude", "{home:?}");
+        }
+        let outside = Path::new("/opt/elsewhere/.claude");
+        assert_eq!(
+            display_below(outside, Some(&linked)),
+            "/opt/elsewhere/.claude"
+        );
+        assert_eq!(display_below(&found, None), found.to_str().unwrap());
     }
 
     #[test]

@@ -391,7 +391,10 @@ fn the_update_row_warns_of_a_failed_or_stalled_release_check() {
 
 /// GA final fix item 7: the human rows fit 100 columns, or a narrower `COLUMNS` (80 here), with
 /// a long install path: a detail or path continues on indented lines and is never cut short, and
-/// each fix command stays whole on its line or is broken between its arguments.
+/// each fix command stays whole on its line or is broken between its arguments. The PATH is the
+/// test's own, so both forms of the binary's install fix are proven whatever the host's PATH
+/// holds (#331, Linux CI): with an `af` on PATH it runs that `af`; with none, this binary by its
+/// path, its printed lines the command the JSON carries.
 #[test]
 fn rows_fit_100_and_80_columns_with_a_long_install_path() {
     let machine = Machine::new();
@@ -402,9 +405,24 @@ fn rows_fit_100_and_80_columns_with_a_long_install_path() {
     std::fs::create_dir_all(&home).unwrap();
     let bin = home.join(".local/bin");
     let squeeze = |text: &str| text.split_whitespace().collect::<String>();
-    for columns in [100, 80] {
+    // A PATH with git and no `af`, and one with an `af` link to this binary before it.
+    let tools = machine.path("tools-path");
+    std::fs::create_dir_all(&tools).unwrap();
+    std::os::unix::fs::symlink(on_path("git"), tools.join("git")).unwrap();
+    let linked = machine.path("af-path");
+    std::fs::create_dir_all(&linked).unwrap();
+    std::os::unix::fs::symlink(crate::common::af_binary(), linked.join("af")).unwrap();
+    let with_af = std::env::join_paths([&linked, &tools]).unwrap();
+    let version = env!("CARGO_PKG_VERSION");
+    for (columns, af_on_path) in [(100, false), (100, true), (80, false), (80, true)] {
+        let path = if af_on_path {
+            with_af.as_os_str()
+        } else {
+            tools.as_os_str()
+        };
         let wide = columns.to_string();
-        let output = machine.doctor_at(&home, &work, &[], None, &[("COLUMNS", &wide)]);
+        let envs = [("COLUMNS", wide.as_str())];
+        let output = machine.doctor_at(&home, &work, &[], Some(path), &envs);
         assert_eq!(output.status.code(), Some(0), "{}", err(&output));
         let text = out(&output);
         for line in text.lines() {
@@ -434,7 +452,6 @@ fn rows_fit_100_and_80_columns_with_a_long_install_path() {
             "{columns}\n{text}"
         );
         // The receipt path is printed canonical; its tail below the machine root is the same.
-        let version = env!("CARGO_PKG_VERSION");
         assert!(
             flat.contains(&format!(
                 "/home/a-long-gate-like-directory-name-for-path-length-tests/\
@@ -442,12 +459,27 @@ fn rows_fit_100_and_80_columns_with_a_long_install_path() {
             )),
             "{columns}\n{text}"
         );
-        // Each af fix command is whole on its line, or broken between its arguments.
-        assert!(
-            text.lines()
-                .any(|line| line.ends_with(&format!("fix: af self install {version}"))),
-            "{columns}\n{text}"
-        );
+        // Each af fix command is whole on its line, or broken between its arguments: the
+        // binary's install runs the `af` on PATH, or this binary by its path when none is.
+        if af_on_path {
+            assert!(
+                text.lines()
+                    .any(|line| line.ends_with(&format!("fix: af self install {version}"))),
+                "{columns}\n{text}"
+            );
+        } else {
+            let json = document(&machine.doctor_at(&home, &work, &["--json"], Some(path), &envs));
+            let fix = check(&json, "binary")["fix"].as_str().unwrap().to_owned();
+            let program = crate::common::af_binary();
+            let program = shell_words::quote(program.to_str().unwrap()).into_owned();
+            assert_eq!(fix, format!("{program} self install {version}"), "{json}");
+            let printed = printed_fix(&text, "binary");
+            assert_eq!(
+                shell_words::split(&printed.replace("\\\n", "")).unwrap(),
+                shell_words::split(&fix).unwrap(),
+                "{columns}\n{text}"
+            );
+        }
         let setup: Vec<String> = text
             .lines()
             .skip_while(|line| !line.contains("fix: af self setup-shell"))
@@ -471,7 +503,7 @@ fn rows_fit_100_and_80_columns_with_a_long_install_path() {
         // the width, its directory cut where the shell joins it again (D6): the printed lines
         // are the command the JSON carries.
         let envs = [("COLUMNS", wide.as_str()), ("SHELL", "/bin/zsh")];
-        let zsh = machine.doctor_at(&home, &work, &[], None, &envs);
+        let zsh = machine.doctor_at(&home, &work, &[], Some(path), &envs);
         let text = out(&zsh);
         for line in text.lines() {
             assert!(
@@ -479,7 +511,7 @@ fn rows_fit_100_and_80_columns_with_a_long_install_path() {
                 "{columns}: `{line}`\n{text}"
             );
         }
-        let json = document(&machine.doctor_at(&home, &work, &["--json"], None, &envs));
+        let json = document(&machine.doctor_at(&home, &work, &["--json"], Some(path), &envs));
         let fix = check(&json, "path")["fix"].as_str().unwrap().to_owned();
         assert!(
             fix.ends_with(&format!(
@@ -1110,7 +1142,9 @@ fn no_fix_is_offered_that_the_reported_error_would_stop() {
     run_fixes(&machine, &document, &repo, &bin, &envs, &[]);
 
     // An empty auth directory holds no login: `af provider detect --apply` probes none there
-    // and registers nothing, so it is no fix either (#331 D5); the hint says why.
+    // and registers nothing, so it is no fix either (#331 D5); the hint says why, naming the
+    // directory `~/.claude` below HOME whether or not HOME is reached through a symbolic link
+    // (macOS's `/var`).
     std::fs::create_dir_all(&found).unwrap();
     std::fs::set_permissions(&found, std::fs::Permissions::from_mode(0o700)).unwrap();
     let document = doctor();
@@ -1119,9 +1153,8 @@ fn no_fix_is_offered_that_the_reported_error_would_stop() {
         assert_eq!(row["fix"], serde_json::Value::Null, "{id}: {document}");
         assert!(
             row["hint"].as_str().unwrap().contains(&format!(
-                "no {login} was found to register: no CLI on PATH reports a login in {}; log in \
-                 and register one yourself at a private terminal",
-                canonical(&found)
+                "no {login} was found to register: no CLI on PATH reports a login in \
+                 ~/.claude; log in and register one yourself at a private terminal"
             )),
             "{id}: {document}"
         );
@@ -1641,7 +1674,12 @@ fn every_doctor_line_fits_the_terminal_and_its_commands_run_as_printed() {
     let tools = machine.path("tools-path");
     std::fs::create_dir_all(&tools).unwrap();
     std::os::unix::fs::symlink(on_path("git"), tools.join("git")).unwrap();
-    let bin = machine.path("home/.local/bin");
+    // The default link's directory below HOME, a long fixed directory in it so that the elvish
+    // line is wider than 100 columns whatever the temporary root is (`/tmp/.tmpXXXXXX` on
+    // Linux, longer on macOS): the cut form is proved on every platform.
+    let bin =
+        machine.path("home/.local/a-fixed-directory-long-enough-that-the-elvish-line-is-cut/bin");
+    let bin_env = bin.to_str().unwrap().to_owned();
     let version = crate::common::VERSION;
     for columns in [80_u16, 100] {
         let fits = |text: &str| {
@@ -1658,7 +1696,7 @@ fn every_doctor_line_fits_the_terminal_and_its_commands_run_as_printed() {
             &repo,
             columns,
             tools.as_os_str(),
-            &[("SHELL", "/bin/zsh")],
+            &[("SHELL", "/bin/zsh"), ("XDG_BIN_HOME", &bin_env)],
         );
         fits(&text);
         // The preview, from `af onboard` to the sentence's `;`: the repository, as it is.
@@ -1721,7 +1759,7 @@ fn every_doctor_line_fits_the_terminal_and_its_commands_run_as_printed() {
             &repo,
             columns,
             tools.as_os_str(),
-            &[("SHELL", "/usr/bin/elvish")],
+            &[("SHELL", "/usr/bin/elvish"), ("XDG_BIN_HOME", &bin_env)],
         );
         fits(&text);
         let fix = printed(&text, "path", "fix: ");
