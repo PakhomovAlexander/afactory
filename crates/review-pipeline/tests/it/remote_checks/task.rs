@@ -341,12 +341,12 @@ pub struct Recorded {
     pub domain: CodeTaskDomain,
     pub policy_id: String,
     pub plan: ExecutionPlanV1,
-    pub receipt: Option<TaskCheckReceiptV1>,
+    pub receipt: Option<TaskCheckReceiptV2>,
     pub candidate: String,
 }
 
 impl Recorded {
-    pub fn receipt(&self) -> &TaskCheckReceiptV1 {
+    pub fn receipt(&self) -> &TaskCheckReceiptV2 {
         self.receipt
             .as_ref()
             .expect("the check node recorded a receipt")

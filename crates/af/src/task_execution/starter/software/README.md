@@ -40,12 +40,12 @@ af task deliver implementation-reviewed --branch pagination-result \
 
 `implementation-small.json` uses checks and an independent evaluator. The heavy implementation
 allows one additional author retry. `implementation-repair-targeted.json` permits one repair and
-targeted fix verification; `implementation-repair-heavy.json` requires full discovery on repaired
-S2 as well. The default author implements the complete tutorial goal, so repair activates only
+targeted fix verification; `implementation-repair-heavy.json` requires a full review of the
+repaired second source Snapshot (S2) as well. The default author implements the complete tutorial goal, so repair activates only
 when an actual finding is present. All possible verification capacity is reserved in advance.
 
 `review-light.json` and `review-heavy.json` use the same Review definition that implementation
-embeds. Light declares one discovery Round; heavy declares two. Running them on the unfinished
+embeds. Light runs one initial review pass (discovery Round); heavy allows two. Running them on the unfinished
 initial source cannot approve it. Both reviewers are required in every Round. A missing reviewer
 is incomplete, and a recorded negative result remains negative.
 
@@ -71,7 +71,8 @@ developer approval. A fitting Task uses its shared definition without a Planner 
 generated example has a fifteen-minute total deadline including approval waiting and shares all
 planning and execution charges; editing the live catalog cannot change a captured plan.
 
-These Workers are tutorial substitutes, with explicit supported requirements and claim types.
+These Workers are tutorial substitutes. They accept only the tutorial's stated requirements and
+review claim categories (claim types).
 Configure independent shared or local model Workers with the same contracts for broader work.
 The captured default uses trusted-local isolation; enabling `require_container` requires supported
 container admission. These deterministic examples establish contract behavior, not model speed

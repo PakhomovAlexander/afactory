@@ -493,6 +493,12 @@ impl EventStore {
                  usage_v3_json      TEXT,
                  usage_observation_v1_json TEXT,
                  PRIMARY KEY (run_id, attempt_id)
+             );
+             CREATE TABLE IF NOT EXISTS attempt_wall_end (
+                 run_id             TEXT    NOT NULL,
+                 attempt_id         TEXT    NOT NULL,
+                 wall_end_id        TEXT    NOT NULL,
+                 PRIMARY KEY (run_id, attempt_id)
              );",
         )?;
         // The table only: this release's marker is written with its first appended event.

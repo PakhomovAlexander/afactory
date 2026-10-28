@@ -87,6 +87,65 @@ pub fn copy_tree(source: &Path, destination: &Path) {
     }
 }
 
+/// The one migration ADR-0255 asks of a project whose packages predate it, applied to a copy
+/// under `repo`: every package file below `trees` (repository-relative directories) that names
+/// `af/TaskCheckReceipt@1` names `af/TaskCheckReceipt@2`, and every package each of `catalogs`
+/// (repository-relative catalog files, package paths relative to `repo`) pins is pinned again.
+/// This repository's own `.af/`, and the fixtures staged to install into it, take it when the
+/// release pin moves to the release that carries ADR-0255; until then a test that copies them
+/// to run them under this `af` takes it on its copy.
+pub fn migrate_check_receipt(repo: &Path, trees: &[&str], catalogs: &[&str]) {
+    // A gate's sealed candidate supplies read-only files, and a copy made with `cp -R` keeps
+    // their modes: every file this migration rewrites takes its owner-write bit first.
+    fn writable(path: &Path) {
+        use std::os::unix::fs::PermissionsExt;
+        let mut permissions = std::fs::metadata(path).unwrap().permissions();
+        permissions.set_mode(permissions.mode() | 0o200);
+        std::fs::set_permissions(path, permissions).unwrap();
+    }
+    let mut stack: Vec<PathBuf> = trees.iter().map(|tree| repo.join(tree)).collect();
+    while let Some(path) = stack.pop() {
+        if path.is_dir() {
+            for entry in std::fs::read_dir(&path).unwrap() {
+                stack.push(entry.unwrap().path());
+            }
+            continue;
+        }
+        let Ok(text) = std::fs::read_to_string(&path) else {
+            continue;
+        };
+        if text.contains("af/TaskCheckReceipt@1") {
+            writable(&path);
+            std::fs::write(
+                &path,
+                text.replace("af/TaskCheckReceipt@1", "af/TaskCheckReceipt@2"),
+            )
+            .unwrap();
+        }
+    }
+    for catalog in catalogs {
+        let path = repo.join(catalog);
+        let mut value: toml::Value =
+            toml::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
+        let mut changed = false;
+        for (name, pin) in value["packages"].as_table_mut().unwrap() {
+            let package = repo.join(pin["path"].as_str().unwrap());
+            if !package.is_dir() {
+                continue;
+            }
+            let digest = review_config::lock::package_digest(name, &package).unwrap();
+            if pin["digest"].as_str() != Some(digest.as_str()) {
+                pin["digest"] = toml::Value::String(digest);
+                changed = true;
+            }
+        }
+        if changed {
+            writable(&path);
+            std::fs::write(&path, toml::to_string(&value).unwrap()).unwrap();
+        }
+    }
+}
+
 pub fn fixture_named(root: &Path, name: &str) -> (PathBuf, PathBuf) {
     let repo = root.join("repo");
     let workspace = std::env::var_os("AF_WORKSPACE_ROOT")

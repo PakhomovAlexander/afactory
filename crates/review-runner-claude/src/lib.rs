@@ -73,8 +73,8 @@ use review_core::{Arg, Command};
 use review_runner::ResolvedReviewer;
 use review_runner::cli::{CliFlag, CliInvocation};
 use review_runner::{
-    InputTransport, ModelRunner, RenderedInput, ReviewerAdapter, ReviewerInputs, RunnerError,
-    compose_model_prompt,
+    InputTransport, ModelRunner, NativeReplySchema, RenderedInput, ReviewerAdapter, ReviewerInputs,
+    RunnerError, compose_model_prompt,
 };
 use review_store::Cas;
 
@@ -259,10 +259,19 @@ impl ReviewerAdapter for ClaudeAdapter {
     fn render_input(&self, inputs: &ReviewerInputs) -> Result<RenderedInput, RunnerError> {
         let (prompt, manifest) =
             compose_model_prompt(&self.prompt, inputs).map_err(RunnerError::Refused)?;
+        // The schema the Task adapter derives for a Campaign reviewer's dispatch (ADR-0246).
+        let schema = review_runner::task::reply_schema::ReplyContract::ReviewerResult
+            .transport(&[])
+            .map_err(RunnerError::Refused)?
+            .ok_or_else(|| RunnerError::Refused("Reviewer Result has no native schema".into()))?;
         Ok(RenderedInput {
             transport: InputTransport::Prompt,
             bytes: prompt.into_bytes(),
             manifest,
+            reply_schema: Some(NativeReplySchema {
+                option: "--json-schema",
+                schema,
+            }),
         })
     }
 }

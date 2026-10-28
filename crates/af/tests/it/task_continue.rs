@@ -171,11 +171,11 @@ fn a_reviewed_task_continues_from_its_candidate_with_typed_findings() {
     // Without --execute it plans and waits for the plan's confirmation.
     let plan = ["task", "run", "second", "--from", "first"];
     let (planned, _) = json(&repo, &state, &plan, 0);
-    assert_eq!(planned["schema"], "af/task-inspection@13");
+    assert_eq!(planned["schema"], "af/task-inspection@14");
     assert_eq!(planned["continues"]["task_id"], "first");
     assert_eq!(planned["continues"]["round"], 1);
     assert_eq!(planned["continues"]["findings"], 1);
-    valid("task-inspection-v13.json", &planned);
+    valid("task-inspection-v14.json", &planned);
 
     let plan_id = planned["plan_id"].as_str().unwrap().to_owned();
     let confirm = ["task", "run", "second", "--confirm-plan", &plan_id];
@@ -262,7 +262,7 @@ fn a_reviewed_task_continues_from_its_candidate_with_typed_findings() {
     // The lineage is shown, in the document and as text.
     let (shown, _) = json(&repo, &state, &["task", "show", "second"], 0);
     assert_eq!(shown["continues"], planned["continues"]);
-    valid("task-inspection-v13.json", &shown);
+    valid("task-inspection-v14.json", &shown);
     let text = run(&repo, &state, &["task", "show", "second"], false);
     let text = String::from_utf8_lossy(&text.stdout).into_owned();
     assert!(
@@ -318,9 +318,9 @@ fn a_task_file_with_only_an_id_a_kind_and_a_goal_plans_with_the_project_defaults
         .unwrap()
         .iter()
         .map(|id| cas.get_json(id.as_str().unwrap()).unwrap())
-        .find(|envelope| envelope["type"] == "af/TaskReadFirst@1")
+        .find(|envelope| envelope["type"] == "af/TaskReadFirst@2")
         .expect("the read-first record is provenance");
-    valid("task-read-first-v1.json", &record["payload"]);
+    valid("task-read-first-v2.json", &record["payload"]);
 
     // The same files plan the same requirements; a changed context file changes them, and with
     // them the plan.
@@ -597,14 +597,14 @@ fn each_round_carries_its_own_evaluator_verdict() {
         &["task", "findings", "twice", "--round", "1"],
         0,
     );
-    valid("task-findings-v1.json", &first);
+    valid("task-findings-v2.json", &first);
     let (second, _) = json(
         &repo,
         &state,
         &["task", "findings", "twice", "--round", "2"],
         0,
     );
-    valid("task-findings-v1.json", &second);
+    valid("task-findings-v2.json", &second);
     assert_eq!(first["rounds"], 2, "{first}");
     // Both rounds reviewed the one candidate.
     assert_eq!(
@@ -889,4 +889,129 @@ fn a_continuation_from_an_earlier_round_names_the_output_that_holds_its_candidat
         (task["result_id"].as_str(), task["port"].as_str()),
         (Some(result_id), Some("snapshot"))
     );
+}
+
+/// The `continue` fixture where the first Task's candidate rewrites `AGENTS.md`, a context file
+/// of `first.json`, and the project's `.af/rules.md`; the continued implementer keeps the
+/// requirements it was handed as `seen-requirements.txt`.
+fn changed_rules(repo: &Path) {
+    std::fs::write(repo.join("AGENTS.md"), "# Agents\n\nThe base's rules.\n").unwrap();
+    let mut task: Value =
+        serde_json::from_str(&std::fs::read_to_string(repo.join("first.json")).unwrap()).unwrap();
+    task["context"] = serde_json::json!(["AGENTS.md"]);
+    std::fs::write(
+        repo.join("first.json"),
+        serde_json::to_vec_pretty(&task).unwrap(),
+    )
+    .unwrap();
+    let path = repo.join(".af/task-packages/fixture/implementer/worker.py");
+    let worker = std::fs::read_to_string(&path).unwrap();
+    let first = "    summary='Implemented pagination'\n";
+    let second = "    summary='; '.join(";
+    assert!(
+        worker.contains(first) && worker.contains(second),
+        "{worker}"
+    );
+    let worker = worker
+        .replace(
+            first,
+            &format!(
+                "{first}    open('AGENTS.md','w').write('# Agents\\n\\nThe candidate\\'s rules.\\n')\n    \
+                 open('.af/rules.md','w').write('# Standing rules\\n\\nThe candidate\\'s.\\n')\n"
+            ),
+        )
+        .replace(
+            second,
+            &format!(
+                "    open('seen-requirements.txt','w').write(request['inputs']['requirements'][0]['payload']['text'])\n{second}"
+            ),
+        );
+    std::fs::write(&path, worker).unwrap();
+}
+
+/// #331 item 2 (ADR-0254): a continued Task's Worker is told to read the rules and context of the
+/// tree it reads, its candidate, never the bytes another Snapshot holds; the record names that
+/// tree, and the plan names it and says the rules changed.
+#[test]
+fn a_continuation_whose_candidate_changed_its_rules_gives_the_worker_the_candidates_rules() {
+    let root = tempfile::tempdir().unwrap();
+    let (repo, state) = fixture_with(root.path(), changed_rules);
+    let start = ["task", "start", "--execute", "--file", "first.json"];
+    let (first, _) = json(&repo, &state, &start, 3);
+    assert_eq!(first["state"]["outcome"], "changes_requested", "{first}");
+    let cas = review_store::Cas::open_existing(state.join("cas")).unwrap();
+    let read_first = |revision: &Value| -> Value {
+        revision["provenance"]["input_artifact_ids"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|id| cas.get_json(id.as_str().unwrap()).unwrap())
+            .find(|envelope| envelope["type"] == "af/TaskReadFirst@2")
+            .expect("the read-first record is provenance")["payload"]
+            .clone()
+    };
+    let digest = |bytes: &[u8]| review_source_git::digest_bytes(bytes);
+    let first_revision = payload(&cas, &first["revision_id"]);
+    let base = &first_revision["inputs"]["source"];
+    let was = read_first(&first_revision);
+    valid("task-read-first-v2.json", &was);
+    assert_eq!(
+        was["snapshot_id"], base["snapshot_id"],
+        "the base's own tree"
+    );
+    let base_rules = file_in(&cas, &base["artifact_ids"][0], ".af/rules.md").unwrap();
+    assert_eq!(was["rules"]["digest"], digest(&base_rules).as_str());
+
+    let plan = ["task", "run", "second", "--from", "first"];
+    let (planned, err) = json(&repo, &state, &plan, 0);
+    let revision = payload(&cas, &planned["revision_id"]);
+    let source = &revision["inputs"]["source"];
+    let snapshot = source["snapshot_id"].as_str().unwrap().to_owned();
+    let candidate = |path: &str| file_in(&cas, &source["artifact_ids"][0], path).unwrap();
+    let (agents, rules) = (candidate("AGENTS.md"), candidate(".af/rules.md"));
+    assert_eq!(agents, b"# Agents\n\nThe candidate's rules.\n");
+    assert_ne!(rules, base_rules, "the candidate changed the rules");
+
+    // The record names the candidate's tree and its bytes; nothing of the base remains.
+    let now = read_first(&revision);
+    valid("task-read-first-v2.json", &now);
+    assert_eq!(now["snapshot_id"], snapshot.as_str());
+    assert_eq!(now["rules"]["digest"], digest(&rules).as_str());
+    assert_eq!(now["context"][0]["path"], "AGENTS.md");
+    assert_eq!(now["context"][0]["digest"], digest(&agents).as_str());
+
+    // The plan names the tree and says the rules are not what `first` read.
+    assert!(
+        err.contains(&format!(
+            "read first: from Snapshot {snapshot}, the reviewed candidate of Task `first` this \
+             Task continues"
+        )),
+        "{err}"
+    );
+    assert!(
+        err.contains(&format!(
+            "rules: the candidate's .af/rules.md ({}) differs from what Task `first` read ({})",
+            digest(&rules),
+            digest(&base_rules)
+        )),
+        "{err}"
+    );
+
+    // What the Worker was handed: the candidate's rules and AGENTS.md, in the tree it read.
+    let plan_id = planned["plan_id"].as_str().unwrap().to_owned();
+    let confirm = ["task", "run", "second", "--confirm-plan", &plan_id];
+    let (second, _) = json(&repo, &state, &confirm, 0);
+    assert_eq!(second["result"]["acceptance"], "satisfied", "{second}");
+    let sealed = &second["result"]["outputs"]["snapshot"]["artifact_ids"][0];
+    let seen = String::from_utf8(file_in(&cas, sealed, "seen-requirements.txt").unwrap()).unwrap();
+    assert!(seen.contains(&snapshot), "{seen}");
+    assert!(
+        seen.contains(&format!("- .af/rules.md ({})", digest(&rules))),
+        "{seen}"
+    );
+    assert!(
+        seen.contains(&format!("- AGENTS.md ({})", digest(&agents))),
+        "{seen}"
+    );
+    assert!(!seen.contains(&digest(&base_rules)), "{seen}");
 }

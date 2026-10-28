@@ -148,18 +148,24 @@ pub enum TaskCauseV1 {
     ProviderNetwork,
     ProviderCapacity,
     ProviderTimeout,
+    /// The Provider's machine environment failed af, not the model or the login: its CLI
+    /// could not start or serve its protocol, or its identity probes proved nothing within
+    /// their bounded retries (ADR-0208, ADR-0257).
+    ProviderEnvironment,
     IdentityChanged,
     IdentityUnverified,
     ModelRefused,
     WriterLost,
     Deadline,
     Budget,
+    /// A Worker's Attempt reached its Attempt wall before it answered (ADR-0257).
+    AttemptWall,
     Collected,
     HostCancelled,
 }
 
 impl TaskCauseV1 {
-    pub const ALL: [Self; 17] = [
+    pub const ALL: [Self; 19] = [
         Self::ReviewerFindings,
         Self::EvaluatorRejected,
         Self::CheckFailed,
@@ -169,12 +175,14 @@ impl TaskCauseV1 {
         Self::ProviderNetwork,
         Self::ProviderCapacity,
         Self::ProviderTimeout,
+        Self::ProviderEnvironment,
         Self::IdentityChanged,
         Self::IdentityUnverified,
         Self::ModelRefused,
         Self::WriterLost,
         Self::Deadline,
         Self::Budget,
+        Self::AttemptWall,
         Self::Collected,
         Self::HostCancelled,
     ];
@@ -190,12 +198,14 @@ impl TaskCauseV1 {
             Self::ProviderNetwork => "provider_network",
             Self::ProviderCapacity => "provider_capacity",
             Self::ProviderTimeout => "provider_timeout",
+            Self::ProviderEnvironment => "provider_environment",
             Self::IdentityChanged => "identity_changed",
             Self::IdentityUnverified => "identity_unverified",
             Self::ModelRefused => "model_refused",
             Self::WriterLost => "writer_lost",
             Self::Deadline => "deadline",
             Self::Budget => "budget",
+            Self::AttemptWall => "attempt_wall",
             Self::Collected => "collected",
             Self::HostCancelled => "host_cancelled",
         }
@@ -213,12 +223,13 @@ impl TaskCauseV1 {
             | Self::ProviderNetwork
             | Self::ProviderCapacity
             | Self::ProviderTimeout
+            | Self::ProviderEnvironment
             | Self::IdentityChanged
             | Self::IdentityUnverified
             | Self::ModelRefused => TaskOutcomeV1::ProviderFailed,
             Self::WriterLost | Self::HostCancelled => TaskOutcomeV1::Cancelled,
             Self::Deadline => TaskOutcomeV1::Expired,
-            Self::Budget => TaskOutcomeV1::Exhausted,
+            Self::Budget | Self::AttemptWall => TaskOutcomeV1::Exhausted,
             Self::Collected => return None,
         })
     }
@@ -227,12 +238,14 @@ impl TaskCauseV1 {
         match self {
             Self::ReviewerFindings => "the review recorded findings at or above its gate",
             Self::EvaluatorRejected => "the independent evaluator did not accept the result",
-            Self::CheckFailed => "a required check ran and failed",
+            Self::CheckFailed => {
+                "a required check ran and failed, or the kernel stopped it at its wall"
+            }
             Self::CheckFlakyThenFailed => {
                 "a required check failed; some of its tests were flaky before"
             }
             Self::PreflightFailed => {
-                "a required check stopped before its tests ran, or never started"
+                "a required check stopped at a step before its tests, or never started"
             }
             Self::MalformedReply => {
                 "a Worker's process failed or its reply broke its output contract"
@@ -242,6 +255,9 @@ impl TaskCauseV1 {
                 "the Provider's model was at capacity or its rate limit was reached"
             }
             Self::ProviderTimeout => "a Worker or Provider call ran out of its Attempt time",
+            Self::ProviderEnvironment => {
+                "the Provider's environment on this machine failed, not the model or the login"
+            }
             Self::IdentityChanged => {
                 "the Provider answered as another account, model or policy than the plan bound"
             }
@@ -252,6 +268,9 @@ impl TaskCauseV1 {
             Self::WriterLost => "the writer lost its lease before the Task finished",
             Self::Deadline => "the Task's wall clock ran out",
             Self::Budget => "a token, Attempt or verification-reserve limit ran out",
+            Self::AttemptWall => {
+                "a Worker reached its Attempt wall; a source-writing Worker's edits are kept"
+            }
             Self::Collected => "the Task was collected; only its summary remains",
             Self::HostCancelled => "the run was interrupted (Ctrl-C or a signal)",
         }
@@ -259,11 +278,15 @@ impl TaskCauseV1 {
 
     /// The cause af's own words in a recorded diagnostic name, if any: a pure reading of the
     /// text, used only where no typed record says more. The order matters: a Provider timeout
-    /// names its own deadline, and the Task's deadline is only the Task's.
+    /// names its own deadline, and the Task's deadline is only the Task's; an account that
+    /// answered as another is a change, and a probe that proved nothing on a failing
+    /// environment (`(environment)`) is the environment's failure, never the login's.
     pub fn of_diagnostic(text: &str) -> Option<Self> {
         let lower = text.to_ascii_lowercase();
         let has = |needles: &[&str]| needles.iter().any(|needle| lower.contains(needle));
-        if has(&[
+        if has(&["reached its attempt wall"]) {
+            Some(Self::AttemptWall)
+        } else if has(&[
             "model_refused",
             "model_switched",
             "model_unavailable",
@@ -275,8 +298,11 @@ impl TaskCauseV1 {
             "changed its exact account",
             "answered as another",
             "identity is no longer current",
+            "differs from the one captured",
         ]) {
             Some(Self::IdentityChanged)
+        } else if has(&["(environment)", "provider environment failure"]) {
+            Some(Self::ProviderEnvironment)
         } else if has(&[
             "authentication",
             "not logged in",
@@ -436,15 +462,113 @@ impl TaskStateV1 {
     }
 }
 
+/// What a Task waits for, as `af task list --attention` and the browser's Tasks pane group it:
+/// a pure reading of its [`TaskStateV1`] (phase, outcome, cause and whether it names a next
+/// command), never recorded. Every state is in exactly one group; the first five need a person,
+/// [`TaskAttentionV1::Running`] and [`TaskAttentionV1::Nothing`] do not.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum TaskAttentionV1 {
+    /// A plan waits for `af task run --confirm-plan`, or the Task waits for a plan review,
+    /// resources, input or a decision.
+    Approval,
+    /// A required check of the gate failed or could not run.
+    GateFailed,
+    /// The review or the evaluator asked for changes.
+    Findings,
+    /// Verified, with a result `af task deliver` has not delivered yet.
+    Deliver,
+    /// It stopped on a Provider, an interrupt, a limit or its wall clock.
+    Stopped,
+    /// A writer runs it now; it names no command until it settles.
+    Running,
+    /// Nothing to run: delivered, verified with nothing to deliver, or collected.
+    Nothing,
+}
+
+impl TaskAttentionV1 {
+    /// Every group, in the order `af task list --attention` prints them.
+    pub const ALL: [Self; 7] = [
+        Self::Approval,
+        Self::GateFailed,
+        Self::Findings,
+        Self::Deliver,
+        Self::Stopped,
+        Self::Running,
+        Self::Nothing,
+    ];
+
+    /// The group a Task in `state` belongs to. A collected Task names no command and needs
+    /// nothing, whatever outcome its tombstone retained.
+    pub fn of(state: &TaskStateV1) -> Self {
+        if state.cause == Some(TaskCauseV1::Collected) {
+            return Self::Nothing;
+        }
+        match (state.phase, state.outcome) {
+            (TaskStatePhaseV1::Running, _) => Self::Running,
+            (TaskStatePhaseV1::Planned | TaskStatePhaseV1::Waiting, _) => Self::Approval,
+            (_, Some(TaskOutcomeV1::Verified)) if state.next_action.is_some() => Self::Deliver,
+            (_, Some(TaskOutcomeV1::Verified)) => Self::Nothing,
+            (_, Some(TaskOutcomeV1::GateFailed)) => Self::GateFailed,
+            (_, Some(TaskOutcomeV1::ChangesRequested)) => Self::Findings,
+            (_, _) => Self::Stopped,
+        }
+    }
+
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Approval => "approval",
+            Self::GateFailed => "gate_failed",
+            Self::Findings => "findings",
+            Self::Deliver => "deliver",
+            Self::Stopped => "stopped",
+            Self::Running => "running",
+            Self::Nothing => "nothing",
+        }
+    }
+
+    /// The group's heading in `af task list --attention` and the browser.
+    pub fn title(self) -> &'static str {
+        match self {
+            Self::Approval => "Waiting for approval",
+            Self::GateFailed => "Failed gate",
+            Self::Findings => "Findings to answer",
+            Self::Deliver => "Verified, ready to deliver",
+            Self::Stopped => "Stopped",
+            Self::Running => "Running",
+            Self::Nothing => "Nothing to do",
+        }
+    }
+
+    /// Whether a Task in this group waits for a person.
+    pub fn needs_you(self) -> bool {
+        !matches!(self, Self::Running | Self::Nothing)
+    }
+
+    /// One line a person reads in `af help task-states`: which states the group holds.
+    pub fn description(self) -> &'static str {
+        match self {
+            Self::Approval => "planned, or waiting for a plan review, resources or input",
+            Self::GateFailed => "gate_failed: a required check failed or could not run",
+            Self::Findings => "changes_requested: reviewer findings or the evaluator",
+            Self::Deliver => "verified, with `af task deliver` as its next command",
+            Self::Stopped => "abandoned, provider_failed, cancelled, exhausted, expired",
+            Self::Running => "a writer holds its lease; no next command until it ends",
+            Self::Nothing => "delivered, verified with nothing to deliver, or collected",
+        }
+    }
+}
+
 /// What the gate's last check receipt said, in `af task list --json` and `af task show --json`.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct TaskGateV1 {
     pub status: TaskGateStatusV1,
-    /// The failing tests the checks' runners named (`FAIL`, `TIMEOUT`, `SIGABRT`), in the order
+    /// The failing tests each check's admitted report names, or for a check without one those
+    /// its runner's output names (`FAIL`, `TIMEOUT`, `SIGABRT`, [`failing_tests`]), in the order
     /// they first appeared, each once.
     pub failed_tests: Vec<String>,
-    /// The tests the runners named flaky: failed at first, passed on a retry.
+    /// The tests named flaky the same way: failed at first, passed on a retry.
     pub flaky: Vec<String>,
 }
 
@@ -473,7 +597,8 @@ pub const MAX_FAILED_TESTS: usize = 200;
 /// nextest's status lines (`FAIL [ 0.004s] crate path::to::test`, `TIMEOUT`, `SIGABRT`,
 /// `SIGSEGV`, and `FLAKY 2/3 [...]`), libtest's `test path::to::test ... FAILED`, and a
 /// `flaky: a, b` line. A test is named by its last word, its path; a name is listed once, in
-/// first-appearance order, and a test that is flaky and later failed for good is failing.
+/// first-appearance order, and a test that is flaky and later failed for good is failing. Read
+/// only for a check without an admitted check report, whose report names its tests instead.
 pub fn failing_tests(output: &str) -> (Vec<String>, Vec<String>) {
     let mut failed: Vec<String> = Vec::new();
     let mut flaky: Vec<String> = Vec::new();
@@ -528,7 +653,8 @@ pub fn failing_tests(output: &str) -> (Vec<String>, Vec<String>) {
 }
 
 /// The step a gate's own step log says stopped it: the label of the first `[label] 1.234s,
-/// exit N` line with a non-zero N (`scripts/ci-step.py` prints one per step).
+/// exit N` line with a non-zero N (`scripts/ci-step.py` prints one per step). Read only for a
+/// check without an admitted check report, whose report names its steps instead.
 pub fn stopped_step(output: &str) -> Option<(String, i64)> {
     output.lines().find_map(|line| {
         let line = line.trim();
@@ -658,6 +784,108 @@ mod tests {
         );
     }
 
+    /// Each attention group from the states the Store derives, and every valid state in one.
+    #[test]
+    fn every_state_waits_for_exactly_one_thing() {
+        use TaskAttentionV1 as A;
+        let finished =
+            |outcome, cause| TaskStateV1::ended(TaskStatePhaseV1::Finished, outcome, cause);
+        let cases = [
+            (
+                TaskStateV1::new(TaskStatePhaseV1::Planned)
+                    .with_next("af task run t --confirm-plan sha256:1"),
+                A::Approval,
+            ),
+            (
+                TaskStateV1::new(TaskStatePhaseV1::Waiting).with_next("af task explain t --tree"),
+                A::Approval,
+            ),
+            (
+                finished(TaskOutcomeV1::GateFailed, Some(TaskCauseV1::CheckFailed))
+                    .with_next("af task run t --retry-gate"),
+                A::GateFailed,
+            ),
+            (
+                finished(
+                    TaskOutcomeV1::GateFailed,
+                    Some(TaskCauseV1::PreflightFailed),
+                )
+                .with_next("af task show t --checks"),
+                A::GateFailed,
+            ),
+            (
+                finished(
+                    TaskOutcomeV1::ChangesRequested,
+                    Some(TaskCauseV1::ReviewerFindings),
+                )
+                .with_next("af task findings t"),
+                A::Findings,
+            ),
+            (
+                finished(
+                    TaskOutcomeV1::ChangesRequested,
+                    Some(TaskCauseV1::EvaluatorRejected),
+                )
+                .with_next("af task show t"),
+                A::Findings,
+            ),
+            (
+                finished(TaskOutcomeV1::Verified, None)
+                    .with_next("af task deliver t --branch af/t --worktree ../t --confirm t"),
+                A::Deliver,
+            ),
+            (
+                TaskStateV1::ended(
+                    TaskStatePhaseV1::Abandoned,
+                    TaskOutcomeV1::Cancelled,
+                    Some(TaskCauseV1::HostCancelled),
+                )
+                .with_next("af task run t"),
+                A::Stopped,
+            ),
+            (
+                finished(
+                    TaskOutcomeV1::ProviderFailed,
+                    Some(TaskCauseV1::ProviderCapacity),
+                )
+                .with_next("af provider status"),
+                A::Stopped,
+            ),
+            (
+                finished(TaskOutcomeV1::Expired, Some(TaskCauseV1::Deadline))
+                    .with_next("af task plan --file TASK_FILE --fit"),
+                A::Stopped,
+            ),
+            (TaskStateV1::new(TaskStatePhaseV1::Running), A::Running),
+            (finished(TaskOutcomeV1::Verified, None), A::Nothing),
+            (
+                finished(TaskOutcomeV1::GateFailed, Some(TaskCauseV1::Collected)),
+                A::Nothing,
+            ),
+            (
+                finished(TaskOutcomeV1::Verified, Some(TaskCauseV1::Collected)),
+                A::Nothing,
+            ),
+        ];
+        for (state, group) in &cases {
+            state.validate().unwrap();
+            assert_eq!(A::of(state), *group, "{}", state.label());
+            // Every group that needs a person has a command to run; the other two may not.
+            if group.needs_you() {
+                assert!(state.next_action.is_some(), "{}", state.label());
+            }
+        }
+        for group in A::ALL {
+            assert!(cases.iter().any(|(_, g)| *g == group), "{group:?} untested");
+            assert_eq!(serde_json::to_value(group).unwrap(), group.as_str());
+        }
+        assert_eq!(
+            A::ALL.iter().filter(|group| group.needs_you()).count(),
+            5,
+            "running and nothing are the only groups that need no one"
+        );
+    }
+
     #[test]
     fn runner_output_names_failing_and_flaky_tests_once_each() {
         let output = "\
@@ -731,6 +959,30 @@ flaky: a::b, c::d
             (
                 "Task node root.nodes.x exhausted its Attempt limit",
                 TaskCauseV1::Budget,
+            ),
+            // ADR-0257: the Attempt wall is its own cause, before the timeout words it carries.
+            (
+                "implementer reached its Attempt wall of 30 min after 30 min; its edits are kept \
+                 as partial candidate sha256:…; implementer did not answer within 1800000ms",
+                TaskCauseV1::AttemptWall,
+            ),
+            // An exhausted identity re-probe is the environment's failure, not the login's.
+            (
+                "identity recheck: probe timed out 3× (up to 30 s each); the account was not \
+                 verified as changed: the Provider's environment failed, not the model or the \
+                 login (environment); run the Task again with `af task run`",
+                TaskCauseV1::ProviderEnvironment,
+            ),
+            (
+                "Provider environment failure, not a model or credential failure: claude \
+                 cannot start",
+                TaskCauseV1::ProviderEnvironment,
+            ),
+            // Another account is still the change it is.
+            (
+                "identity recheck: the Claude account differs from the one captured at plan: \
+                 run `af task plan` again",
+                TaskCauseV1::IdentityChanged,
             ),
         ] {
             assert_eq!(TaskCauseV1::of_diagnostic(text), Some(cause), "{text}");

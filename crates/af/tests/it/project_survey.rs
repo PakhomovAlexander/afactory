@@ -3240,10 +3240,13 @@ fn forced_refreshes_at_one_cutoff_differ_only_in_the_chain_and_a_partial_one_in_
     assert!(stopped.get("commit").is_none() && stopped.get("path").is_none());
 }
 
-/// Kills the processes it holds when the test ends, a panicking one included.
+/// Kills the processes it holds when the test ends, a panicking one included. A parked git is
+/// not this test's child: it is recorded when its ID is read, never signalled, and ends by
+/// itself once the af that started it is gone; one still running is reported (issue #331
+/// item 7).
 struct Reaped {
     children: Vec<std::process::Child>,
-    pids: Vec<String>,
+    pids: crate::common::recorded::Leftovers,
 }
 
 impl Drop for Reaped {
@@ -3252,9 +3255,7 @@ impl Drop for Reaped {
             let _ = child.kill();
             let _ = child.wait();
         }
-        for pid in &self.pids {
-            let _ = Command::new("kill").args(["-9", pid]).status();
-        }
+        drop(std::mem::take(&mut self.pids));
     }
 }
 
@@ -3273,14 +3274,14 @@ fn a_spill_a_killed_refresh_left_is_swept_by_the_next_while_a_live_refreshs_is_k
     let complete = machine.json(&repo, &[], &["project", "survey", "--json"]);
     assert_eq!(complete["completeness"], "complete");
     // A refresh whose manifest runs are spilled parks its merge's `cat-file --batch`: the git
-    // writes its pid under the af that started it and sleeps.
+    // writes its pid under the af that started it and waits while that af runs.
     let bin = fake_git(
         &machine,
         "spill-bin",
         &format!(
             "for argument in \"$@\"; do\n  if [ \"$argument\" = --batch ] && \
              ls -d '{}'/af-tree-digest-$PPID-* >/dev/null 2>&1; then\n    \
-             echo $$ > '{}'/$PPID\n    exec sleep 120\n  fi\ndone",
+             echo $$ > '{}'/$PPID\n    exec python3 -I -c 'import os,sys,time\nparent=int(sys.argv[1])\nend=time.monotonic()+120\nwhile os.getppid()==parent and time.monotonic()<end: time.sleep(0.05)' $PPID\n  fi\ndone",
             scratch.display(),
             parked.display()
         ),
@@ -3299,7 +3300,7 @@ fn a_spill_a_killed_refresh_left_is_swept_by_the_next_while_a_live_refreshs_is_k
     };
     let mut reaped = Reaped {
         children: Vec::new(),
-        pids: Vec::new(),
+        pids: crate::common::recorded::Leftovers::default(),
     };
     // Start a refresh that spills and parks; its af's pid and its parked git's.
     let mut park = || -> (u32, String) {
@@ -3335,7 +3336,9 @@ fn a_spill_a_killed_refresh_left_is_swept_by_the_next_while_a_live_refreshs_is_k
         }
         std::thread::sleep(std::time::Duration::from_millis(50));
         let git = std::fs::read_to_string(&marker).unwrap().trim().to_string();
-        reaped.pids.push(git.clone());
+        reaped.pids.0.push(crate::common::recorded::Recorded::live(
+            git.parse().unwrap(),
+        ));
         (pid, git)
     };
     let (live, _) = park();
@@ -3346,10 +3349,15 @@ fn a_spill_a_killed_refresh_left_is_swept_by_the_next_while_a_live_refreshs_is_k
     let mut child = reaped.children.pop().unwrap();
     child.kill().unwrap();
     child.wait().unwrap();
-    Command::new("kill")
-        .args(["-9", &killed_git])
-        .status()
-        .unwrap();
+    assert!(
+        reaped
+            .pids
+            .0
+            .last()
+            .unwrap()
+            .ended_within(std::time::Duration::from_secs(60)),
+        "the parked git {killed_git} did not end once its af was gone"
+    );
     assert_eq!(spills(killed).len(), 1, "a killed refresh leaves its spill");
 
     // The next refresh sweeps it before it decides to reuse the complete Survey, which it

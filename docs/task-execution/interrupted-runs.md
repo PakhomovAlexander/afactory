@@ -29,6 +29,19 @@ writer recorded. Given `--repo`, `--state` or `--workspace`, this command, and t
 stopped by SIGINT or SIGTERM names, carry them as typed, so it runs as printed against the same
 Store.
 
+A run SIGINT or SIGTERM stopped exits 130 or 143. Under `--json` its stdout is one `af/error@2`
+document ([ADR-0256](../adr/0256-carry-the-recovery-of-an-interrupted-command-as-a-typed-field.md))
+whose `cause` is `interrupted`, `details` names the `signal` and the `task`, and `next_action` is
+the command that continues it, the one the sentence names:
+
+```json
+{"schema":"af/error@2","command":"af task","error":"interrupted by SIGINT; ...","exit_code":130,"cause":"interrupted","next_action":"af task run pagination-cli --state ../state","details":{"signal":"SIGINT","task":"pagination-cli"}}
+```
+
+A node that used up its recovery allowance makes `next_action` `af task start --file TASK_FILE`;
+a command that ran no Task names itself again, and an interrupted `af provider auth begin` names
+the `af provider auth status` command for the same login.
+
 ## The lease
 
 The lease is 60 s, renewed by a heartbeat on its own thread, by its own one-second tick, once a
@@ -128,7 +141,7 @@ next: af task run pagination-cli
 ```
 
 `af task list` prints the same state and `run` as its next command. Their `--json` documents,
-`af/task-inspection@13` and `af/task-list-entry@3`, carry it as `state`: `phase` `abandoned`,
+`af/task-inspection@14` and `af/task-list-entry@4`, carry it as `state`: `phase` `abandoned`,
 `outcome` `cancelled`, `cause` `writer_lost` or `host_cancelled`, and `next_action`; the
 top-level `phase` keeps the phase the Task recorded. A node past its allowance makes
 `next_action` `af task start --file TASK_FILE`.

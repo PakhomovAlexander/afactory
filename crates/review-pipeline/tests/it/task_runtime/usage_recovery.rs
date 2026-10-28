@@ -14,6 +14,8 @@ struct OutageModel {
     calls: AtomicUsize,
     fail_at: usize,
     incomplete: bool,
+    /// The failing call reports its counters with the runner's Attempt-wall timeout.
+    timed_out: bool,
 }
 impl OutageModel {
     fn restore(&self) {
@@ -77,7 +79,11 @@ impl WorkerModelAdapter for OutageModel {
                         charge_complete: false,
                     }
                 }),
-                message: Err("model output CAS publication failed".into()),
+                message: Err(if self.timed_out {
+                    "reviewer did not answer within 5000ms and was killed".into()
+                } else {
+                    "model output CAS publication failed".into()
+                }),
                 raw_artifact_ids: vec![],
                 usage: Some(usage),
                 native_failure: None,
@@ -97,21 +103,28 @@ impl WorkerModelAdapter for OutageModel {
 
 #[test]
 fn worker_and_provider_cas_failure_recover_full_reported_usage_without_another_call() {
-    recovery_cases(&[0, 1], false, &mut vec![]);
+    recovery_cases(&[0, 1], false, false, &mut vec![]);
 }
 
 #[test]
 fn incomplete_native_observation_survives_cas_outage_and_both_admission_and_worker_recovery() {
-    recovery_cases(&[0, 1], true, &mut vec![]);
+    recovery_cases(&[0, 1], true, false, &mut vec![]);
+}
+
+/// A Worker its Attempt wall ended during a CAS outage: the wall end cannot be written, and the
+/// counters it reported are retained before it is tried (ADR-0257, ADR-0068).
+#[test]
+fn a_wall_end_during_a_cas_outage_keeps_the_reported_usage() {
+    recovery_cases(&[1], false, true, &mut vec![]);
 }
 
 /// Each case fails inside the previous case's continuation, so every case keeps its own
 /// runtime host across one real wait past all of their leases; then each case recovers.
-fn recovery_cases(fail_ats: &[usize], incomplete: bool, leases: &mut Vec<u64>) {
+fn recovery_cases(fail_ats: &[usize], incomplete: bool, timed_out: bool, leases: &mut Vec<u64>) {
     match fail_ats.split_first() {
-        Some((&fail_at, rest)) => recovery_case(fail_at, incomplete, |lease_until| {
+        Some((&fail_at, rest)) => recovery_case(fail_at, incomplete, timed_out, |lease_until| {
             leases.push(lease_until);
-            recovery_cases(rest, incomplete, leases);
+            recovery_cases(rest, incomplete, timed_out, leases);
         }),
         None => {
             let lease_until = leases.iter().copied().max().unwrap_or_default();
@@ -129,7 +142,12 @@ fn unix_millis() -> u128 {
         .as_millis()
 }
 
-fn recovery_case(fail_at: usize, incomplete: bool, wait_past_leases: impl FnOnce(u64)) {
+fn recovery_case(
+    fail_at: usize,
+    incomplete: bool,
+    timed_out: bool,
+    wait_past_leases: impl FnOnce(u64),
+) {
     let mut f = super::wide_usage::configured_fixture();
     let model = OutageModel {
         objects: f._directory.path().join("cas/objects"),
@@ -138,6 +156,7 @@ fn recovery_case(fail_at: usize, incomplete: bool, wait_past_leases: impl FnOnce
         calls: AtomicUsize::new(0),
         fail_at,
         incomplete,
+        timed_out,
     };
     let models = f
         .plan

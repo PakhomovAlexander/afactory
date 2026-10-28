@@ -281,6 +281,13 @@ tools a Gate calls, but not `gh` or its login for a Remote Check; it does not ru
   workers/       Worker packages: <name>/reviewer.md (the prompt) and reviewer.toml (the manifest)
 ```
 
+For model-driven implementation Tasks, `af onboard --tasks` previews a pinned Task
+catalog, code policy, Worker packages and `[task.defaults]` without spending tokens.
+`af onboard --tasks --apply` creates review and Task authority together, or adds
+absent Task files to an existing review `.af/` and appends the defaults. It refuses an
+existing Task target or `[task]` table. Review and commit the resulting diff before
+`af task plan` can use it.
+
 Configuration merges, lowest to highest: built-in defaults, `/etc/af`, `~/.config/af`, every
 `.af/af.toml` above the repository, the repository's `.af/af.toml`, its gitignored
 `.af/af.local.toml`, and `AF_<TABLE>__<KEY>` variables (`af help layers`).

@@ -143,11 +143,22 @@ fn a_model_worker_input_is_the_package_contract_and_change_set_with_no_effects()
     let output = af(&state_home, &json_args);
     assert!(output.status.success(), "{}", stderr(&output));
     let view: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
-    assert_eq!(view["schema"], "af/review-render@1");
+    crate::schemas::valid(&crate::schemas::validator("review-render-v2.json"), &view);
+    assert_eq!(view["schema"], "af/review-render@2");
     assert_eq!(view["token_free"], true);
     assert_eq!(view["node"], "correctness");
     assert_eq!(view["runner"], "codex");
     assert_eq!(view["transport"], "prompt");
+    // ADR-0246: the strict Reviewer Result schema the Codex dispatch writes for
+    // `--output-schema`, exactly as the adapter derives it.
+    assert_eq!(view["reply_schema"]["option"], "--output-schema");
+    assert_eq!(
+        view["reply_schema"]["schema"],
+        review_runner::task::reply_schema::ReplyContract::ReviewerResult
+            .strict(&[])
+            .unwrap()
+            .unwrap()
+    );
     assert_eq!(view["package"]["name"], "correctness");
     let input = view["input"].as_str().unwrap();
     let instructions =
@@ -157,6 +168,9 @@ fn a_model_worker_input_is_the_package_contract_and_change_set_with_no_effects()
         "the verified package bytes lead"
     );
     assert!(input.contains("## Diff Subject Change Set"), "{input}");
+    assert!(input.contains("\"git_version\": \"git version"), "{input}");
+    assert!(!input.contains("cpu:"), "{input}");
+    assert!(!input.contains("sizeof-long:"), "{input}");
     assert!(
         input.contains("render me exactly"),
         "the exact patch is in the input"
@@ -196,6 +210,15 @@ fn a_model_worker_input_is_the_package_contract_and_change_set_with_no_effects()
     assert_eq!(raw.stdout, input.as_bytes());
     assert!(stderr(&raw).contains("review render (token-free; no Campaign state)"));
     assert!(stderr(&raw).contains("omitted"));
+    let reply = format!(
+        "reply     --output-schema {}",
+        view["reply_schema"]["schema"]
+    );
+    assert!(
+        stderr(&raw).lines().any(|line| line == reply),
+        "{}",
+        stderr(&raw)
+    );
 }
 
 #[test]
@@ -292,8 +315,13 @@ to = { node = "ledger", port = "reports" }
     let output = af(&state_home, &args);
     assert!(output.status.success(), "{}", stderr(&output));
     let view: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+    crate::schemas::valid(&crate::schemas::validator("review-render-v2.json"), &view);
     assert_eq!(view["transport"], "json");
     assert_eq!(view["runner"], "sh");
+    assert!(
+        view["reply_schema"].is_null(),
+        "a command Worker's stdout has no native schema"
+    );
     assert!(
         view.get("package").is_none(),
         "a command Worker has no package"
@@ -624,6 +652,7 @@ fn review_plan_text_output_shows_control_characters_in_node_ids_escaped() {
             "HEAD~1",
             "--candidate",
             "HEAD",
+            "--long",
             "--provider",
             "arch\u{1b}]0;PWNED\u{7}itecture=codex-main",
             "--provider",

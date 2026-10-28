@@ -329,7 +329,7 @@ fn review(correctness: &TaskWorkerManifest, bugs: &TaskWorkerManifest) -> Pipeli
         ]),
         ports(&[
             ("review", same(TASK_REVIEW_ROUND_V1)),
-            ("checks", same(TASK_CHECK_RECEIPT_V1)),
+            ("checks", same(TASK_CHECK_RECEIPT_V2)),
             ("history", port(REVIEW_HISTORY_V1)),
             ("findings", same(TASK_REVIEW_CLAIMS_V1)),
         ]),
@@ -621,7 +621,7 @@ fn repair(
     }
     p.contract
         .outputs
-        .insert("checks".into(), derived(TASK_CHECK_RECEIPT_V1));
+        .insert("checks".into(), derived(TASK_CHECK_RECEIPT_V2));
     p.outputs
         .insert("checks".into(), output("checks", "result"));
     p
@@ -913,7 +913,7 @@ pub(super) fn files(developer_key: Option<String>) -> Result<BTreeMap<String, Ve
         true,
     );
     let mut evaluator_inputs = author_inputs.clone();
-    evaluator_inputs.insert("checks".into(), same(TASK_CHECK_RECEIPT_V1));
+    evaluator_inputs.insert("checks".into(), same(TASK_CHECK_RECEIPT_V2));
     let mut evaluator = worker_definition(
         "evaluator",
         "evaluate",
@@ -934,7 +934,7 @@ pub(super) fn files(developer_key: Option<String>) -> Result<BTreeMap<String, Ve
         ("history", port(REVIEW_HISTORY_V1)),
         ("subject", same(TASK_REVIEW_SUBJECT_V2)),
         ("assignment", same(TASK_REVIEW_ASSIGNMENT_V1)),
-        ("checks", same(TASK_CHECK_RECEIPT_V1)),
+        ("checks", same(TASK_CHECK_RECEIPT_V2)),
     ]);
     let reviewer = |name| {
         worker_definition(
@@ -965,7 +965,7 @@ pub(super) fn files(developer_key: Option<String>) -> Result<BTreeMap<String, Ve
         "fix-verify",
         ports(&[
             ("source", port(SOURCE_TREE_V1)),
-            ("checks", same(TASK_CHECK_RECEIPT_V1)),
+            ("checks", same(TASK_CHECK_RECEIPT_V2)),
             ("repair", same(TASK_REPAIR_CONTEXT_V1)),
         ]),
         ports(&[("result", same(TASK_FIX_VERIFICATION_V1))]),
@@ -1181,6 +1181,7 @@ pub(super) fn files(developer_key: Option<String>) -> Result<BTreeMap<String, Ve
     ] {
         let task = TaskFile {
         issue: None,
+            acceptance: None,
             inputs: None,
             schema: "af.task-file/1".into(),
             task_id: name.into(),

@@ -1,14 +1,19 @@
 //! Native structured transport is prospective: never salvage a textual or stored failed reply.
 use review_runner::task::MAX_WORKER_BYTES;
+use review_runner::task::reply_schema::ReplyContract;
 use serde_json::Value;
 
 // The native CLI accepts an inline schema, not a file. Leave room for the process environment
 // and fixed arguments below the supported hosts' argv ceiling; the prompt still uses stdin.
 const MAX_SCHEMA_ARGUMENT_BYTES: usize = 64 * 1024;
 
-pub(super) fn output_schema(input: &[u8]) -> Result<Option<String>, String> {
-    // The one derivation of a typed request's native schema (ADR-0103), shared with Codex.
-    let Some(schema) = review_runner::task::reply_schema::transport(input)
+pub(super) fn output_schema(
+    contract: ReplyContract,
+    input: &[u8],
+) -> Result<Option<String>, String> {
+    // The one derivation of a reply's native schema (ADR-0103, ADR-0246), shared with Codex.
+    let Some(schema) = contract
+        .transport(input)
         .map_err(|error| format!("Claude Worker request refused: {error}"))?
     else {
         return Ok(None);

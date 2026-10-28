@@ -126,6 +126,63 @@ pub(crate) fn page(topic: &str, text: &str) -> String {
     body.replace(START_BINDINGS, &start_bindings(&registry))
 }
 
+/// The `schema` of the document `af help TOPIC --json` prints (`schemas/help-topic-v1.json`).
+pub(crate) const HELP_TOPIC_SCHEMA: &str = "af/help-topic@1";
+
+/// One page `af help` prints as text: a topic, or `af help errors CAUSE`. The text form and
+/// `af help WORDS --json` both render it from here, so the two cannot drift (ADR-0259).
+pub(crate) struct HelpPage {
+    /// The words after `af help` that name the page: `agents`, `errors CAUSE`.
+    name: String,
+    /// The description of the title line `af help NAME — DESCRIPTION`; `af help errors CAUSE`
+    /// prints no title line.
+    description: Option<&'static str>,
+    /// The page below its title line and the blank line after it.
+    text: String,
+}
+
+/// The page `words` name, resolved as the text form resolves them: `errors CAUSE`, then a
+/// topic. `None` when they name no page; an error when `errors` is followed by no known cause.
+pub(crate) fn help_page(words: &[String]) -> Option<Result<HelpPage, String>> {
+    match words {
+        [errors, cause] if errors == "errors" => Some(
+            crate::error_document::explain(Some(cause)).map(|text| HelpPage {
+                name: format!("errors {cause}"),
+                description: None,
+                text,
+            }),
+        ),
+        [word] => find(word).map(|(topic, about, text)| {
+            Ok(HelpPage {
+                name: (*topic).to_owned(),
+                description: Some(about),
+                text: page(topic, text),
+            })
+        }),
+        _ => None,
+    }
+}
+
+impl HelpPage {
+    /// What `af help NAME` prints, without the final newline.
+    pub(crate) fn text_form(&self) -> String {
+        match self.description {
+            Some(about) => format!("af help {} — {about}\n\n{}", self.name, self.text),
+            None => self.text.clone(),
+        }
+    }
+
+    /// What `af help NAME --json` prints: one `af/help-topic@1` document.
+    pub(crate) fn document(&self) -> serde_json::Value {
+        serde_json::json!({
+            "schema": HELP_TOPIC_SCHEMA,
+            "name": self.name,
+            "description": self.description,
+            "text": self.text,
+        })
+    }
+}
+
 /// The `start` page's bindings line for `registry`: the IDs `af onboard` would bind, or the
 /// placeholder with the reason none can be named.
 fn start_bindings(registry: &crate::providers::RegistryRead) -> String {
@@ -157,7 +214,7 @@ fn start_bindings(registry: &crate::providers::RegistryRead) -> String {
     }
 }
 
-/// The phase, outcome and cause tables of `af help task-states`, from
+/// The phase, outcome, cause and attention tables of `af help task-states`, from
 /// `review_core::task::state`; `docs/tasks.md` carries the same rows.
 pub(crate) fn task_state_tables() -> String {
     use review_core::task::state::*;
@@ -188,6 +245,17 @@ pub(crate) fn task_state_tables() -> String {
             cause.description()
         );
         out.push_str(&crate::human::wrap(&row, 100, 46));
+        out.push('\n');
+    }
+    out.push_str("\nAttention groups, as af task list --attention prints them\n\n");
+    for group in TaskAttentionV1::ALL {
+        let row = format!(
+            "  {:<12} {:<27} {}",
+            group.as_str(),
+            group.title(),
+            group.description()
+        );
+        out.push_str(&crate::human::wrap(&row, 100, 43));
         out.push('\n');
     }
     out.trim_end().to_owned()
@@ -226,8 +294,8 @@ Where such a code's result goes to stdout alone (under --json, `af task explain`
 of a Task that already finished), stderr ends with `Task ID: phase/outcome/cause; next: COMMAND`,
 so a non-zero exit always says why there.
 
-`af task wait` ends with the same code once the Task settles (4 for a Task that was cancelled or
-waits for a person), and with 124 when its --timeout passes first.
+`af task wait` and `af task events` end with the same code once the Task settles (4 for a Task
+that was cancelled or waits for a person), and with 124 when their --timeout passes first.
 
 `af task show`, `af task list`, `af task report`, `af task status` and `af task findings` exit 0
 once they read the Store: the state they print is data, not their outcome.",
@@ -254,35 +322,56 @@ pub(crate) fn agent_snippet() -> &'static str {
         .0
 }
 
+/// The version of the skill [`agent_skill`] writes. A change to its bytes takes the next
+/// version and moves the bytes it replaces into [`EARLIER_AGENT_SKILLS`] (ADR-0259).
+const AGENT_SKILL_VERSION: u32 = 2;
+
+/// The `SKILL.md` both skill directories hold: YAML frontmatter from line 1, which Codex and
+/// Claude Code require before they load a skill, then the note that af generated it, then the
+/// pointer extracted from the help page.
 pub(crate) fn agent_skill() -> String {
-    let body = format!(
-        "---\nname: af\ndescription: Drive Afactory from a coding agent.\n---\n\n# Afactory\n\n{}\nRun `af help agents` for the full loop.\n",
+    format!(
+        "---\nname: af\ndescription: Use when working with af (afactory) in this repository, its \
+         Tasks and reviews; start with `af help agents`.\n---\n\n<!-- Generated by `af setup \
+         agents` (af skill {AGENT_SKILL_VERSION}); `af setup agents --write` replaces it while \
+         its bytes are unchanged. -->\n\n# Afactory\n\n{}\nRun `af help agents` for the full loop.\n",
         agent_snippet()
-    );
-    generated_agent_skill(&body)
+    )
 }
 
-pub(crate) fn generated_agent_skill(body: &str) -> String {
-    use sha2::{Digest, Sha256};
-    let digest = Sha256::digest(body.as_bytes());
-    let digest: String = digest.iter().map(|byte| format!("{byte:02x}")).collect();
-    format!("<!-- af-generated-skill:sha256:{digest} -->\n{body}")
-}
+/// Every skill an earlier `af setup agents --write` wrote, byte for byte, by the version it
+/// carried. `--write` replaces only these bytes or the current skill's: ownership is the exact
+/// bytes, so no marker a foreign file can recompute makes it af's (ADR-0259).
+const EARLIER_AGENT_SKILLS: [(u32, &str); 1] = [(
+    1,
+    "<!-- af-generated-skill:sha256:0c44d5402cbb85cbba220f2b2eb7c174a0b5940c95df3f32796164307e311c25 -->
+---
+name: af
+description: Drive Afactory from a coding agent.
+---
 
+# Afactory
+
+<!-- af-agent-help:start -->
+For repository work with af, run `af help agents` first.
+Read `af help json`, `af help exit-codes`, and `af help task-file` for machine contracts.
+Start with `af provider status --json` and `af onboard` to inspect readiness.
+Plan a Task with `af task plan --file TASK_FILE --json` before running it.
+Follow `state.next_action` in each JSON result; do not guess a next command.
+Use `af task findings TASK_ID --json` and `af task diff TASK_ID --json` for evidence.
+Never add `--login` inside an agent session; ask the person to log in privately.
+<!-- af-agent-help:end -->
+
+Run `af help agents` for the full loop.
+",
+)];
+
+/// Whether `text` is a skill af generated: the current one or an earlier version, exactly.
 pub(crate) fn is_generated_agent_skill(text: &str) -> bool {
-    use sha2::{Digest, Sha256};
-    let Some((marker, body)) = text.split_once('\n') else {
-        return false;
-    };
-    let Some(expected) = marker
-        .strip_prefix("<!-- af-generated-skill:sha256:")
-        .and_then(|marker| marker.strip_suffix(" -->"))
-    else {
-        return false;
-    };
-    let digest = Sha256::digest(body.as_bytes());
-    let digest: String = digest.iter().map(|byte| format!("{byte:02x}")).collect();
-    expected.len() == 64 && expected == digest
+    text == agent_skill()
+        || EARLIER_AGENT_SKILLS
+            .iter()
+            .any(|(_, earlier)| *earlier == text)
 }
 
 /// What the same table says about a captured Snapshot, and the one knob over it.
@@ -470,7 +559,8 @@ Errors under --json are one af/error@2 document on stdout (schemas/error-v2.json
 exit code: `command`, `error` (the sentence stderr prints) and `exit_code`. A usage error is one
 too, exit 2, with clap's message; `--help` and `--version` are not errors. A refusal af
 classifies adds `cause`, `next_action` (the one af command to run next, with the --repo, --state
-or --workspace the command was given; null when there is none) and `details`, the facts behind
+or --workspace the command was given; null when there is none, or when no pasted line carries
+it: a word with a control character, or past 4096 characters) and `details`, the facts behind
 the cause:
 
   usage                exit 2; next_action is the command's --help
@@ -479,6 +569,8 @@ the cause:
   refresh_refused      exit 4: no Pipeline can run the refreshed source; decision
   task_file_invalid    a Task file field af refuses: file, field, value
   input_unreadable     a file the command names cannot be read: file, what
+  interrupted          exit 130 or 143: SIGINT or SIGTERM stopped it; signal, task (null
+                       when it ran none); next_action resumes or continues it
 
 Other first-run causes are `task_not_found`, `no_task_catalog`, `no_authority`,
 `not_repository`, `provider_not_registered`, `unknown_review_node`, `plan_mismatch`,
@@ -492,38 +584,99 @@ documents are af/provider-detect@4 (`af provider detect`), af/provider-status@4,
 af/provider-setup@2 and af/provider-models@1; none carries an account, a credential or the
 Provider CLI's own words.
 
+One command prints JSON lines instead and takes no --json: `af task events ID` writes one
+af/task-event@1 document per line while it follows a Task, and its refusal or usage error is one
+af/error@2 line with the same exit code.
+
 Documents carry `kind@version` identifiers where they describe persisted records; a payload shape
 change bumps the version rather than reinterpreting an old one. Nothing af prints under --json is
 affected by a TTY, colours, or the update check: its notice goes to stderr, only on a TTY, and
 never under --json.
 
+Review reading commands:
+
+  af review render --json              af/review-render@2 (schemas/review-render-v2.json),
+                                       with the reply schema a model Worker's dispatch passes
+  af review ledger --json              af/review-ledger@1 (schemas/review-ledger-v1.json)
+  af review show KEY --json            af/review-show@1 (schemas/review-show-v1.json)
+  af review report --json              af/review-report@5 (schemas/review-report-v5.json)
+                                       --json is --format json; combining them is a usage error
+  af review report --format sarif      SARIF 2.1.0, profile af/findings-sarif@1
+                                       (schemas/findings-sarif-v1.json)
+
 The Task documents, each named by its `schema`:
 
-  af task show --json                  af/task-inspection@13; a collected Task:
-                                       af/task-collected-inspection@2
-  af task show --checks --json         af/task-checks@2
-  af task list --json                  af/task-list@3, one af/task-list-entry@3 per Task
-  af task report --json                af/task-report@2
-  af task findings --json              af/task-findings@1
+  af task show --json                  af/task-inspection@14; a collected Task:
+                                       af/task-collected-inspection@3
+  af task show --checks --json         af/task-checks@3
+  af task list --json                  af/task-list@4, one af/task-list-entry@4 per Task
+  af task list --attention --json      af/task-attention@1: seven groups by what each Task
+                                       waits for, each Task its af/task-list-entry@4
+  af task report --json                af/task-report@3
+  af task findings --json              af/task-findings@2, each finding with its agent_prompt,
+                                       the round with its coverage and verified_fixed
+  af task findings --format sarif      SARIF 2.1.0, profile af/findings-sarif@1
   af task diff --json                  af/task-diff@1
   af task materialize --json           af/task-materialized@1
-  af task status --json, wait --json   af/task-status@1
-  af task run --detach --json          af/task-detached@2
-  af task cancel --json                af/task-cancelled@1
+  af task status --json, wait --json   af/task-status@2
+  af task events                       JSON lines, no --json: one af/task-event@1 per event
+                                       of the Task's log, with the Store's gap-free
+                                       `sequence` (--after N resumes), then one terminal
+                                       record with the Task's state and exit_code
+  af task run --detach --json          af/task-detached@3
+  af task cancel --json                af/task-cancelled@2
   af task plan --json, refused         af/task-selection@3, exit 1, with `error`, `exit_code`
                                        and `next_action`; an infeasible plan carries
                                        planning_diagnostic.required_limits and .reserves
 
-af/task-inspection@13, af/task-collected-inspection@2, af/task-checks@2, each
-af/task-list-entry@3, af/task-report@2, af/task-findings@1, af/task-status@1, af/task-detached@2
-and af/task-cancelled@1 carry the Task's `state` (`af help task-states`), its `next_action`
-carrying the selectors the command was given (a report, pasted into a pull request, names no
-Store path); the diff, the materialized candidate and the refused selection describe no Task
-state. A previous version is refused, never read.
+af/task-inspection@14, af/task-collected-inspection@3, af/task-checks@3, each
+af/task-list-entry@4, the groups of af/task-attention@1, af/task-report@3, af/task-findings@2,
+af/task-status@2, af/task-detached@3, af/task-cancelled@2 and the terminal record of
+af/task-event@1 carry the Task's `state` (`af help task-states`), its `next_action` carrying the
+selectors the command was given (a report, pasted into a pull request, names no Store path); the
+diff, the materialized candidate and the refused selection describe no Task state. A previous
+version is refused, never read.
+
+The command catalog, the help pages and the schemas:
+
+  af help --json                       af/command-catalog@1 (schemas/command-catalog-v1.json):
+                                       every command with its usage, arguments and effects
+  af help COMMAND... --json            the same document for that command and those below it
+  af help TOPIC --json                 af/help-topic@1 (schemas/help-topic-v1.json): a page the
+                                       text form prints, `af help errors CAUSE` too, when the
+                                       words name no command: its `name`, `description` (null
+                                       for an error cause) and `text`, the page below its title
+                                       line; words that name neither are exit 2
+  af schema show ID                    the JSON Schema of any document this page names, by its
+                                       ID; `af schema show` lists the IDs
+
+The catalog is generated from the command definitions the binary parses. Each runnable command's
+`effects` say what it may do, never that it will:
+
+  tokens     `free`: never calls a model; `charges`: may dispatch model Workers, charged
+             against a budget, under `charges_when` (null: any run may)
+  writes     `store`: a Task Store or a review Campaign's Store; `files`: files outside af's
+             own state, in the repository, a worktree, a branch or a directory or file the
+             command names; `machine`: af's machine-local state, the Provider and Project
+             registries and Project Stores, configuration, installed releases, shell
+             completions and man pages, telemetry and caches; `remote`: something off this
+             machine, the gate branches and draft pull request of a Remote Check
+  human      `login`: a person completes a Provider's official login, at a private terminal
+             or through the host's private channel; `approval`: a developer's signature over
+             an exact decision payload, made outside af; `terminal`: an interactive terminal,
+             for a screen or an editor
+  when       on every write and need: null always, else the flag as typed (`--apply`) or a
+             short phrase naming the condition
+
+Housekeeping every command shares is not an effect: telemetry, the storage sweep after a run, the
+release check's schedule, a pinned release installed on demand, and the lazy registration of the
+repository's Project and checkout.
 
 Examples:
   af task list --json
-  af task show nope --json   # exit 1";
+  af task show nope --json   # exit 1
+  af help task run --json
+  af schema show af/task-status@2";
 
 const TASK_STATES: &str = "\
 Every af task command that shows a Task prints one state for it, in text and under --json alike:
@@ -549,13 +702,27 @@ again on the same candidate, `af task show ID --checks` after one it cannot, `af
 resume (`af task start --file TASK_FILE` once an interrupted node used up its recovery
 allowance), `af task plan --file TASK_FILE --fit` after a budget or deadline ran out (TASK_FILE
 with a new `task_id` once the Task ran), `af provider status` or `af provider setup ID --login`
-after a Provider failure. `af task show ID --checks` prints the gate's last check receipt: each
-check's failing and flaky tests and the end of its stderr.
+after a Provider failure (`af provider status` after `provider_environment`), and `af task run
+NEW_TASK_ID --from ID` after `attempt_wall` when the Worker its wall stopped left edits: they are
+kept as a partial candidate the new Task starts from, never delivered on their own. `af task show
+ID --checks` prints the gate's last check receipt: each check's failing and flaky tests and the
+end of its stderr. A check the kernel stopped at its wall is `check_failed`, never
+`preflight_failed`, and every rendering says `check NAME stopped at its 90 min wall after 90 min`
+with what to do: make the check faster, or raise its wall in .af/code-policy.toml and plan again;
+only a check that did not start says `never started`.
 
 `af task status ID` prints the state in one line without waiting, with the node that runs and the
-tokens so far; `af task wait ID` blocks until the Task settles and exits with its outcome's code.
+reserved, charged and remaining tokens (plus unknown usage). It shows the last comparable Gate
+duration when recorded. `af task wait ID` blocks until the Task settles and exits with its
+outcome's code; `af task events ID` follows it as JSON lines, one per event of its log, and ends
+with one terminal record that carries the same state.
 A run `af task cancel ID` stopped is `abandoned/cancelled/host_cancelled`, and `af task show`
-names who cancelled it. `af help agents` walks the whole loop.";
+names who cancelled it. `af help agents` walks the whole loop.
+
+`af task list --attention` groups the Tasks by what they wait for, read from each state alone and
+never recorded; the browser's Tasks folder opens on the same groups. The first five need a person
+and print each Task with its next command; running Tasks are named on one line and the Tasks that
+need nothing are counted. Under --json, `af/task-attention@1` holds all seven groups.";
 
 const TASK_FILE: &str = "\
 A Task file (JSON, or TOML for any other extension) is what `af task plan --file` and `af task
@@ -586,9 +753,20 @@ refuse) from .af/af.toml [task.defaults]`). Without `limits` in either place the
   wall_ms = 3600000
 
 Context: each `context` entry names a file of the Task's source tree, with an optional
-`#section`. The Worker's requirements end with a \"Read first\" list: the project's standing
-rules, `.af/rules.md` of the Authority Snapshot, then each context file, each with the digest of
-the bytes the Task captured. A changed file is a changed plan; a missing one is refused.
+`#section`. The Worker's requirements end with a \"Read first\" list naming the Snapshot the
+Worker reads: the project's standing rules, `.af/rules.md` of that tree, then each context file,
+each with the digest of its bytes there (af/TaskReadFirst@2). A changed file is a changed plan; a
+missing one is refused. A continued Task reads its candidate, so it lists the candidate's rules,
+and its plan says so when they differ from what TASK read.
+
+Acceptance: `\"acceptance\": [{\"id\": \"bounds\", \"text\": \"Negative offsets are refused\"}]` states
+1 to 32 items the result must meet, each ID once. They are captured as one af/TaskAcceptance@1
+record, carried in the check receipt (af/TaskCheckReceipt@2) and handed to the evaluator on the
+Pipeline's optional `acceptance` input; a Pipeline that does not declare it, or hands it to no
+`verify` evaluator node, is refused at plan time, and so is a kind other than an `implement`
+one, whose domain never judges the items. A passing evaluator names every item ID in its reason
+(`bounds: met`), or its reply is refused and the Task does not verify. A Task file without
+`acceptance` plans as before.
 
 Continuing a reviewed Task: `af task run NEW --from TASK [--round N] [--goal FILE]` plans NEW
 from TASK's own Task file. Its source is the candidate TASK's review round reviewed (the last
@@ -598,7 +776,9 @@ Pipeline's optional `findings` input; nothing is pasted into the goal. --goal re
 Without --execute it plans and waits for `af task run NEW --confirm-plan PLAN_ID`. A Task file
 says the same with `\"continue\": {\"task\": \"TASK\", \"round\": 1}`. `af task show NEW` prints
 `continues TASK round N`, `--json` carries it as `continues`, and `af task report` names it in the
-continued Task's row.
+continued Task's row. A TASK that recorded no review round, but whose implementer its Attempt wall
+stopped, continues from the partial tree the kernel sealed then (`exhausted/attempt_wall`): NEW's
+source is that tree, and no findings travel with it.
 
 Examples:
   # needs: a Task file ticket.json; stderr names the defaults
@@ -1043,6 +1223,35 @@ mod tests {
         assert!(ENVIRONMENT.starts_with("  AF_<TABLE>__<KEY>"));
     }
 
+    /// ADR-0259: the skill opens with its frontmatter, and the earlier versions are what the
+    /// earlier generator wrote: its marker is the digest of the rest, and the current skill is
+    /// none of them, so a write that changes the skill has a version to upgrade from.
+    #[test]
+    fn the_agent_skill_opens_with_frontmatter_and_earlier_versions_are_exact() {
+        use sha2::{Digest, Sha256};
+        let skill = agent_skill();
+        assert!(skill.starts_with("---\nname: af\ndescription: "), "{skill}");
+        assert!(skill.contains(agent_snippet()));
+        assert!(is_generated_agent_skill(&skill));
+        let mut versions = vec![AGENT_SKILL_VERSION];
+        for (version, earlier) in EARLIER_AGENT_SKILLS {
+            assert!(version < AGENT_SKILL_VERSION && !versions.contains(&version));
+            versions.push(version);
+            assert_ne!(earlier, skill);
+            assert!(is_generated_agent_skill(earlier));
+            let (marker, body) = earlier.split_once('\n').unwrap();
+            let digest: String = Sha256::digest(body.as_bytes())
+                .iter()
+                .map(|byte| format!("{byte:02x}"))
+                .collect();
+            assert_eq!(
+                marker,
+                format!("<!-- af-generated-skill:sha256:{digest} -->")
+            );
+            assert!(!is_generated_agent_skill(&format!("{earlier}\n")));
+        }
+    }
+
     /// One registry: every topic once, findable by its name, listed by `af help` with exactly
     /// the description `af help TOPIC` heads its page with.
     #[test]
@@ -1067,5 +1276,41 @@ mod tests {
                 .collect::<Vec<_>>(),
             &["start", "concepts"]
         );
+    }
+
+    /// ADR-0259: a page's `af/help-topic@1` document and its text form are one rendering: the
+    /// text form is the title line from the document's name and description, a blank line and
+    /// the document's text; `af help errors CAUSE` has no title line. `start` is left out: its
+    /// page reads this machine's Provider registry, which a unit test does not touch.
+    #[test]
+    fn a_help_page_document_is_its_text_form_below_the_title_line() {
+        for (name, about, _) in TOPICS.iter().filter(|(name, _, _)| *name != "start") {
+            let page = help_page(&[name.to_string()]).unwrap().unwrap();
+            let document = page.document();
+            assert_eq!(document["schema"], HELP_TOPIC_SCHEMA);
+            assert_eq!(document["name"], *name);
+            assert_eq!(document["description"], *about);
+            assert_eq!(
+                page.text_form(),
+                format!(
+                    "af help {name} — {about}\n\n{}",
+                    document["text"].as_str().unwrap()
+                )
+            );
+        }
+        let words = ["errors".to_owned(), "review_binding_missing".to_owned()];
+        let page = help_page(&words).unwrap().unwrap();
+        let document = page.document();
+        assert_eq!(document["name"], "errors review_binding_missing");
+        assert_eq!(document["description"], serde_json::Value::Null);
+        assert_eq!(
+            page.text_form(),
+            crate::error_document::explain(Some("review_binding_missing")).unwrap()
+        );
+        assert_eq!(document["text"], page.text_form());
+        let unknown = ["errors".to_owned(), "nope".to_owned()];
+        assert!(help_page(&unknown).unwrap().is_err());
+        assert!(help_page(&["review".to_owned()]).is_none());
+        assert!(help_page(&[]).is_none());
     }
 }

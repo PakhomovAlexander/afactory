@@ -36,6 +36,7 @@ mod agent_setup;
 mod authority;
 mod caches;
 mod cli;
+mod command_catalog;
 mod config;
 mod doctor;
 mod error_document;
@@ -52,9 +53,12 @@ mod project_brief;
 mod projects;
 mod providers;
 mod report_tasks;
+mod review_handoff;
 mod review_task;
+mod sarif;
 mod self_optimizer;
 mod selfmgmt;
+mod shipped_schemas;
 mod storage;
 mod store_release;
 mod task;
@@ -333,12 +337,14 @@ struct LedgerOptions {
     state: Option<PathBuf>,
     campaign: String,
     long: bool,
+    json: bool,
 }
 
 struct ShowOptions {
     state: Option<PathBuf>,
     campaign: String,
     key: String,
+    json: bool,
 }
 
 struct ExportOptions {
@@ -383,6 +389,7 @@ enum ReportFormat {
     Markdown,
     Text,
     Json,
+    Sarif,
 }
 
 struct ResolveOptions {
@@ -882,16 +889,19 @@ fn review_command(namespace: cli::ReviewNamespace) -> Result<i32, String> {
                 RunVerdict::Incomplete { .. } => 4,
             })
         }
-        R::Plan(args) => {
+        R::Plan { args, long } => {
             // A plan reads each bound Provider's catalog token-free and names every Model
             // binding's verdict (ADR-0148).
             model_check::enable_plan_time();
             if args.task_file.is_some() {
+                if long {
+                    return Err("--long is for the review plan; use `af task explain TASK_ID --tree` after `af review plan --file FILE`".into());
+                }
                 return task_execution::start_review(task_review_options(args, true));
             }
             let options = run_options(args, "review plan");
             review_selector_refusal(&options, "plan")?;
-            print_plan(&options).map(|()| 0)
+            print_plan(&options, long).map(|()| 0)
         }
         R::Render(args) => {
             if args.task_file.is_some() {
@@ -901,17 +911,27 @@ fn review_command(namespace: cli::ReviewNamespace) -> Result<i32, String> {
             }
             print_render(&run_options(args, "review render")).map(|()| 0)
         }
-        R::Ledger { selector, long } => print_ledger(&LedgerOptions {
+        R::Ledger {
+            selector,
+            long,
+            json,
+        } => print_ledger(&LedgerOptions {
             state: selector.state.clone(),
             campaign: selector.campaign.clone(),
             long,
+            json,
         })
         .map_err(|error| explain_campaign(&selector, error))
         .map(|()| 0),
-        R::Show { selector, key } => show(&ShowOptions {
+        R::Show {
+            selector,
+            key,
+            json,
+        } => show(&ShowOptions {
             state: selector.state.clone(),
             campaign: selector.campaign.clone(),
             key,
+            json,
         })
         .map_err(|error| explain_campaign(&selector, error))
         .map(|()| 0),
@@ -928,13 +948,18 @@ fn review_command(namespace: cli::ReviewNamespace) -> Result<i32, String> {
             allow_stale,
         })
         .map(|()| 0),
-        R::Report { selector, format } => print_report(&ReportOptions {
+        R::Report {
+            selector,
+            format,
+            json,
+        } => print_report(&ReportOptions {
             state: selector.state.clone(),
             campaign: selector.campaign.clone(),
-            format: match format {
-                cli::ReportFormatArg::Md => ReportFormat::Markdown,
-                cli::ReportFormatArg::Text => ReportFormat::Text,
-                cli::ReportFormatArg::Json => ReportFormat::Json,
+            format: match (json, format) {
+                (true, _) | (_, Some(cli::ReportFormatArg::Json)) => ReportFormat::Json,
+                (_, Some(cli::ReportFormatArg::Text)) => ReportFormat::Text,
+                (_, Some(cli::ReportFormatArg::Sarif)) => ReportFormat::Sarif,
+                _ => ReportFormat::Markdown,
             },
         })
         .map_err(|error| explain_campaign(&selector, error))
@@ -1178,7 +1203,10 @@ fn review_next_command(subcommand: &str, extra: &[String]) -> String {
 }
 
 /// Local Git metadata and isolated captures. Never consult the candidate's `.af/` to choose
-/// authority.
+/// authority. When the default branch is found and the selectors af would choose from it
+/// resolve, the refusal names the command with them, and with `--provider NODE=ID` only when
+/// every unbound model Worker has exactly one enabled candidate; otherwise it says why it names
+/// none, and only a default branch it cannot find leaves the policy revision to the person.
 fn review_selector_refusal(options: &Options, subcommand: &str) -> Result<(), String> {
     if options.policy_rev.is_some()
         || subcommand == "run"
@@ -1249,97 +1277,148 @@ fn review_selector_refusal(options: &Options, subcommand: &str) -> Result<(), St
             })
             .map(|commit| (name, commit))
         });
+    // The selectors af would choose from the default branch, then the bindings: each part on
+    // its own, so a binding that remains open never hides the selectors (#363, ADR-0259).
     let mut candidate_details = serde_json::Map::new();
-    let next = chosen.as_ref().and_then(|(branch, commit)| {
-        let on_default = current.as_deref() == Some(branch.as_str());
-        let scratch = tempfile::tempdir().ok()?;
-        let cas = Cas::open(scratch.path().join("cas")).ok()?;
-        let git_home = scratch.path().join("git-home");
-        std::fs::create_dir_all(&git_home).ok()?;
-        let repo = Repo::open(&options.repo, &git_home);
-        let policy = if on_default {
-            "HEAD".to_owned()
-        } else {
-            commit.clone()
-        };
-        let mut flags = vec!["--policy-rev".into(), policy.clone()];
-        if options.base.is_none() {
-            flags.extend(["--base".to_owned(), policy.clone()]);
-        }
-        let mut uncommitted = options.uncommitted;
-        let mut candidate = options.candidate.clone();
-        if on_default {
-            // Capture reads worktree bytes directly. Git sees only isolated plumbing, so a
-            // candidate-selected clean filter cannot run before review has a sandbox.
-            let capture = review_source_git::Capture::new(&repo, &cas);
-            let dirty = capture
-                .committed("HEAD")
-                .and_then(|head| {
-                    capture
-                        .dirty()
-                        .map(|worktree| head.content_digest != worktree.content_digest)
-                })
-                .unwrap_or(false);
-            if !dirty && candidate.is_none() && !uncommitted {
-                return None;
-            }
-            if candidate.is_none() && !uncommitted {
-                flags.push("--uncommitted".into());
-                uncommitted = true;
-            }
-        } else if candidate.is_none() && !uncommitted {
-            flags.extend(["--candidate".to_owned(), "HEAD".to_owned()]);
-            candidate = Some("HEAD".to_owned());
-        }
-        let mut selected = options.clone();
-        selected.campaign = None;
-        selected.restart_round = false;
-        selected.policy_rev = Some(policy.clone());
-        selected.base = options.base.clone().or(Some(policy));
-        selected.candidate = candidate;
-        selected.uncommitted = uncommitted;
-        let resolved = authority::resolve_plan(&selected, &cas, &repo).ok()?;
-        let registered = providers::registered().ok()?.0;
-        let mut unique = true;
-        for (node, kind) in authority::model_workers(&resolved.loaded) {
-            if selected.provider_bindings.contains_key(&node) {
-                continue;
-            }
-            let ids: Vec<String> = registered
-                .iter()
-                .filter(|(id, registered_kind)| {
-                    *registered_kind == kind && providers::availability::check_id(id).is_ok()
-                })
-                .map(|(id, _)| id.clone())
-                .collect();
-            if ids.len() == 1 {
-                flags.extend(["--provider".to_owned(), format!("{node}={}", ids[0])]);
+    let mut registry_unread = None;
+    let suggestion = match chosen.as_ref() {
+        None => Err(None),
+        Some((branch, commit)) => (|| -> Result<(String, bool), Option<String>> {
+            let unresolved = |reason: String| Err(Some(reason));
+            let on_default = current.as_deref() == Some(branch.as_str());
+            let scratch = tempfile::tempdir().map_err(|error| Some(error.to_string()))?;
+            let cas =
+                Cas::open(scratch.path().join("cas")).map_err(|error| Some(error.to_string()))?;
+            let git_home = scratch.path().join("git-home");
+            std::fs::create_dir_all(&git_home).map_err(|error| Some(error.to_string()))?;
+            let repo = Repo::open(&options.repo, &git_home);
+            let policy = if on_default {
+                "HEAD".to_owned()
             } else {
-                unique = false;
+                commit.clone()
+            };
+            let mut flags = vec!["--policy-rev".into(), policy.clone()];
+            if options.base.is_none() {
+                flags.extend(["--base".to_owned(), policy.clone()]);
             }
-            candidate_details.insert(node, serde_json::json!(ids));
-        }
-        unique
-            .then(|| review_next_command(subcommand, &flags))
-            .filter(|command| command.len() <= 4095 && !command.chars().any(char::is_control))
-    });
-    let message = if let Some(command) = &next {
-        format!(
-            "af review {subcommand} needs --policy-rev REV and an explicit Subject; run:\n{command}"
-        )
-    } else {
-        let candidates = if candidate_details.is_empty() {
-            String::new()
-        } else {
-            format!(
-                "; Provider candidates: {}",
-                serde_json::Value::Object(candidate_details.clone())
-            )
-        };
-        format!(
-            "af review {subcommand} needs --policy-rev REV; the trusted policy revision must be chosen when the default branch cannot be determined, and Provider bindings must be chosen when ambiguous{candidates}"
-        )
+            let mut uncommitted = options.uncommitted;
+            let mut candidate = options.candidate.clone();
+            if on_default {
+                // Capture reads worktree bytes directly. Git sees only isolated plumbing, so a
+                // candidate-selected clean filter cannot run before review has a sandbox.
+                let capture = review_source_git::Capture::new(&repo, &cas);
+                let dirty = capture
+                    .committed("HEAD")
+                    .and_then(|head| {
+                        capture
+                            .dirty()
+                            .map(|worktree| head.content_digest != worktree.content_digest)
+                    })
+                    .unwrap_or(false);
+                if !dirty && candidate.is_none() && !uncommitted {
+                    return unresolved(format!(
+                        "HEAD is the default branch {} and the worktree has no uncommitted \
+                         change, so there is no change to review; change files and review them \
+                         with --uncommitted, or name other revisions with --base REV and \
+                         --candidate REV",
+                        terminal_text(branch)
+                    ));
+                }
+                if candidate.is_none() && !uncommitted {
+                    flags.push("--uncommitted".into());
+                    uncommitted = true;
+                }
+            } else if candidate.is_none() && !uncommitted {
+                flags.extend(["--candidate".to_owned(), "HEAD".to_owned()]);
+                candidate = Some("HEAD".to_owned());
+            }
+            let mut selected = options.clone();
+            selected.campaign = None;
+            selected.restart_round = false;
+            selected.policy_rev = Some(policy.clone());
+            selected.base = options.base.clone().or(Some(policy));
+            selected.candidate = candidate;
+            selected.uncommitted = uncommitted;
+            let resolved = match authority::resolve_plan(&selected, &cas, &repo) {
+                Ok(resolved) => resolved,
+                Err(error) => {
+                    return unresolved(format!(
+                        "the selectors af would choose from the default branch {}, {}, do not \
+                         resolve: {error}",
+                        terminal_text(branch),
+                        terminal_text(&shell_words::join(&flags))
+                    ));
+                }
+            };
+            // `--provider NODE=ID` only when every unbound model Worker has exactly one enabled
+            // candidate; otherwise the command's own `review_binding_missing` names the next step.
+            let registered = match providers::registered() {
+                Ok((registered, _)) => Some(registered),
+                Err(error) => {
+                    registry_unread = Some(error);
+                    None
+                }
+            };
+            let mut bindings = Vec::new();
+            let mut unique = true;
+            for (node, kind) in authority::model_workers(&resolved.loaded) {
+                if selected.provider_bindings.contains_key(&node) {
+                    continue;
+                }
+                let Some(registered) = &registered else {
+                    unique = false;
+                    continue;
+                };
+                let ids = binding_candidates(registered, &kind);
+                if let [id] = ids.as_slice() {
+                    bindings.extend(["--provider".to_owned(), format!("{node}={id}")]);
+                } else {
+                    unique = false;
+                }
+                candidate_details.insert(node, serde_json::json!(ids));
+            }
+            if unique {
+                flags.extend(bindings);
+            }
+            let command = review_next_command(subcommand, &flags);
+            if command.len() > 4095 || command.chars().any(char::is_control) {
+                return unresolved(
+                    "the command af would suggest is not one line a person can paste".to_owned(),
+                );
+            }
+            Ok((command, unique))
+        })(),
     };
+    let message = match &suggestion {
+        Ok((command, true)) => format!(
+            "af review {subcommand} needs --policy-rev REV and an explicit Subject; run:\n{command}"
+        ),
+        Ok((command, false)) => {
+            let open = match &registry_unread {
+                Some(error) => format!("the Provider registry cannot be read ({error})"),
+                None => format!(
+                    "Provider candidates: {}",
+                    candidate_words(&candidate_details)
+                ),
+            };
+            format!(
+                "af review {subcommand} needs --policy-rev REV and an explicit Subject; this \
+                 command chooses them, and its refusal then names how to bind the reviewers that \
+                 still need a Provider ({open}); run:\n{command}"
+            )
+        }
+        Err(Some(reason)) => {
+            format!(
+                "af review {subcommand} needs --policy-rev REV and an explicit Subject; {reason}"
+            )
+        }
+        Err(None) => format!(
+            "af review {subcommand} needs --policy-rev REV; the default branch cannot be \
+             determined (none of origin/HEAD, init.defaultBranch, main and master names a branch \
+             with a commit), so the trusted policy revision must be chosen"
+        ),
+    };
+    let next = suggestion.ok().map(|(command, _)| command);
     let mut detail = error_document::Detail::new(error_document::Cause::ReviewSelectorsMissing)
         .with("repo", options.repo.display().to_string())
         .with("selector", "--policy-rev");
@@ -1352,16 +1431,66 @@ fn review_selector_refusal(options: &Options, subcommand: &str) -> Result<(), St
     Err(error_document::typed(message, detail))
 }
 
+/// The enabled Providers of `kind` this machine registers: what a binding of a model Worker of
+/// that kind may name (ADR-0242).
+fn binding_candidates(registered: &[(String, &'static str)], kind: &str) -> Vec<String> {
+    registered
+        .iter()
+        .filter(|(id, registered_kind)| {
+            *registered_kind == kind && providers::availability::check_id(id).is_ok()
+        })
+        .map(|(id, _)| id.clone())
+        .collect()
+}
+
+/// A node-to-candidates map in words, `NODE: ID, ID; NODE: none registered`: a refusal's
+/// sentence never prints a map as Rust debug output or as JSON (ADR-0259).
+fn candidate_words(candidates: &serde_json::Map<String, serde_json::Value>) -> String {
+    candidates
+        .iter()
+        .map(|(node, ids)| {
+            let ids: Vec<&str> = ids
+                .as_array()
+                .into_iter()
+                .flatten()
+                .filter_map(serde_json::Value::as_str)
+                .collect();
+            if ids.is_empty() {
+                format!("{node}: none registered")
+            } else {
+                format!("{node}: {}", ids.join(", "))
+            }
+        })
+        .collect::<Vec<_>>()
+        .join("; ")
+}
+
+/// `a`, `a and b`, `a, b and c`.
+fn and_list(items: &[&str]) -> String {
+    match items {
+        [] => String::new(),
+        [one] => (*one).to_owned(),
+        [rest @ .., last] => format!("{} and {last}", rest.join(", ")),
+    }
+}
+
+/// The `review_binding_missing` refusal when a model Worker has no `--provider NODE=ID`
+/// (ADR-0242, ADR-0259): with no enabled Provider of a Worker's kind, `af provider detect` is
+/// next; with exactly one per kind, the whole command with each binding; with a choice, no
+/// command and the choices in words. `plan` is the token-free plan `af review plan` computed,
+/// carried whole in `details.plan`; `af review run` passes none.
 fn review_binding_refusal(
     options: &Options,
     workers: &[(String, String)],
     subcommand: &str,
+    plan: Option<&serde_json::Value>,
 ) -> Result<(), String> {
     let registered = providers::registered()
         .map(|(ids, _)| ids)
         .unwrap_or_default();
     let mut missing = Vec::new();
     let mut candidates = serde_json::Map::new();
+    let mut unregistered: Vec<(&str, Vec<&str>)> = Vec::new();
     let mut flags = Vec::new();
     let mut unique = true;
     for (node, kind) in workers {
@@ -1369,48 +1498,91 @@ fn review_binding_refusal(
             continue;
         }
         missing.push(node.clone());
-        let ids: Vec<String> = registered
-            .iter()
-            .filter(|(id, registered_kind)| {
-                *registered_kind == kind && providers::availability::check_id(id).is_ok()
-            })
-            .map(|(id, _)| id.clone())
-            .collect();
-        if ids.len() == 1 {
-            flags.extend(["--provider".to_owned(), format!("{node}={}", ids[0])]);
-        } else {
-            unique = false;
+        let ids = binding_candidates(&registered, kind);
+        match ids.as_slice() {
+            [id] => flags.extend(["--provider".to_owned(), format!("{node}={id}")]),
+            [] => {
+                unique = false;
+                match unregistered.iter_mut().find(|(seen, _)| seen == kind) {
+                    Some((_, nodes)) => nodes.push(node),
+                    None => unregistered.push((kind, vec![node])),
+                }
+            }
+            _ => unique = false,
         }
         candidates.insert(node.clone(), serde_json::json!(ids));
     }
     if missing.is_empty() {
         return Ok(());
     }
-    let next = unique
-        .then(|| review_next_command(subcommand, &flags))
-        .filter(|command| command.len() <= 4095 && !command.chars().any(char::is_control));
-    let message = match &next {
-        Some(command) => format!(
-            "model Workers {} need explicit Provider bindings; run:\n{command}",
-            missing.join(", ")
-        ),
-        None => format!(
-            "model Workers {} need explicit Provider bindings; choose one enabled Provider per Worker from {:?}, then pass --provider NODE=ID",
-            missing.join(", "),
-            candidates
-        ),
+    let head = format!(
+        "model Workers {} need explicit Provider bindings",
+        missing.join(", ")
+    );
+    let (message, next) = if !unregistered.is_empty() {
+        let none = unregistered
+            .iter()
+            .map(|(kind, nodes)| {
+                format!("no {kind} Provider is registered for {}", and_list(nodes))
+            })
+            .collect::<Vec<_>>()
+            .join("; ");
+        let setup = unregistered
+            .iter()
+            .map(|(kind, _)| format!("af provider setup ID --kind {kind}"))
+            .collect::<Vec<_>>()
+            .join(" or ");
+        let mut chosen = candidates.clone();
+        chosen.retain(|_, ids| ids.as_array().is_some_and(|ids| !ids.is_empty()));
+        let choices = if chosen.is_empty() {
+            String::new()
+        } else {
+            format!(
+                " (registered choices for the others: {})",
+                candidate_words(&chosen)
+            )
+        };
+        (
+            format!(
+                "{head}: {none}{choices}. Register one with af provider detect --apply, or with \
+                 {setup} once the person has logged in privately, then rerun this command; to see \
+                 the logins this machine has, run:\naf provider detect"
+            ),
+            Some("af provider detect".to_owned()),
+        )
+    } else {
+        let next = unique
+            .then(|| review_next_command(subcommand, &flags))
+            .filter(|command| command.len() <= 4095 && !command.chars().any(char::is_control));
+        let message = match &next {
+            Some(command) => format!("{head}; run:\n{command}"),
+            None => format!(
+                "{head}; choose one enabled Provider per Worker ({}), then pass --provider NODE=ID",
+                candidate_words(&candidates)
+            ),
+        };
+        (message, next)
     };
     let mut detail = error_document::Detail::new(error_document::Cause::ReviewBindingMissing)
         .with("missing", serde_json::json!(missing))
         .with("candidates", serde_json::Value::Object(candidates));
+    if let Some(plan) = plan {
+        // The plan as the success path prints it, its next command the refusal's.
+        let mut plan = plan.clone();
+        plan["next_action"] = serde_json::json!(next);
+        detail = detail.with("plan", plan);
+    }
     if let Some(command) = next {
         detail = detail.next(command);
     }
     Err(error_document::typed(message, detail))
 }
 
-fn help_command(words: &[String], snippet: bool) -> Result<i32, String> {
+fn help_command(words: &[String], snippet: bool, json: bool) -> Result<i32, String> {
     use clap::CommandFactory as _;
+    if json {
+        return help_catalog(words);
+    }
     if snippet {
         if words == ["agents"] {
             print!("{}", topics::agent_snippet());
@@ -1424,16 +1596,17 @@ fn help_command(words: &[String], snippet: bool) -> Result<i32, String> {
         println!("\n{}", topics::listing());
         return Ok(0);
     }
-    if words.first().is_some_and(|word| word == "errors") && words.len() == 2 {
-        println!("{}", error_document::explain(Some(&words[1]))?);
-        return Ok(0);
-    }
-    if words.len() == 1
-        && let Some((topic, about, text)) = topics::find(&words[0])
-    {
-        let body = topics::page(topic, text);
-        println!("af help {topic} — {about}\n\n{body}");
-        return Ok(0);
+    match topics::help_page(words) {
+        Some(Ok(page)) => {
+            println!("{}", page.text_form());
+            return Ok(0);
+        }
+        // `errors` and no known cause name no page: usage, as an unknown topic is.
+        Some(Err(error)) => {
+            eprintln!("af help: {}", terminal_text(&error));
+            return Ok(2);
+        }
+        None => {}
     }
     let mut current = &mut root;
     for word in words {
@@ -1459,6 +1632,41 @@ fn help_command(words: &[String], snippet: bool) -> Result<i32, String> {
         .print_long_help()
         .map_err(|error| error.to_string())?;
     Ok(0)
+}
+
+/// `af help [WORDS...] --json`: the command catalog of the command the words name (ADR-0247);
+/// for words that name no command but a page the text form prints, a topic or `errors CAUSE`,
+/// that page as one `af/help-topic@1` document (ADR-0259); for words that name neither, one
+/// `af/error@2` document with the usage exit code the text form also exits with.
+fn help_catalog(words: &[String]) -> Result<i32, String> {
+    let document = match command_catalog::document(words) {
+        Ok(document) => document,
+        Err(_) => match topics::help_page(words) {
+            Some(Ok(page)) => page.document(),
+            Some(Err(error)) => return Ok(help_refusal(&error)),
+            None => {
+                return Ok(help_refusal(&format!(
+                    "no command or help page named {}; run af help for every page, or af help \
+                     --json for every command",
+                    words.join(" ")
+                )));
+            }
+        },
+    };
+    println!(
+        "{}",
+        serde_json::to_string_pretty(&document).map_err(|error| error.to_string())?
+    );
+    Ok(0)
+}
+
+/// `af help WORDS --json` for words that name no command and no page, `errors` and an unknown
+/// cause included: one `af/error@2` document and its sentence on stderr, exit 2 (usage).
+fn help_refusal(error: &str) -> i32 {
+    let error = terminal_text(error);
+    println!("{}", error_document::document("af help", &error, 2, None));
+    eprintln!("af help: {error}");
+    2
 }
 
 fn main() {
@@ -1526,7 +1734,7 @@ fn main() {
                     command: Some(cli::Command::Review(namespace)),
                     ..
                 }) = cli::Af::try_parse_from(["af", "review", "plan"])
-                && let Some(cli::ReviewCommand::Plan(args)) = namespace.command
+                && let Some(cli::ReviewCommand::Plan { args, .. }) = namespace.command
                 && let Err(suggestion) =
                     review_selector_refusal(&run_options(args, "review plan"), "plan")
             {
@@ -1638,6 +1846,13 @@ fn main() {
         cli::Command::Onboard(args) if args.apply => Some((args.repo.clone(), args.json)),
         _ => None,
     };
+    // `af task events` prints JSON lines with no --json: its refusal is an `af/error@2` line too.
+    let json_lines = matches!(
+        &command,
+        cli::Command::Task {
+            command: cli::TaskCommand::Events { .. }
+        }
+    );
     drop(startup);
     let dispatched = perf_trace::span(Phase::CliCommand);
     let (prefix, outcome): (&str, Result<i32, String>) = match command {
@@ -1915,7 +2130,16 @@ fn main() {
             }),
         ),
         cli::Command::Doctor(args) => ("af doctor", doctor::run(&args.repo, args.json)),
-        cli::Command::Help { words, snippet } => ("af help", help_command(&words, snippet)),
+        cli::Command::Help {
+            words,
+            snippet,
+            json,
+        } => ("af help", help_command(&words, snippet, json)),
+        cli::Command::Schema { command } => match command {
+            cli::SchemaCommand::Show { id } => {
+                ("af schema show", shipped_schemas::show(id.as_deref()))
+            }
+        },
         cli::Command::Setup { command } => match command {
             cli::SetupCommand::Agents { repo, write } => {
                 ("af setup agents", agent_setup::run(&repo, write))
@@ -1954,11 +2178,11 @@ fn main() {
         Err(error) => {
             // A classified refusal adds its cause, next command and facts (`af help json`).
             let detail = error_document::take(&error);
-            if argv.iter().skip(1).any(|word| word == "--json") {
+            if json_lines || argv.iter().skip(1).any(|word| word == "--json") {
                 let document = error_document::document(prefix, &error, 1, detail.as_ref());
                 println!("{document}");
             }
-            eprintln!("{prefix}: {}", terminal_lines(&error));
+            eprintln!("{}", error_text(prefix, &error, detail.as_ref()));
             1
         }
     };
@@ -2159,19 +2383,28 @@ fn task_command(command: cli::TaskCommand) -> Result<i32, String> {
         cli::TaskCommand::Wait {
             task_id,
             timeout,
+            bell,
+            notify,
             inspect,
-        } => task_execution::runs::wait(&task_id, timeout, &inspect),
+        } => task_execution::runs::wait(&task_id, timeout, bell, notify, &inspect),
         cli::TaskCommand::Status { task_id, inspect } => {
             task_execution::runs::status(&task_id, &inspect)
         }
+        cli::TaskCommand::Events {
+            task_id,
+            after,
+            timeout,
+            store,
+        } => task_execution::events::events(&task_id, after, timeout, &store),
         cli::TaskCommand::Cancel { task_id, inspect } => {
             task_execution::runs::cancel(&task_id, &inspect)
         }
         cli::TaskCommand::Findings {
             task_id,
             round,
+            format,
             inspect,
-        } => task_execution::findings::print(&task_id, round, &inspect),
+        } => task_execution::findings::print(&task_id, round, format, &inspect),
         cli::TaskCommand::Materialize {
             task_id,
             snapshot,
@@ -2275,11 +2508,13 @@ fn task_command(command: cli::TaskCommand) -> Result<i32, String> {
             inspect.json,
         )
         .map(|()| 0),
-        cli::TaskCommand::List { sizes, inspect } => {
-            task::inspect_from_cli(None, inspect.repo, inspect.state, inspect.json)
-                .and_then(|options| task::list(options, sizes))
-                .map(|()| 0)
-        }
+        cli::TaskCommand::List {
+            sizes,
+            attention,
+            inspect,
+        } => task::inspect_from_cli(None, inspect.repo, inspect.state, inspect.json)
+            .and_then(|options| task::list(options, sizes, attention))
+            .map(|()| 0),
         cli::TaskCommand::Gc {
             older_than,
             keep,
@@ -2415,30 +2650,50 @@ fn exit_interrupted(
     error: Option<String>,
 ) -> ! {
     let code = interrupt::exit_code(signal);
+    let task = interrupt::noted_task();
     // The same next command `af task show --json` names: `af task run ID` only while the
     // interrupted node has a recovery left (ADR-0209). Either carries the Store selectors this
     // command was given.
-    let resume = match (interrupt::noted_task(), interrupt::noted_next()) {
-        (Some(id), Some(next)) => format!(
-            "a node of Task {id} used up its recovery allowance, so `af task run {id}` cannot \
-             continue it; start it again with `{next}` (the Task file it was started from)"
+    let (resume, next_action) = match (&task, interrupt::noted_next()) {
+        (Some(id), Some(next)) => (
+            format!(
+                "a node of Task {id} used up its recovery allowance, so `af task run {id}` \
+                 cannot continue it; start it again with `{next}` (the Task file it was started \
+                 from)"
+            ),
+            Some(next),
         ),
-        (Some(id), None) => format!(
-            "resume it with `{}`, which dispatches the interrupted node again without using \
-             one of its Attempts",
-            task_execution::with_selectors(&format!("af task run {id}"))
+        (Some(id), None) => {
+            let run = task_execution::with_selectors(&format!("af task run {id}"));
+            (
+                format!(
+                    "resume it with `{run}`, which dispatches the interrupted node again without \
+                     using one of its Attempts"
+                ),
+                Some(run),
+            )
+        }
+        (None, _) => (
+            "run the same command again to resume it".to_owned(),
+            same_command(argv),
         ),
-        (None, _) => "run the same command again to resume it".into(),
     };
-    let message = if argv.get(1).is_some_and(|s| s == "provider")
-        && argv.get(2).is_some_and(|s| s == "auth")
-    {
-        format!(
-            "interrupted by {signal}; native login stopped. Inspect the non-secret recovery status; a new login requires a fresh private host permission"
+    let login =
+        argv.get(1).is_some_and(|s| s == "provider") && argv.get(2).is_some_and(|s| s == "auth");
+    let next_action = next_action.filter(|command| error_document::pasteable(command));
+    let (message, next_action) = if login {
+        (
+            format!(
+                "interrupted by {signal}; native login stopped. Inspect the non-secret recovery status; a new login requires a fresh private host permission"
+            ),
+            login_status(argv),
         )
     } else {
-        format!(
-            "interrupted by {signal}; its Worker processes were stopped and the Task was not finished. To continue, {resume}"
+        (
+            format!(
+                "interrupted by {signal}; its Worker processes were stopped and the Task was not finished. To continue, {resume}"
+            ),
+            next_action,
         )
     };
     if let Some(error) = error {
@@ -2446,18 +2701,56 @@ fn exit_interrupted(
             eprintln!("{prefix}: {}", terminal_lines(&error));
         }
         if argv.iter().skip(1).any(|word| word == "--json") {
-            let document = serde_json::json!({
-                "schema": "af/error@2",
-                "command": prefix,
-                "error": message,
-                "exit_code": code,
-            });
+            // The recovery a script runs is a field, not only prose (`af help json`).
+            let mut detail = error_document::Detail::new(error_document::Cause::Interrupted)
+                .with("signal", signal.as_str())
+                .with("task", task.clone());
+            detail.next_action = next_action;
+            let document = error_document::document(prefix, &message, code, Some(&detail));
             println!("{document}");
         }
     }
     eprintln!("{prefix}: {}", terminal_lines(&message));
     let _ = std::io::stdout().flush();
     interrupt::exit(signal);
+}
+
+/// The `af provider auth status` command for the login an interrupted `af provider auth begin`
+/// started: its ID, kind and auth directory, as given.
+fn login_status(argv: &[String]) -> Option<String> {
+    use clap::Parser as _;
+    let parsed = cli::Af::try_parse_from(argv).ok()?;
+    let Some(cli::Command::Provider {
+        command:
+            cli::ProviderCommand::Auth {
+                command:
+                    cli::ProviderAuthCommand::Begin {
+                        id, kind, auth_dir, ..
+                    },
+            },
+    }) = parsed.command
+    else {
+        return None;
+    };
+    let auth_dir = auth_dir.to_str()?;
+    let command = format!(
+        "af provider auth status {} --kind {} --auth-dir {}",
+        shell_words::quote(&id),
+        provider_kind(kind),
+        shell_words::quote(auth_dir)
+    );
+    error_document::pasteable(&command).then_some(command)
+}
+
+/// `argv` again as one pasteable `af` command, its words quoted as typed; `None` when a word
+/// holds a control character, which no pasted line carries.
+fn same_command(argv: &[String]) -> Option<String> {
+    let words = argv.get(1..).unwrap_or_default();
+    if words.is_empty() {
+        return None;
+    }
+    Some(format!("af {}", shell_words::join(words)))
+        .filter(|command| error_document::pasteable(command))
 }
 
 /// Every `af provider` command returns its own documented exit code.
@@ -2622,6 +2915,11 @@ fn print_render(options: &Options) -> Result<(), String> {
             terminal_text(&entry.required_by)
         );
     }
+    match &view.reply_schema {
+        // The exact schema, compact, as the dispatch passes it (ADR-0246).
+        Some(reply) => eprintln!("reply     {} {}", reply.option, reply.schema),
+        None => eprintln!("reply     no native schema; the kernel parses the Worker's stdout"),
+    }
     for item in &view.not_rendered {
         eprintln!("omitted   {}", terminal_text(item));
     }
@@ -2632,7 +2930,16 @@ fn print_render(options: &Options) -> Result<(), String> {
     Ok(())
 }
 
-fn print_plan(options: &Options) -> Result<(), String> {
+/// The first screen identifies Snapshots by a readable prefix; --long and --json carry the
+/// complete digest for exact inspection.
+fn plan_snapshot_id(value: &str, long: bool) -> String {
+    if !long && let Some(prefix) = value.strip_prefix("sha256:").and_then(|hex| hex.get(..12)) {
+        return format!("sha256:{prefix}…");
+    }
+    terminal_text(value)
+}
+
+fn print_plan(options: &Options, long: bool) -> Result<(), String> {
     let scratch = tempfile::tempdir().map_err(|error| error.to_string())?;
     let cas = Cas::open(scratch.path().join("cas")).map_err(|error| error.to_string())?;
     let repository = std::fs::canonicalize(&options.repo).map_err(|error| {
@@ -2658,7 +2965,16 @@ fn print_plan(options: &Options) -> Result<(), String> {
             )
         })
         .collect();
-    review_binding_refusal(options, &workers, "plan")?;
+    // A missing binding refuses the plan, and the refusal carries what the plan computed: under
+    // --json the document in `details.plan` and the `model` lines on stderr, in text the plan's
+    // lines before the refusal's sentence (ADR-0259).
+    let refusal = review_binding_refusal(options, &workers, "plan", Some(&plan)).err();
+    if let Some(refusal) = refusal.as_ref().filter(|_| options.json) {
+        for line in &models {
+            eprintln!("{}", terminal_text(line));
+        }
+        return Err(refusal.clone());
+    }
     let empty = plan["subject"]["empty"].as_bool() == Some(true);
     let unfit = plan["pipeline"]["inputs_fit"].as_bool() == Some(false);
     let missing = missing_bindings(&plan);
@@ -2688,22 +3004,28 @@ fn print_plan(options: &Options) -> Result<(), String> {
     plan_line!(
         "policy   {} => {}",
         terminal_text(selectors["policy_rev"].as_str().unwrap_or("?")),
-        terminal_text(resolved["policy_snapshot_id"].as_str().unwrap_or("?"))
+        plan_snapshot_id(resolved["policy_snapshot_id"].as_str().unwrap_or("?"), long)
     );
     if let Some(base) = selectors["base"].as_str() {
         plan_line!(
             "base     {} => {}",
             terminal_text(base),
-            terminal_text(resolved["base_snapshot_id"].as_str().unwrap_or("?"))
+            plan_snapshot_id(resolved["base_snapshot_id"].as_str().unwrap_or("?"), long)
         );
     }
     plan_line!(
         "candidate {} => {}",
         terminal_text(selectors["candidate"].as_str().unwrap_or("?")),
-        terminal_text(resolved["candidate_snapshot_id"].as_str().unwrap_or("?"))
+        plan_snapshot_id(
+            resolved["candidate_snapshot_id"].as_str().unwrap_or("?"),
+            long
+        )
     );
+    if !long {
+        plan_line!("ids      abbreviated; --long or --json shows full digests");
+    }
     for provider in plan["providers"].as_array().into_iter().flatten() {
-        if provider["required"] == true {
+        if provider["required"] == true && provider["binding"].is_string() {
             plan_line!(
                 "binding  {} => {}",
                 terminal_text(provider["node"].as_str().unwrap_or("?")),
@@ -2771,30 +3093,32 @@ fn print_plan(options: &Options) -> Result<(), String> {
                 .unwrap_or_default()
         );
     }
-    plan_line!("topology");
-    for node in plan["pipeline"]["topology"]["nodes"]
-        .as_array()
-        .into_iter()
-        .flatten()
-    {
-        plan_line!(
-            "  node {} [{}]",
-            terminal_text(node["id"].as_str().unwrap_or("?")),
-            terminal_text(node["kind"].as_str().unwrap_or("?"))
-        );
-    }
-    for edge in plan["pipeline"]["topology"]["edges"]
-        .as_array()
-        .into_iter()
-        .flatten()
-    {
-        plan_line!(
-            "  {}.{} -> {}.{}",
-            terminal_text(edge["from"]["node"].as_str().unwrap_or("?")),
-            terminal_text(edge["from"]["port"].as_str().unwrap_or("?")),
-            terminal_text(edge["to"]["node"].as_str().unwrap_or("?")),
-            terminal_text(edge["to"]["port"].as_str().unwrap_or("?"))
-        );
+    if long {
+        plan_line!("topology");
+        for node in plan["pipeline"]["topology"]["nodes"]
+            .as_array()
+            .into_iter()
+            .flatten()
+        {
+            plan_line!(
+                "  node {} [{}]",
+                terminal_text(node["id"].as_str().unwrap_or("?")),
+                terminal_text(node["kind"].as_str().unwrap_or("?"))
+            );
+        }
+        for edge in plan["pipeline"]["topology"]["edges"]
+            .as_array()
+            .into_iter()
+            .flatten()
+        {
+            plan_line!(
+                "  {}.{} -> {}.{}",
+                terminal_text(edge["from"]["node"].as_str().unwrap_or("?")),
+                terminal_text(edge["from"]["port"].as_str().unwrap_or("?")),
+                terminal_text(edge["to"]["node"].as_str().unwrap_or("?")),
+                terminal_text(edge["to"]["port"].as_str().unwrap_or("?"))
+            );
+        }
     }
     for gate in plan["pipeline"]["gates"].as_array().into_iter().flatten() {
         plan_line!(
@@ -2818,6 +3142,17 @@ fn print_plan(options: &Options) -> Result<(), String> {
                 .get("run")
                 .and_then(serde_json::Value::as_u64)
                 .unwrap_or(0)
+        );
+    }
+    if refusal.is_some() {
+        // A refused plan prints no next command, so its first screen has room for this line.
+        let convergence = &plan["pipeline"]["convergence"];
+        plan_line!(
+            "converge {}: {} clean Round; {} Round maximum; {} findings block",
+            terminal_text(convergence["mode"].as_str().unwrap_or("?")),
+            convergence["clean_rounds"].as_u64().unwrap_or(0),
+            convergence["max_rounds"].as_u64().unwrap_or(0),
+            terminal_text(convergence["gate"].as_str().unwrap_or("?"))
         );
     }
     if let Some(reservations) = plan["pipeline"]["reservations"]
@@ -2870,23 +3205,25 @@ fn print_plan(options: &Options) -> Result<(), String> {
         let node = provider["node"].as_str().unwrap_or("?");
         let kind = provider["runner"].as_str().unwrap_or("?");
         match provider["binding"].as_str() {
-            Some(binding) => plan_line!(
+            Some(binding) if long => plan_line!(
                 "provider {} -> {}",
                 terminal_text(node),
                 terminal_text(binding)
             ),
+            Some(_) => {}
             None if provider["required"] == true => {
-                let fix = match missing
+                let ids = missing
                     .iter()
                     .find(|(missing, _)| missing == node)
-                    .and_then(|(_, id)| id.as_deref())
-                {
-                    Some(id) => format!("--provider {node}={id}"),
-                    None => format!(
-                        "no {kind} Provider is registered: `af provider status` lists what this \
-                         machine has, and `af provider setup {kind}-main --kind {kind} --login` \
-                         registers one"
+                    .map(|(_, ids)| ids.as_slice())
+                    .unwrap_or_default();
+                let fix = match ids {
+                    [id] => format!("--provider {node}={id}"),
+                    [] => format!(
+                        "no {kind} Provider is registered: `af provider detect --apply` registers \
+                         a login this machine has"
                     ),
+                    ids => format!("choose one of {} with --provider {node}=ID", ids.join(", ")),
                 };
                 plan_line!(
                     "provider {} -> MISSING; fix: {}",
@@ -2912,6 +3249,10 @@ fn print_plan(options: &Options) -> Result<(), String> {
         );
     } else {
         plan_line!("effects  no state, Gates, Provider calls, Workers, or token spend");
+    }
+    if let Some(refusal) = refusal {
+        // The refusal's sentence follows on stderr, its last line the next command.
+        return Err(refusal);
     }
     // What to do, then the one command, whole: continued between its arguments when it is
     // wider than the terminal, so it still runs as copied.
@@ -2961,9 +3302,9 @@ fn wrap_plan_line(line: &str) -> String {
     human::wrap(line, width, column)
 }
 
-/// The model Workers of `plan` without a Provider binding, each with a registered Provider of
-/// its kind when this machine has one.
-fn missing_bindings(plan: &serde_json::Value) -> Vec<(String, Option<String>)> {
+/// The model Workers of `plan` without a Provider binding, each with the enabled Providers of
+/// its kind this machine registers.
+fn missing_bindings(plan: &serde_json::Value) -> Vec<(String, Vec<String>)> {
     let registered = providers::registered()
         .map(|(ids, _)| ids)
         .unwrap_or_default();
@@ -2973,14 +3314,9 @@ fn missing_bindings(plan: &serde_json::Value) -> Vec<(String, Option<String>)> {
         .flatten()
         .filter(|provider| provider["binding"].is_null() && provider["required"] == true)
         .map(|provider| {
-            let kind = provider["runner"].as_str().unwrap_or("?");
-            let candidate = registered
-                .iter()
-                .find(|(_, registered_kind)| *registered_kind == kind)
-                .map(|(id, _)| id.clone());
             (
                 provider["node"].as_str().unwrap_or("?").to_owned(),
-                candidate,
+                binding_candidates(&registered, provider["runner"].as_str().unwrap_or("?")),
             )
         })
         .collect()
@@ -2995,7 +3331,7 @@ struct NextStep {
 
 /// What `af review plan` tells a person to do next: the exact `af review run` command when the
 /// plan is what run admits, else the first thing that keeps it from running.
-fn plan_next_step(empty: bool, unfit: bool, missing: &[(String, Option<String>)]) -> NextStep {
+fn plan_next_step(empty: bool, unfit: bool, missing: &[(String, Vec<String>)]) -> NextStep {
     let words: Vec<String> = std::env::args().skip(1).collect();
     let rerun = |subcommand: &str, extra: &[String]| {
         let mut command = vec!["af".to_string()];
@@ -3031,15 +3367,10 @@ fn plan_next_step(empty: bool, unfit: bool, missing: &[(String, Option<String>)]
         };
     }
     if !missing.is_empty() {
-        if missing.iter().all(|(_, id)| id.is_some()) {
+        if missing.iter().all(|(_, ids)| ids.len() == 1) {
             let flags: Vec<String> = missing
                 .iter()
-                .flat_map(|(node, id)| {
-                    [
-                        "--provider".to_string(),
-                        format!("{node}={}", id.as_deref().unwrap_or_default()),
-                    ]
-                })
+                .flat_map(|(node, ids)| ["--provider".to_string(), format!("{node}={}", ids[0])])
                 .collect();
             return NextStep {
                 prose: None,
@@ -3126,6 +3457,32 @@ fn print_ledger(options: &LedgerOptions) -> Result<(), String> {
     }
     print_scope_authority_warnings(&ledger);
     let findings = ledger.finding_views();
+    if options.json {
+        let demands = ledger.demand_views();
+        let open_required_demands = demands
+            .iter()
+            .filter(|demand| {
+                demand.requirement == review_core::DemandRequirement::Required
+                    && matches!(
+                        demand.status,
+                        review_core::DemandStatus::Open | review_core::DemandStatus::Stale
+                    )
+            })
+            .count();
+        let document = serde_json::json!({
+            "schema": "af/review-ledger@1",
+            "campaign": options.campaign,
+            "round": ledger.round,
+            "findings": findings,
+            "demands": demands,
+            "open_required_demands": open_required_demands,
+        });
+        println!(
+            "{}",
+            serde_json::to_string(&document).map_err(|error| error.to_string())?
+        );
+        return Ok(());
+    }
     for finding in &findings {
         println!(
             "{}\t{}\t{}\t{}\t{}\t{}:{}\t{}",
@@ -3372,6 +3729,42 @@ fn show(options: &ShowOptions) -> Result<(), String> {
     let head = current_campaign_head(&store, &cas, &run_id)?;
     let proposals = campaign_proposals(&store, &cas, &run_id)?;
     let (finding_ids, report_ids) = finding_claim_ids(&finding, &cas)?;
+
+    if options.json {
+        let reports = finding
+            .reports
+            .iter()
+            .map(|attached| {
+                cas.get_json(&attached.report_id)
+                    .map_err(|error| format!("reading report {}: {error}", attached.report_id))
+            })
+            .collect::<Result<Vec<_>, _>>()?;
+        let linked = proposals
+            .iter()
+            .filter(|proposal| {
+                proposal_links_finding(&proposal.proposal, &finding_ids, &report_ids)
+            })
+            .map(|proposal| {
+                serde_json::json!({
+                    "id": proposal.id,
+                    "proposal": proposal.proposal,
+                    "stale": proposal.proposal.base_snapshot_id != head,
+                })
+            })
+            .collect::<Vec<_>>();
+        let document = serde_json::json!({
+            "schema": "af/review-show@1",
+            "campaign": options.campaign,
+            "finding": finding,
+            "reports": reports,
+            "proposals": linked,
+        });
+        println!(
+            "{}",
+            serde_json::to_string(&document).map_err(|error| error.to_string())?
+        );
+        return Ok(());
+    }
 
     println!(
         "{} [{}]",
@@ -4165,7 +4558,14 @@ struct ReviewReportView {
     #[serde(skip_serializing_if = "Option::is_none")]
     wall_ms: Option<u64>,
     findings_summary: FindingsSummaryView,
-    findings: Vec<review_store::Finding>,
+    /// Each finding with its agent prompt and verified fix (ADR-0248).
+    findings: Vec<review_handoff::ReportFindingView>,
+    /// What the last recorded run covered, per reviewer and per path; null when no run is recorded
+    /// or its Round's Subject is unreadable.
+    coverage: Option<review_handoff::ReportCoverageView>,
+    /// The findings' verified fixes, for the SARIF run's properties.
+    #[serde(skip)]
+    verified_fixed: Vec<review_core::task::handoff::VerifiedFixV1>,
 }
 
 #[derive(serde::Serialize)]
@@ -4345,8 +4745,36 @@ fn print_report(options: &ReportOptions) -> Result<(), String> {
             "{}",
             serde_json::to_string_pretty(&view).map_err(|error| error.to_string())?
         ),
+        ReportFormat::Sarif => sarif::print(&report_sarif(&view))?,
     }
     Ok(())
+}
+
+/// The report's findings as one SARIF 2.1.0 log (ADR-0248). A finding a verification record
+/// proved fixed is no result: it is listed in the run's `verified_fixed`.
+fn report_sarif(view: &ReviewReportView) -> sarif::SarifRun<'_> {
+    let coverage = view.coverage.as_ref();
+    sarif::SarifRun {
+        owner: ("campaign", &view.campaign),
+        round: coverage.map(|coverage| u64::from(coverage.round)),
+        snapshot_id: coverage.map(|coverage| coverage.snapshot_id.as_str()),
+        coverage: coverage.map(|coverage| &coverage.coverage),
+        verified_fixed: &view.verified_fixed,
+        findings: view
+            .findings
+            .iter()
+            .filter(|view| view.verified_fix.is_none())
+            .map(|view| sarif::SarifFinding {
+                reviewer: &view.finding.source,
+                severity: view.finding.severity,
+                title: &view.finding.title,
+                finding_id: Some(&view.finding.key),
+                status: Some(view.finding.status.as_str()),
+                prompt: &view.agent_prompt,
+                declined: matches!(view.finding.status, Status::Rejected | Status::Wontfix),
+            })
+            .collect(),
+    }
 }
 
 fn read_report_view(
@@ -4382,8 +4810,14 @@ fn read_report_view_quietly(
     let task_accounting = report_tasks::read(store, cas, &run_id, &events)?;
     let wall_ms = task_accounting.wall_ms();
     let findings = ledger.finding_views();
+    let findings_summary = findings_summary(&findings);
+    let (findings, coverage) = review_handoff::read(cas, &events, &ledger, findings)?;
+    let verified_fixed = findings
+        .iter()
+        .filter_map(|view| view.verified_fix.clone())
+        .collect();
     Ok(ReviewReportView {
-        schema: "af/review-report@4",
+        schema: "af/review-report@5",
         campaign: campaign.into(),
         runs_recorded: reports.len(),
         ledger_round: ledger.round,
@@ -4406,8 +4840,10 @@ fn read_report_view_quietly(
         task_accounting: task_accounting.tasks,
         demands: ledger.demand_views(),
         wall_ms,
-        findings_summary: findings_summary(&findings),
+        findings_summary,
         findings,
+        coverage,
+        verified_fixed,
     })
 }
 
@@ -4505,11 +4941,15 @@ fn print_report_text(report: &ReviewReportView) {
         );
         println!("    source: {}", terminal_text(&demand.source));
     }
+    for line in review_handoff::coverage_lines(report.coverage.as_ref()) {
+        println!("{line}");
+    }
     println!("Findings:");
     if report.findings.is_empty() {
         println!("  none");
     }
-    for finding in &report.findings {
+    for view in &report.findings {
+        let finding = &view.finding;
         println!(
             "  [{}; scope={}; severity={}; effective={}] {} ({}) at {}:{}",
             finding.status.as_str(),
@@ -4528,6 +4968,12 @@ fn print_report_text(report: &ReviewReportView) {
         );
         println!("    body: {}", one_line(&finding.body));
         println!("    fix: {}", one_line(&finding.fix));
+        if let Some(fix) = &view.verified_fix {
+            println!(
+                "    verified fixed: by {} on {}",
+                fix.record_id, fix.snapshot_id
+            );
+        }
         for transition in &finding.history {
             println!(
                 "    history round {}: {} - {}",
@@ -4600,6 +5046,22 @@ fn print_report_markdown(report: &ReviewReportView) {
         println!("  - Source: {}", terminal_text(&demand.source));
     }
     println!();
+    println!("## Coverage");
+    println!();
+    if let Some(coverage) = &report.coverage {
+        println!(
+            "- Last recorded run: run {}, round {}, on `{}`",
+            coverage.run, coverage.round, coverage.snapshot_id
+        );
+    }
+    // The text heading is the section's own; its lines are the items.
+    for line in review_handoff::coverage_lines(report.coverage.as_ref())
+        .iter()
+        .skip(1)
+    {
+        println!("- {}", line.trim_start());
+    }
+    println!();
     println!("## Findings");
     for effective_severity in [
         Some(Severity::Blocker),
@@ -4620,14 +5082,15 @@ fn print_report_markdown(report: &ReviewReportView) {
         let matching = report
             .findings
             .iter()
-            .filter(|finding| finding.convergence_severity == effective_severity)
+            .filter(|view| view.finding.convergence_severity == effective_severity)
             .collect::<Vec<_>>();
         if matching.is_empty() {
             println!();
             println!("None.");
             continue;
         }
-        for finding in matching {
+        for view in matching {
+            let finding = &view.finding;
             println!();
             println!(
                 "- **[{}, scope={}, severity={}, effective={}] {}** (`{}`) at `{}:{}`",
@@ -4647,6 +5110,12 @@ fn print_report_markdown(report: &ReviewReportView) {
             );
             println!("  - Body: {}", markdown_line(&finding.body));
             println!("  - Fix: {}", markdown_line(&finding.fix));
+            if let Some(fix) = &view.verified_fix {
+                println!(
+                    "  - Verified fixed: by `{}` on `{}`",
+                    fix.record_id, fix.snapshot_id
+                );
+            }
             let evidence = finding
                 .reports
                 .iter()
@@ -4759,6 +5228,23 @@ fn terminal_lines(message: &str) -> String {
         .map(terminal_text)
         .collect::<Vec<_>>()
         .join("\n")
+}
+
+/// `error` as stderr shows it after `prefix`. A refusal ending with the command its document
+/// names (`...; then run `af task plan --file F` again`, the `next_action`) is fitted to the
+/// terminal stderr is by [`human::fit_refusal`], so the command runs as printed; every other
+/// error, and every error on a stream that is no terminal, is printed whole.
+fn error_text(prefix: &str, error: &str, detail: Option<&error_document::Detail>) -> String {
+    detail
+        .and_then(|detail| detail.next_action.as_deref())
+        .filter(|next| error_document::pasteable(next))
+        .zip(human::stderr_columns())
+        .and_then(|(next, width)| {
+            let sentence = error.strip_suffix(&format!(" then run `{next}` again"))?;
+            let head = format!("{prefix}: {}", terminal_lines(sentence));
+            Some(human::fit_refusal(&head, next, width))
+        })
+        .unwrap_or_else(|| format!("{prefix}: {}", terminal_lines(error)))
 }
 
 fn run_report(event: &review_core::RunEvent) -> Result<RunReportPayloadV6, String> {
@@ -5349,8 +5835,55 @@ fn run(options: &Options) -> Result<RunVerdict, String> {
 #[cfg(test)]
 mod terminal_text_tests {
     use super::{
-        CampaignProposal, markdown_line, one_line, proposal_line, terminal_lines, terminal_text,
+        CampaignProposal, login_status, markdown_line, one_line, proposal_line, same_command,
+        terminal_lines, terminal_text,
     };
+
+    /// #331 item 10: the `next_action` of an interrupted command that ran no Task is that same
+    /// command, quoted as typed; an interrupted `af provider auth begin` names the status of the
+    /// same login. Each parses with the CLI; a word no pasted line carries gives none.
+    #[test]
+    fn an_interrupted_command_names_the_command_that_continues_it() {
+        use clap::Parser as _;
+        let argv = |words: &[&str]| {
+            words
+                .iter()
+                .map(|word| (*word).to_owned())
+                .collect::<Vec<_>>()
+        };
+        let again = same_command(&argv(&[
+            "/opt/af/bin/af",
+            "review",
+            "run",
+            "--state",
+            "a b",
+        ]));
+        assert_eq!(again.as_deref(), Some("af review run --state 'a b'"));
+        assert_eq!(same_command(&argv(&["af", "review", "run", "x\ny"])), None);
+        assert_eq!(same_command(&argv(&["af"])), None);
+        let begin = argv(&[
+            "af",
+            "provider",
+            "auth",
+            "begin",
+            "--kind",
+            "claude",
+            "--auth-dir",
+            "/h/c d",
+            "--host-read-fd",
+            "3",
+            "--host-write-fd",
+            "4",
+            "claude-main",
+        ]);
+        let status = login_status(&begin).unwrap();
+        assert_eq!(
+            status,
+            "af provider auth status claude-main --kind claude --auth-dir '/h/c d'"
+        );
+        crate::cli::Af::try_parse_from(shell_words::split(&status).unwrap()).unwrap();
+        assert_eq!(login_status(&argv(&["af", "task", "run", "t"])), None);
+    }
 
     /// A message af composed keeps its own line breaks; every line of it is shown through
     /// `terminal_text`, so a value interpolated into it sends no control character (audit C3).
@@ -5848,7 +6381,7 @@ mod option_tests {
         );
         // The report document the browser reads, without a word on stderr.
         let report = browse_report(&state, "local").unwrap();
-        assert_eq!(report["schema"], "af/review-report@4");
+        assert_eq!(report["schema"], "af/review-report@5");
         assert_eq!(report["campaign"], "local");
         // A directory without a Store is no Campaign.
         let Err(error) = read_campaign_dir(&temp.path().join("review")) else {

@@ -4,8 +4,8 @@
 use std::collections::{BTreeMap, BTreeSet};
 
 use review_core::task::diff_subject::{
-    DIFF_SUBJECT_BASE, DIFF_SUBJECT_FILE, DIFF_SUBJECT_SCHEMA, DiffSubjectChangeV1, DiffSubjectV1,
-    MAX_DIFF_PATHS,
+    DIFF_SUBJECT_BASE, DIFF_SUBJECT_OPERATION, DIFF_SUBJECT_PORT, DIFF_SUBJECT_SCHEMA,
+    DIFF_SUBJECT_V1, DiffSubjectChangeV1, DiffSubjectV1, MAX_DIFF_PATHS,
 };
 use review_core::task::execution::{TaskInvocationV1, TaskOutputV1};
 use review_core::task::pipeline::PortAffinityV1;
@@ -88,37 +88,212 @@ impl SnapshotTaskEnvironment {
                 .get("source")
                 .ok_or("Source Worker has no source port")?,
         )?;
-        let source_manifest = manifest.clone();
         add_review_inputs(cas, invocation, captures_candidate, &id, &mut manifest)?;
         let sandbox = Sandbox::materialize(&manifest, cas, mode).map_err(|e| e.to_string())?;
         review_sandbox::admit(self.policy, &sandbox).map_err(|e| e.to_string())?;
         let base = if with_base {
-            match declared_base(cas, invocation)? {
-                Some(declared) => Some(declared),
-                None => recorded_base(cas, &snapshot)?,
-            }
+            subject_base(cas, &invocation.plan_id, &snapshot)?
         } else {
             None
         };
         if let Some(base_id) = base {
             let (_, base) = read_snapshot(cas, &base_id)?;
-            let subject = diff_subject(&base_id, &base, &id, &source_manifest)?;
-            let bytes = serde_json::to_vec_pretty(&subject).map_err(|e| e.to_string())?;
+            // The change's paths reach a Worker that declares them as its typed `diff_subject`
+            // input (ADR-0254); nothing is written beside the tree but the base itself.
             sandbox
-                .attach_base(&base, cas, &[(DIFF_SUBJECT_FILE, &bytes)])
+                .attach_base(&base, cas, &[])
                 .map_err(|e| format!("The base tree beside the sandbox: {e}"))?;
         }
         Ok(sandbox)
     }
 }
 
+/// The Task revision an invocation's plan was made for, or `None` when it names no readable
+/// plan: the dispatch's own records, read again where the dispatch reads them.
+fn plan_revision(cas: &Cas, plan_id: &str) -> Result<Option<TaskRevisionV1>, String> {
+    let Ok(plan) = envelope(cas, plan_id) else {
+        return Ok(None);
+    };
+    let Ok(plan) = serde_json::from_value::<ExecutionPlanV1>(plan.payload) else {
+        return Ok(None);
+    };
+    serde_json::from_value(envelope(cas, &plan.task_revision_id)?.payload)
+        .map(Some)
+        .map_err(|e| e.to_string())
+}
+
+/// The tree a judging Worker of the plan `plan_id` reads at `../base` when its source is
+/// `snapshot`: the base its Task file declared, else the base the Store recorded for the source.
+/// `None` when there is neither.
+pub fn subject_base(
+    cas: &Cas,
+    plan_id: &str,
+    snapshot: &TaskSnapshot,
+) -> Result<Option<String>, String> {
+    match declared_base(cas, plan_revision(cas, plan_id)?.as_ref())? {
+        Some(declared) => Ok(Some(declared)),
+        None => recorded_base(cas, snapshot),
+    }
+}
+
+/// The Diff Subject the kernel supplies on a judging Worker's `diff_subject` port (ADR-0254):
+/// the change between the tree the Worker reads at `../base` and its `source`, recorded as one
+/// `af/DiffSubject@1` artifact of the kernel's `diff-subject@1` operation for `node`, with the
+/// source's Snapshot as its subject. The same records give the same artifact, so a replayed
+/// invocation names the identity it recorded. `None` when the source has no base.
+pub fn kernel_diff_subject(
+    cas: &Cas,
+    plan_id: &str,
+    node: &str,
+    source: &ArtifactInputV1,
+) -> Result<Option<ArtifactInputV1>, String> {
+    let (id, snapshot, manifest) = source_snapshot(cas, source)?;
+    let Some(base_id) = subject_base(cas, plan_id, &snapshot)? else {
+        return Ok(None);
+    };
+    let (_, base) = read_snapshot(cas, &base_id)?;
+    let subject = diff_subject(&base_id, &base, &id, &manifest)?;
+    let task = plan_revision(cas, plan_id)?.ok_or("A Diff Subject needs its Task's plan")?;
+    let producer = Producer::KernelOperation {
+        run_id: task_run_id(&task.task_id).map_err(|e| e.to_string())?,
+        node_id: Some(node.to_owned()),
+        operation_id: DIFF_SUBJECT_OPERATION.into(),
+    };
+    let mut refs: Vec<String> = source
+        .artifact_ids
+        .iter()
+        .cloned()
+        .chain([base_id, id.clone()])
+        .collect();
+    refs.sort();
+    refs.dedup();
+    let (artifact_id, _) = cas
+        .put_artifact(
+            DIFF_SUBJECT_V1,
+            producer,
+            refs,
+            Some(id.clone()),
+            serde_json::to_value(&subject).map_err(|e| e.to_string())?,
+        )
+        .map_err(|e| e.to_string())?;
+    Ok(Some(ArtifactInputV1 {
+        artifact_ids: vec![artifact_id],
+        artifact_type: DIFF_SUBJECT_V1.into(),
+        cardinality: PortCardinality::One,
+        snapshot_id: Some(id),
+    }))
+}
+
+/// Before a judging Worker is dispatched, its `diff_subject` port holds exactly what the kernel
+/// would build for it (ADR-0254): absent when its contract does not declare the port or its
+/// source has no base, else one `af/DiffSubject@1` of the kernel's own operation for this node
+/// whose document is the change between that base and the source. Anything else is refused,
+/// naming the node and what to do, so no Worker judges a change it was not given.
+pub fn check_diff_subject(
+    cas: &Cas,
+    invocation: &TaskInvocationV1,
+    signature: &OperatorSignature,
+) -> Result<Option<DiffSubjectV1>, String> {
+    let node = &invocation.node;
+    let declared = signature
+        .contract
+        .inputs
+        .get(DIFF_SUBJECT_PORT)
+        .is_some_and(|port| port.artifact_type == DIFF_SUBJECT_V1);
+    let carried = invocation.inputs.get(DIFF_SUBJECT_PORT);
+    if !declared {
+        if carried.is_some() {
+            return Err(format!(
+                "Node {node} carries a `{DIFF_SUBJECT_PORT}` input its Worker's contract does not \
+                 declare; plan the Task again"
+            ));
+        }
+        return Ok(None);
+    }
+    let source = invocation
+        .inputs
+        .get("source")
+        .ok_or_else(|| format!("Node {node} declares the Diff Subject but has no source"))?;
+    let (id, snapshot, manifest) = source_snapshot(cas, source)?;
+    let base = subject_base(cas, &invocation.plan_id, &snapshot)?;
+    let (base_id, carried) = match (base, carried) {
+        (None, None) => return Ok(None),
+        (Some(base_id), Some(carried)) => (base_id, carried),
+        (Some(base_id), None) => {
+            return Err(format!(
+                "The Diff Subject of node {node} is absent: its source {id} changed {base_id}, so \
+                 its Worker would judge a change it was not given; plan the Task again"
+            ));
+        }
+        (None, Some(_)) => {
+            return Err(format!(
+                "Node {node} carries a Diff Subject, but its source {id} has no base; plan the \
+                 Task again"
+            ));
+        }
+    };
+    let (_, base) = read_snapshot(cas, &base_id)?;
+    let expected = diff_subject(&base_id, &base, &id, &manifest)?;
+    carried.validate()?;
+    let artifact = envelope(cas, &carried.artifact_ids[0])?;
+    let built = matches!(
+        &artifact.producer,
+        Producer::KernelOperation { node_id, operation_id, .. }
+            if node_id.as_deref() == Some(node.as_str()) && operation_id == DIFF_SUBJECT_OPERATION
+    );
+    let document = serde_json::from_value::<DiffSubjectV1>(artifact.payload)
+        .map_err(|e| format!("The Diff Subject of node {node}: {e}"))?;
+    if carried.artifact_type != DIFF_SUBJECT_V1
+        || carried.cardinality != PortCardinality::One
+        || carried.artifact_ids.len() != 1
+        || carried.snapshot_id.as_deref() != Some(id.as_str())
+        || artifact.artifact_type != DIFF_SUBJECT_V1
+        || artifact.subject_snapshot_id.as_deref() != Some(id.as_str())
+        || !built
+        || document != expected
+    {
+        return Err(format!(
+            "The Diff Subject of node {node} is not the change between {base_id} and its source \
+             {id} the kernel builds; plan the Task again"
+        ));
+    }
+    Ok(Some(document))
+}
+
 /// The base a Task file declared with `"base": {"commit": …}`, read from the `af/TaskBase@1`
-/// record in the revision's provenance (ADR-0212).
-fn declared_base(cas: &Cas, invocation: &TaskInvocationV1) -> Result<Option<String>, String> {
+/// record in the revision's provenance (ADR-0212). A revision that names none, or no revision,
+/// declares no base.
+fn declared_base(cas: &Cas, task: Option<&TaskRevisionV1>) -> Result<Option<String>, String> {
     use review_core::task::findings::{TASK_BASE_V1, TaskBaseV1};
-    // The plan and revision are the dispatch's own records, read again where the dispatch reads
-    // them; an invocation that names no readable plan declares no base.
-    let Ok(plan) = envelope(cas, &invocation.plan_id) else {
+    let Some(task) = task else {
+        return Ok(None);
+    };
+    for id in &task.provenance.input_artifact_ids {
+        let Some(artifact) = cas.get_optional_artifact(id).map_err(|e| e.to_string())? else {
+            continue;
+        };
+        if artifact.artifact_type != TASK_BASE_V1 {
+            continue;
+        }
+        let base: TaskBaseV1 =
+            serde_json::from_value(artifact.payload).map_err(|e| e.to_string())?;
+        base.validate()?;
+        return Ok(Some(base.snapshot_id));
+    }
+    Ok(None)
+}
+
+/// The acceptance items a Task file stated, read from the `af/TaskAcceptance@1` record in the
+/// provenance of the revision `plan_id` executes (ADR-0255), as a check receipt carries them;
+/// `None` for a Task that stated none, or a plan that cannot be read.
+pub fn task_acceptance(
+    cas: &Cas,
+    plan_id: &str,
+) -> Result<Option<review_core::task::verification::TaskReceiptAcceptanceV2>, String> {
+    use review_core::task::acceptance::{TASK_ACCEPTANCE_V1, TaskAcceptanceV1};
+    // As for a declared base: the plan and revision are the dispatch's own records, and an
+    // invocation that names no readable plan states no acceptance.
+    let Ok(plan) = envelope(cas, plan_id) else {
         return Ok(None);
     };
     let Ok(plan) = serde_json::from_value::<ExecutionPlanV1>(plan.payload) else {
@@ -131,13 +306,18 @@ fn declared_base(cas: &Cas, invocation: &TaskInvocationV1) -> Result<Option<Stri
         let Some(artifact) = cas.get_optional_artifact(id).map_err(|e| e.to_string())? else {
             continue;
         };
-        if artifact.artifact_type != TASK_BASE_V1 {
+        if artifact.artifact_type != TASK_ACCEPTANCE_V1 {
             continue;
         }
-        let base: TaskBaseV1 =
+        let record: TaskAcceptanceV1 =
             serde_json::from_value(artifact.payload).map_err(|e| e.to_string())?;
-        base.validate()?;
-        return Ok(Some(base.snapshot_id));
+        record.validate()?;
+        return Ok(Some(
+            review_core::task::verification::TaskReceiptAcceptanceV2 {
+                record_id: id.clone(),
+                items: record.items,
+            },
+        ));
     }
     Ok(None)
 }
@@ -345,6 +525,82 @@ fn candidate_port(signature: &OperatorSignature) -> bool {
             })
 }
 
+/// What sealing a source-writing Worker's tree captured: the Snapshot it started from, the
+/// Manifest of what it left, the record of the generated paths left out, and how many paths
+/// the Manifest adds, changes or removes.
+struct CapturedCandidate {
+    parent_snapshot_id: String,
+    manifest_id: String,
+    ignored_id: Option<String>,
+    changed_paths: u64,
+}
+
+/// The one capture of a writer's sealed tree, for its candidate and for the partial tree an
+/// Attempt wall leaves (ADR-0257) alike. A Worker with a shell leaves scratch behind (build
+/// output, tool caches); it is not part of what the Worker wrote, so it never reaches the
+/// tree. What the project's ignore rules exclude among what the Worker added — generated files
+/// of its own test runs and builds — is left out and listed (ADR-0207).
+fn capture_candidate(
+    cas: &Cas,
+    invocation: &TaskInvocationV1,
+    signature: &OperatorSignature,
+    sealed: &SealedSandbox,
+) -> Result<CapturedCandidate, String> {
+    let source = &invocation.inputs["source"];
+    let parent_snapshot_id = source_input(cas, source)?;
+    let access = worker_access(signature);
+    let owned = owned_top_levels(sealed);
+    let rules = sealed.ignore_rules().map_err(|e| e.to_string())?;
+    let ignored: BTreeSet<String> = sealed
+        .ignored_by(&rules)
+        .into_iter()
+        .filter(|path| !shell_scratch(access, &owned, path))
+        .collect();
+    let kept = |path: &str| !shell_scratch(access, &owned, path) && !ignored.contains(path);
+    let manifest = sealed
+        .capture_snapshot_where(cas, kept)
+        .map_err(|e| e.to_string())?;
+    let manifest_id = cas
+        .put_json(&serde_json::to_value(&manifest).map_err(|e| e.to_string())?)
+        .map_err(|e| e.to_string())?;
+    read_manifest(cas, &manifest_id)?;
+    let changed_paths = sealed
+        .mutations
+        .paths()
+        .iter()
+        .filter(|path| kept(path))
+        .count() as u64;
+    let mut ignored_id = None;
+    if !ignored.is_empty() {
+        let record = review_core::task::seal::SealIgnoredV1::new(
+            manifest_id.clone(),
+            ignored.iter().cloned().collect(),
+        );
+        record.validate()?;
+        let id = cas
+            .put_json(&serde_json::to_value(&record).map_err(|e| e.to_string())?)
+            .map_err(|e| e.to_string())?;
+        eprintln!(
+            "seal: left out {} generated path{} the ignore rules exclude ({}{}); listed in {id}",
+            record.ignored_count,
+            if record.ignored_count == 1 { "" } else { "s" },
+            record.ignored[0],
+            if record.ignored_count > 1 {
+                ", …"
+            } else {
+                ""
+            }
+        );
+        ignored_id = Some(id);
+    }
+    Ok(CapturedCandidate {
+        parent_snapshot_id,
+        manifest_id,
+        ignored_id,
+        changed_paths,
+    })
+}
+
 impl TaskEnvironment for SnapshotTaskEnvironment {
     fn kernel_outputs(&self, signature: &OperatorSignature) -> BTreeSet<String> {
         if candidate_port(signature) {
@@ -385,6 +641,9 @@ impl TaskEnvironment for SnapshotTaskEnvironment {
         // beside its own, read-only, with the change's paths (ADR-0212); a writer changes the
         // source itself and gets none.
         let judges = !signature.effects.contains("write-source");
+        if judges {
+            check_diff_subject(cas, invocation, signature)?;
+        }
         self.materialize_mode(cas, invocation, mode, candidate_port(signature), judges)
     }
 
@@ -415,56 +674,15 @@ impl TaskEnvironment for SnapshotTaskEnvironment {
             return Err("Worker cannot supply the kernel candidate port".into());
         }
         let source = &invocation.inputs["source"];
-        let parent_snapshot_id = source_input(cas, source)?;
-        // A Worker with a shell leaves scratch behind (build output, tool caches); it is not
-        // part of what the Worker wrote, so it never reaches the candidate.
-        let access = worker_access(signature);
-        let owned = owned_top_levels(&sealed);
-        // What the project's ignore rules exclude among what the Worker added — generated
-        // files of its own test runs and builds — is left out and listed (ADR-0207).
-        let rules = sealed.ignore_rules().map_err(|e| e.to_string())?;
-        let ignored: BTreeSet<String> = sealed
-            .ignored_by(&rules)
-            .into_iter()
-            .filter(|path| !shell_scratch(access, &owned, path))
-            .collect();
-        let manifest = sealed
-            .capture_snapshot_where(cas, |path| {
-                !shell_scratch(access, &owned, path) && !ignored.contains(path)
-            })
-            .map_err(|e| e.to_string())?;
-        let manifest_id = cas
-            .put_json(&serde_json::to_value(&manifest).map_err(|e| e.to_string())?)
-            .map_err(|e| e.to_string())?;
-        read_manifest(cas, &manifest_id)?;
+        let captured = capture_candidate(cas, invocation, signature, &sealed)?;
+        let parent_snapshot_id = captured.parent_snapshot_id.clone();
         let candidate = CandidateTree {
             parent_snapshot_id: parent_snapshot_id.clone(),
-            manifest_id: manifest_id.clone(),
+            manifest_id: captured.manifest_id.clone(),
         };
         let mut refs = source.artifact_ids.clone();
-        refs.extend([parent_snapshot_id.clone(), manifest_id.clone()]);
-        if !ignored.is_empty() {
-            let record = review_core::task::seal::SealIgnoredV1::new(
-                manifest_id,
-                ignored.iter().cloned().collect(),
-            );
-            record.validate()?;
-            let id = cas
-                .put_json(&serde_json::to_value(&record).map_err(|e| e.to_string())?)
-                .map_err(|e| e.to_string())?;
-            eprintln!(
-                "seal: left out {} generated path{} the ignore rules exclude ({}{}); listed in {id}",
-                record.ignored_count,
-                if record.ignored_count == 1 { "" } else { "s" },
-                record.ignored[0],
-                if record.ignored_count > 1 {
-                    ", …"
-                } else {
-                    ""
-                }
-            );
-            refs.push(id);
-        }
+        refs.extend([parent_snapshot_id.clone(), captured.manifest_id.clone()]);
+        refs.extend(captured.ignored_id);
         let id = cas
             .put_artifact(
                 CANDIDATE_TREE_V1,
@@ -485,6 +703,63 @@ impl TaskEnvironment for SnapshotTaskEnvironment {
             },
         );
         Ok(outputs)
+    }
+
+    /// The tree a source-writing Worker left when its Attempt wall ended it, sealed exactly as
+    /// `finish` seals a candidate and kept as `af/TaskPartialCandidate@1` (ADR-0257): the same
+    /// scratch and ignore exclusions, a derived Snapshot of the Worker's source and the
+    /// `af/SourceTree@1` that names it. A Worker without a candidate port, or one that changed
+    /// nothing, leaves nothing to keep.
+    fn retain_partial(
+        &self,
+        cas: &Cas,
+        invocation: &TaskInvocationV1,
+        signature: &OperatorSignature,
+        attempt: &PreparedTaskAttempt,
+        sandbox: Sandbox,
+    ) -> Result<Option<String>, String> {
+        if !candidate_port(signature) {
+            return Ok(None);
+        }
+        let sealed = sandbox.seal().map_err(|e| e.to_string())?;
+        let captured = capture_candidate(cas, invocation, signature, &sealed)?;
+        if captured.changed_paths == 0 {
+            return Ok(None);
+        }
+        let source = &invocation.inputs["source"];
+        let producer = invocation_producer(cas, invocation, Some(attempt))?;
+        let mut refs = source.artifact_ids.clone();
+        refs.push(captured.manifest_id.clone());
+        refs.extend(captured.ignored_id);
+        let tree = review_source_git::task::derive_source_tree(
+            cas,
+            producer.clone(),
+            &captured.manifest_id,
+            &captured.parent_snapshot_id,
+            refs,
+        )?;
+        let source_tree_id = tree.artifact_ids[0].clone();
+        let partial = review_core::task::attempt_wall::TaskPartialCandidateV1 {
+            schema: review_core::task::attempt_wall::TASK_PARTIAL_CANDIDATE_SCHEMA.into(),
+            parent_snapshot_id: captured.parent_snapshot_id.clone(),
+            snapshot_id: tree
+                .snapshot_id
+                .clone()
+                .ok_or("The partial SourceTree names no Snapshot")?,
+            source_tree_id: source_tree_id.clone(),
+            changed_paths: captured.changed_paths,
+        };
+        partial.validate()?;
+        let (id, _) = cas
+            .put_artifact(
+                review_core::task::attempt_wall::TASK_PARTIAL_CANDIDATE_V1,
+                producer,
+                vec![source_tree_id, captured.parent_snapshot_id],
+                partial.snapshot_id.clone().into(),
+                serde_json::to_value(&partial).map_err(|e| e.to_string())?,
+            )
+            .map_err(|e| e.to_string())?;
+        Ok(Some(id))
     }
 
     fn validate_outputs(
@@ -689,6 +964,141 @@ mod tests {
         assert!(subject.changes[1].after.is_none() && subject.changes[2].before.is_none());
         assert_eq!(subject.changes[3].before, subject.changes[3].after);
         assert_eq!(subject.base, "../base");
+    }
+
+    /// #331 item 3 (ADR-0254): before a judging Worker starts, its `diff_subject` port holds
+    /// exactly the kernel's Diff Subject, or the Attempt is refused.
+    #[test]
+    fn a_judging_workers_diff_subject_is_checked_before_dispatch() {
+        use review_core::task::pipeline::PipelinePortV1;
+        use review_source_git::task::{capture_snapshot, source_tree};
+        let directory = tempfile::tempdir().unwrap();
+        let cas = Cas::open(directory.path().join("cas")).unwrap();
+        let file = |path: &str, text: &str| Entry {
+            path: path.into(),
+            kind: EntryKind::File,
+            content: cas.put(text.as_bytes()).unwrap(),
+            size: text.len() as u64,
+        };
+        let base = Manifest::new(vec![file("lib.rs", "a")]).unwrap();
+        let tree = Manifest::new(vec![file("lib.rs", "b"), file("new.rs", "c")]).unwrap();
+        let origin = cas
+            .put_json(&serde_json::json!({"schema":"af.task-source-origin/1"}))
+            .unwrap();
+        let base_id = capture_snapshot(&cas, &base, &origin, None).unwrap();
+        let tree_id = capture_snapshot(&cas, &tree, &origin, Some(&base_id)).unwrap();
+        let kernel = |node: &str, operation: &str| Producer::KernelOperation {
+            run_id: "task:fixture".into(),
+            node_id: Some(node.into()),
+            operation_id: operation.into(),
+        };
+        let source = source_tree(
+            &cas,
+            kernel("root.inputs", "task-builtin@1"),
+            &tree_id,
+            vec![],
+        )
+        .unwrap();
+        let node = "root.nodes.review.nodes.bugs";
+        let mut judge = signature("read-source", "review");
+        let declared = |artifact_type: &str, affinity: PortAffinityV1| -> PipelinePortV1 {
+            serde_json::from_value(serde_json::json!({
+                "artifact_type": artifact_type, "cardinality": "one", "optional": true,
+                "affinity": affinity, "covers": []
+            }))
+            .unwrap()
+        };
+        judge.contract.inputs.insert(
+            "source".into(),
+            declared(SOURCE_TREE_V1, PortAffinityV1::Unbound {}),
+        );
+        judge.contract.inputs.insert(
+            DIFF_SUBJECT_PORT.into(),
+            declared(
+                DIFF_SUBJECT_V1,
+                PortAffinityV1::SameAs {
+                    input: "source".into(),
+                },
+            ),
+        );
+        let invocation = |subject: Option<ArtifactInputV1>| TaskInvocationV1 {
+            plan_id: format!("sha256:{}", "9".repeat(64)),
+            node: node.into(),
+            inputs: std::iter::once(("source".to_owned(), source.clone()))
+                .chain(subject.map(|subject| (DIFF_SUBJECT_PORT.to_owned(), subject)))
+                .collect(),
+        };
+        let carried = |producer: Producer, document: &DiffSubjectV1| {
+            let (id, _) = cas
+                .put_artifact(
+                    DIFF_SUBJECT_V1,
+                    producer,
+                    vec![base_id.clone(), tree_id.clone()],
+                    Some(tree_id.clone()),
+                    serde_json::to_value(document).unwrap(),
+                )
+                .unwrap();
+            ArtifactInputV1 {
+                artifact_ids: vec![id],
+                artifact_type: DIFF_SUBJECT_V1.into(),
+                cardinality: PortCardinality::One,
+                snapshot_id: Some(tree_id.clone()),
+            }
+        };
+        let expected = diff_subject(&base_id, &base, &tree_id, &tree).unwrap();
+        // The kernel's own document for this node is admitted, and is the change.
+        let admitted = check_diff_subject(
+            &cas,
+            &invocation(Some(carried(
+                kernel(node, DIFF_SUBJECT_OPERATION),
+                &expected,
+            ))),
+            &judge,
+        )
+        .unwrap()
+        .unwrap();
+        assert_eq!(admitted, expected);
+        assert_eq!(admitted.changes.len(), 2);
+        // Absent where the source has a base: refused, naming the node.
+        let absent = check_diff_subject(&cas, &invocation(None), &judge).unwrap_err();
+        assert!(
+            absent.contains("is absent") && absent.contains(node),
+            "{absent}"
+        );
+        // Another change, another node's, or one a Worker produced: refused.
+        let mut other = expected.clone();
+        other.changes.pop();
+        for subject in [
+            carried(kernel(node, DIFF_SUBJECT_OPERATION), &other),
+            carried(
+                kernel("root.nodes.other", DIFF_SUBJECT_OPERATION),
+                &expected,
+            ),
+            carried(kernel(node, "task-builtin@1"), &expected),
+        ] {
+            let refused = check_diff_subject(&cas, &invocation(Some(subject)), &judge).unwrap_err();
+            assert!(refused.contains("is not the change"), "{refused}");
+        }
+        // A Worker whose contract does not declare the port gets none.
+        let undeclared = signature("read-source", "review");
+        assert!(
+            check_diff_subject(&cas, &invocation(None), &undeclared)
+                .unwrap()
+                .is_none()
+        );
+        let carried_anyway = check_diff_subject(
+            &cas,
+            &invocation(Some(carried(
+                kernel(node, DIFF_SUBJECT_OPERATION),
+                &expected,
+            ))),
+            &undeclared,
+        )
+        .unwrap_err();
+        assert!(
+            carried_anyway.contains("does not declare"),
+            "{carried_anyway}"
+        );
     }
 
     fn signature(effects: &str, roles: &str) -> OperatorSignature {

@@ -452,16 +452,45 @@ future readers need.
 - [0240 — Execute performance experiments independently on a locked
   VM](0240-execute-performance-experiments-independently-on-a-locked-vm.md)
 - [0241 — Install an agent entry point from the help
-  page](0241-install-an-agent-entry-point-from-the-help-page.md)
+  page](0241-install-an-agent-entry-point-from-the-help-page.md) (superseded in part by
+  [ADR-0259](0259-point-agents-at-the-loop-in-four-rules-and-own-skills-by-their-bytes.md))
 - [0242 — Classify first-run refusals and suggest only explicit trusted review
   commands](0242-classify-first-run-refusals.md)
+- [0243 — Add pinned Task authority through additive
+  onboarding](0243-add-task-authority-with-additive-onboarding.md)
+- [0244 — Version review inspection views](0244-version-review-inspection-views.md)
+- [0245 — Show recorded Gate history and version Task
+  status](0245-show-recorded-gate-history-and-version-task-status.md)
+- [0246 — Carry the Reviewer Result schema natively on the Campaign
+  path](0246-carry-the-reviewer-result-schema-natively-on-the-campaign-path.md)
+- [0247 — Generate a machine-readable command catalog and ship the
+  schemas](0247-generate-a-machine-readable-command-catalog.md) (superseded in part by
+  [ADR-0259](0259-point-agents-at-the-loop-in-four-rules-and-own-skills-by-their-bytes.md))
+- [0248 — Hand review findings to the agent that will fix
+  them](0248-hand-review-findings-to-the-agent-that-will-fix-them.md)
 - [0249 — Distinguish host-denied Provider probes from incompatible
   CLIs](0249-distinguish-host-denied-provider-probes.md)
+- [0250 — Follow a Task as a stream of its Store
+  events](0250-follow-a-task-as-a-stream-of-its-store-events.md)
 - [0251 — Run the Task gate on the fast validation
   profile](0251-run-the-task-gate-on-the-fast-validation-profile.md)
 - [0252 — Keep the kernel experiment measurement out of every
   gate](0252-keep-the-kernel-experiment-measurement-out-of-every-gate.md)
 - [0253 — The default Task pipeline lives in the
   catalog](0253-the-default-task-pipeline-lives-in-the-catalog.md)
+- [0254 — Name the tree of a Worker's rules, and deliver the Diff Subject as a typed
+  input](0254-name-the-tree-of-a-workers-rules-and-deliver-the-diff-subject-as-a-typed-input.md)
+- [0255 — Say a check stopped at its wall, and carry typed acceptance in the check
+  receipt](0255-say-a-check-stopped-at-its-wall-and-carry-typed-acceptance-in-the-check-receipt.md)
+- [0256 — Carry the recovery of an interrupted command as a typed
+  field](0256-carry-the-recovery-of-an-interrupted-command-as-a-typed-field.md)
+- [0257 — Seal the implementer's tree when its Attempt wall ends
+  it](0257-seal-the-implementers-tree-when-its-attempt-wall-ends-it.md)
+- [0258 — Task gate evidence comes from the check
+  report](0258-task-gate-evidence-comes-from-the-check-report.md)
+- [0259 — Point agents at the loop in four rules and own skills by their
+  bytes](0259-point-agents-at-the-loop-in-four-rules-and-own-skills-by-their-bytes.md)
 - [0260 — Leave out a default context that holds a registered
   login](0260-leave-out-a-default-context-that-holds-a-registered-login.md)
+- [0261 — Shape the browser around what a person looks
+  for](0261-shape-the-browser-around-what-a-person-looks-for.md)

@@ -1,0 +1,18 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:af:schema:review-show-view:1",
+  "title": "af/review-show@1 finding inspection view",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema", "campaign", "finding", "reports", "proposals"],
+  "properties": {
+    "schema": {"const": "af/review-show@1"},
+    "campaign": {"type": "string"},
+    "finding": {"$ref": "urn:af:schema:review-ledger-view:1#/$defs/finding"},
+    "reports": {"type": "array", "items": {"type": "object"}},
+    "proposals": {"type": "array", "items": {"type": "object", "additionalProperties": false,
+      "required": ["id", "proposal", "stale"], "properties": {
+        "id": {"type": "string"}, "proposal": {"type": "object"}, "stale": {"type": "boolean"}
+      }}}
+  }
+}

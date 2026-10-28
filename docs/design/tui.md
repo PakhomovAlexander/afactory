@@ -312,6 +312,17 @@ The bar groups by state: `running/`, `awaiting approval/`, `done/`, `failed/`; u
 one level for the repository. Row text is `task-id  outcome  progress%` where progress is
 `settled stages / stages in graph.order`.
 
+The folder's main pane opens on the attention view, `NEEDS YOU  (af task list --attention)`,
+above the Stores: the groups `af task list --attention` prints, read from each listed Task's
+`state` alone (`docs/tasks.md`, "Which Tasks need you"). Each group that waits for a person and
+holds a Task is a heading with its count, then per Task its bar id and state and, on the line
+below, `next:` and its next command, broken between its arguments to fit the pane. A Task of a
+Store reached only by naming it gets `--state DIR` in an `af task` command, as `r` and `D` add
+it; a Task of a user-scope repository keeps its command, and one muted line says to run it in
+that repository. Then `Running (N): IDS` names the running Tasks and `Nothing to do (N)` counts
+the rest; with nothing waiting it reads `No Task needs you now.` A scope whose Stores list no
+Task shows no attention view. A collected Task is not listed by the pane, so it is not counted.
+
 `f` filters the pane to the running Tasks. The bar lists under `tasks/` the running Tasks of
 every Store in one list, the one started last first, no group between; the folder lists one
 row per Task, `task-id  progress%  elapsed  tokens  where`, where `where` is the bar group the
@@ -323,7 +334,9 @@ list never stands for a Store that was not read; with none running the folder sa
 running.` The filter is the pane's, kept across reads and `R`, and taken from the bar under
 `tasks/` whatever the main pane shows; `f` again lists every Task grouped by state as above. An
 opened Task the filtered bar no longer lists falls back to the folder, as any unlisted one
-does. `Enter` on a Task row of the folder, filtered or not, opens the Task, as the bar does.
+does; the attention view is left out while the filter is on. `Enter` on a Task row of the
+folder, in the attention view or under a Store, filtered or not, opens the Task, as the bar
+does.
 
 The project scope lists the Project's Tasks, not this directory's alone (ADR-0158: a Project
 is one repository across its worktrees and clones, and every checkout af worked in is a

@@ -66,8 +66,8 @@ fn node(name: &str, worker: Option<TaskReportWorkerV1>) -> TaskReportNodeV1 {
     }
 }
 
-fn entry(task_id: &str, worker: &str) -> TaskReportEntryV2 {
-    TaskReportEntryV2 {
+fn entry(task_id: &str, worker: &str) -> TaskReportEntryV3 {
+    TaskReportEntryV3 {
         round: 0,
         task_id: task_id.into(),
         kind: "implement".into(),
@@ -103,6 +103,31 @@ fn verified() -> review_core::task::state::TaskStateV1 {
     TaskStateV1::ended(TaskStatePhaseV1::Finished, TaskOutcomeV1::Verified, None)
 }
 
+#[test]
+fn pr_body_receipt_precedes_pipeline_and_rounds_with_recorded_values() {
+    let mut task = entry("a", "gpt-6-sol");
+    task.attempts.as_mut().unwrap().unknown_usage = 1;
+    task.attempts.as_mut().unwrap().unknown_usage_causes = vec![TaskReportUnknownUsageV1 {
+        cause: review_core::task::usage::TaskUnknownUsageCauseV1::Unreported,
+        attempts: 1,
+    }];
+    task.nodes.as_mut().unwrap()[0].unknown_usage = 1;
+    let text = markdown_pr_body(&report(vec![task]), [Some(0); 3]);
+    assert!(text.find("#### Receipt").unwrap() < text.find("**fixture/plain@1.0.0**").unwrap());
+    assert!(text.find("**fixture/plain@1.0.0**").unwrap() < text.find("| Round |").unwrap());
+    assert!(text.contains("Outcome: finished/verified"), "{text}");
+    assert!(
+        text.contains("Checks: 1 passed, 0 failed, 0 skipped"),
+        "{text}"
+    );
+    assert!(text.contains("Tokens: 1,234 (+1 unknown)"), "{text}");
+    assert!(text.contains("Active time: 3.2s"), "{text}");
+    assert!(
+        text.contains("Unresolved findings: 0 blocker, 0 major, 0 minor"),
+        "{text}"
+    );
+}
+
 /// The state a round of the five below ended in, by the outcome its row names.
 fn state_of(task_id: &str, outcome: &str) -> review_core::task::state::TaskStateV1 {
     use review_core::task::state::*;
@@ -125,8 +150,8 @@ fn state_of(task_id: &str, outcome: &str) -> review_core::task::state::TaskState
 }
 
 /// The report over `tasks`, which all run `fixture/plain@1.0.0` with `gpt-6-sol`.
-fn report(tasks: Vec<TaskReportEntryV2>) -> TaskReportV2 {
-    TaskReportV2::new(vec![plain("gpt-6-sol")], tasks).unwrap()
+fn report(tasks: Vec<TaskReportEntryV3>) -> TaskReportV3 {
+    TaskReportV3::new(vec![plain("gpt-6-sol")], tasks).unwrap()
 }
 
 #[test]
@@ -156,8 +181,8 @@ fn round(
     runs: u64,
     (total, failure): (u64, Option<(TaskReportFailureClassV1, u128)>),
     node: TaskReportNodeV1,
-) -> TaskReportEntryV2 {
-    TaskReportEntryV2 {
+) -> TaskReportEntryV3 {
+    TaskReportEntryV3 {
         round: 0,
         task_id: task_id.into(),
         kind: kind.into(),
@@ -392,7 +417,7 @@ fn five_rounds_render_their_pipelines_first_then_one_row_each_and_the_total() {
             ),
         ),
     ];
-    let report = TaskReportV2::new(vec![reviewed, verification], tasks).unwrap();
+    let report = TaskReportV3::new(vec![reviewed, verification], tasks).unwrap();
     let expected = "\
 <!-- af-task-report:v1 -->
 ### af task report
@@ -755,7 +780,7 @@ fn token_counts_read_with_thousands_separators_in_markdown_only() {
 #[test]
 fn only_a_model_identity_is_copied_into_the_report() {
     let with =
-        |model: &str| TaskReportV2::new(vec![plain(model)], vec![entry("a", model)]).unwrap();
+        |model: &str| TaskReportV3::new(vec![plain(model)], vec![entry("a", model)]).unwrap();
     let unknown = with(TASK_REPORT_UNKNOWN_MODEL);
     for (recorded, identity) in TASK_REPORT_MODEL_CASES {
         let shown = report_model(recorded);
@@ -1253,7 +1278,7 @@ fn a_task_without_a_retained_plan_gets_the_unknown_pipeline_line_once() {
         task
     };
     let only = markdown(
-        &TaskReportV2::new(Vec::new(), vec![collected("old"), collected("older")]).unwrap(),
+        &TaskReportV3::new(Vec::new(), vec![collected("old"), collected("older")]).unwrap(),
     );
     assert_eq!(
         only.lines()
@@ -1294,7 +1319,7 @@ fn the_checked_in_fixture_is_what_the_renderer_prints_for_its_document() {
     let directory = workspace().join("fixtures/task-report");
     let document: serde_json::Value =
         serde_json::from_slice(&std::fs::read(directory.join("report.json")).unwrap()).unwrap();
-    let report: TaskReportV2 = serde_json::from_value(document.clone()).unwrap();
+    let report: TaskReportV3 = serde_json::from_value(document.clone()).unwrap();
     report.validate().unwrap();
     assert_eq!(serde_json::to_value(&report).unwrap(), document);
     assert_eq!(

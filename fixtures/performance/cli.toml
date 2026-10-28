@@ -208,7 +208,7 @@ argv = ["{af}", "review", "report", "--campaign", "perf-campaign", "--state", "{
 cwd = "{scratch}"
 rules = [
   { kind = "exit_code", value = 0 },
-  { kind = "json_equals", path = "schema", value = "af/review-report@4" },
+  { kind = "json_equals", path = "schema", value = "af/review-report@5" },
   { kind = "json_equals", path = "campaign", value = "perf-campaign" },
   { kind = "json_equals", path = "runs_recorded", value = 1 },
   { kind = "json_equals", path = "ledger_round", value = 1 },
@@ -365,7 +365,7 @@ argv = ["{af}", "review", "report", "--campaign", "perf-campaign", "--state", "{
 cwd = "{scratch}"
 rules = [
   { kind = "exit_code", value = 0 },
-  { kind = "json_equals", path = "schema", value = "af/review-report@4" },
+  { kind = "json_equals", path = "schema", value = "af/review-report@5" },
   { kind = "json_equals", path = "campaign", value = "perf-campaign" },
   { kind = "json_equals", path = "runs_recorded", value = 1 },
   { kind = "json_equals", path = "ledger_round", value = 1 },

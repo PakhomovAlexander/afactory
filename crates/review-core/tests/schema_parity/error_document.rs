@@ -1,6 +1,7 @@
 //! `af/error@2`, the document every af command prints under `--json` when it fails: the four
 //! fields every error has, and the typed `cause`, `next_action` and `details` a classified
-//! refusal adds, each cause with exactly its own facts.
+//! refusal adds, each cause with exactly its own facts. Version 2 adds `interrupted`
+//! (ADR-0256); a version 1 document fails closed.
 
 use serde_json::json;
 
@@ -67,6 +68,27 @@ fn an_error_document_carries_its_cause_next_command_and_facts() {
         "details": {"file": "goal.md", "what": "goal file"},
     });
     assert_valid(ERROR_V2, &goal);
+    let interrupted = json!({
+        "schema": "af/error@2",
+        "command": "af task",
+        "error": "interrupted by SIGINT; its Worker processes were stopped and the Task was not finished. To continue, resume it with `af task run t --state ../state`, ...",
+        "exit_code": 130,
+        "cause": "interrupted",
+        "next_action": "af task run t --state ../state",
+        "details": {"signal": "SIGINT", "task": "t"},
+    });
+    assert_valid(ERROR_V2, &interrupted);
+    let login = json!({
+        "schema": "af/error@2",
+        "command": "af provider auth",
+        "error": "interrupted by SIGTERM; native login stopped. ...",
+        "exit_code": 143,
+        "cause": "interrupted",
+        "next_action": null,
+        "details": {"signal": "SIGTERM", "task": null},
+    });
+    assert_valid(ERROR_V2, &login);
+
     for (cause, details) in [
         (
             "task_not_found",
@@ -112,8 +134,88 @@ fn an_error_document_carries_its_cause_next_command_and_facts() {
         assert_invalid(ERROR_V2, &wrong_exit, "a first-run refusal is exit 1");
     }
 
+    // ADR-0259: `af review plan`'s binding refusal carries the plan it computed, and names
+    // `af provider detect` when a Worker's kind has no registered Provider.
+    let unbound = json!({
+        "schema": "af/error@2",
+        "command": "af review",
+        "error": "model Workers architecture, correctness need explicit Provider bindings: no codex Provider is registered for architecture and correctness. ...",
+        "exit_code": 1,
+        "cause": "review_binding_missing",
+        "next_action": "af provider detect",
+        "details": {
+            "missing": ["architecture", "correctness"],
+            "candidates": {"architecture": [], "correctness": []},
+            "plan": {
+                "schema": "af/review-plan@1",
+                "token_free": true,
+                "pipeline": {"gates": [{"name": "check", "required": true}]},
+                "providers": [{"node": "architecture", "runner": "codex", "required": true,
+                    "binding": null, "ready": false}],
+                "next_action": "af provider detect",
+            },
+        },
+    });
+    assert_valid(ERROR_V2, &unbound);
+    for (pointer, replacement, why) in [
+        (
+            "/details/plan/schema",
+            json!("af/review-plan@2"),
+            "a plan of another version",
+        ),
+        (
+            "/details/plan",
+            json!("plan"),
+            "a plan that is not a document",
+        ),
+    ] {
+        let mut changed = unbound.clone();
+        *changed.pointer_mut(pointer).unwrap() = replacement;
+        assert_invalid(ERROR_V2, &changed, why);
+    }
+    let mut unversioned = unbound.clone();
+    unversioned["details"]["plan"]
+        .as_object_mut()
+        .unwrap()
+        .remove("schema");
+    assert_invalid(ERROR_V2, &unversioned, "a plan without its schema");
+    let mut elsewhere = unbound.clone();
+    elsewhere["cause"] = json!("review_selectors_missing");
+    elsewhere["details"] = json!({"repo": ".", "selector": "--policy-rev",
+        "plan": unbound["details"]["plan"].clone()});
+    assert_invalid(ERROR_V2, &elsewhere, "a plan on another cause");
+
     for (document, pointer, replacement, why) in [
-        (&plain, "/schema", json!("af/error@1"), "another version"),
+        (
+            &plain,
+            "/schema",
+            json!("af/error@1"),
+            "the version 2 replaced",
+        ),
+        (
+            &interrupted,
+            "/schema",
+            json!("af/error@1"),
+            "an interruption in version 1",
+        ),
+        (
+            &interrupted,
+            "/exit_code",
+            json!(1),
+            "an interruption that exits as a failure",
+        ),
+        (
+            &interrupted,
+            "/details/signal",
+            json!("SIGHUP"),
+            "a signal af does not take",
+        ),
+        (
+            &interrupted,
+            "/next_action",
+            json!("af task run t\n--state s"),
+            "a next command that is not one line",
+        ),
         (&plain, "/exit_code", json!(0), "an error that exits 0"),
         (&plain, "/error", json!(""), "an error without its sentence"),
         (
@@ -160,6 +262,8 @@ fn an_error_document_carries_its_cause_next_command_and_facts() {
         assert_invalid(ERROR_V2, &changed, why);
     }
     for (document, field) in [
+        (&interrupted, "details"),
+        (&interrupted, "next_action"),
         (&exhausted, "details"),
         (&exhausted, "next_action"),
         (&usage, "next_action"),
@@ -171,6 +275,13 @@ fn an_error_document_carries_its_cause_next_command_and_facts() {
     let mut stray = exhausted.clone();
     stray["details"]["file"] = json!("ticket.json");
     assert_invalid(ERROR_V2, &stray, "a fact of another cause");
+    let mut stray = interrupted.clone();
+    stray["details"]["node"] = json!("root.nodes.implement");
+    assert_invalid(
+        ERROR_V2,
+        &stray,
+        "an interruption with another cause's fact",
+    );
     let mut orphan = plain.clone();
     orphan["next_action"] = json!("af task list");
     assert_invalid(ERROR_V2, &orphan, "a next command without its cause");

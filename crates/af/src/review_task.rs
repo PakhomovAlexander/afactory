@@ -59,7 +59,12 @@ fn local_workers(
         loaded,
         &options.pipeline.to_string_lossy(),
     )?;
-    super::review_binding_refusal(options, &super::authority::model_workers(loaded), "run")?;
+    super::review_binding_refusal(
+        options,
+        &super::authority::model_workers(loaded),
+        "run",
+        None,
+    )?;
     // First pass, token-free: every captured reviewer's binding passes the static rules, in node
     // order, before any Provider CLI starts (ADR-0147, ADR-0148).
     let mut executions = BTreeMap::new();

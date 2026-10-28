@@ -10,6 +10,15 @@ The p2/p3a closeout repair of the
 the supervisor result becomes `af.perf-supervisor-result/2` and the capability report
 `af.perf-capabilities/2`. The rest of ADR-0166 stands. Paired execution stays package p3b's.
 
+**Amended 2026-10-28.** Decision 6's fill no longer syncs after every MiB. It still writes a
+MiB at a time and counts every byte a write accepted. It syncs after every 64 MiB written
+(`FILL_SYNC_BYTES`) and once more after a write the filesystem refused, before it reads the free
+space. That sync's own error is the fill's stop: a delayed ENOSPC or EDQUOT verifies, EIO
+refuses. Every other rule of decision 6 and every deadline of
+[ADR-0173](0173-own-the-supervisor-a-test-runs-and-bound-admission-collection-scratch-and-cancellation-by-absolute-deadlines.md)
+stand. The [verification note](../performance-local-executor-verification.md#scratch-enforcement-sync-batching-2026-10-28)
+records why.
+
 ## Context
 
 The sealed p3a output failed the mandatory kernel check, and independent root checks

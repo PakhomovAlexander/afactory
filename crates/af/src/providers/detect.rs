@@ -893,6 +893,66 @@ pub(super) fn names_only_scan() -> Vec<PathBuf> {
     found
 }
 
+/// The logins `af provider detect --apply` would register now, each with its kind: the scan
+/// it runs without `--all`, every marked directory probed by an available CLI of its kind, kept
+/// only where the login is authenticated, its directory safe and unregistered, and its CLI on
+/// `PATH` (`--apply` skips one found only off it). A marker alone is no login, and a logged-out
+/// or CLI-less directory registers nothing; only what this returns can clear a check that
+/// offers `af provider detect --apply` (#331 D5). A registry that cannot be read is taken as
+/// naming nothing: `--apply` then refuses until it is corrected, which the caller says.
+pub(super) fn registrable_logins() -> Vec<(PathBuf, ProviderKind)> {
+    let specs = match registry_path() {
+        Ok(Some(path)) => ensure_no_registry_transaction(&path)
+            .and_then(|()| {
+                read_registry(&path).and_then(|text| {
+                    text.map(|text| parse_registry(&text, &path))
+                        .transpose()
+                        .map(Option::unwrap_or_default)
+                })
+            })
+            .unwrap_or_default(),
+        Ok(None) | Err(_) => Vec::new(),
+    };
+    let home = home_dir();
+    let kinds = [ProviderKind::Claude, ProviderKind::Codex];
+    let mut ignored = Vec::new();
+    let mut candidates = Vec::new();
+    for kind in kinds {
+        for (path, source) in scanned_dirs(kind, home.as_deref(), &mut ignored) {
+            candidates.push(candidate(kind, path, source, None));
+        }
+    }
+    let mut candidates = deduplicate(candidates);
+    for candidate in &mut candidates {
+        candidate.registered_as = specs
+            .iter()
+            .find(|spec| {
+                spec.kind == candidate.kind
+                    && spec.auth_dir.as_deref() == candidate.canonical.as_deref()
+            })
+            .map(|spec| spec.id.clone());
+    }
+    let binaries: Vec<Binary> = kinds
+        .iter()
+        .filter_map(|kind| find_binary(*kind, home.as_deref()))
+        .collect();
+    if binaries.is_empty() || candidates.is_empty() {
+        return Vec::new();
+    }
+    let (binaries, mut rows) = probe_all(binaries, candidates, false, &AtomicBool::new(false));
+    let ids: BTreeSet<String> = specs.iter().map(|spec| spec.id.clone()).collect();
+    suggest(&mut rows, &binaries, &ids, false, home.as_deref());
+    rows.into_iter()
+        .filter(|row| {
+            row.auth == Auth::Authenticated
+                && row.candidate.safety.is_ok()
+                && row.candidate.registered_as.is_none()
+                && row.suggested.action == "register"
+        })
+        .filter_map(|row| Some((row.candidate.canonical?, row.candidate.kind)))
+        .collect()
+}
+
 /// The install directories of the fixed list, in order, for one kind.
 fn install_dirs(kind: ProviderKind, home: Option<&Path>) -> Vec<PathBuf> {
     let mut dirs = Vec::new();
@@ -1554,7 +1614,19 @@ fn tilde(path: &Path, home: Option<&Path>) -> String {
 
 /// A directory as af prints it to a person: `~/…` below `HOME`.
 pub(crate) fn display_path(path: &Path) -> String {
-    tilde(path, home_dir().as_deref())
+    display_below(path, home_dir().as_deref())
+}
+
+/// [`tilde`] below `home` as given or as its canonical path: the scan's directories are
+/// canonical, so one below a `home` reached through a symbolic link (macOS's `/var`, say) reads
+/// `~/…` as it does below any other `home` (#331).
+fn display_below(path: &Path, home: Option<&Path>) -> String {
+    let shown = tilde(path, home);
+    if shown.starts_with("~/") {
+        return shown;
+    }
+    let canonical = home.and_then(|home| fs::canonicalize(home).ok());
+    tilde(path, canonical.as_deref())
 }
 
 fn quoted(path: &Path) -> String {
@@ -2381,9 +2453,38 @@ fn print_closing(rows: &[Row], applied: bool, code: i32, binaries: &[Binary], ho
             .iter()
             .filter(|row| row.suggested.action == "register")
             .count();
+        // Worded from the authenticated rows: a directory that exists but is logged out is no
+        // registered login (#394 finding 3).
+        let authenticated = rows
+            .iter()
+            .filter(|row| row.auth == Auth::Authenticated)
+            .count();
+        let registered = rows
+            .iter()
+            .filter(|row| row.auth == Auth::Authenticated && row.candidate.registered_as.is_some())
+            .count();
+        let login = rows
+            .iter()
+            .find(|row| row.suggested.action == "login")
+            .and_then(|row| row.suggested.id.as_deref());
         let summary = match waiting {
             0 if rows.is_empty() => "No login was found to register.".to_string(),
-            0 => "every authenticated login found here is registered".to_string(),
+            0 if authenticated == 0 => match login {
+                Some(id) => format!(
+                    "No authenticated login was found. Log in privately: run the af provider \
+                     setup {id} ... --login line above yourself at a private terminal, never \
+                     through an agent, then run af provider detect again"
+                ),
+                None => "No authenticated login was found.".to_string(),
+            },
+            0 if registered == authenticated => {
+                "every authenticated login found here is registered".to_string()
+            }
+            0 => format!(
+                "{} of {authenticated} authenticated logins cannot be registered yet: fix what \
+                 the lines above name, then run af provider detect again",
+                authenticated - registered
+            ),
             1 => "1 login is not registered: run af provider detect --apply to register it with \
                   the ID above, or copy a line"
                 .to_string(),
@@ -2823,6 +2924,27 @@ mod tests {
             tilde(Path::new("/home/someone/My Tools"), Some(home)),
             "'/home/someone/My Tools'"
         );
+    }
+
+    /// #331: a canonical directory below a HOME reached through a symbolic link reads `~/…`,
+    /// as it does below a canonical HOME; one outside HOME is printed whole.
+    #[test]
+    fn a_directory_below_a_linked_home_reads_as_below_home() {
+        let root = tempfile::tempdir().unwrap();
+        let real = fs::canonicalize(root.path()).unwrap().join("real-home");
+        fs::create_dir_all(real.join(".claude")).unwrap();
+        let linked = root.path().join("linked-home");
+        std::os::unix::fs::symlink(&real, &linked).unwrap();
+        let found = real.join(".claude");
+        for home in [&real, &linked] {
+            assert_eq!(display_below(&found, Some(home)), "~/.claude", "{home:?}");
+        }
+        let outside = Path::new("/opt/elsewhere/.claude");
+        assert_eq!(
+            display_below(outside, Some(&linked)),
+            "/opt/elsewhere/.claude"
+        );
+        assert_eq!(display_below(&found, None), found.to_str().unwrap());
     }
 
     #[test]

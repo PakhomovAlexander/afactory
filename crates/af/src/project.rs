@@ -195,6 +195,18 @@ impl ProjectFile {
         enforce_min_af(&self.project.min_af)
     }
 
+    /// The pipeline each route selects, in declaration order, each once.
+    pub(crate) fn route_pipeline_paths(&self) -> Vec<String> {
+        let mut paths: Vec<String> = Vec::new();
+        for route in &self.routes {
+            let path = pipeline_path_for(&route.pipeline);
+            if !paths.contains(&path) {
+                paths.push(path);
+            }
+        }
+        paths
+    }
+
     /// Whether changed paths can change the pipeline at all.
     pub fn routes_configured(&self) -> bool {
         !self.routes.is_empty()

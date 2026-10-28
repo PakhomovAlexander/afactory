@@ -2,7 +2,7 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "urn:af:schema:error:2",
   "title": "The error document af/error@2",
-  "$comment": "The single JSON error document this release writes under --json. Version 2 adds stable first-run causes and structured details; version 1 is neither written nor read. Classified refusals always carry cause and next_action (null where no one command exists); details hold cause-specific facts. See af help errors and ADR-0242.",
+  "$comment": "The single JSON error document this release writes under --json. Version 2 adds stable first-run causes and structured details; version 1 is neither written nor read. Classified refusals always carry cause and next_action (null where no one command exists); details hold cause-specific facts. The `interrupted` cause is a command SIGINT or SIGTERM stopped (exit 130 or 143): `details` carry the `signal` and the `task` it was running (null when it ran none), and `next_action` is the command that resumes or continues it (ADR-0256). A `review_binding_missing` refusal of `af review plan` also carries the plan it computed in `details.plan` (ADR-0259). See af help errors and ADR-0242.",
   "type": "object",
   "additionalProperties": false,
   "required": [
@@ -55,7 +55,8 @@
         "plan_mismatch",
         "dirty_source",
         "review_selectors_missing",
-        "review_binding_missing"
+        "review_binding_missing",
+        "interrupted"
       ]
     },
     "next_action": {
@@ -691,11 +692,75 @@
                     "maxLength": 256
                   }
                 }
+              },
+              "plan": {
+                "$comment": "af review plan only: the token-free af/review-plan@1 document it computed before it refused, unchanged in shape (ADR-0259).",
+                "type": "object",
+                "required": [
+                  "schema"
+                ],
+                "properties": {
+                  "schema": {
+                    "const": "af/review-plan@1"
+                  }
+                }
               }
             }
           },
           "exit_code": {
             "const": 1
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "required": [
+          "cause"
+        ],
+        "properties": {
+          "cause": {
+            "const": "interrupted"
+          }
+        }
+      },
+      "then": {
+        "required": [
+          "details"
+        ],
+        "properties": {
+          "exit_code": {
+            "enum": [
+              130,
+              143
+            ]
+          },
+          "details": {
+            "additionalProperties": false,
+            "required": [
+              "signal",
+              "task"
+            ],
+            "properties": {
+              "signal": {
+                "enum": [
+                  "SIGINT",
+                  "SIGTERM"
+                ]
+              },
+              "task": {
+                "anyOf": [
+                  {
+                    "type": "string",
+                    "minLength": 1,
+                    "maxLength": 4096
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
+              }
+            }
           }
         }
       }

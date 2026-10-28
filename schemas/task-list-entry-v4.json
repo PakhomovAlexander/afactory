@@ -1,0 +1,222 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:af:schema:task-list-entry:4",
+  "title": "Task list entry af/task-list-entry@4",
+  "$comment": "One common Task entry in `af task list --json`, inside `af/task-list@4`. `state` is the one state every rendering prints (`af help task-states`); `phase` is the phase the Store recorded. An absent snapshot and an absent delivery are explicit nulls. Identity and charge consistency are checked by Store projection, not by this structural schema.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema",
+    "task_id",
+    "kind",
+    "phase",
+    "state",
+    "chargeable_tokens",
+    "derived_snapshot_id",
+    "delivery",
+    "round",
+    "updated_unix_ms"
+  ],
+  "properties": {
+    "schema": {
+      "const": "af/task-list-entry@4"
+    },
+    "task_id": {
+      "$ref": "urn:af:schema:task-contracts:1#/$defs/name"
+    },
+    "kind": {
+      "$ref": "urn:af:schema:task-contracts:1#/$defs/package"
+    },
+    "phase": {
+      "$ref": "urn:af:schema:task-contracts:1#/$defs/taskPhase"
+    },
+    "state": {
+      "$ref": "urn:af:schema:task-state:2#/$defs/state"
+    },
+    "gate": {
+      "description": "The last check receipt's summary, as `af task show --json` carries it; absent before a check recorded one and for a collected Task.",
+      "$ref": "urn:af:schema:task-state:2#/$defs/gate"
+    },
+    "round": {
+      "description": "The review round the Task is in: rounds handed to a successor plan plus the one its current execution recorded; 0 before a review recorded a round and for a collected Task.",
+      "$ref": "#/$defs/count"
+    },
+    "chargeable_tokens": {
+      "$ref": "urn:af:schema:task-token-usage:3#/$defs/decimalU128"
+    },
+    "unknown_usage_attempts": {
+      "description": "Settled Attempts whose Provider reported no usage: each was charged zero and its usage is unknown (ADR-0143), so `chargeable_tokens` is not their spend. Absent when every usage is known. A collected Task's count is the one its tombstone retained.",
+      "type": "integer",
+      "minimum": 1,
+      "maximum": 9007199254740991
+    },
+    "derived_snapshot_id": {
+      "anyOf": [
+        {
+          "$ref": "urn:af:schema:task-contracts:1#/$defs/digest"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "delivery": {
+      "anyOf": [
+        {
+          "$ref": "urn:af:schema:task-inspection:14#/$defs/deliveryReceipt"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "updated_unix_ms": {
+      "description": "Policy time of the Task's last recorded event, or when it was collected; `af task list` prints its age.",
+      "$ref": "#/$defs/count"
+    },
+    "collected": {
+      "description": "Present exactly when the Task was collected by `af task gc --apply` (ADR-0135): its retained tombstone. Such an entry is finished, carries no derived Snapshot or delivery, has a zero footprint under `--sizes`, and its phase names the result its log recorded.",
+      "$ref": "urn:af:schema:task-collected:1"
+    },
+    "sizes": {
+      "description": "`af task list --sizes` only (ADR-0135): the CAS objects only this Task reaches, and those it shares with another Task or Campaign record; all zero for a collected Task.",
+      "$ref": "#/$defs/footprint"
+    }
+  },
+  "$defs": {
+    "footprint": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "exclusive_objects",
+        "exclusive_bytes",
+        "shared_objects",
+        "shared_bytes"
+      ],
+      "properties": {
+        "exclusive_objects": {
+          "$ref": "#/$defs/count"
+        },
+        "exclusive_bytes": {
+          "$ref": "#/$defs/count"
+        },
+        "shared_objects": {
+          "$ref": "#/$defs/count"
+        },
+        "shared_bytes": {
+          "$ref": "#/$defs/count"
+        }
+      }
+    },
+    "count": {
+      "type": "integer",
+      "minimum": 0,
+      "maximum": 9007199254740991
+    }
+  },
+  "allOf": [
+    {
+      "if": {
+        "required": [
+          "collected"
+        ]
+      },
+      "then": {
+        "properties": {
+          "phase": {
+            "properties": {
+              "kind": {
+                "const": "finished"
+              }
+            }
+          },
+          "derived_snapshot_id": {
+            "type": "null"
+          },
+          "delivery": {
+            "type": "null"
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "required": [
+          "collected"
+        ]
+      },
+      "then": {
+        "not": {
+          "required": [
+            "gate"
+          ]
+        },
+        "properties": {
+          "state": {
+            "properties": {
+              "cause": {
+                "const": "collected"
+              }
+            }
+          }
+        }
+      },
+      "else": {
+        "properties": {
+          "state": {
+            "properties": {
+              "cause": {
+                "not": {
+                  "const": "collected"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "phase": {
+            "properties": {
+              "kind": {
+                "const": "finished"
+              }
+            }
+          }
+        }
+      },
+      "then": {
+        "properties": {
+          "state": {
+            "properties": {
+              "phase": {
+                "const": "finished"
+              }
+            }
+          }
+        }
+      },
+      "else": {
+        "properties": {
+          "state": {
+            "properties": {
+              "phase": {
+                "not": {
+                  "const": "finished"
+                }
+              }
+            }
+          },
+          "derived_snapshot_id": {
+            "type": "null"
+          },
+          "delivery": {
+            "type": "null"
+          }
+        }
+      }
+    }
+  ]
+}

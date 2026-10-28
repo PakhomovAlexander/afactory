@@ -954,12 +954,18 @@ impl ReleaseSource for DirSource {
 }
 
 fn source(policy: &SelfPolicy) -> Box<dyn ReleaseSource> {
-    match std::env::var_os(SOURCE_ENV) {
-        Some(root) if !root.is_empty() => Box::new(DirSource {
-            root: PathBuf::from(root),
-        }),
-        _ => Box::new(GithubSource::new(policy.source.clone())),
+    match release_source_override() {
+        Some(root) => Box::new(DirSource { root }),
+        None => Box::new(GithubSource::new(policy.source.clone())),
     }
+}
+
+/// The local release directory `AF_RELEASE_SOURCE` names in place of GitHub, when it is set:
+/// every release check, install and update reads it.
+pub(crate) fn release_source_override() -> Option<PathBuf> {
+    std::env::var_os(SOURCE_ENV)
+        .filter(|root| !root.is_empty())
+        .map(PathBuf::from)
 }
 
 fn offline() -> bool {
@@ -1656,9 +1662,10 @@ fn exempt_from_dispatch(argv: &[String]) -> bool {
     // instead of running early neither dispatches, installs nor schedules a check.
     // `doctor` reads this machine as it is and writes nothing: it never dispatches to a pin,
     // installs one, or schedules an update check.
+    // `schema` prints the schemas of the running af, as `help` lists them, and writes nothing.
     matches!(
         first,
-        None | Some("help" | "completions" | "config" | "doctor")
+        None | Some("help" | "schema" | "completions" | "config" | "doctor")
     ) || binary_management_self
         || matches!(
             (first, argv.get(command_index + 1).map(String::as_str)),
@@ -3688,8 +3695,7 @@ pub(crate) fn update_facts() -> Result<UpdateFacts, String> {
 /// read, or GitHub's releases API anonymously over HTTPS. One bounded request whose answer is
 /// discarded; nothing is written. `Err` says why the anonymous route is closed.
 pub(crate) fn release_source_reachability(policy: &SelfPolicy) -> Result<String, String> {
-    if let Some(root) = std::env::var_os(SOURCE_ENV).filter(|root| !root.is_empty()) {
-        let root = PathBuf::from(root);
+    if let Some(root) = release_source_override() {
         return if root.is_dir() {
             Ok(format!(
                 "{SOURCE_ENV} {} is a readable directory",
@@ -5160,6 +5166,14 @@ mod tests {
         ])));
         // `doctor` reads the machine as it is: no pin dispatch, install or update check.
         assert!(exempt_from_dispatch(&argv(&["af", "doctor", "--json"])));
+        // `schema` prints the running af's schemas, as `help --json` describes its commands.
+        assert!(exempt_from_dispatch(&argv(&[
+            "af",
+            "schema",
+            "show",
+            "af/error@2"
+        ])));
+        assert!(exempt_from_dispatch(&argv(&["af", "help", "--json"])));
         assert!(exempt_from_dispatch(&argv(&[
             "af", "--repo", "/w", "doctor"
         ])));
