@@ -108,9 +108,9 @@ one, and from the text scan of its output only for a check without one (absent o
    label that does not start with `test` stopped it before its tests).
 4. **The source, in one word.** Where `af task show --checks` prints a check's evidence (a stopped
    step, failing tests or flaky tests), the check's line ends with `evidence: report` or
-   `evidence: output`. No printed or persisted shape changes: `af/task-checks@2`,
-   `af/task-inspection@13`, `af/TaskCheckReport@1`, `af.check-report/1` and
-   `af/TaskCheckReceipt@1` keep every field and bound.
+   `evidence: output`. No printed or persisted shape changes: `af/task-checks@3`,
+   `af/task-inspection@14`, `af/TaskCheckReport@1`, `af.check-report/1` and
+   `af/TaskCheckReceipt@2` keep every field and bound.
 5. A check's status still comes from its exit code and its receipt, never from its report.
 
 ## Consequences

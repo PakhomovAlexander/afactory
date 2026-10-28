@@ -1113,7 +1113,7 @@ fn a_passed_gate_s_evidence_is_its_report_s_not_its_preflight_fixtures() {
     assert_eq!(code, 0, "{stderr}\n{stdout}");
     let shown = fixture.show_json("nested-pass");
     crate::schemas::valid(
-        &crate::schemas::validator("task-inspection-v13.json"),
+        &crate::schemas::validator("task-inspection-v14.json"),
         &shown,
     );
     let gate = &shown["gate"];
@@ -1180,7 +1180,7 @@ fn a_failed_gate_names_the_tests_its_report_names_not_its_preflight_fixtures() {
     assert_eq!(code, 5, "{stderr}\n{stdout}");
     let shown = fixture.show_json("nested-fail");
     crate::schemas::valid(
-        &crate::schemas::validator("task-inspection-v13.json"),
+        &crate::schemas::validator("task-inspection-v14.json"),
         &shown,
     );
     assert_eq!(shown["state"]["cause"], "check_failed", "{shown:#}");
@@ -1229,7 +1229,7 @@ fn a_failed_gate_names_the_tests_its_report_names_not_its_preflight_fixtures() {
         fixture.af(&["task", "show", "nested-fail", "--checks", "--json"]);
     assert_eq!(code, 0, "{stderr}\n{document}");
     let document: Value = serde_json::from_str(document.trim()).unwrap();
-    crate::schemas::valid(&crate::schemas::validator("task-checks-v2.json"), &document);
+    crate::schemas::valid(&crate::schemas::validator("task-checks-v3.json"), &document);
     assert_eq!(
         document["receipt"]["checks"][0]["stopped_step"],
         json!({"step": "test", "exit_code": 100}),

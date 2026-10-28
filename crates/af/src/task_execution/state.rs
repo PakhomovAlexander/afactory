@@ -1862,7 +1862,7 @@ mod tests {
         assert_eq!(
             shown["stopped_step"],
             json!({"step": "kernel", "exit_code": 2}),
-            "no key beyond af/task-checks@2"
+            "no key beyond af/task-checks@3"
         );
     }
 
