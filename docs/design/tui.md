@@ -58,10 +58,10 @@ input. A scope error (`--repo` outside a repository) leaves the terminal before 
 |     > claude-main        | claude-main  claude  ready    oauth       Max 20x         |
 |       codex-main         |                                                           |
 |   v workers/             | limit  5h window   [########..........]  41% used  resets in 2h 10m
-|       correctness        |                                                           |
-|       bugs               | limit  7d window   [#############.....]  68% used  resets in 3d 4h |
-|   v pipelines/           | note   weekly limit read from the local /usage screen     |
-|       review             |                                                           |
+|       correctness        | limit  7d window   [#############.....]  68% used  resets in 3d 4h |
+|       bugs               | note   weekly limit read from the local /usage screen     |
+|   v pipelines/           |                                                           |
+|       review             | models source claude list_models  version 2.1.312  12 exact IDs
 |   v tasks/               |                                                           |
 |     v running (1)        |                                                           |
 |         task-01J9…  62%  |                                                           |
@@ -187,7 +187,8 @@ User scope shows only the machine-owned layers plus the provider registry path
 Mirrors `af provider status --usage`; the left bar lists every entry from `providers::discover`.
 The main pane shows the same columns as the CLI table for the selected provider, then one row per
 `ProviderLimit` as a bar of twenty cells with `used_percent` and when the window resets (or who
-does not report that), a blank row between two bars, then `detail` as `note`. A Claude login's
+does not report that), then `detail` as `note`, and one blank row before the `models` section.
+A Claude login's
 windows are the ones its `/usage` screen shows: the five-hour session, then the weekly ones. The
 bar's used cells are solid in the brand's
 colour for how much is used, green under half, blue from half and pink from four fifths, on a

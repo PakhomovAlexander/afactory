@@ -520,6 +520,8 @@ fn inventory_rows(
             );
             let catalog = models.catalogs.iter().find(|c| c.id == provider.id);
             if let Some(catalog) = catalog {
+                // The models stand apart from the login's windows and note.
+                rows.push(Row::blank());
                 model_rows(catalog, selected.is_some() || models.open, rows);
             }
         }
@@ -626,10 +628,9 @@ fn status_row(provider: &ProviderStatus, paint: Paint) -> Row {
     }
 }
 
-/// One row per quota window, each a bar, a blank row between two bars; a login whose windows are
-/// still being read, or that reports none, says so in one muted row. A login that is not
-/// authenticated has no window, and one whose probe did not answer carries the cause in its
-/// `note`.
+/// One row per quota window, each a bar; a login whose windows are still being read, or that
+/// reports none, says so in one muted row. A login that is not authenticated has no window, and
+/// one whose probe did not answer carries the cause in its `note`.
 fn limit_rows(provider: &ProviderStatus, reading: bool, paint: Paint, rows: &mut Vec<Row>) {
     if provider.limits.is_empty() {
         let authenticated = provider.status == "authenticated";
@@ -643,10 +644,7 @@ fn limit_rows(provider: &ProviderStatus, reading: bool, paint: Paint, rows: &mut
         return;
     }
     let width = provider.limits.iter().map(|l| l.name.len()).max();
-    for (index, limit) in provider.limits.iter().enumerate() {
-        if index > 0 {
-            rows.push(Row::blank());
-        }
+    for limit in &provider.limits {
         rows.push(limit_row(&provider.kind, limit, width.unwrap_or(0), paint));
     }
 }
@@ -853,8 +851,8 @@ pub(crate) mod tests {
                 .any(|row| row.contains("reading quota windows and model catalogs")),
             "{rows:#?}"
         );
-        // The probe answers: the windows' bars take the placeholder's place, a blank row
-        // between them, and no third discovery starts.
+        // The probe answers: the windows' bars take the placeholder's place, one under the
+        // other, and no third discovery starts.
         let mut probed = inventory(&["codex-main"]);
         probed.providers[0].usage = UsageState::Available;
         probed.providers[0].limits =
@@ -875,9 +873,8 @@ pub(crate) mod tests {
             .iter()
             .position(|row| row.starts_with("limit  codex 5h  [########...."))
             .unwrap_or_else(|| panic!("{rows:#?}"));
-        assert_eq!(rows[first + 1], "");
         assert!(
-            rows[first + 2].starts_with("limit  codex 1w  [#..."),
+            rows[first + 1].starts_with("limit  codex 1w  [#..."),
             "{rows:#?}"
         );
         // A login that exposes no window says so instead of a bar.
@@ -964,13 +961,15 @@ pub(crate) mod tests {
         });
         let mut pane = ProvidersPane::with_inventory(with_kinds()).with_catalogs(catalogs);
         let rows: Vec<String> = pane.rows().iter().map(Row::text).collect();
-        assert!(
-            rows.contains(
-                &"models source claude list_models  version 2.1.300  freshness live  4 exact IDs  (m unfolds)"
-                    .to_owned()
-            ),
-            "{rows:#?}"
-        );
+        let claude = rows
+            .iter()
+            .position(|row| {
+                row == "models source claude list_models  version 2.1.300  freshness live  4 exact IDs  (m unfolds)"
+            })
+            .unwrap_or_else(|| panic!("{rows:#?}"));
+        // The models stand one blank row under the login's row.
+        assert_eq!(rows[claude - 1], "", "{rows:#?}");
+        assert!(rows[claude - 2].starts_with("claude-work "), "{rows:#?}");
         assert!(
             rows.iter().any(|row| row.starts_with(
                 "models source codex app-server model/list  version 0.162.1  freshness \

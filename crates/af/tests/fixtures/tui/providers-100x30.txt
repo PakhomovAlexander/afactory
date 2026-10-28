@@ -4,9 +4,9 @@ v hub  (project)            |
       claude-main           |claude-main              claude   authenticated       oauth
       codex-ambient         |
   v workers/                |limit  5h window  [########............]   41% used  no reset time from
-  v pipelines/              |
-      review                |limit  weekly     [##############......]   68% used  no reset time from
-      fixture/implementation|note   weekly limit read from the local /usage screen
+  v pipelines/              |limit  weekly     [##############......]   68% used  no reset time from
+      review                |note   weekly limit read from the local /usage screen
+      fixture/implementation|
   v tasks/                  |
   v campaigns/              |
                             |
