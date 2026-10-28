@@ -34,3 +34,7 @@
   group of its own; a registry Store a Workspace uses is listed once, with the Workspaces beside
   it. A Worker's STATE counts the Attempts of every checkout's Store. The checkouts are
   discovered on the read's thread, never at startup.
+- `f` in the Tasks pane lists the running Tasks only: those of every Store in one list, the one
+  started last first, each with how long it has run, its charge so far and where it runs; the
+  Stores that cannot be read follow, so an empty list never hides one. `f` again lists every
+  Task grouped by state. `Enter` on a Task row of the Tasks folder opens it, as the bar does.

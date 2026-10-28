@@ -312,6 +312,19 @@ The bar groups by state: `running/`, `awaiting approval/`, `done/`, `failed/`; u
 one level for the repository. Row text is `task-id  outcome  progress%` where progress is
 `settled stages / stages in graph.order`.
 
+`f` filters the pane to the running Tasks. The bar lists under `tasks/` the running Tasks of
+every Store in one list, the one started last first, no group between; the folder lists one
+row per Task, `task-id  progress%  elapsed  tokens  where`, where `where` is the bar group the
+Task's Store stands in (a checkout's label, an explicit Store's path) or `this checkout`, and
+the status line gives the Store's heading for the highlighted row. A running Task has no
+outcome yet, so none is printed. The Stores that cannot be read follow the list in the folder,
+each with its refusal, and are one muted `! N Stores unreadable` row in the bar, so an empty
+list never stands for a Store that was not read; with none running the folder says `No Task is
+running.` The filter is the pane's, kept across reads and `R`, and taken from the bar under
+`tasks/` whatever the main pane shows; `f` again lists every Task grouped by state as above. An
+opened Task the filtered bar no longer lists falls back to the folder, as any unlisted one
+does. `Enter` on a Task row of the folder, filtered or not, opens the Task, as the bar does.
+
 The project scope lists the Project's Tasks, not this directory's alone (ADR-0158: a Project
 is one repository across its worktrees and clones, and every checkout af worked in is a
 Workspace of it). Beside this checkout's own Store, headed `this checkout (Workspace LABEL)`
@@ -390,8 +403,8 @@ Sources: the event list from `TaskStore::events`, `TaskCompleted@1` totals for t
 state, attempt counts and charged tokens, `TaskRuntimeSpanV1` for the TIME row. A running Task
 re-reads the Store every second while it is selected; nothing is polled otherwise.
 
-Pane-local verbs: `Enter` on a HISTORY row opens that artifact as pretty JSON; `p` jumps to the
-Task's pipeline in the Pipelines pane. `r` on a Task, on the bar or in its opened pane, fills the
+Pane-local verbs: `f` toggles the running filter above; `Enter` on a HISTORY row opens that
+artifact as pretty JSON; `p` jumps to the Task's pipeline in the Pipelines pane. `r` on a Task, on the bar or in its opened pane, fills the
 `:` line with `task run ID --confirm-plan PLAN`, where PLAN is the Task's current recorded plan.
 `D` on a verified Task fills it with `task deliver ID --branch af/ID --worktree ../ID --confirm`
 and a space, and leaves the Task ID for the user to type, which keeps delivery's explicit confirmation. `D` on

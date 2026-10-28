@@ -2465,3 +2465,128 @@ fn a_project_of_one_checkout_lists_its_store_ungrouped() {
     let ids: Vec<String> = pane.items().iter().map(|item| item.id.clone()).collect();
     assert_eq!(ids, ["done/", "failed/"]);
 }
+
+/// `f`: the running Tasks of every Store in one list, the one started last first, with where
+/// each runs, then the Stores that cannot be read; `f` again lists every Task grouped.
+#[test]
+fn f_lists_the_running_tasks_of_every_store_latest_first() {
+    let temp = tempfile::tempdir().unwrap();
+    let root = std::fs::canonicalize(temp.path()).unwrap();
+    let (_repo, state) = crate::tui::tests::hub_with_tasks(&root);
+    let two = root.join("two");
+    std::os::unix::fs::symlink(&state, &two).unwrap();
+    // A directory with entries but no event log: a Store this release refuses.
+    let bad = root.join("bad");
+    std::fs::create_dir_all(bad.join("cas")).unwrap();
+    let target = |repo: &str| Target {
+        dir: match repo {
+            "two" => two.clone(),
+            "bad" => bad.clone(),
+            _ => state.clone(),
+        },
+        shown: format!("~/{repo}"),
+        repo: Some(repo.to_owned()),
+        origin: Origin::Registered,
+        note: None,
+    };
+    let mut pane = TasksPane {
+        targets: vec![target("one"), target("two"), target("bad")],
+        ..TasksPane::default()
+    };
+    let now = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map_or(0, |elapsed| elapsed.as_millis());
+    let now = u64::try_from(now).unwrap();
+    let mut cache = Cache::default();
+    // The Store as read, with one Task running since `ago` milliseconds.
+    let running = |repo: &str, task_id: &str, ago: u64, cache: &mut Cache| {
+        let mut store = read_target(&target(repo), cache);
+        let tasks = store.tasks.as_mut().unwrap();
+        let task = tasks.iter_mut().find(|t| t.task_id == task_id).unwrap();
+        let summary = task.summary.as_mut().unwrap();
+        summary.phase = json!({"kind": "running"});
+        summary.started = Some(now - ago);
+        store
+    };
+    let stores = [
+        running("one", "pagination-cli", 315_000, &mut cache),
+        running("two", "pagination-unfinished", 90_000, &mut cache),
+        read_target(&target("bad"), &mut cache),
+    ];
+    let sender = pane.fed();
+    for store in stores {
+        sender
+            .send(Read::Store {
+                store: Box::new(store),
+                detail: None,
+            })
+            .unwrap();
+    }
+    sender.send(Read::Done(cache)).unwrap();
+    pane.settle();
+    let labels = |pane: &TasksPane| -> Vec<String> {
+        pane.items().into_iter().map(|item| item.label).collect()
+    };
+    assert_eq!(labels(&pane), ["one/ (2)", "two/ (2)", "bad/ (0)"]);
+    assert!(pane.legend().contains("f running"), "{}", pane.legend());
+
+    // `f`: one flat list, the Task started last first, then the Store that cannot be read.
+    assert_eq!(pane.key(Key::Char('f'), 0), Ok(None));
+    let items = pane.items();
+    let ids: Vec<&str> = items.iter().map(|item| item.id.as_str()).collect();
+    assert_eq!(
+        ids,
+        [
+            "two/pagination-unfinished",
+            "one/pagination-cli",
+            UNREADABLE
+        ]
+    );
+    assert!(items.iter().all(|item| item.children.is_none()));
+    assert_eq!(items[0].tone, Some(Tone::Active));
+    assert_eq!(items[2].label, "! 1 Store unreadable");
+    let rows: Vec<String> = pane.rows().iter().map(Row::text).collect();
+    assert!(
+        rows[0].ends_with("running Tasks only, latest first"),
+        "{rows:#?}"
+    );
+    let at = |needle: &str| {
+        rows.iter()
+            .position(|row| row.contains(needle))
+            .unwrap_or_else(|| panic!("{needle}: {rows:#?}"))
+    };
+    let (later, earlier) = (at("pagination-unfinished"), at("pagination-cli"));
+    assert!(later < earlier, "{rows:#?}");
+    // How long each has run, and where: no outcome, since a running Task has none.
+    assert!(
+        rows[later].contains("1m 30s") && rows[later].ends_with("two"),
+        "{rows:#?}"
+    );
+    assert!(
+        rows[earlier].contains("5m 15s") && rows[earlier].ends_with("one"),
+        "{rows:#?}"
+    );
+    assert!(
+        !rows
+            .iter()
+            .any(|row| row.contains("verified") || row.contains("changes_requested")),
+        "{rows:#?}"
+    );
+    assert!(at("this Store cannot be read") > earlier, "{rows:#?}");
+    // The status line names the Store of a running row; Enter opens its Task.
+    assert_eq!(
+        pane.status(later).as_deref(),
+        Some("~/two  (--state, in stores.toml)")
+    );
+    let opened = Effect::OpenItem(Tab::Tasks, "two/pagination-unfinished".to_owned());
+    assert_eq!(pane.key(Key::Enter, later), Ok(Some(opened)));
+    assert!(pane.key(Key::Enter, 0).is_err());
+    assert!(pane.legend().contains("f all Tasks"), "{}", pane.legend());
+
+    // `f` again: the groups as before.
+    assert_eq!(pane.key(Key::Char('f'), 0), Ok(None));
+    assert_eq!(labels(&pane), ["one/ (2)", "two/ (2)", "bad/ (0)"]);
+    assert!(pane.status(later).is_none());
+    let rows: Vec<String> = pane.rows().iter().map(Row::text).collect();
+    assert!(rows.iter().any(|row| row.contains("verified")), "{rows:#?}");
+}

@@ -4,16 +4,16 @@ v hub  (project)            |
       claude-main           |  pr-42                 round 1.1  open  -
       codex-ambient         |      spend - tok  wall -  last write <date> <time>
   v workers/                |
-  v pipelines/              |~/state/af/review/local
-      review                |  local                 round -    new  -
-      fixture/implementation|      spend - tok  wall -  last write <date> <time>
-  v tasks/                  |
-  v campaigns/              |~/elsewhere/audit
-      pr-42            open |  audit                 round 1.1  open  -
-      local             new |      spend - tok  wall -  last write <date> <time>
+      fixture/evaluator     |~/state/af/review/local
+      fixture/implementer   |  local                 round -    new  -
+  v pipelines/              |      spend - tok  wall -  last write <date> <time>
+      review                |
+      fixture/implementation|~/elsewhere/audit
+  v tasks/                  |  audit                 round 1.1  open  -
+  v campaigns/              |      spend - tok  wall -  last write <date> <time>
+      pr-42            open |
+      local             new |
       audit            open |
-                            |
-                            |
                             |
                             |
                             |

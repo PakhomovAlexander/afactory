@@ -956,8 +956,10 @@ fn a_store_this_binary_cannot_read_is_an_error_row_naming_it() {
     press(&mut app, &mut host, b"]]]]]]]]\r");
     let rows: Vec<String> = app.main_rows().iter().map(Row::text).collect();
     let shown = state.strip_prefix(&root).unwrap().display();
-    // The Store's location, then its cause on a row of its own.
-    let at = rows.iter().position(|row| *row == format!("~/{shown}:"));
+    // The Store's heading and location, then its cause on a row of its own.
+    let at = rows
+        .iter()
+        .position(|row| *row == format!("this checkout  ~/{shown}:"));
     let at = at.unwrap_or_else(|| panic!("{rows:#?}"));
     let cause = " error  this Store cannot be read: ";
     assert!(
@@ -972,6 +974,45 @@ fn a_store_this_binary_cannot_read_is_an_error_row_naming_it() {
     assert_eq!(app.breadcrumb(), "tasks/! Store unreadable");
     let rows: Vec<String> = app.main_rows().iter().map(Row::text).collect();
     assert!(rows.iter().any(|row| row.starts_with(cause)), "{rows:#?}");
+}
+
+#[test]
+fn f_filters_the_bar_and_the_folder_to_the_running_tasks() {
+    let (_temp, root) = temp_root();
+    let (repo, _state) = hub_with_tasks(&root);
+    let mut app = app_at(&root, repo);
+    let mut host = Recorder::default();
+    press(&mut app, &mut host, b"]]]]]]]]\r");
+    assert_eq!(app.breadcrumb(), "tasks/");
+    // `f` on the bar: no Task of the fixture runs, so the folder says so and the bar lists
+    // none.
+    press(&mut app, &mut host, b"f");
+    let rows: Vec<String> = app.main_rows().iter().map(Row::text).collect();
+    assert!(
+        rows[0].ends_with("running Tasks only, latest first"),
+        "{rows:#?}"
+    );
+    assert!(
+        rows.contains(&"No Task is running.".to_owned()),
+        "{rows:#?}"
+    );
+    let frame = app.frame(100, 30).text();
+    assert!(!frame.contains("done/ (1)"), "{frame}");
+    press(&mut app, &mut host, b"\t");
+    let status = status_line(&mut app);
+    assert!(status.contains("f all Tasks"), "{status}");
+    // `f` again, from the main pane: every Task, grouped as before.
+    press(&mut app, &mut host, b"f");
+    let frame = app.frame(100, 30).text();
+    assert!(
+        frame.contains("done/ (1)") && frame.contains("failed/ (1)"),
+        "{frame}"
+    );
+    let status = status_line(&mut app);
+    assert!(status.contains("f running"), "{status}");
+    // Enter on a Task row of the folder opens it, as the bar does.
+    press(&mut app, &mut host, b"/pagination-cli\r\r");
+    assert_eq!(app.breadcrumb(), "tasks/pagination-cli");
 }
 
 #[test]
@@ -1001,8 +1042,9 @@ fn only_an_opened_running_task_is_read_again_about_once_a_second() {
     app.poll();
     assert_eq!(app.panes.tasks.reads(), 1);
     let deadline = Instant::now() + Duration::from_secs(60);
-    while !app.panes.tasks.poll() {
+    while app.panes.tasks.busy().is_some() {
         assert!(Instant::now() < deadline, "the live read never finished");
+        app.panes.tasks.poll();
         std::thread::sleep(Duration::from_millis(20));
     }
     // It found the Task finished, so nothing is read again.
@@ -1016,8 +1058,9 @@ fn only_an_opened_running_task_is_read_again_about_once_a_second() {
     app.poll();
     assert_eq!(app.panes.tasks.reads(), 2, "an awaiting Task is live");
     let deadline = Instant::now() + Duration::from_secs(60);
-    while !app.panes.tasks.poll() {
+    while app.panes.tasks.busy().is_some() {
         assert!(Instant::now() < deadline, "the live read never finished");
+        app.panes.tasks.poll();
         std::thread::sleep(Duration::from_millis(20));
     }
     assert!(app.main_rows()[1].text().contains("STATE done"));

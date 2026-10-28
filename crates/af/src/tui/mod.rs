@@ -102,8 +102,10 @@ providers: d fills the : line with `provider remove ID` for a registered
 workers: Enter on a listed Worker opens it; gf opens the prompt (or the
          declaration), y copies the name
 pipelines: Enter on a listed Pipeline opens it
-tasks: Enter on a HISTORY row shows its artifact (q or Esc returns),
-       p opens the Task's pipeline, y copies the Task id,
+tasks: f lists the running Tasks only, latest first, in the bar and the
+       folder; f again lists every Task. Enter on a Task row of the
+       folder opens it; Enter on a HISTORY row shows its artifact (q or
+       Esc returns), p opens the Task's pipeline, y copies the Task id,
        r fills the : line with `task run ID --confirm-plan PLAN`,
        D on a verified Task with `task deliver ID ... --confirm `
        (type the Task id to confirm); Enter on the line runs it
@@ -892,9 +894,26 @@ impl App {
 
     /// A pane-local key while the bar has focus: `r` and `D` act on the bar's selected Task,
     /// and `d` on its selected Provider, and on nothing else, never on what the main pane has
-    /// opened; any other key is the opened pane's, as it always was.
+    /// opened; `f` under `tasks/` filters the Tasks whatever the main pane shows; any other
+    /// key is the opened pane's, as it always was.
     fn bar_key(&mut self, key: Key) -> Option<Effect> {
         let row = self.tree.selected();
+        let tasks = matches!(
+            row.kind,
+            NodeKind::Folder(Tab::Tasks) | NodeKind::Group(Tab::Tasks) | NodeKind::Item(Tab::Tasks)
+        );
+        if key == Key::Char('f') && tasks {
+            let outcome = self.panes.tasks.key(key, 0);
+            self.sync();
+            self.follow_listing();
+            return match outcome {
+                Ok(effect) => effect,
+                Err(error) => {
+                    self.say_error(error);
+                    None
+                }
+            };
+        }
         let (verb, nothing) = match key {
             Key::Char('r' | 'D') => (
                 (row.kind == NodeKind::Item(Tab::Tasks))

@@ -10,6 +10,9 @@
 //! Task again about once a second. The event loop collects each Store as it is read, so the bar
 //! fills Store by Store and the browser never waits on one (ADR-0240).
 //!
+//! `f` filters the folder and the bar to the running Tasks, latest first, across every Store
+//! listed; `f` again shows all of them grouped again.
+//!
 //! The project scope lists the Project's Tasks, not this directory's alone: beside this
 //! checkout's own Store, the default Store of every other checkout of the Project (`project`:
 //! the Workspaces the Project Store registers and the worktrees git lists), each a bar group
@@ -30,7 +33,7 @@ use crate::task_execution;
 use crate::tui::keymap::Key;
 use crate::tui::paint::{self, Paint, Span, Tone};
 use crate::tui::scope::{Scope, ScopeKind};
-use crate::tui::tree::Item;
+use crate::tui::tree::{Item, Tab};
 
 /// How often an opened running Task is read again.
 const LIVE: Duration = Duration::from_secs(1);
@@ -1590,8 +1593,15 @@ pub(crate) struct TasksPane {
     /// Reads started on a thread, for tests: a load records one and starts none.
     #[cfg(test)]
     started: usize,
+    /// `f`: the folder and the bar list the running Tasks only, latest first, across every
+    /// Store.
+    running: bool,
     rows: Vec<Row>,
     history: BTreeMap<usize, String>,
+    /// The bar id of the Task each folder row lists, which `Enter` opens.
+    named: BTreeMap<usize, String>,
+    /// The heading of the Store each running row's Task is in, for the status line.
+    places: BTreeMap<usize, String>,
 }
 
 impl TasksPane {
@@ -1930,6 +1940,8 @@ impl TasksPane {
 
     fn rebuild(&mut self) {
         self.history.clear();
+        self.named.clear();
+        self.places.clear();
         let now = SystemTime::now()
             .duration_since(UNIX_EPOCH)
             .map_or(0, |elapsed| elapsed.as_millis());
@@ -1945,12 +1957,29 @@ impl TasksPane {
                 Row::blank(),
                 Row::error("error", format!("cannot be read: {error}")),
             ],
-            _ => self.folder_rows(),
+            _ => {
+                let folder = self.folder_rows(now);
+                self.named = folder.named;
+                self.places = folder.places;
+                folder.rows
+            }
         };
     }
 
-    fn folder_rows(&self) -> Vec<Row> {
-        let mut rows = vec![Row::painted(&self.title, Paint::Title), Row::blank()];
+    fn folder_rows(&self, now: u64) -> Folder {
+        let title = match self.running {
+            false => Row::painted(&self.title, Paint::Title),
+            true => Row {
+                spans: vec![
+                    Span::new(&self.title, Paint::Title),
+                    Span::new("  running Tasks only, latest first", Paint::Muted),
+                ],
+            },
+        };
+        let mut folder = Folder::default();
+        let rows = &mut folder.rows;
+        rows.push(title);
+        rows.push(Row::blank());
         if let Some(error) = &self.error {
             rows.push(Row::error("error", error));
         } else if self.stores.is_empty() {
@@ -1995,21 +2024,15 @@ impl TasksPane {
             }
             rows.push(Row::blank());
         }
+        if self.running {
+            self.running_rows(now, &mut folder);
+            return folder;
+        }
         for store in self.stores.iter().filter(|s| !earlier(s)) {
             // Each Store under its path, and how it came to be listed.
             let dir = &heading(store);
             match &store.tasks {
-                Err(error) => {
-                    // The location, then the cause on rows of its own: a long state path must
-                    // never push the cause out of the pane.
-                    for line in bounded(&format!("{dir}:"), MAIN, "") {
-                        rows.push(Row::painted(line, Paint::Error));
-                    }
-                    let cause = format!("this Store cannot be read: {error}");
-                    let chip = "error";
-                    let lines = bounded(&cause, MAIN - (chip.len() + 3), "");
-                    rows.extend(Row::errors(chip, lines));
-                }
+                Err(error) => rows.extend(unreadable_rows(dir, error)),
                 Ok(tasks) if tasks.is_empty() => {
                     rows.push(Row::plain(format!("{dir}: no Tasks")));
                 }
@@ -2023,6 +2046,9 @@ impl TasksPane {
                         }
                         rows.push(Row::painted(format!("  {}/", state.word()), Paint::Title));
                         for task in listed {
+                            folder
+                                .named
+                                .insert(rows.len(), TasksPane::id(store, &task.task_id));
                             rows.push(folder_row(task));
                         }
                     }
@@ -2030,8 +2056,122 @@ impl TasksPane {
             }
             rows.push(Row::blank());
         }
-        rows
+        folder
     }
+
+    /// The `f` view: every running Task of every Store, latest first, with where it runs;
+    /// then the Stores that cannot be read, each with its refusal, so an empty list never
+    /// stands for a Store that was not read.
+    fn running_rows(&self, now: u64, folder: &mut Folder) {
+        let rows = &mut folder.rows;
+        let running = self.running_tasks();
+        if running.is_empty() && !self.stores.is_empty() {
+            rows.push(Row::plain("No Task is running."));
+        }
+        for (store, task) in running {
+            folder
+                .named
+                .insert(rows.len(), TasksPane::id(store, &task.task_id));
+            folder.places.insert(rows.len(), heading(store));
+            rows.push(running_row(task, &place(store), now));
+        }
+        for store in self.stores.iter().filter(|s| !earlier(s)) {
+            if let Err(error) = &store.tasks {
+                rows.push(Row::blank());
+                rows.extend(unreadable_rows(&heading(store), error));
+            }
+        }
+    }
+
+    /// The running Tasks of every readable Store, the one started last first.
+    fn running_tasks(&self) -> Vec<(&Store, &Listed)> {
+        let mut running: Vec<(&Store, &Listed)> = self
+            .stores
+            .iter()
+            .filter(|store| !earlier(store))
+            .filter_map(|store| Some((store, store.tasks.as_ref().ok()?)))
+            .flat_map(|(store, tasks)| tasks.iter().map(move |task| (store, task)))
+            .filter(|(_, task)| task.state() == State::Running)
+            .collect();
+        running.sort_by(|(_, a), (_, b)| {
+            started(b)
+                .cmp(&started(a))
+                .then_with(|| a.task_id.cmp(&b.task_id))
+        });
+        running
+    }
+}
+
+/// The folder's rows, and what each row stands for.
+#[derive(Default)]
+struct Folder {
+    rows: Vec<Row>,
+    named: BTreeMap<usize, String>,
+    places: BTreeMap<usize, String>,
+}
+
+/// When a Task opened, from its inspection; `None` while the Store cannot inspect it.
+fn started(task: &Listed) -> Option<u64> {
+    task.summary
+        .as_ref()
+        .ok()
+        .and_then(|summary| summary.started)
+}
+
+/// Where a Task runs, as the `f` view names it beside the row: the bar group (a checkout's
+/// name, an explicit Store's path), else what the heading says of this checkout's own Store.
+fn place(store: &Store) -> String {
+    match (&store.repo, &store.note) {
+        (Some(repo), _) => repo.clone(),
+        (None, Some(note)) => note.clone(),
+        (None, None) => store.shown.clone(),
+    }
+}
+
+/// An unreadable Store in the folder: the location, then the cause on rows of its own, as a
+/// long state path must never push the cause out of the pane.
+fn unreadable_rows(dir: &str, error: &str) -> Vec<Row> {
+    let mut rows = Vec::new();
+    for line in bounded(&format!("{dir}:"), MAIN, "") {
+        rows.push(Row::painted(line, Paint::Error));
+    }
+    let cause = format!("this Store cannot be read: {error}");
+    let chip = "error";
+    let lines = bounded(&cause, MAIN - (chip.len() + 3), "");
+    rows.extend(Row::errors(chip, lines));
+    rows
+}
+
+/// A running Task's row in the `f` view: its id, progress, how long it has run and its
+/// charge so far, then where it runs. A running Task has no outcome yet, so none is printed.
+fn running_row(task: &Listed, place: &str, now: u64) -> Row {
+    let elapsed = match started(task) {
+        Some(started) => duration(now.saturating_sub(started)),
+        None => "-".to_owned(),
+    };
+    let listed = task.entry["chargeable_tokens"].as_str();
+    let inspected = task
+        .summary
+        .as_ref()
+        .ok()
+        .and_then(|summary| summary.chargeable.as_deref());
+    let tokens = inspected.or(listed).unwrap_or("-");
+    let line = format!(
+        "    {:<24} {:>4}  {elapsed:>8}  {tokens:>7} tok  ",
+        task.task_id,
+        task.percent()
+    );
+    let mut spans = vec![
+        Span::new(line, Paint::Plain),
+        Span::new(place, Paint::Muted),
+    ];
+    if let Err(error) = &task.summary {
+        spans.push(Span::new(" ", Paint::Plain));
+        spans.push(Span::chip("error", Tone::Fail));
+        spans.push(Span::new(" ", Paint::Plain));
+        spans.push(Span::new(format!("cannot be read: {error}"), Paint::Error));
+    }
+    Row { spans }
 }
 
 fn folder_row(task: &Listed) -> Row {
@@ -2148,7 +2288,38 @@ impl Pane for TasksPane {
     fn items(&self) -> Vec<Item> {
         let mut items = Vec::new();
         let count = self.stores.iter().filter(|store| earlier(store)).count();
-        for store in self.stores.iter().filter(|store| !earlier(store)) {
+        if self.running {
+            // The running Tasks of every Store in one list, latest first, no group between;
+            // the Stores that cannot be read are one muted row, and the folder names them.
+            let width = BAR_INNER.saturating_sub(2 * 3 + 2 + 1);
+            for (store, task) in self.running_tasks() {
+                let muted = task.summary.is_err();
+                items.push(Item {
+                    id: TasksPane::id(store, &task.task_id),
+                    label: fit(&task.task_id, task.outcome(), &task.percent(), width),
+                    muted,
+                    tone: (!muted).then_some(State::Running.tone()),
+                    children: None,
+                });
+            }
+            let unreadable = self
+                .stores
+                .iter()
+                .filter(|store| !earlier(store) && store.tasks.is_err())
+                .count();
+            if unreadable > 0 {
+                let stores = if unreadable == 1 { "Store" } else { "Stores" };
+                items.push(Item {
+                    id: UNREADABLE.to_owned(),
+                    label: format!("! {unreadable} {stores} unreadable"),
+                    muted: true,
+                    tone: None,
+                    children: None,
+                });
+            }
+        }
+        let grouped = self.stores.iter().filter(|store| !earlier(store));
+        for store in grouped.filter(|_| !self.running) {
             match &store.repo {
                 None => items.extend(store_items(store, 2)),
                 Some(repo) => {
@@ -2223,9 +2394,28 @@ impl Pane for TasksPane {
     }
 
     fn key(&mut self, key: Key, row: usize) -> Result<Option<Effect>, String> {
+        if self.artifact.is_some() {
+            return Ok(None);
+        }
+        if key == Key::Char('f') {
+            // The filter is the pane's, whatever it shows: the bar follows at once, and an
+            // opened Task that is not running falls back to the folder as one unlisted does.
+            self.running = !self.running;
+            self.rebuild();
+            return Ok(None);
+        }
         let detail = match &self.detail {
-            Some(Ok(detail)) if self.artifact.is_none() => detail,
-            _ => return Ok(None),
+            Some(Ok(detail)) => detail,
+            _ => {
+                // The folder: Enter opens the Task of the row under the cursor, as the bar does.
+                if key != Key::Enter {
+                    return Ok(None);
+                }
+                return match self.named.get(&row) {
+                    Some(id) => Ok(Some(Effect::OpenItem(Tab::Tasks, id.clone()))),
+                    None => Err("Enter opens the Task of a row".to_owned()),
+                };
+            }
         };
         match key {
             Key::Enter => {
@@ -2278,8 +2468,16 @@ impl Pane for TasksPane {
             (None, Some(Ok(_))) => {
                 "r run  D deliver  Enter artifact  p pipeline  y yank id  R re-read  Tab bar"
             }
-            _ => "j/k move  R re-read  Tab bar  :cmd  q quit",
+            (None, _) if self.running => {
+                "j/k move  Enter open  f all Tasks  R re-read  Tab bar  :cmd  q quit"
+            }
+            _ => "j/k move  Enter open  f running  R re-read  Tab bar  :cmd  q quit",
         }
+    }
+
+    /// In the `f` view, the Store a running Task is in, as the folder heads it.
+    fn status(&self, row: usize) -> Option<String> {
+        self.places.get(&row).cloned()
     }
 
     fn refresh(&mut self, scope: &Scope) -> Result<(), String> {
