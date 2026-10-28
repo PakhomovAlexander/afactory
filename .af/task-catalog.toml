@@ -15,7 +15,9 @@ max_rounds = 2
 allow_targeted_repairs = false
 
 [review.reviewers]
-bugs = "required"
+# `bugs` is advisory only so that a pipeline may leave it unbound (default-light/*); a
+# pipeline that binds it counts its findings and its missing result exactly as before.
+bugs = "advisory"
 correctness = "required"
 uix = "advisory"
 
@@ -231,6 +233,40 @@ version = "1.0.0"
 digest = "sha256:595fd743b703967b3b4b0c28cf15046d9f4d15b0fa2d0b3a376ad1fdd229fe1f"
 path = ".af/task-packages/default/verification"
 
+# The light default pipeline (owner's decision, 29 October 2026) for small, local issues: one
+# implementing iteration by Opus 5.5 at medium effort, the correctness reviewer and the
+# evaluator of the default pipeline with smaller Attempt allowances, no bugs or advisory reviewer.
+
+[packages."default-light/implementer"]
+version = "1.0.0"
+digest = "sha256:0ddc80a22d594fa43e6f3bea90d0c9c086920508be4ccb154ec111c5b5f96491"
+path = ".af/task-packages/default-light/implementer"
+
+[packages."default-light/correctness"]
+version = "1.0.0"
+digest = "sha256:575bd14a48c2f054cd8e09aa15c0e51b8e9f63083c23bf7bf7b4e60b369725f9"
+path = ".af/task-packages/default-light/correctness"
+
+[packages."default-light/evaluator"]
+version = "1.0.0"
+digest = "sha256:27bb5c74dcc7805569838c46cfe41e8bc243567b4d3d87c4a7c0d7ff7a92642f"
+path = ".af/task-packages/default-light/evaluator"
+
+[packages."default-light/review"]
+version = "1.0.0"
+digest = "sha256:95d652e15fcf06d703d3ada577d251d51e47f75c2f046bbaadfbbef5eecc9b12"
+path = ".af/task-packages/default-light/review"
+
+[packages."default-light/implementation"]
+version = "1.0.0"
+digest = "sha256:0ea9415118a24b6f987c2ec5a259bf07e8529ed4774f5b6db7114da65cae980e"
+path = ".af/task-packages/default-light/implementation"
+
+[packages."default-light/verification"]
+version = "1.0.0"
+digest = "sha256:570f34947f12d22a32c64a1d4ec53218747cc33f99be924fddcad0506e07a10f"
+path = ".af/task-packages/default-light/verification"
+
 [independence]
 command_workers_by_package = true
 distinct_principals = false
@@ -255,6 +291,9 @@ distinct_models = true
 "default/correctness" = "codex-main"
 "default/advisor" = "codex-main"
 "default/evaluator" = "codex-main"
+"default-light/implementer" = "claude-main"
+"default-light/correctness" = "codex-main"
+"default-light/evaluator" = "codex-main"
 
 [provider_admission]
 tokens = 32768
