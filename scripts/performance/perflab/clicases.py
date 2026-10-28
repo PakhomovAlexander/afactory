@@ -14,6 +14,7 @@ import json
 import os
 import re
 import stat
+import sys
 
 from . import contracts, gitrefs, reference, tomlfile
 from . import suite as suite_module
@@ -23,6 +24,11 @@ CLI_PATH = "fixtures/performance/cli.toml"
 # Shared by measurements and diagnostic child runs, including their untimed setup and
 # seed writers. The frozen product must not install or check for another release.
 ENVIRONMENT = {"PATH": "/usr/bin:/bin", "LC_ALL": "C", "TZ": "UTC", "AF_SELF_OFFLINE": "1"}
+# The PTY driver's exit when it could not confirm that the browser's session ended
+# (fixtures/performance/cli/tui-open.py): a process of the sample may still run.
+DRIVER_UNCONFIRMED_EXIT = 3
+# The sample image's interpreter (scripts/performance/images/Dockerfile installs python3).
+CONTAINER_PYTHON = "/usr/bin/python3"
 _PLACEHOLDER = re.compile(r"\{([a-z_]+)\}")
 CATALOG = ".af/task-catalog.toml"
 PACKAGES = ".af/task-packages"
@@ -275,15 +281,21 @@ def expand(text, values):
     return _PLACEHOLDER.sub(substitute, text)
 
 
-def tui_interval(stdout, field):
-    """Read the closed driver document before admitting its reported interval."""
+def tui_report(stdout):
+    """(browser_ms, splash_ms) of the closed driver document, admitted before either is used:
+    the case's primary interval and its declared optional metric."""
     try:
         doc = json.loads(stdout.decode("utf-8"), object_pairs_hook=_unique_pairs)
     except (UnicodeError, ValueError) as error:
         raise ContractError("PTY driver did not report one JSON document: %s" % error)
     contracts.validate_tui_open(doc, "PTY driver")
-    require(field == "browser_ms", "PTY driver reports only browser_ms as its primary interval")
-    return Fraction(str(doc[field]))
+    return Fraction(str(doc["browser_ms"])), Fraction(str(doc["splash_ms"]))
+
+
+def driver_python(contained):
+    """The absolute interpreter of the PTY driver, `{python}`: the sample image's own in a
+    sample container, otherwise the laboratory's own interpreter on this host."""
+    return CONTAINER_PYTHON if contained else sys.executable
 
 
 def tui_home_environment(scratch):

@@ -27,7 +27,10 @@
 #
 # Placeholders: {af} the side's verified AF binary, {probe} the side's verified probe,
 # {fixtures} the authority's read-only CLI fixtures, {scratch}
-# the sample's private scratch, {package_version} the side's own package version. Setups:
+# the sample's private scratch, {package_version} the side's own package version, {python} the
+# absolute interpreter of the PTY driver (the sample image's /usr/bin/python3 in a sample
+# container, the laboratory's own interpreter in trusted local mode), named only as that
+# driver's program. Setups:
 # `none`; `task_repository` (a fresh Git repository of cli/task-roots/repo and its Task file);
 # `task_started` (that repository with the Task captured by the side's own `af task start`);
 # `seed_copy` (a private copy, at {scratch}/seed, of the command's `seed`);
@@ -401,7 +404,7 @@ description = "review report --format json folds all 10,000 Campaign events: one
 case_id = "tui_open"
 parameters = { registry = "empty" }
 setup = "registry_empty"
-argv = ["python3", "-I", "{fixtures}/tui-open.py", "{af}"]
+argv = ["{python}", "-I", "{fixtures}/tui-open.py", "{af}"]
 cwd = "{scratch}"
 rules = [
   { kind = "exit_code", value = 0 },
@@ -418,7 +421,7 @@ case_id = "tui_open"
 parameters = { registry = "stores_20x10000" }
 setup = "registry_stores_20x10000"
 seed = "task_state"
-argv = ["python3", "-I", "{fixtures}/tui-open.py", "{af}"]
+argv = ["{python}", "-I", "{fixtures}/tui-open.py", "{af}"]
 cwd = "{scratch}"
 rules = [
   { kind = "exit_code", value = 0 },

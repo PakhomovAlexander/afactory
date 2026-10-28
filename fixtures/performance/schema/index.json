@@ -550,6 +550,13 @@
       "shape": false
     },
     {
+      "path": "cli/invalid-driver-interpreter.toml",
+      "contract": "cli",
+      "valid": false,
+      "error": "runs the side's AF binary or the declared PTY driver",
+      "shape": false
+    },
+    {
       "path": "cli/invalid-placeholder.toml",
       "contract": "cli",
       "valid": false,

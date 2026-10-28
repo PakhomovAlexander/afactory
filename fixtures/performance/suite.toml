@@ -122,6 +122,11 @@ unit = "ms"
 direction = "lower_is_better"
 description = "Native probe fixture setup outside the timed region; reported beside, never inside, wall_ms."
 
+[metrics.splash_ms]
+unit = "ms"
+direction = "lower_is_better"
+description = "Launch to the first byte bare af writes to its pseudo-terminal, as the PTY driver reports it beside wall_ms; diagnostic, never budgeted."
+
 [metrics.logical_bytes]
 unit = "bytes"
 direction = "lower_is_better"
@@ -234,7 +239,7 @@ golden = "pending_native_oracle"
 [fixtures.stores_20x10000]
 kind = "cli_registry"
 events = 10000
-description = "Twenty private copies of the 10,000-event Task seed registered through the side's af task list --state."
+description = "Twenty private copies of the 10,000-event Task seed, each registered by the side's own af task gc preview of it."
 golden = "pending_native_oracle"
 
 # Recipes -------------------------------------------------------------------------------------
@@ -457,7 +462,7 @@ parameters = { registry = { kind = "fixture", values = ["empty", "stores_20x1000
 tiers = ["quick", "nightly", "release"]
 criticality = "critical"
 primary_metric = "wall_ms"
-optional_metrics = []
+optional_metrics = ["splash_ms"]
 policy = "wall_time_default"
 pairs = { quick = 20, nightly = 40, release = 40 }
 warmup_pairs = 2

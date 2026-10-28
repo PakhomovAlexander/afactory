@@ -2451,7 +2451,10 @@ def validate_tui_open(doc, where="tui-open"):
     return doc
 CLI_SETUPS = ("none", "task_repository", "task_started", "seed_copy", "registry_empty",
               "registry_stores_20x10000")
-CLI_PLACEHOLDERS = ("af", "probe", "scratch", "package_version", "fixtures")
+CLI_PLACEHOLDERS = ("af", "probe", "scratch", "package_version", "fixtures", "python")
+# The reviewed PTY driver's command (ADR-0258): the absolute interpreter `{python}` names, never
+# one the supervisor would look up on PATH, runs the driver isolated around the side's AF.
+TUI_DRIVER_ARGV = ["{python}", "-I", "{fixtures}/tui-open.py", "{af}"]
 AF_TASK_ID = Str(pattern=r"^[a-z][a-z0-9-]{0,63}$", max_len=64)
 JSON_PATH = Str(pattern=r"^(?:[a-z0-9_]+|\*)(?:\.(?:[a-z0-9_]+|\*))*$", max_len=256)
 # A path the supervisor's streaming JSON observation selects (ADR-0172): one to eight segments,
@@ -2581,10 +2584,12 @@ def validate_cli(doc, where="cli.toml"):
             require(len(runnable) == 3, at + ": a command declares argv, cwd and rules, or "
                     "is pending with its reason")
             driver = command["case_id"] == "tui_open"
-            require((command["argv"][:3] == ["python3", "-I", "{fixtures}/tui-open.py"]
-                     and command["argv"][3:] == ["{af}"]) if driver else
+            require(command["argv"] == TUI_DRIVER_ARGV if driver else
                     command["argv"][0] == "{af}",
                     at + ".argv: runs the side's AF binary or the declared PTY driver")
+            require(driver or not any("{python}" in text
+                                      for text in command["argv"] + [command["cwd"]]),
+                    at + ".argv: only the PTY driver's command names {python}")
             for text in command["argv"] + [command["cwd"]]:
                 for name in re.findall(r"\{([^}]*)\}", text):
                     require(name in CLI_PLACEHOLDERS,

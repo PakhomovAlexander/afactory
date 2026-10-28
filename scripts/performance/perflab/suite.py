@@ -515,6 +515,9 @@ def _validate_case(doc, case_id, case, at):
     if timing == "reported_interval":
         require(case_id == "tui_open" and case["timing"]["field"] == "browser_ms",
                 at + ".timing: only tui_open reports browser_ms")
+    require(("splash_ms" in case["optional_metrics"]) == (timing == "reported_interval"),
+            at + ".optional_metrics: splash_ms is the PTY driver's, beside its reported "
+            "interval")
     if case["cache"]["projection"] == "by_parameter":
         domain = case.get("parameters", {}).get("projection")
         require(domain is not None and domain["kind"] == "enum"

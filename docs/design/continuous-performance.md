@@ -278,8 +278,11 @@ the AF child-lifetime metric. An AF command must finish its expected work before
 unexpected live descendants fail its lifecycle oracle rather than produce a fast success.
 For child-lifetime process cases, the supervisor's clock brackets child launch through observed
 child exit; its own startup is excluded. The browser case instead reads the driver's checked
-launch-to-frame interval from its versioned JSON. Record descendant cleanup separately and test
-each boundary explicitly.
+launch-to-frame interval from its versioned JSON, which ends when the status line reaches the
+terminal. The browser leads a session of its own, outside the supervisor's process group, so
+the driver ends that session itself, on cancellation too, and a member that outlives the browser
+fails the sample (ADR-0258). Record descendant cleanup separately and test each boundary
+explicitly.
 
 macOS execution is local and explicitly trusted. It covers discovery, the declared browser PTY
 case, and known nonspawning library cases; process groups do not claim Linux namespace

@@ -1,8 +1,9 @@
 """What this host can execute, with actual identities and the reason for every gap (ADR-0166).
 
 Nothing here installs, configures or grants anything, and nothing missing is replaced by a
-weaker mode. Trusted local execution is the explicit macOS capability for discovery and
-nonspawning library cases. Linux samples need a Linux container runtime with cgroup v2 and a
+weaker mode. Trusted local execution is the explicit macOS capability for the cases declared
+without Linux containment: discovery, the browser's first frame and nonspawning library cases.
+Linux samples need a Linux container runtime with cgroup v2 and a
 configured, verified disk-bounded scratch filesystem of at most the environment's
 2-GiB scratch limit: tmpfs, a container's root layer and an unbounded bind mount are not one,
 and a host disk image's or `statvfs`'s report alone does not establish the bound, so

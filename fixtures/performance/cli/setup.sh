@@ -26,7 +26,9 @@
 #                      exited, to the empty directory ARGUMENT
 # registry_empty       create private HOME/XDG directories without a Store registry
 # registry_stores_20x10000  copy the Task seed to 20 explicit Stores and register each
-#                      through the side's own af task list --state
+#                      through the side's own `af task gc` preview: a command that names a
+#                      --state Store records it (ADR-0144) and the preview writes nothing
+#                      else; `af task list --state` only reads, and records nothing
 #
 # Any failure exits nonzero and the supervisor measures nothing.
 set -eu
@@ -152,8 +154,8 @@ registry_stores_20x10000)
         target="$scratch/home/explicit/$number"
         mkdir -p "$target"
         copy_tree "$argument/probe-work" "$target"
-        (cd "$fixtures" && "$af" task list --state "$target" \
-            >"$scratch/registry-list.json")
+        (cd "$fixtures" && "$af" task gc --older-than 36500 --keep 1000 --state "$target" \
+            >"$scratch/registry-gc.txt")
         number=$((number + 1))
     done
     test -f "$scratch/home/state/af/stores.toml"

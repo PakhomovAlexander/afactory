@@ -593,7 +593,9 @@ class Profile(object):
         self.halted(os.path.basename(argv[0]))
         if stdout_path is not None:
             writes = tuple(writes) + (os.path.dirname(stdout_path),)
-        binds = self.binds(tuple(reads) + (argv[0],), writes)
+        # The image's own interpreter is the image's: a host file is never bound over it.
+        program = () if self.contained() and argv[0] == clicases.CONTAINER_PYTHON else (argv[0],)
+        binds = self.binds(tuple(reads) + program, writes)
         # This shared boundary also owns tools without a Namespace (decoders, renderers,
         # build-id readers). Until a result confirms cleanup, every writable path stays.
         result = LAUNCHING
@@ -1429,7 +1431,8 @@ class Profile(object):
             probe = self.probes[side][0] if side in self.probes else None
             values = {"af": binary, "probe": probe or "", "scratch": scratch,
                       "fixtures": self.cli.fixtures,
-                      "package_version": self.cli.versions[side]}
+                      "package_version": self.cli.versions[side],
+                      "python": clicases.driver_python(self.contained())}
             environment = self.cli_environment(case, scratch)
             if telemetry is not None:
                 environment[TELEMETRY_LEVEL] = telemetry

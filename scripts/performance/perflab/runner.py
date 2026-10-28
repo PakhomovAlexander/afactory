@@ -87,6 +87,19 @@ INJECTION_ENV = "AF_PERF_CALIBRATION_ITERATIONS"
 CONTAINER_BINARIES = {"af": "/perf/bin/af", "probe": "/perf/bin/perf-probe"}
 
 
+def cli_values(mode, af, probe, scratch, fixtures, package_version):
+    """The values of a CLI command's placeholders in this shard's mode: the verified binaries
+    and the host's interpreter in trusted local mode, their bound paths and the image's
+    interpreter in a sample container. Every program the supervisor runs is absolute."""
+    if mode == TRUSTED_LOCAL:
+        values = {"af": af, "probe": probe or ""}
+    else:
+        values = dict(CONTAINER_BINARIES)
+    values.update(scratch=scratch, fixtures=fixtures, package_version=package_version,
+                  python=clicases.driver_python(mode != TRUSTED_LOCAL))
+    return values
+
+
 class Unavailable(ContractError):
     """This host cannot run the shard as frozen; nothing was sampled or substituted."""
 
@@ -1102,17 +1115,15 @@ class Shard(object):
             if self.mode == TRUSTED_LOCAL:
                 namespace = oracle.Namespace(self.options.scratch)
                 scratch = namespace.path
-                values = {"af": af_path, "probe": probe_path or "", "scratch": scratch,
-                          "fixtures": self.authority.fixtures,
-                          "package_version": self.versions[side]}
+                values = cli_values(self.mode, af_path, probe_path, scratch,
+                                    self.authority.fixtures, self.versions[side])
                 setup_script = os.path.join(self.authority.fixtures, "setup.sh")
                 containment, readonly = "process_group", None
                 seed_argument = seed.path if seed is not None else "-"
             else:
                 scratch = supervise.SCRATCH
-                values = dict(CONTAINER_BINARIES, scratch=scratch,
-                              fixtures=supervise.FIXTURES,
-                              package_version=self.versions[side])
+                values = cli_values(self.mode, None, None, scratch, supervise.FIXTURES,
+                                    self.versions[side])
                 setup_script = supervise.FIXTURES + "/setup.sh"
                 containment, readonly = "pid_namespace", {supervise.FIXTURES:
                                                           self.authority.fixtures}
@@ -1147,6 +1158,13 @@ class Shard(object):
         self.apply_supervised(record, supervised)
         result = supervised.result
         kind, detail, halt = supervise.outcome(supervised, containment, control_record=False)
+        # The PTY driver owns the browser's session outside the supervisor's group: its own
+        # unconfirmed cleanup is the sample's (ADR-0258).
+        unconfirmed = (kind is None and case["timing"]["boundary"] == "reported_interval"
+                       and supervise.returncode(result) == clicases.DRIVER_UNCONFIRMED_EXIT)
+        if unconfirmed:
+            detail = ("the PTY driver could not confirm that the browser's session ended: "
+                      + supervised.stderr.decode("utf-8", "replace")[-512:])
         if kind is not None:
             self.fail(record, kind, detail, supervised)
         else:
@@ -1154,27 +1172,31 @@ class Shard(object):
             passed, why, observed = clicases.judge(
                 entry, values, returncode, supervised.stdout, result["stdout"]["truncated"],
                 result["stdout_pattern_counts"], result["stdout_json"])
-            interval = None
+            reported = None
             if passed and case["timing"]["boundary"] == "reported_interval":
                 try:
-                    interval = clicases.tui_interval(supervised.stdout,
-                                                     case["timing"]["field"])
+                    reported = clicases.tui_report(supervised.stdout)
                 except ContractError as error:
                     passed, why = False, str(error)
             record["oracle"].update(status="passed" if passed else "failed",
                                     observed_digest=observed, detail=why[:1024])
+            extra = {}
             if case["timing"]["boundary"] == "reported_interval":
                 if passed:
+                    # The driver's browser_ms is the primary interval; its splash_ms, first
+                    # output, is the declared optional metric beside it (ADR-0258).
+                    browser, splash = reported
                     record["metrics"][case["primary_metric"]["key"]] = {
-                        "value": format_decimal(interval), "unit": "ms"}
+                        "value": format_decimal(browser), "unit": "ms"}
                     record["metric_scopes"][case["primary_metric"]["key"]] = "probe_reported"
+                    extra["splash_ms"] = ({"value": format_decimal(splash), "unit": "ms"},
+                                          "probe_reported")
             else:
                 wall = result["timing"]["child_wall_ns"]
                 record["metrics"][case["primary_metric"]["key"]] = {
                     "value": format_decimal(Fraction(int(wall), 1000000)), "unit": "ms"}
                 record["metric_scopes"][case["primary_metric"]["key"]] = \
                     "child_process_lifetime"
-            extra = {}
             self.record_injection(slot, record, supervised, extra)
             for key, (metric, scope) in extra.items():
                 record["metrics"][key] = metric
@@ -1189,7 +1211,8 @@ class Shard(object):
                     record["oracle"]["status"] = "failed"
                 self.fail(record, failure, why, supervised)
         self.optional(record, case, result)
-        if self.mode == TRUSTED_LOCAL and not supervise.cleanup_confirmed(supervised.result):
+        if self.mode == TRUSTED_LOCAL and (unconfirmed or
+                                           not supervise.cleanup_confirmed(supervised.result)):
             # A process of the sample may still be live: its scratch is kept, never removed
             # beneath it, and the shard stops (ADR-0171). A container's confirmed removal ends
             # every process in it.

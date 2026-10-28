@@ -76,6 +76,18 @@ class Registry(unittest.TestCase):
         self.refuses('field = "browser_ms"', 'field = "splash_ms"',
                      "only tui_open reports browser_ms")
 
+    def test_splash_is_the_browser_case_s_optional_metric_and_no_other_s(self):
+        case = self.suite.doc["cases"]["tui_open"]
+        self.assertEqual(case["optional_metrics"], ["splash_ms"])
+        self.assertEqual(self.suite.doc["metrics"]["splash_ms"]["unit"], "ms")
+        self.refuses('optional_metrics = ["splash_ms"]', 'optional_metrics = []',
+                     "splash_ms is the PTY driver's")
+        self.refuses('optional_metrics = ["user_cpu_ms", "system_cpu_ms", "context_switches", '
+                     '"page_faults", "cgroup_peak_memory_bytes", "wait4_maxrss_bytes"]\n'
+                     'policy = "wall_time_default"\npairs = { quick = 40',
+                     'optional_metrics = ["splash_ms"]\npolicy = "wall_time_default"\n'
+                     'pairs = { quick = 40', "splash_ms is the PTY driver's")
+
     def test_browser_budget_covers_both_registry_instances(self):
         case = self.suite.doc["cases"]["tui_open"]
         budget = self.suite.doc["budgets"]["tui_browser_under_200ms"]

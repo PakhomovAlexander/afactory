@@ -25,10 +25,18 @@ The data of the continuous performance laboratory
   checks against the reference digests. `cli/campaign-roots` is the model-free review whose
   Campaign the `review ledger` and `review report` commands read; a test checks its pipeline
   pin.
-- `cli/tui-open.py` — the stdlib-only 100x30 PTY driver (`af.perf-tui-open/1`). It reports
-  canonical decimal millisecond strings for first output and the first browser status-line
-  frame. `tui_open` uses the checked `browser_ms` interval as its primary metric; its private
-  registry setup invokes each side's `af task list --state` for all 20 copied Stores (ADR-0258).
+- `cli/tui-open.py` — the stdlib-only 100x30 PTY driver (`af.perf-tui-open/1`), run as
+  `{python} -I` with the absolute interpreter `{python}` names. It reports canonical decimal
+  millisecond strings for first output (`splash_ms`) and for the read that completes the
+  last-row `NORMAL` status line after the screen's last clear (`browser_ms`). `tui_open` uses
+  the checked `browser_ms` interval as its primary metric and records `splash_ms` as its
+  optional metric. The driver leads the browser's session: the child holds the driver's
+  stderr, its exit is observed unreaped, every live member of its group is killed before it is
+  reaped, a process that left the group is found by the run's token in its environment
+  (`AF_PERF_TUI_OPEN_SESSION`) and killed, a survivor fails the sample and a cancellation ends
+  the session first. Its private registry setup registers all 20 copied Stores through each
+  side's own `af task gc --state` preview, which records the Store it names and writes nothing
+  else (ADR-0258).
 - `adapters.toml` — the reviewed native probe adapters (`af.perf-adapters/1`): each a fixed
   priority, an equivalence group, the contracts it serves and the exact closure of authority
   example files a build copies into a measured source before compiling it. A test requires each

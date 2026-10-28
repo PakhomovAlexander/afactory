@@ -363,6 +363,58 @@ fn collection_after_a_run_takes_finished_tasks_only_when_auto_gc_is_on() {
     );
 }
 
+/// The laboratory's browser fixture registers its Stores by this rule
+/// (`fixtures/performance/cli/setup.sh`, ADR-0258): a command that resolves a `--state` Store
+/// records it, and `af task gc`'s preview writes nothing else; `af task list` only reads.
+#[test]
+fn a_task_gc_preview_registers_its_state_store_and_a_listing_does_not() {
+    let machine = Machine::new();
+    let (repo, state) = task_gc::fixture(&machine.root);
+    let state_arg = state.to_str().unwrap();
+    let captured = machine.af(
+        &repo,
+        &[],
+        &[
+            "task",
+            "start",
+            "--file",
+            "gc-older.json",
+            "--state",
+            state_arg,
+            "--json",
+        ],
+    );
+    assert!(captured.status.success(), "{}", text(&captured).1);
+    let registry = machine.state_home().join("af/stores.toml");
+    std::fs::remove_file(&registry).unwrap();
+    let list = listed(&machine, &repo, &state);
+    assert_eq!(list["tasks"][0]["task_id"], "gc-older", "{list}");
+    assert!(!registry.exists(), "af task list recorded its Store");
+    let preview = machine.af(
+        &repo,
+        &[],
+        &[
+            "task",
+            "gc",
+            "--older-than",
+            "36500",
+            "--keep",
+            "1000",
+            "--state",
+            state_arg,
+        ],
+    );
+    let (stdout, stderr) = text(&preview);
+    assert!(preview.status.success(), "{stdout}\n{stderr}");
+    assert!(stdout.contains("Nothing was written"), "{stdout}");
+    let recorded = std::fs::read_to_string(&registry).unwrap();
+    assert!(
+        recorded.contains(&format!("path = \"{}\"", state.display())),
+        "{recorded}"
+    );
+    assert!(recorded.contains("kind = \"task\""), "{recorded}");
+}
+
 #[test]
 fn below_the_floor_a_worker_attempt_is_refused_before_it_starts_and_charged_nothing() {
     attempt_refused_below_the_floor(&[]);
