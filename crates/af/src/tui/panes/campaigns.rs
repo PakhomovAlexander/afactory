@@ -468,6 +468,10 @@ pub(crate) struct CampaignsPane {
     /// Why the registry added no source, shown above the Campaigns.
     warning: Option<String>,
     groups: Vec<Group>,
+    /// The Stores the read in flight answered so far, by state path: a Campaign or problem
+    /// of a Store no source answered yet is retained from the last read until one does, or
+    /// until the read is done.
+    answered: BTreeSet<PathBuf>,
     /// The bar id of the opened Campaign.
     selected: Option<String>,
     detail: Option<Detail>,
@@ -528,11 +532,37 @@ impl CampaignsPane {
         let (sources, opened) = (self.sources.clone(), self.opened_campaign());
         let (sender, receiver) = mpsc::channel();
         std::thread::spawn(move || read(&sources, &places, opened, &sender));
+        self.answered.clear();
         self.job = Some(Job {
             receiver,
             for_campaign: self.selected.clone(),
             explicit,
         });
+    }
+
+    /// A read in flight whose messages a test sends by hand, for the Campaign opened now.
+    #[cfg(test)]
+    fn fed(&mut self) -> mpsc::Sender<Read> {
+        let (sender, receiver) = mpsc::channel();
+        self.answered.clear();
+        self.job = Some(Job {
+            receiver,
+            for_campaign: self.selected.clone(),
+            explicit: true,
+        });
+        sender
+    }
+
+    /// The groups in the order of their sources; one of no source last.
+    fn order(&mut self) {
+        let sources = &self.sources;
+        let order = |source: &Source| {
+            sources
+                .iter()
+                .position(|s| s == source)
+                .unwrap_or(usize::MAX)
+        };
+        self.groups.sort_by_key(|group| order(&group.source));
     }
 
     /// Whether the read in flight, if any, was started by a load or `R`.
@@ -571,34 +601,57 @@ impl CampaignsPane {
 
     fn apply(&mut self, read: Read) {
         match read {
-            // A source's group takes the place of what the last read found for it, or its
-            // place in source order. A group of a source this read no longer names stays
-            // until the read is done: a changed source list never unlists a Campaign before
-            // its own source is read, and an opened one stays opened meanwhile.
+            // A source's group takes the place of what the last read found for it, among the
+            // groups in source order. A Store is listed once, where the source that answered
+            // it first in this read put it: a Campaign a root listed may be a registered
+            // Store's answer this time, and the other way round, and a healthy Campaign
+            // becomes the refusal a source reports for its Store the moment that arrives. A
+            // Store no source answered yet stays where the last read listed it, until one
+            // does or the read is done: a changed source list never unlists a Campaign before
+            // a source answers for its Store, and an opened one stays opened meanwhile.
             Read::Group(group) => {
-                let listed = self.groups.iter().position(|g| g.source == group.source);
-                if let Some(listed) = listed {
-                    self.groups[listed] = group;
-                } else {
-                    let order = |source: &Source| {
-                        self.sources
-                            .iter()
-                            .position(|s| s == source)
-                            .unwrap_or(usize::MAX)
-                    };
-                    let index = order(&group.source);
-                    let at = self
-                        .groups
-                        .iter()
-                        .position(|g| order(&g.source) > index)
-                        .unwrap_or(self.groups.len());
-                    self.groups.insert(at, group);
+                let answered: BTreeSet<PathBuf> = group
+                    .campaigns
+                    .iter()
+                    .map(|campaign| campaign.state.clone())
+                    .chain(group.problems.iter().map(|problem| problem.state.clone()))
+                    .collect();
+                for listed in &mut self.groups {
+                    listed
+                        .campaigns
+                        .retain(|campaign| !answered.contains(&campaign.state));
+                    listed
+                        .problems
+                        .retain(|problem| !answered.contains(&problem.state));
                 }
+                self.answered.extend(answered);
+                match self.groups.iter().position(|g| g.source == group.source) {
+                    Some(listed) => {
+                        // What the last read listed under this source and no source answered
+                        // yet stays, behind what this read found.
+                        let old = std::mem::replace(&mut self.groups[listed], group);
+                        let group = &mut self.groups[listed];
+                        group.campaigns.extend(old.campaigns);
+                        group.problems.extend(old.problems);
+                    }
+                    None => self.groups.push(group),
+                }
+                self.order();
             }
             Read::Done { report } => {
-                // Every source answered: a group of a source this read did not name goes.
-                let sources = &self.sources;
+                // Every source answered: a Store none answered goes, and so does a group of a
+                // source this read did not name.
+                let (sources, answered) = (&self.sources, &self.answered);
+                for group in &mut self.groups {
+                    group
+                        .campaigns
+                        .retain(|campaign| answered.contains(&campaign.state));
+                    group
+                        .problems
+                        .retain(|problem| answered.contains(&problem.state));
+                }
                 self.groups.retain(|group| sources.contains(&group.source));
+                self.order();
                 if let Some((state, report)) = report {
                     self.detail = Some(Detail { state, report });
                 }

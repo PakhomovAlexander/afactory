@@ -65,10 +65,17 @@ inside `open` now answers later: a Worker whose declaration went between the lis
 read, or a Task whose Store refused. Never because a Store is unread: a target or source list
 that changed within the scope (a Store registered meanwhile, `:state DIR`) keeps every Store
 listed, and the opened entry opened, until the read answers for that Store, and a Store of a
-target the read no longer names until the read is done; another scope lists nothing of the old.
-A refusal taken on the key loop (the opened Task can no longer be inspected, or an artifact of
-its HISTORY cannot be given back) restarts a read in flight, so that a Store message read before
-the refusal never lists the Task again over it.
+target the read no longer names until the read is done; the Stores stand in the order of the
+targets as they are now, and another scope lists nothing of the old. A Campaign Store is
+listed once, where the source that answers it first in source order puts it, that answer
+taking the place of what the last read listed for the Store wherever it was, a healthy
+Campaign included when a source reports the Store unreadable; a Store no source answered yet
+stays from the last read until one does or the read is done. A refusal taken on the key loop
+(the opened Task can no longer be inspected, or an artifact of its HISTORY cannot be given
+back) falls back to the folder on that key, with the refusal's cause on the status line since
+the cause says more than the fallback's message would, whether or not a read is in flight,
+and restarts a read in flight, so that a Store message read before the refusal never lists
+the Task again over it.
 
 ## Consequences
 

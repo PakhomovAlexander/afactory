@@ -284,13 +284,15 @@ so the folder fills while the rest are still read and no read of a Store ever ho
 or the splash (opening one Task still inspects that Task on the key loop, as before). Nothing
 interrupts the read, since it holds no key; `q` quits without waiting for it. The opened Task's
 detail arrives with its own Store, so its bar row and its pane never disagree; a Task whose
-Store refuses when opened, or whose HISTORY artifact cannot be given back, restarts a read in
-flight, so nothing read before the refusal lists it again. An opened Task or Worker that a read
-no longer lists falls back to its folder with the same message as when opening finds it gone;
+Store refuses when opened, or whose HISTORY artifact cannot be given back, falls back to its
+folder on that key, with the refusal's cause on the status line, and restarts a read in flight,
+so nothing read before the refusal lists it again. An opened Task or Worker that a read no
+longer lists falls back to its folder with the same message as when opening finds it gone;
 never one whose Store is merely unread: a target list that changed within the scope (a Store
 registered meanwhile, `:state DIR`) keeps every Store listed until the read answers for it, and
 a Store of a target no longer named until the read is done, so the opened Task stays opened
-while its Store is read again. Another scope lists nothing of the old.
+while its Store is read again; the Stores stand in the order of the targets as they are now.
+Another scope lists nothing of the old.
 
 Main pane for one Task, top to bottom:
 
@@ -356,8 +358,13 @@ Round as chips of their latest Attempt's outcome (`running`, `selected`, `failed
 Round's Attempts, so a Round that has none yet shows no chips, never the previous Round's, and
 the latest Attempt is the one that started last, not the last one listed. Every read runs on a
 thread, the load's included, each source listed as it is read behind a spinner on `campaigns/`;
-a source list that changed within the scope keeps every group listed until the read answers for
-it, so an opened Campaign stays opened while its source is read again.
+a Store is listed once, where the source that answers it first in source order puts it, and
+that answer takes the place of what the last read listed for the Store wherever that was (a
+Campaign a root listed may be a registered Store's answer this time, and a Campaign becomes the
+refusal a source reports for its Store the moment that arrives); a Store no source answered yet
+stays listed from the last read until one does, or until the read is done, so a source list
+that changed within the scope never unlists an opened Campaign before a source answers for its
+Store. The groups stand in source order.
 While the pane shows, that thread reads every source again: once a second while any listed
 Round is open, the Tasks pane's cadence, and every five seconds otherwise, so a Campaign started
 meanwhile appears without a key.

@@ -2645,6 +2645,105 @@ fn an_opened_campaign_stays_opened_while_a_source_registered_meanwhile_is_read()
     );
 }
 
+/// Enter on a HISTORY row whose artifact the Store cannot give back refuses the Store on the
+/// key loop, with no read in flight to answer later: the opened Task falls back to its folder
+/// at once, the status line names the artifact, and polling changes nothing.
+#[test]
+fn a_history_refusal_with_no_read_in_flight_falls_back_to_the_folder_at_once() {
+    let (_temp, root) = temp_root();
+    let (repo, state) = hub_with_tasks(&root);
+    let mut app = app_at(&root, repo);
+    let mut host = Recorder::default();
+    press(&mut app, &mut host, b"]]]]]]]]jj\r");
+    assert_eq!(app.breadcrumb(), "tasks/pagination-cli");
+    assert!(
+        app.panes.tasks.busy().is_none(),
+        "a finished Task: no read in flight"
+    );
+    press(&mut app, &mut host, b"\t");
+    let rows: Vec<String> = app.main_rows().iter().map(Row::text).collect();
+    let history = rows
+        .iter()
+        .position(|row| row.starts_with("HISTORY"))
+        .unwrap();
+    let show = crate::task_execution::inspection_document(&state, "pagination-cli", false)
+        .unwrap()
+        .unwrap();
+    let first =
+        crate::tui::panes::tasks::change_artifact(&show["history"][0]["transition"]["change"])
+            .unwrap()
+            .trim_start_matches("sha256:")
+            .to_owned();
+    std::fs::remove_file(
+        state
+            .join("cas/objects")
+            .join(&first[..2])
+            .join(&first[2..]),
+    )
+    .unwrap();
+    for _ in 0..=history {
+        press(&mut app, &mut host, b"j");
+    }
+    press_unsettled(&mut app, &mut host, b"\r");
+    assert_eq!(app.opened, Opened::Folder(Tab::Tasks));
+    let line = status_line(&mut app);
+    assert!(line.contains(&first[..12]), "the artifact is named: {line}");
+    assert!(!line.contains("no longer listed"), "{line}");
+    let rows: Vec<String> = app.main_rows().iter().map(Row::text).collect();
+    assert!(rows[0].starts_with("TASKS"), "{rows:#?}");
+    app.poll();
+    assert_eq!(app.opened, Opened::Folder(Tab::Tasks));
+    let bar = app.frame(100, 30).text();
+    assert!(bar.contains("! Store unreadable"), "{bar}");
+}
+
+/// The same refusal with an explicit read in flight (`R` a moment before): the fallback is as
+/// immediate, and the read that starts over refuses the Store again when it answers.
+#[test]
+fn a_history_refusal_with_a_read_in_flight_falls_back_to_the_folder_at_once() {
+    let (_temp, root) = temp_root();
+    let (repo, state) = hub_with_tasks(&root);
+    let mut app = app_at(&root, repo);
+    let mut host = Recorder::default();
+    press(&mut app, &mut host, b"]]]]]]]]jj\r");
+    press(&mut app, &mut host, b"\t");
+    let rows: Vec<String> = app.main_rows().iter().map(Row::text).collect();
+    let history = rows
+        .iter()
+        .position(|row| row.starts_with("HISTORY"))
+        .unwrap();
+    let show = crate::task_execution::inspection_document(&state, "pagination-cli", false)
+        .unwrap()
+        .unwrap();
+    let first =
+        crate::tui::panes::tasks::change_artifact(&show["history"][0]["transition"]["change"])
+            .unwrap()
+            .trim_start_matches("sha256:")
+            .to_owned();
+    press_unsettled(&mut app, &mut host, b"R");
+    assert!(app.panes.tasks.busy().is_some(), "the read is in flight");
+    assert_eq!(app.breadcrumb(), "tasks/pagination-cli");
+    std::fs::remove_file(
+        state
+            .join("cas/objects")
+            .join(&first[..2])
+            .join(&first[2..]),
+    )
+    .unwrap();
+    for _ in 0..=history {
+        press_unsettled(&mut app, &mut host, b"j");
+    }
+    press_unsettled(&mut app, &mut host, b"\r");
+    assert_eq!(app.opened, Opened::Folder(Tab::Tasks));
+    let line = status_line(&mut app);
+    assert!(line.contains(&first[..12]), "the artifact is named: {line}");
+    assert!(app.panes.tasks.busy().is_some(), "the read started over");
+    app.settle();
+    assert_eq!(app.opened, Opened::Folder(Tab::Tasks));
+    let bar = app.frame(100, 30).text();
+    assert!(bar.contains("! Store unreadable"), "{bar}");
+}
+
 fn copy_store(from: &Path, to: &Path) {
     std::fs::create_dir_all(to).unwrap();
     for entry in std::fs::read_dir(from).unwrap() {

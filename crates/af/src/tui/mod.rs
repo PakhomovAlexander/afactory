@@ -923,8 +923,13 @@ impl App {
     fn pane_key(&mut self, key: Key) -> Option<Effect> {
         let (tab, row) = (self.opened_tab(), self.main.cursor);
         let outcome = self.panes.get_mut(tab).key(key, row);
-        // A pane key may change what the pane lists (a Store refused on a failed read).
+        // A pane key may change what the pane lists (a Store refused because an artifact of
+        // the opened Task cannot be given back): the bar follows at once, and so does the
+        // opened entry, which falls back to its folder here, not at a later read's message,
+        // since no read may follow. The key's own error stays on the status line: it names
+        // the cause, where the fallback's message would only name the effect.
         self.sync();
+        self.follow_listing();
         match outcome {
             Ok(effect) => effect,
             Err(error) => {

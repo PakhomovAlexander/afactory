@@ -1765,9 +1765,9 @@ fn the_user_scopes_stores_are_discovered_by_the_read_never_by_the_load() {
 }
 
 /// A target list that changed within the scope (a Store registered meanwhile, `:state DIR`)
-/// keeps the Stores read so far listed, each until its own read answers, and a Store of a
-/// target no longer named until the read is done: an opened Task is never reported gone
-/// because its Store is not read yet.
+/// keeps the Stores read so far listed, in the order of the targets as they stand, each until
+/// its own read answers, and a Store of a target no longer named until the read is done: an
+/// opened Task is never reported gone because its Store is not read yet.
 #[test]
 fn a_changed_target_list_keeps_a_store_listed_until_its_read_answers() {
     let temp = tempfile::tempdir().unwrap();
@@ -1822,6 +1822,20 @@ fn a_changed_target_list_keeps_a_store_listed_until_its_read_answers() {
     assert!(pane.poll());
     assert_eq!(pane.selected.as_deref(), Some("pagination-cli"));
     assert_eq!(pane.stores.len(), 2);
+    // The two targets in the other order: the listed Stores follow, the opened Task stays.
+    pane.targets = vec![own.clone(), other.clone()];
+    let sender = pane.fed();
+    sender.send(message(&own, &mut cache)).unwrap();
+    sender.send(message(&other, &mut cache)).unwrap();
+    sender.send(Read::Done(cache.clone())).unwrap();
+    assert!(pane.poll());
+    let dirs: Vec<&Path> = pane
+        .stores
+        .iter()
+        .map(|store| store.dir.as_path())
+        .collect();
+    assert_eq!(dirs, [own.dir.as_path(), other.dir.as_path()]);
+    assert_eq!(pane.selected.as_deref(), Some("pagination-cli"));
     // A target no longer named keeps its Store until the read is done, then it goes.
     pane.targets = vec![other.clone()];
     let sender = pane.fed();

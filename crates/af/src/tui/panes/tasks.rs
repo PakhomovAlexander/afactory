@@ -1585,28 +1585,28 @@ impl TasksPane {
         sender
     }
 
-    /// A target's Store, read: in its place over what the last read found for it, or among
-    /// the listed Stores in target order. A Store listed for a target this read no longer
-    /// names stays until the read is done (`Done` drops it): a changed target list never
-    /// unlists a Task before its own Store is read, and an opened one stays opened meanwhile.
+    /// A target's Store, read: over what the last read found for it, the Stores in target
+    /// order. A Store listed for a target this read no longer names stays, last, until the
+    /// read is done (`Done` drops it): a changed target list never unlists a Task before its
+    /// own Store is read, and an opened one stays opened meanwhile.
     fn place(&mut self, store: Store) {
-        if let Some(listed) = self.stores.iter().position(|s| s.dir == store.dir) {
-            self.stores[listed] = store;
-            return;
+        match self.stores.iter().position(|s| s.dir == store.dir) {
+            Some(listed) => self.stores[listed] = store,
+            None => self.stores.push(store),
         }
+        self.order();
+    }
+
+    /// The Stores in the order of their targets; one of no target last.
+    fn order(&mut self) {
+        let targets = &self.targets;
         let order = |dir: &Path| {
-            self.targets
+            targets
                 .iter()
                 .position(|target| target.dir == dir)
                 .unwrap_or(usize::MAX)
         };
-        let index = order(&store.dir);
-        let at = self
-            .stores
-            .iter()
-            .position(|listed| order(&listed.dir) > index)
-            .unwrap_or(self.stores.len());
-        self.stores.insert(at, store);
+        self.stores.sort_by_key(|store| order(&store.dir));
     }
 
     /// The opened Task's bar row, rebuilt from the same read as its detail, so the bar and the
@@ -1651,6 +1651,7 @@ impl TasksPane {
                 let targets = &self.targets;
                 self.stores
                     .retain(|store| targets.iter().any(|target| target.dir == store.dir));
+                self.order();
                 self.cache = cache;
                 self.job = None;
             }

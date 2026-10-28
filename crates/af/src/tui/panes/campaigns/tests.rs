@@ -209,3 +209,171 @@ fn a_load_lists_its_sources_behind_a_spinner_never_on_the_callers_thread() {
         "one group per source, in order"
     );
 }
+
+/// A Store one source listed as a Campaign and another source now reports unreadable (its
+/// parent directory registered as a root meanwhile, read first): the refusal is the Store's one
+/// representation the moment it arrives, before the Store's own source answers, and the opened
+/// Campaign is closed with it; the later source lists it no second time.
+#[test]
+fn a_refusal_of_a_store_another_source_listed_unlists_its_campaign_at_once() {
+    let temp = tempfile::tempdir().unwrap();
+    let root = std::fs::canonicalize(temp.path()).unwrap();
+    let audit = root.join("audit");
+    crate::option_tests::write_campaign_rounds(&audit, "audit", &[(1, 1)]);
+    let places = Places {
+        home: None,
+        default_root: None,
+    };
+    let mut pane = CampaignsPane {
+        places: Some(places.clone()),
+        sources: vec![Source::Store(audit.clone())],
+        ..CampaignsPane::default()
+    };
+    let sender = pane.fed();
+    let group = read_source(&places, &Source::Store(audit.clone()));
+    sender.send(Read::Group(group)).unwrap();
+    sender.send(Read::Done { report: None }).unwrap();
+    assert!(pane.poll());
+    let id = audit.display().to_string();
+    assert!(pane.campaign(&id).is_some());
+    pane.selected = Some(id.clone());
+    pane.sources = vec![Source::Root(root.clone()), Source::Store(audit.clone())];
+    let sender = pane.fed();
+    let problem = Problem {
+        state: audit.clone(),
+        shown: id.clone(),
+        reason: "events.sqlite cannot be read".to_owned(),
+        release: None,
+    };
+    sender
+        .send(Read::Group(Group {
+            source: Source::Root(root.clone()),
+            shown: root.display().to_string(),
+            campaigns: Vec::new(),
+            problems: vec![problem],
+            error: None,
+        }))
+        .unwrap();
+    assert!(pane.poll());
+    assert!(pane.busy().is_some(), "the Store's own source is unread");
+    assert!(
+        pane.campaign(&id).is_none(),
+        "the refusal is its one representation"
+    );
+    assert!(pane.selected.is_none(), "the opened Campaign went with it");
+    let ids: Vec<String> = pane.items().into_iter().map(|item| item.id).collect();
+    assert_eq!(ids, [format!("{UNREADABLE}{id}")]);
+    sender
+        .send(Read::Group(Group {
+            source: Source::Store(audit.clone()),
+            shown: id.clone(),
+            campaigns: Vec::new(),
+            problems: Vec::new(),
+            error: None,
+        }))
+        .unwrap();
+    sender.send(Read::Done { report: None }).unwrap();
+    assert!(pane.poll());
+    let ids: Vec<String> = pane.items().into_iter().map(|item| item.id).collect();
+    assert_eq!(ids, [format!("{UNREADABLE}{id}")], "listed once, as before");
+}
+
+/// A Campaign a root listed stays listed and opened while that root fails to list and the
+/// Store's own source, read after it, is unread; when that source answers, the Campaign is
+/// listed there, once. The groups follow the source order whenever it changes.
+#[test]
+fn a_campaign_stays_listed_once_while_its_sources_answer_in_turn() {
+    let temp = tempfile::tempdir().unwrap();
+    let root = std::fs::canonicalize(temp.path()).unwrap();
+    let audit = root.join("audit");
+    crate::option_tests::write_campaign_rounds(&audit, "audit", &[(1, 1)]);
+    let places = Places {
+        home: None,
+        default_root: None,
+    };
+    let id = audit.display().to_string();
+    let campaign = || {
+        read_source(&places, &Source::Store(audit.clone()))
+            .campaigns
+            .remove(0)
+    };
+    let store_group = |campaigns: Vec<Campaign>| Group {
+        source: Source::Store(audit.clone()),
+        shown: id.clone(),
+        campaigns,
+        problems: Vec::new(),
+        error: None,
+    };
+    let root_group = |campaigns: Vec<Campaign>, error: Option<&str>| Group {
+        source: Source::Root(root.clone()),
+        shown: root.display().to_string(),
+        campaigns,
+        problems: Vec::new(),
+        error: error.map(str::to_owned),
+    };
+    let listed = |pane: &CampaignsPane| -> Vec<String> {
+        pane.items().into_iter().map(|item| item.id).collect()
+    };
+    let mut pane = CampaignsPane {
+        places: Some(places.clone()),
+        sources: vec![Source::Root(root.clone()), Source::Store(audit.clone())],
+        ..CampaignsPane::default()
+    };
+    // The root lists the Store first; its own source, read after, lists it no second time.
+    let sender = pane.fed();
+    sender
+        .send(Read::Group(root_group(vec![campaign()], None)))
+        .unwrap();
+    sender.send(Read::Group(store_group(Vec::new()))).unwrap();
+    sender.send(Read::Done { report: None }).unwrap();
+    assert!(pane.poll());
+    assert_eq!(listed(&pane), [id.clone()]);
+    pane.selected = Some(id.clone());
+    // The root cannot be listed this time, and the Store's own source is still unread.
+    let sender = pane.fed();
+    sender
+        .send(Read::Group(root_group(
+            Vec::new(),
+            Some("permission denied"),
+        )))
+        .unwrap();
+    assert!(pane.poll());
+    assert!(
+        pane.campaign(&id).is_some(),
+        "listed until a source answers for it"
+    );
+    assert_eq!(pane.selected.as_deref(), Some(id.as_str()));
+    assert_eq!(listed(&pane), [id.clone()]);
+    sender
+        .send(Read::Group(store_group(vec![campaign()])))
+        .unwrap();
+    assert!(pane.poll());
+    assert_eq!(listed(&pane), [id.clone()], "once, under its own source");
+    let holder = pane
+        .groups
+        .iter()
+        .position(|group| group.campaigns.iter().any(|c| c.state == audit));
+    assert_eq!(holder, Some(1));
+    sender.send(Read::Done { report: None }).unwrap();
+    assert!(pane.poll());
+    assert_eq!(pane.selected.as_deref(), Some(id.as_str()));
+    assert_eq!(listed(&pane), [id.clone()]);
+    // The sources in the other order: the groups follow.
+    pane.sources = vec![Source::Store(audit.clone()), Source::Root(root.clone())];
+    let sender = pane.fed();
+    sender
+        .send(Read::Group(store_group(vec![campaign()])))
+        .unwrap();
+    sender
+        .send(Read::Group(root_group(Vec::new(), None)))
+        .unwrap();
+    sender.send(Read::Done { report: None }).unwrap();
+    assert!(pane.poll());
+    let order: Vec<&Path> = pane
+        .groups
+        .iter()
+        .map(|group| group.source.path())
+        .collect();
+    assert_eq!(order, [audit.as_path(), root.as_path()]);
+    assert_eq!(pane.selected.as_deref(), Some(id.as_str()));
+}
