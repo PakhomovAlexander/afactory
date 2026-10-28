@@ -34,6 +34,24 @@ fn fixture(name: &str) -> Fixture {
     }
 }
 
+/// [`fixture`] under a directory whose name alone is wider than a line, so that every
+/// `--state` path the Task's commands print is cut by `human::fit_command` on every host,
+/// whatever its `TMPDIR`.
+fn long_path_fixture(name: &str) -> Fixture {
+    let directory = tempfile::tempdir().unwrap();
+    let root = directory
+        .path()
+        .join("a-store-path-wider-than-a-line-".repeat(4));
+    std::fs::create_dir(&root).unwrap();
+    let (repo, state) = task_cli::fixture_named(&root, name);
+    Fixture {
+        _directory: directory,
+        root,
+        repo,
+        state,
+    }
+}
+
 impl Fixture {
     /// `af ARGS --state STATE` from the fixture's checkout.
     fn af(&self, args: &[&str]) -> Output {
@@ -270,14 +288,16 @@ fn attention_group(fixture: &Fixture, entry: &Value, label: &str, next: Option<&
     };
     assert_eq!(lines[at - 1], format!("{title} (1)"), "{text}");
     assert_eq!(lines[at].split_whitespace().nth(1), Some(label), "{text}");
-    // The `next:` line as a shell reads it (`shell_words`): a line ending in `\` continues on
-    // the next, indented between arguments or at column 0 inside a word the width split (a
-    // `--state` path under a long temporary directory, as the gate's on macOS).
-    let command = shell_words(&lines[at + 1..]).unwrap_or_else(|error| panic!("{error}: {text}"));
+    // The `next:` line as a shell reads it (`continued_words`): a line ending in `\` continues
+    // on the next, indented between arguments or at column 0 inside a word the width split (a
+    // `--state` path under a long temporary directory, as the gate's on macOS, or the Store of
+    // `long_path_fixture` on every host).
+    let command =
+        continued_words(&lines[at + 1..]).unwrap_or_else(|error| panic!("{error}: {text}"));
     let expected = format!("    next: {}", next.unwrap());
     assert_eq!(
         command,
-        shell_words(&[expected.as_str()]).unwrap(),
+        continued_words(&[expected.as_str()]).unwrap(),
         "{text}"
     );
     group
@@ -286,8 +306,9 @@ fn attention_group(fixture: &Fixture, entry: &Value, label: &str, next: Option<&
 /// The words a shell reads from the command the first of `lines` starts: a backslash at the
 /// end of a line is deleted with the line end, so that the next line continues the command,
 /// its indentation the whitespace it is; a line without one ends the command, and a backslash
-/// with no line after it is an error. Nothing else changes: `tas \` and `k` read `tas k`.
-fn shell_words(lines: &[&str]) -> Result<Vec<String>, String> {
+/// with no line after it is an error. Nothing else changes before the shell's own splitting
+/// (`shell_words`): `tas \` and `k` read `tas k`.
+fn continued_words(lines: &[&str]) -> Result<Vec<String>, String> {
     let mut command = String::new();
     let mut rest = lines.iter();
     loop {
@@ -302,12 +323,40 @@ fn shell_words(lines: &[&str]) -> Result<Vec<String>, String> {
             }
         }
     }
-    Ok(command.split_whitespace().map(str::to_owned).collect())
+    shell_words::split(&command).map_err(|error| error.to_string())
+}
+
+/// A Store whose path is wider than a line: `af task list --attention` cuts the `--state` path
+/// of the next command into pieces, each after the first at the start of its line, and every
+/// rendering still prints the same state, read as a shell reads it.
+#[test]
+fn a_store_path_wider_than_a_line_prints_the_same_state_everywhere() {
+    let fixture = long_path_fixture("pagination");
+    let file = fixture.task_file("ticket.json", |_| {});
+    let plan = fixture.json(&["task", "plan", "--file", file.to_str().unwrap()]);
+    let text = out(&fixture.af(&["task", "list", "--attention"]));
+    let lines: Vec<&str> = text.lines().collect();
+    assert!(
+        lines
+            .windows(2)
+            .any(|pair| pair[0].ends_with('\\') && !pair[1].starts_with(' ')),
+        "no piece of a cut path starts its line:\n{text}"
+    );
+    let (label, next, group) = agreed_state(&fixture);
+    assert_eq!(label, "planned");
+    assert_eq!(group, "approval");
+    assert_eq!(
+        next.unwrap(),
+        fixture.next(&format!(
+            "af task run {TASK} --confirm-plan {}",
+            plan["plan_id"].as_str().unwrap()
+        ))
+    );
 }
 
 #[test]
 fn a_wrapped_next_line_is_read_as_a_shell_reads_it() {
-    let words = |lines: &[&str]| shell_words(lines).map(|words| words.join(" "));
+    let words = |lines: &[&str]| continued_words(lines).map(|words| words.join(" "));
     // Wrapped between arguments, indented; inside a word, at column 0; then another line.
     assert_eq!(
         words(&[
