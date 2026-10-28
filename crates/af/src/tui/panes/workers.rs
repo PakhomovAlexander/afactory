@@ -11,8 +11,9 @@
 //! kernel sends: `reviewer.md` for a reviewer Worker, `instructions.md` for a Task Worker
 //! package.
 //!
-//! The pane reads nothing until its folder or one of its entries is first opened: STATE scans
-//! every Task's records (section 8), so the browser does not pay for it on start.
+//! The folder reads at load in a project scope, on its thread, as the other folders do: a load
+//! records the read and the first poll after the frame starts it (ADR-0240), so the bar lists
+//! the Workers without an open. The user scope lists none and reads nothing.
 //!
 //! A runner's verdict is judged against the catalogs the Providers pane read (ADR-0148), and
 //! the pane follows them as they arrive: each poll compares the shared catalogs' generation with
@@ -623,8 +624,13 @@ struct Job {
 pub(crate) struct WorkersPane {
     title: String,
     root: Option<PathBuf>,
-    /// The pane was opened in this scope: from then on every load reads.
+    /// The scope has Workers to read: every load reads.
     wanted: bool,
+    /// A read the load recorded, started by the first poll after the frame painted.
+    pending: bool,
+    /// How many reads were started on a thread: a load records one and starts none.
+    #[cfg(test)]
+    started: usize,
     /// The read in flight, on its thread.
     job: Option<Job>,
     /// The spinner frame the bar shows while a read runs.
@@ -697,6 +703,7 @@ impl WorkersPane {
     /// A read in flight is dropped, its thread ends at its send. Reading `HEAD` runs git and
     /// reading a Store replays its log, so neither runs on the key loop (ADR-0240).
     fn read(&mut self) {
+        self.pending = false;
         let Some(root) = self.root.clone() else {
             // The user scope lists no Worker: Workers belong to a project.
             self.job = None;
@@ -741,6 +748,16 @@ impl WorkersPane {
             });
         });
         self.job = Some(Job { receiver });
+        #[cfg(test)]
+        {
+            self.started += 1;
+        }
+    }
+
+    /// How many reads were started on a thread.
+    #[cfg(test)]
+    pub(crate) fn started(&self) -> usize {
+        self.started
     }
 
     /// What a read found, listed.
@@ -775,6 +792,9 @@ impl WorkersPane {
     /// Wait for the read in flight, if any, and list what it found: a test's event loop.
     #[cfg(test)]
     pub(crate) fn settle(&mut self) {
+        if self.pending {
+            self.read();
+        }
         let received = match &self.job {
             Some(job) => job.receiver.recv(),
             None => return,
@@ -1152,9 +1172,10 @@ impl Pane for WorkersPane {
             Ok(targets) => (targets, None),
             Err(error) => (Vec::new(), Some(error)),
         };
-        if self.wanted {
-            self.read();
-        }
+        // A project scope's folder lists its Workers from the start: the read is recorded here
+        // and starts at the first poll after the frame, never before the browser's first frame.
+        self.wanted = self.root.is_some();
+        self.pending = self.wanted;
         self.rebuild();
         Ok(())
     }
@@ -1226,21 +1247,19 @@ impl Pane for WorkersPane {
         }
     }
 
-    /// `R` reads, opened before or not; a load for another scope first forgets the old one.
+    /// `R` reads again; a load for another scope first forgets the old one.
     fn refresh(&mut self, scope: &Scope) -> Result<(), String> {
-        self.load(scope)?;
-        if !self.wanted {
-            self.wanted = true;
-            self.read();
-            self.rebuild();
-        }
-        Ok(())
+        self.load(scope)
     }
 
     /// The Providers pane's discovery hands its catalogs over on its own thread: when the shared
     /// generation moved since the rows were built, they are built again for the same selection,
     /// so an open Worker's verdict follows the catalogs as they arrive or go away.
     fn poll(&mut self) -> bool {
+        // The read a load or `R` recorded starts here, after the frame painted last.
+        if self.pending {
+            self.read();
+        }
         let mut changed = false;
         if let Some(job) = &self.job {
             match job.receiver.try_recv() {
@@ -1261,7 +1280,7 @@ impl Pane for WorkersPane {
 
     fn busy(&self) -> Option<char> {
         let spinner = super::SPINNER[self.spinner % super::SPINNER.len()];
-        self.job.as_ref().map(|_| spinner)
+        (self.pending || self.job.is_some()).then_some(spinner)
     }
 
     /// The prompt's working-tree file at and below the PROMPT rule, committed or not: that is

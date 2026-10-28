@@ -137,16 +137,17 @@ fn every_committed_worker_is_found_however_nested_and_grouped_by_source() {
             (".af/vendor/v/w/worker.toml", "v/w"),
         ]
     );
-    // More than one source has Workers: each is a group named by its directory.
+    // More than one source has Workers: each is a group named by its directory. The load
+    // records the read and starts none; the first poll (here `settle`) starts it.
     let mut pane = WorkersPane::default();
     pane.load(&scope(root)).unwrap();
-    pane.settle();
     assert!(
-        pane.items().is_empty(),
-        "nothing is read before the pane opens"
+        pane.items().is_empty() && pane.busy().is_some(),
+        "recorded, not started"
     );
-    pane.open(None);
+    assert_eq!(pane.started(), 0);
     pane.settle();
+    assert_eq!(pane.started(), 1);
     let groups: Vec<String> = pane.items().into_iter().map(|item| item.label).collect();
     assert_eq!(
         groups,

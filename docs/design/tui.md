@@ -487,9 +487,10 @@ Tests: keymap sequences, tree folding and search, and one golden render per pane
      package's plan. The captured `ExecutionPlan` stays with `af task explain`.
 4. Workers pane: identity, state and prompt. **Delivered** (package M4, ADR-0122). Deviations
    from §5.3:
-   - The folder reads nothing until it or one of its entries is first opened. STATE scans every
-     Task of the scope's Stores (§8), and an unopened folder costs nothing. Until then the bar
-     shows an empty `workers/`, as it did before, and `/` finds no Worker.
+   - The folder reads at load in a project scope, on its thread, as the other folders do: the
+     load records the read and the first poll after the first frame starts it (ADR-0240), with
+     a spinner on `workers/` meanwhile, so the bar lists the Workers without an open. STATE
+     scans every Task of the scope's Store (§8) on that thread.
    - The user scope lists no Worker, and synced catalogs are not read. The pane says that
      Workers belong to a project.
    - The bar and every pane read what `HEAD` commits, like the Pipelines pane. A drifted

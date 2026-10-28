@@ -4,13 +4,13 @@ v hub  (project)            |
       claude-main           |  settings     the root row: af config show --origin
       codex-ambient         |  providers/   af provider status; d removes a registered Provider
   v workers/                |  workers/     the Worker packages HEAD commits, and their Attempts
-  v pipelines/              |  pipelines/   af task plan and af task explain --tree, token-free
-      review                |  tasks/       the Tasks of every Task Store: this scope's, every
-      fixture/implementation|               --state DIR the Store registry records, and :state DIR
-  v tasks/                  |  campaigns/   every review Campaign, as af review campaigns lists it
-  v campaigns/              |
-                            |: <af command>   runs any af command line here (:task list,
-                            |                 :review campaigns, :provider status), with the
+      fixture/evaluator     |  pipelines/   af task plan and af task explain --tree, token-free
+      fixture/implementer   |  tasks/       the Tasks of every Task Store: this scope's, every
+  v pipelines/              |               --state DIR the Store registry records, and :state DIR
+      review                |  campaigns/   every review Campaign, as af review campaigns lists it
+      fixture/implementation|
+  v tasks/                  |: <af command>   runs any af command line here (:task list,
+  v campaigns/              |                 :review campaigns, :provider status), with the
                             |                 terminal handed to it; Enter comes back.
                             |
                             |KEYS  (docs/design/tui.md section 4)

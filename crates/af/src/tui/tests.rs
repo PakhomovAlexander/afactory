@@ -1201,13 +1201,13 @@ fn the_workers_pane_golden_at_100x30_and_its_state_is_af_task_shows() {
     let (repo, state) = hub_with_tasks(&root);
     let mut app = app_at(&root, repo.clone());
     let mut host = Recorder::default();
-    // Nothing is read until the folder opens, so no other pane's bar changes.
+    // The folder lists its Workers from the start, read on its thread after the first frame.
     let folders: Vec<String> = app.tree.rows().iter().map(|row| row.text()).collect();
     let at = folders
         .iter()
         .position(|row| row == "  v workers/")
         .unwrap();
-    assert_eq!(folders[at + 1], "  v pipelines/", "{folders:#?}");
+    assert_eq!(folders[at + 1], "      fixture/evaluator", "{folders:#?}");
     press(&mut app, &mut host, b"]]]]\r");
     assert_eq!(app.breadcrumb(), "workers/");
     let listed: Vec<String> = app
@@ -1597,11 +1597,10 @@ fn a_hand_off_releases_first_reenters_after_and_reads_the_panes_again() {
     );
 }
 
-/// The Workers pane reads nothing until first opened (ADR-0122). Once it has read, a hand-off
-/// re-reads it whether it is opened or not; until then it stays unread, and its first open
-/// reads fresh.
+/// The Workers folder lists its Workers from the start, read on its thread, and a hand-off
+/// re-reads it whether it is opened or not.
 #[test]
-fn a_hand_off_rereads_a_workers_pane_that_has_read_even_when_not_opened() {
+fn a_hand_off_rereads_a_workers_pane_even_when_not_opened() {
     let (_temp, root) = temp_root();
     let repo = hub_repo(&root);
     let mut app = app_at(&root, repo.clone());
@@ -1611,13 +1610,6 @@ fn a_hand_off_rereads_a_workers_pane_that_has_read_even_when_not_opened() {
         let text = std::fs::read_to_string(&declaration).unwrap();
         std::fs::write(&declaration, format!("{text}# edited\n")).unwrap();
     };
-    // Never opened: a hand-off leaves it unread.
-    host.child = Some(Box::new(edit.clone()));
-    press(&mut app, &mut host, b":task list\r");
-    assert!(app.panes.workers.items().is_empty(), "the scan stays lazy");
-    // Opened once, then another pane opened in its place.
-    press(&mut app, &mut host, b"]]]]\r");
-    assert_eq!(app.breadcrumb(), "workers/");
     let label = |app: &App| -> Vec<String> {
         app.panes
             .workers
@@ -1626,6 +1618,15 @@ fn a_hand_off_rereads_a_workers_pane_that_has_read_even_when_not_opened() {
             .map(|item| item.label)
             .collect()
     };
+    // Listed from the start, never opened.
+    assert_eq!(label(&app), ["fixture/evaluator", "fixture/implementer"]);
+    // A hand-off re-reads the unopened folder: the drift shows.
+    host.child = Some(Box::new(edit.clone()));
+    press(&mut app, &mut host, b":task list\r");
+    assert_eq!(label(&app), ["fixture/evaluator", "fixture/implementer *"]);
+    // Opened once, then another pane opened in its place.
+    press(&mut app, &mut host, b"]]]]\r");
+    assert_eq!(app.breadcrumb(), "workers/");
     assert_eq!(label(&app), ["fixture/evaluator", "fixture/implementer *"]);
     press(&mut app, &mut host, b"gg\r");
     assert_eq!(app.opened, Opened::Root);
@@ -2771,14 +2772,20 @@ fn the_first_frame_is_painted_before_any_read_of_a_store_starts() {
     let (repo, _state) = hub_with_tasks(&root);
     let providers = ProvidersPane::with_inventory(inventory());
     let mut app = App::new(hub_scope(&root, &repo), None, Panes::new(providers));
-    let started = |app: &App| (app.panes.tasks.started(), app.panes.campaigns.started());
-    assert_eq!(started(&app), (0, 0), "the load started no read");
+    let started = |app: &App| {
+        (
+            app.panes.tasks.started(),
+            app.panes.campaigns.started(),
+            app.panes.workers.started(),
+        )
+    };
+    assert_eq!(started(&app), (0, 0, 0), "the load started no read");
     let _ = app.frame(100, 30);
-    assert_eq!(started(&app), (0, 0), "painting starts none");
+    assert_eq!(started(&app), (0, 0, 0), "painting starts none");
     app.poll();
     assert_eq!(
         started(&app),
-        (1, 1),
+        (1, 1, 1),
         "the first poll after the frame starts them"
     );
     app.settle();

@@ -99,8 +99,7 @@ Caps Lock          a capital letter with no key of its own is its small one
 
 providers: d fills the : line with `provider remove ID` for a registered
            Provider; Enter on the line runs it
-workers: gf opens the prompt (or the declaration), y copies the name;
-         the folder lists its Workers once it is first opened
+workers: gf opens the prompt (or the declaration), y copies the name
 tasks: Enter on a HISTORY row shows its artifact (q or Esc returns),
        p opens the Task's pipeline, y copies the Task id,
        r fills the : line with `task run ID --confirm-plan PLAN`,

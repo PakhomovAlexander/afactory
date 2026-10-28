@@ -4,7 +4,9 @@ v hub  (project)            |
       claude-main           |  done/
       codex-ambient         |    pagination-cli           verified           100%  0 tok
   v workers/                |  failed/
-  v pipelines/              |    pagination-unfinished    changes_requested  100%  0 tok
+      fixture/evaluator     |    pagination-unfinished    changes_requested  100%  0 tok
+      fixture/implementer   |
+  v pipelines/              |
       review                |
       fixture/implementation|
   v tasks/                  |
@@ -13,8 +15,6 @@ v hub  (project)            |
     v failed/ (1)           |
         pagination-u~  100% |
   v campaigns/              |
-                            |
-                            |
                             |
                             |
                             |
