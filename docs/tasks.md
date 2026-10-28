@@ -458,9 +458,75 @@ af task run pagination-2 --from pagination-cli --round 1 --goal goal.md --execut
 A Task file says the same with `"continue": {"task": "pagination-cli", "round": 1}`; it excludes
 `inputs.source` and `inputs.findings`. TASK must be finished and must have recorded a review
 round, and the selected Pipeline must declare `findings` (the kernel's
-`kernel/implementation-reviewed`, `kernel/implementation-ux` and `kernel/review-light` do), or the
+`kernel/implementation-reviewed`, `kernel/implementation-ux` and `kernel/review-light` do, and so
+does [`default/implementation`](#the-default-pipeline)), or the
 plan is refused with the reason. `af task show NEW` prints `continues TASK round N`, `--json`
 carries `continues` (`af/task-inspection@13`), and `af task report` names it in NEW's row.
+
+## The default pipeline
+
+Every change to Afactory runs through the default Task pipeline that this repository's own
+catalog, `.af/task-catalog.toml`, pins
+([ADR-0253](adr/0253-the-default-task-pipeline-lives-in-the-catalog.md)), so any checkout plans
+it. `default/implementation` is `kernel/implementation-ux` with its five slots bound to the
+`default/*` Worker packages: one implementing iteration, the project's local gate on the sealed
+candidate, two required reviewers, one advisory reviewer and an independent evaluator. It
+declares `findings`, so `af task run NEW --from TASK` continues it. `default/verification` is
+`kernel/verification-ux` with the same four judging slots and no implementer: it judges an
+existing candidate read-only.
+
+| Slot | Package | Model | Effort | What it does |
+|---|---|---|---|---|
+| `implementer` | `default/implementer` | `claude-opus-5-5` | `high` | one implementing iteration (`default/implementation` only) |
+| `bugs` | `default/bugs` | `gpt-5.6-terra` | `high` | required reviewer: concrete functional defects |
+| `correctness` | `default/correctness` | `gpt-6-sol` | `high` | required reviewer: requirements, contracts and architecture |
+| `uix` | `default/advisor` | `gpt-6-astra` | `medium` | advisory reviewer: gate time and quality |
+| `evaluator` | `default/evaluator` | `gpt-6-astra` | `high` | independent evaluator of the requirements |
+
+The catalog's `[review.reviewers]` marks the `uix` slot advisory: its reviewer judges the time a
+change adds to every future gate and pull-request validation, and the quality a maintainer cares
+about, and files each finding at its honest severity. In this release its reports still count
+toward convergence like any reviewer's: an open `blocker` or `major` of the bound advisory
+reviewer keeps the round from converging, as a required reviewer's does; a kernel change that
+stops them from counting is planned. The reviewers and the evaluator never receive the
+implementer's summary: the tree, `../base`, the requirements and the check receipts are their
+evidence.
+
+To run it, name it in the Task file; `default/verification` takes a Task of `"kind":
+"verification"` whose `inputs.source` binds the candidate it judges
+([agents](agents.md#6-run-another-round)). The repository's `.af/af.toml` declares no
+`[task.defaults]`, so the file carries its limits; these fit the pipeline's declared Attempt
+allowances, and `af task plan --fit` prints the smallest that do:
+
+```json
+{
+  "task_id": "issue-123",
+  "kind": "implement",
+  "goal": "Fix issue 123 as its text describes.",
+  "pipeline": { "name": "default/implementation", "fallback": "refuse" },
+  "limits": {
+    "tokens": 8000000,
+    "max_attempts": 16,
+    "wall_ms": 43200000,
+    "verification": { "tokens": 2000000, "attempts": 8, "wall_ms": 18000000 }
+  }
+}
+```
+
+The catalog binds `default/implementer` to the Provider label `claude-main` and the other four
+packages to `codex-main`. When your machine-local registry does not carry those labels, map them
+in a [local bindings](task-execution/local-bindings.md) file and pass it with `--bindings FILE`:
+
+```toml
+schema = "af.task-bindings/1"
+
+[providers]
+"default/implementer" = "claude-personal"
+"default/bugs" = "codex-personal"
+"default/correctness" = "codex-personal"
+"default/advisor" = "codex-personal"
+"default/evaluator" = "codex-personal"
+```
 
 ## The tree before the change
 

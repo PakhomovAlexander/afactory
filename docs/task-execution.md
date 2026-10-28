@@ -11,6 +11,12 @@ walkthroughs; the decisions themselves are
 See [preview and confirmation](task-execution/preview.md) for the compact ASCII view,
 expanded tree, Claude/Codex workflow and the automation boundary.
 
+Beside the `kernel/*` and `warm/*` Pipelines, this repository's catalog pins its default Task
+pipeline, `default/implementation` and, for a `verification` Task, `default/verification`:
+one implementing iteration, two required reviewers, one advisory reviewer for gate time and
+quality, and an independent evaluator ([the default pipeline](tasks.md#the-default-pipeline),
+[ADR-0253](adr/0253-the-default-task-pipeline-lives-in-the-catalog.md)).
+
 The trusted `.af/code-policy.toml` sets `check_wall_ms`, the whole check Attempt's wall.
 Without `check_process_wall_ms`, positive values through `5400000` (90 minutes) are admitted.
 With an explicit per-process cap, that cap remains at most `3600000` (60 minutes) and no larger

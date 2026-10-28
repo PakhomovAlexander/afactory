@@ -82,18 +82,25 @@ def member_seed(cohort_id, member_id):
 
 def declare(suite, authority, cohort_id, tier, environment_id, recipe_id, groups, start_date,
             repository, after_run_number, minimum_days=5, preparation_members=2,
-            preparation_iterations=1000000, branch="main"):
+            preparation_iterations=1000000, branch="main", local=None):
     """A complete cohort for the critical family of `tier` under `suite`: 20 A/A members on the
     first two days, the preparation members on the next, then the 30 descriptive and 10 power
     trials round-robin over the remaining days, so the schedule spans `minimum_days`. Every
     member is dispatched from `repository`'s `branch` by the performance workflow, under the
     member's run name, after the workflow's run number `after_run_number`, the latest the
     declarer observed (0 before its first run)."""
-    require(minimum_days >= 5, "--days: a cohort spans at least five days")
     environment = suite.doc["environments"].get(environment_id) or {}
-    require(environment.get("runner") == "github_hosted",
-            "--environment: a cohort runs on fresh hosted runners; %s is not a GitHub-hosted "
-            "environment" % environment_id)
+    if local is None:
+        require(minimum_days >= 5, "--days: a cohort spans at least five days")
+        require(environment.get("runner") == "github_hosted",
+                "--environment: a cohort runs on fresh hosted runners; %s is not a GitHub-hosted "
+                "environment" % environment_id)
+    else:
+        require(minimum_days >= 7, "--days: a local cohort spans at least seven days")
+        require(environment.get("runner") == "dedicated"
+                and environment.get("os") == "linux"
+                and environment.get("containment") == "linux_container",
+                "--environment: local calibration needs a dedicated contained Linux environment")
     doc = suite.doc
     cases = [{"instance_id": item["instance_id"], "criticality": item["criticality"],
               "pairs": doc["cases"][item["case_id"]]["pairs"][tier]}
@@ -135,6 +142,10 @@ def declare(suite, authority, cohort_id, tier, environment_id, recipe_id, groups
         "target_formulas": dict(contracts.TARGET_FORMULAS),
         "members": members,
     }
+    if local is not None:
+        cohort["schema"] = "af.perf-local-cohort/1"
+        cohort["schedule"]["runners"] = "persistent_vm"
+        cohort["dispatch"] = dict(local)
     return contracts.validate_cohort(cohort, "cohort")
 
 
@@ -578,6 +589,8 @@ def collect(cohort, evidence_dir, scratch, replan, producer):
     (`_judge_run`); `producer(run, plan)` is None when the original's workflow and scheduling
     code are the authority's own, else why not (`producer_check`)."""
     contracts.validate_cohort(cohort)
+    require(cohort["schema"] == contracts.COHORT_SCHEMA,
+            "hosted collection needs a hosted cohort; local originals use localcalibration")
     declared = dict((member["member_id"], member) for member in cohort["members"])
     history, summary = _run_history(evidence_dir, cohort)
     listing = _artifact_listing(evidence_dir)
@@ -1056,14 +1069,17 @@ def readiness(cohort, calibration, runs, refused, history):
     tallies, groups, qualifies, ready = contracts.compute_readiness(cohort, calibration, members)
     for entry in members:
         entry["qualifies"] = qualifies[entry["member_id"]]
-    doc = {"schema": contracts.READINESS_SCHEMA, "cohort_id": cohort["cohort_id"],
+    local = cohort["schema"] == "af.perf-local-cohort/1"
+    doc = {"schema": "af.perf-local-readiness/1" if local else contracts.READINESS_SCHEMA,
+           "cohort_id": cohort["cohort_id"],
            "cohort_digest": canonical_digest(cohort),
            "calibration_digest": canonical_digest(calibration),
            "recomputed_calibration_digest": canonical_digest(recomputed),
            "history": dict(history), "members": members,
            "refused_evidence": refused[:256], "tallies": tallies, "groups": groups,
            "ready": ready, "claim": contracts.READINESS_CLAIM}
-    return contracts.validate_readiness(doc, "readiness", cohort=cohort, calibration=calibration)
+    validate = contracts.validate_local_readiness if local else contracts.validate_readiness
+    return validate(doc, "readiness", cohort=cohort, calibration=calibration)
 
 
 # What an activation compares: the membership, classifications, doses, denominators and decision.

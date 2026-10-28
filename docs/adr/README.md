@@ -447,8 +447,8 @@ future readers need.
   results](0238-retain-refused-physical-telemetry-measurements-in-incomplete-results.md)
 - [0239 — Default every pull request to fast
   validation](0239-default-every-pull-request-to-fast-validation.md)
-- [0240 — Distinguish host-denied Provider probes from incompatible
-  CLIs](0240-distinguish-host-denied-provider-probes.md)
+- [0240 — Execute performance experiments independently on a locked
+  VM](0240-execute-performance-experiments-independently-on-a-locked-vm.md)
 - [0241 — Install an agent entry point from the help
   page](0241-install-an-agent-entry-point-from-the-help-page.md)
 - [0242 — Classify first-run refusals and suggest only explicit trusted review
@@ -458,7 +458,11 @@ future readers need.
 - [0244 — Version review inspection views](0244-version-review-inspection-views.md)
 - [0245 — Show recorded Gate history and version Task
   status](0245-show-recorded-gate-history-and-version-task-status.md)
+- [0249 — Distinguish host-denied Provider probes from incompatible
+  CLIs](0249-distinguish-host-denied-provider-probes.md)
 - [0251 — Run the Task gate on the fast validation
   profile](0251-run-the-task-gate-on-the-fast-validation-profile.md)
 - [0252 — Keep the kernel experiment measurement out of every
   gate](0252-keep-the-kernel-experiment-measurement-out-of-every-gate.md)
+- [0253 — The default Task pipeline lives in the
+  catalog](0253-the-default-task-pipeline-lives-in-the-catalog.md)
