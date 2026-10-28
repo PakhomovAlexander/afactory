@@ -650,3 +650,39 @@ source only. The integrated tree's digest is
 `sha256:9363f32dc9397b388178adc1b423a9bc676c2a9a77db366c52644bbcdda54f9b`. The 17
 `test_supervise.Capabilities` tests, `test_kernelguard`, `test_contracts`, `schemas.py`,
 `test-classes.py audit` and `changelog-notes.py --check` passed there.
+
+## Two Mac-gate test helper repairs (2026-10-28)
+
+The integrated candidate's native gate failed in three tests outside the scratch change. This
+section repairs only those test helpers, in two files. No product code, limit, assertion or
+test selection changed.
+
+- **Read-only copied fixtures.** `onboard::afactory_authority_plans_a_three_field_task_with_its_defaults`
+  copies `.af/` with `cp -R`, which keeps the gate's read-only modes. `migrate_check_receipt`
+  in `crates/af/tests/it/support/task_cli.rs` then failed to rewrite the copy, at line 114.
+  It now sets the owner-write bit on each copied file it rewrites, catalogs included.
+- **A `next:` line cut inside a word.** Under a long temporary directory, `af task list
+  --attention` cuts the `--state` path into pieces. Each piece ends in `\` and the next starts
+  at column 0. `attention_group` in `crates/af/tests/it/task_outcomes.rs` joined every line
+  with a space and dropped those column-0 lines, so it failed at line 279. It now reads the
+  lines as a shell does: after a `\`, an indented line adds a space and a column-0 line
+  continues the same word.
+
+**Reference.** The repair is public PR 440's diff
+`fe40b34de4176e244032044fd0578e7ab3a49041..57860818612655a90b9e997de6371529c8d9e2ff`
+(3390 bytes, SHA-256
+`7b279b35054dc05c60b5775c7376dd9730419830d869304118c0e3144d9c313f`). It applied cleanly and
+unchanged. Its join rule matches `human::fit_words`: a space and `\` between arguments, then
+an indented line; a bare `\` after a cut piece, then the next piece at column 0.
+
+**Focused results.** Each run used a copy of the tree with every file read-only, passed as
+`AF_WORKSPACE_ROOT`. Each also used a long `TMPDIR`.
+
+- **Without the repair**, at `TMPDIR` lengths 104 and 144, all three tests failed at the
+  gate's lines: `task_cli.rs:114` and `task_outcomes.rs:279`.
+- **With the repair**, the `task_outcomes::` module and the onboard test (17 tests) all
+  passed at lengths 104, 144 and 224, and with `TMPDIR` unset.
+- **Not repaired.** At lengths 144 and 224,
+  `task_outcomes::a_next_line_fits_the_terminal_and_runs_as_printed` fails because its whole
+  `next:` line is wider than the test's 250-column terminal. It passes at 104 and did not fail
+  in the gate. It is out of this repair's scope.
