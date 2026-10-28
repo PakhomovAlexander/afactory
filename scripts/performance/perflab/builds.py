@@ -486,9 +486,10 @@ class ContainerZigbuild:
 class ContainerSteps:
     """Runs each build step in its own container of the pinned build image."""
 
-    def __init__(self, image, layout, run_id):
+    def __init__(self, image, layout, run_id, bounded=False):
         self.image = image
         self.layout = layout
+        self.bounded = bounded
         self.prefix = "af-perf-build-%s" % run_id[-24:].lower().replace("_", "-")
 
     def wrap(self, argv, cwd, env, network, readonly_files):
@@ -500,7 +501,16 @@ class ContainerSteps:
                   (layout.cargo_home, layout.cargo_home, True)]
         mounts += [(source, target, False) for source, target in readonly_files]
         command = self.image.command(name, argv, cwd, env, mounts, network)
+        if self.bounded:
+            bound_container(command)
         return command, docker_client_environment(), lambda: self.image.remove(name)
+
+
+def bound_container(command):
+    """Shared build-container resource ceiling; candidate code owns no daemon log or IPC."""
+    command[2:2] = ["--memory", "8g", "--memory-swap", "8g", "--pids-limit", "512",
+                    "--ipc", "none", "--log-driver", "none",
+                    "--ulimit", "fsize=8589934592:8589934592"]
 
 
 # Layout ---------------------------------------------------------------------------------------
@@ -599,10 +609,12 @@ class Budget:
         self.run_deadline = None
         self.log_bytes = log_bytes
         self.peak = 0
+        self.whole_run = False
 
     def exceeded(self):
         """Why the run is over budget now, or None."""
-        used = tree_bytes([self.layout.worktrees, self.layout.git])
+        used = tree_bytes([self.layout.run] if self.whole_run else
+                          [self.layout.worktrees, self.layout.git])
         self.peak = max(self.peak, used)
         if used > self.worktree_limit:
             return "worktrees and targets hold %d bytes, over the %d-byte budget" % (
@@ -917,7 +929,8 @@ class Builder:
     def __init__(self, owner, plan, toolchain, adapters_doc=None, cargo_home=None,
                  keep_worktrees=False, log_bytes=limits.BUILD_LOG_BYTES_DEFAULT,
                  free_bytes=None, zigbuild_bin=None, build_image=None, docker="docker",
-                 deadline_unix_ms=None, wall=time.time, build_cache="cold"):
+                 deadline_unix_ms=None, wall=time.time, build_cache="cold",
+                 bounded_container=False):
         self.plan = contracts.validate_run(plan)
         # By default the adapters are the authority commit's own registry, read from its
         # worktree; an explicit registry is for fixtures.
@@ -929,6 +942,10 @@ class Builder:
         self.recipe = plan["profile"]["recipe"]
         self.settings = contracts.recipe_settings(self.recipe)
         self.budget = Budget(self.layout, plan["limits"], log_bytes, free_bytes)
+        self.bounded_container = bounded_container
+        if bounded_container:
+            require(cargo_home is None, "bounded builds require a private Cargo home")
+            self.budget.whole_run = True
         self.steps = Steps(self.layout, self.budget)
         self.ambient = ([], [])
         self.zigbuild_bin = zigbuild_bin
@@ -954,11 +971,15 @@ class Builder:
         """Refuse, before anything is created, what this host cannot build as frozen."""
         recipe = self.recipe
         reference = self.image_reference()
+        require(not self.bounded_container or reference is not None,
+                "bounded builds require a pinned container")
         if reference is not None:
             self.image = BuildImage(self.docker, reference)
+            if self.bounded_container:
+                self.image.refuse_implicit_volumes()
             self.toolchain = ContainerToolchain(self.image, recipe["toolchain"])
             self.steps.container = ContainerSteps(self.image, self.layout,
-                                                  self.plan["run_id"])
+                                                  self.plan["run_id"], self.bounded_container)
         require(self.toolchain is not None, "a host build verifies the recipe's toolchain first")
         if recipe["builder"] == "cargo_zigbuild":
             if self.zigbuild_bin is None:

@@ -1,0 +1,6 @@
+{
+  "schema": "af.perf-executor-journal/1",
+  "journal_id": "synthetic_journal",
+  "repository": "fixture/repo",
+  "originals": []
+}

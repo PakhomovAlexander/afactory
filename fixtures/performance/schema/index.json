@@ -2391,6 +2391,131 @@
       "shape": false
     },
     {
+      "path": "executor/valid-synthetic.json",
+      "contract": "executor",
+      "valid": true
+    },
+    {
+      "path": "executor/invalid-version.json",
+      "contract": "executor",
+      "valid": false,
+      "error": "expected af.perf-executor/2",
+      "shape": true
+    },
+    {
+      "path": "executor-request/valid-synthetic.json",
+      "contract": "executor-request",
+      "valid": true
+    },
+    {
+      "path": "executor-request/invalid-version.json",
+      "contract": "executor-request",
+      "valid": false,
+      "error": "expected af.perf-executor-request/1",
+      "shape": true
+    },
+    {
+      "path": "executor-state/valid-synthetic.json",
+      "contract": "executor-state",
+      "valid": true
+    },
+    {
+      "path": "executor-state/invalid-version.json",
+      "contract": "executor-state",
+      "valid": false,
+      "error": "expected af.perf-executor-state/2",
+      "shape": true
+    },
+    {
+      "path": "executor-result/valid-synthetic.json",
+      "contract": "executor-result",
+      "valid": true
+    },
+    {
+      "path": "executor-result/invalid-version.json",
+      "contract": "executor-result",
+      "valid": false,
+      "error": "expected af.perf-executor-result/2",
+      "shape": true
+    },
+    {
+      "path": "local-cohort/valid-synthetic.json",
+      "contract": "local-cohort-declaration",
+      "valid": true
+    },
+    {
+      "path": "local-cohort/invalid-version.json",
+      "contract": "local-cohort-declaration",
+      "valid": false,
+      "error": "expected af.perf-local-cohort/1",
+      "shape": true
+    },
+    {
+      "path": "local-readiness/valid-synthetic.json",
+      "contract": "local-readiness-assessment",
+      "valid": true
+    },
+    {
+      "path": "local-readiness/invalid-version.json",
+      "contract": "local-readiness-assessment",
+      "valid": false,
+      "error": "expected af.perf-local-readiness/1",
+      "shape": true
+    },
+    {
+      "path": "executor-journal/valid-synthetic.json",
+      "contract": "executor-journal",
+      "valid": true
+    },
+    {
+      "path": "executor-journal/invalid-version.json",
+      "contract": "executor-journal",
+      "valid": false,
+      "error": "expected af.perf-executor-journal/1",
+      "shape": true
+    },
+    {
+      "path": "machine-lock-anchor/valid-synthetic.json",
+      "contract": "machine-lock-anchor",
+      "valid": true
+    },
+    {
+      "path": "machine-lock-anchor/invalid-version.json",
+      "contract": "machine-lock-anchor",
+      "valid": false,
+      "error": "expected af.perf-machine-lock-anchor/1",
+      "shape": true
+    },
+    {
+      "path": "executor/valid-shipping.json",
+      "contract": "executor",
+      "valid": true
+    },
+    {
+      "path": "executor/invalid-missing-shipping-tools.json",
+      "contract": "executor",
+      "valid": false,
+      "shape": false,
+      "error": "requires zigbuild_bin"
+    },
+    {
+      "path": "executor/invalid-relative-tools.json",
+      "contract": "executor",
+      "valid": false,
+      "shape": true,
+      "error": "does not match"
+    },
+    {
+      "path": "executor-state/valid-expired.json",
+      "contract": "executor-state",
+      "valid": true
+    },
+    {
+      "path": "executor-result/valid-expired.json",
+      "contract": "executor-result",
+      "valid": true
+    },
+    {
       "path": "telemetry-result/invalid-version.json",
       "contract": "telemetry-result",
       "valid": false,

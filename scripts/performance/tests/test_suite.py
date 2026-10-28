@@ -235,11 +235,11 @@ class Registry(unittest.TestCase):
 
     def test_the_default_profile_must_contain_every_case(self):
         text = replace_once(self.text, '[tiers.quick]\ndescription = "Pull requests and main '
-                            'pushes."\nprofiles = [{ environment = "linux_x86_64_gnu_hosted", '
-                            'recipe = "linux_gnu_native_release" }]',
+                            'pushes."\nprofiles = [\n  { environment = "linux_x86_64_gnu_hosted", '
+                            'recipe = "linux_gnu_native_release" },',
                             '[tiers.quick]\ndescription = "Pull requests and main pushes."\n'
-                            'profiles = [{ environment = "macos_arm64_local", '
-                            'recipe = "macos_arm64_native_release" }]')
+                            'profiles = [\n  { environment = "macos_arm64_local", '
+                            'recipe = "macos_arm64_native_release" },')
         with self.assertRaises(ContractError) as caught:
             load_text(text)
         self.assertIn("cannot run cli_state_read", str(caught.exception))

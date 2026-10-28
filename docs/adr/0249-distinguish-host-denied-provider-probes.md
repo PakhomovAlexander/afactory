@@ -1,4 +1,4 @@
-# ADR-0240: Distinguish host-denied Provider probes from incompatible CLIs
+# ADR-0249: Distinguish host-denied Provider probes from incompatible CLIs
 
 **Status:** accepted (2026-10-26). Refines [ADR-0146](0146-refuse-a-provider-cli-that-does-not-accept-afs-invocation.md).
 
