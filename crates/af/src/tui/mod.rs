@@ -93,7 +93,7 @@ Tab <C-w>l <C-w>h  move focus between the bar and the main pane
 Enter o            open the selected node in the main pane
 y                  copy the selected id to the clipboard (OSC 52)
 gf                 open the file behind the node in $EDITOR
-R                  read the pane again; providers: probe quota windows
+R                  read the pane again
 q ZZ :q            quit; <C-c> first cancels a prompt or a running probe
 
 providers: d fills the : line with `provider remove ID` for a registered

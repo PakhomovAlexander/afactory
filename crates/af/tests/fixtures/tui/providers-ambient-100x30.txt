@@ -2,8 +2,8 @@
 v hub  (project)            |
   v providers/              |ID                       KIND     STATUS              AUTH
       claude-main           |claude-main              claude   authenticated       oauth
-      codex-ambient         |limit  [####......]  5h window: 41% used, 59% left, reset unavailable
-  v workers/                |limit  [#######...]  weekly: 68% used, 32% left, reset unavailable
+      codex-ambient         |limit  5h window  [########............]   41% used  no reset time from
+  v workers/                |limit  weekly     [##############......]   68% used  no reset time from
   v pipelines/              |note   weekly limit read from the local /usage screen
       review                |codex-ambient            codex    not authenticated   -
       fixture/implementation|note   run `codex login` in this context

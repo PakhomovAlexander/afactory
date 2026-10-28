@@ -87,7 +87,8 @@ macro_rules! solid {
     };
 }
 
-/// A cell of a pixel worker: solid in its colour, grey while it waits, or one of its ink eyes.
+/// A solid cell: of a pixel worker, in its colour, grey while it waits, or one of its ink eyes;
+/// or of a limit bar, in the colour of how much is used, grey for what is left.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum Pixel {
     Pink,

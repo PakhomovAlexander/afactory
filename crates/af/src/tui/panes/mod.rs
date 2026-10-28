@@ -153,8 +153,7 @@ pub(crate) trait Pane {
         self.load(scope)
     }
 
-    /// After a command handed the terminal ran: read again what it may have changed, without
-    /// anything `R` alone may start (a charged probe).
+    /// After a command handed the terminal ran: read again what it may have changed.
     fn reread(&mut self, scope: &Scope) -> Result<(), String> {
         self.load(scope)
     }

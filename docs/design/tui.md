@@ -68,7 +68,7 @@ input. A scope error (`--repo` outside a repository) leaves the terminal before 
 |     > done (14)          |                                                           |
 |                          |                                                           |
 +--------------------------+-----------------------------------------------------------+
-| NORMAL  providers/claude-main          j/k move  Enter open  R probe  / search  :cmd  ? help |
+| NORMAL  providers/claude-main          j/k move  Enter open  / search  :cmd  ? help          |
 +--------------------------+-----------------------------------------------------------+
 ```
 
@@ -119,7 +119,7 @@ few pane-local verbs, listed in its section and in the status line.
 | `Enter` `o` | open the selected node in the main pane |
 | `y` | yank the selected id (Task id, plan id, provider id) via OSC 52 |
 | `gf` | open the file behind the node in `$EDITOR` (worker prompt, pipeline TOML, config layer); the screen is released and re-entered, and the panes the edit could have changed read again |
-| `R` | refresh the pane under the focus from disk: the bar's selected node's pane when the bar has focus, the opened pane otherwise (providers: run the bounded probe) |
+| `R` | refresh the pane under the focus from disk: the bar's selected node's pane when the bar has focus, the opened pane otherwise (providers: discover and probe again) |
 | `?`, `:help` | help overlay: the panes, `: <af command>`, then the keys; `?`, `q` or `Esc` closes it |
 | `q` `:q` `ZZ` | quit; `<C-c>` cancels a prompt or a running probe first |
 
@@ -144,7 +144,8 @@ The browser releases the terminal first. The child's process group then owns the
 foreground, so `<C-c>` stops the child and never the browser. When the child ends, the released
 screen shows one line, `af LINE: exit N -- Enter returns to the browser` (or the signal that
 ended it), and waits for Enter. Then the browser re-enters and reads again the scope, the
-settings and the Tasks, Campaigns, Workers and Providers panes (Providers without the charged probe). It
+settings and the Tasks, Campaigns, Workers and Providers panes (Providers with the usage probe, since
+the command may have spent a window). It
 keeps what is opened and the bar's selection. The status line says `af LINE: exit N`.
 
 `<Tab>` completes subcommand names at every level from `Af::command()` itself, alongside the
@@ -183,10 +184,17 @@ User scope shows only the machine-owned layers plus the provider registry path
 
 ### 5.2 Providers
 
-Mirrors `af provider status`; the left bar lists every entry from `providers::discover`.
+Mirrors `af provider status --usage`; the left bar lists every entry from `providers::discover`.
 The main pane shows the same columns as the CLI table for the selected provider, then one row per
-`ProviderLimit` as a bar with `used_percent` and `format_limit`'s reset text, then `detail` as
-`note`. Ambient candidates render greyed. Under one, the pane says how it got there and how to
+`ProviderLimit` as a bar of twenty cells with `used_percent` and when the window resets (or who
+does not report that), then `detail` as `note`. The bar's used cells are solid in the brand's
+colour for how much is used, green under half, blue from half and pink from four fifths, on a
+grey track; without colour they are `#` and `.`. The quota windows are always on screen: the
+pane discovers first (one bounded authentication check per context, and the catalogs), hands
+the rows over, and then runs the bounded usage probe `--usage` runs (a Provider process or an
+app-server round trip per login, no tokens, a couple of seconds) on its own; an authenticated
+login's row says `reading the quota windows` meanwhile, and one that exposes no window says so.
+Ambient candidates render greyed. Under one, the pane says how it got there and how to
 make it go: `ambient (CODEX_HOME): found through CODEX_HOME, not in the registry` when the
 browser's environment sets the variable, else `ambient (~/.codex): the codex CLI's default
 directory, not in the registry`; then `register it: af provider add codex-main --kind codex`
@@ -200,9 +208,9 @@ described in §4 (ADR-0136). `d` on an ambient candidate says on the status line
 registry entry to remove, and the `af provider add` command that adds it. After the command the pane discovers again, and an opened Provider it
 no longer lists gives way to the folder.
 
-`R` runs the provider probe (a probe cancelled with `<C-c>` is forgotten: the last complete
-inventory stays, and `R` probes again) (the bounded, possibly charged probe in `providers`) with a spinner in the bar
-row, polled from the event loop without blocking key handling.
+`R` discovers and probes again, as a command's return does (a probe cancelled with `<C-c>` is
+forgotten: the last complete inventory and its windows stay, and `R` reads again), with a
+spinner in the bar row, polled from the event loop without blocking key handling.
 
 ### 5.3 Workers
 

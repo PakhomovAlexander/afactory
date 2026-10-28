@@ -7,7 +7,7 @@ use std::time::{Duration, Instant};
 
 use super::*;
 use crate::config::{self, MachineRoots};
-use crate::providers::{ProviderInventory, ProviderLimit, ProviderStatus, UsageProbe, UsageState};
+use crate::providers::{ProviderInventory, ProviderLimit, ProviderStatus, UsageState};
 
 const SETTINGS: &str = include_str!("../../tests/fixtures/tui/settings-100x30.txt");
 const PROVIDERS: &str = include_str!("../../tests/fixtures/tui/providers-100x30.txt");
@@ -251,7 +251,7 @@ fn hub_app(root: &Path) -> App {
 
 fn app_at(root: &Path, repo: PathBuf) -> App {
     let scope = hub_scope(root, &repo);
-    let providers = ProvidersPane::with_inventory(inventory(), UsageProbe::Probe);
+    let providers = ProvidersPane::with_inventory(inventory());
     let mut app = App::new(scope, Some(repo), Panes::new(providers));
     app.settle();
     app.frame(100, 30);
@@ -1464,7 +1464,7 @@ fn scope_project_outside_a_repository_keeps_the_reason_for_a_spaced_start() {
         .join(&final_component);
     std::fs::create_dir_all(&start).unwrap();
     let scope = hub_scope(&root, &repo);
-    let providers = ProvidersPane::with_inventory(inventory(), UsageProbe::Probe);
+    let providers = ProvidersPane::with_inventory(inventory());
     let mut app = App::new(scope, Some(start.clone()), Panes::new(providers));
     app.settle();
     let mut host = Recorder::default();
@@ -1643,7 +1643,7 @@ fn a_user_scope_task_is_neither_prefilled_nor_completed() {
     let (_temp, root) = temp_root();
     let (_repo, _state) = hub_with_tasks(&root);
     let scope = user_scope(&root);
-    let providers = ProvidersPane::with_inventory(inventory(), UsageProbe::Probe);
+    let providers = ProvidersPane::with_inventory(inventory());
     let mut app = App::new(scope, None, Panes::new(providers));
     app.settle();
     app.frame(100, 30);
@@ -2046,7 +2046,7 @@ fn an_empty_registry_opens_on_the_providers_pane_with_the_first_run_row() {
     let repo = hub_repo(&root);
     let mut only_candidates = inventory();
     only_candidates.providers.remove(0);
-    let providers = ProvidersPane::with_inventory(only_candidates, UsageProbe::Skip);
+    let providers = ProvidersPane::with_inventory(only_candidates);
     let mut app = App::new(hub_scope(&root, &repo), Some(repo), Panes::new(providers));
     app.settle();
     assert_eq!(app.opened, Opened::Folder(Tab::Providers));
@@ -2084,7 +2084,7 @@ fn a_repository_without_af_shows_its_project_layer_absent_with_af_onboard() {
     let repo = root.join("plain");
     std::fs::create_dir_all(&repo).unwrap();
     git(&repo, &["init", "-q", "-b", "main"]);
-    let providers = ProvidersPane::with_inventory(inventory(), UsageProbe::Skip);
+    let providers = ProvidersPane::with_inventory(inventory());
     let mut app = App::new(hub_scope(&root, &repo), Some(repo), Panes::new(providers));
     app.settle();
     assert_eq!(app.opened, Opened::Root);
@@ -2769,7 +2769,7 @@ fn a_history_refusal_with_a_read_in_flight_falls_back_to_the_folder_at_once() {
 fn the_first_frame_is_painted_before_any_read_of_a_store_starts() {
     let (_temp, root) = temp_root();
     let (repo, _state) = hub_with_tasks(&root);
-    let providers = ProvidersPane::with_inventory(inventory(), UsageProbe::Probe);
+    let providers = ProvidersPane::with_inventory(inventory());
     let mut app = App::new(hub_scope(&root, &repo), None, Panes::new(providers));
     let started = |app: &App| (app.panes.tasks.started(), app.panes.campaigns.started());
     assert_eq!(started(&app), (0, 0), "the load started no read");
@@ -2931,8 +2931,7 @@ fn an_ambient_provider_row_says_how_it_got_there_and_how_to_make_it_go() {
     let (_temp, root) = temp_root();
     let repo = hub_repo(&root);
     let scope = hub_scope(&root, &repo);
-    let providers = ProvidersPane::with_inventory(inventory(), UsageProbe::Probe)
-        .with_selectors(&["CODEX_HOME"]);
+    let providers = ProvidersPane::with_inventory(inventory()).with_selectors(&["CODEX_HOME"]);
     let mut app = App::new(scope, Some(repo.clone()), Panes::new(providers));
     app.settle();
     let mut host = Recorder::default();
@@ -2955,7 +2954,7 @@ fn an_ambient_provider_row_says_how_it_got_there_and_how_to_make_it_go() {
     );
     // Without the variable, the CLI's default directory is where it came from.
     let scope = hub_scope(&root, &repo);
-    let providers = ProvidersPane::with_inventory(inventory(), UsageProbe::Probe);
+    let providers = ProvidersPane::with_inventory(inventory());
     let mut app = App::new(scope, Some(repo), Panes::new(providers));
     app.settle();
     press(&mut app, &mut host, b"]]\r");

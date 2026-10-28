@@ -147,7 +147,7 @@ pub struct ProviderLimit {
 /// Status is a fast registry and authentication check by default; probing a plan costs a
 /// Provider process, a pseudo-terminal, or an app-server round trip, and can fail for reasons
 /// that say nothing about whether the Provider is authenticated.
-#[derive(Clone, Copy, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum UsageProbe {
     Skip,
     Probe,
@@ -3628,12 +3628,10 @@ fn same_file(path: &Path, file: &File) -> std::io::Result<bool> {
 /// never as a bare "reset unavailable".
 fn format_limit_of(kind: &str, limit: &ProviderLimit) -> String {
     let reset = limit.resets_at.map(format_reset).unwrap_or_else(|| {
-        let provider = match kind {
-            "claude" => "Claude",
-            "codex" => "Codex",
-            _ => "the Provider",
-        };
-        format!("{provider} does not report when this window resets")
+        format!(
+            "{} does not report when this window resets",
+            provider_name(kind)
+        )
     });
     format!(
         "{}: {}% used, {}% left, {reset}",
@@ -3643,17 +3641,22 @@ fn format_limit_of(kind: &str, limit: &ProviderLimit) -> String {
     )
 }
 
-pub fn format_limit(limit: &ProviderLimit) -> String {
-    let reset = limit
-        .resets_at
-        .map(format_reset)
-        .unwrap_or_else(|| "reset unavailable".to_string());
-    format!(
-        "{}: {}% used, {}% left, {reset}",
-        limit.name,
-        limit.used_percent,
-        100_u8.saturating_sub(limit.used_percent)
-    )
+/// When a window resets, as the browser's limit bars say it: `resets in 6d 20h`, or who gave
+/// no reset time, never a bare "unavailable" that reads as a failure of af.
+pub(crate) fn format_reset_of(kind: &str, limit: &ProviderLimit) -> String {
+    match limit.resets_at {
+        Some(resets_at) => format_reset(resets_at),
+        None => format!("no reset time from {}", provider_name(kind)),
+    }
+}
+
+/// The Provider's name in a sentence about its windows.
+fn provider_name(kind: &str) -> &'static str {
+    match kind {
+        "claude" => "Claude",
+        "codex" => "Codex",
+        _ => "the Provider",
+    }
 }
 
 fn format_reset(resets_at: u64) -> String {
@@ -6938,10 +6941,6 @@ auth_dir = "{}"
         let limit = &limits[0];
         assert_eq!(limit.name, "Claude all models 1w");
         assert_eq!(limit.used_percent, 88);
-        assert_eq!(
-            format_limit(limit),
-            "Claude all models 1w: 88% used, 12% left, reset unavailable"
-        );
         // `af provider status` names who does not report the reset (C3 item 26).
         assert_eq!(
             format_limit_of("claude", limit),
@@ -7027,8 +7026,12 @@ auth_dir = "{}"
         assert_eq!(limits[1].name, "Claude Fable 1w");
         assert_eq!(limits[1].used_percent, 96);
         assert_eq!(
-            format_limit(&limits[1]),
-            "Claude Fable 1w: 96% used, 4% left, reset unavailable"
+            format_limit_of("claude", &limits[1]),
+            "Claude Fable 1w: 96% used, 4% left, Claude does not report when this window resets"
+        );
+        assert_eq!(
+            format_reset_of("claude", &limits[1]),
+            "no reset time from Claude"
         );
     }
 
