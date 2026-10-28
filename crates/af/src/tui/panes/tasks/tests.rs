@@ -1921,6 +1921,93 @@ fn a_task_opened_during_a_read_has_its_detail_read_again_when_its_store_answers(
     assert!(pane.selected.is_none() && pane.detail.is_none());
 }
 
+/// A load records the read and starts none: the first poll after it, which the event loop
+/// reaches after the frame that follows the load, starts the read on its thread. No Store is
+/// read before the browser's first frame, on any thread.
+#[test]
+fn a_load_starts_no_read_the_first_poll_after_it_does() {
+    let temp = tempfile::tempdir().unwrap();
+    let root = std::fs::canonicalize(temp.path()).unwrap();
+    let (repo, _state) = crate::tui::tests::hub_with_tasks(&root);
+    let scope = crate::tui::tests::hub_scope(&root, &repo);
+    let mut pane = TasksPane::default();
+    pane.load(&scope).unwrap();
+    assert!(!pane.reading(), "the load started no read");
+    assert!(pane.busy().is_some(), "the folder shows the read to come");
+    assert!(pane.stores.is_empty());
+    pane.poll();
+    assert!(pane.reading(), "the first poll starts the read");
+    pane.settle();
+    assert!(pane.task("pagination-cli").is_some());
+}
+
+/// A read's detail is taken for the opening it was started under: the Task opened again
+/// meanwhile (the folder between, or `R`'s reopening) was inspected afresh, and a detail read
+/// under the earlier opening never stands over that inspection; the Task is inspected again
+/// when its Store answers instead.
+#[test]
+fn a_reads_detail_from_an_earlier_opening_never_stands_over_a_newer_inspection() {
+    let temp = tempfile::tempdir().unwrap();
+    let root = std::fs::canonicalize(temp.path()).unwrap();
+    let (_repo, state) = crate::tui::tests::hub_with_tasks(&root);
+    let target = Target {
+        dir: state.clone(),
+        shown: "state".to_owned(),
+        repo: None,
+        origin: Origin::Scope,
+    };
+    let mut pane = TasksPane {
+        loaded: vec![target.clone()],
+        targets: vec![target.clone()],
+        ..TasksPane::default()
+    };
+    let mut cache = Cache::default();
+    let sender = pane.fed();
+    sender
+        .send(Read::Store {
+            store: Box::new(read_target(&target, &mut cache)),
+            detail: None,
+        })
+        .unwrap();
+    sender.send(Read::Done(cache.clone())).unwrap();
+    assert!(pane.poll());
+    pane.open(Some("pagination-cli"));
+    let goal = pane.detail.as_ref().unwrap().as_ref().unwrap().goal.clone();
+    // An explicit read started under this opening: its detail, marked here, is the one shown.
+    let sender = pane.fed();
+    let mut read = Detail::read(&state, "pagination-cli", &mut cache).unwrap();
+    read.goal = "read under this opening".to_owned();
+    sender
+        .send(Read::Store {
+            store: Box::new(read_target(&target, &mut cache)),
+            detail: Some(Ok(read)),
+        })
+        .unwrap();
+    assert!(pane.poll());
+    let shown = &pane.detail.as_ref().unwrap().as_ref().unwrap().goal;
+    assert_eq!(shown, "read under this opening");
+    // Another explicit read started under this opening; the Task is opened again before its
+    // message is collected: the message's detail is from an earlier opening now, and the
+    // Task's own inspection stands.
+    let sender = pane.fed();
+    let mut read = Detail::read(&state, "pagination-cli", &mut cache).unwrap();
+    read.goal = "read under an earlier opening".to_owned();
+    pane.open(None);
+    pane.open(Some("pagination-cli"));
+    assert_eq!(pane.detail.as_ref().unwrap().as_ref().unwrap().goal, goal);
+    sender
+        .send(Read::Store {
+            store: Box::new(read_target(&target, &mut cache)),
+            detail: Some(Ok(read)),
+        })
+        .unwrap();
+    sender.send(Read::Done(cache.clone())).unwrap();
+    assert!(pane.poll());
+    assert_eq!(pane.selected.as_deref(), Some("pagination-cli"));
+    let shown = &pane.detail.as_ref().unwrap().as_ref().unwrap().goal;
+    assert_eq!(shown, &goal, "the newer inspection stands");
+}
+
 /// A target list that changed within the scope (a Store registered meanwhile, `:state DIR`)
 /// keeps the Stores read so far listed, in the order of the targets as they stand, each until
 /// its own read answers, and a Store of a target no longer named until the read is done: an

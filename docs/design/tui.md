@@ -275,8 +275,9 @@ and its main-pane heading is its path with `(--state, in stores.toml)` or `(:sta
 session)`. `r` and `D` on its Tasks add `--state DIR` to the line. A registry this release cannot
 read is a warning above the Stores; the scope's own Stores are still listed.
 
-Every read of the Stores runs on a thread, the one a load, `R` or `:state DIR` starts as much as
-the live read of an opened running Task, and in the user scope the walk of the state root for
+Every read of the Stores runs on a thread, the one a load, `R` or `:state DIR` records as much
+as the live read of an opened running Task, each started at the first poll after it, which the
+event loop reaches after the frame that follows, and in the user scope the walk of the state root for
 every repository's Store is that thread's first step, never the load's: the bar shows `tasks/`
 with a spinner while it runs, and
 each Store is listed the moment it is read, in the order above, a refused one with its refusal,
@@ -296,7 +297,8 @@ while its Store is read again; the Stores stand in the order of the targets as t
 In the user scope the read discovers the repositories' Stores, and a walk that fails lists the
 registered and session Stores alone once the read is done, with the cause in the folder. A Task
 opened while an explicit read is in flight has its detail read again when its Store answers,
-since a read started before carries none for it. Another scope lists nothing of the old.
+since a read started before carries none for it, or one from an earlier opening of the same
+Task. Another scope lists nothing of the old.
 
 Main pane for one Task, top to bottom:
 
@@ -361,7 +363,8 @@ review report` counts them) and its Store's last write in UTC, and the reviewer 
 Round as chips of their latest Attempt's outcome (`running`, `selected`, `failed`): only that
 Round's Attempts, so a Round that has none yet shows no chips, never the previous Round's, and
 the latest Attempt is the one that started last, not the last one listed. Every read runs on a
-thread, the load's included, each source listed as it is read behind a spinner on `campaigns/`;
+thread, started at the first poll after the load or `R` that records it, each source listed as
+it is read behind a spinner on `campaigns/`;
 a Store is listed once, where the source that answers it first in source order puts it, and
 that answer takes the place of what the last read listed for the Store wherever that was (a
 Campaign a root listed may be a registered Store's answer this time, and a Campaign becomes the

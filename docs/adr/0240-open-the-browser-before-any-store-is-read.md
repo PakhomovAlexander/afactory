@@ -25,10 +25,11 @@ The Providers pane already did it right, discovering on a thread behind a spinne
 ## Decision
 
 The load the splash waits for resolves the scope and loads the panes; it reads no Store. A pane
-that lists Stores starts their read on a thread of its own in `load`, shows a spinner on its
-folder while that read runs (`Pane::busy`), and collects the result in `poll`. The event loop
-paints before it polls, so the browser's first frame never shows, and never waits on, a Store:
-the order is the loop's, not a race. The user scope's targets, every repository's Store under
+that lists Stores records their read in `load`, shows a spinner on its folder from then on
+(`Pane::busy`), and starts the read on a thread of its own at the first `poll` after the load,
+where it also collects the result. The event loop paints before it polls, so the browser's
+first frame is painted before any Store is read, on any thread, and never waits on one: the
+order is the loop's, not a race. The user scope's targets, every repository's Store under
 the state root, are a directory walk with a `metadata` call behind every symlink: the Tasks
 pane's read discovers them on its thread, first, and the load resolves none of them; the
 Workers pane, which lists no Worker in that scope, names no Store there either. What a load
@@ -82,8 +83,9 @@ discovered Store that went between two reads goes when the read after is done, n
 back as a target of the load's; a walk that fails answers the load's targets alone, so the
 Stores discovered before go the same way and the folder shows why. A Task opened while an
 explicit read is in flight has its detail read again when its Store answers, since a read
-started before carries none for it: the detail it was opened with never stands over the
-Store's newer answer.
+started before carries none for it, or one from an earlier opening of the same Task (every
+opening counts, `R`'s reopening included): neither the detail a Task was opened with nor one
+read under an earlier opening stands over the newest inspection.
 
 ## Consequences
 

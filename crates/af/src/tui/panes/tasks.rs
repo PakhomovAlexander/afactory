@@ -1361,6 +1361,9 @@ struct Job {
     /// A load or `R` started it: its Stores are wanted whether or not the pane shows, so
     /// closing the pane or opening a Task keeps it. A live reread is dropped by both.
     explicit: bool,
+    /// The opening the read was started under: a detail read under an earlier opening of
+    /// the Task is dropped, and the Task inspected again when its Store answers.
+    opening: u64,
 }
 
 #[derive(Default)]
@@ -1394,6 +1397,11 @@ pub(crate) struct TasksPane {
     /// The main pane shows this pane.
     opened: bool,
     job: Option<Job>,
+    /// An explicit read `read_now` recorded, which the next `poll` starts.
+    pending: bool,
+    /// How many times a Task was opened: a read's detail is taken only from a read started
+    /// under the opening that shows now.
+    opening: u64,
     next: Option<Instant>,
     /// The spinner frame the bar shows while a read runs.
     spinner: usize,
@@ -1499,12 +1507,16 @@ impl TasksPane {
     }
 
     /// A load or `R`: every listed Task is inspected again, on a thread, each Store listed as
-    /// it is read. Only the live read of a running Task reuses finished summaries; an explicit
-    /// read never trusts them, so a Task that can no longer be inspected refuses its Store.
+    /// it is read. The read is recorded here and started at the next `poll`, which the event
+    /// loop reaches after the frame that follows: no Store is read before that frame, the
+    /// browser's first after a load (ADR-0240). A read in flight is dropped. Only the live
+    /// read of a running Task reuses finished summaries; an explicit read never trusts them,
+    /// so a Task that can no longer be inspected refuses its Store.
     fn read_now(&mut self) {
         self.cache.finished.clear();
         self.cache.nodes.clear();
-        self.start(true);
+        self.job = None;
+        self.pending = true;
     }
 
     /// A Store refused on the key loop, for the opened Task: it cannot be inspected, or an
@@ -1517,17 +1529,18 @@ impl TasksPane {
         self.selected = None;
         self.detail = None;
         self.artifact = None;
-        if self.job.is_some() {
+        if self.pending || self.job.is_some() {
             self.read_now();
         }
     }
 
     /// Start a read of every target on a thread; a read in flight is dropped, its thread ends
-    /// at its next send. The event loop paints before it polls, so nothing this read finds
-    /// reaches the screen before the browser's first frame: the splash waits for the scope
-    /// only, never for a Store (ADR-0240). Nothing interrupts the read: it holds no key, and
-    /// `q` quits without waiting for it.
+    /// at its next send. Only `poll` starts a read, the explicit one `read_now` recorded or a
+    /// live one, so no read begins before the frame painted last: the splash waits for the
+    /// scope only, and no Store is read before the browser's first frame (ADR-0240). Nothing
+    /// interrupts the read: it holds no key, and `q` quits without waiting for it.
     fn start(&mut self, explicit: bool) {
+        self.pending = false;
         let (discover, targets) = (self.discover.clone(), self.loaded.clone());
         let (opened, cache) = (self.opened_task(), self.cache.clone());
         let (sender, receiver) = mpsc::channel();
@@ -1536,12 +1549,13 @@ impl TasksPane {
             receiver,
             for_task: self.selected.clone(),
             explicit,
+            opening: self.opening,
         });
     }
 
-    /// Whether the read in flight, if any, was started by a load or `R`.
+    /// Whether the read in flight, if any, was started by a load or `R`, or one is recorded.
     fn explicit_read(&self) -> bool {
-        self.job.as_ref().is_some_and(|job| job.explicit)
+        self.pending || self.job.as_ref().is_some_and(|job| job.explicit)
     }
 
     /// One message of the read in flight: the detail is for the Task the read was started
@@ -1550,7 +1564,7 @@ impl TasksPane {
         let current = self
             .job
             .as_ref()
-            .is_some_and(|job| job.for_task == self.selected);
+            .is_some_and(|job| job.for_task == self.selected && job.opening == self.opening);
         let read = match read {
             Read::Store {
                 store,
@@ -1567,6 +1581,9 @@ impl TasksPane {
     /// Wait for the read in flight, if any, and list everything it finds: a test's event loop.
     #[cfg(test)]
     pub(crate) fn settle(&mut self) {
+        if self.pending {
+            self.start(true);
+        }
         loop {
             let received = match &self.job {
                 Some(job) => job.receiver.recv(),
@@ -1579,14 +1596,22 @@ impl TasksPane {
         }
     }
 
+    /// Whether a read runs on its thread now; one recorded and not started yet does not.
+    #[cfg(test)]
+    pub(crate) fn reading(&self) -> bool {
+        self.job.is_some()
+    }
+
     /// A read in flight whose messages a test sends by hand, for the Task opened now.
     #[cfg(test)]
     fn fed(&mut self) -> mpsc::Sender<Read> {
         let (sender, receiver) = mpsc::channel();
+        self.pending = false;
         self.job = Some(Job {
             receiver,
             for_task: self.selected.clone(),
             explicit: true,
+            opening: self.opening,
         });
         sender
     }
@@ -1971,6 +1996,9 @@ impl Pane for TasksPane {
             // load's read lists every Store and goes on.
             self.job = None;
         }
+        // Every opening counts: a read's detail from an earlier one never stands over this
+        // one's inspection.
+        self.opening = self.opening.wrapping_add(1);
         self.opened = true;
         self.artifact = None;
         self.detail = None;
@@ -2067,6 +2095,10 @@ impl Pane for TasksPane {
     }
 
     fn poll(&mut self) -> bool {
+        // The read a load or `R` recorded starts here, after the frame painted last.
+        if self.pending {
+            self.start(true);
+        }
         // Every Store the read in flight has delivered, then the end of the read.
         let mut changed = false;
         while let Some(job) = &self.job {
@@ -2103,7 +2135,7 @@ impl Pane for TasksPane {
 
     fn busy(&self) -> Option<char> {
         let spinner = super::SPINNER[self.spinner % super::SPINNER.len()];
-        self.job.as_ref().map(|_| spinner)
+        (self.pending || self.job.is_some()).then_some(spinner)
     }
 
     fn nested(&self) -> bool {

@@ -2762,6 +2762,32 @@ fn a_history_refusal_with_a_read_in_flight_falls_back_to_the_folder_at_once() {
     assert!(bar.contains("! Store unreadable"), "{bar}");
 }
 
+/// The App's load records the panes' reads and starts none: the first frame is painted with
+/// the folders' spinners, and the first poll after it starts the reads. No Store is read
+/// before the browser's first frame, on any thread.
+#[test]
+fn the_first_frame_is_painted_before_any_read_of_a_store_starts() {
+    let (_temp, root) = temp_root();
+    let (repo, _state) = hub_with_tasks(&root);
+    let providers = ProvidersPane::with_inventory(inventory(), UsageProbe::Probe);
+    let mut app = App::new(hub_scope(&root, &repo), None, Panes::new(providers));
+    assert!(
+        !app.panes.tasks.reading() && !app.panes.campaigns.reading(),
+        "the load started no read"
+    );
+    let _ = app.frame(100, 30);
+    assert!(
+        !app.panes.tasks.reading() && !app.panes.campaigns.reading(),
+        "painting starts none"
+    );
+    app.poll();
+    assert!(
+        app.panes.tasks.reading() && app.panes.campaigns.reading(),
+        "the first poll after the frame starts them"
+    );
+    app.settle();
+}
+
 pub(crate) fn copy_store(from: &Path, to: &Path) {
     std::fs::create_dir_all(to).unwrap();
     for entry in std::fs::read_dir(from).unwrap() {

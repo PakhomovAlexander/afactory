@@ -201,6 +201,12 @@ fn a_load_lists_its_sources_behind_a_spinner_never_on_the_callers_thread() {
         pane.groups.is_empty(),
         "nothing is listed before the read is collected"
     );
+    assert!(
+        !pane.reading(),
+        "the load started no read; the first poll does"
+    );
+    pane.poll();
+    assert!(pane.reading());
     pane.settle();
     assert!(pane.busy().is_none());
     assert_eq!(

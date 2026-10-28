@@ -478,6 +478,8 @@ pub(crate) struct CampaignsPane {
     /// The main pane shows this pane.
     opened: bool,
     job: Option<Job>,
+    /// An explicit read `read_now` recorded, which the next `poll` starts.
+    pending: bool,
     next: Option<Instant>,
     /// The spinner frame the bar shows while a read runs.
     spinner: usize,
@@ -517,14 +519,19 @@ impl CampaignsPane {
     }
 
     /// A load or `R`: every source is read again, on a thread, each group listed as it is read.
+    /// The read is recorded here and started at the next `poll`, which the event loop reaches
+    /// after the frame that follows: no Store is read before that frame, the browser's first
+    /// after a load (ADR-0240). A read in flight is dropped.
     fn read_now(&mut self) {
-        self.start(true);
+        self.job = None;
+        self.pending = true;
     }
 
     /// Start a read of every source on a thread; a read in flight is dropped, its thread ends
-    /// at its next send. The event loop paints before it polls, so nothing this read finds
-    /// reaches the screen before the browser's first frame (ADR-0240).
+    /// at its next send. Only `poll` starts a read, the explicit one `read_now` recorded or a
+    /// live one, so no read begins before the frame painted last (ADR-0240).
     fn start(&mut self, explicit: bool) {
+        self.pending = false;
         let Some(places) = self.places.clone() else {
             self.job = None;
             return;
@@ -540,10 +547,17 @@ impl CampaignsPane {
         });
     }
 
+    /// Whether a read runs on its thread now; one recorded and not started yet does not.
+    #[cfg(test)]
+    pub(crate) fn reading(&self) -> bool {
+        self.job.is_some()
+    }
+
     /// A read in flight whose messages a test sends by hand, for the Campaign opened now.
     #[cfg(test)]
     fn fed(&mut self) -> mpsc::Sender<Read> {
         let (sender, receiver) = mpsc::channel();
+        self.pending = false;
         self.answered.clear();
         self.job = Some(Job {
             receiver,
@@ -565,9 +579,9 @@ impl CampaignsPane {
         self.groups.sort_by_key(|group| order(&group.source));
     }
 
-    /// Whether the read in flight, if any, was started by a load or `R`.
+    /// Whether the read in flight, if any, was started by a load or `R`, or one is recorded.
     fn explicit_read(&self) -> bool {
-        self.job.as_ref().is_some_and(|job| job.explicit)
+        self.pending || self.job.as_ref().is_some_and(|job| job.explicit)
     }
 
     /// One message of the read in flight: the report is for the Campaign the read was started
@@ -587,6 +601,9 @@ impl CampaignsPane {
     /// Wait for the read in flight, if any, and list everything it finds: a test's event loop.
     #[cfg(test)]
     pub(crate) fn settle(&mut self) {
+        if self.pending {
+            self.start(true);
+        }
         loop {
             let received = match &self.job {
                 Some(job) => job.receiver.recv(),
@@ -1114,6 +1131,10 @@ impl Pane for CampaignsPane {
     }
 
     fn poll(&mut self) -> bool {
+        // The read a load or `R` recorded starts here, after the frame painted last.
+        if self.pending {
+            self.start(true);
+        }
         // Every group the read in flight has delivered, then the end of the read.
         let mut changed = false;
         while let Some(job) = &self.job {
@@ -1153,7 +1174,7 @@ impl Pane for CampaignsPane {
 
     fn busy(&self) -> Option<char> {
         let spinner = super::SPINNER[self.spinner % super::SPINNER.len()];
-        self.job.as_ref().map(|_| spinner)
+        (self.pending || self.job.is_some()).then_some(spinner)
     }
 
     fn yank(&self, _row: usize) -> Option<String> {
