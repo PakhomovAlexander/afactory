@@ -89,7 +89,8 @@ started before carries none for it, or one from an earlier opening of the same T
 opening counts, `R`'s reopening included): neither the detail a Task was opened with nor one
 read under an earlier opening stands over the newest inspection; a Campaign's report is taken
 the same way, for the opening the read was started under. A reread lists the retained Stores
-and groups in the order of the targets and sources as they stand, from the load on.
+and groups in the order of the targets and sources as they stand, from the load on, and in the
+user scope in the order the read answers for its targets the moment it does, before any Store.
 
 ## Consequences
 

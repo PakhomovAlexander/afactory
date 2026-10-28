@@ -2008,6 +2008,82 @@ fn a_reads_detail_from_an_earlier_opening_never_stands_over_a_newer_inspection()
     assert_eq!(shown, &goal, "the newer inspection stands");
 }
 
+/// The user scope's read answers the targets first, the discovered Stores among them: the
+/// Stores retained from the last read follow that order the moment it arrives, before the
+/// read answers for any Store. A reload lists the registered Store first, since the load
+/// resolves no discovered target; the discovered Store returns to its place with the targets.
+#[test]
+fn a_targets_message_reorders_the_retained_stores_before_any_store_answers() {
+    let temp = tempfile::tempdir().unwrap();
+    let root = std::fs::canonicalize(temp.path()).unwrap();
+    let (_repo, state) = crate::tui::tests::hub_with_tasks(&root);
+    let registered = root.join("elsewhere/registered");
+    crate::tui::tests::copy_store(&state, &registered);
+    let discovered = Target {
+        dir: state.clone(),
+        shown: "repository".to_owned(),
+        repo: Some("repository".to_owned()),
+        origin: Origin::Repository,
+    };
+    let explicit = Target {
+        dir: registered.clone(),
+        shown: "~/elsewhere/registered".to_owned(),
+        repo: Some("~/elsewhere/registered".to_owned()),
+        origin: Origin::Registered,
+    };
+    let mut pane = TasksPane {
+        loaded: vec![explicit.clone()],
+        targets: vec![discovered.clone(), explicit.clone()],
+        ..TasksPane::default()
+    };
+    let mut cache = Cache::default();
+    let dirs = |pane: &TasksPane| -> Vec<PathBuf> {
+        pane.stores.iter().map(|store| store.dir.clone()).collect()
+    };
+    let sender = pane.fed();
+    for target in [&discovered, &explicit] {
+        sender
+            .send(Read::Store {
+                store: Box::new(read_target(target, &mut cache)),
+                detail: None,
+            })
+            .unwrap();
+    }
+    sender.send(Read::Done(cache.clone())).unwrap();
+    assert!(pane.poll());
+    assert_eq!(dirs(&pane), [state.clone(), registered.clone()]);
+    // A reload: the load resolves the registered target alone, and the retained Stores
+    // follow; the read then answers the targets, the discovered Store first again.
+    pane.targets = pane.loaded.clone();
+    pane.order();
+    assert_eq!(dirs(&pane), [registered.clone(), state.clone()]);
+    let sender = pane.fed();
+    sender
+        .send(Read::Targets(Ok(vec![
+            discovered.clone(),
+            explicit.clone(),
+        ])))
+        .unwrap();
+    assert!(pane.poll());
+    assert!(pane.busy().is_some(), "no Store answered yet");
+    assert_eq!(
+        dirs(&pane),
+        [state.clone(), registered.clone()],
+        "the retained Stores follow the targets the read answered"
+    );
+    for target in [&discovered, &explicit] {
+        sender
+            .send(Read::Store {
+                store: Box::new(read_target(target, &mut cache)),
+                detail: None,
+            })
+            .unwrap();
+    }
+    sender.send(Read::Done(cache.clone())).unwrap();
+    assert!(pane.poll());
+    assert_eq!(dirs(&pane), [state, registered]);
+}
+
 /// A target list that changed within the scope (a Store registered meanwhile, `:state DIR`)
 /// keeps the Stores read so far listed, in the order of the targets as they stand, each until
 /// its own read answers, and a Store of a target no longer named until the read is done: an

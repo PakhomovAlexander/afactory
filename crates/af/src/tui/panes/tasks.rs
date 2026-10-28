@@ -1666,14 +1666,18 @@ impl TasksPane {
 
     fn apply(&mut self, read: Read) {
         match read {
+            // The targets as this read answers them: the Stores retained from the last read
+            // follow their order at once, before the read answers for any of them.
             Read::Targets(Ok(targets)) => {
                 self.targets = targets;
+                self.order();
                 self.error = None;
             }
             Read::Targets(Err(error)) => {
                 // The walk failed: this read answers the load's targets alone, so the Stores
                 // discovered before go when it is done, and the folder shows why.
                 self.targets = self.loaded.clone();
+                self.order();
                 self.error = Some(error);
             }
             Read::Store { store, detail } => {
