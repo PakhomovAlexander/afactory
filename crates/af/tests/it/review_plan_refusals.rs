@@ -350,7 +350,7 @@ fn ready_comes_from_the_registry_and_a_ready_plan_names_the_run_command() {
     assert_eq!(unregistered.status.code(), Some(1));
     let document: Value = serde_json::from_slice(&unregistered.stdout).unwrap();
     assert_eq!(document["cause"], "review_binding_missing", "{document}");
-    assert_eq!(document["next_action"], Value::Null, "{document}");
+    assert_eq!(document["next_action"], "af provider detect", "{document}");
     register(&repo, "codex-main", "codex");
     let suggested = plan(&repo, &[], true);
     assert_eq!(suggested.status.code(), Some(1));
@@ -614,6 +614,129 @@ fn two_registered_providers_leave_the_binding_to_the_caller() {
             .contains(&Value::from("codex-two"))
     );
     crate::schemas::valid(&crate::schemas::validator("error-v2.json"), &document);
+    // #434: the choices in words, never as Rust debug output or JSON, and the plan it computed.
+    let message = document["error"].as_str().unwrap();
+    assert!(
+        message.contains("need explicit Provider bindings")
+            && message.contains("architecture: codex-one, codex-two")
+            && message.contains("correctness: codex-one, codex-two"),
+        "{message}"
+    );
+    for debug in ["Array [", "{\"", "[\""] {
+        assert!(!message.contains(debug), "{debug}: {message}");
+    }
+    assert_eq!(document["details"]["plan"]["schema"], "af/review-plan@1");
+    // The selectors refusal names the same candidates in the same words.
+    let selectors = af(&repo, &["review", "plan", "--json"]);
+    let document: Value = serde_json::from_slice(&selectors.stdout).unwrap();
+    assert_eq!(document["cause"], "review_selectors_missing", "{document}");
+    let message = document["error"].as_str().unwrap();
+    assert!(
+        message.contains("Provider candidates: architecture: codex-one, codex-two"),
+        "{message}"
+    );
+    for debug in ["Array [", "{\"", "[\""] {
+        assert!(!message.contains(debug), "{debug}: {message}");
+    }
+}
+
+/// #363 and #434: with no Provider registered, the binding refusal names `af provider detect`
+/// and says in words which kind each node needs, and `af review plan` carries the token-free
+/// plan it computed: the `af/review-plan@1` document in `details.plan`, its `model` lines on
+/// stderr, and in text the reviewers, gates, convergence and budgets before the refusal, whose
+/// last line is the next command. `af review run` refuses the same way, without a plan.
+#[test]
+fn no_registered_provider_names_detect_and_carries_the_plan() {
+    let root = tempfile::tempdir().unwrap();
+    let repo = onboarded(&root.path().canonicalize().unwrap());
+    let refused = plan(&repo, &[], true);
+    assert_eq!(refused.status.code(), Some(1), "{}", err(&refused));
+    let document: Value = serde_json::from_slice(&refused.stdout).unwrap();
+    crate::schemas::valid(&crate::schemas::validator("error-v2.json"), &document);
+    assert_eq!(document["cause"], "review_binding_missing", "{document}");
+    assert_eq!(document["next_action"], "af provider detect", "{document}");
+    let message = document["error"].as_str().unwrap();
+    for words in [
+        "model Workers architecture, correctness need explicit Provider bindings",
+        "no codex Provider is registered for architecture and correctness",
+        "af provider detect --apply",
+        "af provider setup ID --kind codex once the person has logged in privately",
+        "then rerun this command",
+    ] {
+        assert!(message.contains(words), "{words}: {message}");
+    }
+    for debug in ["Array [", "{\"", "[\""] {
+        assert!(!message.contains(debug), "{debug}: {message}");
+    }
+    let plan_document = &document["details"]["plan"];
+    assert_eq!(plan_document["schema"], "af/review-plan@1", "{document}");
+    let gates: Vec<&str> = plan_document["pipeline"]["gates"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|gate| gate["name"].as_str().unwrap())
+        .collect();
+    assert_eq!(gates, ["check"], "{plan_document}");
+    let nodes: Vec<&str> = plan_document["providers"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter(|provider| provider["required"] == true)
+        .map(|provider| provider["node"].as_str().unwrap())
+        .collect();
+    assert_eq!(nodes, ["architecture", "correctness"], "{plan_document}");
+    assert!(plan_document["pipeline"]["convergence"].is_object());
+    assert!(plan_document["pipeline"]["budgets"].is_object());
+    let stderr = err(&refused);
+    for node in ["architecture", "correctness"] {
+        assert!(
+            stderr
+                .lines()
+                .any(|line| line.starts_with(&format!("model {node} "))),
+            "{stderr}"
+        );
+    }
+
+    let text = plan(&repo, &[], false);
+    assert_eq!(text.status.code(), Some(1), "{}", err(&text));
+    let shown = unwrapped(&out(&text));
+    for line in [
+        "gate     check (required)",
+        "budgets  ",
+        "converge light: 1 clean Round",
+        "model architecture ",
+        "model correctness ",
+        "provider architecture -> MISSING; fix: no codex Provider is registered",
+    ] {
+        assert!(shown.contains(line), "{line}:\n{shown}");
+    }
+    assert!(!shown.contains("next:"), "{shown}");
+    assert_eq!(
+        err(&text).lines().last(),
+        Some("af provider detect"),
+        "{}",
+        err(&text)
+    );
+
+    let run = af(
+        &repo,
+        &[
+            "review",
+            "run",
+            "--policy-rev",
+            "HEAD",
+            "--base",
+            "HEAD",
+            "--uncommitted",
+            "--json",
+        ],
+    );
+    assert_eq!(run.status.code(), Some(1), "{}", err(&run));
+    let document: Value = serde_json::from_slice(&run.stdout).unwrap();
+    crate::schemas::valid(&crate::schemas::validator("error-v2.json"), &document);
+    assert_eq!(document["cause"], "review_binding_missing", "{document}");
+    assert_eq!(document["next_action"], "af provider detect", "{document}");
+    assert!(document["details"].get("plan").is_none(), "{document}");
 }
 
 #[test]

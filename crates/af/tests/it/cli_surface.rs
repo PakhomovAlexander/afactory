@@ -1693,6 +1693,7 @@ fn the_agent_loop_verbs_and_the_agents_topic_describe_the_commands() {
             (Some(&"help"), Some(topic)) => af(&["help", topic]),
             (Some(&"setup"), Some(verb)) => af(&["setup", verb, "--help"]),
             (Some(&"schema"), Some(verb)) => af(&["schema", verb, "--help"]),
+            (Some(&"review"), Some(verb)) => af(&["review", verb, "--help"]),
             _ => panic!("docs/agents.md names `{span}`, which is not an af task command"),
         };
         assert!(help.status.success(), "`{span}`: {}", err(&help));
@@ -1810,11 +1811,29 @@ fn agent_setup_previews_writes_once_and_refuses_foreign_skills() {
     let agents = std::fs::read_to_string(root.join("AGENTS.md")).unwrap();
     assert!(agents.starts_with("foreign instructions\n\n"));
     assert!(agents.contains(&snippet));
-    assert_eq!(snippet.lines().count(), 9);
+    assert!(snippet.lines().count() <= 8, "{snippet}");
     let claude = std::fs::read_to_string(root.join(".claude/skills/af/SKILL.md")).unwrap();
     let codex = std::fs::read_to_string(root.join(".agents/skills/af/SKILL.md")).unwrap();
     assert_eq!(claude, codex);
     assert!(claude.contains(&snippet));
+    // Codex and Claude Code load a skill only when YAML frontmatter opens it (#394 finding 1).
+    for skill in [&claude, &codex] {
+        let frontmatter = skill
+            .strip_prefix("---\n")
+            .and_then(|rest| rest.split_once("\n---\n"))
+            .unwrap_or_else(|| panic!("no frontmatter on line 1:\n{skill}"))
+            .0;
+        assert!(
+            frontmatter.lines().any(|line| line == "name: af"),
+            "{skill}"
+        );
+        assert!(
+            frontmatter.lines().any(|line| line
+                .strip_prefix("description: ")
+                .is_some_and(|description| !description.trim().is_empty())),
+            "{skill}"
+        );
+    }
     let again = af(&["setup", "agents", "--repo", repo, "--write"]);
     assert!(again.status.success(), "{}", err(&again));
     assert_eq!(
@@ -1832,11 +1851,26 @@ fn agent_setup_previews_writes_once_and_refuses_foreign_skills() {
             .count()
             == 3
     );
-    let old_body = "---\nname: af\ndescription: Previous af agent skill.\n---\n";
-    let digest = Sha256::digest(old_body.as_bytes());
+    // A digest marker any file can recompute makes no skill af's (#394 finding 2): the forged
+    // file is refused before any write and left byte for byte.
+    let forged_body = "---\nname: af\ndescription: Previous af agent skill.\n---\n";
+    let digest = Sha256::digest(forged_body.as_bytes());
     let digest: String = digest.iter().map(|byte| format!("{byte:02x}")).collect();
-    let old_skill = format!("<!-- af-generated-skill:sha256:{digest} -->\n{old_body}");
-    std::fs::write(root.join(".agents/skills/af/SKILL.md"), old_skill).unwrap();
+    let forged = format!("<!-- af-generated-skill:sha256:{digest} -->\n{forged_body}");
+    std::fs::write(root.join(".agents/skills/af/SKILL.md"), &forged).unwrap();
+    let refused = af(&["setup", "agents", "--repo", repo, "--write"]);
+    assert!(!refused.status.success(), "{}", out(&refused));
+    assert!(
+        err(&refused).contains("foreign SKILL.md"),
+        "{}",
+        err(&refused)
+    );
+    assert_eq!(
+        std::fs::read_to_string(root.join(".agents/skills/af/SKILL.md")).unwrap(),
+        forged
+    );
+    // The bytes an earlier `af setup agents --write` wrote are af's, and are upgraded.
+    std::fs::write(root.join(".agents/skills/af/SKILL.md"), EARLIER_SKILL).unwrap();
     let upgraded = af(&["setup", "agents", "--repo", repo, "--write"]);
     assert!(upgraded.status.success(), "{}", err(&upgraded));
     assert_eq!(
@@ -1882,6 +1916,155 @@ fn agent_setup_previews_writes_once_and_refuses_foreign_skills() {
         std::fs::read_to_string(empty.join("AGENTS.md")).unwrap(),
         snippet
     );
+    // An AGENTS.md holding the earlier seven-line block gets the current one; its own text stays.
+    std::fs::write(
+        root.join("AGENTS.md"),
+        format!("foreign instructions\n\n{EARLIER_BLOCK}\nmore foreign text\n"),
+    )
+    .unwrap();
+    std::fs::write(root.join(".agents/skills/af/SKILL.md"), &claude).unwrap();
+    let block = af(&["setup", "agents", "--repo", repo, "--write"]);
+    assert!(block.status.success(), "{}", err(&block));
+    assert_eq!(
+        std::fs::read_to_string(root.join("AGENTS.md")).unwrap(),
+        format!("foreign instructions\n\n{snippet}\nmore foreign text\n")
+    );
+}
+
+/// The block `af setup agents --write` installed before ADR-0258, with its markers: a copy of
+/// that source's `docs/agents.md`.
+const EARLIER_BLOCK: &str = "\
+<!-- af-agent-help:start -->
+For repository work with af, run `af help agents` first.
+Read `af help json`, `af help exit-codes`, and `af help task-file` for machine contracts.
+Start with `af provider status --json` and `af onboard` to inspect readiness.
+Plan a Task with `af task plan --file TASK_FILE --json` before running it.
+Follow `state.next_action` in each JSON result; do not guess a next command.
+Use `af task findings TASK_ID --json` and `af task diff TASK_ID --json` for evidence.
+Never add `--login` inside an agent session; ask the person to log in privately.
+<!-- af-agent-help:end -->
+";
+
+/// The `SKILL.md` that source's `af setup agents --write` wrote: its digest marker, then the
+/// skill built around [`EARLIER_BLOCK`].
+const EARLIER_SKILL: &str = "\
+<!-- af-generated-skill:sha256:0c44d5402cbb85cbba220f2b2eb7c174a0b5940c95df3f32796164307e311c25 -->
+---
+name: af
+description: Drive Afactory from a coding agent.
+---
+
+# Afactory
+
+<!-- af-agent-help:start -->
+For repository work with af, run `af help agents` first.
+Read `af help json`, `af help exit-codes`, and `af help task-file` for machine contracts.
+Start with `af provider status --json` and `af onboard` to inspect readiness.
+Plan a Task with `af task plan --file TASK_FILE --json` before running it.
+Follow `state.next_action` in each JSON result; do not guess a next command.
+Use `af task findings TASK_ID --json` and `af task diff TASK_ID --json` for evidence.
+Never add `--login` inside an agent session; ask the person to log in privately.
+<!-- af-agent-help:end -->
+
+Run `af help agents` for the full loop.
+";
+
+/// #363: the pointer is four rules in at most six lines of at most 100 columns, names no
+/// command but `af help agents`, and `af help agents --snippet`, the installed `AGENTS.md`
+/// block and both skills hold the same bytes.
+#[test]
+fn the_agent_pointer_is_four_rules_and_one_source() {
+    let snippet = out(&af(&["help", "agents", "--snippet"]));
+    let inner = snippet
+        .split_once("<!-- af-agent-help:start -->\n")
+        .and_then(|(_, rest)| rest.split_once("<!-- af-agent-help:end -->"))
+        .unwrap_or_else(|| panic!("no af-agent-help markers:\n{snippet}"))
+        .0;
+    assert!(inner.lines().count() <= 6, "{inner}");
+    for line in inner.lines() {
+        assert!(line.chars().count() <= 100, "{line}");
+    }
+    for rule in [
+        "run `af help agents` first",
+        "plan, run, status, findings, diff, deliver, report",
+        "`--json`",
+        "one versioned document",
+        "`state.outcome`",
+        "`state.next_action`",
+        "never guess a next command",
+        "Never add `--login` in an agent session",
+        "done privately",
+    ] {
+        assert!(inner.contains(rule), "{rule}:\n{inner}");
+    }
+    for removed in [
+        "af help json",
+        "af help exit-codes",
+        "af help task-file",
+        "af provider status",
+        "af onboard",
+        "af task plan",
+        "af task findings",
+        "af task diff",
+    ] {
+        assert!(!snippet.contains(removed), "{removed}:\n{snippet}");
+    }
+    let temp = tempfile::tempdir().unwrap();
+    let root = temp.path();
+    assert!(
+        std::process::Command::new("git")
+            .arg("init")
+            .arg(root)
+            .output()
+            .unwrap()
+            .status
+            .success()
+    );
+    let written = af(&[
+        "setup",
+        "agents",
+        "--repo",
+        root.to_str().unwrap(),
+        "--write",
+    ]);
+    assert!(written.status.success(), "{}", err(&written));
+    let agents = std::fs::read_to_string(root.join("AGENTS.md")).unwrap();
+    assert_eq!(agents, snippet);
+    let marked = |text: &str| -> String {
+        let start = text.find("<!-- af-agent-help:start -->").unwrap();
+        let end = text.find("<!-- af-agent-help:end -->").unwrap();
+        text[start..end].to_owned()
+    };
+    for skill in [".claude/skills/af/SKILL.md", ".agents/skills/af/SKILL.md"] {
+        let skill = std::fs::read_to_string(root.join(skill)).unwrap();
+        assert!(skill.contains(&snippet), "{skill}");
+        assert_eq!(marked(&skill), marked(&snippet));
+    }
+}
+
+/// #363 and #434: the page starts the loop at step 1, keeps the references for when they are
+/// needed, needs no `effects` lookup for a command it describes, and says what a review
+/// refusal names.
+#[test]
+fn the_agents_page_starts_at_step_one_and_says_what_a_review_refusal_names() {
+    let page = out(&af(&["help", "agents"]));
+    let prose = page.split_whitespace().collect::<Vec<_>>().join(" ");
+    for sentence in [
+        "Start at step 1, with no readiness check first.",
+        "`af provider status`, `af provider detect`, `af doctor` and `af onboard` are for when a \
+         refusal points there or the person asks.",
+        "not as steps before work: `af help json`, `af help exit-codes`, `af help task-file`, \
+         `af help task-states` and `af help errors CAUSE`.",
+        "A command this page describes, or one a `next_action` names, needs no such lookup \
+         first. Before you run any other command for the first time, read its `effects`",
+        "`af review plan --json` previews it token-free, and when selectors or Provider bindings \
+         are missing, its refusal's `next_action` names the next command when one command \
+         fixes it, and a refusal for missing bindings carries in `details.plan` what the review \
+         would run.",
+    ] {
+        assert!(prose.contains(sentence), "{sentence}\n{page}");
+    }
+    assert!(!prose.contains("Read a command's `effects` before you run it for the first time"));
 }
 
 #[test]

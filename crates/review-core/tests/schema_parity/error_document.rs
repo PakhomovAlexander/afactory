@@ -134,6 +134,57 @@ fn an_error_document_carries_its_cause_next_command_and_facts() {
         assert_invalid(ERROR_V2, &wrong_exit, "a first-run refusal is exit 1");
     }
 
+    // ADR-0258: `af review plan`'s binding refusal carries the plan it computed, and names
+    // `af provider detect` when a Worker's kind has no registered Provider.
+    let unbound = json!({
+        "schema": "af/error@2",
+        "command": "af review",
+        "error": "model Workers architecture, correctness need explicit Provider bindings: no codex Provider is registered for architecture and correctness. ...",
+        "exit_code": 1,
+        "cause": "review_binding_missing",
+        "next_action": "af provider detect",
+        "details": {
+            "missing": ["architecture", "correctness"],
+            "candidates": {"architecture": [], "correctness": []},
+            "plan": {
+                "schema": "af/review-plan@1",
+                "token_free": true,
+                "pipeline": {"gates": [{"name": "check", "required": true}]},
+                "providers": [{"node": "architecture", "runner": "codex", "required": true,
+                    "binding": null, "ready": false}],
+                "next_action": "af provider detect",
+            },
+        },
+    });
+    assert_valid(ERROR_V2, &unbound);
+    for (pointer, replacement, why) in [
+        (
+            "/details/plan/schema",
+            json!("af/review-plan@2"),
+            "a plan of another version",
+        ),
+        (
+            "/details/plan",
+            json!("plan"),
+            "a plan that is not a document",
+        ),
+    ] {
+        let mut changed = unbound.clone();
+        *changed.pointer_mut(pointer).unwrap() = replacement;
+        assert_invalid(ERROR_V2, &changed, why);
+    }
+    let mut unversioned = unbound.clone();
+    unversioned["details"]["plan"]
+        .as_object_mut()
+        .unwrap()
+        .remove("schema");
+    assert_invalid(ERROR_V2, &unversioned, "a plan without its schema");
+    let mut elsewhere = unbound.clone();
+    elsewhere["cause"] = json!("review_selectors_missing");
+    elsewhere["details"] = json!({"repo": ".", "selector": "--policy-rev",
+        "plan": unbound["details"]["plan"].clone()});
+    assert_invalid(ERROR_V2, &elsewhere, "a plan on another cause");
+
     for (document, pointer, replacement, why) in [
         (
             &plain,

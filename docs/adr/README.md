@@ -452,7 +452,8 @@ future readers need.
 - [0240 — Execute performance experiments independently on a locked
   VM](0240-execute-performance-experiments-independently-on-a-locked-vm.md)
 - [0241 — Install an agent entry point from the help
-  page](0241-install-an-agent-entry-point-from-the-help-page.md)
+  page](0241-install-an-agent-entry-point-from-the-help-page.md) (superseded in part by
+  [ADR-0258](0258-point-agents-at-the-loop-in-four-rules-and-own-skills-by-their-bytes.md))
 - [0242 — Classify first-run refusals and suggest only explicit trusted review
   commands](0242-classify-first-run-refusals.md)
 - [0243 — Add pinned Task authority through additive
@@ -484,3 +485,5 @@ future readers need.
   field](0256-carry-the-recovery-of-an-interrupted-command-as-a-typed-field.md)
 - [0257 — Seal the implementer's tree when its Attempt wall ends
   it](0257-seal-the-implementers-tree-when-its-attempt-wall-ends-it.md)
+- [0258 — Point agents at the loop in four rules and own skills by their
+  bytes](0258-point-agents-at-the-loop-in-four-rules-and-own-skills-by-their-bytes.md)

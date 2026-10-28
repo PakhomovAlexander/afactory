@@ -1330,13 +1330,7 @@ fn review_selector_refusal(options: &Options, subcommand: &str) -> Result<(), St
             if selected.provider_bindings.contains_key(&node) {
                 continue;
             }
-            let ids: Vec<String> = registered
-                .iter()
-                .filter(|(id, registered_kind)| {
-                    *registered_kind == kind && providers::availability::check_id(id).is_ok()
-                })
-                .map(|(id, _)| id.clone())
-                .collect();
+            let ids = binding_candidates(&registered, &kind);
             if ids.len() == 1 {
                 flags.extend(["--provider".to_owned(), format!("{node}={}", ids[0])]);
             } else {
@@ -1358,7 +1352,7 @@ fn review_selector_refusal(options: &Options, subcommand: &str) -> Result<(), St
         } else {
             format!(
                 "; Provider candidates: {}",
-                serde_json::Value::Object(candidate_details.clone())
+                candidate_words(&candidate_details)
             )
         };
         format!(
@@ -1377,16 +1371,66 @@ fn review_selector_refusal(options: &Options, subcommand: &str) -> Result<(), St
     Err(error_document::typed(message, detail))
 }
 
+/// The enabled Providers of `kind` this machine registers: what a binding of a model Worker of
+/// that kind may name (ADR-0242).
+fn binding_candidates(registered: &[(String, &'static str)], kind: &str) -> Vec<String> {
+    registered
+        .iter()
+        .filter(|(id, registered_kind)| {
+            *registered_kind == kind && providers::availability::check_id(id).is_ok()
+        })
+        .map(|(id, _)| id.clone())
+        .collect()
+}
+
+/// A node-to-candidates map in words, `NODE: ID, ID; NODE: none registered`: a refusal's
+/// sentence never prints a map as Rust debug output or as JSON (ADR-0258).
+fn candidate_words(candidates: &serde_json::Map<String, serde_json::Value>) -> String {
+    candidates
+        .iter()
+        .map(|(node, ids)| {
+            let ids: Vec<&str> = ids
+                .as_array()
+                .into_iter()
+                .flatten()
+                .filter_map(serde_json::Value::as_str)
+                .collect();
+            if ids.is_empty() {
+                format!("{node}: none registered")
+            } else {
+                format!("{node}: {}", ids.join(", "))
+            }
+        })
+        .collect::<Vec<_>>()
+        .join("; ")
+}
+
+/// `a`, `a and b`, `a, b and c`.
+fn and_list(items: &[&str]) -> String {
+    match items {
+        [] => String::new(),
+        [one] => (*one).to_owned(),
+        [rest @ .., last] => format!("{} and {last}", rest.join(", ")),
+    }
+}
+
+/// The `review_binding_missing` refusal when a model Worker has no `--provider NODE=ID`
+/// (ADR-0242, ADR-0258): with no enabled Provider of a Worker's kind, `af provider detect` is
+/// next; with exactly one per kind, the whole command with each binding; with a choice, no
+/// command and the choices in words. `plan` is the token-free plan `af review plan` computed,
+/// carried whole in `details.plan`; `af review run` passes none.
 fn review_binding_refusal(
     options: &Options,
     workers: &[(String, String)],
     subcommand: &str,
+    plan: Option<&serde_json::Value>,
 ) -> Result<(), String> {
     let registered = providers::registered()
         .map(|(ids, _)| ids)
         .unwrap_or_default();
     let mut missing = Vec::new();
     let mut candidates = serde_json::Map::new();
+    let mut unregistered: Vec<(&str, Vec<&str>)> = Vec::new();
     let mut flags = Vec::new();
     let mut unique = true;
     for (node, kind) in workers {
@@ -1394,40 +1438,80 @@ fn review_binding_refusal(
             continue;
         }
         missing.push(node.clone());
-        let ids: Vec<String> = registered
-            .iter()
-            .filter(|(id, registered_kind)| {
-                *registered_kind == kind && providers::availability::check_id(id).is_ok()
-            })
-            .map(|(id, _)| id.clone())
-            .collect();
-        if ids.len() == 1 {
-            flags.extend(["--provider".to_owned(), format!("{node}={}", ids[0])]);
-        } else {
-            unique = false;
+        let ids = binding_candidates(&registered, kind);
+        match ids.as_slice() {
+            [id] => flags.extend(["--provider".to_owned(), format!("{node}={id}")]),
+            [] => {
+                unique = false;
+                match unregistered.iter_mut().find(|(seen, _)| seen == kind) {
+                    Some((_, nodes)) => nodes.push(node),
+                    None => unregistered.push((kind, vec![node])),
+                }
+            }
+            _ => unique = false,
         }
         candidates.insert(node.clone(), serde_json::json!(ids));
     }
     if missing.is_empty() {
         return Ok(());
     }
-    let next = unique
-        .then(|| review_next_command(subcommand, &flags))
-        .filter(|command| command.len() <= 4095 && !command.chars().any(char::is_control));
-    let message = match &next {
-        Some(command) => format!(
-            "model Workers {} need explicit Provider bindings; run:\n{command}",
-            missing.join(", ")
-        ),
-        None => format!(
-            "model Workers {} need explicit Provider bindings; choose one enabled Provider per Worker from {:?}, then pass --provider NODE=ID",
-            missing.join(", "),
-            candidates
-        ),
+    let head = format!(
+        "model Workers {} need explicit Provider bindings",
+        missing.join(", ")
+    );
+    let (message, next) = if !unregistered.is_empty() {
+        let none = unregistered
+            .iter()
+            .map(|(kind, nodes)| {
+                format!("no {kind} Provider is registered for {}", and_list(nodes))
+            })
+            .collect::<Vec<_>>()
+            .join("; ");
+        let setup = unregistered
+            .iter()
+            .map(|(kind, _)| format!("af provider setup ID --kind {kind}"))
+            .collect::<Vec<_>>()
+            .join(" or ");
+        let mut chosen = candidates.clone();
+        chosen.retain(|_, ids| ids.as_array().is_some_and(|ids| !ids.is_empty()));
+        let choices = if chosen.is_empty() {
+            String::new()
+        } else {
+            format!(
+                " (registered choices for the others: {})",
+                candidate_words(&chosen)
+            )
+        };
+        (
+            format!(
+                "{head}: {none}{choices}. Register one with af provider detect --apply, or with \
+                 {setup} once the person has logged in privately, then rerun this command; to see \
+                 the logins this machine has, run:\naf provider detect"
+            ),
+            Some("af provider detect".to_owned()),
+        )
+    } else {
+        let next = unique
+            .then(|| review_next_command(subcommand, &flags))
+            .filter(|command| command.len() <= 4095 && !command.chars().any(char::is_control));
+        let message = match &next {
+            Some(command) => format!("{head}; run:\n{command}"),
+            None => format!(
+                "{head}; choose one enabled Provider per Worker ({}), then pass --provider NODE=ID",
+                candidate_words(&candidates)
+            ),
+        };
+        (message, next)
     };
     let mut detail = error_document::Detail::new(error_document::Cause::ReviewBindingMissing)
         .with("missing", serde_json::json!(missing))
         .with("candidates", serde_json::Value::Object(candidates));
+    if let Some(plan) = plan {
+        // The plan as the success path prints it, its next command the refusal's.
+        let mut plan = plan.clone();
+        plan["next_action"] = serde_json::json!(next);
+        detail = detail.with("plan", plan);
+    }
     if let Some(command) = next {
         detail = detail.next(command);
     }
@@ -2804,7 +2888,16 @@ fn print_plan(options: &Options, long: bool) -> Result<(), String> {
             )
         })
         .collect();
-    review_binding_refusal(options, &workers, "plan")?;
+    // A missing binding refuses the plan, and the refusal carries what the plan computed: under
+    // --json the document in `details.plan` and the `model` lines on stderr, in text the plan's
+    // lines before the refusal's sentence (ADR-0258).
+    let refusal = review_binding_refusal(options, &workers, "plan", Some(&plan)).err();
+    if let Some(refusal) = refusal.as_ref().filter(|_| options.json) {
+        for line in &models {
+            eprintln!("{}", terminal_text(line));
+        }
+        return Err(refusal.clone());
+    }
     let empty = plan["subject"]["empty"].as_bool() == Some(true);
     let unfit = plan["pipeline"]["inputs_fit"].as_bool() == Some(false);
     let missing = missing_bindings(&plan);
@@ -2855,7 +2948,7 @@ fn print_plan(options: &Options, long: bool) -> Result<(), String> {
         plan_line!("ids      abbreviated; --long or --json shows full digests");
     }
     for provider in plan["providers"].as_array().into_iter().flatten() {
-        if provider["required"] == true {
+        if provider["required"] == true && provider["binding"].is_string() {
             plan_line!(
                 "binding  {} => {}",
                 terminal_text(provider["node"].as_str().unwrap_or("?")),
@@ -2974,6 +3067,17 @@ fn print_plan(options: &Options, long: bool) -> Result<(), String> {
                 .unwrap_or(0)
         );
     }
+    if refusal.is_some() {
+        // A refused plan prints no next command, so its first screen has room for this line.
+        let convergence = &plan["pipeline"]["convergence"];
+        plan_line!(
+            "converge {}: {} clean Round; {} Round maximum; {} findings block",
+            terminal_text(convergence["mode"].as_str().unwrap_or("?")),
+            convergence["clean_rounds"].as_u64().unwrap_or(0),
+            convergence["max_rounds"].as_u64().unwrap_or(0),
+            terminal_text(convergence["gate"].as_str().unwrap_or("?"))
+        );
+    }
     if let Some(reservations) = plan["pipeline"]["reservations"]
         .as_array()
         .filter(|reservations| !reservations.is_empty())
@@ -3031,17 +3135,18 @@ fn print_plan(options: &Options, long: bool) -> Result<(), String> {
             ),
             Some(_) => {}
             None if provider["required"] == true => {
-                let fix = match missing
+                let ids = missing
                     .iter()
                     .find(|(missing, _)| missing == node)
-                    .and_then(|(_, id)| id.as_deref())
-                {
-                    Some(id) => format!("--provider {node}={id}"),
-                    None => format!(
-                        "no {kind} Provider is registered: `af provider status` lists what this \
-                         machine has, and `af provider setup {kind}-main --kind {kind} --login` \
-                         registers one"
+                    .map(|(_, ids)| ids.as_slice())
+                    .unwrap_or_default();
+                let fix = match ids {
+                    [id] => format!("--provider {node}={id}"),
+                    [] => format!(
+                        "no {kind} Provider is registered: `af provider detect --apply` registers \
+                         a login this machine has"
                     ),
+                    ids => format!("choose one of {} with --provider {node}=ID", ids.join(", ")),
                 };
                 plan_line!(
                     "provider {} -> MISSING; fix: {}",
@@ -3067,6 +3172,10 @@ fn print_plan(options: &Options, long: bool) -> Result<(), String> {
         );
     } else {
         plan_line!("effects  no state, Gates, Provider calls, Workers, or token spend");
+    }
+    if let Some(refusal) = refusal {
+        // The refusal's sentence follows on stderr, its last line the next command.
+        return Err(refusal);
     }
     // What to do, then the one command, whole: continued between its arguments when it is
     // wider than the terminal, so it still runs as copied.
@@ -3116,9 +3225,9 @@ fn wrap_plan_line(line: &str) -> String {
     human::wrap(line, width, column)
 }
 
-/// The model Workers of `plan` without a Provider binding, each with a registered Provider of
-/// its kind when this machine has one.
-fn missing_bindings(plan: &serde_json::Value) -> Vec<(String, Option<String>)> {
+/// The model Workers of `plan` without a Provider binding, each with the enabled Providers of
+/// its kind this machine registers.
+fn missing_bindings(plan: &serde_json::Value) -> Vec<(String, Vec<String>)> {
     let registered = providers::registered()
         .map(|(ids, _)| ids)
         .unwrap_or_default();
@@ -3128,14 +3237,9 @@ fn missing_bindings(plan: &serde_json::Value) -> Vec<(String, Option<String>)> {
         .flatten()
         .filter(|provider| provider["binding"].is_null() && provider["required"] == true)
         .map(|provider| {
-            let kind = provider["runner"].as_str().unwrap_or("?");
-            let candidate = registered
-                .iter()
-                .find(|(_, registered_kind)| *registered_kind == kind)
-                .map(|(id, _)| id.clone());
             (
                 provider["node"].as_str().unwrap_or("?").to_owned(),
-                candidate,
+                binding_candidates(&registered, provider["runner"].as_str().unwrap_or("?")),
             )
         })
         .collect()
@@ -3150,7 +3254,7 @@ struct NextStep {
 
 /// What `af review plan` tells a person to do next: the exact `af review run` command when the
 /// plan is what run admits, else the first thing that keeps it from running.
-fn plan_next_step(empty: bool, unfit: bool, missing: &[(String, Option<String>)]) -> NextStep {
+fn plan_next_step(empty: bool, unfit: bool, missing: &[(String, Vec<String>)]) -> NextStep {
     let words: Vec<String> = std::env::args().skip(1).collect();
     let rerun = |subcommand: &str, extra: &[String]| {
         let mut command = vec!["af".to_string()];
@@ -3186,15 +3290,10 @@ fn plan_next_step(empty: bool, unfit: bool, missing: &[(String, Option<String>)]
         };
     }
     if !missing.is_empty() {
-        if missing.iter().all(|(_, id)| id.is_some()) {
+        if missing.iter().all(|(_, ids)| ids.len() == 1) {
             let flags: Vec<String> = missing
                 .iter()
-                .flat_map(|(node, id)| {
-                    [
-                        "--provider".to_string(),
-                        format!("{node}={}", id.as_deref().unwrap_or_default()),
-                    ]
-                })
+                .flat_map(|(node, ids)| ["--provider".to_string(), format!("{node}={}", ids[0])])
                 .collect();
             return NextStep {
                 prose: None,
