@@ -20,3 +20,10 @@
   after the first frame like the other folders; it no longer waits for an open.
 - `Enter` on a Worker or a Pipeline listed in the main pane of its folder opens it, as the bar
   does; the folders' legends say so.
+- The Pipelines pane never prints a declaration's TOML: a review Pipeline under
+  `.af/pipelines/` is drawn from its committed declaration (Subject, convergence, budgets,
+  checks, one row per node with its package or runner, gate and Demands, and the `af review
+  plan` command), and a package the kernel has not planned yet, or refuses to plan, is drawn the
+  same way (one row per node with its slot's Worker and Attempt bounds, a `call` expanded into
+  the pinned callee with the call's bindings applied, the contract, then the refusal). The
+  status line names the highlighted row's Worker.

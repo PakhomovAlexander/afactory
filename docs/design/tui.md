@@ -285,13 +285,23 @@ at that file; a file the catalog pins elsewhere, or not at all, says so and show
 instead of another file's plan. Selecting a pipeline package with
 no captured Task compiles a plan the token-free way `af task plan` does and renders that text; the two renders agree line for line except the identity lines
 (`PLAN`, `TIME`, `--confirm-plan`), which carry a fresh plan identity and deadline on every
-compilation. A package whose compilation the kernel refuses (required facts or public inputs
-the preview Task cannot invent) shows the refusal and the package's declared contract instead.
-A review Pipeline under `.af/pipelines/` is planned against a diff selector the browser does not
-hold, so its pane shows the committed declaration and the `af review plan` command, not a plan
-tree. Selecting a Task's pipeline from the Tasks pane shows the captured `ExecutionPlan`. `j`/`k`
-highlight a row; the status line shows its slot binding and provider. The ASCII DAG from the
-review TUI is not carried over; it can return as a `:set dag` view later.
+compilation. While that plan compiles, and when the kernel refuses it (required facts, public inputs
+or a Provider the preview Task cannot supply), the pane draws the committed declaration as the
+same kind of tree: `attempts N at most, M in parallel`, then one row per node in declared order
+(`implement  worker implementer -> default/implementer  attempts 1..1`, `check  checks: kernel`,
+`evaluate  verify evaluator -> ...  when check=passed`), a `call` expanded into the package the
+catalog pins by that name, as committed, with the call's slot bindings applied the way the
+kernel applies them (a bound slot is the caller's Worker, role and bounds); the contract follows
+the tree and the refusal, when there is one, comes last. A review Pipeline under
+`.af/pipelines/` is planned against a diff selector the browser does not hold, so it is always
+drawn from its declaration: the Subject, the convergence policy, the budgets and the checks,
+then one row per node (`correctness  reviewer -> correctness  after gate  demands required`,
+`gather  <- correctness, bugs`), and the `af review plan` command that plans it against a diff.
+No pane prints a declaration's TOML; `gf` opens the file. Selecting a Task's pipeline from the
+Tasks pane shows the captured `ExecutionPlan`. `j`/`k` highlight a row; the status line shows
+its slot binding and provider on a kernel plan, and the slot's declared Worker, role and bounds
+(or a reviewer's package or runner) on a declared tree. The ASCII DAG from the review TUI is
+not carried over; it can return as a `:set dag` view later.
 
 ### 5.5 Tasks
 
