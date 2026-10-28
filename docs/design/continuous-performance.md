@@ -281,7 +281,7 @@ child exit; its own startup is excluded. The browser case instead reads the driv
 launch-to-frame interval from its versioned JSON, which ends when the status line reaches the
 terminal. The browser leads a session of its own, outside the supervisor's process group, so
 the driver ends that session itself, on cancellation too, and a member that outlives the browser
-fails the sample (ADR-0259). Record descendant cleanup separately and test each boundary
+fails the sample (ADR-0260). Record descendant cleanup separately and test each boundary
 explicitly.
 
 macOS execution is local and explicitly trusted. It covers discovery, the declared browser PTY

@@ -2107,49 +2107,74 @@ class UncertainCleanup(ChildRunBase):
 
 
 class BrowserDiagnostic(ChildRunBase):
-    """The browser case under a diagnostic (ADR-0259): its PTY driver owns the browser's
+    """The browser case under a diagnostic (ADR-0260): its PTY driver owns the browser's
     session outside the supervisor's group, so a cleanup the driver could not confirm is the
     execution's, whatever the supervisor confirmed of its own group."""
 
     PARENT_CASES = ChildRunBase.PARENT_CASES + ["tui_open"]
+
+    def driver_ended(self, termination, held, **fields):
+        """A diagnostic of the browser case whose driver execution the supervisor reports as
+        `termination` with `held` on stderr, in place of running it; every other execution runs
+        for real. (profiles document, the one driver's cwd)."""
+        actual = toolrun.run
+        launched = []
+
+        def ended(boss, argv, *args, **kwargs):
+            if not any(arg.endswith("/tui-open.py") for arg in argv):
+                return actual(boss, argv, *args, **kwargs)
+            with open(os.path.join(kwargs["cwd"], "live-data"), "w") as stream:
+                stream.write("reachable")
+            launched.append(kwargs["cwd"])
+            reply = {"termination": termination, "timing": {"child_wall_ns": 5000000},
+                     "stdout": {"retained": 0, "total": 0, "truncated": 0},
+                     "stdout_pattern_counts": {}, "stdout_json": None}
+            return toolrun.Result(argv, stderr=held, stderr_bytes=len(held), elapsed_ms=5,
+                                  supervised=supervise.Supervised(reply, b"", held, 5000000,
+                                                                  None), **fields)
+
+        with mock.patch.object(diagnostics.toolrun, "run", ended):
+            # The browser case is a command of the 0.13 adapter.
+            doc, _ = self.profile("linux_gnu_trace", [TUI_EMPTY], {}, {}, af_config={},
+                                  work_removed=False, cli_version="0.13.0-rc.1")
+        self.assertEqual(len(launched), 1, "nothing launched after the unconfirmed end")
+        return doc, launched[0]
 
     def test_a_driver_that_cannot_confirm_the_sessions_end_keeps_the_scratch(self):
         # The supervisor's reply is clean and the driver exited `DRIVER_UNCONFIRMED_EXIT`
         # after it wrote below its namespace: the execution's cleanup is unconfirmed, the
         # namespace and its data are kept, the other side never launches, and the run's work
         # is not removed.
-        actual = toolrun.run
-        launched = []
         held = b"tui-open: cleanup unconfirmed: held\n"
-
-        def unconfirmed(boss, argv, *args, **kwargs):
-            if not any(arg.endswith("/tui-open.py") for arg in argv):
-                return actual(boss, argv, *args, **kwargs)
-            with open(os.path.join(kwargs["cwd"], "live-data"), "w") as stream:
-                stream.write("reachable")
-            launched.append(kwargs["cwd"])
-            reply = {"termination": {"kind": "exited", "code": clicases.DRIVER_UNCONFIRMED_EXIT,
-                                     "signal": None, "detail": ""},
-                     "timing": {"child_wall_ns": 5000000},
-                     "stdout": {"retained": 0, "total": 0, "truncated": 0},
-                     "stdout_pattern_counts": {}, "stdout_json": None}
-            return toolrun.Result(argv, code=clicases.DRIVER_UNCONFIRMED_EXIT, stderr=held,
-                                  stderr_bytes=len(held), elapsed_ms=5,
-                                  supervised=supervise.Supervised(reply, b"", held, 5000000,
-                                                                  None))
-
-        with mock.patch.object(diagnostics.toolrun, "run", unconfirmed):
-            # The browser case is a command of the 0.13 adapter.
-            doc, output = self.profile("linux_gnu_trace", [TUI_EMPTY], {}, {}, af_config={},
-                                       work_removed=False, cli_version="0.13.0-rc.1")
+        doc, kept = self.driver_ended(
+            {"kind": "exited", "code": clicases.DRIVER_UNCONFIRMED_EXIT, "signal": None,
+             "detail": ""}, held, code=clicases.DRIVER_UNCONFIRMED_EXIT)
         baseline, candidate = doc["traces"]
         self.assertEqual(baseline["omission"]["reason"], "cleanup_uncertain")
         self.assertIn("could not confirm that the browser's session ended: tui-open: cleanup "
                       "unconfirmed: held", baseline["omission"]["detail"])
         self.assertEqual(candidate["omission"]["reason"], "cleanup_uncertain")
         self.assertIn("was not started", candidate["omission"]["detail"])
-        self.assertEqual(len(launched), 1, "nothing launched after the unconfirmed end")
-        [kept] = launched
+        self.assertIn(kept, baseline["omission"]["detail"])
+        self.assertEqual(read(os.path.join(kept, "live-data")), b"reachable")
+        self.assertEqual(doc["execution"]["retained_scratch"], 1)
+        self.assertEqual(self.profile_object.retained, [kept])
+
+    def test_a_driver_that_did_not_exit_of_its_own_accord_keeps_the_scratch(self):
+        # The supervisor ended the driver at its bound, its own group clean: whether the
+        # driver settled the browser's session, outside that group, is unknown, so the
+        # execution's cleanup is unconfirmed the same way, before anything is judged.
+        held = b"tui-open: still settling\n"
+        doc, kept = self.driver_ended(
+            {"kind": "timeout", "code": None, "signal": None, "detail": ""}, held,
+            timed_out=True)
+        baseline, candidate = doc["traces"]
+        self.assertEqual(baseline["omission"]["reason"], "cleanup_uncertain")
+        self.assertIn("did not exit of its own accord (timeout), so its settlement of the "
+                      "browser's session is unconfirmed: tui-open: still settling",
+                      baseline["omission"]["detail"])
+        self.assertEqual(candidate["omission"]["reason"], "cleanup_uncertain")
+        self.assertIn("was not started", candidate["omission"]["detail"])
         self.assertIn(kept, baseline["omission"]["detail"])
         self.assertEqual(read(os.path.join(kept, "live-data")), b"reachable")
         self.assertEqual(doc["execution"]["retained_scratch"], 1)

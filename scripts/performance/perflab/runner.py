@@ -1159,12 +1159,20 @@ class Shard(object):
         result = supervised.result
         kind, detail, halt = supervise.outcome(supervised, containment, control_record=False)
         # The PTY driver owns the browser's session outside the supervisor's group: its own
-        # unconfirmed cleanup is the sample's (ADR-0259).
-        unconfirmed = (kind is None and case["timing"]["boundary"] == "reported_interval"
-                       and supervise.returncode(result) == clicases.DRIVER_UNCONFIRMED_EXIT)
-        if unconfirmed:
-            detail = ("the PTY driver could not confirm that the browser's session ended: "
-                      + supervised.stderr.decode("utf-8", "replace")[-512:])
+        # unconfirmed cleanup is the sample's, and so is a driver that did not exit of its own
+        # accord, whose settlement of that session may not have finished (ADR-0260).
+        termination = result["termination"]["kind"]
+        unconfirmed = None
+        if case["timing"]["boundary"] == "reported_interval":
+            tail = supervised.stderr.decode("utf-8", "replace")[-512:]
+            if termination not in ("exited", "setup_failed", "launch_failed"):
+                unconfirmed = ("the PTY driver did not exit of its own accord (%s), so its "
+                               "settlement of the browser's session is unconfirmed: %s"
+                               % (termination, tail))
+            elif (kind is None
+                  and supervise.returncode(result) == clicases.DRIVER_UNCONFIRMED_EXIT):
+                unconfirmed = ("the PTY driver could not confirm that the browser's session "
+                               "ended: " + tail)
         if kind is not None:
             self.fail(record, kind, detail, supervised)
         else:
@@ -1184,7 +1192,7 @@ class Shard(object):
             if case["timing"]["boundary"] == "reported_interval":
                 if passed:
                     # The driver's browser_ms is the primary interval; its splash_ms, first
-                    # output, is the declared optional metric beside it (ADR-0259).
+                    # output, is the declared optional metric beside it (ADR-0260).
                     browser, splash = reported
                     record["metrics"][case["primary_metric"]["key"]] = {
                         "value": format_decimal(browser), "unit": "ms"}
@@ -1211,12 +1219,13 @@ class Shard(object):
                     record["oracle"]["status"] = "failed"
                 self.fail(record, failure, why, supervised)
         self.optional(record, case, result)
-        if self.mode == TRUSTED_LOCAL and (unconfirmed or
+        if self.mode == TRUSTED_LOCAL and (unconfirmed is not None or
                                            not supervise.cleanup_confirmed(supervised.result)):
             # A process of the sample may still be live: its scratch is kept, never removed
             # beneath it, and the shard stops (ADR-0171). A container's confirmed removal ends
             # every process in it.
-            halted = _halted(supervised, detail, retain=True)
+            halted = _halted(supervised, unconfirmed if unconfirmed is not None else detail,
+                             retain=True)
             self._release_namespace(namespace, record, halted)
             raise halted.with_record(record)
         try:

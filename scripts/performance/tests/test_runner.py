@@ -753,9 +753,12 @@ class BrowserShard(ShardHarness):
         # reports a frame of `100 + call` and a half and a splash of `10 + call` and a
         # quarter, so the pairs are distinct and each differs by 90.25; the real sample's are
         # the measured ones.
-        pairs = [(Fraction(record["metrics"]["wall_ms"]["value"]),
-                  Fraction(record["metrics"]["splash_ms"]["value"])) for record in browser]
-        reported = [pair for pair in pairs if pair[0].denominator == 2]
+        # The first browser sample run is the one the supervisor ran for real
+        # (`reported_after_one`); the rest are the reported ones, known by their sequence.
+        real = min(browser, key=lambda record: record["sequence"])
+        reported = [(Fraction(record["metrics"]["wall_ms"]["value"]),
+                     Fraction(record["metrics"]["splash_ms"]["value"]))
+                    for record in browser if record is not real]
         self.assertEqual(len(reported), len(browser) - 1)
         self.assertEqual(len(set(reported)), len(reported))
         self.assertEqual(set(frame - splash for frame, splash in reported),
@@ -771,6 +774,32 @@ class BrowserShard(ShardHarness):
                           if record["instance_id"] == TUI_EMPTY],
                          [record["metrics"]["splash_ms"] for record in browser])
 
+
+    def test_a_driver_that_did_not_exit_of_its_own_accord_stops_the_shard(self):
+        versions = {"baseline": BROWSER_VERSION, "candidate": BROWSER_VERSION}
+        plan, plan_path, _ = self.prepare([TUI_EMPTY], versions, run_id="killed",
+                                          lock=self.lock)
+        # An authority whose driver a signal ends before it could settle the browser's
+        # session: the supervisor's own group is clean, and the sample's cleanup is not, since
+        # a process the browser started outside that group may live on (ADR-0260).
+        authority = self.repo.commit("authority", {
+            "fixtures/performance/cli/tui-open.py":
+                "import os, sys\nsys.stderr.write('tui-open: ended\\n')\nsys.stderr.flush()\n"
+                "os.kill(os.getpid(), 9)\n"})
+        plan = dict(plan)
+        plan["resolved"] = dict(plan["resolved"], authority_sha=authority)
+        plan["plan_digest"] = contracts.plan_digest(plan)
+        with open(plan_path, "wb") as stream:
+            stream.write(contracts.write_bytes(plan, "run"))
+        build = make_build(self.path("killed-build-2"), plan, versions)
+        doc = runner.run_shard(self.options(plan_path, build))
+        self.assertEqual(doc["status"], "failed")
+        self.assertEqual(doc["failure"]["reason"], "cleanup_uncertain")
+        self.assertIn("did not exit of its own accord (signalled)", doc["failure"]["detail"])
+        self.assertIn("tui-open: ended", doc["failure"]["detail"])
+        self.assert_kept_one_namespace(doc)
+        browser = [record for record in self.records() if record["instance_id"] == TUI_EMPTY]
+        self.assertEqual([record["status"] for record in browser], ["failed"])
 
     def test_a_driver_that_cannot_confirm_the_session_ended_stops_the_shard(self):
         versions = {"baseline": BROWSER_VERSION, "candidate": BROWSER_VERSION}

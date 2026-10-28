@@ -7,7 +7,7 @@ parameter domain before anything is planned. Version 2 added the native probe de
 each library case's probe contract (ADR-0163). Version 3 names the seed a library case's probe
 reads, speaks `af.perf-probe-request/2`, and lets a recipe pin its build image by either
 canonical digest form (ADR-0170); earlier versions are refused.
-Version 4 admits a reviewed driver-reported process interval for the browser frame (ADR-0259).
+Version 4 admits a reviewed driver-reported process interval for the browser frame (ADR-0260).
 """
 from fractions import Fraction
 import itertools

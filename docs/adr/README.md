@@ -486,5 +486,5 @@ future readers need.
   it](0257-seal-the-implementers-tree-when-its-attempt-wall-ends-it.md)
 - [0258 — Task gate evidence comes from the check
   report](0258-task-gate-evidence-comes-from-the-check-report.md)
-- [0259 — Bound bare af's first browser
-  frame](0259-bound-bare-afs-first-browser-frame.md)
+- [0260 — Bound bare af's first browser
+  frame](0260-bound-bare-afs-first-browser-frame.md)

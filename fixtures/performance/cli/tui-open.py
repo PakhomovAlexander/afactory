@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Measure bare af from launch to the first browser status-line frame (ADR-0259).
+"""Measure bare af from launch to the first browser status-line frame (ADR-0260).
 
 `python3 -I tui-open.py AF [ARG...]` runs the argv in a 100x30 pseudo-terminal as the leader of
 a new session (the browser needs a controlling terminal), and prints one

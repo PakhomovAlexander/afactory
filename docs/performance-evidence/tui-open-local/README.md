@@ -1,7 +1,7 @@
 # tui_open: the first real local run of the browser case
 
 The retained evidence of
-[ADR-0259](../../adr/0259-bound-bare-afs-first-browser-frame.md): the laboratory case
+[ADR-0260](../../adr/0260-bound-bare-afs-first-browser-frame.md): the laboratory case
 `tui_open`, both registry instances, run for real on a macOS arm64 host in the named
 `macos_arm64_local` environment, trusted local mode, as
 [`p8-local`](../p8-local/README.md) describes the workflow. The products were built from source
@@ -96,16 +96,19 @@ holds that rule. The empty instance's 24 measured samples passed, 8.8 to 29.5 ms
 ## Later differences
 
 After the run these paths changed, and nothing else: `docs/README.md`,
-`docs/adr/0259-bound-bare-afs-first-browser-frame.md`,
+`docs/adr/0260-bound-bare-afs-first-browser-frame.md`,
 `docs/design/continuous-performance.md`, `docs/performance-acceptance.md`,
 `changelog.d/perf-tui-open-target.md`, `fixtures/performance/README.md`, this directory, the
 docstring of `scripts/performance/perflab/capability.py`, the driver
 `fixtures/performance/cli/tui-open.py`, the tests `scripts/performance/tests/test_tui_open.py`,
-`test_runner.py`, `test_diagnostics.py` and `support.py`, the diagnostic child run
-`scripts/performance/perflab/diagnostics.py` (it reads the driver's unconfirmed exit as the
-shard does; this run took no diagnostic), and the protected-harness inventory
+`test_runner.py`, `test_diagnostics.py` and `support.py`, the shard runner
+`scripts/performance/perflab/runner.py` and the diagnostic child run `diagnostics.py` (both
+read the driver's unconfirmed exit, and a driver their supervisor had to end, as an
+unconfirmed cleanup; every driver of this run exited of its own accord, and the run took no
+diagnostic), and the protected-harness inventory
 `fixtures/performance/kernel-measure/code-policy-measures.toml` and `inventory.json`,
-re-rendered for them. No registry, setup, runner or product code changed. The driver did
+re-rendered for them. No registry, setup or product code changed, and the runner changed only
+in that reading. The driver did
 change after the run, in its cleanup and its reading of the terminal, not in what it
 measures: the review rounds after it made the driver find a process that left the browser's
 session by a token in its environment and fail closed on a listing it cannot confirm, count

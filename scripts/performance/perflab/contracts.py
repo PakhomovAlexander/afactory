@@ -2452,7 +2452,7 @@ def validate_tui_open(doc, where="tui-open"):
 CLI_SETUPS = ("none", "task_repository", "task_started", "seed_copy", "registry_empty",
               "registry_stores_20x10000")
 CLI_PLACEHOLDERS = ("af", "probe", "scratch", "package_version", "fixtures", "python")
-# The reviewed PTY driver's command (ADR-0259): the absolute interpreter `{python}` names, never
+# The reviewed PTY driver's command (ADR-0260): the absolute interpreter `{python}` names, never
 # one the supervisor would look up on PATH, runs the driver isolated around the side's AF.
 TUI_DRIVER_ARGV = ["{python}", "-I", "{fixtures}/tui-open.py", "{af}"]
 AF_TASK_ID = Str(pattern=r"^[a-z][a-z0-9-]{0,63}$", max_len=64)

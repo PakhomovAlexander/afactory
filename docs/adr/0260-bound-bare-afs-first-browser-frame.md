@@ -1,4 +1,4 @@
-# ADR-0259: Bound bare af's first browser frame
+# ADR-0260: Bound bare af's first browser frame
 
 **Status:** proposed (2026-10-27). See [issue #402](https://github.com/PakhomovAlexander/afactory/issues/402).
 
@@ -83,8 +83,10 @@ listing included, is confirmed, and ends the sample then with the same exit. A c
 cannot confirm, the listing included, exits 3, which stops the shard and keeps the sample's
 scratch, as any uncertain cleanup does (ADR-0171); a diagnostic child run (ADR-0176) reads
 that exit the same way, keeps the execution's namespace and launches nothing more, whatever
-its supervisor confirmed of its own group. A Linux sample container's PID namespace ends
-every process regardless.
+its supervisor confirmed of its own group. A driver that did not exit of its own accord,
+ended by its supervisor's timeout or kill, may not have settled that session: in trusted local
+mode the shard and a diagnostic child run treat it the same way. A Linux sample container's
+PID namespace ends every process regardless.
 
 The supervisor runs only an absolute program, so the driver's interpreter is the placeholder
 `{python}`, named only as that driver's program: the laboratory's own interpreter in trusted

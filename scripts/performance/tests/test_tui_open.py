@@ -128,7 +128,7 @@ class TuiOpen(unittest.TestCase):
         self.addCleanup(signal.pthread_sigmask, signal.SIG_SETMASK,
                         signal.pthread_sigmask(signal.SIG_BLOCK, ()))
         self.root = tempfile.mkdtemp(prefix="af-tui-open-")
-        self.addCleanup(lambda: subprocess.run(["rm", "-rf", self.root]))
+        self.addCleanup(lambda: subprocess.run(["rm", "-rf", self.root], timeout=30))
         self.addCleanup(self.release_recorded)
         self.browser = os.path.join(self.root, "browser.py")
         with open(self.browser, "w", encoding="utf-8") as output:
@@ -200,11 +200,11 @@ class TuiOpen(unittest.TestCase):
 
     def stderr_so_far(self, process, seconds=1):
         """What the driver wrote to its stderr so far, read for at most `seconds` so that a
-        process left holding the pipe cannot hold the test."""
+        process left holding the pipe, or writing to it without end, cannot hold the test."""
         source = process.stderr.fileno()
         chunks = []
         deadline = time.monotonic() + seconds
-        while True:
+        while time.monotonic() < deadline:
             ready, _, _ = select.select([source], [], [], max(deadline - time.monotonic(), 0))
             if not ready:
                 break
@@ -213,6 +213,21 @@ class TuiOpen(unittest.TestCase):
                 break
             chunks.append(data)
         return b"".join(chunks).decode("utf-8", "replace")
+
+    def read_to_end(self, source, seconds):
+        """Everything descriptor `source` delivers until its end, which must come within
+        `seconds`: a pipe a process holds open past that fails the test rather than hold it."""
+        chunks = []
+        deadline = time.monotonic() + seconds
+        while True:
+            remaining = deadline - time.monotonic()
+            ready, _, _ = select.select([source], [], [], max(remaining, 0))
+            if not ready or remaining <= 0:
+                self.fail("the pipe did not end within %s s" % seconds)
+            data = os.read(source, 65536)
+            if not data:
+                return b"".join(chunks).decode("utf-8", "replace")
+            chunks.append(data)
 
     def consume(self, number):
         """A pending `number` a test left blocked, taken before its handler is restored."""
@@ -250,22 +265,53 @@ class TuiOpen(unittest.TestCase):
             self.addCleanup(self.release, pid)
         return pids
 
-    def state(self, pid):
-        """`pid`'s process state as `ps` prints it; empty once it is gone."""
-        return subprocess.run(["ps", "-o", "stat=", "-p", str(pid)], stdout=subprocess.PIPE,
-                              stderr=subprocess.DEVNULL, text=True).stdout.strip()
+    PS = ["ps", "-o", "stat=", "-p"]
+
+    def state(self, pid, seconds=10):
+        """`pid`'s process state as `ps` prints it; empty once it is gone. `ps` has `seconds`
+        to answer: one that does not fails the test rather than hold it."""
+        try:
+            return subprocess.run(self.PS + [str(pid)], stdout=subprocess.PIPE,
+                                  stderr=subprocess.DEVNULL, text=True,
+                                  timeout=seconds).stdout.strip()
+        except subprocess.TimeoutExpired:
+            self.fail("ps did not report pid %d within %s s" % (pid, seconds))
 
     def assert_not_running(self, pid):
         """`pid` is gone or a zombie its parent has yet to reap; within 2 s, since the
         reparenting and reaping of a killed orphan are the init's to time."""
         deadline = time.monotonic() + 2
         while True:
-            state = self.state(pid)
+            state = self.state(pid, max(deadline - time.monotonic(), 0.1))
             if state == "" or state.startswith("Z"):
                 return
             if time.monotonic() >= deadline:
                 self.fail("pid %d still runs in state %r" % (pid, state))
             time.sleep(0.02)
+
+    def test_a_blocked_process_query_cannot_outlive_its_bound(self):
+        # `state` gives `ps` a bound: one that never answers fails the test within it, so
+        # `assert_not_running`'s own deadline holds whatever `ps` does.
+        self.PS = ["/bin/sh", "-c", "exec sleep 30", "sh"]
+        started = time.monotonic()
+        with self.assertRaisesRegex(AssertionError, "did not report"):
+            self.state(os.getpid(), 0.2)
+        self.assertLess(time.monotonic() - started, 5)
+
+    def test_a_pipe_written_without_end_cannot_hold_the_stderr_read(self):
+        # `stderr_so_far` reads for its bound and no longer, whatever keeps writing; a pipe
+        # that never ends fails `read_to_end` within its bound.
+        writer = subprocess.Popen(["/bin/sh", "-c", "while :; do echo x >&2; done"],
+                                  stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                                  start_new_session=True)
+        self.addCleanup(self.end, writer, True)
+        started = time.monotonic()
+        self.assertIn("x", self.stderr_so_far(writer, 0.3))
+        self.assertLess(time.monotonic() - started, 3)
+        started = time.monotonic()
+        with self.assertRaisesRegex(AssertionError, "did not end"):
+            self.read_to_end(writer.stderr.fileno(), 0.3)
+        self.assertLess(time.monotonic() - started, 3)
 
     def test_first_status_line_and_missing_frame(self):
         code, stdout, stderr = self.run_driver("paint")
@@ -490,7 +536,7 @@ class TuiOpen(unittest.TestCase):
         def drop(pid):
             for name in os.listdir(os.path.join(proc, str(pid))):
                 os.chmod(os.path.join(proc, str(pid), name), 0o600)
-            subprocess.run(["rm", "-r", os.path.join(proc, str(pid))], check=True)
+            subprocess.run(["rm", "-r", os.path.join(proc, str(pid))], check=True, timeout=30)
 
         # An owner or a start that cannot be read, and a listing that cannot be made, leave
         # the cleanup unconfirmed; so does a status that names no uid.
@@ -622,7 +668,7 @@ class TuiOpen(unittest.TestCase):
         readable, _, _ = select.select([process.stderr], [], [], 0)
         self.assertEqual(readable, [])
         open(self.fifo + ".release", "w").close()
-        self.assertEqual(process.stderr.read(), "")
+        self.assertEqual(self.read_to_end(process.stderr.fileno(), 10), "")
         process.stdout.close()
         process.stderr.close()
 
@@ -679,11 +725,12 @@ class TuiOpen(unittest.TestCase):
         environment = dict(os.environ, **clicases.tui_home_environment(scratch))
         self.assertEqual(environment["XDG_STATE_HOME"], os.path.join(scratch, "home/state"))
         result = subprocess.run(["/bin/sh", SETUP, "registry_empty", scratch, af, "-", seed],
-                                env=environment, capture_output=True, text=True)
+                                env=environment, capture_output=True, text=True, timeout=120)
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertFalse(os.path.exists(os.path.join(scratch, "home/state/af/stores.toml")))
         result = subprocess.run(["/bin/sh", SETUP, "registry_stores_20x10000", scratch, af,
-                                 "-", seed], env=environment, capture_output=True, text=True)
+                                 "-", seed], env=environment, capture_output=True, text=True,
+                                timeout=120)
         self.assertEqual(result.returncode, 0, result.stderr)
         with open(os.path.join(scratch, "home/state/calls"), encoding="utf-8") as source:
             calls = source.read().splitlines()

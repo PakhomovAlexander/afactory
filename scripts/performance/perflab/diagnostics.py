@@ -1472,6 +1472,20 @@ class Profile(object):
                 # watch cancelled the command while it was live or it finished first: settled
                 # on the bytes held now, before any supervision failure the cancellation caused.
                 self.settled_trace()
+            if (case["timing"]["boundary"] == "reported_interval" and not self.contained()
+                    and result.supervised is not None
+                    and result.supervised.result["termination"]["kind"]
+                    not in ("exited", "setup_failed", "launch_failed")):
+                # A PTY driver that did not exit of its own accord (its supervisor's timeout or
+                # kill) may not have settled the browser's session, which runs outside the
+                # supervisor's group (ADR-0260): the execution's cleanup is unconfirmed, the
+                # namespace is kept and nothing more is launched.
+                result.uncertain = True
+                unconfirmed = ("%s: the PTY driver did not exit of its own accord (%s), so its "
+                               "settlement of the browser's session is unconfirmed: %s"
+                               % (what, result.supervised.result["termination"]["kind"],
+                                  result.stderr.decode("utf-8", "replace")[-512:]))
+                raise perfcapture.CaptureError("cleanup_uncertain", unconfirmed[:4096])
             failure = result.supervision_failure(observed_stream=True)
             if failure is not None:
                 raise perfcapture.CaptureError("cli_failed", "%s: %s" % (what, failure))
@@ -1480,7 +1494,7 @@ class Profile(object):
                     and supervise.returncode(reply) == clicases.DRIVER_UNCONFIRMED_EXIT):
                 # The PTY driver owns the browser's session outside the supervisor's group: a
                 # cleanup it could not confirm is this execution's, whatever the supervisor
-                # confirmed of its own group (ADR-0259). Nothing of the run is judged or
+                # confirmed of its own group (ADR-0260). Nothing of the run is judged or
                 # removed: the namespace is kept and nothing more is launched.
                 result.uncertain = True
                 unconfirmed = ("%s: the PTY driver could not confirm that the browser's "
