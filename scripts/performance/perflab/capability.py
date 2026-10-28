@@ -8,11 +8,11 @@ configured, verified disk-bounded scratch filesystem of at most the environment'
 2-GiB scratch limit: tmpfs, a container's root layer and an unbounded bind mount are not one,
 and a host disk image's or `statvfs`'s report alone does not establish the bound, so
 enforcement is verified by filling it. Only the filesystem's own capacity refusal (ENOSPC or
-EDQUOT) after real progress, with the filesystem then reporting itself full and the fill file
-removed, verifies it (ADR-0167); an I/O or permission error, no progress, the fill's time bound
-and a failed cleanup each refuse it with the original error. An environment is available only
-where this host provides its containment and the registry declares it executable (ADR-0168);
-otherwise it names every reason, the registry's own included.
+EDQUOT) after real progress, with the data it accepted synced, the filesystem then reporting
+itself full and the fill file removed, verifies it (ADR-0167); an I/O or permission error, no
+progress, the fill's time bound and a failed cleanup each refuse it with the original error. An
+environment is available only where this host provides its containment and the registry
+declares it executable (ADR-0168); otherwise it names every reason, the registry's own included.
 
 The whole check, its metadata steps and the fill's every write, sync and cleanup, is bounded by
 one absolute deadline fixed before its first step (ADR-0173): no step starts once it has passed,
@@ -31,8 +31,13 @@ from . import contracts
 
 BLOCK_FILESYSTEMS = ("ext2", "ext3", "ext4", "xfs", "btrfs", "f2fs")
 FILL_CHUNK = 1 << 20
-# At most this long for one scratch check, its fill included: 2 GiB written and synced a MiB at a
-# time well within it on a disk that a sample's scratch can live on; a slower one is not verified.
+# The fill syncs its file each time this many bytes were written since its last sync, and once
+# more after the filesystem refuses a write. A sync after every chunk is one durable flush per
+# MiB: the 120 s check of an 8-GiB scratch on a nested loop ext4 stopped at its fill's time bound
+# with 1.46 GB written. The bound on the unsynced data keeps each sync short.
+FILL_SYNC_BYTES = 64 * FILL_CHUNK
+# At most this long for one scratch check, its fill included: 2 GiB written and synced well within
+# it on a disk that a sample's scratch can live on; a slower one is not verified.
 FILL_SECONDS_MAX = 600
 # Kept free before the deadline for what follows the fill's last write: the free space at its
 # stop, closing and removing its file. No write starts within it.
@@ -241,12 +246,15 @@ class _Progress(object):
 
 
 def fill(root, limit_bytes, host=None, deadline=None):
-    """Write zeros into one new file below `root`, a MiB at a time and synced, until the
-    filesystem refuses, a byte past `limit_bytes` was written or a write makes no progress;
-    then remove the file. Returns the `fill` record: the bytes every successful write accepted
-    (a sync that fails afterwards does not unwrite them), why it stopped, the error and its
-    stage, the space `statvfs` reported free when it stopped or why it could not, and any error
-    closing or removing the file, each kept verbatim. Nothing is retried.
+    """Write zeros into one new file below `root`, a MiB at a time, until the filesystem
+    refuses, a byte past `limit_bytes` was written or a write makes no progress; then remove the
+    file. The file is synced after every `FILL_SYNC_BYTES` written and again after a write the
+    filesystem refused, before its free space is read: a refused write alone does not show that
+    the data before it was committed, and that sync's own error, a delayed capacity refusal or an
+    I/O error, is the fill's. Returns the `fill` record: the bytes every successful write
+    accepted (a sync that fails afterwards does not unwrite them), why it stopped, the error and
+    its stage, the space `statvfs` reported free when it stopped or why it could not, and any
+    error closing or removing the file, each kept verbatim. Nothing is retried.
 
     `deadline`, an instant of `host.clock` (`FILL_SECONDS_MAX` after the start by default),
     bounds all of it (ADR-0173). No write starts within `FILL_CLEANUP_SECONDS` before it, and a
@@ -293,7 +301,7 @@ def _fill(progress, path, root, limit_bytes, host, writes_end, started):
               "elapsed_ms": 0, "cleanup": None}
 
     def stop(why, stage=None, error=None):
-        record.update(stopped=why, stage=stage)
+        record.update(stopped=why, stage=stage, errno=None, detail=None)
         if error is not None:
             record["errno"] = errno.errorcode.get(error.errno, "errno %s" % error.errno)
             record["detail"] = _error(error)
@@ -335,6 +343,7 @@ def _fill(progress, path, root, limit_bytes, host, writes_end, started):
     cleanup = []
     try:
         chunk = b"\0" * FILL_CHUNK
+        unsynced = 0
         while record["stopped"] is None:
             if record["written_bytes"] > limit_bytes:
                 stop("limit_exceeded")
@@ -349,19 +358,34 @@ def _fill(progress, path, root, limit_bytes, host, writes_end, started):
                 break
             if count > 0:
                 record["written_bytes"] += count
+                unsynced += count
             if late():
                 stop("deadline")
                 break
             if count <= 0:
                 stop("no_progress", "write")
                 break
+            if unsynced < FILL_SYNC_BYTES:
+                continue
             if not step("fsync"):
                 stop("deadline")
                 break
+            unsynced = 0
             try:
                 host.fsync(fd)
             except OSError as error:
                 failed("fsync", error)
+        if record["stopped"] == "refused" and record["stage"] == "write":
+            # Commit what the refused write followed before the free space is read.
+            if not step("fsync"):
+                stop("deadline")
+            else:
+                try:
+                    host.fsync(fd)
+                    if late():
+                        stop("deadline")
+                except OSError as error:
+                    failed("fsync", error)
         if step("statvfs"):
             try:
                 info = host.statvfs(root)

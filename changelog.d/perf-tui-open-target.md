@@ -10,4 +10,4 @@ child run keep that sample's scratch for recovery. The case was added for the
 splash delay diagnosed
 in [issue #402](https://github.com/PakhomovAlexander/afactory/issues/402) and measures whatever
 binary it is given, the repaired browser included; it does not activate a shipping budget
-([ADR-0258](docs/adr/0258-bound-bare-afs-first-browser-frame.md)).
+([ADR-0259](docs/adr/0259-bound-bare-afs-first-browser-frame.md)).

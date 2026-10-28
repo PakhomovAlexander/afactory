@@ -1,7 +1,7 @@
 # tui_open: the first real local run of the browser case
 
 The retained evidence of
-[ADR-0258](../../adr/0258-bound-bare-afs-first-browser-frame.md): the laboratory case
+[ADR-0259](../../adr/0259-bound-bare-afs-first-browser-frame.md): the laboratory case
 `tui_open`, both registry instances, run for real on a macOS arm64 host in the named
 `macos_arm64_local` environment, trusted local mode, as
 [`p8-local`](../p8-local/README.md) describes the workflow. The products were built from source
@@ -96,7 +96,7 @@ holds that rule. The empty instance's 24 measured samples passed, 8.8 to 29.5 ms
 ## Later differences
 
 After the run these paths changed, and nothing else: `docs/README.md`,
-`docs/adr/0258-bound-bare-afs-first-browser-frame.md`,
+`docs/adr/0259-bound-bare-afs-first-browser-frame.md`,
 `docs/design/continuous-performance.md`, `docs/performance-acceptance.md`,
 `changelog.d/perf-tui-open-target.md`, `fixtures/performance/README.md`, this directory, the
 docstring of `scripts/performance/perflab/capability.py`, the driver

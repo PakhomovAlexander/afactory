@@ -113,10 +113,15 @@ commands, assertions, or the Task's own budget.
 - A gate is evidence, not a verdict to discard. A gate run reruns the tests that failed in its
   parallel run once each, alone, and fails only on those that fail twice; every local check
   records `af/TaskCheckReport@1` beside its receipt (the host's load and CPUs at its start and
-  end, its steps by stage, its test threads and its flaky tests). A Task that ended at a failed
-  gate is reopened at that gate by `af task run ID --retry-gate` (`TaskGateRetried@1`): a new
-  check Attempt on the same sealed candidate, nothing re-planned or re-admitted. A check whose
-  pinned toolchain does not resolve refuses the Task before its plan is admitted
+  end, its steps by stage, its test threads and its flaky tests). A check writes one `tests`
+  record per test run, and af folds them into one. The gate's failed and flaky tests and the
+  step that stopped a check come from its report when the check writes one, and from the text
+  scan of its output only for a check without one (absent or refused)
+  ([ADR-0258](adr/0258-task-gate-evidence-comes-from-the-check-report.md)). A Task that ended
+  at a failed gate is reopened at that gate by `af task run ID --retry-gate`
+  (`TaskGateRetried@1`): a new check Attempt on the same sealed candidate, nothing re-planned or
+  re-admitted. A check whose pinned toolchain does not resolve refuses the Task before its plan
+  is admitted
   ([ADR-0205](adr/0205-rerun-a-failed-test-alone-report-the-gate-and-retry-a-failed-gate-on-the-same-candidate.md),
   [Retry a failed gate](tasks.md#retry-a-failed-gate)).
 - A report is accepted by an independent verifier, not by its author, and every report receipt

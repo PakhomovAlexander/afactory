@@ -641,7 +641,8 @@ fn stable(text: &str) -> String {
 
 /// A check that fails on two named tests: `--checks` names them with the end of its stderr, the
 /// list's `gate` and the run's own output carry them, and `--checks --json` is the receipt
-/// document.
+/// document. The check writes no report, so its evidence is the text of its output, as
+/// `--checks` says (`evidence: output`, ADR-0258).
 #[test]
 fn a_failed_gate_names_its_failing_tests_in_checks_the_list_and_the_run() {
     let fixture = fixture("pagination");
@@ -684,7 +685,7 @@ next: {show_checks}"
             "\
 Task pagination-cli: finished/gate_failed/check_failed
 receipt sha256:<id> from root.nodes.check: failed
-check pagination: failed (exit 1) in <ms> ms, cold (no warm cache)
+check pagination: failed (exit 1) in <ms> ms, cold (no warm cache), evidence: output
   failing tests (2):
     alpha::one
     beta::two

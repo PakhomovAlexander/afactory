@@ -1480,7 +1480,7 @@ class Profile(object):
                     and supervise.returncode(reply) == clicases.DRIVER_UNCONFIRMED_EXIT):
                 # The PTY driver owns the browser's session outside the supervisor's group: a
                 # cleanup it could not confirm is this execution's, whatever the supervisor
-                # confirmed of its own group (ADR-0258). Nothing of the run is judged or
+                # confirmed of its own group (ADR-0259). Nothing of the run is judged or
                 # removed: the namespace is kept and nothing more is launched.
                 result.uncertain = True
                 unconfirmed = ("%s: the PTY driver could not confirm that the browser's "
