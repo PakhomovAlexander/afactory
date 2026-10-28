@@ -44,6 +44,10 @@ class Terminal(TempDir):
                 settings = fx.settings(self, executor, output=label, rounds=1,
                     experiments=["read_latency"] if target in ("corpus", "read_latency-0-baseline")
                     else ["overhead"])
+                # Independent fault scenarios model independent machines. A retained
+                # uncertainty fence must never be cleared to enter the next scenario.
+                settings.lock_directory = self.path("machine-" + label)
+                os.mkdir(settings.lock_directory)
                 try:
                     result = telemetrylab.run(settings)
                     self.assertEqual(result["execution"]["cleanup"], "uncertain")
@@ -52,10 +56,12 @@ class Terminal(TempDir):
                     self.assertEqual(executor.calls[-1].cwd, hostile[0])
                     self.assertTrue(os.path.lexists(hostile[0]))
                     before = len(executor.calls)
-                    retry = fx.settings(self, executor, output=label + "_retry", work=settings.output + ".work")
-                    with self.assertRaisesRegex(ContractError, "work directory"):
+                    retry = fx.settings(self, executor, output=label + "_retry", work=settings.output + ".work",
+                                        lock_directory=settings.lock_directory)
+                    with self.assertRaisesRegex(ContractError, "unfinished experiment fence"):
                         telemetrylab.run(retry)
                     self.assertEqual(len(executor.calls), before)
+                    self.assertTrue(os.path.lexists(hostile[0]))
                 finally:
                     for path in hostile:
                         os.chmod(path, 0o700)  # Explicit test-owned recovery after assertions.
@@ -168,8 +174,11 @@ class Terminal(TempDir):
             with self.subTest(operation=operation):
                 offset = [0.0]
                 executor = fx.StandIn(self.binaries)
+                lock_directory = self.path("machine-" + operation)
+                os.mkdir(lock_directory)
                 settings = fx.settings(self, executor, output=operation, rounds=1,
-                    experiments=["overhead"], clock=lambda: time.monotonic() + offset[0])
+                    experiments=["overhead"], clock=lambda: time.monotonic() + offset[0],
+                    lock_directory=lock_directory)
                 remove_owned = telemetrylab._remove_owned
                 remove_tree = telemetrylab.shutil.rmtree
                 def final_remove(path, *args, **kwargs):

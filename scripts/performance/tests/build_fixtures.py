@@ -272,6 +272,9 @@ if args[:2] == ["image", "inspect"]:
     if image not in IMAGES:
         sys.stderr.write("Error: No such image: %s\n" % image)
         sys.exit(1)
+    if args[args.index("--format") + 1] == "{{json .Config.Volumes}}":
+        print("null")
+        sys.exit(0)
     identity, env = IMAGES[image][:2]
     digests = IMAGES[image][2] if len(IMAGES[image]) > 2 else []
     print("\t".join(json.dumps(value) for value in (identity, "linux", "arm64", digests, env)))
