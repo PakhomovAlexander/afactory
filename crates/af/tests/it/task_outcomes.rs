@@ -145,6 +145,12 @@ fn malformed_implementer(fixture: &Fixture) {
 /// and `report`. They must all agree, and the triple, the next command and the attention group
 /// they agree on are returned.
 fn agreed_state(fixture: &Fixture) -> (String, Option<String>, String) {
+    agreed_state_in(fixture, None)
+}
+
+/// [`agreed_state`] with the text of `af task list --attention` the caller collected already
+/// (`listing`), so that a test that read it for an assertion of its own reads it once.
+fn agreed_state_in(fixture: &Fixture, listing: Option<&str>) -> (String, Option<String>, String) {
     let shown = fixture.json(&["task", "show", TASK]);
     schemas::valid(&schemas::validator("task-inspection-v14.json"), &shown);
     let listed = fixture.json(&["task", "list"]);
@@ -244,14 +250,20 @@ fn agreed_state(fixture: &Fixture) -> (String, Option<String>, String) {
         row.starts_with(&format!("| 1 | {TASK} | {label}")),
         "{row}\n{report}"
     );
-    let group = attention_group(fixture, &entry, &label, next.as_deref());
+    let group = attention_group(fixture, &entry, &label, next.as_deref(), listing);
     (label, next, group)
 }
 
 /// The one `af task list --attention` group that holds the Task: its `--json` document carries
 /// the same list entry there and nowhere else, and its text prints the Task under that group's
 /// title with the same state and next command.
-fn attention_group(fixture: &Fixture, entry: &Value, label: &str, next: Option<&str>) -> String {
+fn attention_group(
+    fixture: &Fixture,
+    entry: &Value,
+    label: &str,
+    next: Option<&str>,
+    listing: Option<&str>,
+) -> String {
     let attention = fixture.json(&["task", "list", "--attention"]);
     schemas::valid(&schemas::validator("task-attention-v1.json"), &attention);
     let holding: Vec<&Value> = attention["groups"]
@@ -272,7 +284,10 @@ fn attention_group(fixture: &Fixture, entry: &Value, label: &str, next: Option<&
         holding[0]["tasks"][0], *entry,
         "--attention and list --json"
     );
-    let text = out(&fixture.af(&["task", "list", "--attention"]));
+    let text = listing.map_or_else(
+        || out(&fixture.af(&["task", "list", "--attention"])),
+        str::to_owned,
+    );
     let lines: Vec<&str> = text.lines().collect();
     let at = lines
         .iter()
@@ -342,7 +357,7 @@ fn a_store_path_wider_than_a_line_prints_the_same_state_everywhere() {
             .any(|pair| pair[0].ends_with('\\') && !pair[1].starts_with(' ')),
         "no piece of a cut path starts its line:\n{text}"
     );
-    let (label, next, group) = agreed_state(&fixture);
+    let (label, next, group) = agreed_state_in(&fixture, Some(&text));
     assert_eq!(label, "planned");
     assert_eq!(group, "approval");
     assert_eq!(
