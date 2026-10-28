@@ -552,6 +552,34 @@ fn the_prompt_is_the_file_the_kernel_sends_and_nothing_else() {
     assert_eq!(pane.yank(0).as_deref(), Some("fixture/bare"));
 }
 
+/// `Enter` on a listed Worker's row is the effect that opens it; a title row, a blank row and
+/// an opened entry's rows name none.
+#[test]
+fn enter_on_a_listed_worker_row_opens_it() {
+    let temp = tempfile::tempdir().unwrap();
+    let root = temp.path();
+    worker(root, ".af/packages/p", "p");
+    commit_all(root, "p");
+    let mut pane = WorkersPane::default();
+    pane.load(&scope(root)).unwrap();
+    pane.settle();
+    let rows = texts(pane.rows());
+    let row = rows
+        .iter()
+        .position(|row| row.starts_with("  p "))
+        .unwrap_or_else(|| panic!("{rows:#?}"));
+    let id = ".af/packages/p/worker.toml";
+    assert_eq!(
+        pane.key(Key::Enter, row),
+        Ok(Some(Effect::OpenItem(Tab::Workers, id.to_owned())))
+    );
+    assert_eq!(pane.key(Key::Enter, 0), Ok(None));
+    assert_eq!(pane.key(Key::Char('x'), row), Ok(None));
+    pane.open(Some(id));
+    pane.settle();
+    assert_eq!(pane.key(Key::Enter, row), Ok(None));
+}
+
 #[test]
 fn the_user_scope_lists_no_workers_and_says_they_belong_to_a_project() {
     let temp = tempfile::tempdir().unwrap();

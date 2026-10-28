@@ -18,3 +18,5 @@
   Keychain login as a registered directory), as they leave out a logged-out one (ADR-0254).
 - The Workers folder lists its Workers from the start in a project scope, read on its thread
   after the first frame like the other folders; it no longer waits for an open.
+- `Enter` on a Worker or a Pipeline listed in the main pane of its folder opens it, as the bar
+  does; the folders' legends say so.

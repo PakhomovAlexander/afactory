@@ -89,6 +89,8 @@ pub(crate) enum Effect {
     Refresh,
     /// Open the named Pipeline in the Pipelines pane, when that pane lists it.
     OpenPipeline(String),
+    /// Open the entry a folder lists under this id in its pane, as the bar would.
+    OpenItem(crate::tui::tree::Tab, String),
     /// Open the `:` line holding this text, for the user to review; nothing is submitted.
     Prefill(String),
 }

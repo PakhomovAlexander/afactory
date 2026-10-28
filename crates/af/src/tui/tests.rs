@@ -1597,6 +1597,40 @@ fn a_hand_off_releases_first_reenters_after_and_reads_the_panes_again() {
     );
 }
 
+/// `Enter` on a Worker or a Pipeline the folder lists in the main pane opens it, as the bar
+/// does, and the bar's cursor follows.
+#[test]
+fn enter_on_a_listed_entry_in_the_main_pane_opens_it() {
+    let (_temp, root) = temp_root();
+    let repo = hub_repo(&root);
+    let mut app = app_at(&root, repo);
+    let mut host = Recorder::default();
+    let row_of = |app: &App, prefix: &str| {
+        app.main_rows()
+            .iter()
+            .position(|row| row.text().starts_with(prefix))
+            .unwrap_or_else(|| panic!("{prefix}: {:#?}", main_texts(app)))
+    };
+    press(&mut app, &mut host, b"]]]]\r\t");
+    assert_eq!(app.breadcrumb(), "workers/");
+    let evaluator = row_of(&app, "  fixture/evaluator ");
+    press(&mut app, &mut host, "j".repeat(evaluator).as_bytes());
+    press(&mut app, &mut host, b"\r");
+    assert_eq!(app.breadcrumb(), "workers/fixture/evaluator");
+    assert_eq!(
+        app.tree.selected().id,
+        ".af/task-packages/fixture/evaluator/worker.toml"
+    );
+    // The Pipelines folder alike: `<C-w>h` to the bar, the next folder, open it, `<C-w>l` to
+    // the main pane; its title row names no entry, a Pipeline's row opens that Pipeline.
+    press(&mut app, &mut host, b"\x17h]]\r\x17l\r");
+    assert_eq!(app.breadcrumb(), "pipelines/");
+    let review = row_of(&app, "review ");
+    press(&mut app, &mut host, "j".repeat(review).as_bytes());
+    press(&mut app, &mut host, b"\r");
+    assert_eq!(app.breadcrumb(), "pipelines/review");
+}
+
 /// The Workers folder lists its Workers from the start, read on its thread, and a hand-off
 /// re-reads it whether it is opened or not.
 #[test]

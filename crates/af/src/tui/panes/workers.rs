@@ -29,11 +29,13 @@ use toml::Value;
 
 use super::pipelines::{CATALOG, blobs, declared, differing, head, listed, pinned_paths};
 use super::tasks::{self, Cache, Invoked, Target};
-use super::{Pane, Row};
+use super::{Effect, Pane, Row};
 use crate::task_execution;
+use crate::tui::keymap::Key;
 use crate::tui::paint::{Paint, Span, Tone};
 use crate::tui::scope::Scope;
 use crate::tui::tree::Item;
+use crate::tui::tree::Tab;
 
 /// The columns of a section rule: the main pane beside the bar at 100 columns.
 const RULE: usize = 100 - crate::tui::BAR_WIDTH;
@@ -638,6 +640,8 @@ pub(crate) struct WorkersPane {
     /// The commit the entries were read from.
     commit: String,
     entries: Vec<Entry>,
+    /// The entry each row of the folder's listing names; empty while an entry is opened.
+    named: BTreeMap<usize, String>,
     /// Why the last read of `HEAD` failed; the entries shown are the previous read's.
     error: Option<String>,
     /// The Task state directories the Tasks pane reads for this scope.
@@ -807,15 +811,24 @@ impl WorkersPane {
 
     fn rebuild(&mut self) {
         self.generation = self.catalogs.generation();
-        let (rows, prompt_row) = match self.selected_entry() {
-            Some(entry) => self.entry_rows(entry),
-            None => (self.folder_rows(), usize::MAX),
+        let (rows, prompt_row, named) = match self.selected_entry() {
+            Some(entry) => {
+                let (rows, prompt_row) = self.entry_rows(entry);
+                (rows, prompt_row, BTreeMap::new())
+            }
+            None => {
+                let (rows, named) = self.folder_rows();
+                (rows, usize::MAX, named)
+            }
         };
         self.rows = rows;
         self.prompt_row = prompt_row;
+        self.named = named;
     }
 
-    fn folder_rows(&self) -> Vec<Row> {
+    /// The folder's listing, and the entry each of its rows names.
+    fn folder_rows(&self) -> (Vec<Row>, BTreeMap<usize, String>) {
+        let mut named = BTreeMap::new();
         let mut rows = vec![Row::painted(&self.title, Paint::Title), Row::blank()];
         if let Some(error) = &self.error {
             let stale = if self.entries.is_empty() {
@@ -830,7 +843,7 @@ impl WorkersPane {
         if self.root.is_none() {
             let project = "Workers belong to a project; :cd into a repository.";
             rows.push(Row::plain(project));
-            return rows;
+            return (rows, named);
         }
         if self.entries.is_empty() && self.error.is_none() {
             let none = "No Worker committed under .af/workers/, .af/task-packages/, \
@@ -846,11 +859,12 @@ impl WorkersPane {
             for entry in listed {
                 let mark = if entry.drifted.is_empty() { "" } else { " *" };
                 let (label, directory) = (&entry.label, &entry.directory);
+                named.insert(rows.len(), entry.id.clone());
                 rows.push(Row::plain(format!("  {label:<26} {directory}{mark}")));
             }
         }
         rows.extend(self.store_refusals());
-        rows
+        (rows, named)
     }
 
     /// Why the scope's Task state, or one of its Stores, cannot be read.
@@ -1240,10 +1254,19 @@ impl Pane for WorkersPane {
         &self.rows
     }
 
+    /// `Enter` on a Worker the folder lists opens it, as the bar does.
+    fn key(&mut self, key: Key, row: usize) -> Result<Option<Effect>, String> {
+        if key != Key::Enter {
+            return Ok(None);
+        }
+        let id = self.named.get(&row).cloned();
+        Ok(id.map(|id| Effect::OpenItem(Tab::Workers, id)))
+    }
+
     fn legend(&self) -> &'static str {
         match self.selected {
             Some(_) => "j/k scroll  gf open file  y yank name  R re-read  Tab bar",
-            None => "j/k move  R re-read  Tab bar  :cmd  q quit",
+            None => "j/k move  Enter open  R re-read  Tab bar  :cmd  q quit",
         }
     }
 

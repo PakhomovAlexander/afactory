@@ -251,7 +251,13 @@ Main pane, three sections separated by rules:
    `instructions.md` for a Task Worker package (§8), rendered as plain text, scrollable, with
    `gf` to edit. If a package has no prompt file the section says so instead of guessing.
 
+The folder's listing in the main pane is one row per Worker under its source; `Enter` on one
+opens it, as the bar does, and the bar's cursor follows.
+
 ### 5.4 Pipelines
+
+The folder's listing in the main pane is one row per Pipeline; `Enter` on one opens it, as
+the bar does, and the bar's cursor follows.
 
 For now the pane is the text `af task explain --tree` prints, produced by
 `task_execution::preview::render(…, tree = true)`, verbatim:

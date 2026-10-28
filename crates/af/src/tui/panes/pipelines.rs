@@ -15,11 +15,13 @@ use std::sync::mpsc::{self, Receiver, TryRecvError};
 
 use toml::Value;
 
-use super::{Pane, Row, SPINNER};
+use super::{Effect, Pane, Row, SPINNER};
 use crate::task_execution::{self, TreePreview};
+use crate::tui::keymap::Key;
 use crate::tui::paint::Paint;
 use crate::tui::scope::Scope;
 use crate::tui::tree::Item;
+use crate::tui::tree::Tab;
 
 /// The committed catalog that pins Pipeline and Worker packages by name.
 pub(crate) const CATALOG: &str = ".af/task-catalog.toml";
@@ -112,6 +114,8 @@ pub(crate) struct PipelinesPane {
     /// The entry being compiled, and the commit it was compiled at.
     job: Option<(String, String, Receiver<Compiled>)>,
     rows: Vec<Row>,
+    /// The entry each row of the folder's listing names; empty while an entry is opened.
+    named: BTreeMap<usize, String>,
     spinner: usize,
 }
 
@@ -270,8 +274,8 @@ impl PipelinesPane {
     }
 
     fn rebuild(&mut self) {
-        self.rows = match self.selected_entry() {
-            Some(entry) => self.entry_rows(entry),
+        (self.rows, self.named) = match self.selected_entry() {
+            Some(entry) => (self.entry_rows(entry), BTreeMap::new()),
             None => self.folder_rows(),
         };
     }
@@ -318,7 +322,9 @@ impl PipelinesPane {
         rows
     }
 
-    fn folder_rows(&self) -> Vec<Row> {
+    /// The folder's listing, and the entry each of its rows names.
+    fn folder_rows(&self) -> (Vec<Row>, BTreeMap<usize, String>) {
+        let mut named = BTreeMap::new();
         let mut rows = vec![Row::painted("PIPELINES", Paint::Title), Row::blank()];
         if let Some(error) = &self.error {
             let stale = if self.entries.is_empty() {
@@ -343,9 +349,10 @@ impl PipelinesPane {
         for entry in &self.entries {
             let (label, id) = (&entry.label, &entry.id);
             let mark = if entry.modified { " *" } else { "" };
+            named.insert(rows.len(), id.clone());
             rows.push(Row::plain(format!("{label:<28} {id}{mark}")));
         }
-        rows
+        (rows, named)
     }
 }
 
@@ -393,8 +400,20 @@ impl Pane for PipelinesPane {
         &self.rows
     }
 
+    /// `Enter` on a Pipeline the folder lists opens it, as the bar does.
+    fn key(&mut self, key: Key, row: usize) -> Result<Option<Effect>, String> {
+        if key != Key::Enter {
+            return Ok(None);
+        }
+        let id = self.named.get(&row).cloned();
+        Ok(id.map(|id| Effect::OpenItem(Tab::Pipelines, id)))
+    }
+
     fn legend(&self) -> &'static str {
-        "j/k slot  R recompile  gf open TOML  y yank name  Tab bar  :cmd  q quit"
+        match self.selected {
+            Some(_) => "j/k slot  R recompile  gf open TOML  y yank name  Tab bar  :cmd  q quit",
+            None => "j/k move  Enter open  R re-read  Tab bar  :cmd  q quit",
+        }
     }
 
     /// The Worker binding of the slot a highlighted plan row names.
@@ -1047,6 +1066,32 @@ mod tests {
 
     fn scope(root: &Path) -> Scope {
         Scope::project(root.to_path_buf(), config::load(Some(root)).unwrap())
+    }
+
+    /// `Enter` on a listed Pipeline's row is the effect that opens it; a title row and an
+    /// opened entry's rows name none.
+    #[test]
+    fn enter_on_a_listed_pipeline_row_opens_it() {
+        let temp = tempfile::tempdir().unwrap();
+        let root = temp.path();
+        package(root, "p", "p-pipeline");
+        catalog(root, &[("p-pipeline", "p")]);
+        commit_all(root, "p");
+        let mut pane = PipelinesPane::default();
+        pane.load(&scope(root)).unwrap();
+        let id = pane.items()[0].id.clone();
+        let row = pane
+            .rows()
+            .iter()
+            .position(|row| row.text().starts_with("p-pipeline "))
+            .unwrap_or_else(|| panic!("{:#?}", pane.rows()));
+        assert_eq!(
+            pane.key(Key::Enter, row),
+            Ok(Some(Effect::OpenItem(Tab::Pipelines, id.clone())))
+        );
+        assert_eq!(pane.key(Key::Enter, 0), Ok(None));
+        pane.open(Some(&id));
+        assert_eq!(pane.key(Key::Enter, row), Ok(None));
     }
 
     /// Every open reads again, so the read must cost the same for 2 pipelines as for 30.

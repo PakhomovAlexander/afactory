@@ -99,7 +99,9 @@ Caps Lock          a capital letter with no key of its own is its small one
 
 providers: d fills the : line with `provider remove ID` for a registered
            Provider; Enter on the line runs it
-workers: gf opens the prompt (or the declaration), y copies the name
+workers: Enter on a listed Worker opens it; gf opens the prompt (or the
+         declaration), y copies the name
+pipelines: Enter on a listed Pipeline opens it
 tasks: Enter on a HISTORY row shows its artifact (q or Esc returns),
        p opens the Task's pipeline, y copies the Task id,
        r fills the : line with `task run ID --confirm-plan PLAN`,
@@ -1238,12 +1240,24 @@ impl App {
             }
             Effect::RunCommand(words) => self.run_command(&words, host),
             Effect::OpenPipeline(name) => self.open_pipeline(&name),
+            Effect::OpenItem(tab, id) => self.open_item(tab, &id),
             Effect::Prefill(line) => {
                 // Never submitted: the user reads the line and presses Enter, or `Esc`.
                 self.begin(Mode::Command);
                 self.prompt.set(&line);
             }
         }
+    }
+
+    /// Open an entry a folder's listing names, as selecting it in the bar would; the bar's
+    /// cursor follows it. An entry a read no longer lists says so.
+    fn open_item(&mut self, tab: Tab, id: &str) {
+        self.sync();
+        if !self.tree.select(NodeKind::Item(tab), id) {
+            self.say_error(format!("{id} is no longer listed"));
+            return;
+        }
+        self.show(Opened::Item(tab, id.to_owned()));
     }
 
     /// Open a Pipeline the Pipelines pane lists by name, as selecting it in the bar would.
