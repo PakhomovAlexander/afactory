@@ -2075,8 +2075,8 @@ fn the_agents_page_names_the_help_topic_document_and_the_selectors_command() {
     let prose = page.split_whitespace().collect::<Vec<_>>().join(" ");
     for sentence in [
         "`af help agents --json` prints this page as one `af/help-topic@1` document whose \
-         `text` is the page `af help agents` prints, and so does every other topic and \
-         `af help errors CAUSE` with `--json` added",
+         `text` is the page `af help agents` prints below its title line, and so does every \
+         other topic and `af help errors CAUSE` with `--json` added",
         "When af finds the default branch, the selectors refusal names the command with the \
          selectors af would choose, even while reviewers still need a Provider",
     ] {
@@ -2402,10 +2402,12 @@ fn help_json_prints_the_generated_command_catalog() {
 }
 
 /// #363: words that name no command but a page `af help` prints as text, a topic or
-/// `errors CAUSE`, print that page under `--json` as one `af/help-topic@1` document whose `text`
-/// is what the text form prints after its title line; a word that is also a command keeps its
-/// catalog, and words that name neither are one `af/error@2` document, exit 2, that no longer
-/// says only commands exist.
+/// `errors CAUSE`, print that page under `--json` as one `af/help-topic@1` document. The text
+/// form is exactly the title line `af help NAME — DESCRIPTION`, a blank line, the document's
+/// `text` and a final newline; `af help errors CAUSE` has no title line, so it is the `text` and
+/// a final newline. A word that is also a command keeps its catalog, and words that name neither,
+/// `errors` with an unknown cause among them, are one `af/error@2` document, exit 2, that no
+/// longer says only commands exist; the text form exits 2 for them too.
 #[test]
 fn help_json_prints_a_page_the_text_form_prints() {
     let topic = crate::schemas::validator("help-topic-v1.json");
@@ -2417,18 +2419,13 @@ fn help_json_prints_a_page_the_text_form_prints() {
         crate::schemas::valid(&topic, &document);
         assert_eq!(document["schema"], "af/help-topic@1");
         assert_eq!(document["name"], name);
-        let text = out(&af(&["help", name]));
-        let (title, rest) = text.split_once('\n').unwrap();
         assert_eq!(
-            title,
+            out(&af(&["help", name])),
             format!(
-                "af help {name} — {}",
-                document["description"].as_str().unwrap()
-            )
-        );
-        assert_eq!(
-            rest,
-            format!("\n{}\n", document["text"].as_str().unwrap()),
+                "af help {name} — {}\n\n{}\n",
+                document["description"].as_str().unwrap(),
+                document["text"].as_str().unwrap()
+            ),
             "{name}"
         );
     }
@@ -2461,11 +2458,39 @@ fn help_json_prints_a_page_the_text_form_prints() {
         .unwrap_or_else(|_| panic!("not one document: {}", out(&refused)));
     crate::schemas::valid(&crate::schemas::validator("error-v2.json"), &error);
     assert_eq!(error["schema"], "af/error@2");
+    assert_eq!(error["exit_code"], 2, "{error}");
     let message = error["error"].as_str().unwrap();
     assert!(
         message
             .starts_with("no command or help page named no-such-page; run af help for every page"),
         "{message}"
+    );
+
+    // `errors` and a cause af does not know name no page either: the same usage refusal.
+    let refused = af(&["help", "errors", "no_such_cause", "--json"]);
+    assert_eq!(refused.status.code(), Some(2), "{}", err(&refused));
+    let error: serde_json::Value = serde_json::from_slice(&refused.stdout)
+        .unwrap_or_else(|_| panic!("not one document: {}", out(&refused)));
+    crate::schemas::valid(&crate::schemas::validator("error-v2.json"), &error);
+    assert_eq!(error["schema"], "af/error@2");
+    assert_eq!(error["exit_code"], 2, "{error}");
+    assert_eq!(
+        error["error"],
+        "unknown error cause no_such_cause; run af help errors"
+    );
+    assert!(
+        err(&refused)
+            .starts_with("af help: unknown error cause no_such_cause; run af help errors\n"),
+        "{}",
+        err(&refused)
+    );
+    let text = af(&["help", "errors", "no_such_cause"]);
+    assert_eq!(text.status.code(), Some(2), "{}", err(&text));
+    assert!(text.stdout.is_empty(), "{}", out(&text));
+    assert!(
+        err(&text).starts_with("af help: unknown error cause no_such_cause; run af help errors\n"),
+        "{}",
+        err(&text)
     );
 
     let shipped = af(&["schema", "show", "af/help-topic@1"]);

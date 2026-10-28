@@ -19,7 +19,8 @@
 - `af help agents --json`, and `af help TOPIC --json` for every page `af help` prints, now prints
   the page as one `af/help-topic@1` document (`schemas/help-topic-v1.json`): its name, description
   and text; `af help errors CAUSE --json` too. Words that are a command still print the command
-  catalog, and words that name neither still exit 2.
+  catalog, and words that name neither still exit 2. `af help errors CAUSE` with a cause af does
+  not know now exits 2 (usage), as an unknown topic does, in both forms.
 - On the default branch with an uncommitted change and reviewers that still need a Provider,
   `af review plan --json` no longer says the default branch cannot be determined: its refusal's
   `next_action` is the command with the selectors af would choose, and the message names each

@@ -120,11 +120,13 @@ caused it:
    words name a command, as before. Words that name no command but a page `af help` prints as
    text, a topic or `errors CAUSE`, print exactly one new document, `af/help-topic@1`
    (`schemas/help-topic-v1.json`): the page's `name`, its one-line `description` (null for
-   `errors CAUSE`, whose text form has no title line) and `text`, the page as the text form
-   prints it below its title line. One function renders both forms, so they cannot drift.
-   Words that name neither exit 2 with one `af/error@2` document that names both the pages and
-   the commands. `af help --json`, `af help COMMAND... --json` and `af help agents --snippet`
-   are unchanged.
+   `errors CAUSE`, whose text form has no title line) and `text`, the page below its title line
+   and the blank line after it (all of it for `errors CAUSE`), without the final newline: the
+   text form prints exactly the title line, a blank line, `text` and a newline. One function
+   renders both forms, so they cannot drift. Words that name neither, `errors` and a cause af
+   does not know among them, exit 2 in both forms; under `--json` they print one `af/error@2`
+   document, which for unknown words names both the pages and the commands. `af help --json`,
+   `af help COMMAND... --json` and `af help agents --snippet` are unchanged.
 7. **The selectors refusal names its selectors.** When af finds the default branch and the
    selectors it would choose resolve, the `review_selectors_missing` refusal's `next_action` is
    the command with them: `--policy-rev`, `--base` when not given, `--uncommitted` or

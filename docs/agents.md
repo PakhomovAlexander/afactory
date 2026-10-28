@@ -89,10 +89,10 @@ prints one command. A command this page describes, or one a `next_action` names,
 lookup first. Before you run any other command for the first time, read its `effects`: one with
 `tokens` `free`, no `writes` and no `human` only reads. Every page is a document too:
 `af help agents --json` prints this page as one `af/help-topic@1` document whose `text` is the
-page `af help agents` prints, and so does every other topic and `af help errors CAUSE` with
-`--json` added; a word that is also a command, such as `config`, prints the command's catalog.
-`af schema show ID` prints the schema of any document `af help json` names, and `af schema show`
-lists the IDs.
+page `af help agents` prints below its title line, and so does every other topic and
+`af help errors CAUSE` with `--json` added; a word that is also a command, such as `config`,
+prints the command's catalog. `af schema show ID` prints the schema of any document
+`af help json` names, and `af schema show` lists the IDs.
 
 ## 1. Plan
 

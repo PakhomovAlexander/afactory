@@ -1596,9 +1596,17 @@ fn help_command(words: &[String], snippet: bool, json: bool) -> Result<i32, Stri
         println!("\n{}", topics::listing());
         return Ok(0);
     }
-    if let Some(page) = topics::help_page(words) {
-        println!("{}", page?.text_form());
-        return Ok(0);
+    match topics::help_page(words) {
+        Some(Ok(page)) => {
+            println!("{}", page.text_form());
+            return Ok(0);
+        }
+        // `errors` and no known cause name no page: usage, as an unknown topic is.
+        Some(Err(error)) => {
+            eprintln!("af help: {}", terminal_text(&error));
+            return Ok(2);
+        }
+        None => {}
     }
     let mut current = &mut root;
     for word in words {
@@ -1634,16 +1642,14 @@ fn help_catalog(words: &[String]) -> Result<i32, String> {
     let document = match command_catalog::document(words) {
         Ok(document) => document,
         Err(_) => match topics::help_page(words) {
-            Some(page) => page?.document(),
+            Some(Ok(page)) => page.document(),
+            Some(Err(error)) => return Ok(help_refusal(&error)),
             None => {
-                let error = format!(
+                return Ok(help_refusal(&format!(
                     "no command or help page named {}; run af help for every page, or af help \
                      --json for every command",
-                    terminal_text(&words.join(" "))
-                );
-                println!("{}", error_document::document("af help", &error, 2, None));
-                eprintln!("af help: {error}");
-                return Ok(2);
+                    words.join(" ")
+                )));
             }
         },
     };
@@ -1652,6 +1658,15 @@ fn help_catalog(words: &[String]) -> Result<i32, String> {
         serde_json::to_string_pretty(&document).map_err(|error| error.to_string())?
     );
     Ok(0)
+}
+
+/// `af help WORDS --json` for words that name no command and no page, `errors` and an unknown
+/// cause included: one `af/error@2` document and its sentence on stderr, exit 2 (usage).
+fn help_refusal(error: &str) -> i32 {
+    let error = terminal_text(error);
+    println!("{}", error_document::document("af help", &error, 2, None));
+    eprintln!("af help: {error}");
+    2
 }
 
 fn main() {
