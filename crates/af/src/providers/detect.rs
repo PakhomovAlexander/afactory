@@ -2453,9 +2453,38 @@ fn print_closing(rows: &[Row], applied: bool, code: i32, binaries: &[Binary], ho
             .iter()
             .filter(|row| row.suggested.action == "register")
             .count();
+        // Worded from the authenticated rows: a directory that exists but is logged out is no
+        // registered login (#394 finding 3).
+        let authenticated = rows
+            .iter()
+            .filter(|row| row.auth == Auth::Authenticated)
+            .count();
+        let registered = rows
+            .iter()
+            .filter(|row| row.auth == Auth::Authenticated && row.candidate.registered_as.is_some())
+            .count();
+        let login = rows
+            .iter()
+            .find(|row| row.suggested.action == "login")
+            .and_then(|row| row.suggested.id.as_deref());
         let summary = match waiting {
             0 if rows.is_empty() => "No login was found to register.".to_string(),
-            0 => "every authenticated login found here is registered".to_string(),
+            0 if authenticated == 0 => match login {
+                Some(id) => format!(
+                    "No authenticated login was found. Log in privately: run the af provider \
+                     setup {id} ... --login line above yourself at a private terminal, never \
+                     through an agent, then run af provider detect again"
+                ),
+                None => "No authenticated login was found.".to_string(),
+            },
+            0 if registered == authenticated => {
+                "every authenticated login found here is registered".to_string()
+            }
+            0 => format!(
+                "{} of {authenticated} authenticated logins cannot be registered yet: fix what \
+                 the lines above name, then run af provider detect again",
+                authenticated - registered
+            ),
             1 => "1 login is not registered: run af provider detect --apply to register it with \
                   the ID above, or copy a line"
                 .to_string(),

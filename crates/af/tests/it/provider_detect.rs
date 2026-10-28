@@ -284,6 +284,37 @@ fn detect_with_a_cli_but_no_login_does_not_claim_any_login_registered() {
     );
 }
 
+/// #394 finding 3: an auth directory that exists but is logged out is no registered login. The
+/// summary says no authenticated login was found and points to that row's private login step,
+/// which detect never runs.
+#[test]
+fn detect_with_a_logged_out_directory_names_the_private_login_step() {
+    let machine = Machine::new();
+    machine.install("claude", CLAUDE);
+    machine.dir(".claude", &[".claude.json"]);
+    let output = machine.af(&["provider", "detect"]);
+    assert_eq!(code(&output), 0, "{}", err(&output));
+    let stdout = out(&output);
+    let prose = stdout.split_whitespace().collect::<Vec<_>>().join(" ");
+    assert!(
+        !prose.contains("every authenticated login found here is registered"),
+        "{stdout}"
+    );
+    assert!(
+        prose.contains(
+            "No authenticated login was found. Log in privately: run the af provider setup \
+             claude-main ... --login line above yourself at a private terminal, never through \
+             an agent, then run af provider detect again"
+        ),
+        "{stdout}"
+    );
+    assert!(
+        stdout.contains("af provider setup claude-main --kind claude --auth-dir ~/.claude --login"),
+        "{stdout}"
+    );
+    assert!(machine.registry().is_empty());
+}
+
 /// Item 7: `af provider status` with no CLI and no registry entry prints the same guidance, and
 /// with directories present but unregistered names them, unprobed.
 #[test]

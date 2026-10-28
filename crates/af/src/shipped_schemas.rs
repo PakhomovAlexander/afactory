@@ -25,6 +25,7 @@ pub(crate) const SCHEMAS: &[(&str, &str, &str)] = &[
     schema!("command-catalog", 1),
     schema!("error", 2),
     schema!("findings-sarif", 1),
+    schema!("help-topic", 1),
     schema!("provider-detect", 4),
     schema!("provider-models", 1),
     schema!("provider-setup", 2),

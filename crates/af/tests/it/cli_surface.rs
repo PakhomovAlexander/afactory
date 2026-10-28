@@ -1693,6 +1693,7 @@ fn the_agent_loop_verbs_and_the_agents_topic_describe_the_commands() {
             (Some(&"help"), Some(topic)) => af(&["help", topic]),
             (Some(&"setup"), Some(verb)) => af(&["setup", verb, "--help"]),
             (Some(&"schema"), Some(verb)) => af(&["schema", verb, "--help"]),
+            (Some(&"review"), Some(verb)) => af(&["review", verb, "--help"]),
             _ => panic!("docs/agents.md names `{span}`, which is not an af task command"),
         };
         assert!(help.status.success(), "`{span}`: {}", err(&help));
@@ -1810,11 +1811,29 @@ fn agent_setup_previews_writes_once_and_refuses_foreign_skills() {
     let agents = std::fs::read_to_string(root.join("AGENTS.md")).unwrap();
     assert!(agents.starts_with("foreign instructions\n\n"));
     assert!(agents.contains(&snippet));
-    assert_eq!(snippet.lines().count(), 9);
+    assert!(snippet.lines().count() <= 8, "{snippet}");
     let claude = std::fs::read_to_string(root.join(".claude/skills/af/SKILL.md")).unwrap();
     let codex = std::fs::read_to_string(root.join(".agents/skills/af/SKILL.md")).unwrap();
     assert_eq!(claude, codex);
     assert!(claude.contains(&snippet));
+    // Codex and Claude Code load a skill only when YAML frontmatter opens it (#394 finding 1).
+    for skill in [&claude, &codex] {
+        let frontmatter = skill
+            .strip_prefix("---\n")
+            .and_then(|rest| rest.split_once("\n---\n"))
+            .unwrap_or_else(|| panic!("no frontmatter on line 1:\n{skill}"))
+            .0;
+        assert!(
+            frontmatter.lines().any(|line| line == "name: af"),
+            "{skill}"
+        );
+        assert!(
+            frontmatter.lines().any(|line| line
+                .strip_prefix("description: ")
+                .is_some_and(|description| !description.trim().is_empty())),
+            "{skill}"
+        );
+    }
     let again = af(&["setup", "agents", "--repo", repo, "--write"]);
     assert!(again.status.success(), "{}", err(&again));
     assert_eq!(
@@ -1832,11 +1851,26 @@ fn agent_setup_previews_writes_once_and_refuses_foreign_skills() {
             .count()
             == 3
     );
-    let old_body = "---\nname: af\ndescription: Previous af agent skill.\n---\n";
-    let digest = Sha256::digest(old_body.as_bytes());
+    // A digest marker any file can recompute makes no skill af's (#394 finding 2): the forged
+    // file is refused before any write and left byte for byte.
+    let forged_body = "---\nname: af\ndescription: Previous af agent skill.\n---\n";
+    let digest = Sha256::digest(forged_body.as_bytes());
     let digest: String = digest.iter().map(|byte| format!("{byte:02x}")).collect();
-    let old_skill = format!("<!-- af-generated-skill:sha256:{digest} -->\n{old_body}");
-    std::fs::write(root.join(".agents/skills/af/SKILL.md"), old_skill).unwrap();
+    let forged = format!("<!-- af-generated-skill:sha256:{digest} -->\n{forged_body}");
+    std::fs::write(root.join(".agents/skills/af/SKILL.md"), &forged).unwrap();
+    let refused = af(&["setup", "agents", "--repo", repo, "--write"]);
+    assert!(!refused.status.success(), "{}", out(&refused));
+    assert!(
+        err(&refused).contains("foreign SKILL.md"),
+        "{}",
+        err(&refused)
+    );
+    assert_eq!(
+        std::fs::read_to_string(root.join(".agents/skills/af/SKILL.md")).unwrap(),
+        forged
+    );
+    // The bytes an earlier `af setup agents --write` wrote are af's, and are upgraded.
+    std::fs::write(root.join(".agents/skills/af/SKILL.md"), EARLIER_SKILL).unwrap();
     let upgraded = af(&["setup", "agents", "--repo", repo, "--write"]);
     assert!(upgraded.status.success(), "{}", err(&upgraded));
     assert_eq!(
@@ -1882,6 +1916,157 @@ fn agent_setup_previews_writes_once_and_refuses_foreign_skills() {
         std::fs::read_to_string(empty.join("AGENTS.md")).unwrap(),
         snippet
     );
+    assert_the_pointer_is_four_rules_and_one_source(
+        &snippet,
+        [
+            &std::fs::read_to_string(empty.join(".claude/skills/af/SKILL.md")).unwrap(),
+            &std::fs::read_to_string(empty.join(".agents/skills/af/SKILL.md")).unwrap(),
+        ],
+    );
+    // An AGENTS.md holding the earlier seven-line block gets the current one; its own text stays.
+    std::fs::write(
+        root.join("AGENTS.md"),
+        format!("foreign instructions\n\n{EARLIER_BLOCK}\nmore foreign text\n"),
+    )
+    .unwrap();
+    std::fs::write(root.join(".agents/skills/af/SKILL.md"), &claude).unwrap();
+    let block = af(&["setup", "agents", "--repo", repo, "--write"]);
+    assert!(block.status.success(), "{}", err(&block));
+    assert_eq!(
+        std::fs::read_to_string(root.join("AGENTS.md")).unwrap(),
+        format!("foreign instructions\n\n{snippet}\nmore foreign text\n")
+    );
+}
+
+/// The block `af setup agents --write` installed before ADR-0259, with its markers: a copy of
+/// that source's `docs/agents.md`.
+const EARLIER_BLOCK: &str = "\
+<!-- af-agent-help:start -->
+For repository work with af, run `af help agents` first.
+Read `af help json`, `af help exit-codes`, and `af help task-file` for machine contracts.
+Start with `af provider status --json` and `af onboard` to inspect readiness.
+Plan a Task with `af task plan --file TASK_FILE --json` before running it.
+Follow `state.next_action` in each JSON result; do not guess a next command.
+Use `af task findings TASK_ID --json` and `af task diff TASK_ID --json` for evidence.
+Never add `--login` inside an agent session; ask the person to log in privately.
+<!-- af-agent-help:end -->
+";
+
+/// The `SKILL.md` that source's `af setup agents --write` wrote: its digest marker, then the
+/// skill built around [`EARLIER_BLOCK`].
+const EARLIER_SKILL: &str = "\
+<!-- af-generated-skill:sha256:0c44d5402cbb85cbba220f2b2eb7c174a0b5940c95df3f32796164307e311c25 -->
+---
+name: af
+description: Drive Afactory from a coding agent.
+---
+
+# Afactory
+
+<!-- af-agent-help:start -->
+For repository work with af, run `af help agents` first.
+Read `af help json`, `af help exit-codes`, and `af help task-file` for machine contracts.
+Start with `af provider status --json` and `af onboard` to inspect readiness.
+Plan a Task with `af task plan --file TASK_FILE --json` before running it.
+Follow `state.next_action` in each JSON result; do not guess a next command.
+Use `af task findings TASK_ID --json` and `af task diff TASK_ID --json` for evidence.
+Never add `--login` inside an agent session; ask the person to log in privately.
+<!-- af-agent-help:end -->
+
+Run `af help agents` for the full loop.
+";
+
+/// #363: the pointer is four rules in at most six lines of at most 100 columns, names no
+/// command but `af help agents`, and `af help agents --snippet` (`snippet`) and the block of
+/// both installed skills hold the same bytes; the caller checks that a fresh `AGENTS.md` is
+/// `snippet`. Called by `agent_setup_previews_writes_once_and_refuses_foreign_skills` with what
+/// it installed, so the pointer costs no fixture of its own.
+fn assert_the_pointer_is_four_rules_and_one_source(snippet: &str, skills: [&str; 2]) {
+    let inner = snippet
+        .split_once("<!-- af-agent-help:start -->\n")
+        .and_then(|(_, rest)| rest.split_once("<!-- af-agent-help:end -->"))
+        .unwrap_or_else(|| panic!("no af-agent-help markers:\n{snippet}"))
+        .0;
+    assert!(inner.lines().count() <= 6, "{inner}");
+    for line in inner.lines() {
+        assert!(line.chars().count() <= 100, "{line}");
+    }
+    for rule in [
+        "run `af help agents` first",
+        "plan, run, status, findings, diff, deliver, report",
+        "`--json`",
+        "one versioned document",
+        "`state.outcome`",
+        "`state.next_action`",
+        "never guess a next command",
+        "Never add `--login` in an agent session",
+        "done privately",
+    ] {
+        assert!(inner.contains(rule), "{rule}:\n{inner}");
+    }
+    for removed in [
+        "af help json",
+        "af help exit-codes",
+        "af help task-file",
+        "af provider status",
+        "af onboard",
+        "af task plan",
+        "af task findings",
+        "af task diff",
+    ] {
+        assert!(!snippet.contains(removed), "{removed}:\n{snippet}");
+    }
+    let marked = |text: &str| -> String {
+        let start = text.find("<!-- af-agent-help:start -->").unwrap();
+        let end = text.find("<!-- af-agent-help:end -->").unwrap();
+        text[start..end].to_owned()
+    };
+    for skill in skills {
+        assert!(skill.contains(snippet), "{skill}");
+        assert_eq!(marked(skill), marked(snippet));
+    }
+}
+
+/// #363 and #434: the page starts the loop at step 1, keeps the references for when they are
+/// needed, needs no `effects` lookup for a command it describes, and says what a review
+/// refusal names.
+#[test]
+fn the_agents_page_starts_at_step_one_and_says_what_a_review_refusal_names() {
+    let page = out(&af(&["help", "agents"]));
+    let prose = page.split_whitespace().collect::<Vec<_>>().join(" ");
+    for sentence in [
+        "Start at step 1, with no readiness check first.",
+        "`af provider status`, `af provider detect`, `af doctor` and `af onboard` are for when a \
+         refusal points there or the person asks.",
+        "not as steps before work: `af help json`, `af help exit-codes`, `af help task-file`, \
+         `af help task-states` and `af help errors CAUSE`.",
+        "A command this page describes, or one a `next_action` names, needs no such lookup \
+         first. Before you run any other command for the first time, read its `effects`",
+        "`af review plan --json` previews it token-free, and when selectors or Provider bindings \
+         are missing, its refusal's `next_action` names the next command when one command \
+         fixes it, and a refusal for missing bindings carries in `details.plan` what the review \
+         would run.",
+    ] {
+        assert!(prose.contains(sentence), "{sentence}\n{page}");
+    }
+    assert!(!prose.contains("Read a command's `effects` before you run it for the first time"));
+}
+
+/// #363 round 3: the page says that a page under `--json` is one `af/help-topic@1` document,
+/// and that the selectors refusal names the command with the selectors af would choose.
+#[test]
+fn the_agents_page_names_the_help_topic_document_and_the_selectors_command() {
+    let page = out(&af(&["help", "agents"]));
+    let prose = page.split_whitespace().collect::<Vec<_>>().join(" ");
+    for sentence in [
+        "`af help agents --json` prints this page as one `af/help-topic@1` document whose \
+         `text` is the page `af help agents` prints below its title line, and so does every \
+         other topic and `af help errors CAUSE` with `--json` added",
+        "When af finds the default branch, the selectors refusal names the command with the \
+         selectors af would choose, even while reviewers still need a Provider",
+    ] {
+        assert!(prose.contains(sentence), "{sentence}\n{page}");
+    }
 }
 
 #[test]
@@ -2109,8 +2294,9 @@ fn workspace_schemas() -> std::path::PathBuf {
 
 /// #374: `af help --json` is one `af/command-catalog@1` document generated from the binary's
 /// own command tree, every runnable command with its effects; `af help COMMAND --json` is the
-/// same document for that command's subtree, an alias naming its command; a path that names no
-/// command is one `af/error@2` document with exit 2, never a topic.
+/// same document for that command's subtree, an alias naming its command; words that name no
+/// command and no help page are one `af/error@2` document with exit 2 (#363: a page prints
+/// `af/help-topic@1`, `help_json_prints_a_page_the_text_form_prints`).
 #[test]
 fn help_json_prints_the_generated_command_catalog() {
     let catalog = crate::schemas::validator("command-catalog-v1.json");
@@ -2178,7 +2364,7 @@ fn help_json_prints_the_generated_command_catalog() {
 
     for words in [
         &["help", "nope", "--json"][..],
-        &["help", "json", "--json"][..],
+        &["help", "task", "nope", "--json"][..],
     ] {
         let refused = af(words);
         assert_eq!(refused.status.code(), Some(2), "{words:?}");
@@ -2189,15 +2375,115 @@ fn help_json_prints_the_generated_command_catalog() {
             error["error"]
                 .as_str()
                 .unwrap()
-                .ends_with("; run af help --json for every command"),
+                .ends_with("; run af help for every page, or af help --json for every command"),
             "{error}"
         );
         assert!(
-            err(&refused).starts_with("af help: no command af "),
+            err(&refused).starts_with("af help: no command or help page named "),
             "{}",
             err(&refused)
         );
     }
+}
+
+/// #363: words that name no command but a page `af help` prints as text, a topic or
+/// `errors CAUSE`, print that page under `--json` as one `af/help-topic@1` document. The text
+/// form is exactly the title line `af help NAME — DESCRIPTION`, a blank line, the document's
+/// `text` and a final newline; `af help errors CAUSE` has no title line, so it is the `text` and
+/// a final newline. A word that is also a command keeps its catalog, and words that name neither,
+/// `errors` with an unknown cause among them, are one `af/error@2` document, exit 2, that no
+/// longer says only commands exist; the text form exits 2 for them too.
+#[test]
+fn help_json_prints_a_page_the_text_form_prints() {
+    let topic = crate::schemas::validator("help-topic-v1.json");
+    for name in ["agents", "exit-codes"] {
+        let shown = af(&["help", name, "--json"]);
+        assert_eq!(shown.status.code(), Some(0), "{name}: {}", err(&shown));
+        let document: serde_json::Value = serde_json::from_slice(&shown.stdout)
+            .unwrap_or_else(|_| panic!("{name}: not one document: {}", out(&shown)));
+        crate::schemas::valid(&topic, &document);
+        assert_eq!(document["schema"], "af/help-topic@1");
+        assert_eq!(document["name"], name);
+        assert_eq!(
+            out(&af(&["help", name])),
+            format!(
+                "af help {name} — {}\n\n{}\n",
+                document["description"].as_str().unwrap(),
+                document["text"].as_str().unwrap()
+            ),
+            "{name}"
+        );
+    }
+
+    let shown = af(&["help", "errors", "review_binding_missing", "--json"]);
+    assert_eq!(shown.status.code(), Some(0), "{}", err(&shown));
+    let document: serde_json::Value = serde_json::from_slice(&shown.stdout).unwrap();
+    crate::schemas::valid(&topic, &document);
+    assert_eq!(document["schema"], "af/help-topic@1");
+    assert_eq!(document["name"], "errors review_binding_missing");
+    assert_eq!(document["description"], serde_json::Value::Null);
+    // `af help errors CAUSE` prints no title line: the whole page is its text.
+    let text = out(&af(&["help", "errors", "review_binding_missing"]));
+    assert_eq!(
+        text,
+        format!("{}\n", document["text"].as_str().unwrap()),
+        "{document}"
+    );
+    assert!(text.starts_with("review_binding_missing: "), "{text}");
+
+    // `config` is a topic and a command: under --json the command's catalog, as before.
+    let catalog = af(&["help", "config", "--json"]);
+    let catalog: serde_json::Value = serde_json::from_slice(&catalog.stdout).unwrap();
+    assert_eq!(catalog["schema"], "af/command-catalog@1", "{catalog}");
+    assert_eq!(catalog["scope"], "af config", "{catalog}");
+
+    let refused = af(&["help", "no-such-page", "--json"]);
+    assert_eq!(refused.status.code(), Some(2), "{}", err(&refused));
+    let error: serde_json::Value = serde_json::from_slice(&refused.stdout)
+        .unwrap_or_else(|_| panic!("not one document: {}", out(&refused)));
+    crate::schemas::valid(&crate::schemas::validator("error-v2.json"), &error);
+    assert_eq!(error["schema"], "af/error@2");
+    assert_eq!(error["exit_code"], 2, "{error}");
+    let message = error["error"].as_str().unwrap();
+    assert!(
+        message
+            .starts_with("no command or help page named no-such-page; run af help for every page"),
+        "{message}"
+    );
+
+    // `errors` and a cause af does not know name no page either: the same usage refusal.
+    let refused = af(&["help", "errors", "no_such_cause", "--json"]);
+    assert_eq!(refused.status.code(), Some(2), "{}", err(&refused));
+    let error: serde_json::Value = serde_json::from_slice(&refused.stdout)
+        .unwrap_or_else(|_| panic!("not one document: {}", out(&refused)));
+    crate::schemas::valid(&crate::schemas::validator("error-v2.json"), &error);
+    assert_eq!(error["schema"], "af/error@2");
+    assert_eq!(error["exit_code"], 2, "{error}");
+    assert_eq!(
+        error["error"],
+        "unknown error cause no_such_cause; run af help errors"
+    );
+    assert!(
+        err(&refused)
+            .starts_with("af help: unknown error cause no_such_cause; run af help errors\n"),
+        "{}",
+        err(&refused)
+    );
+    let text = af(&["help", "errors", "no_such_cause"]);
+    assert_eq!(text.status.code(), Some(2), "{}", err(&text));
+    assert!(text.stdout.is_empty(), "{}", out(&text));
+    assert!(
+        err(&text).starts_with("af help: unknown error cause no_such_cause; run af help errors\n"),
+        "{}",
+        err(&text)
+    );
+
+    let shipped = af(&["schema", "show", "af/help-topic@1"]);
+    assert!(shipped.status.success(), "{}", err(&shipped));
+    assert_eq!(
+        shipped.stdout,
+        std::fs::read(workspace_schemas().join("help-topic-v1.json")).unwrap()
+    );
 }
 
 /// #374: `af schema show` lists exactly the document IDs `af help json` names, and prints each

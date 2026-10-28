@@ -510,8 +510,10 @@ the commands below it, generated from the command definitions. Each command carr
 subcommands and arguments, and each runnable one its effects: `tokens` (`free` or `charges`), \
 the state it `writes` (`store`, `files`, `machine`, `remote`) and what it needs from a `human` \
 (`login`, `approval`, `terminal`), each with the flag or condition that turns it on. Under \
---json every word is a command path, never a topic; one that names no command is an af/error@2 \
-document, exit 2. `af help json` explains the vocabulary.",
+--json words are a command path first; words that name no command but a page, a topic or \
+`errors CAUSE`, print that page as one af/help-topic@1 document (schemas/help-topic-v1.json): \
+its name, description and text, the page below its title line. Words that name neither are an \
+af/error@2 document, exit 2. `af help json` explains the vocabulary.",
         after_long_help = "Examples:\n  af help start\n  af help concepts\n  af help layers\n  af help exit-codes\n  af help errors\n  af help errors no_task_catalog\n  af help review ledger\n  af help --json | jq -r '.commands[] | [.command, .effects.tokens] | @tsv'\n  af help task run --json | jq '.commands[0].effects'"
     )]
     Help {
@@ -521,7 +523,8 @@ document, exit 2. `af help json` explains the vocabulary.",
         /// Print only the AGENTS.md pointer (agents topic only)
         #[arg(long)]
         snippet: bool,
-        /// One af/command-catalog@1 document of the commands (or the one named) instead of text
+        /// One af/command-catalog@1 document of the commands (or the one named), or one
+        /// af/help-topic@1 document of a page, instead of text
         #[arg(long, conflicts_with = "snippet")]
         json: bool,
     },
