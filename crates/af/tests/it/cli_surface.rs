@@ -1931,7 +1931,7 @@ fn agent_setup_previews_writes_once_and_refuses_foreign_skills() {
     );
 }
 
-/// The block `af setup agents --write` installed before ADR-0258, with its markers: a copy of
+/// The block `af setup agents --write` installed before ADR-0259, with its markers: a copy of
 /// that source's `docs/agents.md`.
 const EARLIER_BLOCK: &str = "\
 <!-- af-agent-help:start -->

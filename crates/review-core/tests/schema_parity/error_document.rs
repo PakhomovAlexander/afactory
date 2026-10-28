@@ -134,7 +134,7 @@ fn an_error_document_carries_its_cause_next_command_and_facts() {
         assert_invalid(ERROR_V2, &wrong_exit, "a first-run refusal is exit 1");
     }
 
-    // ADR-0258: `af review plan`'s binding refusal carries the plan it computed, and names
+    // ADR-0259: `af review plan`'s binding refusal carries the plan it computed, and names
     // `af provider detect` when a Worker's kind has no registered Provider.
     let unbound = json!({
         "schema": "af/error@2",

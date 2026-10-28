@@ -1,4 +1,4 @@
-# ADR-0258: Point agents at the loop in four rules and own skills by their bytes
+# ADR-0259: Point agents at the loop in four rules and own skills by their bytes
 
 **Status:** accepted (2026-10-28). Supersedes in part
 [ADR-0241](0241-install-an-agent-entry-point-from-the-help-page.md): the pointer's content and

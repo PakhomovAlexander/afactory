@@ -2,7 +2,7 @@
   run `af help agents` first, add `--json`, run `state.next_action`, and never add `--login`
   in an agent session. `af help agents` starts the loop at step 1 with no readiness check, and
   a command it describes needs no `effects` lookup first
-  ([ADR-0258](docs/adr/0258-point-agents-at-the-loop-in-four-rules-and-own-skills-by-their-bytes.md)).
+  ([ADR-0259](docs/adr/0259-point-agents-at-the-loop-in-four-rules-and-own-skills-by-their-bytes.md)).
 - The generated `SKILL.md` files open with YAML frontmatter, so Codex and Claude Code load
   them. `af setup agents --write` replaces only a skill whose bytes are one af wrote, the
   previous version included; any other file, one under a recomputed digest line included, is

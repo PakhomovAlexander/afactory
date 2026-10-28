@@ -1278,7 +1278,7 @@ fn review_selector_refusal(options: &Options, subcommand: &str) -> Result<(), St
             .map(|commit| (name, commit))
         });
     // The selectors af would choose from the default branch, then the bindings: each part on
-    // its own, so a binding that remains open never hides the selectors (#363, ADR-0258).
+    // its own, so a binding that remains open never hides the selectors (#363, ADR-0259).
     let mut candidate_details = serde_json::Map::new();
     let mut registry_unread = None;
     let suggestion = match chosen.as_ref() {
@@ -1444,7 +1444,7 @@ fn binding_candidates(registered: &[(String, &'static str)], kind: &str) -> Vec<
 }
 
 /// A node-to-candidates map in words, `NODE: ID, ID; NODE: none registered`: a refusal's
-/// sentence never prints a map as Rust debug output or as JSON (ADR-0258).
+/// sentence never prints a map as Rust debug output or as JSON (ADR-0259).
 fn candidate_words(candidates: &serde_json::Map<String, serde_json::Value>) -> String {
     candidates
         .iter()
@@ -1475,7 +1475,7 @@ fn and_list(items: &[&str]) -> String {
 }
 
 /// The `review_binding_missing` refusal when a model Worker has no `--provider NODE=ID`
-/// (ADR-0242, ADR-0258): with no enabled Provider of a Worker's kind, `af provider detect` is
+/// (ADR-0242, ADR-0259): with no enabled Provider of a Worker's kind, `af provider detect` is
 /// next; with exactly one per kind, the whole command with each binding; with a choice, no
 /// command and the choices in words. `plan` is the token-free plan `af review plan` computed,
 /// carried whole in `details.plan`; `af review run` passes none.
@@ -1636,7 +1636,7 @@ fn help_command(words: &[String], snippet: bool, json: bool) -> Result<i32, Stri
 
 /// `af help [WORDS...] --json`: the command catalog of the command the words name (ADR-0247);
 /// for words that name no command but a page the text form prints, a topic or `errors CAUSE`,
-/// that page as one `af/help-topic@1` document (ADR-0258); for words that name neither, one
+/// that page as one `af/help-topic@1` document (ADR-0259); for words that name neither, one
 /// `af/error@2` document with the usage exit code the text form also exits with.
 fn help_catalog(words: &[String]) -> Result<i32, String> {
     let document = match command_catalog::document(words) {
@@ -2967,7 +2967,7 @@ fn print_plan(options: &Options, long: bool) -> Result<(), String> {
         .collect();
     // A missing binding refuses the plan, and the refusal carries what the plan computed: under
     // --json the document in `details.plan` and the `model` lines on stderr, in text the plan's
-    // lines before the refusal's sentence (ADR-0258).
+    // lines before the refusal's sentence (ADR-0259).
     let refusal = review_binding_refusal(options, &workers, "plan", Some(&plan)).err();
     if let Some(refusal) = refusal.as_ref().filter(|_| options.json) {
         for line in &models {

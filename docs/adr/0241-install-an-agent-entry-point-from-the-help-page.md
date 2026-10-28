@@ -1,7 +1,7 @@
 # ADR-0241: Install an agent entry point from the help page
 
 **Status:** accepted (2026-10-27); superseded in part by
-[ADR-0258](0258-point-agents-at-the-loop-in-four-rules-and-own-skills-by-their-bytes.md): the
+[ADR-0259](0259-point-agents-at-the-loop-in-four-rules-and-own-skills-by-their-bytes.md): the
 pointer's content and the rule that decides which skill af owns, now its exact bytes.
 
 ## Context

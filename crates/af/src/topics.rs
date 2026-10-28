@@ -130,7 +130,7 @@ pub(crate) fn page(topic: &str, text: &str) -> String {
 pub(crate) const HELP_TOPIC_SCHEMA: &str = "af/help-topic@1";
 
 /// One page `af help` prints as text: a topic, or `af help errors CAUSE`. The text form and
-/// `af help WORDS --json` both render it from here, so the two cannot drift (ADR-0258).
+/// `af help WORDS --json` both render it from here, so the two cannot drift (ADR-0259).
 pub(crate) struct HelpPage {
     /// The words after `af help` that name the page: `agents`, `errors CAUSE`.
     name: String,
@@ -323,7 +323,7 @@ pub(crate) fn agent_snippet() -> &'static str {
 }
 
 /// The version of the skill [`agent_skill`] writes. A change to its bytes takes the next
-/// version and moves the bytes it replaces into [`EARLIER_AGENT_SKILLS`] (ADR-0258).
+/// version and moves the bytes it replaces into [`EARLIER_AGENT_SKILLS`] (ADR-0259).
 const AGENT_SKILL_VERSION: u32 = 2;
 
 /// The `SKILL.md` both skill directories hold: YAML frontmatter from line 1, which Codex and
@@ -341,7 +341,7 @@ pub(crate) fn agent_skill() -> String {
 
 /// Every skill an earlier `af setup agents --write` wrote, byte for byte, by the version it
 /// carried. `--write` replaces only these bytes or the current skill's: ownership is the exact
-/// bytes, so no marker a foreign file can recompute makes it af's (ADR-0258).
+/// bytes, so no marker a foreign file can recompute makes it af's (ADR-0259).
 const EARLIER_AGENT_SKILLS: [(u32, &str); 1] = [(
     1,
     "<!-- af-generated-skill:sha256:0c44d5402cbb85cbba220f2b2eb7c174a0b5940c95df3f32796164307e311c25 -->
@@ -1223,7 +1223,7 @@ mod tests {
         assert!(ENVIRONMENT.starts_with("  AF_<TABLE>__<KEY>"));
     }
 
-    /// ADR-0258: the skill opens with its frontmatter, and the earlier versions are what the
+    /// ADR-0259: the skill opens with its frontmatter, and the earlier versions are what the
     /// earlier generator wrote: its marker is the digest of the rest, and the current skill is
     /// none of them, so a write that changes the skill has a version to upgrade from.
     #[test]
@@ -1278,7 +1278,7 @@ mod tests {
         );
     }
 
-    /// ADR-0258: a page's `af/help-topic@1` document and its text form are one rendering: the
+    /// ADR-0259: a page's `af/help-topic@1` document and its text form are one rendering: the
     /// text form is the title line from the document's name and description, a blank line and
     /// the document's text; `af help errors CAUSE` has no title line. `start` is left out: its
     /// page reads this machine's Provider registry, which a unit test does not touch.

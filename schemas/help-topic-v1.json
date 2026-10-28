@@ -2,7 +2,7 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "urn:af:schema:help-topic:1",
   "title": "Help page af/help-topic@1",
-  "$comment": "What `af help TOPIC --json` and `af help errors CAUSE --json` print when the words name no command but a page `af help` prints as text (ADR-0258): the page's name, its one-line description and its text, rendered by the same function as the text form. Words that name a command print af/command-catalog@1 instead.",
+  "$comment": "What `af help TOPIC --json` and `af help errors CAUSE --json` print when the words name no command but a page `af help` prints as text (ADR-0259): the page's name, its one-line description and its text, rendered by the same function as the text form. Words that name a command print af/command-catalog@1 instead.",
   "type": "object",
   "additionalProperties": false,
   "required": [
