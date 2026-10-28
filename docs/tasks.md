@@ -286,11 +286,16 @@ a non-zero exit always says why on stderr.
 `af task show ID --checks` prints the gate's last check receipt: each check's status, duration,
 warm or cold directories, its warm layer when the policy has `[warm]` (the key, how the check came
 by it, the source groups it rebuilt, its build and test phases and an eviction with its cause,
-[Warm checks](task-execution/warm-checks.md)), the step that stopped it, its failing tests (named from the runner's
-`FAIL`, `TIMEOUT` and `SIGABRT` lines), its `flaky:` tests and the last 40 lines of its stderr;
-`--json` prints one [`af/task-checks@2`](../schemas/task-checks-v2.json) document. `af task list
---json` rows carry the same `gate` summary, and after a failed gate `af task run` names the
-failing tests, at most 20, then `… and N more; af task show ID --checks`.
+[Warm checks](task-execution/warm-checks.md)), the step that stopped it, its failing and flaky
+tests and the last 40 lines of its stderr; `--json` prints one
+[`af/task-checks@2`](../schemas/task-checks-v2.json) document. The gate's failed and flaky tests
+and the step that stopped a check come from its report when the check writes one, and from the
+text scan of its output only for a check without one (absent or refused): the runner's `FAIL`,
+`TIMEOUT` and `SIGABRT` lines, its `flaky:` lines and its step log. A check line that prints this
+evidence ends with where it came from, `evidence: report` or `evidence: output`
+([ADR-0254](adr/0254-task-gate-evidence-comes-from-the-check-report.md)). `af task list --json`
+rows carry the same `gate` summary, and after a failed gate `af task run` names the failing
+tests, at most 20, then `… and N more; af task show ID --checks`.
 
 A Task's wall clock starts at its first `af task run`, not when it is planned: the preview says
 `deadline starts when you run`, the Store moves the recorded deadline by the time the Task waited
@@ -738,16 +743,44 @@ account for itself
 one JSON object per line, each `"schema": "af.check-report/1"`. A `"record": "step"` line names
 one step of the gate, its `stage` (`preflight`, `lint`, `build`, `tests` or `release`), its
 `exit_code`, its `command` and, when the gate names one, the `fix` that repairs what it refuses;
-one `"record": "tests"` line names the test threads, the tests that failed, and those that failed
+a `"record": "tests"` line names the test threads, the tests that failed, and those that failed
 in the parallel run and passed alone (`flaky`, with `"parallel": "failed", "isolated":
 "passed"`). This repository's `scripts/ci-step.py` and `scripts/nextest-gate.py` write them.
+A check writes one `tests` record per test run, and af folds them into one
+([ADR-0254](adr/0254-task-gate-evidence-comes-from-the-check-report.md)): this repository's gate
+runs `scripts/nextest-gate.py` once per test class and writes one per class. The folded
+`failed` is the ordered union of the runs' names, each once, the first `MAX_NAMED_FAILED_TESTS`
+(100). The folded `failed_count` is the number of distinct failed tests: when every run names all
+of its failures (each run's `failed_count` below `MAX_NAMED_FAILED_TESTS`), it is the size of
+that union: the names are complete, so a repeated name, inside one run or across runs, is one
+test; when any run is capped (its `failed_count` at or above `MAX_NAMED_FAILED_TESTS`, so it
+counts failures it does not name), it is the checked sum of the runs' counts less one for each
+name a later run repeats from an earlier run; a name repeated inside one run is deduplicated in
+`failed` but stays counted, because the capped run's unnamed failures make the true distinct
+count unknowable and the fold never undercounts. A sum that does not fit `failed_count` refuses
+the whole report, naming the line of the record that overflowed. Both branches keep the record
+contract (`failed.len() <= failed_count`, and below the bound `failed.len() == failed_count`):
+in the first the count equals the union's size by construction, so below the bound `failed` is
+all of the union; in the second the count stays at or above the largest record's count, which
+is at or above the bound, because the cross-run repeats subtracted are names earlier records
+added and counted, so only `failed.len() <= failed_count` applies and the union's size never
+exceeds the summed counts less those repeats. The fold keeps the runs' flaky
+names in order, each once, at most 25; takes the first run's `test_threads`; and takes the strongest
+`rerun`, `over_bound` before `isolated` before `not_run` before `not_needed`. Every record must
+hold on its own: one that breaks the contract refuses the whole report, wherever it stands.
 
 After the check, af records an `af/TaskCheckReport@1`
 ([schema](../schemas/task-check-report-v1.json)) beside its `af/TaskCheckReceipt@1`: for each
 local check that started, the 1-minute load average when it started and ended and the CPUs
 available to af, which af measures itself, and what the check wrote, `admitted`, `absent` when it
 wrote nothing, or `refused` with the reason when its lines are not this contract. A check's own
-account never changes its result; its exit code does. `af task show` prints, per check, where it
+account never changes its result; its exit code does. The gate's failed and flaky tests and the
+step that stopped a check come from its report when the check writes one, and from the text scan
+of its output only for a check without one (absent or refused); a reported step whose stage is
+before `tests` (`preflight`, `lint`, `build`) makes the cause `preflight_failed`. The nested
+output of a project's own preflight, such as the failing fixture gates
+`scripts/test-nextest-gate.py` prints, never becomes a Task's failing or flaky test when the
+check writes a report. `af task show` prints, per check, where it
 stopped (`check kernel: stopped at preflight step performance-kernel-harness (exit 1); fix:
 python3 -I scripts/performance/cli.py harness-digest --write`), its flaky tests and the tests
 that failed twice, each on its own line, and the host's load beside a check that did not pass or

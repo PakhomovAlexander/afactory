@@ -1,10 +1,12 @@
 //! The one Task state every `af task` rendering prints (`list`, `show`, `report` and the last
 //! line of `run`), derived here from what the Store recorded: the phase, the outcome and its cause
 //! ([`review_core::task::state`]), the next command, the gate's last check receipt with the
-//! failing tests its runners named, and each failed node's first error line. Read-only: nothing
-//! is written, no Worker runs, no Provider is contacted.
+//! failing and flaky tests each check's admitted report names (the text of its output for a
+//! check without one, ADR-0254), and each failed node's first error line. Read-only: nothing is
+//! written, no Worker runs, no Provider is contacted.
 
 use super::*;
+use review_core::task::check_report::{CheckReportStateV1, CheckStageV1, TaskCheckRunV1};
 use review_core::task::execution::TaskAttemptResultV1;
 use review_core::task::feedback::{
     TASK_RETRY_FEEDBACK_V1, TaskFeedbackCodeV1, TaskRetryFeedbackV1,
@@ -78,11 +80,16 @@ pub(crate) struct CheckView {
     /// without a warm cache.
     pub(crate) cache: String,
     pub(crate) remote: bool,
-    /// The step the check's own step log says stopped it (`scripts/ci-step.py`).
+    /// The step that stopped the check: its report's first step that did not exit 0, or for a
+    /// check without an admitted report the first failed step of its step log
+    /// (`scripts/ci-step.py`).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub(crate) stopped_step: Option<StoppedStep>,
     pub(crate) failed_tests: Vec<String>,
     pub(crate) flaky: Vec<String>,
+    /// Where `stopped_step`, `failed_tests` and `flaky` came from; printed, never serialized.
+    #[serde(skip)]
+    pub(crate) evidence: Evidence,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub(crate) stdout_id: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -97,6 +104,27 @@ pub(crate) struct CheckView {
 pub(crate) struct StoppedStep {
     pub(crate) step: String,
     pub(crate) exit_code: i64,
+    /// The step's stage, as the check's report names it; `None` for a step read from its log.
+    #[serde(skip)]
+    pub(crate) stage: Option<CheckStageV1>,
+}
+
+/// Where a check's failed and flaky tests and its stopped step came from (ADR-0254): its
+/// admitted `af/TaskCheckReport@1`, or, for a check without one, the text of its output.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum Evidence {
+    Report,
+    Output,
+}
+
+impl Evidence {
+    /// The one word `af task show --checks` prints for it.
+    pub(crate) fn as_str(self) -> &'static str {
+        match self {
+            Self::Report => "report",
+            Self::Output => "output",
+        }
+    }
 }
 
 /// The state of an uncollected Task at `now`. `cancelled` is the lease epoch of the run an
@@ -424,14 +452,17 @@ fn node_kind(operator: Option<&CompiledOperator>) -> NodeKind {
 }
 
 /// A failed gate's cause: a check never started, or every failed check stopped at a step before
-/// its tests and named no test; its tests failed after some were flaky; or it failed.
+/// its tests and named no test; its tests failed after some were flaky; or it failed. A step
+/// its report names is before the tests when its stage is (`preflight`, `lint`, `build`); a step
+/// read from a log, when its label does not start with `test`.
 fn gate_cause(checks: &ChecksView, gate: &TaskGateV1) -> TaskCauseV1 {
     let preflight = checks.checks.iter().all(|c| {
         c.status != "failed"
             || (c.failed_tests.is_empty()
-                && c.stopped_step
-                    .as_ref()
-                    .is_some_and(|s| !s.step.starts_with("test")))
+                && c.stopped_step.as_ref().is_some_and(|s| match s.stage {
+                    Some(stage) => stage < CheckStageV1::Tests,
+                    None => !s.step.starts_with("test"),
+                }))
     });
     match gate.status {
         TaskGateStatusV1::NotRun => TaskCauseV1::PreflightFailed,
@@ -750,9 +781,10 @@ fn last_checks(cas: &Cas, state: &TaskProjection) -> Result<Option<ChecksView>, 
         matches!(&attempt.result, Some(TaskAttemptResultV1::Succeeded { output_id: id }) if *id == output_id)
     });
     let layers = check_layers(cas, &receipt_id, attempt.as_ref());
+    let runs = check_runs(cas, &receipt_id, attempt.as_ref());
     let mut checks = Vec::new();
     for (name, result_id) in &receipt.checks {
-        let mut view = check_view(cas, name, result_id, attempt.as_ref())?;
+        let mut view = check_view(cas, name, result_id, attempt.as_ref(), runs.get(name))?;
         view.layer = layers.get(name).cloned();
         checks.push(view);
     }
@@ -784,6 +816,22 @@ fn check_layers(
         .filter_map(|artifact| serde_json::from_value::<TaskCheckLayerV1>(artifact.payload).ok())
         .filter(|layer| layer.receipt_id == receipt_id && layer.validate().is_ok())
         .flat_map(|layer| layer.checks)
+        .collect()
+}
+
+/// The runs of the `af/TaskCheckReport@1` of a receipt, by check, from the Attempt that recorded
+/// both. A report that does not decode or validate is skipped, as it was never admitted.
+fn check_runs(
+    cas: &Cas,
+    receipt_id: &str,
+    attempt: Option<&TaskAttemptAccounting>,
+) -> BTreeMap<String, TaskCheckRunV1> {
+    attempt
+        .iter()
+        .flat_map(|attempt| attempt.raw_artifact_ids.iter())
+        .filter_map(|id| super::recorded_check_report(cas, id))
+        .filter(|(_, report)| report.receipt_id == receipt_id)
+        .flat_map(|(_, report)| report.checks)
         .collect()
 }
 
@@ -855,11 +903,15 @@ fn layer_lines(layer: &review_core::task::check_layer::TaskCheckLayerRunV1) -> V
     lines
 }
 
+/// One check of a receipt. Its failed and flaky tests and its stopped step come from `run`, its
+/// entry in the check report, when that report was admitted; otherwise from the text of its
+/// stdout and stderr (ADR-0254). Its status is always its result's.
 fn check_view(
     cas: &Cas,
     name: &str,
     result_id: &str,
     attempt: Option<&TaskAttemptAccounting>,
+    run: Option<&TaskCheckRunV1>,
 ) -> Result<CheckView, String> {
     let result = cas.get_json(result_id).map_err(|e| e.to_string())?;
     let text = |key: &str| -> Result<(Option<String>, String), String> {
@@ -876,11 +928,36 @@ fn check_view(
             None => Ok((None, String::new())),
         }
     };
-    let (stdout_id, stdout) = text("stdout")?;
     let (stderr_id, stderr) = text("stderr")?;
-    let both = format!("{stdout}\n{stderr}");
-    let (failed_tests, flaky) = failing_tests(&both);
-    let stopped_step = stopped_step(&both).map(|(step, exit_code)| StoppedStep { step, exit_code });
+    let stdout_id = result["stdout"].as_str().map(str::to_owned);
+    let (evidence, stopped_step, failed_tests, flaky) =
+        match run.filter(|run| run.report == CheckReportStateV1::Admitted) {
+            Some(run) => (
+                Evidence::Report,
+                run.stopped_at().map(|step| StoppedStep {
+                    step: step.label.clone(),
+                    exit_code: i64::from(step.exit_code),
+                    stage: Some(step.stage),
+                }),
+                run.tests
+                    .as_ref()
+                    .map_or_else(Vec::new, |tests| tests.failed.clone()),
+                run.tests.as_ref().map_or_else(Vec::new, |tests| {
+                    tests.flaky.iter().map(|test| test.name.clone()).collect()
+                }),
+            ),
+            None => {
+                let (_, stdout) = text("stdout")?;
+                let both = format!("{stdout}\n{stderr}");
+                let (failed_tests, flaky) = failing_tests(&both);
+                let stopped_step = stopped_step(&both).map(|(step, exit_code)| StoppedStep {
+                    step,
+                    exit_code,
+                    stage: None,
+                });
+                (Evidence::Output, stopped_step, failed_tests, flaky)
+            }
+        };
     let lines: Vec<&str> = stderr.lines().collect();
     let stderr_tail = lines[lines.len().saturating_sub(STDERR_TAIL_LINES)..]
         .iter()
@@ -898,6 +975,7 @@ fn check_view(
         stopped_step,
         failed_tests,
         flaky,
+        evidence,
         stdout_id,
         stderr_id,
         stderr_tail,
@@ -1185,6 +1263,10 @@ pub(crate) fn checks_lines(task_id: &str, view: &TaskView) -> Vec<String> {
             None => head.push_str(", never started"),
         }
         head.push_str(&format!(", {}", check.cache));
+        if check.stopped_step.is_some() || !check.failed_tests.is_empty() || !check.flaky.is_empty()
+        {
+            head.push_str(&format!(", evidence: {}", check.evidence.as_str()));
+        }
         lines.push(head);
         if let Some(reason) = &check.reason {
             lines.push(format!("  reason: {reason}"));
@@ -1325,9 +1407,11 @@ mod tests {
             stopped_step: step.map(|s| StoppedStep {
                 step: s.into(),
                 exit_code: 2,
+                stage: None,
             }),
             failed_tests: tests.iter().map(|t| t.to_string()).collect(),
             flaky: flaky.iter().map(|t| t.to_string()).collect(),
+            evidence: Evidence::Output,
             stdout_id: None,
             stderr_id: None,
             stderr_tail: vec![],
@@ -1459,6 +1543,74 @@ mod tests {
         assert_eq!(of, TaskCauseV1::PreflightFailed);
         let (passed, _) = cause(view(vec![check("passed", &[], &[], None)]));
         assert_eq!(passed.status, TaskGateStatusV1::Passed);
+    }
+
+    /// A step the check's report names stopped it before its tests by its stage, whatever its
+    /// label (ADR-0254): the preflight `test-nextest-gate` is a preflight, a `tests` step named
+    /// `kernel` is not. `--checks` says on the check's line where its evidence came from.
+    #[test]
+    fn a_reported_stop_is_a_preflight_by_its_stage_and_the_checks_line_names_its_evidence() {
+        let reported = |label: &str, stage| {
+            let mut check = check("failed", &[], &[], Some(label));
+            check.evidence = Evidence::Report;
+            check.stopped_step.as_mut().unwrap().stage = Some(stage);
+            check
+        };
+        let cause = |check: CheckView| {
+            let checks = view(vec![check]);
+            gate_cause(&checks, &gate_of(&checks))
+        };
+        for (label, stage, of) in [
+            (
+                "test-nextest-gate",
+                CheckStageV1::Preflight,
+                TaskCauseV1::PreflightFailed,
+            ),
+            (
+                "test-build",
+                CheckStageV1::Build,
+                TaskCauseV1::PreflightFailed,
+            ),
+            ("fmt", CheckStageV1::Lint, TaskCauseV1::PreflightFailed),
+            ("kernel", CheckStageV1::Tests, TaskCauseV1::CheckFailed),
+            ("package", CheckStageV1::Release, TaskCauseV1::CheckFailed),
+        ] {
+            assert_eq!(cause(reported(label, stage)), of, "{label}");
+        }
+        // Without a report the label decides, as the step log names no stage.
+        assert_eq!(
+            cause(check("failed", &[], &[], Some("test-nextest-gate"))),
+            TaskCauseV1::CheckFailed
+        );
+        assert_eq!(
+            cause(check("failed", &[], &[], Some("kernel"))),
+            TaskCauseV1::PreflightFailed
+        );
+
+        let task = |check: CheckView| TaskView {
+            state: TaskStateV1::new(TaskStatePhaseV1::Finished),
+            gate: None,
+            checks: Some(view(vec![check])),
+            failures: vec![],
+        };
+        let mut flaky = check("passed", &[], &["af::it a::b"], None);
+        flaky.evidence = Evidence::Report;
+        assert_eq!(
+            checks_lines("t", &task(flaky))[2],
+            "check kernel: passed (exit 1) in 10 ms, cold (no warm cache), evidence: report"
+        );
+        assert_eq!(
+            checks_lines("t", &task(check("failed", &["a::b"], &[], None)))[2],
+            "check kernel: failed (exit 1) in 10 ms, cold (no warm cache), evidence: output"
+        );
+        let document = checks_document("t", &task(reported("kernel", CheckStageV1::Tests)));
+        let shown = &document["receipt"]["checks"][0];
+        assert!(shown.get("evidence").is_none(), "{shown}");
+        assert_eq!(
+            shown["stopped_step"],
+            json!({"step": "kernel", "exit_code": 2}),
+            "no key beyond af/task-checks@2"
+        );
     }
 
     /// A failed gate names `--retry-gate` only when the kernel would run it again; one it

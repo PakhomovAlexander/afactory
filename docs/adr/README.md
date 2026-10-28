@@ -457,3 +457,5 @@ future readers need.
   gate](0252-keep-the-kernel-experiment-measurement-out-of-every-gate.md)
 - [0253 — The default Task pipeline lives in the
   catalog](0253-the-default-task-pipeline-lives-in-the-catalog.md)
+- [0254 — Task gate evidence comes from the check
+  report](0254-task-gate-evidence-comes-from-the-check-report.md)

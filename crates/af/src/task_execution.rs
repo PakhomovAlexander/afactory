@@ -4642,21 +4642,8 @@ fn latest_check_reports(
         .flat_map(|execution| execution.attempt_accounting())
     {
         for id in &attempt.raw_artifact_ids {
-            let Ok(Some(artifact)) = cas.get_optional_artifact(id) else {
+            let Some((node, report)) = recorded_check_report(cas, id) else {
                 continue;
-            };
-            if artifact.artifact_type != TASK_CHECK_REPORT_V1 {
-                continue;
-            }
-            let Ok(report) = serde_json::from_value::<TaskCheckReportV1>(artifact.payload) else {
-                continue;
-            };
-            if report.validate().is_err() {
-                continue;
-            }
-            let node = match &artifact.producer {
-                review_core::Producer::Attempt { node_id, .. } => node_id.clone(),
-                _ => continue,
             };
             // The node's latest settled Attempt wins: a retried gate's report, not the failed
             // one before it.
@@ -4675,6 +4662,25 @@ fn latest_check_reports(
         .into_iter()
         .map(|(node, (_, id, report))| (node, (id, report)))
         .collect()
+}
+
+/// The `af/TaskCheckReport@1` artifact `id`, with the node whose Attempt recorded it; `None` for
+/// another artifact, or a report that does not decode or validate, as it was never admitted.
+fn recorded_check_report(
+    cas: &Cas,
+    id: &str,
+) -> Option<(String, review_core::task::check_report::TaskCheckReportV1)> {
+    use review_core::task::check_report::*;
+    let artifact = cas.get_optional_artifact(id).ok().flatten()?;
+    if artifact.artifact_type != TASK_CHECK_REPORT_V1 {
+        return None;
+    }
+    let node = match &artifact.producer {
+        review_core::Producer::Attempt { node_id, .. } => node_id.clone(),
+        _ => return None,
+    };
+    let report = serde_json::from_value::<TaskCheckReportV1>(artifact.payload).ok()?;
+    report.validate().is_ok().then_some((node, report))
 }
 
 /// What the latest check report of each check node says (`af/TaskCheckReport@1`): where a
