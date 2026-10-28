@@ -20,6 +20,15 @@ plan before execution. The same option works with `task start`, `review run --fi
 `review plan --file`. Model, effort and Attempt cost are properties of the replacement
 Worker package; its Provider alias supplies the locally admitted account.
 
+`af onboard --tasks` generates `onboard/implementer`, `onboard/bugs`,
+`onboard/correctness` and `onboard/evaluator` with `codex-main` or
+`claude-main` Provider aliases. With both kinds registered, the implementer uses
+`claude-main` and the judging Workers use `codex-main`; with one kind, all use its alias.
+If the local registry uses another ID, map those package
+names to that ID in `[providers]` of a machine-local bindings file and pass
+`--bindings FILE` to `af task plan`. The implementer and independent judging Workers
+use distinct models; one registered login can serve them.
+
 Additional packages must use `local/*` names, exact version/digest pins and paths beneath
 the bindings file's directory. They use the same Worker manifest and input/output schemas
 as shared packages. Capture rejects symlinks, namespace shadowing and excessive closure

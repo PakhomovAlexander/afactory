@@ -1,0 +1,49 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:af:schema:task-attempt-wall-end:1",
+  "title": "af.task-attempt-wall-end/1",
+  "description": "The typed end of an Attempt whose wall ran out before its Worker answered (ADR-0257), the payload of `af/TaskAttemptWallEnd@1`: the Task, the qualified node, the exact Attempt, the node's Attempt wall as its allowance captured it, and the time from the Attempt's start to its end. A source-writing Worker's tree is sealed as a candidate is and named as `partial_candidate_id` (an `af/TaskPartialCandidate@1`); absent for a Worker that writes no source or whose tree could not be sealed. Raw evidence of the failed Attempt's settlement, never an output: its Attempt is charged and counted as every failed Attempt is.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema",
+    "task_id",
+    "node",
+    "attempt_id",
+    "wall_ms",
+    "elapsed_ms"
+  ],
+  "properties": {
+    "schema": {
+      "const": "af.task-attempt-wall-end/1"
+    },
+    "task_id": {
+      "type": "string",
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9_-]{0,127}$"
+    },
+    "node": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 4096,
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9_-]{0,127}(\\.[A-Za-z0-9][A-Za-z0-9_-]{0,127})*$"
+    },
+    "attempt_id": {
+      "type": "string",
+      "pattern": "^[A-Za-z0-9]{26}$"
+    },
+    "wall_ms": {
+      "type": "integer",
+      "minimum": 1,
+      "maximum": 9007199254740991
+    },
+    "elapsed_ms": {
+      "type": "integer",
+      "minimum": 0,
+      "maximum": 9007199254740991
+    },
+    "partial_candidate_id": {
+      "type": "string",
+      "pattern": "^sha256:[0-9a-f]{64}$"
+    }
+  }
+}

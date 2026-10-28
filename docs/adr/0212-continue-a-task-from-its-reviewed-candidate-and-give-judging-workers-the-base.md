@@ -70,7 +70,10 @@ the standing rules were pasted into every goal.
    plan time as `af/TaskBase@1` (`schemas/task-base-v1.json`) and kept in the provenance. Neither
    file is under the Worker's tree, so neither is sealed back or counts as an edit, and both go
    with the sandbox. Neither is a port: no Worker contract changes and no Pipeline has to bind a
-   `base`, which stays unbindable. A writer gets no base; it changes the tree itself.
+   `base`, which stays unbindable. A writer gets no base; it changes the tree itself. *Amended by
+   [ADR-0254](0254-name-the-tree-of-a-workers-rules-and-deliver-the-diff-subject-as-a-typed-input.md):*
+   the Diff Subject is a typed input, an `af/DiffSubject@1` on the optional `diff_subject` port
+   the kernel fills and checks before dispatch, and `../diff-subject.json` is no longer written.
 5. **Short Task files.** Only `task_id`, `kind` and `goal` are required, and an omitted `schema`
    reads as `af.task-file/1`. `[task.defaults]` of `.af/af.toml`, read from the Authority
    Snapshot, supplies `limits`, `pipeline` and `fallback`; a field the Task file names wins whole,
@@ -79,7 +82,10 @@ the standing rules were pasted into every goal.
    files of the source tree, with an optional `#section`, and `.af/rules.md` of the Authority
    Snapshot holds standing rules (a declared `.af/` entry). Both are recorded by content digest
    as one `af/TaskReadFirst@1` (`schemas/task-read-first-v1.json`) in the provenance and listed,
-   rules first, at the end of the Worker's requirements text, so a changed file is a changed plan.
+   rules first, at the end of the Worker's requirements text, so a changed file is a changed plan. *Amended by
+   [ADR-0254](0254-name-the-tree-of-a-workers-rules-and-deliver-the-diff-subject-as-a-typed-input.md):*
+   the record is `af/TaskReadFirst@2`, which names the tree its entries were read from, the
+   Snapshot the Worker reads, and the rules are that tree's `.af/rules.md`.
 6. **The Task file stays `af.task-file/1`.** Its new fields are optional and absent on round
    trip, so a file without them keeps its exact revision and plan, as the `inputs` table did; a
    release that does not know them refuses a file that uses them, which is the direction

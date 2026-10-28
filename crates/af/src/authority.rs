@@ -817,6 +817,9 @@ pub(super) struct RenderView {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub(super) fits: Option<bool>,
     pub(super) manifest: review_runner::ContextManifest,
+    /// The Provider-native reply schema a model Worker's dispatch passes beside the input, and
+    /// the option that carries it (ADR-0246); `null` for a command Worker.
+    pub(super) reply_schema: Option<review_runner::NativeReplySchema>,
     /// Campaign-bound inputs a real Attempt also receives; listed, never invented.
     pub(super) not_rendered: Vec<String>,
     pub(super) input_is_utf8: bool,
@@ -868,7 +871,7 @@ pub(super) fn render(options: &Options, cas: &Cas, repo: &Repo) -> Result<Render
         ),
     };
     Ok(RenderView {
-        schema: "af/review-render@1",
+        schema: "af/review-render@2",
         token_free: true,
         runner: input.runner,
         package,
@@ -878,6 +881,7 @@ pub(super) fn render(options: &Options, cas: &Cas, repo: &Repo) -> Result<Render
         cap_tokens,
         fits: cap_tokens.map(|cap| estimated_tokens < cap),
         manifest: input.rendered.manifest,
+        reply_schema: input.rendered.reply_schema,
         not_rendered: input.not_rendered,
         input_is_utf8,
         input: text,

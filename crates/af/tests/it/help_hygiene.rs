@@ -361,7 +361,7 @@ fn json_help_names_the_documents_that_carry_a_state() {
         .map(std::path::PathBuf::from)
         .unwrap_or_else(|| std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../.."))
         .join("schemas");
-    // `af/task-list-entry@3` -> `task-list-entry-v3.json`.
+    // `af/task-list-entry@4` -> `task-list-entry-v4.json`.
     let file = |document: &str| {
         let (kind, version) = document.trim_start_matches("af/").split_once('@').unwrap();
         schemas.join(format!("{kind}-v{version}.json"))

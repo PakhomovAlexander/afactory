@@ -340,9 +340,13 @@ impl CampaignReviewTaskHost<'_, '_> {
                 ),
                 // Preserve the native Review capability profile: ADR-0042 keeps Claude
                 // read-only, while the legacy Codex adapter permits sandbox Proposals.
-                // A different installed backend has no implicit edit authority.
-                WorkerExecutionV1::Model { provider_kind, .. } => {
-                    self.model(&node.id)?.adapter.invoke(
+                // A different installed backend has no implicit edit authority. The reply is
+                // constrained natively to the Reviewer Result (ADR-0246); the parse and
+                // admission below judge it as before.
+                WorkerExecutionV1::Model { provider_kind, .. } => self
+                    .model(&node.id)?
+                    .adapter
+                    .invoke_constrained(
                         cas,
                         sandbox.root(),
                         bytes,
@@ -354,8 +358,9 @@ impl CampaignReviewTaskHost<'_, '_> {
                         },
                         cancellation,
                         &environment,
+                        review_runner::task::reply_schema::ReplyContract::ReviewerResult,
                     )
-                }
+                    .unwrap_or_else(|unstarted| *unstarted.0),
             };
             // Build cache bytes leave before the seal: they never enter the sealed diff, a
             // Proposal, or provenance.
@@ -364,6 +369,10 @@ impl CampaignReviewTaskHost<'_, '_> {
             }
             // A transient ending lets the runtime call again within this Attempt (ADR-0208).
             result.notes = returned.notes;
+            // An environment failure is its own closed class, never an account change
+            // (ADR-0257).
+            result.notes.environment |= returned.native_failure
+                == Some(review_runner::native_failure::NativeFailureKind::Environment);
             result.usage = returned.usage;
             result.usage_observation = returned.usage_observation;
             result.unknown_usage_cause = returned

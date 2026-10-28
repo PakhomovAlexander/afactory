@@ -6,7 +6,7 @@ code_policy = ".af/code-policy.toml"
 
 [packages."perf/accept"]
 version = "1.0.0"
-digest = "sha256:23560f526336c3bf99611629134ef8a077fdd2c2f83f81aeac6f61b90200b0ce"
+digest = "sha256:82fca142163cc11cbaf908a95057632cf95a0c1f92ed5c294e5b9ba4b2a9421b"
 path = ".af/task-packages/perf/accept"
 
 [packages."perf/check-true"]

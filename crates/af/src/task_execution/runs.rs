@@ -285,7 +285,7 @@ fn running_node(task: &TaskProjection) -> Option<(String, u64)> {
 
 /// The exit code a settled Task gives a script that waited for it: its outcome's, 4 for a Task
 /// that waits for a person.
-fn settled_code(state: &TaskStateV1) -> i32 {
+pub(super) fn settled_code(state: &TaskStateV1) -> i32 {
     match state.outcome {
         Some(outcome) => i32::from(outcome.exit_code()),
         None if state.phase == TaskStatePhaseV1::Waiting => 4,
@@ -296,7 +296,7 @@ fn settled_code(state: &TaskStateV1) -> i32 {
 // ------------------------------------------------------------------------------------------
 // af task status
 
-fn status_document(opened: &OpenedTask, state: TaskStateV1) -> TaskStatusV1 {
+fn status_document(opened: &OpenedTask, state: TaskStateV1) -> TaskStatusV2 {
     let task = &opened.task;
     let running = state.phase == TaskStatePhaseV1::Running;
     let elapsed_ms = task.clock_started_unix_ms().map(|started| {
@@ -311,15 +311,30 @@ fn status_document(opened: &OpenedTask, state: TaskStateV1) -> TaskStatusV1 {
         .into_iter()
         .rev()
         .find(|request| request.epoch == task.lease_epoch());
-    TaskStatusV1 {
-        schema: TASK_STATUS_V1.into(),
+    let budget = task.execution.as_ref().map(|execution| &execution.budget);
+    TaskStatusV2 {
+        schema: TASK_STATUS_V2.into(),
         task_id: task.task_id.clone(),
         state,
         node: running
             .then(|| running_node(task).map(|(node, _)| node_name(&node)))
             .flatten(),
         elapsed_ms,
-        chargeable_tokens: committed_tokens(task).into(),
+        charged_tokens: committed_tokens(task).into(),
+        reserved_tokens: budget.map_or(0, |budget| budget.reserved_tokens()).into(),
+        remaining_tokens: budget
+            .map_or(u128::from(task.revision.limits.tokens), |budget| {
+                u128::from(budget.remaining_limits().tokens)
+            })
+            .into(),
+        unknown_usage_attempts: task.execution.as_ref().map_or(0, |execution| {
+            execution
+                .attempt_accounting()
+                .into_iter()
+                .filter(|attempt| attempt.unknown_usage.is_some())
+                .count() as u64
+        }),
+        last_gate: super::gate_history::last(&opened.cas, &opened.store, task),
         run: lease_run(records(&opened.state, &task.task_id), task.lease_writer()),
         cancel,
     }
@@ -399,7 +414,7 @@ pub(crate) fn command_lines(lead: &str, command: &str, width: usize, indent: &st
 /// `Task ID: running, node implement, 3 min, 41.2k tokens; run 2 pid 812 on builder`, then the
 /// next command on its own indented line or lines: at most `width` columns each, the state
 /// broken only between its parts and the command only between its arguments.
-fn status_lines(status: &TaskStatusV1, width: usize) -> Vec<String> {
+fn status_lines(status: &TaskStatusV2, width: usize) -> Vec<String> {
     let mut parts = vec![status.state.label()];
     if let Some(node) = &status.node {
         parts.push(format!("node {}", preview::text(node)));
@@ -407,7 +422,6 @@ fn status_lines(status: &TaskStatusV1, width: usize) -> Vec<String> {
     if let Some(elapsed) = status.elapsed_ms {
         parts.push(state::duration_words(elapsed));
     }
-    parts.push(format!("{} tokens", tokens(status.chargeable_tokens.get())));
     let mut segments = vec![format!("Task {}: {}", status.task_id, parts.join(", "))];
     if status.state.phase == TaskStatePhaseV1::Running
         && let Some(run) = &status.run
@@ -437,6 +451,20 @@ fn status_lines(status: &TaskStatusV1, width: usize) -> Vec<String> {
             None => lines.push(segment),
         }
     }
+    lines.push(format!(
+        "  tokens: {} reserved, {} charged{}, {} remaining",
+        tokens(status.reserved_tokens.get()),
+        tokens(status.charged_tokens.get()),
+        if status.unknown_usage_attempts == 0 {
+            String::new()
+        } else {
+            format!(" (+{} unknown)", status.unknown_usage_attempts)
+        },
+        tokens(status.remaining_tokens.get())
+    ));
+    if let Some(last_gate) = &status.last_gate {
+        lines.push(format!("  last Gate here: {last_gate}"));
+    }
     if let Some(next) = &status.state.next_action {
         lines.extend(command_lines(
             "  next:",
@@ -448,7 +476,7 @@ fn status_lines(status: &TaskStatusV1, width: usize) -> Vec<String> {
     lines
 }
 
-fn print_status(status: &TaskStatusV1, json: bool) -> Result<(), String> {
+fn print_status(status: &TaskStatusV2, json: bool) -> Result<(), String> {
     status.validate()?;
     if json {
         println!(
@@ -478,7 +506,7 @@ pub(crate) fn status(id: &str, inspect: &crate::cli::TaskInspectArgs) -> Result<
 /// Whether a run of `task` is on its way here though it holds no lease yet: its newest record
 /// names a live process of this host, recorded within the window a detached run has to take the
 /// Task.
-fn starting_run(state: &Path, task: &TaskProjection) -> Option<TaskRunProcessV1> {
+pub(super) fn starting_run(state: &Path, task: &TaskProjection) -> Option<TaskRunProcessV1> {
     let record = records(state, &task.task_id).pop()?;
     (record.host == this_host()
         && alive(record.pid)
@@ -494,6 +522,8 @@ fn starting_run(state: &Path, task: &TaskProjection) -> Option<TaskRunProcessV1>
 pub(crate) fn wait(
     id: &str,
     timeout: Option<u64>,
+    bell: bool,
+    notify: bool,
     inspect: &crate::cli::TaskInspectArgs,
 ) -> Result<i32, String> {
     let mut opened = open_task(id, &inspect.repo, inspect.state.as_deref())?;
@@ -520,6 +550,12 @@ pub(crate) fn wait(
             }
             let code = settled_code(&view.state);
             print_status(&status_document(&opened, view.state), inspect.json)?;
+            if bell && std::io::IsTerminal::is_terminal(&std::io::stderr()) {
+                eprint!("\x07");
+            }
+            if notify {
+                notify_completion(id, code);
+            }
             return Ok(code);
         }
         if !said {
@@ -537,6 +573,43 @@ pub(crate) fn wait(
         }
         std::thread::sleep(Duration::from_millis(250));
         opened.refresh()?;
+    }
+}
+
+/// A notification is a best-effort side effect of a completed wait, never its result.
+fn notify_completion(id: &str, code: i32) {
+    let message = format!("Task {id} completed (exit {code})");
+    #[cfg(target_os = "macos")]
+    let result = {
+        let escaped = message.replace('\\', "\\\\").replace('"', "\\\"");
+        let mut command = std::process::Command::new("osascript");
+        command.args([
+            "-e",
+            &format!("display notification \"{escaped}\" with title \"af task wait\""),
+        ]);
+        review_process::run_supervised(&mut command, None, Duration::from_secs(5))
+            .map(|output| output.status)
+            .map_err(|error| error.to_string())
+    };
+    #[cfg(target_os = "linux")]
+    let result = {
+        let mut command = std::process::Command::new("notify-send");
+        command.args(["af task wait", &message]);
+        review_process::run_supervised(&mut command, None, Duration::from_secs(5))
+            .map(|output| output.status)
+            .map_err(|error| error.to_string())
+    };
+    #[cfg(not(any(target_os = "macos", target_os = "linux")))]
+    let result: Result<std::process::ExitStatus, String> =
+        Err("no OS notifier on this platform".into());
+    match result {
+        Ok(status) if status.success() => {}
+        Ok(status) => eprintln!(
+            "af task wait: warning: notification failed ({status}); Task {id} still completed"
+        ),
+        Err(error) => eprintln!(
+            "af task wait: warning: notifier unavailable ({error}); Task {id} still completed"
+        ),
     }
 }
 
@@ -616,7 +689,11 @@ pub(crate) fn detach(id: &str, inspect: &crate::cli::TaskInspectArgs) -> Result<
                     log.display()
                 ));
             }
-            eprintln!("{tail}");
+            // The child wrote its log to a file, so its `next:` line was left whole; replayed
+            // onto a terminal it is held to that terminal's width as the run's own is.
+            for line in tail.lines() {
+                eprintln!("{}", super::next_line(line, true));
+            }
             break Admission::Ended;
         }
         opened.refresh()?;
@@ -641,8 +718,8 @@ pub(crate) fn detach(id: &str, inspect: &crate::cli::TaskInspectArgs) -> Result<
         Admission::Starting => Some(format!("af task status {id}")),
         Admission::Ended => view.state.next_action.clone(),
     };
-    let document = TaskDetachedV2 {
-        schema: TASK_DETACHED_V2.into(),
+    let document = TaskDetachedV3 {
+        schema: TASK_DETACHED_V3.into(),
         task_id: id.into(),
         run,
         pid,
@@ -661,19 +738,20 @@ pub(crate) fn detach(id: &str, inspect: &crate::cli::TaskInspectArgs) -> Result<
         );
     } else {
         let host = preview::text(&document.host);
+        let next = crate::human::fit_on_terminal(&format!("next: {next}"), false);
         match admission {
             Admission::Admitted => println!(
                 "Task {id} runs in the background: run {run}, pid {pid} on {host}\nlog: {}\n\
-                 next: {next}",
+                 {next}",
                 log.display()
             ),
             Admission::Starting => println!(
                 "Task {id} is not admitted yet: run {run}, pid {pid} on {host}, has not taken \
-                 the Task\nlog: {}\nnext: {next}",
+                 the Task\nlog: {}\n{next}",
                 log.display()
             ),
             Admission::Ended => println!(
-                "Task {id}: {}; its run ended at once, its log is {}\nnext: {next}",
+                "Task {id}: {}; its run ended at once, its log is {}\n{next}",
                 document.state.label(),
                 log.display()
             ),
@@ -847,8 +925,8 @@ pub(crate) fn cancel(id: &str, inspect: &crate::cli::TaskInspectArgs) -> Result<
         }
     }
     let (_, view) = opened.view()?;
-    let document = TaskCancelledV1 {
-        schema: TASK_CANCELLED_V1.into(),
+    let document = TaskCancelledV2 {
+        schema: TASK_CANCELLED_V2.into(),
         task_id: id.into(),
         request,
         state: view.state,
@@ -967,9 +1045,9 @@ struct Seen {
 
 impl Seen {
     /// Everything `task` already records, so a resumed run prints only what it does itself.
-    fn of(task: &TaskProjection) -> Self {
+    fn of(cas: &Cas, task: &TaskProjection) -> Self {
         let mut seen = Self::default();
-        seen.lines(task, 0);
+        seen.lines(cas, task, 0);
         seen
     }
 
@@ -977,7 +1055,7 @@ impl Seen {
     /// runs gets one `started` line before each `finished` or `failed` line of it — a node with
     /// Attempts when one starts, a node the kernel runs itself (seal, check, reduce, accept)
     /// when it is invoked, or, seen only once it published, just before its `finished`.
-    fn lines(&mut self, task: &TaskProjection, run_started: u64) -> Vec<String> {
+    fn lines(&mut self, cas: &Cas, task: &TaskProjection, run_started: u64) -> Vec<String> {
         let Some(execution) = &task.execution else {
             return Vec::new();
         };
@@ -1013,9 +1091,23 @@ impl Seen {
                 let word = match &attempt.result {
                     Some(TaskAttemptResultV1::Succeeded { .. }) => {
                         self.finished.insert(node.clone());
-                        "finished"
+                        "finished".to_owned()
                     }
-                    _ => "failed",
+                    // An Attempt its wall ended says so, with the wall and the time it took,
+                    // and whether its edits were kept (ADR-0257).
+                    _ => match state::wall_end(cas, attempt) {
+                        Some((_, end)) => format!(
+                            "failed: its Attempt wall of {} ran out after {}{}",
+                            state::duration_words(end.wall_ms),
+                            state::duration_words(end.elapsed_ms),
+                            if end.partial_candidate_id.is_some() {
+                                "; its edits are kept as a partial candidate"
+                            } else {
+                                ""
+                            }
+                        ),
+                        None => "failed".to_owned(),
+                    },
                 };
                 events.push((at, format!("{name} {word} ({})", figure(at))));
             }
@@ -1150,7 +1242,7 @@ fn watch(state: &Path, task_id: &str, run_started: u64, stop: &AtomicBool) {
     let Some(first) = project() else {
         return;
     };
-    let mut seen = Seen::of(&first);
+    let mut seen = Seen::of(&cas, &first);
     let mut sequence = store.latest_run_sequence(&run_id).ok().flatten();
     let interval = heartbeat();
     let mut beat = std::time::Instant::now();
@@ -1162,7 +1254,7 @@ fn watch(state: &Path, task_id: &str, run_started: u64, stop: &AtomicBool) {
             sequence = latest;
             let began = std::time::Instant::now();
             if let Some(task) = project() {
-                for line in seen.lines(&task, run_started) {
+                for line in seen.lines(&cas, &task, run_started) {
                     eprintln!("{line}");
                 }
             }
@@ -1274,9 +1366,9 @@ mod tests {
         assert_eq!(lease_run(Vec::new(), "cli-101"), None);
     }
 
-    fn finished(next: &str) -> TaskStatusV1 {
-        TaskStatusV1 {
-            schema: TASK_STATUS_V1.into(),
+    fn finished(next: &str) -> TaskStatusV2 {
+        TaskStatusV2 {
+            schema: TASK_STATUS_V2.into(),
             task_id: "implementation-small".into(),
             state: TaskStateV1::ended(
                 TaskStatePhaseV1::Finished,
@@ -1286,7 +1378,11 @@ mod tests {
             .with_next(next),
             node: None,
             elapsed_ms: Some(1_000),
-            chargeable_tokens: 0_u128.into(),
+            charged_tokens: 0_u128.into(),
+            reserved_tokens: 0_u128.into(),
+            remaining_tokens: 100_u128.into(),
+            unknown_usage_attempts: 0,
+            last_gate: None,
             run: None,
             cancel: None,
         }
@@ -1300,11 +1396,11 @@ mod tests {
         for width in [100, 80] {
             let lines = status_lines(&status, width);
             assert_eq!(
-                lines[0], "Task implementation-small: finished/verified, 1 s, 0 tokens",
+                lines[0], "Task implementation-small: finished/verified, 1 s",
                 "{lines:#?}"
             );
             assert!(
-                lines[1].starts_with("  next: af task deliver"),
+                lines[2].starts_with("  next: af task deliver"),
                 "{lines:#?}"
             );
             for line in &lines {
@@ -1312,28 +1408,47 @@ mod tests {
             }
             // Broken only between arguments, each line but the last continued: the lines are
             // the one command a shell reads.
-            let joined: Vec<String> = lines[1..]
+            let joined: Vec<String> = lines[2..]
                 .iter()
                 .map(|line| line.trim().trim_end_matches('\\').trim().to_owned())
                 .collect();
             assert_eq!(joined.join(" "), format!("next: {next}"));
-            for line in &lines[1..lines.len() - 1] {
+            for line in &lines[2..lines.len() - 1] {
                 assert!(line.ends_with(" \\"), "{line}");
             }
         }
         assert_eq!(
             status_lines(&status, 80),
             [
-                "Task implementation-small: finished/verified, 1 s, 0 tokens",
+                "Task implementation-small: finished/verified, 1 s",
+                "  tokens: 0 reserved, 0 charged, 100 remaining",
                 "  next: af task deliver implementation-small --branch af/implementation-small \\",
                 "        --worktree ../implementation-small --confirm implementation-small",
             ]
         );
         // A short command stays on its one line.
         assert_eq!(
-            status_lines(&finished("af task show implementation-small"), 100)[1],
+            status_lines(&finished("af task show implementation-small"), 100)[2],
             "  next: af task show implementation-small"
         );
+    }
+
+    #[test]
+    fn unknown_usage_is_named_beside_the_three_exact_status_counters() {
+        let mut status = finished("af task show implementation-small");
+        status.unknown_usage_attempts = 1;
+        status.charged_tokens = 7_u128.into();
+        status.reserved_tokens = 3_u128.into();
+        status.remaining_tokens = 90_u128.into();
+        assert_eq!(
+            status_lines(&status, 100)[1],
+            "  tokens: 3 reserved, 7 charged (+1 unknown), 90 remaining"
+        );
+        let json = serde_json::to_value(&status).unwrap();
+        assert_eq!(json["reserved_tokens"], "3");
+        assert_eq!(json["charged_tokens"], "7");
+        assert_eq!(json["remaining_tokens"], "90");
+        assert_eq!(json["unknown_usage_attempts"], 1);
     }
 
     #[test]

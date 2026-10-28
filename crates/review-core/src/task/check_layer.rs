@@ -177,7 +177,7 @@ impl WarmEvictionV1 {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct TaskCheckLayerV1 {
-    /// The `af/TaskCheckReceipt@1` the checks' results are recorded in.
+    /// The `af/TaskCheckReceipt@2` the checks' results are recorded in.
     pub receipt_id: String,
     pub checks: BTreeMap<String, TaskCheckLayerRunV1>,
 }

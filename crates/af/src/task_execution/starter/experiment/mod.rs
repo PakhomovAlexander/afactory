@@ -29,7 +29,7 @@ fn trial(evaluator: &TaskWorkerManifest) -> PipelineDefinitionV1 {
         ports(&[
             ("source", port(SOURCE_TREE_V1)),
             ("requirements", port("af/Requirements@1")),
-            ("checks", same(TASK_CHECK_RECEIPT_V1)),
+            ("checks", same(TASK_CHECK_RECEIPT_V2)),
             ("baseline", port(MEASUREMENT_V1)),
         ]),
         ports(&[
@@ -227,7 +227,7 @@ pub(super) fn files() -> Result<BTreeMap<String, Vec<u8>>, String> {
     let evaluator_inputs: Ports = ports(&[
         ("source", port(SOURCE_TREE_V1)),
         ("requirements", port("af/Requirements@1")),
-        ("checks", same(TASK_CHECK_RECEIPT_V1)),
+        ("checks", same(TASK_CHECK_RECEIPT_V2)),
         ("comparison", same(MEASUREMENT_COMPARISON_V1)),
     ]);
     let mut evaluator = worker_definition(
@@ -329,6 +329,7 @@ pub(super) fn files() -> Result<BTreeMap<String, Vec<u8>>, String> {
     };
     let task = TaskFile {
         issue: None,
+        acceptance: None,
         inputs: None,
         schema: "af.task-file/1".into(),
         task_id: "experiment".into(),

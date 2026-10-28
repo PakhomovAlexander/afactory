@@ -3,8 +3,14 @@ use super::*;
 use review_core::task::plan::{ExecutionPlanV1, WorkerExecutionV1};
 use review_pipeline::task::host::TaskModelBinding;
 use review_runner::task::provider::PROBE_INPUT;
-use review_runner::task::{ModelWorkerReturn, WorkerAccess, WorkerModelAdapter};
+use review_runner::task::reply_schema::ReplyContract;
+use review_runner::task::{ModelWorkerReturn, Unstarted, WorkerAccess, WorkerModelAdapter};
 use std::sync::atomic::{AtomicUsize, Ordering};
+
+std::thread_local! {
+    /// Set while a call arrives through `invoke_constrained` with the Reviewer Result contract.
+    static CONSTRAINED: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+}
 
 struct Model {
     provider_kind: &'static str,
@@ -49,6 +55,13 @@ impl WorkerModelAdapter for Model {
                 n <= if self.retry { 2 } else { 1 },
                 "replay must reuse the selected Attempt"
             );
+            // ADR-0246: every reviewer dispatch carries the Reviewer Result contract natively,
+            // on the Claude and the Codex binding alike.
+            assert!(
+                CONSTRAINED.get(),
+                "{}: the Campaign host dispatched a reviewer unconstrained",
+                self.provider_kind
+            );
             let prompt = String::from_utf8(input).unwrap();
             assert!(prompt.contains("Captured instruction marker."));
             assert!(!prompt.contains("PRIVATE_MALFORMED_RESPONSE"));
@@ -74,6 +87,30 @@ impl WorkerModelAdapter for Model {
             raw_artifact_ids: vec![cas.put(message.as_bytes()).unwrap()],
             native_failure: None,
         }
+    }
+    fn invoke_constrained(
+        &self,
+        cas: &Cas,
+        workdir: &std::path::Path,
+        input: Vec<u8>,
+        timeout: std::time::Duration,
+        access: WorkerAccess,
+        cancellation: Option<&std::sync::atomic::AtomicBool>,
+        environment: &[(String, String)],
+        contract: ReplyContract,
+    ) -> Result<ModelWorkerReturn, Unstarted> {
+        CONSTRAINED.set(contract == ReplyContract::ReviewerResult);
+        let returned = self.invoke(
+            cas,
+            workdir,
+            input,
+            timeout,
+            access,
+            cancellation,
+            environment,
+        );
+        CONSTRAINED.set(false);
+        Ok(returned)
     }
 }
 
@@ -346,6 +383,135 @@ fn check_native_provider_reuse(provider_only: bool) {
             }
         );
     }
+}
+
+/// ADR-0246: a reviewer whose native CLI ended without a constrained reply — Claude Code without
+/// a `structured_output` object, Codex without a final message — never reaches the Reviewer
+/// Result parser. Its Attempt fails as `provider_failure`, not `invalid_output_contract`, and is
+/// charged exactly the usage the call reported, nothing refunded; the retry Attempt's typed
+/// feedback names that class and the kernel admits its reply unchanged.
+#[test]
+fn a_reviewer_reply_the_cli_did_not_deliver_fails_as_a_provider_failure_charged_its_usage() {
+    struct Undelivered {
+        inner: Model,
+        reviewer_calls: AtomicUsize,
+    }
+    impl WorkerModelAdapter for Undelivered {
+        fn provider_kind(&self) -> &'static str {
+            self.inner.provider_kind
+        }
+        fn model_settings(&self) -> Option<(String, String)> {
+            self.inner.model_settings()
+        }
+        fn invoke(
+            &self,
+            cas: &Cas,
+            workdir: &std::path::Path,
+            input: Vec<u8>,
+            timeout: std::time::Duration,
+            access: WorkerAccess,
+            cancellation: Option<&std::sync::atomic::AtomicBool>,
+            environment: &[(String, String)],
+        ) -> ModelWorkerReturn {
+            self.inner.invoke(
+                cas,
+                workdir,
+                input,
+                timeout,
+                access,
+                cancellation,
+                environment,
+            )
+        }
+        fn invoke_constrained(
+            &self,
+            cas: &Cas,
+            workdir: &std::path::Path,
+            input: Vec<u8>,
+            timeout: std::time::Duration,
+            access: WorkerAccess,
+            cancellation: Option<&std::sync::atomic::AtomicBool>,
+            environment: &[(String, String)],
+            contract: ReplyContract,
+        ) -> Result<ModelWorkerReturn, Unstarted> {
+            assert_eq!(contract, ReplyContract::ReviewerResult);
+            if self.reviewer_calls.fetch_add(1, Ordering::SeqCst) == 0 {
+                // What the Claude adapter returns for an envelope with no structured object.
+                let raw = br#"{"is_error":false,"result":"{\"findings\":[]}"}"#;
+                return Ok(ModelWorkerReturn {
+                    notes: Default::default(),
+                    usage_observation: None,
+                    message: Err("Claude Worker returned no structured output object".into()),
+                    usage: Some(review_core::task::usage::TaskTokenUsageV3::charge_only(11)),
+                    raw_artifact_ids: vec![cas.put(raw).unwrap()],
+                    native_failure: None,
+                });
+            }
+            let prompt = String::from_utf8(input.clone()).unwrap();
+            assert!(prompt.contains("provider_failure"), "{prompt}");
+            self.inner.invoke_constrained(
+                cas,
+                workdir,
+                input,
+                timeout,
+                access,
+                cancellation,
+                environment,
+                contract,
+            )
+        }
+    }
+    let directory = tempfile::tempdir().unwrap();
+    let cas = Cas::open(directory.path().join("cas")).unwrap();
+    let mut store = EventStore::open(directory.path().join("events.sqlite")).unwrap();
+    let (compiler, lease, plan) = admitted_plan(&cas, &mut store, "trusted_unsafe");
+    let model = Undelivered {
+        // `retry: false`: the inner double's retry prompt must not name the parser's class.
+        inner: Model {
+            provider_kind: "claude",
+            calls: AtomicUsize::new(0),
+            admitted: true,
+            retry: false,
+            wide: false,
+        },
+        reviewer_calls: AtomicUsize::new(0),
+    };
+    let shared = SharedEventStore::new(&mut store);
+    let host = CampaignReviewTaskHost::new(
+        &cas,
+        shared.clone(),
+        &compiler,
+        lease.clone(),
+        model_bindings(&plan, &model),
+    )
+    .unwrap();
+    let authority = CapturedTaskAuthority::for_campaign_review(&compiler, &host, &NoTaskDeveloper);
+    let runtime =
+        TaskRuntime::with_store(shared.clone(), &cas, lease.clone(), &authority, &host).unwrap();
+    assert!(runtime.execute().unwrap().complete());
+    let execution = runtime.projection().unwrap().execution.unwrap();
+    // The probe's 1, the undelivered reply's 11 and the admitted retry's 11.
+    assert_eq!(execution.budget.committed_tokens(), 23);
+    let failed: Vec<_> = execution
+        .attempt_accounting()
+        .into_iter()
+        .filter_map(|attempt| match &attempt.result {
+            Some(review_core::task::execution::TaskAttemptResultV1::Failed {
+                feedback_id: Some(id),
+                ..
+            }) => Some((attempt.charged_tokens, id.clone())),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(failed.len(), 1, "{failed:?}");
+    assert_eq!(failed[0].0, 11, "the undelivered call is charged its usage");
+    let feedback: review_core::task::feedback::TaskRetryFeedbackV1 =
+        serde_json::from_value(cas.get_artifact(&failed[0].1).unwrap().payload).unwrap();
+    assert_eq!(
+        feedback.code,
+        review_core::task::feedback::TaskFeedbackCodeV1::ProviderFailure
+    );
+    assert_eq!(model.reviewer_calls.load(Ordering::SeqCst), 2);
 }
 
 /// `af review render` shows the prompt an adapter composes from the package and the focus

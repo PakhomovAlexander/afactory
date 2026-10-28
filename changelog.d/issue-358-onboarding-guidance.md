@@ -12,9 +12,14 @@
   holding a login marker, `--all` also about a safe empty one, never about an unsafe or missing
   one
   ([ADR-0206](../docs/adr/0206-detect-provider-logins-and-register-them-through-add.md)); a
-  registered Provider whose CLI is missing or incompatible is no longer told to log in.
+  registered Provider whose CLI is missing or incompatible is no longer told to log in. With no
+  Provider registered, a Worker needing a kind none is, or a registry that does not read, doctor
+  no longer starts a CLI for a sibling directory to decide whether to offer
+  `af provider detect --apply`: it offers it only for an ambient login its one status probe found
+  logged in, and names each sibling `not probed`, for `af provider detect` to inspect.
   `af review campaigns --json` prints the `--format json` document, and the two together are a
-  usage error. The README and `af help json` claim `--json` only for commands whose `--help` lists
+  usage error; `af help json` names that `af/review-campaigns@1` document, and
+  `af schema show af/review-campaigns@1` prints its schema, `schemas/review-campaigns-v1.json`. The README and `af help json` claim `--json` only for commands whose `--help` lists
   it, promise one document only where one is printed, and name `af telemetry tail --json` as a
   JSON Lines stream, one `af/telemetry-tail@1` object per line, that a tail failing with an error
   ends with one `af/error@2` line, while a run two Stores record exits 2 with only stderr to say

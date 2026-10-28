@@ -1,5 +1,7 @@
 //! Continuing a reviewed Task (ADR-0212): `af task run NEW --from TASK [--round N]`, or a Task
-//! file's `continue` table.
+//! file's `continue` table. A Task that recorded no review round, but whose source-writing
+//! Worker an Attempt wall stopped, continues from the partial tree the kernel sealed then
+//! (ADR-0257).
 //!
 //! Resolution happens once, at plan time, from the `--state` Store alone, like an `inputs`
 //! binding (ADR-0117). The continued round's reviewed candidate becomes the new Task's `source`,
@@ -10,6 +12,7 @@
 //! Requirements bound.
 
 use super::*;
+use review_core::task::attempt_wall::*;
 use review_core::task::findings::*;
 use review_core::task::input_bindings::ReferencedTaskV1;
 use review_core::task::pipeline::ReceiptOutcomeV1;
@@ -32,24 +35,69 @@ pub(super) struct ContinueRefV1 {
 /// The input port a continuation fills beside `source`.
 pub(super) const FINDINGS_PORT: &str = "findings";
 
-/// What a continuation resolved to: the candidate as the new Task's source, the Manifest it
-/// holds, and the findings artifact.
+/// What a continuation resolved to: the continued Task, the tree it continues as the new
+/// Task's source with the Manifest it holds, and the record the revision's provenance keeps for
+/// it: the findings artifact of a reviewed round, or the Attempt wall end of a partial tree.
 pub(super) struct Continued {
+    pub(super) task_id: String,
+    /// The continued Task's revision, whose recorded rules the new plan compares (ADR-0254).
+    pub(super) task_revision_id: String,
     pub(super) source: ArtifactInputV1,
     pub(super) manifest: Manifest,
-    pub(super) findings_id: String,
-    pub(super) findings: TaskReviewFindingsV1,
+    pub(super) lineage: Lineage,
+}
+
+/// Where a continued tree came from.
+pub(super) enum Lineage {
+    /// A review round's candidate, with the round's findings for the implementer (ADR-0212).
+    Reviewed { findings_id: String },
+    /// The partial tree an Attempt wall left (ADR-0257): no review ran, so no findings travel.
+    Partial { wall_end_id: String },
 }
 
 impl Continued {
-    pub(super) fn port(&self) -> ArtifactInputV1 {
-        ArtifactInputV1 {
-            artifact_ids: vec![self.findings_id.clone()],
-            artifact_type: TASK_REVIEW_FINDINGS_V1.into(),
-            cardinality: PortCardinality::One,
-            snapshot_id: None,
+    /// The record the new revision's provenance keeps.
+    pub(super) fn provenance_id(&self) -> String {
+        match &self.lineage {
+            Lineage::Reviewed { findings_id, .. } => findings_id.clone(),
+            Lineage::Partial { wall_end_id } => wall_end_id.clone(),
         }
     }
+
+    /// The `findings` port a reviewed continuation fills; a partial one fills none.
+    pub(super) fn port(&self) -> Option<ArtifactInputV1> {
+        match &self.lineage {
+            Lineage::Reviewed { findings_id, .. } => Some(ArtifactInputV1 {
+                artifact_ids: vec![findings_id.clone()],
+                artifact_type: TASK_REVIEW_FINDINGS_V1.into(),
+                cardinality: PortCardinality::One,
+                snapshot_id: None,
+            }),
+            Lineage::Partial { .. } => None,
+        }
+    }
+}
+
+/// The partial tree a Task's source-writing Worker left when its Attempt wall ended it
+/// (ADR-0257): the latest settled Attempt whose `af/TaskAttemptWallEnd@1` names one, with the
+/// wall end's ID, the wall end, the partial candidate's ID and the partial candidate.
+pub(super) fn partial_candidate(
+    cas: &Cas,
+    state: &TaskProjection,
+) -> Option<(String, TaskAttemptWallEndV1, String, TaskPartialCandidateV1)> {
+    let mut attempts = state.execution.as_ref()?.attempt_accounting();
+    attempts.sort_by_key(|attempt| (attempt.settled_unix_ms, attempt.started_unix_ms));
+    attempts.iter().rev().find_map(|attempt| {
+        let (end_id, end) = super::state::wall_end(cas, attempt)?;
+        let partial_id = end.partial_candidate_id.clone()?;
+        let envelope = cas.get_optional_artifact(&partial_id).ok()??;
+        if envelope.artifact_type != TASK_PARTIAL_CANDIDATE_V1 {
+            return None;
+        }
+        let partial: TaskPartialCandidateV1 = serde_json::from_value(envelope.payload).ok()?;
+        partial.validate().ok()?;
+        Some((end_id, end, partial_id, partial))
+    })
 }
 
 /// One line of reviewer text as the findings carry it: control characters become spaces, and
@@ -213,10 +261,38 @@ pub(super) fn resolve(
         recorded.push((id, round));
     }
     if recorded.is_empty() {
+        // No review ran: the partial tree an Attempt wall left, when one was kept (ADR-0257).
+        let partial = partial_candidate(cas, &projection);
+        if let (Some(number), Some(_)) = (reference.round, &partial) {
+            return Err(format!(
+                "continue: Task `{shown}` recorded no review round, so it has no round \
+                 {number}; it kept the partial tree an Attempt wall left, which continues \
+                 without a round: omit --round (or `round` in the Task file's `continue`)"
+            ));
+        }
+        if let Some((wall_end_id, _, _, partial)) = partial {
+            let tree = ArtifactInputV1 {
+                artifact_ids: vec![partial.source_tree_id.clone()],
+                artifact_type: SOURCE_TREE_V1.into(),
+                cardinality: PortCardinality::One,
+                snapshot_id: Some(partial.snapshot_id.clone()),
+            };
+            let (source, _, manifest) =
+                input_bindings::bind_source(cas, tree, None).map_err(|error| {
+                    format!("continue: Task `{shown}`'s partial candidate: {error}")
+                })?;
+            return Ok(Continued {
+                task_id: task.clone(),
+                task_revision_id: result.task_revision_id.clone(),
+                source,
+                manifest,
+                lineage: Lineage::Partial { wall_end_id },
+            });
+        }
         return Err(format!(
             "continue: Task `{shown}` recorded no review round, so it has no reviewed candidate \
-             to continue from; bind its output instead with an `inputs` table \
-             (`af help task-file`)"
+             to continue from, and no Attempt wall left a partial tree; bind its output instead \
+             with an `inputs` table (`af help task-file`)"
         ));
     }
     let chosen = match reference.round {
@@ -298,10 +374,11 @@ pub(super) fn resolve(
         .put_artifact(TASK_REVIEW_FINDINGS_V1, producer(), refs, None, payload)
         .map_err(|e| e.to_string())?;
     Ok(Continued {
+        task_id: task.clone(),
+        task_revision_id: result.task_revision_id.clone(),
         source,
         manifest,
-        findings_id,
-        findings: record,
+        lineage: Lineage::Reviewed { findings_id },
     })
 }
 
@@ -328,7 +405,54 @@ pub(super) fn recorded(
     Ok(None)
 }
 
-/// The `continues` member of `af/task-inspection@13`: the continued Task and round, the
+/// The partial-tree continuation a recorded revision carries (ADR-0257): the
+/// `af/TaskAttemptWallEnd@1` in its provenance, with its ID, and the partial candidate it
+/// names. `None` for every Task that continues no partial tree.
+pub(super) fn recorded_partial(
+    cas: &Cas,
+    revision: &TaskRevisionV1,
+) -> Result<Option<(String, TaskAttemptWallEndV1, TaskPartialCandidateV1)>, String> {
+    for id in &revision.provenance.input_artifact_ids {
+        let found = cas.get_optional_artifact(id);
+        let Some(envelope) = found.map_err(|e| e.to_string())? else {
+            continue;
+        };
+        if envelope.artifact_type != TASK_ATTEMPT_WALL_END_V1 {
+            continue;
+        }
+        let end: TaskAttemptWallEndV1 =
+            serde_json::from_value(envelope.payload).map_err(|e| e.to_string())?;
+        end.validate()?;
+        let partial_id = end
+            .partial_candidate_id
+            .as_deref()
+            .ok_or("A continued Attempt wall end names no partial candidate")?;
+        let partial: TaskPartialCandidateV1 = artifact(cas, partial_id, TASK_PARTIAL_CANDIDATE_V1)?;
+        partial.validate()?;
+        return Ok(Some((id.clone(), end, partial)));
+    }
+    Ok(None)
+}
+
+/// The `continues` member of `af/task-inspection@14` for a partial tree (ADR-0257): the
+/// continued Task, the node and Attempt its wall stopped, the wall end, the partial candidate
+/// and the Snapshot of the tree the new Task reads.
+pub(super) fn partial_inspection_value(
+    wall_end_id: &str,
+    end: &TaskAttemptWallEndV1,
+    partial: &TaskPartialCandidateV1,
+) -> serde_json::Value {
+    json!({
+        "task_id": end.task_id,
+        "node": end.node,
+        "attempt_id": end.attempt_id,
+        "wall_end_id": wall_end_id,
+        "partial_candidate_id": end.partial_candidate_id,
+        "snapshot_id": partial.snapshot_id,
+    })
+}
+
+/// The `continues` member of `af/task-inspection@14`: the continued Task and round, the
 /// candidate the new Task reads, and the findings artifact with its count.
 pub(super) fn inspection_value(
     findings_id: &str,
@@ -348,6 +472,14 @@ pub(super) fn inspection_value(
 /// The line `af task show` prints for a continued Task, from its inspection document.
 pub(super) fn show_line(inspection: &serde_json::Value) -> Option<String> {
     let continues = inspection.get("continues")?;
+    if let Some(node) = continues["node"].as_str() {
+        return Some(format!(
+            "continues {} from the partial tree its node {} left at its Attempt wall (Attempt {})",
+            preview::text(continues["task_id"].as_str().unwrap_or_default()),
+            preview::text(node),
+            preview::text(continues["attempt_id"].as_str().unwrap_or_default())
+        ));
+    }
     let count = continues["findings"].as_u64().unwrap_or_default();
     Some(format!(
         "continues {} round {} ({count} finding{} on the findings port)",

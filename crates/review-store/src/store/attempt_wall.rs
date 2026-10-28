@@ -1,5 +1,7 @@
 //! Exact-usage sidecar: one row per Attempt holding its wall-clock interval, its cumulative
-//! `TaskTokenUsage@3` floor and its native usage observation.
+//! `TaskTokenUsage@3` floor and its native usage observation; and, beside it, the
+//! `af/TaskAttemptWallEnd@1` of an Attempt its wall ended, kept before settlement so a lost
+//! writer's successor settles that Attempt from it (ADR-0257).
 
 use super::{EventStore, StoreError, TaskAttemptWall};
 use review_core::task::usage::{TaskTokenUsageV3, TaskUsageObservationV1};
@@ -185,5 +187,47 @@ impl EventStore {
         })?;
         rows.collect::<Result<Vec<_>, _>>()
             .map_err(StoreError::Sqlite)
+    }
+
+    /// Keep the `af/TaskAttemptWallEnd@1` an Attempt's wall left before anything else of the
+    /// Attempt is published (ADR-0257): a writer lost before settlement leaves its successor the
+    /// wall end and the partial tree it names, not only an unsettled Attempt. The artifact must
+    /// already be durable in the CAS. One Attempt keeps one wall end; recording another is a
+    /// conflict.
+    pub fn record_task_attempt_wall_end(
+        &self,
+        run_id: &str,
+        attempt_id: &str,
+        wall_end_id: &str,
+    ) -> Result<(), StoreError> {
+        let changed = self.conn.execute(
+            "INSERT INTO attempt_wall_end (run_id, attempt_id, wall_end_id) VALUES (?1, ?2, ?3)
+             ON CONFLICT(run_id, attempt_id) DO NOTHING",
+            rusqlite::params![run_id, attempt_id, wall_end_id],
+        )?;
+        if changed == 0
+            && self.task_attempt_wall_end(run_id, attempt_id)?.as_deref() != Some(wall_end_id)
+        {
+            return Err(StoreError::Conflict(
+                "Task Attempt already recorded another wall end".into(),
+            ));
+        }
+        Ok(())
+    }
+
+    /// The wall end recorded for one Attempt, when its wall ended it.
+    pub fn task_attempt_wall_end(
+        &self,
+        run_id: &str,
+        attempt_id: &str,
+    ) -> Result<Option<String>, StoreError> {
+        Ok(self
+            .conn
+            .query_row(
+                "SELECT wall_end_id FROM attempt_wall_end WHERE run_id = ?1 AND attempt_id = ?2",
+                rusqlite::params![run_id, attempt_id],
+                |row| row.get(0),
+            )
+            .optional()?)
     }
 }

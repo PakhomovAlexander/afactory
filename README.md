@@ -245,9 +245,9 @@ Rules for a coding agent, or a script, that drives af for someone:
   exit code, so tell each line by its `schema`. A run two Stores record is no such error: shared
   when tail starts or by a second Store that appears while it follows, tail exits 2 with no
   further line on stdout and names both Stores for `--store` on stderr, so check the exit code
-  too. `af review report` takes `--format json` instead, and `af review campaigns` either flag
-  for the same document. Some commands, such as `af review ledger` and `af review show`, print
-  text only. Branch on the document's `schema`: most refusals are `af/error@2`, while
+  too. `af review report` and `af review campaigns` also take `--format json`, the same document
+  as `--json`; giving both is a usage error. Some commands, such as `af config paths`, print text
+  only. Branch on the document's `schema`: most refusals are `af/error@2`, while
   `af provider` commands and a refused Task plan print their own documents (`af help json`), and
   `af config show --json` prints a document with no `schema`.
 - **Branch on the exit code.** `af review run` exits 0 pass, 3 fail, 4 incomplete. A foreground
@@ -307,6 +307,13 @@ tools a Gate calls, but not `gh` or its login for a Remote Check; it does not ru
   pipelines/     pipeline definitions; af onboard writes review.toml
   workers/       Worker packages: <name>/reviewer.md (the prompt) and reviewer.toml (the manifest)
 ```
+
+For model-driven implementation Tasks, `af onboard --tasks` previews a pinned Task
+catalog, code policy, Worker packages and `[task.defaults]` without spending tokens.
+`af onboard --tasks --apply` creates review and Task authority together, or adds
+absent Task files to an existing review `.af/` and appends the defaults. It refuses an
+existing Task target or `[task]` table. Review and commit the resulting diff before
+`af task plan` can use it.
 
 Configuration merges, lowest to highest: built-in defaults, `/etc/af`, `~/.config/af`, every
 `.af/af.toml` above the repository, the repository's `.af/af.toml`, its gitignored

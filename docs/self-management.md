@@ -64,8 +64,8 @@ prints from it. `af help self` has the whole `[self]` policy.
 
 ### When the check runs
 
-- After an eligible command (any but `help`, `--version`, `af self`, `af config`, `doctor`,
-  `completions` and the browser) `af` spawns a detached `af self refresh-check` when the check is
+- After an eligible command (any but `help`, `schema`, `--version`, `af self`, `af config`,
+  `doctor`, `completions` and the browser) `af` spawns a detached `af self refresh-check` when the check is
   due; it caches the newest release and exits. Headless and `--json` runs check too: the child
   holds none of the command's pipes, never changes the command's output or exit status, and
   nothing waits for the network. No timer, daemon or service runs between commands.

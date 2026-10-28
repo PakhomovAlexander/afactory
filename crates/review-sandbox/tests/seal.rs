@@ -691,13 +691,43 @@ fn a_base_the_worker_changed_is_refused_at_seal() {
         "{refused}"
     );
 
+    let budget = std::time::Duration::from_secs(60);
     let template = std::sync::Arc::new(SandboxTemplate::materialize(&base, &cas).unwrap());
+    assert!(template.intact().unwrap());
+    // A clone keeps the template's times; the attached base is stamped now, as a
+    // materialization stamps it, so no build takes it for older than its output (#266).
+    let old = std::time::SystemTime::UNIX_EPOCH + std::time::Duration::from_secs(1_000_000);
+    std::fs::File::options()
+        .write(true)
+        .open(template.root().join("src/lib.rs"))
+        .unwrap()
+        .set_modified(old)
+        .unwrap();
+    assert!(
+        !template.intact().unwrap(),
+        "a stamped template is not intact"
+    );
+    let template = std::sync::Arc::new(SandboxTemplate::materialize(&base, &cas).unwrap());
+    std::fs::File::options()
+        .write(true)
+        .open(template.root().join("src/lib.rs"))
+        .unwrap()
+        .set_modified(old)
+        .unwrap();
+    let before = std::time::SystemTime::now();
     let sandbox = Sandbox::materialize(&tree, &cas, Mode::ReadOnly).unwrap();
-    let at = sandbox.attach_base_template(&template, &[]).unwrap();
+    let at = sandbox
+        .attach_base_template(&template, &[], budget)
+        .unwrap();
     assert_eq!(
         std::fs::read(at.join("src/lib.rs")).unwrap(),
         b"fn before() {}\n"
     );
+    let stamped = std::fs::metadata(at.join("src/lib.rs"))
+        .unwrap()
+        .modified()
+        .unwrap();
+    assert!(stamped >= before, "the cloned base is stamped now");
     edit(&at);
     assert!(sandbox.seal().is_err(), "a changed cloned base is refused");
     assert_eq!(
@@ -706,6 +736,8 @@ fn a_base_the_worker_changed_is_refused_at_seal() {
         "the template is untouched"
     );
     let sandbox = Sandbox::materialize(&tree, &cas, Mode::ReadOnly).unwrap();
-    sandbox.attach_base_template(&template, &[]).unwrap();
+    sandbox
+        .attach_base_template(&template, &[], budget)
+        .unwrap();
     assert!(sandbox.seal().unwrap().unchanged());
 }

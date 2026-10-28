@@ -44,7 +44,7 @@ fn fixture(recovery: Option<u32>) -> Fixture {
     let marker = "request=json.load(sys.stdin)\n";
     assert_eq!(original.matches(marker).count(), 1);
     let hold = format!(
-        "{marker}import os,subprocess\nif not os.path.exists({resume:?}):\n    child=subprocess.Popen(['/bin/sleep','90'])\n    open({ready:?}+'.tmp','w').write('%d %d' % (os.getpid(), child.pid))\n    os.rename({ready:?}+'.tmp',{ready:?})\n    child.wait()\n",
+        "{marker}import os,subprocess,time\nif not os.path.exists({resume:?}):\n    child=subprocess.Popen(['/bin/sleep','90'])\n    open({ready:?}+'.tmp','w').write('%d %d' % (os.getpid(), child.pid))\n    os.rename({ready:?}+'.tmp',{ready:?})\n    parent=os.getppid()\n    while child.poll() is None:\n        if os.getppid()!=parent:\n            child.kill();child.wait();sys.exit(1)\n        time.sleep(0.05)\n",
         resume = resume.to_str().unwrap(),
         ready = ready.to_str().unwrap(),
     );
@@ -90,22 +90,21 @@ fn af(f: &Fixture, args: &[&str]) -> std::process::Command {
     command
 }
 
-/// Kills af and its Worker group if a test fails before they ended.
+/// Kills af, this test's own child, if a test fails before it ended; its Worker, af's child,
+/// is never signalled here: it ends by itself once af is gone, and is reported if it does not
+/// (issue #331 item 7).
 struct Running {
     af: Option<Child>,
-    worker_group: i32,
+    worker: crate::common::recorded::Leftovers,
 }
 
 impl Drop for Running {
     fn drop(&mut self) {
-        let _ = nix::sys::signal::killpg(
-            nix::unistd::Pid::from_raw(self.worker_group),
-            Signal::SIGKILL,
-        );
         if let Some(child) = &mut self.af {
             let _ = child.kill();
             let _ = child.wait();
         }
+        drop(std::mem::take(&mut self.worker));
     }
 }
 
@@ -146,7 +145,11 @@ fn until_the_worker_runs(f: &Fixture, args: &[&str]) -> (Running, Vec<i32>) {
     (
         Running {
             af: Some(child),
-            worker_group: pids[0],
+            worker: crate::common::recorded::Leftovers(
+                crate::common::recorded::Recorded::now(pids[0])
+                    .into_iter()
+                    .collect(),
+            ),
         },
         pids,
     )
@@ -173,13 +176,19 @@ fn sigterm(f: &Fixture, args: &[&str]) -> std::process::Output {
 }
 
 /// SIGKILL to af mid-Attempt, as a closed lid, a reboot or a killed launcher ends it: nothing
-/// settles the Attempt or releases the lease. The orphaned Worker group is then killed too.
+/// settles the Attempt or releases the lease. The orphaned Worker, which this test does not
+/// hold, then ends its own child and itself, as the fixture's Worker does once af is gone.
 fn sigkill(f: &Fixture, args: &[&str]) {
     let (mut running, pids) = until_the_worker_runs(f, args);
     let mut child = running.af.take().unwrap();
     child.kill().unwrap();
     child.wait().unwrap();
-    nix::sys::signal::killpg(nix::unistd::Pid::from_raw(pids[0]), Signal::SIGKILL).unwrap();
+    let worker = running.worker.0.first().expect("the Worker was recorded");
+    assert!(
+        worker.ended_within(Duration::from_secs(60)),
+        "the orphaned Worker {} did not end once af was gone",
+        pids[0]
+    );
     let until = Instant::now() + Duration::from_secs(10);
     while pids.iter().any(|pid| alive(*pid)) && Instant::now() < until {
         std::thread::sleep(Duration::from_millis(10));
@@ -265,8 +274,8 @@ fn a_killed_run_is_abandoned_then_resumed_with_one_chargeable_and_one_abandoned_
 
     // Snapshot after the kill: abandoned by a lost writer, and what continues it.
     let shown = abandoned_inspection(&f);
-    schemas::valid(&schemas::validator("task-inspection-v13.json"), &shown);
-    assert_eq!(shown["schema"], "af/task-inspection@13");
+    schemas::valid(&schemas::validator("task-inspection-v14.json"), &shown);
+    assert_eq!(shown["schema"], "af/task-inspection@14");
     assert_eq!(
         shown["phase"]["kind"], "running",
         "the recorded phase stays"
@@ -286,7 +295,7 @@ fn a_killed_run_is_abandoned_then_resumed_with_one_chargeable_and_one_abandoned_
     assert!(text.contains(&format!("\nnext: {resume}\n")), "{text}");
     let listed = json(&af(&f, &["task", "list", "--json"]).output().unwrap());
     let entry = &listed["tasks"][0];
-    schemas::valid(&schemas::validator("task-list-entry-v3.json"), entry);
+    schemas::valid(&schemas::validator("task-list-entry-v4.json"), entry);
     assert_eq!(
         (&entry["state"]["cause"], &entry["state"]["next_action"]),
         (&Value::from("writer_lost"), &Value::from(resume.as_str()))
@@ -527,7 +536,7 @@ fn a_declared_recovery_allowance_dispatches_the_node_again_as_often_as_it_allows
             .output()
             .unwrap(),
     );
-    schemas::valid(&schemas::validator("task-inspection-v13.json"), &planned);
+    schemas::valid(&schemas::validator("task-inspection-v14.json"), &planned);
     assert_eq!(planned["graph"]["schema"], "af.compiled-task/2");
     schemas::valid(
         &schemas::validator("compiled-task-v2.json"),

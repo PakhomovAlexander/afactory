@@ -36,6 +36,7 @@ mod agent_setup;
 mod authority;
 mod caches;
 mod cli;
+mod command_catalog;
 mod config;
 mod doctor;
 mod error_document;
@@ -52,9 +53,12 @@ mod project_brief;
 mod projects;
 mod providers;
 mod report_tasks;
+mod review_handoff;
 mod review_task;
+mod sarif;
 mod self_optimizer;
 mod selfmgmt;
+mod shipped_schemas;
 mod storage;
 mod store_release;
 mod task;
@@ -333,12 +337,14 @@ struct LedgerOptions {
     state: Option<PathBuf>,
     campaign: String,
     long: bool,
+    json: bool,
 }
 
 struct ShowOptions {
     state: Option<PathBuf>,
     campaign: String,
     key: String,
+    json: bool,
 }
 
 struct ExportOptions {
@@ -383,6 +389,7 @@ enum ReportFormat {
     Markdown,
     Text,
     Json,
+    Sarif,
 }
 
 struct ResolveOptions {
@@ -882,16 +889,19 @@ fn review_command(namespace: cli::ReviewNamespace) -> Result<i32, String> {
                 RunVerdict::Incomplete { .. } => 4,
             })
         }
-        R::Plan(args) => {
+        R::Plan { args, long } => {
             // A plan reads each bound Provider's catalog token-free and names every Model
             // binding's verdict (ADR-0148).
             model_check::enable_plan_time();
             if args.task_file.is_some() {
+                if long {
+                    return Err("--long is for the review plan; use `af task explain TASK_ID --tree` after `af review plan --file FILE`".into());
+                }
                 return task_execution::start_review(task_review_options(args, true));
             }
             let options = run_options(args, "review plan");
             review_selector_refusal(&options, "plan")?;
-            print_plan(&options).map(|()| 0)
+            print_plan(&options, long).map(|()| 0)
         }
         R::Render(args) => {
             if args.task_file.is_some() {
@@ -901,17 +911,27 @@ fn review_command(namespace: cli::ReviewNamespace) -> Result<i32, String> {
             }
             print_render(&run_options(args, "review render")).map(|()| 0)
         }
-        R::Ledger { selector, long } => print_ledger(&LedgerOptions {
+        R::Ledger {
+            selector,
+            long,
+            json,
+        } => print_ledger(&LedgerOptions {
             state: selector.state.clone(),
             campaign: selector.campaign.clone(),
             long,
+            json,
         })
         .map_err(|error| explain_campaign(&selector, error))
         .map(|()| 0),
-        R::Show { selector, key } => show(&ShowOptions {
+        R::Show {
+            selector,
+            key,
+            json,
+        } => show(&ShowOptions {
             state: selector.state.clone(),
             campaign: selector.campaign.clone(),
             key,
+            json,
         })
         .map_err(|error| explain_campaign(&selector, error))
         .map(|()| 0),
@@ -928,13 +948,18 @@ fn review_command(namespace: cli::ReviewNamespace) -> Result<i32, String> {
             allow_stale,
         })
         .map(|()| 0),
-        R::Report { selector, format } => print_report(&ReportOptions {
+        R::Report {
+            selector,
+            format,
+            json,
+        } => print_report(&ReportOptions {
             state: selector.state.clone(),
             campaign: selector.campaign.clone(),
-            format: match format {
-                cli::ReportFormatArg::Md => ReportFormat::Markdown,
-                cli::ReportFormatArg::Text => ReportFormat::Text,
-                cli::ReportFormatArg::Json => ReportFormat::Json,
+            format: match (json, format) {
+                (true, _) | (_, Some(cli::ReportFormatArg::Json)) => ReportFormat::Json,
+                (_, Some(cli::ReportFormatArg::Text)) => ReportFormat::Text,
+                (_, Some(cli::ReportFormatArg::Sarif)) => ReportFormat::Sarif,
+                _ => ReportFormat::Markdown,
             },
         })
         .map_err(|error| explain_campaign(&selector, error))
@@ -1411,8 +1436,11 @@ fn review_binding_refusal(
     Err(error_document::typed(message, detail))
 }
 
-fn help_command(words: &[String], snippet: bool) -> Result<i32, String> {
+fn help_command(words: &[String], snippet: bool, json: bool) -> Result<i32, String> {
     use clap::CommandFactory as _;
+    if json {
+        return help_catalog(words);
+    }
     if snippet {
         if words == ["agents"] {
             print!("{}", topics::agent_snippet());
@@ -1461,6 +1489,25 @@ fn help_command(words: &[String], snippet: bool) -> Result<i32, String> {
         .print_long_help()
         .map_err(|error| error.to_string())?;
     Ok(0)
+}
+
+/// `af help [COMMAND...] --json`: the command catalog (ADR-0247), or for a path that names no
+/// command one `af/error@2` document with the usage exit code the text form also exits with.
+fn help_catalog(words: &[String]) -> Result<i32, String> {
+    match command_catalog::document(words) {
+        Ok(document) => {
+            println!(
+                "{}",
+                serde_json::to_string_pretty(&document).map_err(|error| error.to_string())?
+            );
+            Ok(0)
+        }
+        Err(error) => {
+            println!("{}", error_document::document("af help", &error, 2, None));
+            eprintln!("af help: {error}");
+            Ok(2)
+        }
+    }
 }
 
 fn main() {
@@ -1528,7 +1575,7 @@ fn main() {
                     command: Some(cli::Command::Review(namespace)),
                     ..
                 }) = cli::Af::try_parse_from(["af", "review", "plan"])
-                && let Some(cli::ReviewCommand::Plan(args)) = namespace.command
+                && let Some(cli::ReviewCommand::Plan { args, .. }) = namespace.command
                 && let Err(suggestion) =
                     review_selector_refusal(&run_options(args, "review plan"), "plan")
             {
@@ -1640,6 +1687,13 @@ fn main() {
         cli::Command::Onboard(args) if args.apply => Some((args.repo.clone(), args.json)),
         _ => None,
     };
+    // `af task events` prints JSON lines with no --json: its refusal is an `af/error@2` line too.
+    let json_lines = matches!(
+        &command,
+        cli::Command::Task {
+            command: cli::TaskCommand::Events { .. }
+        }
+    );
     drop(startup);
     let dispatched = perf_trace::span(Phase::CliCommand);
     let (prefix, outcome): (&str, Result<i32, String>) = match command {
@@ -1917,7 +1971,16 @@ fn main() {
             }),
         ),
         cli::Command::Doctor(args) => ("af doctor", doctor::run(&args.repo, args.json)),
-        cli::Command::Help { words, snippet } => ("af help", help_command(&words, snippet)),
+        cli::Command::Help {
+            words,
+            snippet,
+            json,
+        } => ("af help", help_command(&words, snippet, json)),
+        cli::Command::Schema { command } => match command {
+            cli::SchemaCommand::Show { id } => {
+                ("af schema show", shipped_schemas::show(id.as_deref()))
+            }
+        },
         cli::Command::Setup { command } => match command {
             cli::SetupCommand::Agents { repo, write } => {
                 ("af setup agents", agent_setup::run(&repo, write))
@@ -1956,11 +2019,11 @@ fn main() {
         Err(error) => {
             // A classified refusal adds its cause, next command and facts (`af help json`).
             let detail = error_document::take(&error);
-            if argv.iter().skip(1).any(|word| word == "--json") {
+            if json_lines || argv.iter().skip(1).any(|word| word == "--json") {
                 let document = error_document::document(prefix, &error, 1, detail.as_ref());
                 println!("{document}");
             }
-            eprintln!("{prefix}: {}", terminal_lines(&error));
+            eprintln!("{}", error_text(prefix, &error, detail.as_ref()));
             1
         }
     };
@@ -2161,19 +2224,28 @@ fn task_command(command: cli::TaskCommand) -> Result<i32, String> {
         cli::TaskCommand::Wait {
             task_id,
             timeout,
+            bell,
+            notify,
             inspect,
-        } => task_execution::runs::wait(&task_id, timeout, &inspect),
+        } => task_execution::runs::wait(&task_id, timeout, bell, notify, &inspect),
         cli::TaskCommand::Status { task_id, inspect } => {
             task_execution::runs::status(&task_id, &inspect)
         }
+        cli::TaskCommand::Events {
+            task_id,
+            after,
+            timeout,
+            store,
+        } => task_execution::events::events(&task_id, after, timeout, &store),
         cli::TaskCommand::Cancel { task_id, inspect } => {
             task_execution::runs::cancel(&task_id, &inspect)
         }
         cli::TaskCommand::Findings {
             task_id,
             round,
+            format,
             inspect,
-        } => task_execution::findings::print(&task_id, round, &inspect),
+        } => task_execution::findings::print(&task_id, round, format, &inspect),
         cli::TaskCommand::Materialize {
             task_id,
             snapshot,
@@ -2277,11 +2349,13 @@ fn task_command(command: cli::TaskCommand) -> Result<i32, String> {
             inspect.json,
         )
         .map(|()| 0),
-        cli::TaskCommand::List { sizes, inspect } => {
-            task::inspect_from_cli(None, inspect.repo, inspect.state, inspect.json)
-                .and_then(|options| task::list(options, sizes))
-                .map(|()| 0)
-        }
+        cli::TaskCommand::List {
+            sizes,
+            attention,
+            inspect,
+        } => task::inspect_from_cli(None, inspect.repo, inspect.state, inspect.json)
+            .and_then(|options| task::list(options, sizes, attention))
+            .map(|()| 0),
         cli::TaskCommand::Gc {
             older_than,
             keep,
@@ -2417,30 +2491,50 @@ fn exit_interrupted(
     error: Option<String>,
 ) -> ! {
     let code = interrupt::exit_code(signal);
+    let task = interrupt::noted_task();
     // The same next command `af task show --json` names: `af task run ID` only while the
     // interrupted node has a recovery left (ADR-0209). Either carries the Store selectors this
     // command was given.
-    let resume = match (interrupt::noted_task(), interrupt::noted_next()) {
-        (Some(id), Some(next)) => format!(
-            "a node of Task {id} used up its recovery allowance, so `af task run {id}` cannot \
-             continue it; start it again with `{next}` (the Task file it was started from)"
+    let (resume, next_action) = match (&task, interrupt::noted_next()) {
+        (Some(id), Some(next)) => (
+            format!(
+                "a node of Task {id} used up its recovery allowance, so `af task run {id}` \
+                 cannot continue it; start it again with `{next}` (the Task file it was started \
+                 from)"
+            ),
+            Some(next),
         ),
-        (Some(id), None) => format!(
-            "resume it with `{}`, which dispatches the interrupted node again without using \
-             one of its Attempts",
-            task_execution::with_selectors(&format!("af task run {id}"))
+        (Some(id), None) => {
+            let run = task_execution::with_selectors(&format!("af task run {id}"));
+            (
+                format!(
+                    "resume it with `{run}`, which dispatches the interrupted node again without \
+                     using one of its Attempts"
+                ),
+                Some(run),
+            )
+        }
+        (None, _) => (
+            "run the same command again to resume it".to_owned(),
+            same_command(argv),
         ),
-        (None, _) => "run the same command again to resume it".into(),
     };
-    let message = if argv.get(1).is_some_and(|s| s == "provider")
-        && argv.get(2).is_some_and(|s| s == "auth")
-    {
-        format!(
-            "interrupted by {signal}; native login stopped. Inspect the non-secret recovery status; a new login requires a fresh private host permission"
+    let login =
+        argv.get(1).is_some_and(|s| s == "provider") && argv.get(2).is_some_and(|s| s == "auth");
+    let next_action = next_action.filter(|command| error_document::pasteable(command));
+    let (message, next_action) = if login {
+        (
+            format!(
+                "interrupted by {signal}; native login stopped. Inspect the non-secret recovery status; a new login requires a fresh private host permission"
+            ),
+            login_status(argv),
         )
     } else {
-        format!(
-            "interrupted by {signal}; its Worker processes were stopped and the Task was not finished. To continue, {resume}"
+        (
+            format!(
+                "interrupted by {signal}; its Worker processes were stopped and the Task was not finished. To continue, {resume}"
+            ),
+            next_action,
         )
     };
     if let Some(error) = error {
@@ -2448,18 +2542,56 @@ fn exit_interrupted(
             eprintln!("{prefix}: {}", terminal_lines(&error));
         }
         if argv.iter().skip(1).any(|word| word == "--json") {
-            let document = serde_json::json!({
-                "schema": "af/error@2",
-                "command": prefix,
-                "error": message,
-                "exit_code": code,
-            });
+            // The recovery a script runs is a field, not only prose (`af help json`).
+            let mut detail = error_document::Detail::new(error_document::Cause::Interrupted)
+                .with("signal", signal.as_str())
+                .with("task", task.clone());
+            detail.next_action = next_action;
+            let document = error_document::document(prefix, &message, code, Some(&detail));
             println!("{document}");
         }
     }
     eprintln!("{prefix}: {}", terminal_lines(&message));
     let _ = std::io::stdout().flush();
     interrupt::exit(signal);
+}
+
+/// The `af provider auth status` command for the login an interrupted `af provider auth begin`
+/// started: its ID, kind and auth directory, as given.
+fn login_status(argv: &[String]) -> Option<String> {
+    use clap::Parser as _;
+    let parsed = cli::Af::try_parse_from(argv).ok()?;
+    let Some(cli::Command::Provider {
+        command:
+            cli::ProviderCommand::Auth {
+                command:
+                    cli::ProviderAuthCommand::Begin {
+                        id, kind, auth_dir, ..
+                    },
+            },
+    }) = parsed.command
+    else {
+        return None;
+    };
+    let auth_dir = auth_dir.to_str()?;
+    let command = format!(
+        "af provider auth status {} --kind {} --auth-dir {}",
+        shell_words::quote(&id),
+        provider_kind(kind),
+        shell_words::quote(auth_dir)
+    );
+    error_document::pasteable(&command).then_some(command)
+}
+
+/// `argv` again as one pasteable `af` command, its words quoted as typed; `None` when a word
+/// holds a control character, which no pasted line carries.
+fn same_command(argv: &[String]) -> Option<String> {
+    let words = argv.get(1..).unwrap_or_default();
+    if words.is_empty() {
+        return None;
+    }
+    Some(format!("af {}", shell_words::join(words)))
+        .filter(|command| error_document::pasteable(command))
 }
 
 /// Every `af provider` command returns its own documented exit code.
@@ -2624,6 +2756,11 @@ fn print_render(options: &Options) -> Result<(), String> {
             terminal_text(&entry.required_by)
         );
     }
+    match &view.reply_schema {
+        // The exact schema, compact, as the dispatch passes it (ADR-0246).
+        Some(reply) => eprintln!("reply     {} {}", reply.option, reply.schema),
+        None => eprintln!("reply     no native schema; the kernel parses the Worker's stdout"),
+    }
     for item in &view.not_rendered {
         eprintln!("omitted   {}", terminal_text(item));
     }
@@ -2634,7 +2771,16 @@ fn print_render(options: &Options) -> Result<(), String> {
     Ok(())
 }
 
-fn print_plan(options: &Options) -> Result<(), String> {
+/// The first screen identifies Snapshots by a readable prefix; --long and --json carry the
+/// complete digest for exact inspection.
+fn plan_snapshot_id(value: &str, long: bool) -> String {
+    if !long && let Some(prefix) = value.strip_prefix("sha256:").and_then(|hex| hex.get(..12)) {
+        return format!("sha256:{prefix}…");
+    }
+    terminal_text(value)
+}
+
+fn print_plan(options: &Options, long: bool) -> Result<(), String> {
     let scratch = tempfile::tempdir().map_err(|error| error.to_string())?;
     let cas = Cas::open(scratch.path().join("cas")).map_err(|error| error.to_string())?;
     let repository = std::fs::canonicalize(&options.repo).map_err(|error| {
@@ -2690,20 +2836,26 @@ fn print_plan(options: &Options) -> Result<(), String> {
     plan_line!(
         "policy   {} => {}",
         terminal_text(selectors["policy_rev"].as_str().unwrap_or("?")),
-        terminal_text(resolved["policy_snapshot_id"].as_str().unwrap_or("?"))
+        plan_snapshot_id(resolved["policy_snapshot_id"].as_str().unwrap_or("?"), long)
     );
     if let Some(base) = selectors["base"].as_str() {
         plan_line!(
             "base     {} => {}",
             terminal_text(base),
-            terminal_text(resolved["base_snapshot_id"].as_str().unwrap_or("?"))
+            plan_snapshot_id(resolved["base_snapshot_id"].as_str().unwrap_or("?"), long)
         );
     }
     plan_line!(
         "candidate {} => {}",
         terminal_text(selectors["candidate"].as_str().unwrap_or("?")),
-        terminal_text(resolved["candidate_snapshot_id"].as_str().unwrap_or("?"))
+        plan_snapshot_id(
+            resolved["candidate_snapshot_id"].as_str().unwrap_or("?"),
+            long
+        )
     );
+    if !long {
+        plan_line!("ids      abbreviated; --long or --json shows full digests");
+    }
     for provider in plan["providers"].as_array().into_iter().flatten() {
         if provider["required"] == true {
             plan_line!(
@@ -2773,30 +2925,32 @@ fn print_plan(options: &Options) -> Result<(), String> {
                 .unwrap_or_default()
         );
     }
-    plan_line!("topology");
-    for node in plan["pipeline"]["topology"]["nodes"]
-        .as_array()
-        .into_iter()
-        .flatten()
-    {
-        plan_line!(
-            "  node {} [{}]",
-            terminal_text(node["id"].as_str().unwrap_or("?")),
-            terminal_text(node["kind"].as_str().unwrap_or("?"))
-        );
-    }
-    for edge in plan["pipeline"]["topology"]["edges"]
-        .as_array()
-        .into_iter()
-        .flatten()
-    {
-        plan_line!(
-            "  {}.{} -> {}.{}",
-            terminal_text(edge["from"]["node"].as_str().unwrap_or("?")),
-            terminal_text(edge["from"]["port"].as_str().unwrap_or("?")),
-            terminal_text(edge["to"]["node"].as_str().unwrap_or("?")),
-            terminal_text(edge["to"]["port"].as_str().unwrap_or("?"))
-        );
+    if long {
+        plan_line!("topology");
+        for node in plan["pipeline"]["topology"]["nodes"]
+            .as_array()
+            .into_iter()
+            .flatten()
+        {
+            plan_line!(
+                "  node {} [{}]",
+                terminal_text(node["id"].as_str().unwrap_or("?")),
+                terminal_text(node["kind"].as_str().unwrap_or("?"))
+            );
+        }
+        for edge in plan["pipeline"]["topology"]["edges"]
+            .as_array()
+            .into_iter()
+            .flatten()
+        {
+            plan_line!(
+                "  {}.{} -> {}.{}",
+                terminal_text(edge["from"]["node"].as_str().unwrap_or("?")),
+                terminal_text(edge["from"]["port"].as_str().unwrap_or("?")),
+                terminal_text(edge["to"]["node"].as_str().unwrap_or("?")),
+                terminal_text(edge["to"]["port"].as_str().unwrap_or("?"))
+            );
+        }
     }
     for gate in plan["pipeline"]["gates"].as_array().into_iter().flatten() {
         plan_line!(
@@ -2872,11 +3026,12 @@ fn print_plan(options: &Options) -> Result<(), String> {
         let node = provider["node"].as_str().unwrap_or("?");
         let kind = provider["runner"].as_str().unwrap_or("?");
         match provider["binding"].as_str() {
-            Some(binding) => plan_line!(
+            Some(binding) if long => plan_line!(
                 "provider {} -> {}",
                 terminal_text(node),
                 terminal_text(binding)
             ),
+            Some(_) => {}
             None if provider["required"] == true => {
                 let fix = match missing
                     .iter()
@@ -3128,6 +3283,32 @@ fn print_ledger(options: &LedgerOptions) -> Result<(), String> {
     }
     print_scope_authority_warnings(&ledger);
     let findings = ledger.finding_views();
+    if options.json {
+        let demands = ledger.demand_views();
+        let open_required_demands = demands
+            .iter()
+            .filter(|demand| {
+                demand.requirement == review_core::DemandRequirement::Required
+                    && matches!(
+                        demand.status,
+                        review_core::DemandStatus::Open | review_core::DemandStatus::Stale
+                    )
+            })
+            .count();
+        let document = serde_json::json!({
+            "schema": "af/review-ledger@1",
+            "campaign": options.campaign,
+            "round": ledger.round,
+            "findings": findings,
+            "demands": demands,
+            "open_required_demands": open_required_demands,
+        });
+        println!(
+            "{}",
+            serde_json::to_string(&document).map_err(|error| error.to_string())?
+        );
+        return Ok(());
+    }
     for finding in &findings {
         println!(
             "{}\t{}\t{}\t{}\t{}\t{}:{}\t{}",
@@ -3374,6 +3555,42 @@ fn show(options: &ShowOptions) -> Result<(), String> {
     let head = current_campaign_head(&store, &cas, &run_id)?;
     let proposals = campaign_proposals(&store, &cas, &run_id)?;
     let (finding_ids, report_ids) = finding_claim_ids(&finding, &cas)?;
+
+    if options.json {
+        let reports = finding
+            .reports
+            .iter()
+            .map(|attached| {
+                cas.get_json(&attached.report_id)
+                    .map_err(|error| format!("reading report {}: {error}", attached.report_id))
+            })
+            .collect::<Result<Vec<_>, _>>()?;
+        let linked = proposals
+            .iter()
+            .filter(|proposal| {
+                proposal_links_finding(&proposal.proposal, &finding_ids, &report_ids)
+            })
+            .map(|proposal| {
+                serde_json::json!({
+                    "id": proposal.id,
+                    "proposal": proposal.proposal,
+                    "stale": proposal.proposal.base_snapshot_id != head,
+                })
+            })
+            .collect::<Vec<_>>();
+        let document = serde_json::json!({
+            "schema": "af/review-show@1",
+            "campaign": options.campaign,
+            "finding": finding,
+            "reports": reports,
+            "proposals": linked,
+        });
+        println!(
+            "{}",
+            serde_json::to_string(&document).map_err(|error| error.to_string())?
+        );
+        return Ok(());
+    }
 
     println!(
         "{} [{}]",
@@ -4167,7 +4384,14 @@ struct ReviewReportView {
     #[serde(skip_serializing_if = "Option::is_none")]
     wall_ms: Option<u64>,
     findings_summary: FindingsSummaryView,
-    findings: Vec<review_store::Finding>,
+    /// Each finding with its agent prompt and verified fix (ADR-0248).
+    findings: Vec<review_handoff::ReportFindingView>,
+    /// What the last recorded run covered, per reviewer and per path; null when no run is recorded
+    /// or its Round's Subject is unreadable.
+    coverage: Option<review_handoff::ReportCoverageView>,
+    /// The findings' verified fixes, for the SARIF run's properties.
+    #[serde(skip)]
+    verified_fixed: Vec<review_core::task::handoff::VerifiedFixV1>,
 }
 
 #[derive(serde::Serialize)]
@@ -4347,8 +4571,36 @@ fn print_report(options: &ReportOptions) -> Result<(), String> {
             "{}",
             serde_json::to_string_pretty(&view).map_err(|error| error.to_string())?
         ),
+        ReportFormat::Sarif => sarif::print(&report_sarif(&view))?,
     }
     Ok(())
+}
+
+/// The report's findings as one SARIF 2.1.0 log (ADR-0248). A finding a verification record
+/// proved fixed is no result: it is listed in the run's `verified_fixed`.
+fn report_sarif(view: &ReviewReportView) -> sarif::SarifRun<'_> {
+    let coverage = view.coverage.as_ref();
+    sarif::SarifRun {
+        owner: ("campaign", &view.campaign),
+        round: coverage.map(|coverage| u64::from(coverage.round)),
+        snapshot_id: coverage.map(|coverage| coverage.snapshot_id.as_str()),
+        coverage: coverage.map(|coverage| &coverage.coverage),
+        verified_fixed: &view.verified_fixed,
+        findings: view
+            .findings
+            .iter()
+            .filter(|view| view.verified_fix.is_none())
+            .map(|view| sarif::SarifFinding {
+                reviewer: &view.finding.source,
+                severity: view.finding.severity,
+                title: &view.finding.title,
+                finding_id: Some(&view.finding.key),
+                status: Some(view.finding.status.as_str()),
+                prompt: &view.agent_prompt,
+                declined: matches!(view.finding.status, Status::Rejected | Status::Wontfix),
+            })
+            .collect(),
+    }
 }
 
 fn read_report_view(
@@ -4384,8 +4636,14 @@ fn read_report_view_quietly(
     let task_accounting = report_tasks::read(store, cas, &run_id, &events)?;
     let wall_ms = task_accounting.wall_ms();
     let findings = ledger.finding_views();
+    let findings_summary = findings_summary(&findings);
+    let (findings, coverage) = review_handoff::read(cas, &events, &ledger, findings)?;
+    let verified_fixed = findings
+        .iter()
+        .filter_map(|view| view.verified_fix.clone())
+        .collect();
     Ok(ReviewReportView {
-        schema: "af/review-report@4",
+        schema: "af/review-report@5",
         campaign: campaign.into(),
         runs_recorded: reports.len(),
         ledger_round: ledger.round,
@@ -4408,8 +4666,10 @@ fn read_report_view_quietly(
         task_accounting: task_accounting.tasks,
         demands: ledger.demand_views(),
         wall_ms,
-        findings_summary: findings_summary(&findings),
+        findings_summary,
         findings,
+        coverage,
+        verified_fixed,
     })
 }
 
@@ -4507,11 +4767,15 @@ fn print_report_text(report: &ReviewReportView) {
         );
         println!("    source: {}", terminal_text(&demand.source));
     }
+    for line in review_handoff::coverage_lines(report.coverage.as_ref()) {
+        println!("{line}");
+    }
     println!("Findings:");
     if report.findings.is_empty() {
         println!("  none");
     }
-    for finding in &report.findings {
+    for view in &report.findings {
+        let finding = &view.finding;
         println!(
             "  [{}; scope={}; severity={}; effective={}] {} ({}) at {}:{}",
             finding.status.as_str(),
@@ -4530,6 +4794,12 @@ fn print_report_text(report: &ReviewReportView) {
         );
         println!("    body: {}", one_line(&finding.body));
         println!("    fix: {}", one_line(&finding.fix));
+        if let Some(fix) = &view.verified_fix {
+            println!(
+                "    verified fixed: by {} on {}",
+                fix.record_id, fix.snapshot_id
+            );
+        }
         for transition in &finding.history {
             println!(
                 "    history round {}: {} - {}",
@@ -4602,6 +4872,22 @@ fn print_report_markdown(report: &ReviewReportView) {
         println!("  - Source: {}", terminal_text(&demand.source));
     }
     println!();
+    println!("## Coverage");
+    println!();
+    if let Some(coverage) = &report.coverage {
+        println!(
+            "- Last recorded run: run {}, round {}, on `{}`",
+            coverage.run, coverage.round, coverage.snapshot_id
+        );
+    }
+    // The text heading is the section's own; its lines are the items.
+    for line in review_handoff::coverage_lines(report.coverage.as_ref())
+        .iter()
+        .skip(1)
+    {
+        println!("- {}", line.trim_start());
+    }
+    println!();
     println!("## Findings");
     for effective_severity in [
         Some(Severity::Blocker),
@@ -4622,14 +4908,15 @@ fn print_report_markdown(report: &ReviewReportView) {
         let matching = report
             .findings
             .iter()
-            .filter(|finding| finding.convergence_severity == effective_severity)
+            .filter(|view| view.finding.convergence_severity == effective_severity)
             .collect::<Vec<_>>();
         if matching.is_empty() {
             println!();
             println!("None.");
             continue;
         }
-        for finding in matching {
+        for view in matching {
+            let finding = &view.finding;
             println!();
             println!(
                 "- **[{}, scope={}, severity={}, effective={}] {}** (`{}`) at `{}:{}`",
@@ -4649,6 +4936,12 @@ fn print_report_markdown(report: &ReviewReportView) {
             );
             println!("  - Body: {}", markdown_line(&finding.body));
             println!("  - Fix: {}", markdown_line(&finding.fix));
+            if let Some(fix) = &view.verified_fix {
+                println!(
+                    "  - Verified fixed: by `{}` on `{}`",
+                    fix.record_id, fix.snapshot_id
+                );
+            }
             let evidence = finding
                 .reports
                 .iter()
@@ -4761,6 +5054,23 @@ fn terminal_lines(message: &str) -> String {
         .map(terminal_text)
         .collect::<Vec<_>>()
         .join("\n")
+}
+
+/// `error` as stderr shows it after `prefix`. A refusal ending with the command its document
+/// names (`...; then run `af task plan --file F` again`, the `next_action`) is fitted to the
+/// terminal stderr is by [`human::fit_refusal`], so the command runs as printed; every other
+/// error, and every error on a stream that is no terminal, is printed whole.
+fn error_text(prefix: &str, error: &str, detail: Option<&error_document::Detail>) -> String {
+    detail
+        .and_then(|detail| detail.next_action.as_deref())
+        .filter(|next| error_document::pasteable(next))
+        .zip(human::stderr_columns())
+        .and_then(|(next, width)| {
+            let sentence = error.strip_suffix(&format!(" then run `{next}` again"))?;
+            let head = format!("{prefix}: {}", terminal_lines(sentence));
+            Some(human::fit_refusal(&head, next, width))
+        })
+        .unwrap_or_else(|| format!("{prefix}: {}", terminal_lines(error)))
 }
 
 fn run_report(event: &review_core::RunEvent) -> Result<RunReportPayloadV6, String> {
@@ -5351,8 +5661,55 @@ fn run(options: &Options) -> Result<RunVerdict, String> {
 #[cfg(test)]
 mod terminal_text_tests {
     use super::{
-        CampaignProposal, markdown_line, one_line, proposal_line, terminal_lines, terminal_text,
+        CampaignProposal, login_status, markdown_line, one_line, proposal_line, same_command,
+        terminal_lines, terminal_text,
     };
+
+    /// #331 item 10: the `next_action` of an interrupted command that ran no Task is that same
+    /// command, quoted as typed; an interrupted `af provider auth begin` names the status of the
+    /// same login. Each parses with the CLI; a word no pasted line carries gives none.
+    #[test]
+    fn an_interrupted_command_names_the_command_that_continues_it() {
+        use clap::Parser as _;
+        let argv = |words: &[&str]| {
+            words
+                .iter()
+                .map(|word| (*word).to_owned())
+                .collect::<Vec<_>>()
+        };
+        let again = same_command(&argv(&[
+            "/opt/af/bin/af",
+            "review",
+            "run",
+            "--state",
+            "a b",
+        ]));
+        assert_eq!(again.as_deref(), Some("af review run --state 'a b'"));
+        assert_eq!(same_command(&argv(&["af", "review", "run", "x\ny"])), None);
+        assert_eq!(same_command(&argv(&["af"])), None);
+        let begin = argv(&[
+            "af",
+            "provider",
+            "auth",
+            "begin",
+            "--kind",
+            "claude",
+            "--auth-dir",
+            "/h/c d",
+            "--host-read-fd",
+            "3",
+            "--host-write-fd",
+            "4",
+            "claude-main",
+        ]);
+        let status = login_status(&begin).unwrap();
+        assert_eq!(
+            status,
+            "af provider auth status claude-main --kind claude --auth-dir '/h/c d'"
+        );
+        crate::cli::Af::try_parse_from(shell_words::split(&status).unwrap()).unwrap();
+        assert_eq!(login_status(&argv(&["af", "task", "run", "t"])), None);
+    }
 
     /// A message af composed keeps its own line breaks; every line of it is shown through
     /// `terminal_text`, so a value interpolated into it sends no control character (audit C3).
@@ -5850,7 +6207,7 @@ mod option_tests {
         );
         // The report document the browser reads, without a word on stderr.
         let report = browse_report(&state, "local").unwrap();
-        assert_eq!(report["schema"], "af/review-report@4");
+        assert_eq!(report["schema"], "af/review-report@5");
         assert_eq!(report["campaign"], "local");
         // A directory without a Store is no Campaign.
         let Err(error) = read_campaign_dir(&temp.path().join("review")) else {

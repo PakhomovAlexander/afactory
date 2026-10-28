@@ -18,6 +18,14 @@ def require(condition, message):
         raise ContractError(message)
 
 
+def add_note(error, note):
+    """`error.add_note(note)`, also on Python 3.9 and 3.10, which lack it (ADR-0162)."""
+    if hasattr(error, "add_note"):
+        error.add_note(note)
+    else:
+        error.__notes__ = list(getattr(error, "__notes__", ())) + [note]
+
+
 ID_PATTERN = r"^[a-z][a-z0-9_]{0,63}$"
 GIT_SHA_PATTERN = r"^(?:[0-9a-f]{40}|[0-9a-f]{64})$"
 DIGEST_PATTERN = r"^sha256:[0-9a-f]{64}$"

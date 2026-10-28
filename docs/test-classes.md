@@ -81,7 +81,12 @@ Ignored tests retain the previous policy. Benchmarks, child-process helpers and 
 are inventoried as ignored, never silently promoted or discarded. Live container probes are an explicit
 e2e job on Linux; missing Docker fails it. `make review-kernel-container-probes` runs exactly the three
 existing probe selections, including their ignored tests. They remain outside default local
-`make check`, as before; selective e2e execution includes them and requires a live daemon.
+`make check`, as before. Local class execution (`scripts/test-classes.py execute`, behind
+`make check-classes`, `make check-fast`, `make check-full` and `scripts/verify.sh --profile fast`)
+runs every selected class but omits the live probes, e2e included, so it needs no daemon and a
+local pass is no evidence that they passed. CI's separate
+`container-probes` job runs them for every e2e selection, and the aggregate requires its success.
+Run `make review-kernel-container-probes` to run them locally; it fails without a container runtime.
 
 ## Selection and precedence
 

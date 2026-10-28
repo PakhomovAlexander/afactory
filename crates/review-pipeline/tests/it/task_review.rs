@@ -5,7 +5,7 @@ use review_config::task::catalog::*;
 use review_core::task::pipeline::*;
 use review_core::task::plan::*;
 use review_core::task::review::*;
-use review_core::task::verification::TASK_CHECK_RECEIPT_V1;
+use review_core::task::verification::TASK_CHECK_RECEIPT_V2;
 use review_core::task::*;
 use review_core::{DemandRequirement, PortCardinality, Producer, Severity};
 use review_graph::task::{OperatorAttemptCost, OperatorSignature};
@@ -237,7 +237,7 @@ fn run_case(case: &str) {
                         "history".into(),
                         port(REVIEW_HISTORY_V1, PortAffinityV1::Unbound {}),
                     ),
-                    ("checks".into(), port(TASK_CHECK_RECEIPT_V1, same())),
+                    ("checks".into(), port(TASK_CHECK_RECEIPT_V2, same())),
                 ]),
                 outputs: BTreeMap::from([("result".into(), port(result_type, same()))]),
             },

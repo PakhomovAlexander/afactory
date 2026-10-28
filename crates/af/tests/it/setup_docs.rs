@@ -464,13 +464,35 @@ fn json_guidance_names_telemetry_tail_as_the_one_json_lines_stream() {
     // `--help` lists, and no surface promises `--json` to most commands.
     assert!(
         agents.contains(
-            "`af review report` takes `--format json` instead, and `af review campaigns` either \
-             flag for the same document"
+            "`af review report` and `af review campaigns` also take `--format json`, the same \
+             document as `--json`; giving both is a usage error. Some commands, such as \
+             `af config paths`, print text only."
         ),
         "{agents}"
     );
-    assert!(help(&["review", "campaigns", "--help"]).contains("--json"));
-    assert!(!help(&["review", "report", "--help"]).contains("--json"));
+    for command in ["report", "campaigns"] {
+        let page = help(&["review", command, "--help"]);
+        assert!(
+            page.contains("--json") && page.contains("--format"),
+            "{page}"
+        );
+        let both = crate::common::af()
+            .args(["review", command, "--json", "--format", "json"])
+            .output()
+            .unwrap();
+        assert_eq!(both.status.code(), Some(2), "af review {command}");
+        assert!(
+            String::from_utf8_lossy(&both.stderr)
+                .contains("'--json' cannot be used with '--format <FORMAT>'"),
+            "af review {command}"
+        );
+    }
+    // The text-only examples print no JSON form, and the review reading commands that do are
+    // never named as text only.
+    assert!(!help(&["config", "paths", "--help"]).contains("--json"));
+    for command in ["ledger", "show"] {
+        assert!(help(&["review", command, "--help"]).contains("--json"));
+    }
     assert!(!collapsed(&readme).contains("Most commands"), "README.md");
     assert!(
         agents.contains(
@@ -504,6 +526,24 @@ fn json_guidance_names_telemetry_tail_as_the_one_json_lines_stream() {
         ),
         "{topic}"
     );
+    assert!(
+        topic.contains(
+            "`af review report` and `af review campaigns` also take --format json, the same \
+             document as --json; giving both is a usage error. Not every command has a JSON \
+             form: `af config paths`, for example, prints text only."
+        ),
+        "{topic}"
+    );
+    for (surface, text) in [("README.md", agents.as_str()), ("af help json", &topic)] {
+        for command in ["`af review ledger`", "`af review show`"] {
+            assert!(
+                !text
+                    .split(". ")
+                    .any(|sentence| sentence.contains(command) && sentence.contains("text only")),
+                "{surface} calls {command} text only"
+            );
+        }
+    }
     let telemetry = collapsed(&workspace_file("docs/telemetry.md"));
     assert!(
         telemetry.contains(
@@ -528,4 +568,87 @@ fn json_guidance_names_telemetry_tail_as_the_one_json_lines_stream() {
         );
     }
     assert!(!topic.contains("always works"), "{topic}");
+}
+
+/// Issue #358 review: the test-class guide says what local class execution does with the live
+/// container probes, as the code does it. `scripts/test-classes.py execute`, behind the local
+/// `make` targets and the fast Task gate, runs every selected class and never the probes; the
+/// separate CI job runs them for every e2e selection; the explicit target runs them locally.
+/// The guide no longer says local e2e selection includes them.
+#[test]
+fn test_class_guide_says_local_execution_omits_the_live_container_probes() {
+    let guide = collapsed(&workspace_file("docs/test-classes.md"));
+    for claim in [
+        "Local class execution (`scripts/test-classes.py execute`, behind `make check-classes`, \
+         `make check-fast`, `make check-full` and `scripts/verify.sh --profile fast`) runs every \
+         selected class but omits the live probes, e2e included, so it needs no daemon and a \
+         local pass is no evidence that they passed.",
+        "CI's separate `container-probes` job runs them for every e2e selection, and the \
+         aggregate requires its success.",
+        "Run `make review-kernel-container-probes` to run them locally; it fails without a \
+         container runtime.",
+    ] {
+        assert!(guide.contains(claim), "{claim}");
+    }
+    assert!(
+        !guide.contains("selective e2e execution includes them"),
+        "{guide}"
+    );
+
+    // What the guide states, where it is decided.
+    let execute = workspace_file("scripts/test-classes.py");
+    let execute = execute
+        .split("elif args.command == 'execute':")
+        .nth(1)
+        .unwrap()
+        .split("elif args.command ==")
+        .next()
+        .unwrap();
+    assert!(
+        execute.contains("for kind in plan['selected']:"),
+        "{execute}"
+    );
+    let code: String = execute
+        .lines()
+        .filter(|line| !line.trim_start().starts_with('#'))
+        .collect();
+    assert!(!code.contains("container"), "{execute}");
+    let makefile = workspace_file("Makefile");
+    for target in ["check-fast:", "check-full:"] {
+        let recipe = makefile.split(target).nth(1).unwrap();
+        let recipe = recipe.split("\n\n").next().unwrap();
+        assert!(recipe.contains("$(MAKE) check-classes"), "{target}{recipe}");
+    }
+    let classes = makefile.split("\ncheck-classes:").nth(1).unwrap();
+    assert!(
+        classes
+            .split("\n\n")
+            .next()
+            .unwrap()
+            .contains("scripts/test-classes.py execute"),
+        "{classes}"
+    );
+    let probes = makefile
+        .split("\nreview-kernel-container-probes:")
+        .nth(1)
+        .unwrap();
+    assert!(
+        probes
+            .contains("cargo test --locked -p review-sandbox --test container_probes -- --ignored"),
+        "{probes}"
+    );
+    let workflow = workspace_file(".github/workflows/validate.yml");
+    let job = workflow
+        .split("\n  container-probes:\n")
+        .nth(1)
+        .unwrap()
+        .split("\n  lint:\n")
+        .next()
+        .unwrap();
+    assert!(
+        job.contains("if: needs.resolve.outputs.e2e == 'true'"),
+        "{job}"
+    );
+    assert!(job.contains("run: docker info"), "{job}");
+    assert!(job.contains("make review-kernel-container-probes"), "{job}");
 }

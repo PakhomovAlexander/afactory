@@ -26,7 +26,11 @@ if sys.argv[1:2]==['app-server']:
 request=sys.stdin.read()
 probe=request==PROBE_INPUT
 with open(home+'/calls','a') as f: f.write('admission\n' if probe else 'reviewer\n')
-message='OK' if probe else json.dumps({'findings':[],'benchmark_demands':[],'dispositions':[]})
+# The reviewer's dispatch names the strict Reviewer Result schema (ADR-0246); keep what it named.
+if '--output-schema' in sys.argv:
+ with open(home+('/probe-schema.json' if probe else '/reviewer-schema.json'),'w') as f: f.write(open(sys.argv[sys.argv.index('--output-schema')+1]).read())
+# What a strict schema makes the model write: every field, `null` for the absent transport ones.
+message='OK' if probe else json.dumps({'reports':[],'benchmark_demands':[],'dispositions':[],'proposal':None,'notes':None})
 with open(sys.argv[sys.argv.index('-o')+1],'w') as f: f.write(message)
 usage=json.load(open(home+'/usage.json')) if probe else {'input_tokens':1,'output_tokens':1}
 print(json.dumps({'type':'turn.completed','usage':usage}))
@@ -195,6 +199,21 @@ fn common_review_captures_admission_cost_and_retains_exact_overruns() {
                 "admission\n"
             }
         );
+        // ADR-0246: the reviewer's dispatch wrote the strict Reviewer Result schema that
+        // `af review render` shows; the admission probe passes none.
+        assert!(!f.home.join("codex-auth/probe-schema.json").exists());
+        let schema = std::fs::read(f.home.join("codex-auth/reviewer-schema.json"));
+        if accepted {
+            assert_eq!(
+                serde_json::from_slice::<Value>(&schema.unwrap()).unwrap(),
+                review_runner::task::reply_schema::ReplyContract::ReviewerResult
+                    .strict(&[])
+                    .unwrap()
+                    .unwrap()
+            );
+        } else {
+            assert!(schema.is_err(), "no reviewer was dispatched");
+        }
         let again = f.projection(id);
         assert_eq!(
             again.execution.unwrap().budget.committed_tokens(),

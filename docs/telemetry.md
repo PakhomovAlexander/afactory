@@ -1035,7 +1035,7 @@ SHA-256, the `af.config.text.digest` every level records, as its `source_digest`
   declares them and judges everything else. In the Worker request those are each input and
   feedback value's `artifact_id` and `snapshot_id`, and inside its payload only the identity
   positions the schema of an artifact type `af` owns declares (`af/SourceTree@1`,
-  `af/TaskCheckReceipt@1`, `af/TaskRetryFeedback@1`, `af/TaskReviewAssignment@1`,
+  `af/TaskCheckReceipt@2`, `af/TaskAcceptance@1`, `af/TaskRetryFeedback@1`, `af/TaskReviewAssignment@1`,
   `af/TaskReviewSubject@2`, `af/ReviewHistory@1`, `af/TaskRepairContext@1`,
   `af/DocumentContext@1`, `af/WorkerNotes@1`, `af/WorkerReplyReask@1`,
   `af/ReportDraftValidation@1`); every other payload — the Task's requirements

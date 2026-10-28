@@ -17,6 +17,8 @@ const LOAD_SAFE_WALL_MS: u64 = 120_000;
 
 #[path = "support/executables.rs"]
 mod executables;
+#[path = "support/recorded.rs"]
+mod recorded;
 use executables::{DIRECTORY, identity, layout, snapshot};
 
 /// The supervisor this test process runs: its own link to a snapshot of the example cargo built
@@ -705,16 +707,12 @@ fn recorded_process_gone(marker: &Path) -> bool {
     nix::sys::signal::kill(nix::unistd::Pid::from_raw(pid), None) == Err(nix::errno::Errno::ESRCH)
 }
 
-/// End the process group a fixture recorded in `marker` if it outlived a failing assertion, so
-/// a failing test leaves nothing running; nothing else is signalled.
+/// Report the fixture recorded in `marker` if it outlived a failing assertion. It is the
+/// supervisor's child, not this test's, so it is never signalled here: its ID may name another
+/// test's process by now, and the fixture's own `sleep` ends within a minute (issue #331 item 7).
 fn end_recorded(marker: &Path) {
-    if let Ok(text) = std::fs::read_to_string(marker)
-        && let Ok(pid) = text.trim().parse::<i32>()
-    {
-        let _ = nix::sys::signal::killpg(
-            nix::unistd::Pid::from_raw(pid),
-            nix::sys::signal::Signal::SIGKILL,
-        );
+    if let Some(recorded) = recorded::Recorded::from_marker(marker) {
+        drop(recorded::Leftovers(vec![recorded]));
     }
 }
 

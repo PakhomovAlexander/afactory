@@ -1,0 +1,1700 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:af:schema:task-inspection:14",
+  "title": "Task inspection af/task-inspection@14",
+  "$comment": "The one read-only projection of a common Task. Sections beyond the required core appear only when the Task recorded them: owned children, Review handoffs and Integration phases, measured Attempt walls with their runtime evidence, experiments and adoption observations. History, execution, report and handoff entries keep their exact artifact types and payloads. The Store validates cross-artifact identities, histories, selected results and cumulative accounting; a JSON schema cannot authenticate CAS or recompute a history. These records grant no admission or dispatch authority. Explain adds graph and plan together. Version 12 adds the `state` every rendering prints, the `gate` summary of the last check receipt with its check reports and gate retries, and the `failures` of the last run report (`af help task-states`). Version 13 adds `continues`, the Task and review round a continued Task was planned from (ADR-0212).",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema",
+    "task_id",
+    "revision_id",
+    "phase",
+    "state",
+    "clock",
+    "plan_id",
+    "chargeable_tokens",
+    "attempts",
+    "history",
+    "execution_records",
+    "run_reports"
+  ],
+  "properties": {
+    "schema": {
+      "const": "af/task-inspection@14"
+    },
+    "task_id": {
+      "$ref": "urn:af:schema:task-contracts:1#/$defs/name"
+    },
+    "revision_id": {
+      "$ref": "urn:af:schema:task-contracts:1#/$defs/digest"
+    },
+    "phase": {
+      "$ref": "urn:af:schema:task-contracts:1#/$defs/taskPhase"
+    },
+    "state": {
+      "description": "The state `af task list`, `show`, `report` and `run` print for this Task.",
+      "$ref": "urn:af:schema:task-state:2#/$defs/state"
+    },
+    "clock": {
+      "description": "The Task's wall clock, which starts at its first plan admission (`af task run`), not at planning: the wall it has from then, when it started, and the deadline it has since; both null before the first run. The plan's own `limits.deadline_unix_ms` is the deadline recorded at planning.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "wall_ms",
+        "started_unix_ms",
+        "deadline_unix_ms"
+      ],
+      "properties": {
+        "wall_ms": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 9007199254740991
+        },
+        "started_unix_ms": {
+          "anyOf": [
+            {
+              "type": "integer",
+              "minimum": 0,
+              "maximum": 9007199254740991
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "deadline_unix_ms": {
+          "anyOf": [
+            {
+              "type": "integer",
+              "minimum": 0,
+              "maximum": 9007199254740991
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      },
+      "allOf": [
+        {
+          "if": {
+            "properties": {
+              "started_unix_ms": {
+                "type": "null"
+              }
+            }
+          },
+          "then": {
+            "properties": {
+              "deadline_unix_ms": {
+                "type": "null"
+              }
+            }
+          },
+          "else": {
+            "properties": {
+              "deadline_unix_ms": {
+                "type": "integer"
+              }
+            }
+          }
+        }
+      ]
+    },
+    "plan_id": {
+      "anyOf": [
+        {
+          "$ref": "urn:af:schema:task-contracts:1#/$defs/digest"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "chargeable_tokens": {
+      "$ref": "urn:af:schema:task-token-usage:3#/$defs/decimalU128"
+    },
+    "attempts": {
+      "type": "integer",
+      "minimum": 0,
+      "maximum": 18446744073709551615
+    },
+    "unknown_usage_attempts": {
+      "description": "Settled Attempts whose Provider reported no usage: each was charged zero and its usage is unknown (ADR-0143), so `chargeable_tokens` is not their spend. Absent when every usage is known.",
+      "type": "integer",
+      "minimum": 1,
+      "maximum": 9007199254740991
+    },
+    "selection": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "artifact_id",
+        "request_revision_id",
+        "assessment"
+      ],
+      "properties": {
+        "artifact_id": {
+          "$ref": "urn:af:schema:task-contracts:1#/$defs/digest"
+        },
+        "request_revision_id": {
+          "$ref": "urn:af:schema:task-contracts:1#/$defs/digest"
+        },
+        "assessment": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "schema",
+            "requested",
+            "no_match",
+            "candidates",
+            "decision"
+          ],
+          "properties": {
+            "schema": {
+              "const": "af.pipeline-selection/1"
+            },
+            "requested": {
+              "anyOf": [
+                {
+                  "$ref": "urn:af:schema:task-contracts:1#/$defs/choice"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
+            "no_match": {
+              "enum": [
+                "refuse",
+                "generate"
+              ]
+            },
+            "candidates": {
+              "type": "array",
+              "items": {
+                "type": "object",
+                "additionalProperties": false,
+                "required": [
+                  "pipeline",
+                  "preferred",
+                  "priority",
+                  "state"
+                ],
+                "properties": {
+                  "pipeline": {
+                    "type": "string"
+                  },
+                  "preferred": {
+                    "type": "boolean"
+                  },
+                  "priority": {
+                    "type": "integer",
+                    "minimum": 0,
+                    "maximum": 4294967295
+                  },
+                  "state": {
+                    "oneOf": [
+                      {
+                        "type": "object",
+                        "additionalProperties": false,
+                        "required": [
+                          "kind"
+                        ],
+                        "properties": {
+                          "kind": {
+                            "const": "fit"
+                          }
+                        }
+                      },
+                      {
+                        "type": "object",
+                        "additionalProperties": false,
+                        "required": [
+                          "kind"
+                        ],
+                        "properties": {
+                          "kind": {
+                            "const": "compatible"
+                          }
+                        }
+                      },
+                      {
+                        "type": "object",
+                        "additionalProperties": false,
+                        "required": [
+                          "kind",
+                          "reasons"
+                        ],
+                        "properties": {
+                          "kind": {
+                            "const": "no_fit"
+                          },
+                          "reasons": {
+                            "type": "array",
+                            "items": {
+                              "type": "string"
+                            }
+                          }
+                        }
+                      },
+                      {
+                        "type": "object",
+                        "additionalProperties": false,
+                        "required": [
+                          "kind",
+                          "facts"
+                        ],
+                        "properties": {
+                          "kind": {
+                            "const": "unknown_facts"
+                          },
+                          "facts": {
+                            "type": "array",
+                            "items": {
+                              "type": "string"
+                            },
+                            "uniqueItems": true
+                          }
+                        }
+                      },
+                      {
+                        "type": "object",
+                        "additionalProperties": false,
+                        "required": [
+                          "kind",
+                          "reason"
+                        ],
+                        "properties": {
+                          "kind": {
+                            "const": "unavailable"
+                          },
+                          "reason": {
+                            "type": "string"
+                          }
+                        }
+                      },
+                      {
+                        "type": "object",
+                        "additionalProperties": false,
+                        "required": [
+                          "kind",
+                          "reason"
+                        ],
+                        "properties": {
+                          "kind": {
+                            "const": "infeasible"
+                          },
+                          "reason": {
+                            "type": "string"
+                          }
+                        }
+                      },
+                      {
+                        "type": "object",
+                        "additionalProperties": false,
+                        "required": [
+                          "kind",
+                          "reason"
+                        ],
+                        "properties": {
+                          "kind": {
+                            "const": "invalid"
+                          },
+                          "reason": {
+                            "type": "string"
+                          }
+                        }
+                      }
+                    ]
+                  }
+                }
+              }
+            },
+            "decision": {
+              "oneOf": [
+                {
+                  "type": "object",
+                  "additionalProperties": false,
+                  "required": [
+                    "kind"
+                  ],
+                  "properties": {
+                    "kind": {
+                      "const": "unavailable"
+                    }
+                  }
+                },
+                {
+                  "type": "object",
+                  "additionalProperties": false,
+                  "required": [
+                    "kind"
+                  ],
+                  "properties": {
+                    "kind": {
+                      "const": "infeasible"
+                    }
+                  }
+                },
+                {
+                  "type": "object",
+                  "additionalProperties": false,
+                  "required": [
+                    "kind"
+                  ],
+                  "properties": {
+                    "kind": {
+                      "const": "invalid"
+                    }
+                  }
+                },
+                {
+                  "type": "object",
+                  "additionalProperties": false,
+                  "required": [
+                    "kind"
+                  ],
+                  "properties": {
+                    "kind": {
+                      "const": "refused"
+                    }
+                  }
+                },
+                {
+                  "type": "object",
+                  "additionalProperties": false,
+                  "required": [
+                    "kind"
+                  ],
+                  "properties": {
+                    "kind": {
+                      "const": "needs_generation"
+                    }
+                  }
+                },
+                {
+                  "type": "object",
+                  "additionalProperties": false,
+                  "required": [
+                    "kind",
+                    "pipeline"
+                  ],
+                  "properties": {
+                    "kind": {
+                      "const": "selected"
+                    },
+                    "pipeline": {
+                      "type": "string"
+                    }
+                  }
+                },
+                {
+                  "type": "object",
+                  "additionalProperties": false,
+                  "required": [
+                    "kind",
+                    "pipelines"
+                  ],
+                  "properties": {
+                    "kind": {
+                      "const": "ambiguous"
+                    },
+                    "pipelines": {
+                      "type": "array",
+                      "items": {
+                        "type": "string"
+                      },
+                      "uniqueItems": true
+                    }
+                  }
+                },
+                {
+                  "type": "object",
+                  "additionalProperties": false,
+                  "required": [
+                    "kind",
+                    "facts"
+                  ],
+                  "properties": {
+                    "kind": {
+                      "const": "needs_facts"
+                    },
+                    "facts": {
+                      "type": "array",
+                      "items": {
+                        "type": "string"
+                      },
+                      "uniqueItems": true
+                    }
+                  }
+                }
+              ]
+            }
+          }
+        }
+      }
+    },
+    "planning": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "bootstrap_plan_id",
+        "proposal_id",
+        "request_revision_id"
+      ],
+      "properties": {
+        "bootstrap_plan_id": {
+          "$ref": "urn:af:schema:task-contracts:1#/$defs/digest"
+        },
+        "proposal_id": {
+          "$ref": "urn:af:schema:task-contracts:1#/$defs/digest"
+        },
+        "request_revision_id": {
+          "$ref": "urn:af:schema:task-contracts:1#/$defs/digest"
+        }
+      }
+    },
+    "plan_decisions": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "artifact_id",
+          "decision",
+          "valid_until_unix_ms"
+        ],
+        "properties": {
+          "artifact_id": {
+            "$ref": "urn:af:schema:task-contracts:1#/$defs/digest"
+          },
+          "decision": {
+            "$ref": "urn:af:schema:task-contracts:1#/$defs/planDecision"
+          },
+          "valid_until_unix_ms": {
+            "type": "integer",
+            "minimum": 0,
+            "maximum": 9007199254740991
+          }
+        }
+      },
+      "minItems": 1
+    },
+    "history": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "sequence",
+          "transition"
+        ],
+        "properties": {
+          "sequence": {
+            "type": "integer",
+            "minimum": 0,
+            "maximum": 9007199254740991
+          },
+          "transition": {
+            "$ref": "urn:af:schema:task-transition:5"
+          }
+        }
+      }
+    },
+    "execution_records": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "artifact_id",
+          "artifact_type",
+          "record"
+        ],
+        "properties": {
+          "artifact_id": {
+            "$ref": "urn:af:schema:task-contracts:1#/$defs/digest"
+          },
+          "artifact_type": {
+            "const": "af/TaskExecutionRecord@5"
+          },
+          "record": {
+            "$ref": "urn:af:schema:task-execution-record:5"
+          },
+          "diagnostic": {
+            "$comment": "The exact CAS JSON a Failed settlement's diagnostic_id names: an af.task-diagnostic/1 object that no published schema types.",
+            "type": "object"
+          }
+        },
+        "if": {
+          "required": [
+            "record"
+          ],
+          "properties": {
+            "record": {
+              "required": [
+                "kind"
+              ],
+              "properties": {
+                "kind": {
+                  "enum": [
+                    "settled",
+                    "usage_observed"
+                  ]
+                }
+              }
+            }
+          }
+        },
+        "else": {
+          "not": {
+            "required": [
+              "diagnostic"
+            ]
+          }
+        }
+      }
+    },
+    "provider_events": {
+      "description": "What started Attempts did about their Provider without failing, in log order (ADR-0208): each `TaskProviderEvent@1` event of the Task's log with its sequence. Absent when there is none.",
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "sequence",
+          "record"
+        ],
+        "properties": {
+          "sequence": {
+            "type": "integer",
+            "minimum": 0,
+            "maximum": 9007199254740991
+          },
+          "record": {
+            "$ref": "urn:af:schema:task-provider-event:1"
+          }
+        }
+      }
+    },
+    "attempt_wall_ends": {
+      "description": "Each Attempt a Worker's Attempt wall ended, in log order (ADR-0257): the af/TaskAttemptWallEnd@1 its settlement keeps among its raw evidence and, for a source-writing Worker, the af/TaskPartialCandidate@1 its tree was sealed as. Never an output: no seal, check, review, acceptance or delivery reads one. Absent when there is none.",
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "artifact_id",
+          "record"
+        ],
+        "properties": {
+          "artifact_id": {
+            "$ref": "urn:af:schema:task-contracts:1#/$defs/digest"
+          },
+          "record": {
+            "$ref": "urn:af:schema:task-attempt-wall-end:1"
+          },
+          "partial_candidate": {
+            "$ref": "urn:af:schema:task-partial-candidate:1"
+          }
+        }
+      }
+    },
+    "run_reports": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "artifact_id",
+          "report",
+          "diagnostics"
+        ],
+        "properties": {
+          "artifact_id": {
+            "$ref": "urn:af:schema:task-contracts:1#/$defs/digest"
+          },
+          "report": {
+            "$ref": "urn:af:schema:task-run-report:2"
+          },
+          "diagnostics": {
+            "type": "object",
+            "additionalProperties": {
+              "$ref": "urn:af:schema:task-diagnostic:1"
+            }
+          }
+        }
+      }
+    },
+    "delivery": {
+      "$ref": "#/$defs/deliveryReceipt"
+    },
+    "undeclared_af_paths": {
+      "$comment": "Paths under .af/ of one captured Snapshot that the declared layout does not name, with their byte total. Advisory: classification reports, it never removes a path from a Snapshot or from a delivered worktree. Present only when there is at least one such path, so a document or receipt with a fully declared authority tree carries no field at all.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "paths",
+        "bytes"
+      ],
+      "properties": {
+        "paths": {
+          "type": "array",
+          "minItems": 1,
+          "items": {
+            "type": "string"
+          }
+        },
+        "bytes": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 18446744073709551615
+        }
+      }
+    },
+    "result": {
+      "$ref": "urn:af:schema:task-contracts:1#/$defs/taskResult"
+    },
+    "planning_diagnostic": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "schema",
+        "plan_id",
+        "reason"
+      ],
+      "properties": {
+        "schema": {
+          "const": "af.planning-diagnostic/1"
+        },
+        "plan_id": {
+          "anyOf": [
+            {
+              "$ref": "urn:af:schema:task-contracts:1#/$defs/digest"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "reason": {
+          "type": "string",
+          "maxLength": 8192
+        }
+      }
+    },
+    "repair_assessments": {
+      "type": "array",
+      "items": {
+        "$ref": "urn:af:schema:task-contracts:1#/$defs/repairAssessment"
+      },
+      "minItems": 1
+    },
+    "review_rounds": {
+      "type": "array",
+      "items": {
+        "$ref": "urn:af:schema:task-review-round:1"
+      }
+    },
+    "slots": {
+      "description": "Each Worker slot of the recorded plan beside its binding and its Attempt wall, in the order `af task plan` lists them (ADR-0257): the slot, its captured Worker package, a model binding's Provider, model and effort or a command Worker, and the longest `wall_ms_per_attempt` the compiled graph gives a node the slot runs as, null for a slot no node runs. Present with `plan` and `graph` (`af task plan`, `start`, `explain` and `run --from` without --execute).",
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "slot",
+          "worker",
+          "execution",
+          "attempt_wall_ms"
+        ],
+        "properties": {
+          "slot": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 4096
+          },
+          "worker": {
+            "anyOf": [
+              {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 256
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "execution": {
+            "enum": [
+              "model",
+              "command",
+              null
+            ]
+          },
+          "provider": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 128
+          },
+          "model": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 256
+          },
+          "effort": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 128
+          },
+          "attempt_wall_ms": {
+            "anyOf": [
+              {
+                "type": "integer",
+                "minimum": 1,
+                "maximum": 9007199254740991
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
+        },
+        "if": {
+          "properties": {
+            "execution": {
+              "const": "model"
+            }
+          }
+        },
+        "then": {
+          "required": [
+            "provider",
+            "model",
+            "effort"
+          ]
+        },
+        "else": {
+          "not": {
+            "anyOf": [
+              {
+                "required": [
+                  "provider"
+                ]
+              },
+              {
+                "required": [
+                  "model"
+                ]
+              },
+              {
+                "required": [
+                  "effort"
+                ]
+              }
+            ]
+          }
+        }
+      }
+    },
+    "graph": {
+      "$comment": "af.compiled-task/2 is the graph of an af.pipeline/3 pipeline, whose slots declare recovery_attempts (ADR-0209); every other graph is af.compiled-task/1.",
+      "oneOf": [
+        {
+          "$ref": "urn:af:schema:compiled-task:1"
+        },
+        {
+          "$ref": "urn:af:schema:compiled-task:2"
+        }
+      ]
+    },
+    "plan": {
+      "$ref": "urn:af:schema:task-contracts:1#/$defs/executionPlan"
+    },
+    "owned_child_sets": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "artifact_id",
+          "artifact_type",
+          "record"
+        ],
+        "properties": {
+          "artifact_id": {
+            "$ref": "urn:af:schema:task-contracts:1#/$defs/digest"
+          },
+          "artifact_type": {
+            "const": "af/TaskOwnedChildSet@1"
+          },
+          "record": {
+            "$ref": "urn:af:schema:task-owned-child-set:1"
+          }
+        }
+      }
+    },
+    "review_handoffs": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "artifact_id",
+          "artifact_type",
+          "record"
+        ],
+        "properties": {
+          "artifact_id": {
+            "$ref": "urn:af:schema:task-contracts:1#/$defs/digest"
+          },
+          "artifact_type": {
+            "const": "af/TaskReviewHandoff@2"
+          },
+          "record": {
+            "$ref": "urn:af:schema:task-review-handoff:2"
+          }
+        }
+      }
+    },
+    "review_integrations": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "artifact_id",
+          "artifact_type",
+          "record",
+          "node",
+          "requires_checks",
+          "finished",
+          "report_id",
+          "integration_committed_event_id"
+        ],
+        "properties": {
+          "artifact_id": {
+            "$ref": "urn:af:schema:task-contracts:1#/$defs/digest"
+          },
+          "artifact_type": {
+            "const": "af/TaskReviewIntegrationPhase@1"
+          },
+          "record": {
+            "$ref": "urn:af:schema:task-review-integration-phase:1"
+          },
+          "node": {
+            "type": "string",
+            "maxLength": 4096,
+            "pattern": "^[A-Za-z0-9][A-Za-z0-9_-]{0,127}(\\.[A-Za-z0-9][A-Za-z0-9_-]{0,127})*$"
+          },
+          "requires_checks": {
+            "type": "boolean"
+          },
+          "finished": {
+            "type": "boolean"
+          },
+          "report_id": {
+            "oneOf": [
+              {
+                "$ref": "urn:af:schema:task-contracts:1#/$defs/digest"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "integration_committed_event_id": {
+            "oneOf": [
+              {
+                "type": "string",
+                "pattern": "^[a-z0-9]{26}$"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
+        },
+        "allOf": [
+          {
+            "if": {
+              "properties": {
+                "record": {
+                  "properties": {
+                    "selection": {
+                      "properties": {
+                        "kind": {
+                          "const": "prepared"
+                        }
+                      }
+                    }
+                  }
+                }
+              }
+            },
+            "then": {
+              "properties": {
+                "requires_checks": {
+                  "const": true
+                }
+              }
+            },
+            "else": {
+              "properties": {
+                "requires_checks": {
+                  "const": false
+                },
+                "finished": {
+                  "const": true
+                },
+                "report_id": {
+                  "type": "null"
+                },
+                "integration_committed_event_id": {
+                  "type": "null"
+                }
+              }
+            }
+          },
+          {
+            "if": {
+              "properties": {
+                "finished": {
+                  "const": false
+                }
+              }
+            },
+            "then": {
+              "properties": {
+                "report_id": {
+                  "type": "null"
+                },
+                "integration_committed_event_id": {
+                  "type": "null"
+                }
+              }
+            }
+          },
+          {
+            "if": {
+              "properties": {
+                "requires_checks": {
+                  "const": true
+                },
+                "finished": {
+                  "const": true
+                }
+              }
+            },
+            "then": {
+              "properties": {
+                "report_id": {
+                  "$ref": "urn:af:schema:task-contracts:1#/$defs/digest"
+                }
+              }
+            }
+          },
+          {
+            "if": {
+              "properties": {
+                "integration_committed_event_id": {
+                  "type": "string"
+                }
+              }
+            },
+            "then": {
+              "properties": {
+                "requires_checks": {
+                  "const": true
+                },
+                "finished": {
+                  "const": true
+                },
+                "report_id": {
+                  "$ref": "urn:af:schema:task-contracts:1#/$defs/digest"
+                }
+              }
+            }
+          }
+        ]
+      }
+    },
+    "attempt_walls": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "run_id",
+          "attempt_id",
+          "node_id",
+          "round",
+          "epoch",
+          "started_unix_ms",
+          "elapsed_ms"
+        ],
+        "properties": {
+          "run_id": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 512
+          },
+          "attempt_id": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 256
+          },
+          "node_id": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 256
+          },
+          "round": {
+            "type": "integer",
+            "minimum": 0,
+            "maximum": 4294967295
+          },
+          "epoch": {
+            "type": "integer",
+            "minimum": 0,
+            "maximum": 4294967295
+          },
+          "started_unix_ms": {
+            "type": "integer",
+            "minimum": 0,
+            "maximum": 9007199254740991
+          },
+          "elapsed_ms": {
+            "type": "integer",
+            "minimum": 0,
+            "maximum": 9007199254740991
+          },
+          "usage": {
+            "$ref": "urn:af:schema:task-runtime-evidence:1#/$defs/usage"
+          }
+        }
+      }
+    },
+    "runtime_observations": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "artifact_id",
+          "artifact_type",
+          "record"
+        ],
+        "properties": {
+          "artifact_id": {
+            "$ref": "urn:af:schema:task-runtime-evidence:1#/$defs/digest"
+          },
+          "artifact_type": {
+            "const": "af/TaskRuntimeEvidence@1"
+          },
+          "record": {
+            "$ref": "urn:af:schema:task-runtime-evidence:1"
+          }
+        }
+      }
+    },
+    "remote_checks": {
+      "description": "Every remote check result of the Task's current check receipts (ADR-0140), with the `af/RemoteCheckEvidence@1` document its status derives from. Absent when no current receipt holds a remote result.",
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "node",
+          "check",
+          "status",
+          "artifact_id",
+          "artifact_type",
+          "record"
+        ],
+        "properties": {
+          "node": {
+            "type": "string",
+            "minLength": 1
+          },
+          "check": {
+            "type": "string",
+            "pattern": "^[A-Za-z0-9][A-Za-z0-9_-]{0,127}$"
+          },
+          "status": {
+            "enum": [
+              "passed",
+              "failed",
+              "not_run"
+            ]
+          },
+          "artifact_id": {
+            "$ref": "urn:af:schema:remote-check-evidence:1#/$defs/digest"
+          },
+          "artifact_type": {
+            "const": "af/RemoteCheckEvidence@1"
+          },
+          "record": {
+            "$ref": "urn:af:schema:remote-check-evidence:1"
+          },
+          "log_id": {
+            "description": "The CAS object holding the bounded log excerpt of the remote jobs that did not succeed: the result's `stdout`. Absent when none was kept.",
+            "$ref": "urn:af:schema:remote-check-evidence:1#/$defs/digest"
+          }
+        }
+      }
+    },
+    "gate_cleanups": {
+      "description": "Every recorded attempt to close the Task's draft gate pull requests and delete its two af-gate branches (ADR-0144), in log order; absent when none was made.",
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "$ref": "urn:af:schema:task-gate-cleanup:1"
+      }
+    },
+    "storage_sweeps": {
+      "description": "What every Storage Budget sweep that ended a run of this Task removed and failed to remove (ADR-0144), in log order; absent when none removed or failed anything.",
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "$ref": "urn:af:schema:task-storage-sweep:2"
+      }
+    },
+    "experiments": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "type": "object",
+        "required": [
+          "kind",
+          "artifact_id",
+          "artifact_type",
+          "record"
+        ],
+        "additionalProperties": false,
+        "properties": {
+          "kind": {
+            "enum": [
+              "prepared",
+              "decision",
+              "registered"
+            ]
+          },
+          "artifact_id": {
+            "$ref": "urn:af:schema:task-contracts:1#/$defs/digest"
+          },
+          "artifact_type": {
+            "enum": [
+              "af/ExperimentPrepared@1",
+              "af/ExperimentPlanDecision@1",
+              "af/ExperimentExecutionPlan@1"
+            ]
+          },
+          "prepared_id": {
+            "$ref": "urn:af:schema:task-contracts:1#/$defs/digest"
+          },
+          "decision_id": {
+            "$ref": "urn:af:schema:task-contracts:1#/$defs/digest"
+          },
+          "record": {
+            "oneOf": [
+              {
+                "$ref": "urn:af:schema:experiment-prepared:1"
+              },
+              {
+                "$ref": "urn:af:schema:experiment-plan-decision:1"
+              },
+              {
+                "$ref": "urn:af:schema:experiment-execution-plan:1"
+              }
+            ]
+          }
+        }
+      }
+    },
+    "adoption_observations": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "artifact_id",
+          "record",
+          "task_evidence"
+        ],
+        "properties": {
+          "artifact_id": {
+            "type": "string",
+            "pattern": "^sha256:[0-9a-f]{64}$"
+          },
+          "record": {
+            "$ref": "urn:af:schema:optimization-adoption-observation:1"
+          },
+          "task_evidence": {
+            "type": "array",
+            "maxItems": 1,
+            "items": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": [
+                "artifact_id",
+                "record"
+              ],
+              "properties": {
+                "artifact_id": {
+                  "type": "string",
+                  "pattern": "^sha256:[0-9a-f]{64}$"
+                },
+                "record": {
+                  "$ref": "https://afactory.dev/schemas/optimization-adoption-task-evidence-v1.json"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "input_bindings": {
+      "$comment": "The af/TaskInputBindings@1 record of a Task whose file bound a root input port to a recorded Task's output or an exact artifact (ADR-0117). Present only when there is a binding; it is provenance and changes no counter.",
+      "$ref": "urn:af:schema:task-input-bindings:1"
+    },
+    "continues": {
+      "description": "What a continued Task continues (ADR-0212): the Task and review round it was planned from with `af task run NEW --from TASK` or a Task file's `continue` table, that Task's result, the reviewed candidate Snapshot this Task reads as its source, and the af/TaskReviewFindings@1 artifact its implementer receives with the number of findings it holds. Absent for a Task that continues nothing; provenance, never authority. A Task planned from a Task that recorded no review round continues the partial tree an Attempt wall left (ADR-0257): it names the continued Task, the node and Attempt its wall stopped, the af/TaskAttemptWallEnd@1 record its provenance keeps, the af/TaskPartialCandidate@1 and the Snapshot of the tree this Task reads; no findings travel with it.",
+      "oneOf": [
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "task_id",
+            "round",
+            "result_id",
+            "snapshot_id",
+            "findings_id",
+            "findings"
+          ],
+          "properties": {
+            "task_id": {
+              "$ref": "urn:af:schema:task-contracts:1#/$defs/name"
+            },
+            "round": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 16
+            },
+            "result_id": {
+              "$ref": "urn:af:schema:task-contracts:1#/$defs/digest"
+            },
+            "snapshot_id": {
+              "$ref": "urn:af:schema:task-contracts:1#/$defs/digest"
+            },
+            "findings_id": {
+              "$ref": "urn:af:schema:task-contracts:1#/$defs/digest"
+            },
+            "findings": {
+              "type": "integer",
+              "minimum": 0,
+              "maximum": 512
+            }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "task_id",
+            "node",
+            "attempt_id",
+            "wall_end_id",
+            "partial_candidate_id",
+            "snapshot_id"
+          ],
+          "properties": {
+            "task_id": {
+              "$ref": "urn:af:schema:task-contracts:1#/$defs/name"
+            },
+            "node": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 4096
+            },
+            "attempt_id": {
+              "type": "string",
+              "pattern": "^[A-Za-z0-9]{26}$"
+            },
+            "wall_end_id": {
+              "$ref": "urn:af:schema:task-contracts:1#/$defs/digest"
+            },
+            "partial_candidate_id": {
+              "$ref": "urn:af:schema:task-contracts:1#/$defs/digest"
+            },
+            "snapshot_id": {
+              "$ref": "urn:af:schema:task-contracts:1#/$defs/digest"
+            }
+          }
+        }
+      ]
+    },
+    "gate": {
+      "description": "The last check receipt the Task recorded, summarized: its status and the failing and flaky tests its runners named, as `af task list --json` carries them; and the gate's evidence `af task show` prints beside it (ADR-0205): each check node's latest `af/TaskCheckReport@1` and every `af task run --retry-gate` that ran a failed gate again on the same candidate. Absent before a check recorded one.",
+      "$ref": "#/$defs/gate"
+    },
+    "failures": {
+      "description": "Each failed node of the last run report, in plan order; a node that only lacks another node's receipt comes after it. Absent when none failed.",
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "$ref": "urn:af:schema:task-state:2#/$defs/failure"
+      }
+    }
+  },
+  "$defs": {
+    "gate": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "status",
+        "failed_tests",
+        "flaky"
+      ],
+      "properties": {
+        "status": {
+          "$ref": "urn:af:schema:task-state:2#/$defs/gate/properties/status"
+        },
+        "failed_tests": {
+          "$ref": "urn:af:schema:task-state:2#/$defs/gate/properties/failed_tests"
+        },
+        "flaky": {
+          "$ref": "urn:af:schema:task-state:2#/$defs/gate/properties/flaky"
+        },
+        "check_reports": {
+          "description": "Each check node's latest `af/TaskCheckReport@1`, the report of its latest settled Attempt, by node ID: the host's load and CPUs, the steps by stage with the one that stopped the check and its fix, and the flaky tests and those that failed twice. Absent when no check recorded one.",
+          "type": "array",
+          "minItems": 1,
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "node",
+              "artifact_id",
+              "record"
+            ],
+            "properties": {
+              "node": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 1024,
+                "pattern": "^[^\\u0000-\\u001f\\u007f]+$"
+              },
+              "artifact_id": {
+                "type": "string",
+                "pattern": "^sha256:[0-9a-f]{64}$"
+              },
+              "record": {
+                "$ref": "urn:af:schema:task-check-report:1"
+              }
+            }
+          }
+        },
+        "retries": {
+          "description": "Every `TaskGateRetried@1` of the Task's log, in log order: each `af task run --retry-gate` and the failed gates it ran again on the same candidate. Absent when the gate was never retried.",
+          "type": "array",
+          "minItems": 1,
+          "items": {
+            "$ref": "urn:af:schema:task-gate-retried:1"
+          }
+        }
+      }
+    },
+    "deliveryReceipt": {
+      "oneOf": [
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "schema",
+            "delivery_id",
+            "task_id",
+            "result_id",
+            "source_snapshot_id",
+            "derived_snapshot_id",
+            "target",
+            "source_revision"
+          ],
+          "properties": {
+            "schema": {
+              "const": "af/task-delivery-prepared@1"
+            },
+            "delivery_id": {
+              "type": "string"
+            },
+            "task_id": {
+              "type": "string"
+            },
+            "result_id": {
+              "$ref": "urn:af:schema:task-contracts:1#/$defs/digest"
+            },
+            "source_snapshot_id": {
+              "$ref": "urn:af:schema:task-contracts:1#/$defs/digest"
+            },
+            "derived_snapshot_id": {
+              "$ref": "urn:af:schema:task-contracts:1#/$defs/digest"
+            },
+            "target": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": [
+                "repository",
+                "repository_id",
+                "branch",
+                "worktree"
+              ],
+              "properties": {
+                "repository": {
+                  "type": "string"
+                },
+                "repository_id": {
+                  "type": "string"
+                },
+                "branch": {
+                  "type": "string"
+                },
+                "worktree": {
+                  "type": "string"
+                }
+              }
+            },
+            "source_revision": {
+              "type": "string"
+            }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "schema",
+            "delivery_id",
+            "task_id",
+            "result_id",
+            "source_snapshot_id",
+            "derived_snapshot_id",
+            "target",
+            "outcome",
+            "ignored_paths",
+            "remote_actions"
+          ],
+          "properties": {
+            "schema": {
+              "const": "af/task-delivery@1"
+            },
+            "delivery_id": {
+              "type": "string"
+            },
+            "task_id": {
+              "type": "string"
+            },
+            "result_id": {
+              "$ref": "urn:af:schema:task-contracts:1#/$defs/digest"
+            },
+            "source_snapshot_id": {
+              "$ref": "urn:af:schema:task-contracts:1#/$defs/digest"
+            },
+            "derived_snapshot_id": {
+              "$ref": "urn:af:schema:task-contracts:1#/$defs/digest"
+            },
+            "target": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": [
+                "repository",
+                "repository_id",
+                "branch",
+                "worktree"
+              ],
+              "properties": {
+                "repository": {
+                  "type": "string"
+                },
+                "repository_id": {
+                  "type": "string"
+                },
+                "branch": {
+                  "type": "string"
+                },
+                "worktree": {
+                  "type": "string"
+                }
+              }
+            },
+            "outcome": {
+              "oneOf": [
+                {
+                  "type": "object",
+                  "additionalProperties": false,
+                  "required": [
+                    "kind"
+                  ],
+                  "properties": {
+                    "kind": {
+                      "const": "delivered"
+                    }
+                  }
+                },
+                {
+                  "type": "object",
+                  "additionalProperties": false,
+                  "required": [
+                    "kind",
+                    "reason"
+                  ],
+                  "properties": {
+                    "kind": {
+                      "const": "failed"
+                    },
+                    "reason": {
+                      "type": "string"
+                    }
+                  }
+                }
+              ]
+            },
+            "ignored_paths": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              }
+            },
+            "remote_actions": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              }
+            },
+            "undeclared_af_paths": {
+              "$ref": "#/properties/undeclared_af_paths"
+            }
+          }
+        }
+      ]
+    }
+  },
+  "dependentRequired": {
+    "graph": [
+      "plan"
+    ],
+    "plan": [
+      "graph"
+    ],
+    "delivery": [
+      "result"
+    ],
+    "planning_diagnostic": [
+      "result"
+    ],
+    "repair_assessments": [
+      "result"
+    ],
+    "review_rounds": [
+      "result"
+    ],
+    "attempt_walls": [
+      "runtime_observations"
+    ],
+    "runtime_observations": [
+      "attempt_walls"
+    ]
+  },
+  "allOf": [
+    {
+      "if": {
+        "properties": {
+          "phase": {
+            "properties": {
+              "kind": {
+                "const": "finished"
+              }
+            }
+          }
+        }
+      },
+      "then": {
+        "required": [
+          "result"
+        ]
+      },
+      "else": {
+        "not": {
+          "required": [
+            "result"
+          ]
+        }
+      }
+    },
+    {
+      "if": {
+        "required": [
+          "graph"
+        ]
+      },
+      "then": {
+        "properties": {
+          "plan_id": {
+            "$ref": "urn:af:schema:task-contracts:1#/$defs/digest"
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "history": {
+            "contains": {
+              "required": [
+                "transition"
+              ],
+              "properties": {
+                "transition": {
+                  "properties": {
+                    "change": {
+                      "properties": {
+                        "kind": {
+                          "enum": [
+                            "review_integration_selected",
+                            "review_integration_finished"
+                          ]
+                        }
+                      },
+                      "required": [
+                        "kind"
+                      ]
+                    }
+                  },
+                  "required": [
+                    "change"
+                  ]
+                }
+              }
+            }
+          }
+        }
+      },
+      "then": {
+        "required": [
+          "review_integrations"
+        ]
+      }
+    }
+  ]
+}

@@ -1,0 +1,51 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:af:schema:review-ledger-view:1",
+  "title": "af/review-ledger@1 inspection view",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema", "campaign", "round", "findings", "demands", "open_required_demands"],
+  "properties": {
+    "schema": {"const": "af/review-ledger@1"},
+    "campaign": {"type": "string"},
+    "round": {"type": "integer", "minimum": 0},
+    "findings": {"type": "array", "items": {"$ref": "#/$defs/finding"}},
+    "demands": {"type": "array", "items": {"$ref": "#/$defs/demand"}},
+    "open_required_demands": {"type": "integer", "minimum": 0}
+  },
+  "$defs": {
+    "finding": {
+      "type": "object", "additionalProperties": false,
+      "required": ["key", "status", "severity", "last_seen_round", "source", "identity_file", "identity_line", "file", "line", "title", "body", "fix", "confidence", "authority_diagnostic", "convergence_scope", "convergence_severity", "scoped_news_round", "reports", "history"],
+      "properties": {
+        "key": {"type": "string"}, "aliases": {"type": "array", "items": {"type": "string"}},
+        "status": {"type": "string"}, "severity": {"type": "string"},
+        "last_seen_round": {"type": "integer", "minimum": 0}, "source": {"type": "string"},
+        "identity_file": {"type": "string"}, "identity_line": {"type": ["integer", "null"]},
+        "file": {"type": "string"}, "line": {"type": ["integer", "null"]},
+        "title": {"type": "string"}, "body": {"type": "string"}, "fix": {"type": "string"},
+        "confidence": {"type": ["number", "null"]}, "authority_diagnostic": {"type": "boolean"},
+        "unreadable_reports": {"type": "array", "items": {"type": "string"}},
+        "convergence_scope": {"type": ["string", "null"]},
+        "convergence_severity": {"type": ["string", "null"]},
+        "scoped_news_round": {"type": ["integer", "null"]},
+        "reports": {"type": "array", "items": {"type": "object"}},
+        "history": {"type": "array", "items": {"type": "object"}}
+      }
+    },
+    "demand": {
+      "type": "object", "additionalProperties": false,
+      "required": ["demand_id", "claim", "why", "suggested_method", "source", "requirement", "status", "subject_id", "evidence_ids", "satisfaction_ids", "waiver_ids"],
+      "properties": {
+        "demand_id": {"type": "string"}, "claim": {"type": "string"}, "why": {"type": "string"},
+        "suggested_method": {"type": "string"}, "source": {"type": "string"},
+        "requirement": {"enum": ["required", "advisory"]},
+        "status": {"enum": ["open", "satisfied", "stale", "waived"]},
+        "subject_id": {"type": "string"},
+        "evidence_ids": {"type": "array", "items": {"type": "string"}},
+        "satisfaction_ids": {"type": "array", "items": {"type": "string"}},
+        "waiver_ids": {"type": "array", "items": {"type": "string"}}
+      }
+    }
+  }
+}

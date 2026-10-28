@@ -3,7 +3,7 @@ code_policy = ".af/code-policy.toml"
 
 [packages."bench/stream"]
 version = "1.0.0"
-digest = "sha256:587b5c25030adaeee23ae89ca3992b01a48b123d5c0a5e2f353484b31efd768d"
+digest = "sha256:a64a5ad5148540cf86428fa5d0d53e4eb9a2fd47835800ed7ea5ff05944246c1"
 path = ".af/task-packages/bench/stream"
 
 [packages."bench/dense"]
