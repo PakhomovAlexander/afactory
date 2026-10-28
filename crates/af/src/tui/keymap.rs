@@ -181,11 +181,26 @@ pub(crate) enum Action {
 
 /// The NORMAL-mode parser: single keys map directly, and `g`, `z`, `]`, `[`, `Z` and `<C-w>`
 /// wait for the key that completes them. An unknown continuation abandons the sequence, as vim
-/// does, so the key after it starts afresh.
+/// does, so the key after it starts afresh. An upper-case letter with no binding of its own is
+/// its lower-case key, so Caps Lock changes nothing: `Q` quits and `J` moves down.
 #[derive(Debug, Default)]
 pub(crate) struct KeyMap {
     /// The first key of an unfinished sequence; `w` stands for `<C-w>`.
     pending: Option<char>,
+}
+
+/// The upper-case letters with a binding of their own: the keymap's `G` `N` `R` `Z` and the
+/// Tasks pane's `D`. Every other upper-case letter is read as its lower-case key.
+const UPPER_CASE_OWN: [char; 5] = ['D', 'G', 'N', 'R', 'Z'];
+
+/// `key`, an upper-case letter with no binding of its own read as its lower-case key.
+fn folded(key: Key) -> Key {
+    match key {
+        Key::Char(letter) if letter.is_ascii_uppercase() && !UPPER_CASE_OWN.contains(&letter) => {
+            Key::Char(letter.to_ascii_lowercase())
+        }
+        other => other,
+    }
 }
 
 impl KeyMap {
@@ -209,7 +224,7 @@ impl KeyMap {
                 _ => None,
             };
         }
-        let action = match key {
+        let action = match folded(key) {
             Key::Char(prefix @ ('g' | 'z' | ']' | '[' | 'Z')) => {
                 self.pending = Some(prefix);
                 return None;
@@ -365,6 +380,38 @@ mod tests {
         for (key, action) in bound {
             assert_eq!(actions(&[key]), vec![Some(action)], "{key:?}");
         }
+    }
+
+    /// Caps Lock: an upper-case letter with no binding of its own is its lower-case key; the
+    /// ones with their own keep it.
+    #[test]
+    fn an_upper_case_letter_without_its_own_binding_is_its_lower_case_key() {
+        let folded = [
+            (Key::Char('Q'), Action::Quit),
+            (Key::Char('J'), Action::Down),
+            (Key::Char('K'), Action::Up),
+            (Key::Char('H'), Action::Left),
+            (Key::Char('L'), Action::Right),
+            (Key::Char('O'), Action::Open),
+            (Key::Char('Y'), Action::Yank),
+            (Key::Char('M'), Action::Pane(Key::Char('m'))),
+            (Key::Char('E'), Action::Pane(Key::Char('e'))),
+        ];
+        for (key, action) in folded {
+            assert_eq!(actions(&[key]), vec![Some(action)], "{key:?}");
+        }
+        let own = [
+            (Key::Char('G'), Action::Bottom),
+            (Key::Char('N'), Action::SearchPrevious),
+            (Key::Char('R'), Action::Refresh),
+            (Key::Char('D'), Action::Pane(Key::Char('D'))),
+        ];
+        for (key, action) in own {
+            assert_eq!(actions(&[key]), vec![Some(action)], "{key:?}");
+        }
+        // `ZZ` still quits, and the continuations `zR` `zM` keep their case.
+        assert_eq!(actions(&chars("ZZ")), vec![None, Some(Action::Quit)]);
+        assert_eq!(actions(&chars("zR")), vec![None, Some(Action::FoldOpenAll)]);
     }
 
     #[test]

@@ -95,6 +95,7 @@ y                  copy the selected id to the clipboard (OSC 52)
 gf                 open the file behind the node in $EDITOR
 R                  read the pane again
 q ZZ :q            quit; <C-c> first cancels a prompt or a running probe
+Caps Lock          a capital letter with no key of its own is its small one
 
 providers: d fills the : line with `provider remove ID` for a registered
            Provider; Enter on the line runs it

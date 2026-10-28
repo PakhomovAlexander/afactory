@@ -127,6 +127,9 @@ few pane-local verbs, listed in its section and in the status line.
 | `?`, `:help` | help overlay: the panes, `: <af command>`, then the keys; `?`, `q` or `Esc` closes it |
 | `q` `:q` `ZZ` | quit; `<C-c>` cancels a prompt or a running probe first |
 
+An upper-case letter with no binding of its own is its lower-case key, so Caps Lock changes
+nothing: `Q` quits, `J` and `K` move. `G`, `N`, `R`, `Z` and the Tasks pane's `D` keep their own.
+
 **Command line (`:`)** — the browser's own verbs, and any `af` command line:
 
 ```

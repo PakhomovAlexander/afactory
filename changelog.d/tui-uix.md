@@ -10,3 +10,6 @@
 - The Providers pane keeps the model catalogs off screen until asked for: its last row says
   `<m> to show models`, and `m` shows every listed Provider's `models` section (one row per exact
   ID) until `m` hides them again.
+- With Caps Lock on the browser still answers: an upper-case letter with no binding of its own
+  (`Q`, `J`, `K`, ...) is read as its lower-case key; `G`, `N`, `R`, `Z` and the Tasks pane's `D`
+  keep their own.
