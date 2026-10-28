@@ -6,8 +6,10 @@
 //! grouped as `af task list --attention` groups the same entries; one Task's main pane shows its
 //! identity, one row per stage of its plan's graph order, its token and time totals, and its
 //! event history. Every value is a field of those documents or of an artifact they name by ID:
-//! the node an invocation ran and the goal of the revision. Nothing is written. While the opened Task runs,
-//! a thread reads the Store again about once a second and the event loop collects the result.
+//! the node an invocation ran and the goal of the revision. Nothing is written. Every read of the
+//! Stores runs on a thread: the one a load or `R` starts, and the one that reads the opened running
+//! Task again about once a second. The event loop collects each Store as it is read, so the bar
+//! fills Store by Store and the browser never waits on one (ADR-0240).
 
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
@@ -20,7 +22,7 @@ use super::{Effect, Pane, Row};
 use crate::task_execution;
 use crate::tui::keymap::Key;
 use crate::tui::paint::{self, Paint, Span, Tone};
-use crate::tui::scope::Scope;
+use crate::tui::scope::{Scope, ScopeKind};
 use crate::tui::tree::Item;
 
 /// How often an opened running Task is read again.
@@ -1083,32 +1085,78 @@ fn verb(
     prefill(key, task_id, plan, state, named)
 }
 
-/// What one read of the scope's Task state found.
-struct Reread {
-    stores: Vec<Store>,
-    detail: Option<Result<Detail, String>>,
-    cache: Cache,
+/// One message of a read: a Store as soon as it is read, then the end of the read.
+enum Read {
+    /// The user scope's targets, discovered on the read's thread: every repository's Store
+    /// under the state root, then the explicit targets that are no repository's. The Stores
+    /// after this message are theirs, in this order. An error names the state root that cannot
+    /// be listed; the explicit targets are read all the same.
+    Targets(Result<Vec<Target>, String>),
+    /// One target's Store, read; with the opened Task's detail when this is its Store, read
+    /// from the same Store state as its row, so the bar and the main pane never disagree
+    /// about it.
+    Store {
+        store: Box<Store>,
+        detail: Option<Result<Detail, String>>,
+    },
+    /// Every target was read; the cache the read filled.
+    Done(Cache),
 }
 
-/// Read every Store, and the opened Task again. It runs on the key loop for a load or `R`, and
-/// on a thread for a running Task's live read.
-fn read(targets: &[Target], opened: Option<(PathBuf, String)>, mut cache: Cache) -> Reread {
-    let mut stores = Vec::new();
-    for target in targets {
-        stores.push(read_target(target, &mut cache));
-    }
-    let detail = opened.map(|(dir, task_id)| {
-        let detail = Detail::read(&dir, &task_id, &mut cache);
-        if let Err(error) = &detail {
-            refuse(&mut stores, &dir, &task_id, error);
+/// Read every Store, and the opened Task again, on the calling thread: each Store goes through
+/// `sender` the moment it is read, the cache last. In the user scope the repositories' Stores
+/// are discovered first, here, never by the load (ADR-0240); `explicit` are the targets the
+/// load resolved. A receiver gone away ends the read early, since nobody waits for the rest.
+fn read(
+    discover: Option<Discovery>,
+    explicit: Vec<Target>,
+    opened: Option<(PathBuf, String)>,
+    mut cache: Cache,
+    sender: &mpsc::Sender<Read>,
+) {
+    let targets = match discover {
+        None => explicit,
+        Some(discovery) => match discovery.targets() {
+            Ok(mut found) => {
+                let explicit: Vec<Target> = explicit
+                    .into_iter()
+                    .filter(|target| !found.iter().any(|repo| same_store(&repo.dir, &target.dir)))
+                    .collect();
+                found.extend(explicit);
+                if sender.send(Read::Targets(Ok(found.clone()))).is_err() {
+                    return;
+                }
+                found
+            }
+            Err(error) => {
+                if sender.send(Read::Targets(Err(error))).is_err() {
+                    return;
+                }
+                explicit
+            }
+        },
+    };
+    for target in &targets {
+        let mut store = read_target(target, &mut cache);
+        let detail = match &opened {
+            Some((dir, task_id)) if *dir == store.dir => {
+                let detail = Detail::read(dir, task_id, &mut cache);
+                if let Err(error) = &detail {
+                    refuse(std::slice::from_mut(&mut store), dir, task_id, error);
+                }
+                Some(detail)
+            }
+            _ => None,
+        };
+        let read = Read::Store {
+            store: Box::new(store),
+            detail,
+        };
+        if sender.send(read).is_err() {
+            return;
         }
-        detail
-    });
-    Reread {
-        stores,
-        detail,
-        cache,
     }
+    let _ = sender.send(Read::Done(cache));
 }
 
 /// A Task a Store lists but cannot be inspected refuses the whole Store: no other Task of it
@@ -1152,36 +1200,64 @@ pub(crate) struct Target {
     origin: Origin,
 }
 
-/// The Task state directories a scope reads, or why the scope names none: the project scope
-/// reads the directory `af task` resolves for the repository without `--state`, and the user
-/// scope every repository's.
+/// The Task state directories a scope resolves on the calling thread, or why it names none:
+/// the project scope's own Store, the directory `af task` resolves for the repository without
+/// `--state`. The user scope reads every repository's Store, a walk of the state root that the
+/// read makes on its thread (`Discovery`), never a load: the user scope resolves none here.
 pub(crate) fn targets(scope: &Scope) -> Result<Vec<Target>, String> {
     let Some(root) = &scope.state else {
         return Err("no Task state: neither XDG_STATE_HOME nor HOME is set".to_owned());
     };
-    if let Some(toplevel) = scope.toplevel() {
-        let repo = std::fs::canonicalize(toplevel)
-            .map_err(|error| format!("{}: {error}", toplevel.display()))?;
-        let dir = task_execution::default_task_state(root, &repo)?;
-        let shown = scope.abbreviate(&dir);
-        return Ok(vec![Target {
-            dir,
-            shown,
-            repo: None,
-            origin: Origin::Scope,
-        }]);
+    let Some(toplevel) = scope.toplevel() else {
+        return Ok(Vec::new());
+    };
+    let repo = std::fs::canonicalize(toplevel)
+        .map_err(|error| format!("{}: {error}", toplevel.display()))?;
+    let dir = task_execution::default_task_state(root, &repo)?;
+    let shown = scope.abbreviate(&dir);
+    Ok(vec![Target {
+        dir,
+        shown,
+        repo: None,
+        origin: Origin::Scope,
+    }])
+}
+
+/// The user scope's state root, whose repositories' Stores the read discovers on its thread:
+/// a directory walk, with a `metadata` call behind every symlink, that no load makes.
+#[derive(Clone)]
+struct Discovery {
+    root: PathBuf,
+    /// The directory paths are abbreviated against, as the scope shows them.
+    home: Option<PathBuf>,
+}
+
+impl Discovery {
+    /// `None` in a project scope, whose one target `targets` resolves.
+    fn of(scope: &Scope) -> Option<Discovery> {
+        if scope.toplevel().is_some() {
+            return None;
+        }
+        scope.state.clone().map(|root| Discovery {
+            root,
+            home: scope.home.clone(),
+        })
     }
-    let mut targets = Vec::new();
-    for (dir, name) in user_targets(root)? {
-        let shown = scope.abbreviate(&dir);
-        targets.push(Target {
-            dir,
-            shown,
-            repo: Some(name),
-            origin: Origin::Repository,
-        });
+
+    /// Every repository's Store under the root, as the user scope lists them.
+    fn targets(&self) -> Result<Vec<Target>, String> {
+        let mut targets = Vec::new();
+        for (dir, name) in user_targets(&self.root)? {
+            let shown = crate::tui::scope::abbreviate(self.home.as_deref(), &dir);
+            targets.push(Target {
+                dir,
+                shown,
+                repo: Some(name),
+                origin: Origin::Repository,
+            });
+        }
+        Ok(targets)
     }
-    Ok(targets)
 }
 
 /// The Task Stores beyond the scope's own: every `--state DIR` Store the Store registry records
@@ -1279,16 +1355,34 @@ struct Opened {
 }
 
 struct Job {
-    receiver: Receiver<Reread>,
-    /// The Task the read was started for; a read for another is dropped.
+    receiver: Receiver<Read>,
+    /// The Task the read was started for: its detail is dropped when another Task is opened
+    /// meanwhile; the Stores are listed either way.
     for_task: Option<String>,
+    /// A load or `R` started it: its Stores are wanted whether or not the pane shows, so
+    /// closing the pane or opening a Task keeps it. A live reread is dropped by both.
+    explicit: bool,
+    /// The opening the read was started under: a detail read under an earlier opening of
+    /// the Task is dropped, and the Task inspected again when its Store answers.
+    opening: u64,
 }
 
 #[derive(Default)]
 pub(crate) struct TasksPane {
     /// The folder pane's title.
     title: String,
+    /// The scope loaded last, by what makes it another one: another scope lists nothing of
+    /// the old; the same scope with other targets keeps its Stores until the read answers.
+    place: Option<(ScopeKind, PathBuf)>,
+    /// The targets the load resolved: the scope's own Store, the registered Stores and the
+    /// session's. What a read starts from; in the user scope, what it adds the discovered
+    /// repositories' Stores to, so a Store discovered once is never a target of the load's.
+    loaded: Vec<Target>,
+    /// The targets as the last read answered them (`loaded`, and the discovered Stores in
+    /// the user scope): the order the Stores stand in, and what `Done` prunes them by.
     targets: Vec<Target>,
+    /// The user scope's state root, whose repositories' Stores the read discovers.
+    discover: Option<Discovery>,
     /// Why the scope names no Task state.
     error: Option<String>,
     /// Why the Store registry added no Store.
@@ -1304,10 +1398,20 @@ pub(crate) struct TasksPane {
     /// The main pane shows this pane.
     opened: bool,
     job: Option<Job>,
+    /// An explicit read `read_now` recorded, which the next `poll` starts.
+    pending: bool,
+    /// How many times a Task was opened: a read's detail is taken only from a read started
+    /// under the opening that shows now.
+    opening: u64,
     next: Option<Instant>,
+    /// The spinner frame the bar shows while a read runs.
+    spinner: usize,
     /// Live reads started, for tests.
     #[cfg(test)]
     reads: usize,
+    /// Reads started on a thread, for tests: a load records one and starts none.
+    #[cfg(test)]
+    started: usize,
     rows: Vec<Row>,
     history: BTreeMap<usize, String>,
 }
@@ -1406,15 +1510,142 @@ impl TasksPane {
         Some((store.dir.clone(), task.task_id.clone()))
     }
 
-    /// A load or `R`: every listed Task is inspected again. Only the live read of a running
-    /// Task reuses finished summaries; an explicit read never trusts them, so a Task that can
-    /// no longer be inspected refuses its Store.
+    /// A load or `R`: every listed Task is inspected again, on a thread, each Store listed as
+    /// it is read. The read is recorded here and started at the next `poll`, which the event
+    /// loop reaches after the frame that follows: no Store is read before that frame, the
+    /// browser's first after a load (ADR-0240). A read in flight is dropped. Only the live
+    /// read of a running Task reuses finished summaries; an explicit read never trusts them,
+    /// so a Task that can no longer be inspected refuses its Store.
     fn read_now(&mut self) {
-        self.job = None;
         self.cache.finished.clear();
         self.cache.nodes.clear();
-        let reread = read(&self.targets, self.opened_task(), self.cache.clone());
-        self.apply(reread);
+        self.job = None;
+        self.pending = true;
+    }
+
+    /// A Store refused on the key loop, for the opened Task: it cannot be inspected, or an
+    /// artifact of its HISTORY cannot be given back. The folder shows the refusal, not the
+    /// Task. A read in flight may still deliver this Store as it stood before the refusal and
+    /// list the Task again over it: the read starts over, so whatever lands was read after the
+    /// refusal and repeats it.
+    fn refuse_opened(&mut self, dir: &Path, task_id: &str, error: &str) {
+        refuse(&mut self.stores, dir, task_id, error);
+        self.selected = None;
+        self.detail = None;
+        self.artifact = None;
+        if self.pending || self.job.is_some() {
+            self.read_now();
+        }
+    }
+
+    /// Start a read of every target on a thread; a read in flight is dropped, its thread ends
+    /// at its next send. Only `poll` starts a read, the explicit one `read_now` recorded or a
+    /// live one, so no read begins before the frame painted last: the splash waits for the
+    /// scope only, and no Store is read before the browser's first frame (ADR-0240). Nothing
+    /// interrupts the read: it holds no key, and `q` quits without waiting for it.
+    fn start(&mut self, explicit: bool) {
+        self.pending = false;
+        #[cfg(test)]
+        {
+            self.started += 1;
+        }
+        let (discover, targets) = (self.discover.clone(), self.loaded.clone());
+        let (opened, cache) = (self.opened_task(), self.cache.clone());
+        let (sender, receiver) = mpsc::channel();
+        std::thread::spawn(move || read(discover, targets, opened, cache, &sender));
+        self.job = Some(Job {
+            receiver,
+            for_task: self.selected.clone(),
+            explicit,
+            opening: self.opening,
+        });
+    }
+
+    /// Whether the read in flight, if any, was started by a load or `R`, or one is recorded.
+    fn explicit_read(&self) -> bool {
+        self.pending || self.job.as_ref().is_some_and(|job| job.explicit)
+    }
+
+    /// One message of the read in flight: the detail is for the Task the read was started
+    /// for, and dropped when another was opened meanwhile; a Store is listed either way.
+    fn collect(&mut self, read: Read) {
+        let current = self
+            .job
+            .as_ref()
+            .is_some_and(|job| job.for_task == self.selected && job.opening == self.opening);
+        let read = match read {
+            Read::Store {
+                store,
+                detail: Some(_),
+            } if !current => Read::Store {
+                store,
+                detail: None,
+            },
+            other => other,
+        };
+        self.apply(read);
+    }
+
+    /// Wait for the read in flight, if any, and list everything it finds: a test's event loop.
+    #[cfg(test)]
+    pub(crate) fn settle(&mut self) {
+        if self.pending {
+            self.start(true);
+        }
+        loop {
+            let received = match &self.job {
+                Some(job) => job.receiver.recv(),
+                None => return,
+            };
+            match received {
+                Ok(read) => self.collect(read),
+                Err(_) => self.job = None,
+            }
+        }
+    }
+
+    /// How many reads were started on a thread: a load records one and starts none.
+    #[cfg(test)]
+    pub(crate) fn started(&self) -> usize {
+        self.started
+    }
+
+    /// A read in flight whose messages a test sends by hand, for the Task opened now.
+    #[cfg(test)]
+    fn fed(&mut self) -> mpsc::Sender<Read> {
+        let (sender, receiver) = mpsc::channel();
+        self.pending = false;
+        self.job = Some(Job {
+            receiver,
+            for_task: self.selected.clone(),
+            explicit: true,
+            opening: self.opening,
+        });
+        sender
+    }
+
+    /// A target's Store, read: over what the last read found for it, the Stores in target
+    /// order. A Store listed for a target this read no longer names stays, last, until the
+    /// read is done (`Done` drops it): a changed target list never unlists a Task before its
+    /// own Store is read, and an opened one stays opened meanwhile.
+    fn place(&mut self, store: Store) {
+        match self.stores.iter().position(|s| s.dir == store.dir) {
+            Some(listed) => self.stores[listed] = store,
+            None => self.stores.push(store),
+        }
+        self.order();
+    }
+
+    /// The Stores in the order of their targets; one of no target last.
+    fn order(&mut self) {
+        let targets = &self.targets;
+        let order = |dir: &Path| {
+            targets
+                .iter()
+                .position(|target| target.dir == dir)
+                .unwrap_or(usize::MAX)
+        };
+        self.stores.sort_by_key(|store| order(&store.dir));
     }
 
     /// The opened Task's bar row, rebuilt from the same read as its detail, so the bar and the
@@ -1434,18 +1665,49 @@ impl TasksPane {
         }
     }
 
-    fn apply(&mut self, reread: Reread) {
-        self.stores = reread.stores;
-        self.cache = reread.cache;
-        match reread.detail {
-            // The Store was refused with the cause; the folder shows it, not the Task.
-            Some(Err(_)) => {
-                self.detail = None;
-                self.selected = None;
-                self.artifact = None;
+    fn apply(&mut self, read: Read) {
+        match read {
+            // The targets as this read answers them: the Stores retained from the last read
+            // follow their order at once, before the read answers for any of them.
+            Read::Targets(Ok(targets)) => {
+                self.targets = targets;
+                self.order();
+                self.error = None;
             }
-            Some(detail) => self.detail = Some(detail),
-            None => {}
+            Read::Targets(Err(error)) => {
+                // The walk failed: this read answers the load's targets alone, so the Stores
+                // discovered before go when it is done, and the folder shows why.
+                self.targets = self.loaded.clone();
+                self.order();
+                self.error = Some(error);
+            }
+            Read::Store { store, detail } => {
+                let mut store = *store;
+                let detail = match detail {
+                    None => self.detail_of_opened(&mut store),
+                    detail => detail,
+                };
+                self.place(store);
+                match detail {
+                    // The Store was refused with the cause; the folder shows it, not the Task.
+                    Some(Err(_)) => {
+                        self.detail = None;
+                        self.selected = None;
+                        self.artifact = None;
+                    }
+                    Some(detail) => self.detail = Some(detail),
+                    None => {}
+                }
+            }
+            Read::Done(cache) => {
+                // Every target answered: a Store of a target this read did not name goes.
+                let targets = &self.targets;
+                self.stores
+                    .retain(|store| targets.iter().any(|target| target.dir == store.dir));
+                self.order();
+                self.cache = cache;
+                self.job = None;
+            }
         }
         // A Store refused as a whole takes its opened Task with it, even when that one Task
         // could still be inspected by path: the folder shows the refusal instead.
@@ -1461,7 +1723,23 @@ impl TasksPane {
         self.rebuild();
     }
 
-    /// Whether the opened Task is running, so the pane reads it again.
+    /// The opened Task's detail, read here when its Store answers a read that carries none
+    /// for it (a read started before the Task was opened, for another Task or for none):
+    /// the detail the Task was opened with must not stand over the Store's newer summary.
+    /// One Task's inspection, as `open` does it; the Store refuses when it fails, as it does
+    /// on the reader's thread. `None` for any other Store.
+    fn detail_of_opened(&mut self, store: &mut Store) -> Option<Result<Detail, String>> {
+        let (dir, task_id) = self.opened_task()?;
+        if dir != store.dir {
+            return None;
+        }
+        let detail = Detail::read(&dir, &task_id, &mut self.cache);
+        if let Err(error) = &detail {
+            refuse(std::slice::from_mut(store), &dir, &task_id, error);
+        }
+        Some(detail)
+    }
+
     /// Whether the opened Task is unfinished, so the pane reads it again: a Task awaiting
     /// approval may start running at any moment from the CLI.
     fn live(&self) -> bool {
@@ -1760,15 +2038,25 @@ impl Pane for TasksPane {
         let (explicit, warning) = explicit_targets(scope, &self.session, &targets);
         targets.extend(explicit);
         self.warning = warning;
-        if targets != self.targets {
-            // Another scope: nothing read for the old one is listed, opened or yanked.
+        let place = (scope.kind, scope.root.clone());
+        if self.place.as_ref() != Some(&place) {
+            // Another scope: nothing read for the old one is listed, opened or yanked. The
+            // same scope with other targets (a Store registered meanwhile, `:state DIR`) keeps
+            // every Store listed until the read answers for it, so an opened Task is never
+            // reported gone because its Store is not read yet.
             self.stores.clear();
             self.selected = None;
             self.detail = None;
             self.artifact = None;
             self.cache = Cache::default();
         }
+        self.place = Some(place);
+        self.discover = Discovery::of(scope);
+        self.loaded = targets.clone();
         self.targets = targets;
+        // The Stores retained from the last read follow the targets as they stand now, before
+        // the read answers for any of them.
+        self.order();
         self.error = error;
         self.title = format!("TASKS  {}: {}", scope.word(), scope.name());
         self.read_now();
@@ -1813,10 +2101,14 @@ impl Pane for TasksPane {
     }
 
     fn open(&mut self, item: Option<&str>) {
-        if item != self.selected.as_deref() {
-            // A slow read of the previously opened Task must not delay the new one's.
+        if item != self.selected.as_deref() && !self.explicit_read() {
+            // A slow live read of the previously opened Task must not delay the new one's; a
+            // load's read lists every Store and goes on.
             self.job = None;
         }
+        // Every opening counts: a read's detail from an earlier one never stands over this
+        // one's inspection.
+        self.opening = self.opening.wrapping_add(1);
         self.opened = true;
         self.artifact = None;
         self.detail = None;
@@ -1827,10 +2119,7 @@ impl Pane for TasksPane {
                     self.detail = Some(Ok(detail));
                     self.sync_selected_row();
                 }
-                Err(error) => {
-                    refuse(&mut self.stores, &dir, &task_id, &error);
-                    self.selected = None;
-                }
+                Err(error) => self.refuse_opened(&dir, &task_id, &error),
             }
         }
         self.next = Some(Instant::now() + LIVE);
@@ -1839,7 +2128,9 @@ impl Pane for TasksPane {
 
     fn close(&mut self) {
         self.opened = false;
-        self.job = None;
+        if !self.explicit_read() {
+            self.job = None;
+        }
     }
 
     fn rows(&self) -> &[Row] {
@@ -1866,10 +2157,7 @@ impl Pane for TasksPane {
                         // as any other failed read of it does.
                         let error = format!("{id}: {error}");
                         let (dir, task_id) = (detail.dir.clone(), detail.task_id.clone());
-                        refuse(&mut self.stores, &dir, &task_id, &error);
-                        self.selected = None;
-                        self.detail = None;
-                        self.artifact = None;
+                        self.refuse_opened(&dir, &task_id, &error);
                         self.rebuild();
                         return Err(error);
                     }
@@ -1917,25 +2205,30 @@ impl Pane for TasksPane {
     }
 
     fn poll(&mut self) -> bool {
-        if let Some(job) = &self.job {
-            return match job.receiver.try_recv() {
-                Ok(reread) => {
-                    let current = job.for_task == self.selected;
-                    self.job = None;
-                    if current {
-                        self.apply(reread);
-                    }
-                    current
+        // The read a load or `R` recorded starts here, after the frame painted last.
+        if self.pending {
+            self.start(true);
+        }
+        // Every Store the read in flight has delivered, then the end of the read.
+        let mut changed = false;
+        while let Some(job) = &self.job {
+            match job.receiver.try_recv() {
+                Ok(read) => {
+                    self.collect(read);
+                    changed = true;
                 }
-                Err(TryRecvError::Empty) => false,
+                Err(TryRecvError::Empty) => {
+                    self.spinner = self.spinner.wrapping_add(1);
+                    return changed;
+                }
                 Err(TryRecvError::Disconnected) => {
                     self.job = None;
-                    false
+                    return changed;
                 }
-            };
+            }
         }
-        if !self.live() {
-            return false;
+        if changed || !self.live() {
+            return changed;
         }
         let now = Instant::now();
         if self.next.is_some_and(|next| now < next) {
@@ -1946,17 +2239,13 @@ impl Pane for TasksPane {
         {
             self.reads += 1;
         }
-        let (targets, opened) = (self.targets.clone(), self.opened_task());
-        let cache = self.cache.clone();
-        let (sender, receiver) = mpsc::channel();
-        std::thread::spawn(move || {
-            let _ = sender.send(read(&targets, opened, cache));
-        });
-        self.job = Some(Job {
-            receiver,
-            for_task: self.selected.clone(),
-        });
+        self.start(false);
         false
+    }
+
+    fn busy(&self) -> Option<char> {
+        let spinner = super::SPINNER[self.spinner % super::SPINNER.len()];
+        (self.pending || self.job.is_some()).then_some(spinner)
     }
 
     fn nested(&self) -> bool {

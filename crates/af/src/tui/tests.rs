@@ -117,14 +117,22 @@ pub(crate) fn hub_with_tasks(root: &Path) -> (PathBuf, PathBuf) {
     (repo, state)
 }
 
-/// Run the fixture's ticket under `task_id` the way `af task start --execute` runs it.
+/// Run the fixture's ticket under `task_id` the way `af task start --execute` runs it, with the
+/// fixture's state root as the state home: the Task registers nothing in the developer's own
+/// `stores.toml`, as its Store is a default one under that root.
 pub(crate) fn record_task(root: &Path, repo: &Path, state: &Path, task_id: &str) {
     let ticket = std::fs::read(repo.join("ticket.json")).unwrap();
     let mut task: serde_json::Value = serde_json::from_slice(&ticket).unwrap();
     task["task_id"] = serde_json::Value::String(task_id.to_owned());
     let file = root.join(format!("{task_id}.json"));
     std::fs::write(&file, serde_json::to_vec_pretty(&task).unwrap()).unwrap();
-    crate::task_execution::run_silently(&file, repo, state).unwrap();
+    let pin = |home: Option<PathBuf>| {
+        config::STATE_HOME_FOR_TESTS.with(|pinned| *pinned.borrow_mut() = home);
+    };
+    pin(Some(root.join("state")));
+    let ran = crate::task_execution::run_silently(&file, repo, state);
+    pin(None);
+    ran.unwrap();
 }
 
 /// Lines two captures of one Task file share: the plan ID covers the deadline and TIME counts
@@ -157,6 +165,26 @@ pub(crate) fn hub_scope(root: &Path, repo: &Path) -> Scope {
     Scope {
         kind: ScopeKind::Project,
         root: config.toplevel.clone().unwrap(),
+        config,
+        home: Some(root.to_path_buf()),
+        registry: Some(root.join("config/af/providers.toml")),
+        state: Some(root.join("state")),
+    }
+}
+
+/// The user scope rooted at `root`: the machine-owned configuration layers, the Provider
+/// registry and the state root all under it, so the read's walk of the state root finds the
+/// fixture's Stores alone and no file of the machine running the test is read.
+pub(crate) fn user_scope(root: &Path) -> Scope {
+    let roots = MachineRoots {
+        system: root.join("etc/af"),
+        user: root.join("config/af"),
+        environment: Vec::new(),
+    };
+    let config = config::load_rooted(Some(root), true, &roots).unwrap();
+    Scope {
+        kind: ScopeKind::User,
+        root: root.to_path_buf(),
         config,
         home: Some(root.to_path_buf()),
         registry: Some(root.join("config/af/providers.toml")),
@@ -225,6 +253,7 @@ fn app_at(root: &Path, repo: PathBuf) -> App {
     let scope = hub_scope(root, &repo);
     let providers = ProvidersPane::with_inventory(inventory(), UsageProbe::Probe);
     let mut app = App::new(scope, Some(repo), Panes::new(providers));
+    app.settle();
     app.frame(100, 30);
     app
 }
@@ -291,6 +320,18 @@ impl Host for Recorder {
 }
 
 fn press(app: &mut App, host: &mut Recorder, keys: &[u8]) {
+    for key in keymap::decode(keys) {
+        if let Some(effect) = app.key(key) {
+            app.apply(effect, host);
+        }
+    }
+    // The event loop would collect the panes' reads a few frames later; here, at once.
+    app.settle();
+}
+
+/// `press` without the settling: the reads the keys start are still in flight afterwards, as
+/// they are on the screen between a key and the frames that collect them.
+fn press_unsettled(app: &mut App, host: &mut Recorder, keys: &[u8]) {
     for key in keymap::decode(keys) {
         if let Some(effect) = app.key(key) {
             app.apply(effect, host);
@@ -1426,6 +1467,7 @@ fn scope_project_outside_a_repository_keeps_the_reason_for_a_spaced_start() {
     let scope = hub_scope(&root, &repo);
     let providers = ProvidersPane::with_inventory(inventory(), UsageProbe::Probe);
     let mut app = App::new(scope, Some(start.clone()), Panes::new(providers));
+    app.settle();
     let mut host = Recorder::default();
     press(&mut app, &mut host, b":scope project\r");
     let full = format!("{}{reason}", start.display());
@@ -1601,11 +1643,10 @@ fn a_hand_off_rereads_a_workers_pane_that_has_read_even_when_not_opened() {
 fn a_user_scope_task_is_neither_prefilled_nor_completed() {
     let (_temp, root) = temp_root();
     let (_repo, _state) = hub_with_tasks(&root);
-    let mut scope = Scope::user().unwrap();
-    scope.home = Some(root.clone());
-    scope.state = Some(root.join("state"));
+    let scope = user_scope(&root);
     let providers = ProvidersPane::with_inventory(inventory(), UsageProbe::Probe);
     let mut app = App::new(scope, None, Panes::new(providers));
+    app.settle();
     app.frame(100, 30);
     fn leaves(items: Vec<crate::tui::tree::Item>, found: &mut Vec<String>) {
         for item in items {
@@ -2009,6 +2050,7 @@ fn an_empty_registry_opens_on_the_providers_pane_with_the_first_run_row() {
     only_candidates.providers.remove(0);
     let providers = ProvidersPane::with_inventory(only_candidates, UsageProbe::Skip);
     let mut app = App::new(hub_scope(&root, &repo), Some(repo), Panes::new(providers));
+    app.settle();
     assert_eq!(app.opened, Opened::Folder(Tab::Providers));
     assert_eq!(app.breadcrumb(), "providers/");
     let rows = app.panes.providers.rows();
@@ -2046,6 +2088,7 @@ fn a_repository_without_af_shows_its_project_layer_absent_with_af_onboard() {
     git(&repo, &["init", "-q", "-b", "main"]);
     let providers = ProvidersPane::with_inventory(inventory(), UsageProbe::Skip);
     let mut app = App::new(hub_scope(&root, &repo), Some(repo), Panes::new(providers));
+    app.settle();
     assert_eq!(app.opened, Opened::Root);
     let project = app
         .panes
@@ -2517,7 +2560,322 @@ fn the_tasks_pane_lists_every_registered_store_and_a_state_dir_for_the_session()
     assert_eq!(registry.len(), 1);
 }
 
-fn copy_store(from: &Path, to: &Path) {
+/// A Store registered while a Task of another is opened: `R` reads the changed target list
+/// again, and the opened Task stays opened while its Store is unread, never reported gone
+/// because the read has not reached its Store yet (ADR-0240).
+#[test]
+fn an_opened_task_stays_opened_while_a_store_registered_meanwhile_is_read() {
+    let (_temp, root) = temp_root();
+    let (repo, state) = hub_with_tasks(&root);
+    let mut app = app_at(&root, repo);
+    let mut host = Recorder::default();
+    press(&mut app, &mut host, b"]]]]]]]]jj\r");
+    assert_eq!(app.breadcrumb(), "tasks/pagination-cli");
+    let registered = root.join("elsewhere/registered");
+    copy_store(&state, &registered);
+    register(&root, &[(&registered, "task")]);
+    press_unsettled(&mut app, &mut host, b"R");
+    assert!(app.panes.tasks.busy().is_some(), "the read is in flight");
+    assert_eq!(app.breadcrumb(), "tasks/pagination-cli");
+    assert_eq!(
+        app.opened,
+        Opened::Item(Tab::Tasks, "pagination-cli".to_owned())
+    );
+    let line = status_line(&mut app);
+    assert!(!line.contains("no longer listed"), "{line}");
+    app.settle();
+    assert_eq!(app.breadcrumb(), "tasks/pagination-cli");
+    let line = status_line(&mut app);
+    assert!(!line.contains("no longer listed"), "{line}");
+    let bar: Vec<String> = app.tree.rows().iter().map(|row| row.text()).collect();
+    assert!(
+        bar.iter().any(|row| row.contains("registered/ (2)")),
+        "{bar:#?}"
+    );
+}
+
+/// `:state DIR` while a Task is opened: the Store is listed for the session, and the opened
+/// Task stays opened while the changed target list is read, in flight and after.
+#[test]
+fn an_opened_task_stays_opened_while_a_state_dir_added_for_the_session_is_read() {
+    let (_temp, root) = temp_root();
+    let (repo, state) = hub_with_tasks(&root);
+    let session = root.join("elsewhere/session");
+    copy_store(&state, &session);
+    let mut app = app_at(&root, repo);
+    let mut host = Recorder::default();
+    press(&mut app, &mut host, b"]]]]]]]]jj\r");
+    assert_eq!(app.breadcrumb(), "tasks/pagination-cli");
+    press(&mut app, &mut host, b":state ~/elsewhere/session");
+    press_unsettled(&mut app, &mut host, b"\r");
+    assert!(app.panes.tasks.busy().is_some(), "the read is in flight");
+    assert_eq!(app.breadcrumb(), "tasks/pagination-cli");
+    let line = status_line(&mut app);
+    assert!(
+        line.contains("tasks/ lists ~/elsewhere/session for this session"),
+        "{line}"
+    );
+    app.settle();
+    assert_eq!(app.breadcrumb(), "tasks/pagination-cli");
+    assert_eq!(
+        app.opened,
+        Opened::Item(Tab::Tasks, "pagination-cli".to_owned())
+    );
+    let line = status_line(&mut app);
+    assert!(!line.contains("no longer listed"), "{line}");
+    let bar: Vec<String> = app.tree.rows().iter().map(|row| row.text()).collect();
+    assert!(
+        bar.iter().any(|row| row.contains("session/ (2)")),
+        "{bar:#?}"
+    );
+}
+
+/// A review Store registered while a Campaign of another source is opened: `R` reads the
+/// changed source list again, and the opened Campaign stays opened while its source is unread.
+#[test]
+fn an_opened_campaign_stays_opened_while_a_source_registered_meanwhile_is_read() {
+    let (_temp, root) = temp_root();
+    let audit = campaign_stores(&root);
+    let mut app = hub_app(&root);
+    let mut host = Recorder::default();
+    press(&mut app, &mut host, b"]]]]]]]]]]\r");
+    press(&mut app, &mut host, b"G\r");
+    assert_eq!(app.breadcrumb(), "campaigns/audit");
+    let more = root.join("elsewhere/more");
+    crate::option_tests::write_campaign_rounds(&more, "more", &[(1, 1)]);
+    register(&root, &[(&audit, "review"), (&more, "review")]);
+    press_unsettled(&mut app, &mut host, b"R");
+    assert!(
+        app.panes.campaigns.busy().is_some(),
+        "the read is in flight"
+    );
+    assert_eq!(app.breadcrumb(), "campaigns/audit");
+    let line = status_line(&mut app);
+    assert!(!line.contains("no longer listed"), "{line}");
+    app.settle();
+    assert_eq!(app.breadcrumb(), "campaigns/audit");
+    let line = status_line(&mut app);
+    assert!(!line.contains("no longer listed"), "{line}");
+    assert!(
+        app.panes
+            .campaigns
+            .label(&more.display().to_string())
+            .is_some(),
+        "the registered Store's Campaign is listed"
+    );
+}
+
+/// Enter on a HISTORY row whose artifact the Store cannot give back refuses the Store on the
+/// key loop, with no read in flight to answer later: the opened Task falls back to its folder
+/// at once, the status line names the artifact, and polling changes nothing.
+#[test]
+fn a_history_refusal_with_no_read_in_flight_falls_back_to_the_folder_at_once() {
+    let (_temp, root) = temp_root();
+    let (repo, state) = hub_with_tasks(&root);
+    let mut app = app_at(&root, repo);
+    let mut host = Recorder::default();
+    press(&mut app, &mut host, b"]]]]]]]]jj\r");
+    assert_eq!(app.breadcrumb(), "tasks/pagination-cli");
+    assert!(
+        app.panes.tasks.busy().is_none(),
+        "a finished Task: no read in flight"
+    );
+    press(&mut app, &mut host, b"\t");
+    let rows: Vec<String> = app.main_rows().iter().map(Row::text).collect();
+    let history = rows
+        .iter()
+        .position(|row| row.starts_with("HISTORY"))
+        .unwrap();
+    let show = crate::task_execution::inspection_document(&state, "pagination-cli", false)
+        .unwrap()
+        .unwrap();
+    let first =
+        crate::tui::panes::tasks::change_artifact(&show["history"][0]["transition"]["change"])
+            .unwrap()
+            .trim_start_matches("sha256:")
+            .to_owned();
+    std::fs::remove_file(
+        state
+            .join("cas/objects")
+            .join(&first[..2])
+            .join(&first[2..]),
+    )
+    .unwrap();
+    for _ in 0..=history {
+        press(&mut app, &mut host, b"j");
+    }
+    press_unsettled(&mut app, &mut host, b"\r");
+    assert_eq!(app.opened, Opened::Folder(Tab::Tasks));
+    let line = status_line(&mut app);
+    assert!(line.contains(&first[..12]), "the artifact is named: {line}");
+    assert!(!line.contains("no longer listed"), "{line}");
+    let rows: Vec<String> = app.main_rows().iter().map(Row::text).collect();
+    assert!(rows[0].starts_with("TASKS"), "{rows:#?}");
+    app.poll();
+    assert_eq!(app.opened, Opened::Folder(Tab::Tasks));
+    let bar = app.frame(100, 30).text();
+    assert!(bar.contains("! Store unreadable"), "{bar}");
+}
+
+/// The same refusal with an explicit read in flight (`R` a moment before): the fallback is as
+/// immediate, and the read that starts over refuses the Store again when it answers.
+#[test]
+fn a_history_refusal_with_a_read_in_flight_falls_back_to_the_folder_at_once() {
+    let (_temp, root) = temp_root();
+    let (repo, state) = hub_with_tasks(&root);
+    let mut app = app_at(&root, repo);
+    let mut host = Recorder::default();
+    press(&mut app, &mut host, b"]]]]]]]]jj\r");
+    press(&mut app, &mut host, b"\t");
+    let rows: Vec<String> = app.main_rows().iter().map(Row::text).collect();
+    let history = rows
+        .iter()
+        .position(|row| row.starts_with("HISTORY"))
+        .unwrap();
+    let show = crate::task_execution::inspection_document(&state, "pagination-cli", false)
+        .unwrap()
+        .unwrap();
+    let first =
+        crate::tui::panes::tasks::change_artifact(&show["history"][0]["transition"]["change"])
+            .unwrap()
+            .trim_start_matches("sha256:")
+            .to_owned();
+    press_unsettled(&mut app, &mut host, b"R");
+    assert!(app.panes.tasks.busy().is_some(), "the read is in flight");
+    assert_eq!(app.breadcrumb(), "tasks/pagination-cli");
+    std::fs::remove_file(
+        state
+            .join("cas/objects")
+            .join(&first[..2])
+            .join(&first[2..]),
+    )
+    .unwrap();
+    for _ in 0..=history {
+        press_unsettled(&mut app, &mut host, b"j");
+    }
+    press_unsettled(&mut app, &mut host, b"\r");
+    assert_eq!(app.opened, Opened::Folder(Tab::Tasks));
+    let line = status_line(&mut app);
+    assert!(line.contains(&first[..12]), "the artifact is named: {line}");
+    assert!(app.panes.tasks.busy().is_some(), "the read started over");
+    app.settle();
+    assert_eq!(app.opened, Opened::Folder(Tab::Tasks));
+    let bar = app.frame(100, 30).text();
+    assert!(bar.contains("! Store unreadable"), "{bar}");
+}
+
+/// The App's load records the panes' reads and starts none: the first frame is painted with
+/// the folders' spinners, and the first poll after it starts the reads. No Store is read
+/// before the browser's first frame, on any thread.
+#[test]
+fn the_first_frame_is_painted_before_any_read_of_a_store_starts() {
+    let (_temp, root) = temp_root();
+    let (repo, _state) = hub_with_tasks(&root);
+    let providers = ProvidersPane::with_inventory(inventory(), UsageProbe::Probe);
+    let mut app = App::new(hub_scope(&root, &repo), None, Panes::new(providers));
+    let started = |app: &App| (app.panes.tasks.started(), app.panes.campaigns.started());
+    assert_eq!(started(&app), (0, 0), "the load started no read");
+    let _ = app.frame(100, 30);
+    assert_eq!(started(&app), (0, 0), "painting starts none");
+    app.poll();
+    assert_eq!(
+        started(&app),
+        (1, 1),
+        "the first poll after the frame starts them"
+    );
+    app.settle();
+}
+
+/// `R` after the registry's Task Stores changed order: the Stores retained from the last read
+/// stand in the targets' new order at once, before the read answers for any of them.
+#[test]
+fn a_reread_lists_the_retained_stores_in_the_targets_new_order_before_it_answers() {
+    let (_temp, root) = temp_root();
+    let (repo, state) = hub_with_tasks(&root);
+    let (one, two) = (root.join("elsewhere/one"), root.join("elsewhere/two"));
+    copy_store(&state, &one);
+    copy_store(&state, &two);
+    register(&root, &[(&one, "task"), (&two, "task")]);
+    let mut app = app_at(&root, repo);
+    let mut host = Recorder::default();
+    press(&mut app, &mut host, b"]]]]]]]]\r");
+    assert_eq!(app.breadcrumb(), "tasks/");
+    let groups = |app: &App| -> Vec<String> {
+        app.panes
+            .tasks
+            .items()
+            .into_iter()
+            .filter(|item| item.children.is_some() && item.id.contains("elsewhere/"))
+            .map(|item| item.id)
+            .collect()
+    };
+    let before = groups(&app);
+    assert!(
+        before.len() == 2 && before[0].contains("one") && before[1].contains("two"),
+        "{before:?}"
+    );
+    register(&root, &[(&two, "task"), (&one, "task")]);
+    press_unsettled(&mut app, &mut host, b"R");
+    assert!(app.panes.tasks.busy().is_some(), "the read is in flight");
+    let after = groups(&app);
+    assert!(
+        after.len() == 2 && after[0].contains("two") && after[1].contains("one"),
+        "before any Store answered: {after:?}"
+    );
+    app.settle();
+    assert_eq!(groups(&app), after);
+}
+
+/// `R` after the registry's Campaign Stores changed order: the groups retained from the last
+/// read stand in the sources' new order at once, before the read answers for any of them.
+#[test]
+fn a_reread_lists_the_retained_groups_in_the_sources_new_order_before_it_answers() {
+    let (_temp, root) = temp_root();
+    let audit = campaign_stores(&root);
+    let more = root.join("elsewhere/more");
+    crate::option_tests::write_campaign_rounds(&more, "more", &[(1, 1)]);
+    register(&root, &[(&audit, "review"), (&more, "review")]);
+    let mut app = hub_app(&root);
+    let mut host = Recorder::default();
+    press(&mut app, &mut host, b"]]]]]]]]]]\r");
+    assert_eq!(app.breadcrumb(), "campaigns/");
+    let ids = |app: &App| -> Vec<String> {
+        app.panes
+            .campaigns
+            .items()
+            .into_iter()
+            .map(|item| item.id)
+            .collect()
+    };
+    let position = |ids: &[String], dir: &Path| {
+        let id = dir.display().to_string();
+        ids.iter().position(|listed| *listed == id).expect("listed")
+    };
+    let before = ids(&app);
+    assert!(
+        position(&before, &audit) < position(&before, &more),
+        "{before:?}"
+    );
+    register(&root, &[(&more, "review"), (&audit, "review")]);
+    press_unsettled(&mut app, &mut host, b"R");
+    assert!(
+        app.panes.campaigns.busy().is_some(),
+        "the read is in flight"
+    );
+    let after = ids(&app);
+    assert!(
+        position(&after, &more) < position(&after, &audit),
+        "before any source answered: {after:?}"
+    );
+    app.settle();
+    let settled = ids(&app);
+    assert!(
+        position(&settled, &more) < position(&settled, &audit),
+        "{settled:?}"
+    );
+}
+
+pub(crate) fn copy_store(from: &Path, to: &Path) {
     std::fs::create_dir_all(to).unwrap();
     for entry in std::fs::read_dir(from).unwrap() {
         let entry = entry.unwrap();
@@ -2578,6 +2936,7 @@ fn an_ambient_provider_row_says_how_it_got_there_and_how_to_make_it_go() {
     let providers = ProvidersPane::with_inventory(inventory(), UsageProbe::Probe)
         .with_selectors(&["CODEX_HOME"]);
     let mut app = App::new(scope, Some(repo.clone()), Panes::new(providers));
+    app.settle();
     let mut host = Recorder::default();
     press(&mut app, &mut host, b"]]\r");
     assert_eq!(app.frame(100, 30).text(), AMBIENT);
@@ -2600,6 +2959,7 @@ fn an_ambient_provider_row_says_how_it_got_there_and_how_to_make_it_go() {
     let scope = hub_scope(&root, &repo);
     let providers = ProvidersPane::with_inventory(inventory(), UsageProbe::Probe);
     let mut app = App::new(scope, Some(repo), Panes::new(providers));
+    app.settle();
     press(&mut app, &mut host, b"]]\r");
     let rows = main_texts(&app);
     let at = rows
@@ -2613,4 +2973,73 @@ fn an_ambient_provider_row_says_how_it_got_there_and_how_to_make_it_go() {
         "  register it: af provider add codex-main --kind codex"
     );
     assert!(!rows[at + 2].contains("unset"), "{}", rows[at + 2]);
+}
+
+/// A Worker whose declaration went while its pane read in the background: opened from a stale
+/// row, or opened and then refreshed, it falls back to the folder when the read answers, with
+/// the message opening gives when it finds an entry gone.
+#[test]
+fn a_worker_gone_before_a_background_read_answers_falls_back_to_the_folder() {
+    let (_temp, root) = temp_root();
+    let repo = hub_repo(&root);
+    let mut app = app_at(&root, repo.clone());
+    let mut host = Recorder::default();
+    press(&mut app, &mut host, b"]]]]\r");
+    assert_eq!(app.breadcrumb(), "workers/");
+    let commit = |repo: &Path, path: &str| {
+        git(repo, &["rm", "-rq", path]);
+        git(
+            repo,
+            &[
+                "-c",
+                "user.name=T",
+                "-c",
+                "user.email=t@example.invalid",
+                "commit",
+                "-qm",
+                "a Worker goes",
+            ],
+        );
+    };
+    // Gone between the listing and the open: the stale row opens, the read answers, the
+    // folder shows.
+    commit(&repo, ".af/task-packages/fixture/evaluator");
+    press(&mut app, &mut host, b"j\r");
+    assert_eq!(app.opened, Opened::Folder(Tab::Workers));
+    assert_eq!(
+        app.message.as_ref().map(|(text, _)| text.as_str()),
+        Some(
+            ".af/task-packages/fixture/evaluator/worker.toml is no longer listed; showing the folder"
+        )
+    );
+    let listed: Vec<String> = app
+        .panes
+        .workers
+        .items()
+        .into_iter()
+        .map(|item| item.label)
+        .collect();
+    assert_eq!(listed, ["fixture/implementer"]);
+    // Opened, then gone before `R`: the reread answers, the folder shows.
+    let implementer = ".af/task-packages/fixture/implementer/worker.toml";
+    assert!(app.tree.select(NodeKind::Item(Tab::Workers), implementer));
+    press(&mut app, &mut host, b"\r");
+    assert_eq!(
+        app.opened,
+        Opened::Item(
+            Tab::Workers,
+            ".af/task-packages/fixture/implementer/worker.toml".to_owned()
+        )
+    );
+    commit(&repo, ".af/task-packages/fixture/implementer");
+    press(&mut app, &mut host, b"R");
+    assert_eq!(app.opened, Opened::Folder(Tab::Workers));
+    assert_eq!(
+        app.message.as_ref().map(|(text, _)| text.as_str()),
+        Some(
+            ".af/task-packages/fixture/implementer/worker.toml is no longer listed; showing the folder"
+        )
+    );
+    assert_eq!(app.breadcrumb(), "workers/");
+    assert!(app.panes.workers.items().is_empty());
 }
