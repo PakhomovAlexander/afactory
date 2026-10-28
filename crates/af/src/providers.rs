@@ -4674,18 +4674,25 @@ fn parse_claude_weekly_limits(output: &[u8]) -> Result<ParsedClaudeUsage, String
     // whitespace after removing terminal controls gives old and new screen renderers one stable
     // text shape without attempting to emulate a terminal.
     let screen = compact_terminal_text(output);
+    // The screen's sections in its order: the five-hour session window first, then the weekly
+    // ones. The all-models week is what makes a screen a usage screen; the rest are optional.
     let sections = [
-        ("Currentweek(allmodels)", "Claude all models 1w"),
-        ("Currentweek(Fable)", "Claude Fable 1w"),
-        ("Currentweek(Sonnetonly)", "Claude Sonnet 1w"),
-        ("Currentweek(Opusonly)", "Claude Opus 1w"),
+        ("Currentsession", "Claude session 5h", 5 * 60),
+        (
+            "Currentweek(allmodels)",
+            "Claude all models 1w",
+            7 * 24 * 60,
+        ),
+        ("Currentweek(Fable)", "Claude Fable 1w", 7 * 24 * 60),
+        ("Currentweek(Sonnetonly)", "Claude Sonnet 1w", 7 * 24 * 60),
+        ("Currentweek(Opusonly)", "Claude Opus 1w", 7 * 24 * 60),
     ];
     let mut limits = Vec::with_capacity(sections.len());
-    for (section, name) in sections {
+    for (section, name, window_minutes) in sections {
         if let Some(used_percent) = percent_used_after(&screen, section) {
             limits.push(ProviderLimit {
                 name: name.to_string(),
-                window_minutes: Some(7 * 24 * 60),
+                window_minutes: Some(window_minutes),
                 used_percent,
                 // Claude renders a localized wall-clock string rather than an epoch. Do not
                 // guess a timestamp; the percentage is the stable compatibility surface.
@@ -4693,9 +4700,9 @@ fn parse_claude_weekly_limits(output: &[u8]) -> Result<ParsedClaudeUsage, String
             });
         }
     }
-    if limits
-        .first()
-        .is_none_or(|limit| limit.name != "Claude all models 1w")
+    if !limits
+        .iter()
+        .any(|limit| limit.name == "Claude all models 1w")
     {
         return Err("unrecognized Claude usage screen".to_string());
     }
@@ -6937,8 +6944,11 @@ auth_dir = "{}"
         ))
         .unwrap();
         let limits = usage.limits;
-        assert_eq!(limits.len(), 1);
-        let limit = &limits[0];
+        assert_eq!(limits.len(), 2);
+        assert_eq!(limits[0].name, "Claude session 5h");
+        assert_eq!(limits[0].window_minutes, Some(300));
+        assert_eq!(limits[0].used_percent, 13);
+        let limit = &limits[1];
         assert_eq!(limit.name, "Claude all models 1w");
         assert_eq!(limit.used_percent, 88);
         // `af provider status` names who does not report the reset (C3 item 26).
@@ -7020,17 +7030,19 @@ auth_dir = "{}"
         .unwrap();
         assert!(usage.complete);
         let limits = usage.limits;
-        assert_eq!(limits.len(), 2);
-        assert_eq!(limits[0].name, "Claude all models 1w");
-        assert_eq!(limits[0].used_percent, 90);
-        assert_eq!(limits[1].name, "Claude Fable 1w");
-        assert_eq!(limits[1].used_percent, 96);
+        assert_eq!(limits.len(), 3);
+        assert_eq!(limits[0].name, "Claude session 5h");
+        assert_eq!(limits[0].used_percent, 23);
+        assert_eq!(limits[1].name, "Claude all models 1w");
+        assert_eq!(limits[1].used_percent, 90);
+        assert_eq!(limits[2].name, "Claude Fable 1w");
+        assert_eq!(limits[2].used_percent, 96);
         assert_eq!(
-            format_limit_of("claude", &limits[1]),
+            format_limit_of("claude", &limits[2]),
             "Claude Fable 1w: 96% used, 4% left, Claude does not report when this window resets"
         );
         assert_eq!(
-            format_reset_of("claude", &limits[1]),
+            format_reset_of("claude", &limits[2]),
             "no reset time from Claude"
         );
     }

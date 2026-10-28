@@ -626,9 +626,10 @@ fn status_row(provider: &ProviderStatus, paint: Paint) -> Row {
     }
 }
 
-/// One row per quota window, each a bar; a login whose windows are still being read, or that
-/// reports none, says so in one muted row. A login that is not authenticated has no window, and
-/// one whose probe did not answer carries the cause in its `note`.
+/// One row per quota window, each a bar, a blank row between two bars; a login whose windows are
+/// still being read, or that reports none, says so in one muted row. A login that is not
+/// authenticated has no window, and one whose probe did not answer carries the cause in its
+/// `note`.
 fn limit_rows(provider: &ProviderStatus, reading: bool, paint: Paint, rows: &mut Vec<Row>) {
     if provider.limits.is_empty() {
         let authenticated = provider.status == "authenticated";
@@ -642,7 +643,10 @@ fn limit_rows(provider: &ProviderStatus, reading: bool, paint: Paint, rows: &mut
         return;
     }
     let width = provider.limits.iter().map(|l| l.name.len()).max();
-    for limit in &provider.limits {
+    for (index, limit) in provider.limits.iter().enumerate() {
+        if index > 0 {
+            rows.push(Row::blank());
+        }
         rows.push(limit_row(&provider.kind, limit, width.unwrap_or(0), paint));
     }
 }
@@ -849,11 +853,12 @@ pub(crate) mod tests {
                 .any(|row| row.contains("reading quota windows and model catalogs")),
             "{rows:#?}"
         );
-        // The probe answers: the window's bar takes the placeholder's place, and no third
-        // discovery starts.
+        // The probe answers: the windows' bars take the placeholder's place, a blank row
+        // between them, and no third discovery starts.
         let mut probed = inventory(&["codex-main"]);
         probed.providers[0].usage = UsageState::Available;
-        probed.providers[0].limits = vec![window("codex 1w", 5, None)];
+        probed.providers[0].limits =
+            vec![window("codex 5h", 40, None), window("codex 1w", 5, None)];
         pane.fed
             .as_ref()
             .unwrap()
@@ -866,9 +871,13 @@ pub(crate) mod tests {
         assert!(pane.job.is_none());
         let rows: Vec<String> = pane.rows().iter().map(Row::text).collect();
         assert!(!rows.contains(&READING_LIMITS.to_owned()), "{rows:#?}");
+        let first = rows
+            .iter()
+            .position(|row| row.starts_with("limit  codex 5h  [########...."))
+            .unwrap_or_else(|| panic!("{rows:#?}"));
+        assert_eq!(rows[first + 1], "");
         assert!(
-            rows.iter()
-                .any(|row| row.starts_with("limit  codex 1w  [#...")),
+            rows[first + 2].starts_with("limit  codex 1w  [#..."),
             "{rows:#?}"
         );
         // A login that exposes no window says so instead of a bar.
