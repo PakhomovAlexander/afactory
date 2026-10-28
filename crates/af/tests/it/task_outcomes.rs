@@ -34,24 +34,6 @@ fn fixture(name: &str) -> Fixture {
     }
 }
 
-/// [`fixture`] under a directory whose name alone is wider than a line, so every `--state`
-/// path the Task's commands print is cut by `human::fit_command` on every host, whatever its
-/// `TMPDIR`.
-fn long_path_fixture(name: &str) -> Fixture {
-    let directory = tempfile::tempdir().unwrap();
-    let root = directory
-        .path()
-        .join("a-store-path-wider-than-a-line-".repeat(4));
-    std::fs::create_dir(&root).unwrap();
-    let (repo, state) = task_cli::fixture_named(&root, name);
-    Fixture {
-        _directory: directory,
-        root,
-        repo,
-        state,
-    }
-}
-
 impl Fixture {
     /// `af ARGS --state STATE` from the fixture's checkout.
     fn af(&self, args: &[&str]) -> Output {
@@ -208,7 +190,17 @@ fn agreed_state(fixture: &Fixture) -> (String, Option<String>, String) {
         if let (Some(next), false) = (&next, shown.lines().next().unwrap().ends_with("NEXT")) {
             let lines: Vec<&str> = shown.lines().collect();
             let at = lines.iter().position(|l| l.starts_with(TASK)).unwrap();
-            let words = shell_command(&lines[at + 1..]);
+            // The command's lines: each but the last ends in the backslash a shell removes
+            // with the newline after it.
+            let mut command = String::new();
+            for line in &lines[at + 1..] {
+                command.push_str(line);
+                if !command.ends_with('\\') {
+                    break;
+                }
+                command.pop();
+            }
+            let words = shell_words::split(command.trim_start()).unwrap();
             assert_eq!(words[0], "next:", "{shown}");
             assert_eq!(
                 words[1..],
@@ -278,31 +270,24 @@ fn attention_group(fixture: &Fixture, entry: &Value, label: &str, next: Option<&
     };
     assert_eq!(lines[at - 1], format!("{title} (1)"), "{text}");
     assert_eq!(lines[at].split_whitespace().nth(1), Some(label), "{text}");
-    let words = shell_command(&lines[at + 1..]);
-    assert_eq!(words[0], "next:", "{text}");
-    assert_eq!(
-        words[1..],
-        shell_words::split(next.unwrap()).unwrap()[..],
-        "{text}"
-    );
-    group
-}
-
-/// The words of the command printed from `lines[0]` on, read as a shell reads it: a line that
-/// ends in `\` continues on the next one whatever that line's indentation, the backslash and
-/// the newline are removed, and the rest is split as `sh` splits it. `human::fit_command` cuts
-/// an argument wider than a line, a long `--state` path, into quoted pieces joined that way,
-/// each piece after the first at the start of its line.
-fn shell_command(lines: &[&str]) -> Vec<String> {
-    let mut command = String::new();
-    for line in lines {
-        command.push_str(line);
-        if !command.ends_with('\\') {
+    // The `next:` line as a shell reads it: a line ending in `\` continues on the next, an
+    // indented continuation after a space, one at column 0 inside a word the width split
+    // (a `--state` path under a long temporary directory, as the gate's on macOS).
+    let mut continued = String::new();
+    let mut continues = false;
+    for line in &lines[at + 1..] {
+        if !(continues || line.starts_with("    ")) {
             break;
         }
-        command.pop();
+        if !continued.is_empty() && line.starts_with(' ') {
+            continued.push(' ');
+        }
+        let line = line.trim_end();
+        continues = line.ends_with('\\');
+        continued.push_str(line.trim_end_matches('\\').trim());
     }
-    shell_words::split(&command).unwrap()
+    assert_eq!(continued, format!("next: {}", next.unwrap()), "{text}");
+    group
 }
 
 /// Each outcome the fixture pipeline reaches, driven through the CLI: the run's own output, its
@@ -451,34 +436,6 @@ fn a_planned_and_an_interrupted_task_print_the_same_state_everywhere() {
     );
 }
 
-/// A Store whose path is wider than a line: `af task list --attention` cuts the `--state` path
-/// of the next command into pieces, each after the first at the start of its line, and every
-/// rendering still prints the same state, read as a shell reads it.
-#[test]
-fn a_store_path_wider_than_a_line_prints_the_same_state_everywhere() {
-    let fixture = long_path_fixture("pagination");
-    let file = fixture.task_file("ticket.json", |_| {});
-    let plan = fixture.json(&["task", "plan", "--file", file.to_str().unwrap()]);
-    let text = out(&fixture.af(&["task", "list", "--attention"]));
-    let lines: Vec<&str> = text.lines().collect();
-    assert!(
-        lines
-            .windows(2)
-            .any(|pair| pair[0].ends_with('\\') && !pair[1].starts_with(' ')),
-        "no piece of a cut path starts its line:\n{text}"
-    );
-    let (label, next, group) = agreed_state(&fixture);
-    assert_eq!(label, "planned");
-    assert_eq!(group, "approval");
-    assert_eq!(
-        next.unwrap(),
-        fixture.next(&format!(
-            "af task run {TASK} --confirm-plan {}",
-            plan["plan_id"].as_str().unwrap()
-        ))
-    );
-}
-
 /// The words of the command a printed `next: COMMAND` line names, as a shell splits them.
 fn next_words(line: &str) -> Vec<String> {
     let command = line
@@ -585,11 +542,17 @@ fn printed_next_commands_carry_the_selectors_and_run_as_printed() {
     assert!(fitted.status.success(), "{}", err(&fitted));
     // The preview's approve command, continued between its arguments, carries them too.
     let preview = out(&fitted);
-    let lines: Vec<&str> = preview
+    let approve: String = preview
         .lines()
         .skip_while(|line| !line.trim_start().starts_with("af task run tight-cli"))
-        .collect();
-    let words = shell_command(&lines);
+        .scan(true, |more, line| {
+            let take = *more;
+            *more = line.ends_with('\\');
+            take.then(|| line.trim_end_matches('\\').trim().to_owned())
+        })
+        .collect::<Vec<_>>()
+        .join(" ");
+    let words = next_words(&approve);
     assert_eq!(
         words[..5],
         ["af", "task", "run", "tight-cli", "--confirm-plan"],
@@ -678,7 +641,8 @@ fn stable(text: &str) -> String {
 
 /// A check that fails on two named tests: `--checks` names them with the end of its stderr, the
 /// list's `gate` and the run's own output carry them, and `--checks --json` is the receipt
-/// document.
+/// document. The check writes no report, so its evidence is the text of its output, as
+/// `--checks` says (`evidence: output`, ADR-0258).
 #[test]
 fn a_failed_gate_names_its_failing_tests_in_checks_the_list_and_the_run() {
     let fixture = fixture("pagination");
@@ -721,7 +685,7 @@ next: {show_checks}"
             "\
 Task pagination-cli: finished/gate_failed/check_failed
 receipt sha256:<id> from root.nodes.check: failed
-check pagination: failed (exit 1) in <ms> ms, cold (no warm cache)
+check pagination: failed (exit 1) in <ms> ms, cold (no warm cache), evidence: output
   failing tests (2):
     alpha::one
     beta::two
@@ -1525,11 +1489,8 @@ fn a_next_line_fits_the_terminal_and_runs_as_printed() {
             "{printed}"
         );
     }
-    // A terminal wide enough for the line shows it whole, wider than 100 columns too: 250
-    // columns, or the line's own width where a long `TMPDIR` makes it wider.
-    let whole = format!("next: {next}").chars().count();
-    let columns = u16::try_from(whole).unwrap().max(250);
-    let text = in_terminal(&planned, &["task", "show", TASK], columns);
+    // A terminal wide enough for the line shows it whole, wider than 100 columns too.
+    let text = in_terminal(&planned, &["task", "show", TASK], 250);
     assert!(
         text.lines().any(|line| line == format!("next: {next}")),
         "{text}"

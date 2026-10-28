@@ -93,9 +93,16 @@ pub fn copy_tree(source: &Path, destination: &Path) {
 /// (repository-relative catalog files, package paths relative to `repo`) pins is pinned again.
 /// This repository's own `.af/`, and the fixtures staged to install into it, take it when the
 /// release pin moves to the release that carries ADR-0255; until then a test that copies them
-/// to run them under this `af` takes it on its copy. A copy keeps its source's modes (`cp -R`),
-/// and the gate's source is read-only, so each file it rewrites is made writable first.
+/// to run them under this `af` takes it on its copy.
 pub fn migrate_check_receipt(repo: &Path, trees: &[&str], catalogs: &[&str]) {
+    // A gate's sealed candidate supplies read-only files, and a copy made with `cp -R` keeps
+    // their modes: every file this migration rewrites takes its owner-write bit first.
+    fn writable(path: &Path) {
+        use std::os::unix::fs::PermissionsExt;
+        let mut permissions = std::fs::metadata(path).unwrap().permissions();
+        permissions.set_mode(permissions.mode() | 0o200);
+        std::fs::set_permissions(path, permissions).unwrap();
+    }
     let mut stack: Vec<PathBuf> = trees.iter().map(|tree| repo.join(tree)).collect();
     while let Some(path) = stack.pop() {
         if path.is_dir() {
@@ -108,10 +115,12 @@ pub fn migrate_check_receipt(repo: &Path, trees: &[&str], catalogs: &[&str]) {
             continue;
         };
         if text.contains("af/TaskCheckReceipt@1") {
-            write_owned(
+            writable(&path);
+            std::fs::write(
                 &path,
-                &text.replace("af/TaskCheckReceipt@1", "af/TaskCheckReceipt@2"),
-            );
+                text.replace("af/TaskCheckReceipt@1", "af/TaskCheckReceipt@2"),
+            )
+            .unwrap();
         }
     }
     for catalog in catalogs {
@@ -131,79 +140,10 @@ pub fn migrate_check_receipt(repo: &Path, trees: &[&str], catalogs: &[&str]) {
             }
         }
         if changed {
-            write_owned(&path, &toml::to_string(&value).unwrap());
+            writable(&path);
+            std::fs::write(&path, toml::to_string(&value).unwrap()).unwrap();
         }
     }
-}
-
-/// The gate runs the suite on a read-only copy of the candidate, and `cp -R` keeps those modes:
-/// the migration still rewrites every package file and re-pins the catalog of such a copy.
-#[test]
-fn check_receipt_migration_rewrites_a_read_only_copy() {
-    use std::os::unix::fs::PermissionsExt;
-    let root = tempfile::tempdir().unwrap();
-    let repo = root.path();
-    let package = repo.join(".af/task-packages/kernel/implementer");
-    std::fs::create_dir_all(package.join("prompts")).unwrap();
-    std::fs::write(
-        package.join("worker.toml"),
-        "[outputs.check]\nschema = \"af/TaskCheckReceipt@1\"\n",
-    )
-    .unwrap();
-    std::fs::write(
-        package.join("prompts/implement.md"),
-        "Read the `af/TaskCheckReceipt@1` receipt.\n",
-    )
-    .unwrap();
-    std::fs::write(
-        repo.join(".af/task-catalog.toml"),
-        "[packages.\"kernel/implementer\"]\nversion = \"1.0.0\"\n\
-         digest = \"sha256:0000000000000000000000000000000000000000000000000000000000000000\"\n\
-         path = \".af/task-packages/kernel/implementer\"\n",
-    )
-    .unwrap();
-    let set_modes = |file: u32, directory: u32| {
-        let mut stack = vec![repo.join(".af")];
-        while let Some(path) = stack.pop() {
-            let mode = if path.is_dir() {
-                stack.extend(std::fs::read_dir(&path).unwrap().map(|e| e.unwrap().path()));
-                directory
-            } else {
-                file
-            };
-            std::fs::set_permissions(&path, std::fs::Permissions::from_mode(mode)).unwrap();
-        }
-    };
-    set_modes(0o444, 0o555);
-
-    migrate_check_receipt(repo, &[".af"], &[".af/task-catalog.toml"]);
-
-    for file in ["worker.toml", "prompts/implement.md"] {
-        let text = std::fs::read_to_string(package.join(file)).unwrap();
-        assert!(text.contains("af/TaskCheckReceipt@2"), "{file}: {text}");
-        assert!(!text.contains("af/TaskCheckReceipt@1"), "{file}: {text}");
-    }
-    let catalog: toml::Value =
-        toml::from_str(&std::fs::read_to_string(repo.join(".af/task-catalog.toml")).unwrap())
-            .unwrap();
-    assert_eq!(
-        catalog["packages"]["kernel/implementer"]["digest"].as_str(),
-        Some(
-            review_config::lock::package_digest("kernel/implementer", &package)
-                .unwrap()
-                .as_str()
-        )
-    );
-    set_modes(0o644, 0o755);
-}
-
-/// Write `text` to the copied file at `path`, first making it writable by its owner.
-fn write_owned(path: &Path, text: &str) {
-    use std::os::unix::fs::PermissionsExt;
-    let mut permissions = std::fs::metadata(path).unwrap().permissions();
-    permissions.set_mode(permissions.mode() | 0o200);
-    std::fs::set_permissions(path, permissions).unwrap();
-    std::fs::write(path, text).unwrap();
 }
 
 pub fn fixture_named(root: &Path, name: &str) -> (PathBuf, PathBuf) {

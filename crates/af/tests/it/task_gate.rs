@@ -293,9 +293,11 @@ fn a_failed_gate_is_retried_on_the_same_candidate_and_continues_into_review() {
     );
     let (code, shown, stderr) = fixture.af(&["task", "show", "gate-retry"]);
     assert_eq!(code, 0, "{stderr}\n{shown}");
+    // The check's report says it stopped at a `preflight` step: its evidence comes from the
+    // report, whose stage decides (ADR-0258).
     assert_eq!(
         shown.lines().next(),
-        Some("Task gate-retry: finished/gate_failed/check_failed"),
+        Some("Task gate-retry: finished/gate_failed/preflight_failed"),
         "{shown}"
     );
     assert_eq!(
@@ -1042,5 +1044,203 @@ fn a_package_that_declares_the_retired_receipt_is_refused_by_name() {
     assert!(
         String::from_utf8_lossy(&output.stdout).starts_with("sha256:"),
         "{output:?}"
+    );
+}
+
+/// A gate like this repository's: its preflight prints the nested nextest output of its own
+/// fixture gates (failing and flaky fixtures, a step log line with a non-zero exit), and its test
+/// run writes one `tests` record per test class. With `FAILS` the two real tests fail twice and
+/// the gate exits 100; otherwise one real test is flaky and it passes.
+const NESTED_GATE: &str = r#"import json, os, sys
+report = os.environ['AF_CHECK_REPORT']
+def line(record):
+    record['schema'] = 'af.check-report/1'
+    with open(report, 'a') as stream:
+        stream.write(json.dumps(record) + '\n')
+def step(label, stage, code):
+    line({'record': 'step', 'label': label, 'stage': stage, 'exit_code': code,
+          'command': ['python3', 'scripts/%s.py' % label]})
+def tests(failed, flaky, rerun):
+    line({'record': 'tests', 'test_threads': 7, 'failed_count': len(failed), 'failed': failed,
+          'flaky': [{'name': name, 'parallel': 'failed', 'isolated': 'passed'} for name in flaky],
+          'rerun': rerun})
+for n in range(3):
+    print('        FAIL [   0.007s] (%2d/30) gate-store-regression many_%d' % (n + 5, n))
+print('flaky: gate-store-regression fails_when_crowded')
+print('failed twice: gate-store-regression many_0')
+print('[test] 0.326s, exit 100')
+step('test-nextest-gate', 'preflight', 0)
+import pagination
+assert pagination.paginate(list(range(7)), 2, 3) == [2, 3, 4]
+if FAILS:
+    tests(['af::it alpha::one'], [], 'isolated')
+    tests(['af::it beta::two'], [], 'isolated')
+    step('test', 'tests', 100)
+    sys.exit(100)
+tests([], [], 'not_needed')
+tests([], ['af::it telemetry_ledger::real_flaky'], 'isolated')
+step('test', 'tests', 0)
+"#;
+
+/// The pagination fixture whose check is [`NESTED_GATE`].
+fn nested_gate(root: &Path, task_id: &str, fails: bool) -> Gate {
+    let script = format!(
+        "FAILS = {}\n{NESTED_GATE}",
+        if fails { "True" } else { "False" }
+    );
+    gate_edited(root, "pagination", task_id, true, true, &|repo| {
+        std::fs::write(repo.join("gate.py"), &script).unwrap();
+    })
+}
+
+/// Any fixture test name the nested output printed, in `text`.
+fn fixture_name(text: &str) -> Option<&str> {
+    ["gate-store-regression", "many_", "fails_when_crowded"]
+        .into_iter()
+        .find(|name| text.contains(name))
+}
+
+/// A passed gate whose output holds its preflight's failing fixtures, and whose report holds
+/// two `tests` records: the report is admitted and the gate's evidence is the report's, the real
+/// flaky test alone, not the fixtures the output names (#346). With the evidence taken from the
+/// output text (the fold alone, `check_view` unchanged) this test fails: `gate.failed_tests`
+/// held `many_0`, `many_1`, `many_2`.
+#[test]
+fn a_passed_gate_s_evidence_is_its_report_s_not_its_preflight_fixtures() {
+    let directory = tempfile::tempdir().unwrap();
+    let fixture = nested_gate(directory.path(), "nested-pass", false);
+    let (code, stdout, stderr) = fixture.start();
+    assert_eq!(code, 0, "{stderr}\n{stdout}");
+    let shown = fixture.show_json("nested-pass");
+    crate::schemas::valid(
+        &crate::schemas::validator("task-inspection-v14.json"),
+        &shown,
+    );
+    let gate = &shown["gate"];
+    assert_eq!(gate["status"], "passed", "{shown:#}");
+    assert_eq!(gate["failed_tests"], json!([]), "{shown:#}");
+    assert_eq!(
+        gate["flaky"],
+        json!(["af::it telemetry_ledger::real_flaky"]),
+        "{shown:#}"
+    );
+    let run = &gate["check_reports"][0]["record"]["checks"]["pagination"];
+    assert_eq!(run["report"], "admitted", "{shown:#}");
+    assert_eq!(
+        run["tests"],
+        json!({"test_threads": 7, "failed_count": 0, "failed": [], "rerun": "isolated",
+            "flaky": [{"name": "af::it telemetry_ledger::real_flaky", "parallel": "failed",
+                "isolated": "passed"}]})
+    );
+    let (code, listed, stderr) = fixture.af(&["task", "list", "--json"]);
+    assert_eq!(code, 0, "{stderr}\n{listed}");
+    let listed: Value = serde_json::from_str(listed.trim()).unwrap();
+    assert_eq!(
+        listed["tasks"][0]["gate"],
+        json!({"status": "passed", "failed_tests": [],
+        "flaky": ["af::it telemetry_ledger::real_flaky"]})
+    );
+
+    let (code, text, stderr) = fixture.af(&["task", "show", "nested-pass"]);
+    assert_eq!(code, 0, "{stderr}\n{text}");
+    assert!(
+        text.lines().any(|line| line
+            == "check pagination flaky: af::it telemetry_ledger::real_flaky (failed in the \
+                parallel run, passed alone)"),
+        "{text}"
+    );
+    assert!(!text.contains("its report was refused"), "{text}");
+    assert_eq!(fixture_name(&text), None, "{text}");
+    let (code, checks, stderr) = fixture.af(&["task", "show", "nested-pass", "--checks"]);
+    assert_eq!(code, 0, "{stderr}\n{checks}");
+    let head = checks
+        .lines()
+        .find(|line| line.starts_with("check pagination: passed (exit 0)"))
+        .unwrap_or_else(|| panic!("{checks}"));
+    assert!(head.ends_with(", evidence: report"), "{checks}");
+    assert!(
+        checks
+            .lines()
+            .any(|line| line == "  flaky: af::it telemetry_ledger::real_flaky"),
+        "{checks}"
+    );
+    assert_eq!(fixture_name(&checks), None, "{checks}");
+}
+
+/// The same nested output on a gate that fails, whose report names two real tests that failed
+/// twice and no flaky test: the gate names exactly those two, its cause is `check_failed` (the
+/// fixtures' `flaky:` line made no test flaky), and `af task show` names no fixture. With the
+/// evidence taken from the output text this test fails: the cause was
+/// `check_flaky_then_failed` and `gate.failed_tests` the fixtures' `many_0`, `many_1`, `many_2`.
+#[test]
+fn a_failed_gate_names_the_tests_its_report_names_not_its_preflight_fixtures() {
+    let directory = tempfile::tempdir().unwrap();
+    let fixture = nested_gate(directory.path(), "nested-fail", true);
+    let (code, stdout, stderr) = fixture.start();
+    assert_eq!(code, 5, "{stderr}\n{stdout}");
+    let shown = fixture.show_json("nested-fail");
+    crate::schemas::valid(
+        &crate::schemas::validator("task-inspection-v14.json"),
+        &shown,
+    );
+    assert_eq!(shown["state"]["cause"], "check_failed", "{shown:#}");
+    let gate = &shown["gate"];
+    assert_eq!(gate["status"], "failed");
+    assert_eq!(
+        gate["failed_tests"],
+        json!(["af::it alpha::one", "af::it beta::two"]),
+        "{shown:#}"
+    );
+    assert_eq!(gate["flaky"], json!([]), "{shown:#}");
+    let run = &gate["check_reports"][0]["record"]["checks"]["pagination"];
+    assert_eq!(run["report"], "admitted", "{shown:#}");
+    assert_eq!(run["tests"]["failed_count"], 2);
+
+    let (code, text, stderr) = fixture.af(&["task", "show", "nested-fail"]);
+    assert_eq!(code, 0, "{stderr}\n{text}");
+    assert_eq!(
+        text.lines().next(),
+        Some("Task nested-fail: finished/gate_failed/check_failed"),
+        "{text}"
+    );
+    assert!(
+        text.contains("check pagination, 2 tests: af::it alpha::one, af::it beta::two"),
+        "{text}"
+    );
+    assert_eq!(fixture_name(&text), None, "{text}");
+    let (code, checks, stderr) = fixture.af(&["task", "show", "nested-fail", "--checks"]);
+    assert_eq!(code, 0, "{stderr}\n{checks}");
+    assert!(
+        checks.lines().any(
+            |line| line.starts_with("check pagination: failed (exit 100)")
+                && line.ends_with(", evidence: report")
+        ),
+        "{checks}"
+    );
+    assert!(
+        checks.contains(
+            "  stopped at step test (exit 100)\n  failing tests (2):\n    af::it alpha::one\n    \
+             af::it beta::two\n"
+        ),
+        "{checks}"
+    );
+    assert_eq!(fixture_name(&checks), None, "{checks}");
+    let (code, document, stderr) =
+        fixture.af(&["task", "show", "nested-fail", "--checks", "--json"]);
+    assert_eq!(code, 0, "{stderr}\n{document}");
+    let document: Value = serde_json::from_str(document.trim()).unwrap();
+    crate::schemas::valid(&crate::schemas::validator("task-checks-v3.json"), &document);
+    assert_eq!(
+        document["receipt"]["checks"][0]["stopped_step"],
+        json!({"step": "test", "exit_code": 100}),
+        "{document:#}"
+    );
+    // The run's own tail names the same two tests.
+    assert!(
+        stdout.contains(
+            "check pagination: failed: 2 failing tests\n  FAIL af::it alpha::one\n  \
+                         FAIL af::it beta::two\n"
+        ),
+        "{stdout}"
     );
 }

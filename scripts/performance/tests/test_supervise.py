@@ -16,7 +16,7 @@ import threading
 import time
 from unittest import mock
 
-from perflab import capability, contracts, supervise
+from perflab import capability, contracts, supervise, telemetrybuild
 from perflab import suite as suite_module
 from perflab.values import ContractError
 from tests.support import (CLI, FAKE_SUPERVISOR_EXECUTE, ROOT, SUITE, TempDir, fake_supervisor,
@@ -666,12 +666,141 @@ class Capabilities(TempDir):
         self.assertEqual((record["enforcement"], record["fill"]["stage"]), ("refused", "open"))
 
     def test_a_failed_sync_keeps_the_bytes_its_write_accepted(self):
-        host = FakeHost(fail={"fsync": (3, errno.EIO)})
-        record = self.verify(host)
+        # The third periodic sync fails: every byte the writes before it accepted is kept.
+        host = FakeHost(fail={"fsync": (3, errno.EIO)}, size=256 << 20)
+        record = self.verify(host, limit=256 << 20)
         self.assertEqual(record["enforcement"], "refused")
         self.assertEqual((record["fill"]["stage"], record["fill"]["errno"]), ("fsync", "EIO"))
-        self.assertEqual(record["fill"]["written_bytes"], 3 * capability.FILL_CHUNK)
+        self.assertEqual(record["fill"]["written_bytes"], 3 * capability.FILL_SYNC_BYTES)
+        self.assertIn("not a capacity refusal", record["capability"]["reasons"][0])
         self.assertEqual(host.unlinked, 1)
+
+    def test_one_sync_per_mib_misses_an_8_gib_check_that_batched_syncs_verify(self):
+        # The Claw telemetry original: its build checks the 8-GiB build scratch with the 120 s
+        # deadline it gives that check, 30 s of them kept for cleanup, and the fill stopped at
+        # its time bound with 1,458,569,216 bytes written. Modelled here, storing nothing: a
+        # sync costs a fixed 60.7 ms plus its unsynced bytes at 250 MB/s, and the nested ext4
+        # holds 160 MiB less than its size.
+        size = telemetrybuild.BUILD_BYTES
+        capacity = size - (160 << 20)
+
+        def claw():
+            return FakeHost(size=size, capacity=capacity, sync_latency=0.0607,
+                            flush_rate=250e6)
+
+        deadline = 120.0
+        # One sync after every chunk, as the fill did: the deadline ends it, by its time bound,
+        # at the observed scale.
+        host = claw()
+        with mock.patch.object(capability, "FILL_SYNC_BYTES", capability.FILL_CHUNK):
+            record = self.verify(host, limit=size, deadline=deadline)
+        fill = record["fill"]
+        self.assertEqual((fill["stopped"], record["enforcement"]), ("deadline", "refused"))
+        self.assertIn("did not finish within its time bound", record["capability"]["reasons"][0])
+        self.assertAlmostEqual(fill["written_bytes"] / 1458569216.0, 1.0, delta=0.02)
+        self.assertEqual(host.calls["fsync"], host.writes)
+        # The same filesystem, deadline and cleanup allowance: syncs every FILL_SYNC_BYTES and
+        # once after the refusal fill it to its real capacity and verify the bound in time.
+        host = claw()
+        record = self.verify(host, limit=size, deadline=deadline)
+        fill = record["fill"]
+        self.assertEqual(record["enforcement"], "verified", record["capability"])
+        self.assertEqual((fill["stopped"], fill["stage"], fill["errno"]),
+                         ("refused", "write", "ENOSPC"))
+        self.assertEqual(fill["written_bytes"], capacity)
+        self.assertLess(host.now, deadline - capability.FILL_CLEANUP_SECONDS)
+        self.assertEqual(host.calls["fsync"], capacity // capability.FILL_SYNC_BYTES + 1)
+        self.assertEqual(host.order[-6:], ["write", "write", "fsync", "statvfs", "close",
+                                           "unlink"])
+
+    def test_a_refused_write_is_synced_before_the_bound_is_verified(self):
+        # 40 MiB and one page: no periodic sync, a partial last write, then ENOSPC. The refusal
+        # alone commits nothing: one sync follows it before the free space is read.
+        capacity = (40 << 20) + 4096
+        host = FakeHost(size=48 << 20, capacity=capacity)
+        record = self.verify(host, limit=48 << 20)
+        self.assertEqual(record["enforcement"], "verified", record["capability"])
+        self.assertEqual(record["fill"]["written_bytes"], capacity)
+        self.assertEqual(host.order[host.order.index("fsync") - 1:],
+                         ["write", "fsync", "statvfs", "close", "unlink"])
+        self.assertEqual(host.calls["fsync"], 1)
+        # That sync's own answer is the fill's: a delayed capacity refusal still verifies the
+        # bound, an I/O error never does, and the bytes the writes accepted are kept.
+        for code, enforcement, stopped in ((errno.ENOSPC, "verified", "refused"),
+                                           (errno.EDQUOT, "verified", "refused"),
+                                           (errno.EIO, "refused", "error")):
+            with self.subTest(errno=errno.errorcode[code]):
+                host = FakeHost(size=48 << 20, capacity=capacity, fail={"fsync": (1, code)})
+                record = self.verify(host, limit=48 << 20)
+                fill = record["fill"]
+                self.assertEqual(record["enforcement"], enforcement, record["capability"])
+                self.assertEqual((fill["stopped"], fill["stage"], fill["errno"]),
+                                 (stopped, "fsync", errno.errorcode[code]))
+                self.assertEqual((fill["written_bytes"], host.unlinked), (capacity, 1))
+                if code == errno.EIO:
+                    self.assertIn("EIO", record["capability"]["reasons"][0])
+                    self.assertIn("not a capacity refusal", record["capability"]["reasons"][0])
+
+    def test_a_delayed_refusal_at_a_periodic_sync_is_its_errno_s(self):
+        # The writes accept 128 MiB of a 100-MiB filesystem; the sync at 128 MiB refuses them.
+        for code, enforcement in ((errno.ENOSPC, "verified"), (errno.EDQUOT, "verified"),
+                                  (errno.EIO, "refused")):
+            with self.subTest(errno=errno.errorcode[code]):
+                host = FakeHost(size=128 << 20, capacity=100 << 20, delayed=code)
+                record = self.verify(host, limit=128 << 20)
+                fill = record["fill"]
+                self.assertEqual(record["enforcement"], enforcement, record["capability"])
+                self.assertEqual((fill["stage"], fill["errno"], fill["written_bytes"]),
+                                 ("fsync", errno.errorcode[code], 2 * capability.FILL_SYNC_BYTES))
+                self.assertEqual((host.calls["fsync"], host.unlinked), (2, 1))
+
+    def test_batched_syncs_keep_the_byte_limit_and_late_syncs_are_the_deadline_s(self):
+        # Nothing refuses: the fill stops a chunk past the limit, after one periodic sync, and
+        # its file is removed.
+        host = FakeHost(size=100 << 20)
+        record = self.verify(host, limit=100 << 20)
+        fill = record["fill"]
+        self.assertEqual((fill["stopped"], fill["written_bytes"]),
+                         ("limit_exceeded", (100 << 20) + capability.FILL_CHUNK))
+        self.assertEqual((host.calls["fsync"], host.unlinked), (1, 1))
+        self.assertIn("without the filesystem refusing", record["capability"]["reasons"][0])
+        # A periodic sync that returns after the fill's bound: no write follows it.
+        host = FakeHost(size=100 << 20, delay={"fsync": (1, 95.0)})
+        record = self.verify(host, limit=100 << 20, deadline=120.0)
+        self.assertEqual((record["fill"]["stopped"], record["fill"]["written_bytes"]),
+                         ("deadline", capability.FILL_SYNC_BYTES))
+        self.assertEqual((host.writes, host.unlinked), (64, 1))
+        # The sync after an in-time ENOSPC returns late: no errno of that refusal is kept.
+        host = FakeHost(size=48 << 20, capacity=40 << 20, delay={"fsync": (1, 95.0)})
+        record = self.verify(host, limit=48 << 20, deadline=120.0)
+        fill = record["fill"]
+        self.assertEqual((fill["stopped"], fill["stage"], fill["errno"], fill["detail"]),
+                         ("deadline", None, None, None))
+        self.assertEqual(record["enforcement"], "refused")
+        self.assertTrue(capability.ended_by_deadline(record))
+        doc = fixture("capabilities/valid-verified-scratch.json")
+        doc["linux_container"]["scratch"].update(
+            enforcement="refused", fill=fill,
+            capability={"status": "unavailable", "reasons": record["capability"]["reasons"]})
+        doc["linux_container"]["capability"] = {"status": "unavailable", "reasons": ["x"]}
+        contracts.validate_capabilities(doc)
+
+    def test_a_sync_blocked_after_the_refusal_is_abandoned_and_its_file_kept(self):
+        host = FakeHost(fail={"write": (3, errno.ENOSPC)}, free=0, block={"fsync": 1},
+                        deadline_reached=True)
+        record = self.verify(host)
+        fill = record["fill"]
+        self.assertEqual((fill["stopped"], fill["written_bytes"]),
+                         ("deadline", 2 * capability.FILL_CHUNK))
+        self.assertIn("not confirmed: its fsync call had not returned at the deadline",
+                      fill["cleanup"])
+        self.assertEqual(record["enforcement"], "refused")
+        # Released, the abandoned worker reads no free space and removes nothing: it only
+        # closes its descriptor.
+        host.release.set()
+        self.assertTrue(host.closed.wait(30))
+        self.assertEqual(host.order[-3:], ["write", "fsync", "close"])
+        self.assertEqual((host.writes, host.calls["statvfs"], host.unlinked), (3, 1, 0))
 
     def test_a_capacity_refusal_without_progress_or_a_full_filesystem_proves_nothing(self):
         record = self.verify(FakeHost(fail={"write": (1, errno.ENOSPC)}, free=0))
@@ -748,11 +877,12 @@ class Capabilities(TempDir):
             capability={"status": "unavailable", "reasons": record["capability"]["reasons"]})
         doc["linux_container"]["capability"] = {"status": "unavailable", "reasons": ["x"]}
         contracts.validate_capabilities(doc)
-        # When the blocked write finally returns, the abandoned worker writes nothing more and
-        # only closes its descriptor: the file stays for the operator.
+        # When the blocked write finally returns, the abandoned worker writes and syncs nothing
+        # more and only closes its descriptor: the file stays for the operator.
         host.release.set()
         self.assertTrue(host.closed.wait(30))
-        self.assertEqual((host.writes, host.calls["fsync"], host.unlinked), (2, 1, 0))
+        self.assertEqual((host.writes, host.calls["fsync"], host.unlinked), (2, 0, 0))
+        self.assertEqual(host.order[-2:], ["write", "close"])
 
     def test_a_slow_check_before_the_fill_starts_no_fill(self):
         # Root-reproduced (ADR-0173): one second was left; finding the mount took two, and the
@@ -830,25 +960,35 @@ StatVfs = collections.namedtuple("StatVfs", "f_blocks f_frsize f_bavail")
 
 
 class FakeHost(capability.Host):
-    """Filesystem calls of an 8-MiB ext4 scratch with deterministic failures: `fail` maps a
-    call to (the 1-based call that fails, errno); later calls of it succeed. `free` is what
-    `statvfs` reports available, all of it unless given. `delay` maps a call to (the 1-based
-    call that takes long, seconds of the controlled clock); `block` maps a call to the 1-based
-    call that blocks until `release` is set, and `deadline_reached` makes the caller's wait
-    for the fill end at once, as a deadline would."""
+    """Filesystem calls of an ext4 scratch of `size` bytes, 8 MiB unless given, with
+    deterministic failures: `fail` maps a call to (the 1-based call that fails, errno); later
+    calls of it succeed. `free` is what `statvfs` reports available: unless given, all of it,
+    or with a `capacity` what of that the writes left. A virtual `capacity` stores nothing:
+    writes accept bytes up to it, the last one partly, and then refuse with ENOSPC; with
+    `delayed` they accept more, and the first sync after they went past it raises that errno,
+    as a delayed allocation does. Each sync costs `sync_latency` seconds of the controlled clock
+    and the bytes written since the last one at `flush_rate` bytes a second. `delay` maps a call
+    to (the 1-based call that takes long, seconds of the controlled clock); `block` maps a call
+    to the 1-based call that blocks until `release` is set, and `deadline_reached` makes the
+    caller's wait for the fill end at once, as a deadline would. `order` lists every call."""
 
     def __init__(self, fail=None, free=None, zero_after=None, tick=0.0, delay=None,
-                 block=None, deadline_reached=False):
+                 block=None, deadline_reached=False, size=8 << 20, capacity=None, delayed=None,
+                 sync_latency=0.0, flush_rate=None):
         self.fail, self.free, self.zero_after, self.tick = fail or {}, free, zero_after, tick
         self.delay, self.block = delay or {}, block or {}
         self.deadline_reached = deadline_reached
-        self.calls = collections.Counter()
+        self.size, self.capacity, self.delayed = size, capacity, delayed
+        self.sync_latency, self.flush_rate = sync_latency, flush_rate
+        self.calls, self.order = collections.Counter(), []
         self.now, self.writes, self.unlinked = 0.0, 0, 0
+        self.accepted, self.unsynced = 0, 0
         self.blocked, self.release, self.closed = (threading.Event(), threading.Event(),
                                                    threading.Event())
 
     def check(self, call):
         self.calls[call] += 1
+        self.order.append(call)
         at, seconds = self.delay.get(call, (None, None))
         if self.calls[call] == at:
             self.now += seconds
@@ -868,10 +1008,23 @@ class FakeHost(capability.Host):
         self.check("write")
         if self.zero_after is not None and self.writes > self.zero_after:
             return 0
-        return len(data)
+        count = len(data)
+        if self.capacity is not None and self.delayed is None:
+            if self.accepted >= self.capacity:
+                raise OSError(errno.ENOSPC, os.strerror(errno.ENOSPC))
+            count = min(count, self.capacity - self.accepted)
+        self.accepted += count
+        self.unsynced += count
+        return count
 
     def fsync(self, fd):
+        self.now += self.sync_latency
+        if self.flush_rate is not None:
+            self.now += self.unsynced / self.flush_rate
+        self.unsynced = 0
         self.check("fsync")
+        if self.delayed is not None and self.accepted > self.capacity:
+            raise OSError(self.delayed, os.strerror(self.delayed))
 
     def close(self, fd):
         try:
@@ -885,8 +1038,11 @@ class FakeHost(capability.Host):
 
     def statvfs(self, path):
         self.check("statvfs")
-        blocks = (8 << 20) // 4096
-        free = blocks * 4096 if self.free is None else self.free
+        blocks = self.size // 4096
+        free = self.free
+        if free is None:
+            free = (blocks * 4096 if self.capacity is None
+                    else max(0, self.capacity - self.accepted))
         return StatVfs(blocks, 4096, free // 4096)
 
     def listdir(self, path):
