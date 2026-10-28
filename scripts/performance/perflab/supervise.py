@@ -714,15 +714,16 @@ def run_contained(docker, name, image, environment, supervisor, binaries, scratc
         try:
             removal = remove_container(docker, name, deadline, clock)
         except BaseException as cleanup:
-            removal = "container %s removal unconfirmed: %s" % (name, cleanup)
+            # Whatever its text says, an exception confirms nothing (issue #388).
+            removal = Removal(False, "container %s removal unconfirmed: %s" % (name, cleanup))
             if not isinstance(cleanup, Exception):
                 cleanup.__cause__ = failure
-                _exceptional_failure(SupervisorFailure("%s; %s" % (failure, removal),
+                _exceptional_failure(SupervisorFailure("%s; %s" % (failure, removal.detail),
                     uncertain=True, supervised=getattr(evidence, "supervised", None)), cleanup)
         # A confirmed removal ends every process in the container; anything else may be live.
-        _exceptional_failure(SupervisorFailure("%s; %s" % (failure, removal),
+        _exceptional_failure(SupervisorFailure("%s; %s" % (failure, removal.detail),
                                 deadline=getattr(evidence, "deadline", False),
-                                uncertain=not removal.endswith(" removed"),
+                                uncertain=not removal.confirmed,
                                 supervised=getattr(evidence, "supervised", None)), failure)
     try:
         removal = remove_container(docker, name, deadline, clock)
@@ -730,20 +731,32 @@ def run_contained(docker, name, image, environment, supervisor, binaries, scratc
         _exceptional_failure(SupervisorFailure(
             "container %s removal unconfirmed: %s" % (name, cleanup),
             uncertain=True, supervised=supervised), cleanup)
-    removed = removal.endswith(" removed")
     child = supervised.result["timing"]["child_wall_ns"]
     overhead = supervised.host_wall_ns - int(child) if child is not None else None
-    return Contained(supervised, removal, removed,
+    return Contained(supervised, removal.detail, removal.confirmed,
                      check_container_observations(supervised.result, environment), overhead,
                      scratch_problems(scratch_root, inventory))
 
 
+class Removal(collections.namedtuple("Removal", "confirmed detail")):
+    """A container removal's outcome. `confirmed` is true only when `docker rm` ran and a
+    following `docker ps` listed no such container, both within the removal's allowance;
+    `detail` is for people, and no caller decides anything from its wording (issue #388)."""
+
+    __slots__ = ()
+
+    def __new__(cls, confirmed, detail):
+        require(isinstance(confirmed, bool), "a removal is confirmed or not")
+        return super(Removal, cls).__new__(cls, confirmed, str(detail))
+
+
 def remove_container(docker, name, deadline=None, clock=time.monotonic):
-    """Remove a named sample container and confirm it is gone; the outcome as text.
+    """Remove a named sample container and confirm it is gone; the outcome as a `Removal`.
 
     The removal and its confirmation share one allowance, at most `REMOVAL_SECONDS` and ending
     by `deadline` (a `clock` instant) when given: neither starts once it is spent, and each
-    is bounded by what remains of it. A removal not confirmed within it says so."""
+    is bounded by what remains of it. A removal not confirmed within it says so, and so does a
+    confirmation that ended after it, however long its client took to start."""
     env = {"PATH": "/usr/local/bin:/usr/bin:/bin", "LC_ALL": "C"}
     started = clock()
     until = started + REMOVAL_SECONDS
@@ -764,10 +777,16 @@ def remove_container(docker, name, deadline=None, clock=time.monotonic):
                                 stderr=subprocess.DEVNULL, timeout=left("confirming it"),
                                 env=env)
     except (_Spent, OSError, subprocess.TimeoutExpired) as error:
-        return "container %s removal unconfirmed: %s" % (name, error)
+        return Removal(False, "container %s removal unconfirmed: %s" % (name, error))
+    # A relative timeout does not count a client's startup: only the clock says the
+    # confirmation ended within the allowance (issue #403).
+    ended = clock()
+    if ended > until:
+        return Removal(False, "container %s removal unconfirmed: confirming it ended %.3f s "
+                       "after its %.3f s allowance" % (name, ended - until, until - started))
     if listed.returncode != 0 or listed.stdout.strip():
-        return "container %s removal unconfirmed" % name
-    return "container %s removed" % name
+        return Removal(False, "container %s removal unconfirmed" % name)
+    return Removal(True, "container %s removed" % name)
 
 
 class _Spent(Exception):

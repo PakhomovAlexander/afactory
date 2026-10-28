@@ -100,7 +100,7 @@ fn disable_status_catalog_setup_and_enable_are_token_free_and_survive_processes(
     let status = success(run(home, &["provider", "status", "--usage", "--json"]));
     let status: Value = serde_json::from_slice(&status.stdout).unwrap();
     crate::schemas::valid(
-        &crate::schemas::validator("provider-status-v3.json"),
+        &crate::schemas::validator("provider-status-v4.json"),
         &status,
     );
     let row = status["providers"]
@@ -164,7 +164,7 @@ fn long_registered_id_can_be_disabled_reported_and_enabled_across_processes() {
     let output = success(run(home, &["provider", "status", "--usage", "--json"]));
     let status: Value = serde_json::from_slice(&output.stdout).unwrap();
     crate::schemas::valid(
-        &crate::schemas::validator("provider-status-v3.json"),
+        &crate::schemas::validator("provider-status-v4.json"),
         &status,
     );
     assert_eq!(status["providers"][0]["id"], id);

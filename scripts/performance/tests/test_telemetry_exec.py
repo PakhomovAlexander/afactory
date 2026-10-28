@@ -635,6 +635,29 @@ class Contained(ContainedBase):
         self.assertIn("removal unconfirmed", outcome.cleanup_detail)
         self.assertIn("cleanup was not confirmed", outcome.failure())
 
+    def test_only_the_removal_s_typed_outcome_confirms_it(self):
+        # Issue #388: the cleanup was confirmed by a removal text ending in " removed". The
+        # typed outcome decides: an unconfirmed one worded like a removal keeps the latch, a
+        # confirmed one in other words releases it.
+        for confirmed, detail in ((False, "container x was not removed"),
+                                  (True, "the runtime lists no container x")):
+            with self.subTest(confirmed=confirmed):
+                with mock.patch.object(supervise, "remove_container",
+                                       return_value=supervise.Removal(confirmed, detail)):
+                    outcome = self.executor.run(execution(self, ["/bin/sh", "-c", "echo '{}'"],
+                                                          label="x%d" % confirmed,
+                                                          cwd=self.run_dir))
+                self.assertEqual(outcome.cleanup, "confirmed" if confirmed else "uncertain")
+                self.assertEqual(outcome.cleanup_detail, detail)
+                self.assertEqual(self.executor.pending, not confirmed)
+                if not confirmed:
+                    self.assertIn("cleanup was not confirmed", outcome.failure())
+                    refused = self.executor.prepare(execution(self, ["/bin/true"],
+                                                              label="refused", cwd=self.run_dir))
+                    self.assertIn("cleanup is unconfirmed; nothing more runs", refused)
+                    # Only the operator's recovery clears it; here the container is gone.
+                    self.executor.pending = False
+
     def test_a_changed_scratch_filesystem_is_an_uncertain_cleanup(self):
         planted = os.path.join(self.scratch, "planted")
         outcome = self.executor.run(execution(self, [

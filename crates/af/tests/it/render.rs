@@ -28,8 +28,41 @@ fn af(state_home: &Path, args: &[&str]) -> Output {
         .env("XDG_CONFIG_HOME", state_home.join("config"))
         .env("XDG_STATE_HOME", state_home)
         .env("AF_SELF_OFFLINE", "1")
+        .env("PATH", path_without_provider_clis())
         .output()
         .unwrap()
+}
+
+/// `PATH` without the directories that hold a `codex` or `claude`. A plan reads each bound
+/// Provider's model catalog token-free through its CLI, so with the developer's own CLI on
+/// `PATH` a model line would read `ok` where CI, which has none, reads `unverified against the
+/// catalog`; here every machine reads the latter.
+fn path_without_provider_clis() -> std::ffi::OsString {
+    let path = std::env::var_os("PATH").unwrap_or_default();
+    std::env::join_paths(
+        std::env::split_paths(&path)
+            .filter(|dir| !["codex", "claude"].iter().any(|cli| dir.join(cli).exists())),
+    )
+    .unwrap()
+}
+
+fn register_codex(state_home: &Path) {
+    let auth = state_home.join("codex-auth");
+    std::fs::create_dir_all(&auth).unwrap();
+    let added = af(
+        state_home,
+        &[
+            "provider",
+            "add",
+            "codex-main",
+            "--kind",
+            "codex",
+            "--auth-dir",
+            auth.to_str().unwrap(),
+            "--unverified",
+        ],
+    );
+    assert!(added.status.success(), "{}", stderr(&added));
 }
 
 fn stderr(output: &Output) -> String {
@@ -328,6 +361,13 @@ fn an_input_that_exhausts_its_attempt_cap_is_refused_before_admission() {
 
     let mut plan_args = vec!["review", "plan"];
     plan_args.extend(selectors);
+    register_codex(&state_home);
+    plan_args.extend([
+        "--provider",
+        "architecture=codex-main",
+        "--provider",
+        "correctness=codex-main",
+    ]);
     plan_args.push("--json");
     let planned = af(&state_home, &plan_args);
     assert!(planned.status.success(), "{}", stderr(&planned));
@@ -348,7 +388,12 @@ fn an_input_that_exhausts_its_attempt_cap_is_refused_before_admission() {
     let mut run_args = vec!["review", "run", "--campaign", "fit", "--state"];
     run_args.push(campaign_state.to_str().unwrap());
     run_args.extend(selectors);
-    run_args.extend(["--provider", "correctness=codex-ambient"]);
+    run_args.extend([
+        "--provider",
+        "correctness=codex-main",
+        "--provider",
+        "architecture=codex-main",
+    ]);
     let refused = af(&state_home, &run_args);
     assert!(!refused.status.success(), "the run must refuse");
     let message = stderr(&refused);
@@ -370,6 +415,7 @@ fn review_plan_prints_each_model_line_and_refuses_an_effort_level_codex_does_not
     let repo = onboarded_repo_with_a_change(root.path());
     let state_home = root.path().join("state");
     let repo_arg = repo.to_str().unwrap();
+    register_codex(&state_home);
     let plan_args = [
         "review",
         "plan",
@@ -383,6 +429,10 @@ fn review_plan_prints_each_model_line_and_refuses_an_effort_level_codex_does_not
         "HEAD~1",
         "--candidate",
         "HEAD",
+        "--provider",
+        "architecture=codex-main",
+        "--provider",
+        "correctness=codex-main",
     ];
     let planned = af(&state_home, &plan_args);
     assert!(planned.status.success(), "{}", stderr(&planned));
@@ -448,6 +498,7 @@ fn review_plan_text_output_shows_control_characters_in_changed_paths_escaped() {
     git(&repo, &["commit", "-q", "-m", "hostile names"]);
     let state_home = root.path().join("state");
     let repo_arg = repo.to_str().unwrap();
+    register_codex(&state_home);
     let mut plan_args = vec![
         "review",
         "plan",
@@ -461,6 +512,10 @@ fn review_plan_text_output_shows_control_characters_in_changed_paths_escaped() {
         "HEAD~1",
         "--candidate",
         "HEAD",
+        "--provider",
+        "architecture=codex-main",
+        "--provider",
+        "correctness=codex-main",
     ];
     let planned = af(&state_home, &plan_args);
     assert!(planned.status.success(), "{}", stderr(&planned));
@@ -513,7 +568,7 @@ fn review_plan_names_a_repo_it_cannot_open_with_control_characters_escaped() {
         &root.path().join("state"),
         &["review", "plan", "--repo", repo.to_str().unwrap()],
     );
-    assert_eq!(planned.status.code(), Some(1), "{}", stderr(&planned));
+    assert!(!planned.status.success(), "{}", stderr(&planned));
     let text = stderr(&planned);
     assert!(
         !text.chars().any(|c| c.is_control() && c != '\n'),
@@ -521,8 +576,8 @@ fn review_plan_names_a_repo_it_cannot_open_with_control_characters_escaped() {
     );
     assert_eq!(text.lines().count(), 1, "a forged line:\n{text}");
     assert!(
-        text.starts_with("af review: opening repository ")
-            && text.contains("esc\\u{1b}]0;PWNED\\u{7}repo\\u{a}forged: "),
+        text.starts_with("af review: ")
+            && text.contains("esc\\u{1b}]0;PWNED\\u{7}repo\\u{a}forged is not a Git repository"),
         "{text}"
     );
 }
@@ -553,6 +608,7 @@ fn review_plan_text_output_shows_control_characters_in_node_ids_escaped() {
     git(&repo, &["add", "-A"]);
     git(&repo, &["commit", "-q", "-m", "hostile node ids"]);
     let state_home = root.path().join("state");
+    register_codex(&state_home);
     let planned = af(
         &state_home,
         &[
@@ -568,6 +624,10 @@ fn review_plan_text_output_shows_control_characters_in_node_ids_escaped() {
             "HEAD~1",
             "--candidate",
             "HEAD",
+            "--provider",
+            "arch\u{1b}]0;PWNED\u{7}itecture=codex-main",
+            "--provider",
+            "correctness=codex-main",
         ],
     );
     assert!(planned.status.success(), "{}", stderr(&planned));
@@ -592,12 +652,9 @@ fn review_plan_text_output_shows_control_characters_in_node_ids_escaped() {
     ] {
         assert!(text.lines().any(|row| row == line), "{line}:\n{text}");
     }
-    // A missing binding names its fix after it, the node as safely shown as everywhere else.
-    let missing = format!("provider {architecture} -> MISSING; fix: ");
-    assert!(
-        text.lines().any(|row| row.starts_with(&missing)),
-        "{missing}:\n{text}"
-    );
+    // A resolved binding names the node as safely shown as everywhere else.
+    let binding = format!("provider {architecture} -> codex-main");
+    assert!(text.lines().any(|row| row == binding), "{binding}:\n{text}");
     for prefix in ["reserve  ", "input    "] {
         assert!(
             text.lines()

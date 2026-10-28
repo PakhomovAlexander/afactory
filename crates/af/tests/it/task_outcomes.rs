@@ -1089,6 +1089,11 @@ fn not_found_errors_name_the_task_the_store_and_what_it_holds() {
             err(&missing)
         );
     }
+    let missing_json = fixture.af(&["task", "show", "nope", "--json"]);
+    let document: serde_json::Value = serde_json::from_slice(&missing_json.stdout).unwrap();
+    assert_eq!(document["cause"], "task_not_found", "{document}");
+    assert_eq!(document["details"]["task_id"], "nope");
+    crate::schemas::valid(&crate::schemas::validator("error-v2.json"), &document);
     let absent = fixture.root.join("absent.json");
     let unreadable = fixture.af(&["task", "plan", "--file", absent.to_str().unwrap()]);
     assert_eq!(unreadable.status.code(), Some(1));

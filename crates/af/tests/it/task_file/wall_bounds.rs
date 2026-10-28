@@ -172,6 +172,37 @@ fn task_timeout_zero_is_a_usage_error_but_review_file_is_validated_by_its_adapte
 }
 
 #[test]
+fn review_file_plan_names_the_whole_task_timeout_scope() {
+    let dir = tempfile::tempdir().unwrap();
+    let (repo, state) = fixture_named(dir.path(), "review");
+    let output = crate::common::af()
+        .current_dir(&repo)
+        .args([
+            "review",
+            "plan",
+            "--file",
+            "review.json",
+            "--timeout-secs",
+            "37",
+        ])
+        .arg("--state")
+        .arg(&state)
+        .output()
+        .unwrap();
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert!(
+        String::from_utf8_lossy(&output.stdout)
+            .contains("timeout --timeout-secs 37: whole Task cap"),
+        "{}",
+        String::from_utf8_lossy(&output.stdout)
+    );
+}
+
+#[test]
 fn smallest_positive_file_and_cli_durations_reach_source_validation() {
     let dir = tempfile::tempdir().unwrap();
     let (repo, state) = fixture(dir.path());

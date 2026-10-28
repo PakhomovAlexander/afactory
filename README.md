@@ -91,7 +91,7 @@ are at any point, token-free.
    the onboard preview printed:
 
    ```sh
-   af review plan --policy-rev HEAD --base HEAD --uncommitted
+   af review plan --policy-rev HEAD --base HEAD --uncommitted --provider correctness=PROVIDER --provider architecture=PROVIDER
    af review --policy-rev HEAD --base HEAD --uncommitted --provider correctness=PROVIDER --provider architecture=PROVIDER
    ```
 
@@ -242,7 +242,7 @@ Rules for a coding agent, or a script, that drives af for someone:
 - **One review, then fix.** A review that finds defects exits non-zero by design: fix the
   Findings, run the project's Gate, and stop. Do not start another Campaign to check your fix;
   `--heavy` is for when a human asks for convergence review.
-- **Ask the doctor.** `af doctor --json` prints one `af/doctor@2` document: every check with its
+- **Ask the doctor.** `af doctor --json` prints one `af/doctor@3` document: every check with its
   status, a `fix` command where one command fixes it, and a `hint` otherwise.
 
 The whole Task loop (plan, run or `--detach`, wait, findings, diff, materialize, deliver, and

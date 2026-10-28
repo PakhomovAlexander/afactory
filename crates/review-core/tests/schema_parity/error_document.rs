@@ -89,6 +89,51 @@ fn an_error_document_carries_its_cause_next_command_and_facts() {
     });
     assert_valid(ERROR_V2, &login);
 
+    for (cause, details) in [
+        (
+            "task_not_found",
+            json!({"task_id":"missing","store":"this checkout's Task Store"}),
+        ),
+        (
+            "no_task_catalog",
+            json!({"path":".af/task-catalog.toml","revision":"HEAD"}),
+        ),
+        ("no_authority", json!({"revision":"HEAD"})),
+        ("not_repository", json!({"repo":"."})),
+        (
+            "provider_not_registered",
+            json!({"provider":"nope","kind":"codex"}),
+        ),
+        (
+            "unknown_review_node",
+            json!({"node":"nope","pipeline":".af/pipelines/review.toml"}),
+        ),
+        (
+            "plan_mismatch",
+            json!({"task_id":"t","confirmed":"sha256:old","current":"sha256:new"}),
+        ),
+        ("dirty_source", json!({"repo":"."})),
+        (
+            "review_selectors_missing",
+            json!({"repo":".","selector":"--policy-rev"}),
+        ),
+        (
+            "review_binding_missing",
+            json!({"missing":["correctness"],"candidates":{"correctness":["codex-main"]}}),
+        ),
+    ] {
+        let document = json!({"schema":"af/error@2","command":"af review plan",
+            "error":"refused; choose the next action","exit_code":1,"cause":cause,
+            "next_action":null,"details":details});
+        assert_valid(ERROR_V2, &document);
+        let mut invalid = document.clone();
+        invalid["details"]["unexpected"] = json!(true);
+        assert_invalid(ERROR_V2, &invalid, "unexpected detail");
+        let mut wrong_exit = document;
+        wrong_exit["exit_code"] = json!(2);
+        assert_invalid(ERROR_V2, &wrong_exit, "a first-run refusal is exit 1");
+    }
+
     for (document, pointer, replacement, why) in [
         (
             &plain,

@@ -2,7 +2,7 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "urn:af:schema:error:2",
   "title": "The error document af/error@2",
-  "$comment": "What every af command prints on stdout under --json when it fails, instead of its result (`af help json`): the command, the error sentence stderr also prints, and the process's exit code. A usage error clap finds is one too, exit 2. A refusal af classifies adds `cause`, `next_action`, the one af command to run next with the selectors the command was given (null when there is none, or when no pasted line carries it: a word with a control character, or past 4096 characters), and `details`, the facts behind the cause: for `recovery_exhausted` the node, how often it was abandoned (`count`, of which `writer_lost` lost their writer and `host_cancelled` were interrupted) and its recovery `allowance`; for `refresh_refused` the selection `decision`; for `task_file_invalid` the `file`, the `field` and its `value`; for `input_unreadable` the `file` and what it is (`what`); for `interrupted`, a command SIGINT or SIGTERM stopped (exit 130 or 143), the `signal` and the `task` it was running (null when it ran none), with `next_action` the command that resumes or continues it. Version 2 adds the `interrupted` cause (ADR-0256); af/error@1 is no longer printed.",
+  "$comment": "The single JSON error document this release writes under --json. Version 2 adds stable first-run causes and structured details; version 1 is neither written nor read. Classified refusals always carry cause and next_action (null where no one command exists); details hold cause-specific facts. The `interrupted` cause is a command SIGINT or SIGTERM stopped (exit 130 or 143): `details` carry the `signal` and the `task` it was running (null when it ran none), and `next_action` is the command that resumes or continues it (ADR-0256). See af help errors and ADR-0242.",
   "type": "object",
   "additionalProperties": false,
   "required": [
@@ -46,6 +46,16 @@
         "refresh_refused",
         "task_file_invalid",
         "input_unreadable",
+        "task_not_found",
+        "no_task_catalog",
+        "no_authority",
+        "not_repository",
+        "provider_not_registered",
+        "unknown_review_node",
+        "plan_mismatch",
+        "dirty_source",
+        "review_selectors_missing",
+        "review_binding_missing",
         "interrupted"
       ]
     },
@@ -255,6 +265,438 @@
                 "minLength": 1
               }
             }
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "required": [
+          "cause"
+        ],
+        "properties": {
+          "cause": {
+            "const": "task_not_found"
+          }
+        }
+      },
+      "then": {
+        "required": [
+          "details"
+        ],
+        "properties": {
+          "details": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "task_id",
+              "store"
+            ],
+            "properties": {
+              "task_id": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 4096
+              },
+              "store": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 4096
+              }
+            }
+          },
+          "exit_code": {
+            "const": 1
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "required": [
+          "cause"
+        ],
+        "properties": {
+          "cause": {
+            "const": "no_task_catalog"
+          }
+        }
+      },
+      "then": {
+        "required": [
+          "details"
+        ],
+        "properties": {
+          "details": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "path",
+              "revision"
+            ],
+            "properties": {
+              "path": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 4096
+              },
+              "revision": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 4096
+              }
+            }
+          },
+          "exit_code": {
+            "const": 1
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "required": [
+          "cause"
+        ],
+        "properties": {
+          "cause": {
+            "const": "no_authority"
+          }
+        }
+      },
+      "then": {
+        "required": [
+          "details"
+        ],
+        "properties": {
+          "details": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "revision"
+            ],
+            "properties": {
+              "revision": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 4096
+              }
+            }
+          },
+          "exit_code": {
+            "const": 1
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "required": [
+          "cause"
+        ],
+        "properties": {
+          "cause": {
+            "const": "not_repository"
+          }
+        }
+      },
+      "then": {
+        "required": [
+          "details"
+        ],
+        "properties": {
+          "details": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "repo"
+            ],
+            "properties": {
+              "repo": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 4096
+              }
+            }
+          },
+          "exit_code": {
+            "const": 1
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "required": [
+          "cause"
+        ],
+        "properties": {
+          "cause": {
+            "const": "provider_not_registered"
+          }
+        }
+      },
+      "then": {
+        "required": [
+          "details"
+        ],
+        "properties": {
+          "details": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "provider",
+              "kind"
+            ],
+            "properties": {
+              "provider": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 4096
+              },
+              "kind": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 4096
+              }
+            }
+          },
+          "exit_code": {
+            "const": 1
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "required": [
+          "cause"
+        ],
+        "properties": {
+          "cause": {
+            "const": "unknown_review_node"
+          }
+        }
+      },
+      "then": {
+        "required": [
+          "details"
+        ],
+        "properties": {
+          "details": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "node",
+              "pipeline"
+            ],
+            "properties": {
+              "node": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 4096
+              },
+              "pipeline": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 4096
+              }
+            }
+          },
+          "exit_code": {
+            "const": 1
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "required": [
+          "cause"
+        ],
+        "properties": {
+          "cause": {
+            "const": "plan_mismatch"
+          }
+        }
+      },
+      "then": {
+        "required": [
+          "details"
+        ],
+        "properties": {
+          "details": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "task_id",
+              "confirmed",
+              "current"
+            ],
+            "properties": {
+              "task_id": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 4096
+              },
+              "confirmed": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 4096
+              },
+              "current": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 4096
+              }
+            }
+          },
+          "exit_code": {
+            "const": 1
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "required": [
+          "cause"
+        ],
+        "properties": {
+          "cause": {
+            "const": "dirty_source"
+          }
+        }
+      },
+      "then": {
+        "required": [
+          "details"
+        ],
+        "properties": {
+          "details": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "repo"
+            ],
+            "properties": {
+              "repo": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 4096
+              }
+            }
+          },
+          "exit_code": {
+            "const": 1
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "required": [
+          "cause"
+        ],
+        "properties": {
+          "cause": {
+            "const": "review_selectors_missing"
+          }
+        }
+      },
+      "then": {
+        "required": [
+          "details"
+        ],
+        "properties": {
+          "details": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "repo",
+              "selector"
+            ],
+            "properties": {
+              "repo": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 4096
+              },
+              "selector": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 4096
+              },
+              "candidates": {
+                "type": "object",
+                "additionalProperties": {
+                  "type": "array",
+                  "uniqueItems": true,
+                  "items": {
+                    "type": "string",
+                    "minLength": 1,
+                    "maxLength": 256
+                  }
+                }
+              }
+            }
+          },
+          "exit_code": {
+            "const": 1
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "required": [
+          "cause"
+        ],
+        "properties": {
+          "cause": {
+            "const": "review_binding_missing"
+          }
+        }
+      },
+      "then": {
+        "required": [
+          "details"
+        ],
+        "properties": {
+          "details": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "missing",
+              "candidates"
+            ],
+            "properties": {
+              "missing": {
+                "type": "array",
+                "items": {
+                  "type": "string",
+                  "minLength": 1,
+                  "maxLength": 256
+                },
+                "minItems": 1,
+                "uniqueItems": true
+              },
+              "candidates": {
+                "type": "object",
+                "additionalProperties": {
+                  "type": "array",
+                  "uniqueItems": true,
+                  "items": {
+                    "type": "string",
+                    "minLength": 1,
+                    "maxLength": 256
+                  }
+                }
+              }
+            }
+          },
+          "exit_code": {
+            "const": 1
           }
         }
       }

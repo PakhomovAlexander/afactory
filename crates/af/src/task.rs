@@ -1326,7 +1326,11 @@ fn verify_source_authority(
     )?;
     if !staged.status.success() {
         if staged.status.code() == Some(1) {
-            return Err("target repository has staged changes".into());
+            return Err(crate::error_document::typed(
+                "target repository has staged changes; inspect its changes and retry".into(),
+                crate::error_document::Detail::new(crate::error_document::Cause::DirtySource)
+                    .with("repo", repository.display().to_string()),
+            ));
         }
         return Err(format!(
             "checking staged changes: {}",
@@ -1340,7 +1344,11 @@ fn verify_source_authority(
         || dirty.content_digest != assets.source.content_digest
         || dirty.manifest != assets.source_manifest
     {
-        return Err("target repository worktree is not clean at the Task source Snapshot".into());
+        return Err(crate::error_document::typed(
+            "target repository worktree is not clean at the Task source Snapshot; inspect its changes and retry".into(),
+            crate::error_document::Detail::new(crate::error_document::Cause::DirtySource)
+                .with("repo", repository.display().to_string()),
+        ));
     }
     Ok(())
 }

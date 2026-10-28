@@ -1,4 +1,4 @@
-//! The agent-facing `af/provider-detect@3` document (ADR-0206).
+//! The agent-facing `af/provider-detect@4` document (ADR-0206).
 //!
 //! Like the other Provider onboarding documents it carries no Rust type: `af provider detect`
 //! builds it from what the machine's CLIs and directories said. The schema is the contract, and
@@ -9,7 +9,7 @@
 use super::{assert_invalid, assert_valid};
 use serde_json::{Value, json};
 
-const SCHEMA: &str = "provider-detect-v3.json";
+const SCHEMA: &str = "provider-detect-v4.json";
 
 fn row(dir: &str, source: &str, auth: &str) -> Value {
     let authenticated = auth == "authenticated";
@@ -46,7 +46,7 @@ fn row(dir: &str, source: &str, auth: &str) -> Value {
 
 fn scan() -> Value {
     json!({
-        "schema": "af/provider-detect@3",
+        "schema": "af/provider-detect@4",
         "exit_code": 0,
         "applied": false,
         "binaries": [{
@@ -55,6 +55,7 @@ fn scan() -> Value {
             "version": "2.1.299",
             "on_path": false,
             "compatible": true,
+            "probe": "compatible",
         }],
         "unsupported": [{"name": "gemini", "path": "/usr/bin/gemini", "version": null}],
         "candidates": [
@@ -86,6 +87,25 @@ fn scan() -> Value {
         "next_action": null,
         "notes": ["shell aliases or functions that set CLAUDE_CONFIG_DIR/CODEX_HOME are not read; pass --dir for such a directory"],
     })
+}
+
+#[test]
+fn a_denied_binary_and_candidate_cannot_claim_compatibility_or_login() {
+    let mut denied = scan();
+    denied["exit_code"] = json!(8);
+    denied["binaries"][0]["compatible"] = Value::Null;
+    denied["binaries"][0]["probe"] = json!("denied");
+    denied["candidates"][0]["auth"] = json!("probe_denied");
+    denied["candidates"][0]["auth_cause"] = json!("probe_denied");
+    denied["candidates"][0]["auth_method"] = json!("unknown");
+    denied["candidates"][0]["suggested"] = json!({"action":"none","id":null,"command":null});
+    assert_valid(SCHEMA, &denied);
+    let mut wrong = denied.clone();
+    wrong["exit_code"] = json!(0);
+    assert_invalid(SCHEMA, &wrong, "a denial cannot exit zero");
+    wrong = denied.clone();
+    wrong["schema"] = json!("af/provider-detect@3");
+    assert_invalid(SCHEMA, &wrong, "the retired shape fails closed");
 }
 
 /// A machine with no supported CLI and no auth directory: both kinds to install, and the scan
@@ -146,6 +166,7 @@ fn scans_and_applications_are_valid() {
     let mut broken = scan();
     broken["exit_code"] = json!(4);
     broken["binaries"][0]["compatible"] = json!(false);
+    broken["binaries"][0]["probe"] = json!("incompatible");
     broken["candidates"][1] = json!({
         "kind": "claude",
         "auth_dir": "/home/o/.config/claude-work",

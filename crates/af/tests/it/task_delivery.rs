@@ -777,6 +777,30 @@ fn delivery_refuses_unverified_and_dirty_sources_without_creating_a_target() {
     assert_eq!(code, 1);
     assert!(stderr.contains("not clean"), "{stderr}");
     assert!(!refused.exists());
+    let (code, stdout, _) = run_af(
+        &repo,
+        &home,
+        &[
+            "task",
+            "deliver",
+            task_id,
+            "--repo",
+            repo.to_str().unwrap(),
+            "--branch",
+            "af/dirty-refused",
+            "--worktree",
+            refused.to_str().unwrap(),
+            "--confirm",
+            task_id,
+            "--state",
+            state.to_str().unwrap(),
+            "--json",
+        ],
+    );
+    assert_eq!(code, 1);
+    let document: serde_json::Value = serde_json::from_str(stdout.trim()).unwrap();
+    assert_eq!(document["cause"], "dirty_source", "{document}");
+    crate::schemas::valid(&crate::schemas::validator("error-v2.json"), &document);
 }
 
 #[test]

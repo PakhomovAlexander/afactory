@@ -26,6 +26,7 @@ fn af(state_home: &Path, args: &[&str]) -> Output {
     crate::common::af()
         .args(args)
         .env("XDG_STATE_HOME", state_home)
+        .env("AF_PROVIDERS_FILE", state_home.join("providers.toml"))
         .output()
         .unwrap()
 }
@@ -79,6 +80,22 @@ impl Routed {
         let routed = Routed { root, repo };
         routed.set_routing(routing);
         commit(&routed.repo, "base");
+        let auth = routed.root.path().join("codex-auth");
+        std::fs::create_dir_all(&auth).unwrap();
+        let registered = af(
+            &routed.state_home(),
+            &[
+                "provider",
+                "add",
+                "codex-main",
+                "--kind",
+                "codex",
+                "--auth-dir",
+                auth.to_str().unwrap(),
+                "--unverified",
+            ],
+        );
+        assert!(registered.status.success(), "{}", stderr(&registered));
         routed
     }
 
@@ -122,6 +139,10 @@ impl Routed {
             "HEAD~1",
             "--candidate",
             "HEAD",
+            "--provider",
+            "architecture=codex-main",
+            "--provider",
+            "correctness=codex-main",
             "--json",
         ];
         args.extend_from_slice(extra);

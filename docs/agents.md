@@ -1,5 +1,45 @@
 # Driving af from an agent
 
+## Repository entry point
+
+`af help agents --snippet` prints the following block for `AGENTS.md`. Preview its installation
+with `af setup agents`; `af setup agents --write` installs the block and the two af skills.
+
+<!-- af-agent-snippet:start -->
+<!-- af-agent-help:start -->
+For repository work with af, run `af help agents` first.
+Read `af help json`, `af help exit-codes`, and `af help task-file` for machine contracts.
+Start with `af provider status --json` and `af onboard` to inspect readiness.
+Plan a Task with `af task plan --file TASK_FILE --json` before running it.
+Follow `state.next_action` in each JSON result; do not guess a next command.
+Use `af task findings TASK_ID --json` and `af task diff TASK_ID --json` for evidence.
+Never add `--login` inside an agent session; ask the person to log in privately.
+<!-- af-agent-help:end -->
+<!-- af-agent-snippet:end -->
+
+## Replace your scripts
+
+| Script pattern | af command or setting |
+|---|---|
+| Read CAS findings | `af task findings TASK_ID --json` |
+| Write a candidate | `af task materialize TASK_ID --into DIR` |
+| Parse check failures | `af task show TASK_ID --checks --json` |
+| Scrape a plan ID | `af task plan --file TASK_FILE --json` |
+| Paste findings into a goal | `af task run NEW --from OLD` |
+| Build a PR body | `af task report TASK_ID --pr-body` |
+| Check disk before launch | `[storage] min_free_bytes` |
+| Retry a failed Gate | `af task run TASK_ID --retry-gate` |
+
+The findings command reads a recorded review round; an absent round appears in state.
+Materialize requires a clean Git worktree unless `--force`; add `--allow-unverified` for an
+unverified candidate or `--snapshot ID` for another recorded Snapshot. Show reads recorded checks,
+including failures, without rerunning them. Plan is token-free; read `.plan_id` from its JSON.
+Continuation uses OLD's reviewed candidate and recorded findings, then requires confirmation of
+the exact new plan. The PR body requires the repository template and a valid lines block; failure
+prints no partial body. The machine's free-disk floor refuses work before spend. Gate retry needs
+an eligible failed check on the same sealed candidate and remains bound by approval, deadline and
+budgets; it does not decide that a failure was flaky.
+
 This is the loop a coding agent, or a script, runs to get a change made through af: plan a
 Task, run it, read how it ended, read its findings, look at its change, run another round
 when it needs one, deliver it, and describe it in a pull request. Every step is one `af task`
@@ -11,6 +51,15 @@ Worker is a program a Pipeline node runs (a model CLI or a command), and each tr
 Attempt. A Snapshot is an exact tree of files the Task recorded: its source, and the candidate
 its implementer produced. The Store is the directory that keeps all of it (`--state`, or a
 default per checkout). `af help task-states` lists every state a Task can be in.
+
+## Running af from inside an agent
+
+An agent's host sandbox may deny a CLI probe, such as `codex app-server` before it answers
+`initialize`. `af provider status --json` and `af provider detect --json` then report
+`probe_denied` and exit 8: compatibility and login remain unknown. Tell the user to run af outside
+that sandbox or approve the needed host permission, then retry the command. Reinstalling the CLI
+does not grant a sandbox permission. `af doctor` shows the detected harness, sandbox and network
+context; these markers explain the environment but never prove that a Provider CLI is compatible.
 
 ## 1. Plan
 
