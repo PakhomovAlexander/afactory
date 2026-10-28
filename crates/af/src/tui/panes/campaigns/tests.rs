@@ -201,12 +201,9 @@ fn a_load_lists_its_sources_behind_a_spinner_never_on_the_callers_thread() {
         pane.groups.is_empty(),
         "nothing is listed before the read is collected"
     );
-    assert!(
-        !pane.reading(),
-        "the load started no read; the first poll does"
-    );
+    assert_eq!(pane.started(), 0, "the load started no read");
     pane.poll();
-    assert!(pane.reading());
+    assert_eq!(pane.started(), 1, "the first poll after it does");
     pane.settle();
     assert!(pane.busy().is_none());
     assert_eq!(
@@ -382,4 +379,61 @@ fn a_campaign_stays_listed_once_while_its_sources_answer_in_turn() {
         .collect();
     assert_eq!(order, [audit.as_path(), root.as_path()]);
     assert_eq!(pane.selected.as_deref(), Some(id.as_str()));
+}
+
+/// A read's report is taken for the opening it was started under: the Campaign opened again
+/// meanwhile (the folder between) read its report afresh, and a report read under the earlier
+/// opening never stands over that one, a refusal included.
+#[test]
+fn a_reads_report_from_an_earlier_opening_never_stands_over_a_newer_one() {
+    let temp = tempfile::tempdir().unwrap();
+    let root = std::fs::canonicalize(temp.path()).unwrap();
+    let audit = root.join("audit");
+    crate::option_tests::write_campaign_rounds(&audit, "audit", &[(1, 1)]);
+    let places = Places {
+        home: None,
+        default_root: None,
+    };
+    let mut pane = CampaignsPane {
+        places: Some(places.clone()),
+        sources: vec![Source::Store(audit.clone())],
+        ..CampaignsPane::default()
+    };
+    let sender = pane.fed();
+    let group = read_source(&places, &Source::Store(audit.clone()));
+    sender.send(Read::Group(group)).unwrap();
+    sender.send(Read::Done { report: None }).unwrap();
+    assert!(pane.poll());
+    let id = audit.display().to_string();
+    pane.open(Some(&id));
+    let report_of = |pane: &CampaignsPane| pane.detail.as_ref().map(|detail| detail.report.is_ok());
+    assert_eq!(report_of(&pane), Some(true));
+    // An explicit read started under this opening read the group and the report before the
+    // Store went aside; the Campaign is opened again before that read is collected, and its
+    // report cannot be read now.
+    let sender = pane.fed();
+    let group = read_source(&places, &Source::Store(audit.clone()));
+    let report = crate::browse_report(&audit, "audit");
+    assert!(report.is_ok());
+    std::fs::rename(&audit, root.join("aside")).unwrap();
+    pane.open(None);
+    pane.open(Some(&id));
+    assert_eq!(
+        report_of(&pane),
+        Some(false),
+        "reopened: the report refuses"
+    );
+    sender.send(Read::Group(group)).unwrap();
+    sender
+        .send(Read::Done {
+            report: Some((audit.clone(), report)),
+        })
+        .unwrap();
+    assert!(pane.poll());
+    assert_eq!(pane.selected.as_deref(), Some(id.as_str()));
+    assert_eq!(
+        report_of(&pane),
+        Some(false),
+        "the refusal read under this opening stands over the earlier opening's report"
+    );
 }

@@ -1408,6 +1408,9 @@ pub(crate) struct TasksPane {
     /// Live reads started, for tests.
     #[cfg(test)]
     reads: usize,
+    /// Reads started on a thread, for tests: a load records one and starts none.
+    #[cfg(test)]
+    started: usize,
     rows: Vec<Row>,
     history: BTreeMap<usize, String>,
 }
@@ -1541,6 +1544,10 @@ impl TasksPane {
     /// interrupts the read: it holds no key, and `q` quits without waiting for it.
     fn start(&mut self, explicit: bool) {
         self.pending = false;
+        #[cfg(test)]
+        {
+            self.started += 1;
+        }
         let (discover, targets) = (self.discover.clone(), self.loaded.clone());
         let (opened, cache) = (self.opened_task(), self.cache.clone());
         let (sender, receiver) = mpsc::channel();
@@ -1596,10 +1603,10 @@ impl TasksPane {
         }
     }
 
-    /// Whether a read runs on its thread now; one recorded and not started yet does not.
+    /// How many reads were started on a thread: a load records one and starts none.
     #[cfg(test)]
-    pub(crate) fn reading(&self) -> bool {
-        self.job.is_some()
+    pub(crate) fn started(&self) -> usize {
+        self.started
     }
 
     /// A read in flight whose messages a test sends by hand, for the Task opened now.
@@ -1947,6 +1954,9 @@ impl Pane for TasksPane {
         self.discover = Discovery::of(scope);
         self.loaded = targets.clone();
         self.targets = targets;
+        // The Stores retained from the last read follow the targets as they stand now, before
+        // the read answers for any of them.
+        self.order();
         self.error = error;
         self.title = format!("TASKS  {}: {}", scope.word(), scope.name());
         self.read_now();

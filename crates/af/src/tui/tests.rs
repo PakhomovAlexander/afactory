@@ -2771,21 +2771,106 @@ fn the_first_frame_is_painted_before_any_read_of_a_store_starts() {
     let (repo, _state) = hub_with_tasks(&root);
     let providers = ProvidersPane::with_inventory(inventory(), UsageProbe::Probe);
     let mut app = App::new(hub_scope(&root, &repo), None, Panes::new(providers));
-    assert!(
-        !app.panes.tasks.reading() && !app.panes.campaigns.reading(),
-        "the load started no read"
-    );
+    let started = |app: &App| (app.panes.tasks.started(), app.panes.campaigns.started());
+    assert_eq!(started(&app), (0, 0), "the load started no read");
     let _ = app.frame(100, 30);
-    assert!(
-        !app.panes.tasks.reading() && !app.panes.campaigns.reading(),
-        "painting starts none"
-    );
+    assert_eq!(started(&app), (0, 0), "painting starts none");
     app.poll();
-    assert!(
-        app.panes.tasks.reading() && app.panes.campaigns.reading(),
+    assert_eq!(
+        started(&app),
+        (1, 1),
         "the first poll after the frame starts them"
     );
     app.settle();
+}
+
+/// `R` after the registry's Task Stores changed order: the Stores retained from the last read
+/// stand in the targets' new order at once, before the read answers for any of them.
+#[test]
+fn a_reread_lists_the_retained_stores_in_the_targets_new_order_before_it_answers() {
+    let (_temp, root) = temp_root();
+    let (repo, state) = hub_with_tasks(&root);
+    let (one, two) = (root.join("elsewhere/one"), root.join("elsewhere/two"));
+    copy_store(&state, &one);
+    copy_store(&state, &two);
+    register(&root, &[(&one, "task"), (&two, "task")]);
+    let mut app = app_at(&root, repo);
+    let mut host = Recorder::default();
+    press(&mut app, &mut host, b"]]]]]]]]\r");
+    assert_eq!(app.breadcrumb(), "tasks/");
+    let groups = |app: &App| -> Vec<String> {
+        app.panes
+            .tasks
+            .items()
+            .into_iter()
+            .filter(|item| item.children.is_some() && item.id.contains("elsewhere/"))
+            .map(|item| item.id)
+            .collect()
+    };
+    let before = groups(&app);
+    assert!(
+        before.len() == 2 && before[0].contains("one") && before[1].contains("two"),
+        "{before:?}"
+    );
+    register(&root, &[(&two, "task"), (&one, "task")]);
+    press_unsettled(&mut app, &mut host, b"R");
+    assert!(app.panes.tasks.busy().is_some(), "the read is in flight");
+    let after = groups(&app);
+    assert!(
+        after.len() == 2 && after[0].contains("two") && after[1].contains("one"),
+        "before any Store answered: {after:?}"
+    );
+    app.settle();
+    assert_eq!(groups(&app), after);
+}
+
+/// `R` after the registry's Campaign Stores changed order: the groups retained from the last
+/// read stand in the sources' new order at once, before the read answers for any of them.
+#[test]
+fn a_reread_lists_the_retained_groups_in_the_sources_new_order_before_it_answers() {
+    let (_temp, root) = temp_root();
+    let audit = campaign_stores(&root);
+    let more = root.join("elsewhere/more");
+    crate::option_tests::write_campaign_rounds(&more, "more", &[(1, 1)]);
+    register(&root, &[(&audit, "review"), (&more, "review")]);
+    let mut app = hub_app(&root);
+    let mut host = Recorder::default();
+    press(&mut app, &mut host, b"]]]]]]]]]]\r");
+    assert_eq!(app.breadcrumb(), "campaigns/");
+    let ids = |app: &App| -> Vec<String> {
+        app.panes
+            .campaigns
+            .items()
+            .into_iter()
+            .map(|item| item.id)
+            .collect()
+    };
+    let position = |ids: &[String], dir: &Path| {
+        let id = dir.display().to_string();
+        ids.iter().position(|listed| *listed == id).expect("listed")
+    };
+    let before = ids(&app);
+    assert!(
+        position(&before, &audit) < position(&before, &more),
+        "{before:?}"
+    );
+    register(&root, &[(&more, "review"), (&audit, "review")]);
+    press_unsettled(&mut app, &mut host, b"R");
+    assert!(
+        app.panes.campaigns.busy().is_some(),
+        "the read is in flight"
+    );
+    let after = ids(&app);
+    assert!(
+        position(&after, &more) < position(&after, &audit),
+        "before any source answered: {after:?}"
+    );
+    app.settle();
+    let settled = ids(&app);
+    assert!(
+        position(&settled, &more) < position(&settled, &audit),
+        "{settled:?}"
+    );
 }
 
 pub(crate) fn copy_store(from: &Path, to: &Path) {

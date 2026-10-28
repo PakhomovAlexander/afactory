@@ -27,7 +27,9 @@ The Providers pane already did it right, discovering on a thread behind a spinne
 The load the splash waits for resolves the scope and loads the panes; it reads no Store. A pane
 that lists Stores records their read in `load`, shows a spinner on its folder from then on
 (`Pane::busy`), and starts the read on a thread of its own at the first `poll` after the load,
-where it also collects the result. The event loop paints before it polls, so the browser's
+where it also collects the result (the Workers pane, once opened and its Stores wanted, starts
+its read in `load` itself, after the first frame by then). The event loop paints before it
+polls, so the browser's
 first frame is painted before any Store is read, on any thread, and never waits on one: the
 order is the loop's, not a race. The user scope's targets, every repository's Store under
 the state root, are a directory walk with a `metadata` call behind every symlink: the Tasks
@@ -85,7 +87,9 @@ Stores discovered before go the same way and the folder shows why. A Task opened
 explicit read is in flight has its detail read again when its Store answers, since a read
 started before carries none for it, or one from an earlier opening of the same Task (every
 opening counts, `R`'s reopening included): neither the detail a Task was opened with nor one
-read under an earlier opening stands over the newest inspection.
+read under an earlier opening stands over the newest inspection; a Campaign's report is taken
+the same way, for the opening the read was started under. A reread lists the retained Stores
+and groups in the order of the targets and sources as they stand, from the load on.
 
 ## Consequences
 

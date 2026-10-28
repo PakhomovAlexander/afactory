@@ -1932,11 +1932,11 @@ fn a_load_starts_no_read_the_first_poll_after_it_does() {
     let scope = crate::tui::tests::hub_scope(&root, &repo);
     let mut pane = TasksPane::default();
     pane.load(&scope).unwrap();
-    assert!(!pane.reading(), "the load started no read");
+    assert_eq!(pane.started(), 0, "the load started no read");
     assert!(pane.busy().is_some(), "the folder shows the read to come");
     assert!(pane.stores.is_empty());
     pane.poll();
-    assert!(pane.reading(), "the first poll starts the read");
+    assert_eq!(pane.started(), 1, "the first poll starts the read");
     pane.settle();
     assert!(pane.task("pagination-cli").is_some());
 }

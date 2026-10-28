@@ -452,6 +452,9 @@ struct Job {
     /// The Campaign the read was started for: its report is dropped when another is opened
     /// meanwhile; the groups are listed either way.
     for_campaign: Option<String>,
+    /// The opening the read was started under: a report read under an earlier opening of
+    /// the Campaign is dropped, and the one that opening read stands.
+    opening: u64,
     /// A load or `R` started it: its groups are wanted whether or not the pane shows, so
     /// closing the pane or opening a Campaign keeps it. A live reread is dropped by both.
     explicit: bool,
@@ -480,12 +483,18 @@ pub(crate) struct CampaignsPane {
     job: Option<Job>,
     /// An explicit read `read_now` recorded, which the next `poll` starts.
     pending: bool,
+    /// How many times a Campaign was opened: a read's report is taken only from a read
+    /// started under the opening that shows now.
+    opening: u64,
     next: Option<Instant>,
     /// The spinner frame the bar shows while a read runs.
     spinner: usize,
     /// Live reads started, for tests.
     #[cfg(test)]
     reads: usize,
+    /// Reads started on a thread, for tests: a load records one and starts none.
+    #[cfg(test)]
+    started: usize,
     rows: Vec<Row>,
     /// The `:` line Enter puts up on a row of the opened Campaign.
     lines: BTreeMap<usize, String>,
@@ -539,18 +548,23 @@ impl CampaignsPane {
         let (sources, opened) = (self.sources.clone(), self.opened_campaign());
         let (sender, receiver) = mpsc::channel();
         std::thread::spawn(move || read(&sources, &places, opened, &sender));
+        #[cfg(test)]
+        {
+            self.started += 1;
+        }
         self.answered.clear();
         self.job = Some(Job {
             receiver,
             for_campaign: self.selected.clone(),
+            opening: self.opening,
             explicit,
         });
     }
 
-    /// Whether a read runs on its thread now; one recorded and not started yet does not.
+    /// How many reads were started on a thread: a load records one and starts none.
     #[cfg(test)]
-    pub(crate) fn reading(&self) -> bool {
-        self.job.is_some()
+    pub(crate) fn started(&self) -> usize {
+        self.started
     }
 
     /// A read in flight whose messages a test sends by hand, for the Campaign opened now.
@@ -562,6 +576,7 @@ impl CampaignsPane {
         self.job = Some(Job {
             receiver,
             for_campaign: self.selected.clone(),
+            opening: self.opening,
             explicit: true,
         });
         sender
@@ -590,7 +605,7 @@ impl CampaignsPane {
         let current = self
             .job
             .as_ref()
-            .is_some_and(|job| job.for_campaign == self.selected);
+            .is_some_and(|job| job.for_campaign == self.selected && job.opening == self.opening);
         let read = match read {
             Read::Done { report: Some(_) } if !current => Read::Done { report: None },
             other => other,
@@ -1016,6 +1031,9 @@ impl Pane for CampaignsPane {
         }
         self.place = Some(place);
         self.sources = sources;
+        // The groups retained from the last read follow the sources as they stand now,
+        // before the read answers for any of them.
+        self.order();
         self.warning = warning;
         self.places = Some(Places::of(scope));
         self.title = format!("CAMPAIGNS  {}: {}", scope.word(), scope.name());
@@ -1079,6 +1097,9 @@ impl Pane for CampaignsPane {
             // a load's read lists every source and goes on.
             self.job = None;
         }
+        // Every opening counts: a read's report from an earlier one never stands over this
+        // one's.
+        self.opening = self.opening.wrapping_add(1);
         self.opened = true;
         self.detail = None;
         self.selected = item
