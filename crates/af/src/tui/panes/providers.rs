@@ -515,30 +515,40 @@ fn inventory_rows(
         ids.insert(provider.id.clone());
     }
     rows.push(Row::painted(providers::status_table_header(), Paint::Title));
+    // Every bar on the page starts in one column: the window names are padded to the longest
+    // of every listed provider, not each provider's own.
+    let shown = |provider: &&ProviderStatus| selected.is_none_or(|id| id == provider.id);
+    let width = inventory
+        .providers
+        .iter()
+        .filter(shown)
+        .flat_map(|provider| &provider.limits)
+        .map(|limit| limit.name.len())
+        .max()
+        .unwrap_or(0);
     let mut any_catalog = false;
     let mut listed = 0;
-    for provider in &inventory.providers {
-        if selected.is_none_or(|id| id == provider.id) {
-            if listed > 0 {
+    for provider in inventory.providers.iter().filter(shown) {
+        if listed > 0 {
+            rows.push(Row::blank());
+        }
+        listed += 1;
+        provider_rows(
+            provider,
+            selected.is_some(),
+            reading,
+            width,
+            &ids,
+            models.selectors,
+            rows,
+        );
+        let catalog = models.catalogs.iter().find(|c| c.id == provider.id);
+        if let Some(catalog) = catalog {
+            any_catalog = true;
+            if models.open {
+                // The models stand apart from the login's windows and note.
                 rows.push(Row::blank());
-            }
-            listed += 1;
-            provider_rows(
-                provider,
-                selected.is_some(),
-                reading,
-                &ids,
-                models.selectors,
-                rows,
-            );
-            let catalog = models.catalogs.iter().find(|c| c.id == provider.id);
-            if let Some(catalog) = catalog {
-                any_catalog = true;
-                if models.open {
-                    // The models stand apart from the login's windows and note.
-                    rows.push(Row::blank());
-                    model_rows(catalog, rows);
-                }
+                model_rows(catalog, rows);
             }
         }
     }
@@ -557,6 +567,7 @@ fn provider_rows(
     provider: &ProviderStatus,
     alone: bool,
     reading: bool,
+    width: usize,
     ids: &BTreeSet<String>,
     selectors: &BTreeSet<&'static str>,
     rows: &mut Vec<Row>,
@@ -567,7 +578,7 @@ fn provider_rows(
     if alone {
         rows.push(Row::blank());
     }
-    limit_rows(provider, reading, paint, rows);
+    limit_rows(provider, reading, width, paint, rows);
     if !provider.detail.is_empty() {
         rows.push(Row::painted(format!("note   {}", provider.detail), paint));
     }
@@ -649,10 +660,17 @@ fn status_row(provider: &ProviderStatus, paint: Paint) -> Row {
     }
 }
 
-/// One row per quota window, each a bar; a login whose windows are still being read, or that
-/// reports none, says so in one muted row. A login that is not authenticated has no window, and
-/// one whose probe did not answer carries the cause in its `note`.
-fn limit_rows(provider: &ProviderStatus, reading: bool, paint: Paint, rows: &mut Vec<Row>) {
+/// One row per quota window, each a bar, the names padded to `width`; a login whose windows are
+/// still being read, or that reports none, says so in one muted row. A login that is not
+/// authenticated has no window, and one whose probe did not answer carries the cause in its
+/// `note`.
+fn limit_rows(
+    provider: &ProviderStatus,
+    reading: bool,
+    width: usize,
+    paint: Paint,
+    rows: &mut Vec<Row>,
+) {
     if provider.limits.is_empty() {
         let authenticated = provider.status == "authenticated";
         match provider.usage {
@@ -664,9 +682,8 @@ fn limit_rows(provider: &ProviderStatus, reading: bool, paint: Paint, rows: &mut
         }
         return;
     }
-    let width = provider.limits.iter().map(|l| l.name.len()).max();
     for limit in &provider.limits {
-        rows.push(limit_row(&provider.kind, limit, width.unwrap_or(0), paint));
+        rows.push(limit_row(&provider.kind, limit, width, paint));
     }
 }
 
@@ -826,6 +843,39 @@ pub(crate) mod tests {
         let muted = limit_row("codex", &window("codex 1w", 5, Some(far)), 8, Paint::Muted);
         assert_eq!(muted.spans[0].paint, Paint::Muted);
         assert_eq!(muted.spans[1].paint, Paint::Bar(Pixel::Green));
+    }
+
+    /// Every bar on the page starts in one column, whatever its login's window names.
+    #[test]
+    fn the_bars_of_every_provider_start_in_one_column() {
+        let mut both = inventory(&["claude-main", "codex-main"]);
+        both.providers[0].kind = "claude".into();
+        both.providers[0].usage = UsageState::Available;
+        both.providers[0].limits = vec![
+            window("Claude session 5h", 16, None),
+            window("Claude all models 1w", 33, None),
+        ];
+        both.providers[1].usage = UsageState::Available;
+        both.providers[1].limits = vec![window("codex 1w", 6, Some(u64::MAX / 2))];
+        let mut pane = ProvidersPane::with_inventory(both);
+        let bars: Vec<usize> = pane
+            .rows()
+            .iter()
+            .map(Row::text)
+            .filter(|row| row.starts_with("limit  "))
+            .map(|row| row.find('[').unwrap())
+            .collect();
+        assert_eq!(bars, [29, 29, 29]);
+        // Opened alone, a login's own names set the column.
+        pane.open(Some("codex-main"));
+        let codex: Vec<String> = pane
+            .rows()
+            .iter()
+            .map(Row::text)
+            .filter(|row| row.starts_with("limit  "))
+            .collect();
+        assert_eq!(codex.len(), 1);
+        assert!(codex[0].starts_with("limit  codex 1w  ["), "{codex:#?}");
     }
 
     /// Discovery hands the rows over first; the quota windows follow from a probe the pane

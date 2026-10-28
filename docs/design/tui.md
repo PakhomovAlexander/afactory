@@ -197,7 +197,8 @@ stay off screen until asked for: the pane's last row says `<m> to show models`, 
 every listed Provider's `models` section, one blank row under its rows, one row per exact ID of
 that Provider's own catalog, until `m` hides them again.
 A Claude login's windows are the ones its `/usage` screen shows: the five-hour session, then the
-weekly ones. The bar's used cells are drawn in the brand's colour for how much is used, green
+weekly ones. The window names are padded to the longest on the page, so every bar starts in one
+column. The bar's used cells are drawn in the brand's colour for how much is used, green
 under half, blue from half and pink from four fifths, the rest as a grey track, each cell the
 block glyph of §3 so the bars keep a hairline between them; without colour they are `#` and
 `.`. The quota windows are always on screen: the
