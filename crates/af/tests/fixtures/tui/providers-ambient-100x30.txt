@@ -5,13 +5,13 @@ v hub  (project)            |
       codex-ambient         |limit  5h window  [########............]   41% used  no reset time from
   v workers/                |limit  weekly     [##############......]   68% used  no reset time from
   v pipelines/              |note   weekly limit read from the local /usage screen
-      review                |codex-ambient            codex    not authenticated   -
-      fixture/implementation|note   run `codex login` in this context
-  v tasks/                  |ambient (CODEX_HOME): found through CODEX_HOME, not in the registry
-  v campaigns/              |  register it: af provider add codex-main --kind codex
+      review                |
+      fixture/implementation|codex-ambient            codex    not authenticated   -
+  v tasks/                  |note   run `codex login` in this context
+  v campaigns/              |ambient (CODEX_HOME): found through CODEX_HOME, not in the registry
+                            |  register it: af provider add codex-main --kind codex
                             |  unsetting CODEX_HOME lists ~/.codex instead
                             |set up codex: af provider setup codex-main --kind codex --login
-                            |
                             |
                             |
                             |

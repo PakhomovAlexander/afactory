@@ -189,7 +189,8 @@ User scope shows only the machine-owned layers plus the provider registry path
 ### 5.2 Providers
 
 Mirrors `af provider status --usage`; the left bar lists every entry from `providers::discover`.
-The main pane shows the same columns as the CLI table for the selected provider, then one row per
+The main pane shows the same columns as the CLI table for the selected provider (for every
+provider on the folder, a blank row between two of them), then one row per
 `ProviderLimit` as a bar of twenty cells with `used_percent` and when the window resets (or who
 does not report that), then `detail` as `note`. The model catalogs (`af provider models`, ADR-0148)
 stay off screen until asked for: the pane's last row says `<m> to show models`, and `m` shows

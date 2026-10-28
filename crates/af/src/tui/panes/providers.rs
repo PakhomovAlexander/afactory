@@ -489,9 +489,10 @@ struct Models<'a> {
     selectors: &'a BTreeSet<&'static str>,
 }
 
-/// The `af provider status` table for the selected provider, or for all of them, then each
-/// provider's limit bars and note, the setup line for an ambient candidate, and, once `m` asked
-/// for them, each provider's models; the last row says what `m` does while a catalog was read.
+/// The `af provider status` table for the selected provider, or for all of them with a blank
+/// row between two providers, then each provider's limit bars and note, the setup line for an
+/// ambient candidate, and, once `m` asked for them, each provider's models; the last row says
+/// what `m` does while a catalog was read.
 /// `reading` while a discovery or probe runs: a login whose windows it has not read yet says so.
 fn inventory_rows(
     inventory: &ProviderInventory,
@@ -515,8 +516,13 @@ fn inventory_rows(
     }
     rows.push(Row::painted(providers::status_table_header(), Paint::Title));
     let mut any_catalog = false;
+    let mut listed = 0;
     for provider in &inventory.providers {
         if selected.is_none_or(|id| id == provider.id) {
+            if listed > 0 {
+                rows.push(Row::blank());
+            }
+            listed += 1;
             provider_rows(
                 provider,
                 selected.is_some(),
