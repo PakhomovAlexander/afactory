@@ -99,7 +99,7 @@ impl Cause {
                 "The selected Task Store has no Task with that ID. List its Tasks."
             }
             Self::NoTaskCatalog => {
-                "The selected committed Authority Snapshot has no `.af/task-catalog.toml`; review and commit a local catalog, then select that commit. af catalog init --repo .. --profile software --destination af-demo creates a starter."
+                "The selected committed Authority Snapshot has no `.af/task-catalog.toml`. Preview with af onboard --tasks and add it with af onboard --tasks --apply; review and commit the result, then select that commit. af catalog init --repo .. --profile software --destination af-demo creates a deterministic starter beside the checkout."
             }
             Self::NoAuthority => {
                 "The selected commit has no .af/ authority. Run af onboard --apply, review and commit its output, then select that commit."

@@ -21,9 +21,10 @@ Planning probes only accounts used by the selected Pipeline. It obtains account 
 domain-separated principal digest. Raw account metadata and email addresses are not stored in
 Task artifacts. Provider family, principal, explicit model/effort and invocation policy become
 part of the exact binding. Bare model-family aliases and `-latest` selectors are refused. A
-model or effort outside grammar G, the one spelling af prints verbatim (an ASCII letter or digit,
-then at most 127 ASCII letters, digits, `-`, `.`, `_` or `:`; no `/`, `@` or whitespace), is
-refused before any process starts, the Provider's own probes included, by `af task plan`, `af
+model ID or effort level must begin with an ASCII letter or digit and have at most 128 characters.
+Later characters may be ASCII letters, digits, `-`, `.`, `_` or `:`; `/`, `@` and whitespace are
+refused. This allowed spelling is called grammar G. Af prints a valid value verbatim. A value
+outside it is refused before any process starts, the Provider's own probes included, by `af task plan`, `af
 review run` and the Claude Task adapter alike: the refusal names the rule and the value's byte
 length, never the value, so a path or an account identifier is never echoed. G is checked first,
 so such a value gets G's refusal even when it is also not a versioned model ID. Both rules run
@@ -199,7 +200,7 @@ set, because it also disables the model substitution compaction may need. Three 
   unused; neither is a switch. This refusal outranks every other accounting reason: the
   diagnostic starts with it, naming every foreign activity in map order, and every other reason
   found (malformed usage, more than 32 entries, an unreconciled summary) follows it after a
-  semicolon; the charge, which reads at most 32 entries, is unchanged. A model ID outside grammar G is counted all the same and named
+  semicolon; the charge, which reads at most 32 entries, is unchanged. A model ID outside the allowed spelling (grammar G) is counted all the same and named
   `[not printable]` with its byte length.
 - **`model_unavailable`.** Claude Code answered that there is an issue with the selected model:
   it does not know the model ID or the account cannot use it. The diagnostic quotes the spelling

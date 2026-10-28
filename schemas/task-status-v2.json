@@ -2,7 +2,7 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "urn:af:schema:task-status:2",
   "title": "Task status af/task-status@2",
-  "$comment": "What `af task status ID --json` and `af task wait ID --json` print (ADR-0211): the Task's state, the node whose Attempt runs now, the time since the Task's clock started (to now while it runs, to its last event once it stopped), the tokens charged so far, the run process whose writer took the Task's last lease (the newest one recorded when no record names that writer), and the cancel request that stopped the Task's last lease. Read-only.",
+  "$comment": "What `af task status ID --json` and `af task wait ID --json` print (ADR-0211, ADR-0245): the Task's state, the node whose Attempt runs now, the time since the Task's clock started (to now while it runs, to its last event once it stopped), exact decimal tokens reserved, charged and remaining, Attempts with unknown usage, the last recorded comparable Gate duration when available, the run process whose writer took the Task's last lease (the newest one recorded when no record names that writer), and the cancel request that stopped the Task's last lease. Read-only.",
   "type": "object",
   "additionalProperties": false,
   "required": [
@@ -11,7 +11,11 @@
     "state",
     "node",
     "elapsed_ms",
-    "chargeable_tokens",
+    "charged_tokens",
+    "reserved_tokens",
+    "remaining_tokens",
+    "unknown_usage_attempts",
+    "last_gate",
     "run",
     "cancel"
   ],
@@ -50,8 +54,25 @@
         }
       ]
     },
-    "chargeable_tokens": {
+    "charged_tokens": {
       "$ref": "urn:af:schema:task-token-usage:3#/$defs/decimalU128"
+    },
+    "reserved_tokens": {
+      "$ref": "urn:af:schema:task-token-usage:3#/$defs/decimalU128"
+    },
+    "remaining_tokens": {
+      "$ref": "urn:af:schema:task-token-usage:3#/$defs/decimalU128"
+    },
+    "unknown_usage_attempts": {
+      "type": "integer",
+      "minimum": 0,
+      "maximum": 9007199254740991
+    },
+    "last_gate": {
+      "anyOf": [
+        {"type": "string", "minLength": 1, "maxLength": 65536, "pattern": "\\S"},
+        {"type": "null"}
+      ]
     },
     "run": {
       "anyOf": [

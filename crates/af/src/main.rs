@@ -333,12 +333,14 @@ struct LedgerOptions {
     state: Option<PathBuf>,
     campaign: String,
     long: bool,
+    json: bool,
 }
 
 struct ShowOptions {
     state: Option<PathBuf>,
     campaign: String,
     key: String,
+    json: bool,
 }
 
 struct ExportOptions {
@@ -882,16 +884,19 @@ fn review_command(namespace: cli::ReviewNamespace) -> Result<i32, String> {
                 RunVerdict::Incomplete { .. } => 4,
             })
         }
-        R::Plan(args) => {
+        R::Plan { args, long } => {
             // A plan reads each bound Provider's catalog token-free and names every Model
             // binding's verdict (ADR-0148).
             model_check::enable_plan_time();
             if args.task_file.is_some() {
+                if long {
+                    return Err("--long is for the review plan; use `af task explain TASK_ID --tree` after `af review plan --file FILE`".into());
+                }
                 return task_execution::start_review(task_review_options(args, true));
             }
             let options = run_options(args, "review plan");
             review_selector_refusal(&options, "plan")?;
-            print_plan(&options).map(|()| 0)
+            print_plan(&options, long).map(|()| 0)
         }
         R::Render(args) => {
             if args.task_file.is_some() {
@@ -901,17 +906,27 @@ fn review_command(namespace: cli::ReviewNamespace) -> Result<i32, String> {
             }
             print_render(&run_options(args, "review render")).map(|()| 0)
         }
-        R::Ledger { selector, long } => print_ledger(&LedgerOptions {
+        R::Ledger {
+            selector,
+            long,
+            json,
+        } => print_ledger(&LedgerOptions {
             state: selector.state.clone(),
             campaign: selector.campaign.clone(),
             long,
+            json,
         })
         .map_err(|error| explain_campaign(&selector, error))
         .map(|()| 0),
-        R::Show { selector, key } => show(&ShowOptions {
+        R::Show {
+            selector,
+            key,
+            json,
+        } => show(&ShowOptions {
             state: selector.state.clone(),
             campaign: selector.campaign.clone(),
             key,
+            json,
         })
         .map_err(|error| explain_campaign(&selector, error))
         .map(|()| 0),
@@ -928,13 +943,17 @@ fn review_command(namespace: cli::ReviewNamespace) -> Result<i32, String> {
             allow_stale,
         })
         .map(|()| 0),
-        R::Report { selector, format } => print_report(&ReportOptions {
+        R::Report {
+            selector,
+            format,
+            json,
+        } => print_report(&ReportOptions {
             state: selector.state.clone(),
             campaign: selector.campaign.clone(),
-            format: match format {
-                cli::ReportFormatArg::Md => ReportFormat::Markdown,
-                cli::ReportFormatArg::Text => ReportFormat::Text,
-                cli::ReportFormatArg::Json => ReportFormat::Json,
+            format: match (json, format) {
+                (true, _) | (_, Some(cli::ReportFormatArg::Json)) => ReportFormat::Json,
+                (_, Some(cli::ReportFormatArg::Text)) => ReportFormat::Text,
+                _ => ReportFormat::Markdown,
             },
         })
         .map_err(|error| explain_campaign(&selector, error))
@@ -1526,7 +1545,7 @@ fn main() {
                     command: Some(cli::Command::Review(namespace)),
                     ..
                 }) = cli::Af::try_parse_from(["af", "review", "plan"])
-                && let Some(cli::ReviewCommand::Plan(args)) = namespace.command
+                && let Some(cli::ReviewCommand::Plan { args, .. }) = namespace.command
                 && let Err(suggestion) =
                     review_selector_refusal(&run_options(args, "review plan"), "plan")
             {
@@ -2159,8 +2178,10 @@ fn task_command(command: cli::TaskCommand) -> Result<i32, String> {
         cli::TaskCommand::Wait {
             task_id,
             timeout,
+            bell,
+            notify,
             inspect,
-        } => task_execution::runs::wait(&task_id, timeout, &inspect),
+        } => task_execution::runs::wait(&task_id, timeout, bell, notify, &inspect),
         cli::TaskCommand::Status { task_id, inspect } => {
             task_execution::runs::status(&task_id, &inspect)
         }
@@ -2690,7 +2711,16 @@ fn print_render(options: &Options) -> Result<(), String> {
     Ok(())
 }
 
-fn print_plan(options: &Options) -> Result<(), String> {
+/// The first screen identifies Snapshots by a readable prefix; --long and --json carry the
+/// complete digest for exact inspection.
+fn plan_snapshot_id(value: &str, long: bool) -> String {
+    if !long && let Some(prefix) = value.strip_prefix("sha256:").and_then(|hex| hex.get(..12)) {
+        return format!("sha256:{prefix}…");
+    }
+    terminal_text(value)
+}
+
+fn print_plan(options: &Options, long: bool) -> Result<(), String> {
     let scratch = tempfile::tempdir().map_err(|error| error.to_string())?;
     let cas = Cas::open(scratch.path().join("cas")).map_err(|error| error.to_string())?;
     let repository = std::fs::canonicalize(&options.repo).map_err(|error| {
@@ -2746,20 +2776,26 @@ fn print_plan(options: &Options) -> Result<(), String> {
     plan_line!(
         "policy   {} => {}",
         terminal_text(selectors["policy_rev"].as_str().unwrap_or("?")),
-        terminal_text(resolved["policy_snapshot_id"].as_str().unwrap_or("?"))
+        plan_snapshot_id(resolved["policy_snapshot_id"].as_str().unwrap_or("?"), long)
     );
     if let Some(base) = selectors["base"].as_str() {
         plan_line!(
             "base     {} => {}",
             terminal_text(base),
-            terminal_text(resolved["base_snapshot_id"].as_str().unwrap_or("?"))
+            plan_snapshot_id(resolved["base_snapshot_id"].as_str().unwrap_or("?"), long)
         );
     }
     plan_line!(
         "candidate {} => {}",
         terminal_text(selectors["candidate"].as_str().unwrap_or("?")),
-        terminal_text(resolved["candidate_snapshot_id"].as_str().unwrap_or("?"))
+        plan_snapshot_id(
+            resolved["candidate_snapshot_id"].as_str().unwrap_or("?"),
+            long
+        )
     );
+    if !long {
+        plan_line!("ids      abbreviated; --long or --json shows full digests");
+    }
     for provider in plan["providers"].as_array().into_iter().flatten() {
         if provider["required"] == true {
             plan_line!(
@@ -2829,30 +2865,32 @@ fn print_plan(options: &Options) -> Result<(), String> {
                 .unwrap_or_default()
         );
     }
-    plan_line!("topology");
-    for node in plan["pipeline"]["topology"]["nodes"]
-        .as_array()
-        .into_iter()
-        .flatten()
-    {
-        plan_line!(
-            "  node {} [{}]",
-            terminal_text(node["id"].as_str().unwrap_or("?")),
-            terminal_text(node["kind"].as_str().unwrap_or("?"))
-        );
-    }
-    for edge in plan["pipeline"]["topology"]["edges"]
-        .as_array()
-        .into_iter()
-        .flatten()
-    {
-        plan_line!(
-            "  {}.{} -> {}.{}",
-            terminal_text(edge["from"]["node"].as_str().unwrap_or("?")),
-            terminal_text(edge["from"]["port"].as_str().unwrap_or("?")),
-            terminal_text(edge["to"]["node"].as_str().unwrap_or("?")),
-            terminal_text(edge["to"]["port"].as_str().unwrap_or("?"))
-        );
+    if long {
+        plan_line!("topology");
+        for node in plan["pipeline"]["topology"]["nodes"]
+            .as_array()
+            .into_iter()
+            .flatten()
+        {
+            plan_line!(
+                "  node {} [{}]",
+                terminal_text(node["id"].as_str().unwrap_or("?")),
+                terminal_text(node["kind"].as_str().unwrap_or("?"))
+            );
+        }
+        for edge in plan["pipeline"]["topology"]["edges"]
+            .as_array()
+            .into_iter()
+            .flatten()
+        {
+            plan_line!(
+                "  {}.{} -> {}.{}",
+                terminal_text(edge["from"]["node"].as_str().unwrap_or("?")),
+                terminal_text(edge["from"]["port"].as_str().unwrap_or("?")),
+                terminal_text(edge["to"]["node"].as_str().unwrap_or("?")),
+                terminal_text(edge["to"]["port"].as_str().unwrap_or("?"))
+            );
+        }
     }
     for gate in plan["pipeline"]["gates"].as_array().into_iter().flatten() {
         plan_line!(
@@ -2928,11 +2966,12 @@ fn print_plan(options: &Options) -> Result<(), String> {
         let node = provider["node"].as_str().unwrap_or("?");
         let kind = provider["runner"].as_str().unwrap_or("?");
         match provider["binding"].as_str() {
-            Some(binding) => plan_line!(
+            Some(binding) if long => plan_line!(
                 "provider {} -> {}",
                 terminal_text(node),
                 terminal_text(binding)
             ),
+            Some(_) => {}
             None if provider["required"] == true => {
                 let fix = match missing
                     .iter()
@@ -3184,6 +3223,32 @@ fn print_ledger(options: &LedgerOptions) -> Result<(), String> {
     }
     print_scope_authority_warnings(&ledger);
     let findings = ledger.finding_views();
+    if options.json {
+        let demands = ledger.demand_views();
+        let open_required_demands = demands
+            .iter()
+            .filter(|demand| {
+                demand.requirement == review_core::DemandRequirement::Required
+                    && matches!(
+                        demand.status,
+                        review_core::DemandStatus::Open | review_core::DemandStatus::Stale
+                    )
+            })
+            .count();
+        let document = serde_json::json!({
+            "schema": "af/review-ledger@1",
+            "campaign": options.campaign,
+            "round": ledger.round,
+            "findings": findings,
+            "demands": demands,
+            "open_required_demands": open_required_demands,
+        });
+        println!(
+            "{}",
+            serde_json::to_string(&document).map_err(|error| error.to_string())?
+        );
+        return Ok(());
+    }
     for finding in &findings {
         println!(
             "{}\t{}\t{}\t{}\t{}\t{}:{}\t{}",
@@ -3430,6 +3495,42 @@ fn show(options: &ShowOptions) -> Result<(), String> {
     let head = current_campaign_head(&store, &cas, &run_id)?;
     let proposals = campaign_proposals(&store, &cas, &run_id)?;
     let (finding_ids, report_ids) = finding_claim_ids(&finding, &cas)?;
+
+    if options.json {
+        let reports = finding
+            .reports
+            .iter()
+            .map(|attached| {
+                cas.get_json(&attached.report_id)
+                    .map_err(|error| format!("reading report {}: {error}", attached.report_id))
+            })
+            .collect::<Result<Vec<_>, _>>()?;
+        let linked = proposals
+            .iter()
+            .filter(|proposal| {
+                proposal_links_finding(&proposal.proposal, &finding_ids, &report_ids)
+            })
+            .map(|proposal| {
+                serde_json::json!({
+                    "id": proposal.id,
+                    "proposal": proposal.proposal,
+                    "stale": proposal.proposal.base_snapshot_id != head,
+                })
+            })
+            .collect::<Vec<_>>();
+        let document = serde_json::json!({
+            "schema": "af/review-show@1",
+            "campaign": options.campaign,
+            "finding": finding,
+            "reports": reports,
+            "proposals": linked,
+        });
+        println!(
+            "{}",
+            serde_json::to_string(&document).map_err(|error| error.to_string())?
+        );
+        return Ok(());
+    }
 
     println!(
         "{} [{}]",

@@ -455,6 +455,11 @@ future readers need.
   page](0241-install-an-agent-entry-point-from-the-help-page.md)
 - [0242 — Classify first-run refusals and suggest only explicit trusted review
   commands](0242-classify-first-run-refusals.md)
+- [0243 — Add pinned Task authority through additive
+  onboarding](0243-add-task-authority-with-additive-onboarding.md)
+- [0244 — Version review inspection views](0244-version-review-inspection-views.md)
+- [0245 — Show recorded Gate history and version Task
+  status](0245-show-recorded-gate-history-and-version-task-status.md)
 - [0249 — Distinguish host-denied Provider probes from incompatible
   CLIs](0249-distinguish-host-denied-provider-probes.md)
 - [0251 — Run the Task gate on the fast validation

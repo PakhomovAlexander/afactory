@@ -798,7 +798,21 @@ fn status_revalidates_auth_directory_safety_after_registration() {
     let mut permissions = std::fs::metadata(&auth).unwrap().permissions();
     permissions.set_mode(0o777);
     std::fs::set_permissions(&auth, permissions).unwrap();
-    let status = af(root.path(), &["provider", "status"]);
+    // An ambient Provider CLI can answer a different status on a developer machine than
+    // CI's empty PATH. This assertion is about the registered auth directory, not that CLI.
+    let path = std::env::join_paths(
+        std::env::split_paths(&std::env::var_os("PATH").unwrap_or_default())
+            .filter(|dir| !["codex", "claude"].iter().any(|cli| dir.join(cli).exists())),
+    )
+    .unwrap();
+    let status = crate::common::af()
+        .args(["provider", "status"])
+        .env("HOME", root.path())
+        .env("XDG_CONFIG_HOME", root.path().join("config"))
+        .env("AF_SELF_OFFLINE", "1")
+        .env("PATH", path)
+        .output()
+        .unwrap();
     assert!(status.status.success(), "{}", stderr(&status));
     let stdout = String::from_utf8_lossy(&status.stdout);
     assert!(stdout.contains("codex-main"), "{stdout}");

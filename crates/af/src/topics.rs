@@ -500,6 +500,13 @@ change bumps the version rather than reinterpreting an old one. Nothing af print
 affected by a TTY, colours, or the update check: its notice goes to stderr, only on a TTY, and
 never under --json.
 
+Review reading commands:
+
+  af review ledger --json              af/review-ledger@1 (schemas/review-ledger-v1.json)
+  af review show KEY --json            af/review-show@1 (schemas/review-show-v1.json)
+  af review report --json              af/review-report@4 (schemas/review-report-v4.json)
+                                       --json is --format json; combining them is a usage error
+
 The Task documents, each named by its `schema`:
 
   af task show --json                  af/task-inspection@14; a collected Task:
@@ -562,7 +569,9 @@ with what to do: make the check faster, or raise its wall in .af/code-policy.tom
 only a check that did not start says `never started`.
 
 `af task status ID` prints the state in one line without waiting, with the node that runs and the
-tokens so far; `af task wait ID` blocks until the Task settles and exits with its outcome's code.
+reserved, charged and remaining tokens (plus unknown usage). It shows the last comparable Gate
+duration when recorded. `af task wait ID` blocks until the Task settles and exits with its
+outcome's code.
 A run `af task cancel ID` stopped is `abandoned/cancelled/host_cancelled`, and `af task show`
 names who cancelled it. `af help agents` walks the whole loop.";
 

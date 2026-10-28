@@ -378,7 +378,8 @@ impl TaskCancelRequestV1 {
 
 /// `af task status ID --json`: where a Task is, without waiting. `node` is the node whose
 /// Attempt runs now, `elapsed_ms` the time since the Task's clock started (to now while it
-/// runs, to its last event once it stopped), `run` the run process whose writer took the Task's
+/// runs, to its last event once it stopped), exact token accounting and last comparable Gate
+/// duration when recorded, `run` the run process whose writer took the Task's
 /// last lease (the newest one recorded when no record names that writer), `cancel` the request
 /// that stopped it.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -391,7 +392,16 @@ pub struct TaskStatusV2 {
     pub node: Option<String>,
     #[serde(deserialize_with = "Option::deserialize")]
     pub elapsed_ms: Option<u64>,
-    pub chargeable_tokens: DecimalU128,
+    pub charged_tokens: DecimalU128,
+    /// Tokens held by currently admitted Attempts.
+    pub reserved_tokens: DecimalU128,
+    /// Tokens still available for admission after charges and reservations.
+    pub remaining_tokens: DecimalU128,
+    /// Attempts whose usage was not reported, so the charged total is not their spend.
+    pub unknown_usage_attempts: u64,
+    /// Last measured duration for a check in this plan, with the same repository and code policy.
+    #[serde(deserialize_with = "Option::deserialize")]
+    pub last_gate: Option<String>,
     #[serde(deserialize_with = "Option::deserialize")]
     pub run: Option<TaskRunProcessV1>,
     #[serde(deserialize_with = "Option::deserialize")]
@@ -403,6 +413,11 @@ impl TaskStatusV2 {
         schema_is(&self.schema, TASK_STATUS_V2)?;
         require(is_name(&self.task_id), "A status names an exact Task")?;
         self.state.validate()?;
+        require(
+            self.unknown_usage_attempts <= crate::json::SAFE_INTEGER_MAX as u64
+                && self.last_gate.as_deref().is_none_or(bounded),
+            "Task status requires bounded unknown usage and Gate history",
+        )?;
         if let Some(run) = &self.run {
             run.validate()?;
         }

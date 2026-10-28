@@ -52,6 +52,63 @@ pub(crate) fn read(state: &Path, task_ids: &[String]) -> Result<TaskReportV3, St
     TaskReportV3::new(pipelines, tasks)
 }
 
+/// Unresolved findings in each Task's latest complete Finding Set, for the PR receipt.
+/// An incomplete or collected review has unknown counts rather than zero.
+pub(crate) fn unresolved(state: &Path, report: &TaskReportV3) -> Result<[Option<u64>; 3], String> {
+    let cas = Cas::open_existing(state.join("cas")).map_err(|e| e.to_string())?;
+    let store =
+        EventStore::open_read_only(state.join("events.sqlite")).map_err(|e| e.to_string())?;
+    let mut totals = [Some(0u64); 3];
+    for task in &report.tasks {
+        if task.collected {
+            totals = [None; 3];
+            continue;
+        }
+        let run_id =
+            review_store::store::task::task_run_id(&task.task_id).map_err(|e| e.to_string())?;
+        let rounds = recorded_rounds(&cas, &store, &run_id)?;
+        let current = match rounds.last() {
+            Some(round) => match &round.finding_set_id {
+                Some(id) => {
+                    let set: FindingSetV1 =
+                        artifact(&cas, id, review_core::contract::FINDING_SET_V1)?;
+                    set.validate()?;
+                    let mut counts = [0u64; 3];
+                    for finding in set.findings {
+                        if !matches!(
+                            finding.status.as_str(),
+                            "open" | "pending-verification" | "contested"
+                        ) || finding.scope == "out"
+                        {
+                            continue;
+                        }
+                        let index = match finding.effective_severity.unwrap_or(finding.severity) {
+                            Severity::Blocker => 0,
+                            Severity::Major => 1,
+                            Severity::Minor => 2,
+                        };
+                        counts[index] += 1;
+                    }
+                    counts.map(Some)
+                }
+                None => [None; 3],
+            },
+            None if task
+                .findings
+                .as_ref()
+                .is_some_and(|finding| finding.review_ran) =>
+            {
+                [None; 3]
+            }
+            None => [Some(0); 3],
+        };
+        for (total, count) in totals.iter_mut().zip(current) {
+            *total = total.and_then(|value| count.and_then(|count| value.checked_add(count)));
+        }
+    }
+    Ok(totals)
+}
+
 /// The warnings `af task report` prints on stderr before its report: two Tasks whose sealed
 /// candidates add the same `docs/adr/NNNN-*.md` number. Tasks planned in parallel from one base
 /// each take the next free number, and only one of them can keep it once both merge. Each
@@ -1119,6 +1176,15 @@ fn report_model(model: &str) -> String {
 /// recorded value is sanitized display text, so recorded data can neither break the table nor
 /// carry markup.
 pub(crate) fn markdown(report: &TaskReportV3) -> String {
+    markdown_inner(report, None)
+}
+
+/// The pull request form leads with an evidence-only receipt, before the pipeline and rounds.
+pub(crate) fn markdown_pr_body(report: &TaskReportV3, unresolved: [Option<u64>; 3]) -> String {
+    markdown_inner(report, Some(unresolved))
+}
+
+fn markdown_inner(report: &TaskReportV3, receipt: Option<[Option<u64>; 3]>) -> String {
     let mut out = String::new();
     let mut line = |text: &str| {
         out.push_str(text);
@@ -1127,6 +1193,74 @@ pub(crate) fn markdown(report: &TaskReportV3) -> String {
     line(TASK_REPORT_BEGIN);
     line("### af task report");
     line("");
+    if let Some(findings) = receipt {
+        let mut passed = 0u64;
+        let mut failed = 0u64;
+        let mut skipped = 0u64;
+        let mut checks_known = true;
+        for task in &report.tasks {
+            match &task.nodes {
+                Some(nodes) => {
+                    for check in nodes.iter().flat_map(|node| &node.checks) {
+                        match check.status {
+                            TaskReportCheckStatusV1::Passed => passed += 1,
+                            TaskReportCheckStatusV1::Failed => failed += 1,
+                            TaskReportCheckStatusV1::NotRun => skipped += 1,
+                        }
+                    }
+                }
+                None => checks_known = false,
+            }
+        }
+        let count =
+            |value: Option<u64>| value.map_or_else(|| UNKNOWN.to_owned(), |n| n.to_string());
+        line("#### Receipt");
+        line(&format!(
+            "Outcome: {}",
+            report
+                .tasks
+                .iter()
+                .map(|task| task.state.label())
+                .collect::<Vec<_>>()
+                .join(", ")
+        ));
+        line(&format!(
+            "Checks: {} passed, {} failed, {} skipped",
+            if checks_known {
+                passed.to_string()
+            } else {
+                UNKNOWN.into()
+            },
+            if checks_known {
+                failed.to_string()
+            } else {
+                UNKNOWN.into()
+            },
+            if checks_known {
+                skipped.to_string()
+            } else {
+                UNKNOWN.into()
+            }
+        ));
+        line(&format!(
+            "Unresolved findings: {} blocker, {} major, {} minor",
+            count(findings[0]),
+            count(findings[1]),
+            count(findings[2])
+        ));
+        line(&format!(
+            "Tokens: {}",
+            tokens_cell(
+                report.totals.chargeable_tokens.get(),
+                report.totals.unknown_usage
+            )
+        ));
+        line(&format!(
+            "Active time: {}",
+            duration(report.totals.active_ms)
+        ));
+        line("");
+    }
     for pipeline in &report.pipelines {
         line(&pipeline_line(pipeline));
         line("");

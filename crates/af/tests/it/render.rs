@@ -157,6 +157,9 @@ fn a_model_worker_input_is_the_package_contract_and_change_set_with_no_effects()
         "the verified package bytes lead"
     );
     assert!(input.contains("## Diff Subject Change Set"), "{input}");
+    assert!(input.contains("\"git_version\": \"git version"), "{input}");
+    assert!(!input.contains("cpu:"), "{input}");
+    assert!(!input.contains("sizeof-long:"), "{input}");
     assert!(
         input.contains("render me exactly"),
         "the exact patch is in the input"
@@ -624,6 +627,7 @@ fn review_plan_text_output_shows_control_characters_in_node_ids_escaped() {
             "HEAD~1",
             "--candidate",
             "HEAD",
+            "--long",
             "--provider",
             "arch\u{1b}]0;PWNED\u{7}itecture=codex-main",
             "--provider",

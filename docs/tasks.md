@@ -2,7 +2,8 @@
 
 `af task` runs one bounded implementation Task against a local Git repository and, when the
 result is verified, delivers it to a new local branch and worktree for a human to inspect and
-commit. A Task starts from a Task file that names its ID, kind, goal and limits; the Pipeline and
+commit. A Task starts from a Task file that names its ID, kind and goal; limits may come from
+the project defaults. The Pipeline and
 Worker packages that run it are pinned in the repository's committed Task catalog. This page
 covers the `implement` Task and its delivery. Embedded Review, generated plans, repair and the
 other Task kinds are described under [Task execution](task-execution.md).
@@ -43,7 +44,14 @@ automatic Integration are outside this path.
 - every tool named by the code policy's checks, such as the repository's compiler and test
   runner;
 - a reviewed Task catalog committed in the repository: `.af/task-catalog.toml`, the Pipeline and
-  Worker packages it pins, and `.af/code-policy.toml` with the required checks.
+  Worker packages it pins, and `.af/code-policy.toml` with the required checks. Run
+  `af onboard --tasks` to preview the generic model-driven catalog and the exact
+  `[task.defaults]` text. `af onboard --tasks --apply` writes it with review authority
+  in a new repository, or adds absent Task files and appends the table to an existing
+  `.af/`. It refuses an existing target or `[task]` table without writing. Review the
+  diff and commit `.af/` before planning; local, uncommitted files are not authority.
+  With both Provider kinds registered, the generated implementer uses Claude and the
+  reviewers use Codex; with one kind, distinct models under that login serve all Workers.
 
 `af catalog init --profile software --destination task-demo` creates a new starter directory,
 which must not exist yet, holding a working, credential-free catalog and runnable Task files
@@ -54,7 +62,8 @@ Its `--destination`, like that of `af catalog sync`, is a safe path relative to 
 ([shared catalogs](task-execution/shared-catalogs.md)). The catalog pins every package by digest,
 so changing any package byte requires a newly reviewed pin; `af catalog digest PACKAGE_DIR`
 prints that digest ([pin a package](task-execution/shared-catalogs.md#pin-a-package)). Checks
-are project-specific, so the code policy is written per repository.
+are project-specific. The onboarded code policy uses the same discovered Gate as review
+onboarding, or an explicit `--gate NAME=COMMAND`; inspect that check before committing.
 
 Trusting that committed authority and running `af task start --execute`, or confirming the
 previewed plan, authorizes Afactory to deliver each Worker its exact declared inputs for every
@@ -114,13 +123,16 @@ fallback = "refuse"
 [task.defaults.limits]
 tokens = 6000000
 max_attempts = 16
-wall_ms = 10800000
+wall_ms = 28800000
 
 [task.defaults.limits.verification]
 tokens = 2000000
 attempts = 8
-wall_ms = 3600000
+wall_ms = 14400000
 ```
+
+The wall bounds leave room for the compiled reviewers, evaluator and repository checks of
+`kernel/implementation-reviewed`; plan another Pipeline against its own declared allowances.
 
 A goal can stay short and point at what it needs. `context` names files of the Task's source
 tree, each with an optional `#section`; standing rules live in `.af/rules.md`. The Worker's
@@ -234,10 +246,15 @@ af task cancel pagination-cli
 ```
 
 `af task status ID` prints at once the state, the node whose Attempt runs, the time since the
-Task's clock started, the tokens so far and the run that holds the Task's lease, then the next
-command on its own line, broken between its arguments to fit 100 columns. `af task wait ID` blocks
+Task's clock started, the tokens reserved, charged and remaining (with unknown usage marked), the
+last comparable recorded Gate duration when available, and the run that holds the Task's lease.
+It puts the next command on its own line, broken between its arguments to fit 100 columns.
+`af task wait ID` blocks
 until the Task settles and exits with its exit code, or with 124 when `--timeout S` passes first;
-both print `af/task-status@2` under `--json`. `af task cancel ID` stops the `af task run` the Task's
+both print `af/task-status@2` under `--json`. A comparable Gate uses the same check name, captured
+code policy and source repository; no recorded check span means no hint. `af task wait --bell`
+rings terminal stderr on completion. `--notify` tries the OS notifier and warns if unavailable
+while preserving the Task exit code. `af task cancel ID` stops the `af task run` the Task's
 writer lease names: it finds the process by the lease's writer in the run records, refuses one of
 another host with its pid and host, records who asked in `runs/ID-N.cancel.json`, and signals that
 recorded pid only, which stops its Worker processes as Ctrl-C does. The Task is then
@@ -1030,8 +1047,11 @@ an unknown figure is absent there.
 
 `af task report TASK_ID... --pr-body` prints the whole pull request description instead, which
 `gh pr create --body-file` takes unchanged: the repository's `.github/PULL_REQUEST_TEMPLATE.md`
-(or `--template FILE`) with this block between its markers, and the lines added block that the
-checkout's `scripts/pr-lines.py` prints between `<!-- af-pr-lines:v1 -->` and
+(or `--template FILE`) with this block between its markers. The report block opens with a
+receipt before its pipeline and rounds: outcome, passed,
+failed and skipped checks, unresolved findings by severity, tokens with unknown usage marked,
+and active time. The lines added block is what the checkout's `scripts/pr-lines.py` prints
+between `<!-- af-pr-lines:v1 -->` and
 `<!-- /af-pr-lines -->` when the checkout has the script, counted from `--base REF` (origin/main
 by default). A checkout without the script keeps the template's block as it is; one whose script
 cannot print its block gets no body, and the command exits 1 naming `--base REF`; a block

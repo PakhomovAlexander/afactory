@@ -202,7 +202,7 @@ See `af help providers` for the registry model and the order of first use."
         #[command(subcommand)]
         command: ProviderCommand,
     },
-    /// Generate or validate `.af/` review authority for a repository
+    /// Generate or validate `.af/` review and Task authority for a repository
     #[command(
         display_order = 2,
         long_about = "Set up a repository for af review: write the `.af/` policy a review runs \
@@ -217,12 +217,18 @@ its exact pins, the Worker packages, the graph and the Gates. --refresh-lock: ex
 the selected pipeline, every pipeline a route or the oversized policy names, and the Worker \
 packages they reference; it drops a pin whose `.af/workers/NAME` package or \
 `.af/pipelines/NAME.toml` file no longer exists.\n\n\
+With --tasks, preview the exact files and [task.defaults] text for model-driven Tasks; \
+--tasks --apply creates a combined bundle in a new repository or adds only absent Task files \
+and the absent table to an existing `.af/` directory. With --tasks, a registered Claude and Codex \
+use the mixed profile: Claude implements and Codex reviews; one registered kind is used for all \
+Workers. Review and commit the result before a Task can plan.\n\n\
 The command never calls a model, runs a Gate, reads credentials, creates Campaign state, fetches \
-a pull request, commits, pushes, comments, or overwrites an existing `.af/` directory. Notes for \
+a pull request, commits, pushes, comments, or overwrites existing authority files. Notes for \
 agents and automation close this page.",
         after_long_help = "Runner profiles:\n  mixed   correctness = Claude Opus 5.5/high; architecture = GPT-6 Sol/high\n  claude  both Workers = Claude Opus 5.5/high\n  codex   both Workers = GPT-6 Sol/high\nWithout --runner, onboarding picks claude or codex when only that Provider kind is registered on this machine (`af provider status`), and mixed otherwise; the `profile` line says which and why.\n\nThe preview's `providers` block names, for every model Worker, a registered Provider of its kind and the --provider binding to pass, or the command that registers one; it reads the registry without starting a Provider CLI unless --probe asks.\n\nGate discovery prefers `make check`, then `scripts/verify.sh`, Rust, Go, or a package-manager test script. If none is unambiguous, pass a trusted literal.\n\nExamples:\n  \
 af onboard\n  \
 # needs: a repository without .af/\n  af onboard --gate 'check=make check' --apply\n  \
+# needs: a repository with an acceptance Gate\n  af onboard --tasks\n  # needs: a repository with review authority and an acceptance Gate\n  af onboard --tasks --apply\n  \
 af onboard --runner mixed --apply   # needs: a repository without .af/\n  \
 af onboard --refresh-lock\n  \
 # needs: release 0.9.0; moves the pin to it\n  af onboard --refresh-lock --af 0.9.0\n\n\
@@ -803,9 +809,15 @@ af review plan --policy-rev HEAD --base HEAD --uncommitted\n  \
 # needs: one registered Provider for every model Worker\n  \
 af review plan --policy-rev HEAD --base HEAD --uncommitted --json\n  \
 # needs: one registered Provider for every model Worker\n  \
-af review plan --policy-rev HEAD --base HEAD~1 --candidate HEAD"
+af review plan --policy-rev HEAD --base HEAD~1 --candidate HEAD --long"
     )]
-    Plan(RunArgs),
+    Plan {
+        #[command(flatten)]
+        args: RunArgs,
+        /// Include pipeline nodes and edges in the text plan
+        #[arg(long, help_heading = "Output")]
+        long: bool,
+    },
     /// Compose one Worker's exact input, token-free, without Campaign state
     #[command(
         long_about = "Compose the exact input one Worker node would receive — the bytes, their \
@@ -819,7 +831,8 @@ af review render --node correctness --policy-rev HEAD --base HEAD \\\n    --unco
     Render(RunArgs),
     /// List the ledger: findings, dispositions, and open demands
     #[command(
-        after_long_help = "Examples:\n  af review ledger --campaign pr-42 --long   # needs: Campaign pr-42"
+        long_about = "Read the current Campaign ledger. --json prints one af/review-ledger@1 document with Finding views and Demand views (schemas/review-ledger-v1.json). An empty ledger has empty arrays. --long expands each Finding in text output.",
+        after_long_help = "Examples:\n  af review ledger --campaign pr-42 --json   # needs: Campaign pr-42\n  af review ledger --campaign pr-42 --long   # needs: Campaign pr-42"
     )]
     Ledger {
         #[command(flatten)]
@@ -827,16 +840,23 @@ af review render --node correctness --policy-rev HEAD --base HEAD \\\n    --unco
         /// Full detail per finding
         #[arg(long, help_heading = "Output")]
         long: bool,
+        /// One versioned JSON document on stdout
+        #[arg(long, help_heading = "Output")]
+        json: bool,
     },
     /// Show one ledger entry by key
     #[command(
-        after_long_help = "Examples:\n  # needs: Campaign pr-42 and its finding F-01H…\n  af review show --campaign pr-42 F-01H…"
+        long_about = "Read one Finding by its ledger key. --json prints one af/review-show@1 document with the Finding, its attached reports and linked proposals (schemas/review-show-v1.json).",
+        after_long_help = "Examples:\n  # needs: Campaign pr-42 and its finding F-01H…\n  af review show --campaign pr-42 F-01H… --json"
     )]
     Show {
         #[command(flatten)]
         selector: CampaignSelector,
-        /// Finding, demand, or proposal key
+        /// Finding key
         key: String,
+        /// One versioned JSON document on stdout
+        #[arg(long, help_heading = "Output")]
+        json: bool,
     },
     /// Export a verified patch proposal, by id or by the finding it fixes
     #[command(
@@ -859,14 +879,18 @@ af review export --campaign pr-42 --finding F-01H… --allow-stale"
     },
     /// Render the Campaign report
     #[command(
-        after_long_help = "Examples:\n  af review report --campaign pr-42   # needs: Campaign pr-42\n  af review report --campaign pr-42 --format json   # needs: Campaign pr-42"
+        long_about = "Render the Campaign report. --json selects the existing af/review-report@4 document, the same as --format json. The two flags cannot be combined, even when --format names json.",
+        after_long_help = "Examples:\n  af review report --campaign pr-42   # needs: Campaign pr-42\n  af review report --campaign pr-42 --json   # needs: Campaign pr-42"
     )]
     Report {
         #[command(flatten)]
         selector: CampaignSelector,
         /// Output format
-        #[arg(long, value_enum, default_value_t = ReportFormatArg::Md, help_heading = "Output")]
-        format: ReportFormatArg,
+        #[arg(long, value_enum, help_heading = "Output", conflicts_with = "json")]
+        format: Option<ReportFormatArg>,
+        /// Shorthand for --format json; cannot be combined with --format
+        #[arg(long, help_heading = "Output")]
+        json: bool,
     },
     /// List Campaigns under the state root
     #[command(
@@ -1544,6 +1568,12 @@ pub(crate) struct OnboardArgs {
         help_heading = "Selector"
     )]
     pub(crate) repo: PathBuf,
+    /// Include pipeline nodes and edges in the text preview
+    #[arg(long, help_heading = "Output")]
+    pub(crate) long: bool,
+    /// Preview or add pinned model-driven Task authority (also includes review authority in a new repository)
+    #[arg(long, help_heading = "Generate", conflicts_with = "refresh_lock")]
+    pub(crate) tasks: bool,
     /// Runner profile for the generated Workers [default: the Provider kinds registered on
     /// this machine: claude, codex, or mixed for both or none]
     #[arg(long, value_enum, help_heading = "Generate")]
@@ -2006,12 +2036,15 @@ af task run NEW_ID --from TASK_ID   # needs: a finished reviewed Task TASK_ID\n 
         long_about = "Block until a Task settles — no writer holds it and no run of this host \
 is starting — then print its status line (`af/task-status@2` under --json) and exit with the \
 Task's exit code: its outcome's (`af help exit-codes`), 4 for a Task that waits for a person. \
+--bell rings terminal stderr when it settles; --notify requests an OS notification, warning \
+without changing the exit code when the notifier is unavailable. \
 With --timeout S it gives up after S seconds, prints the status so far and exits 124. A \
 planned Task with no run in progress is refused (exit 1): there is nothing to wait for.\n\n\
 Never: starts, resumes or changes a Task.",
         after_long_help = "Examples:\n  \
 af task wait TASK_ID   # needs: a Task af task run --detach started\n  \
-af task wait TASK_ID --timeout 600 --json   # needs: a running Task"
+af task wait TASK_ID --timeout 600 --json   # needs: a running Task\n  \
+af task wait TASK_ID --bell --notify   # needs: a running Task"
     )]
     Wait {
         /// Task id
@@ -2019,14 +2052,22 @@ af task wait TASK_ID --timeout 600 --json   # needs: a running Task"
         /// Give up after S seconds and exit 124
         #[arg(long, value_name = "S", value_parser = clap::value_parser!(u64).range(1..))]
         timeout: Option<u64>,
+        /// Ring the terminal bell when the Task settles, if stderr is a terminal
+        #[arg(long)]
+        bell: bool,
+        /// Send an OS notification when the Task settles; an unavailable notifier warns
+        #[arg(long)]
+        notify: bool,
         #[command(flatten)]
         inspect: TaskInspectArgs,
     },
-    /// Print a Task's state, current node, elapsed time and tokens so far, and what is next
+    /// Print a Task's state, current node, elapsed time, tokens and what is next
     #[command(
         long_about = "Print where a Task is, now, without waiting: its state \
 (phase/outcome/cause, `af help task-states`), the node whose Attempt runs, the time since its \
-clock started, the tokens charged so far, the run that holds it (run number, pid and host) and \
+clock started, one line with tokens reserved, charged and remaining (and unknown usage), the \
+last comparable Gate duration recorded for this repository, check and code policy when one \
+exists, the run that holds it (run number, pid and host) and \
 who cancelled it, then the next command on its own line, within 100 columns (the terminal's \
 width when narrower) and broken only between arguments. --json prints one `af/task-status@2` \
 document. Exits 0: the state is data.",

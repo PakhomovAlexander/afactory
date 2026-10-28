@@ -307,7 +307,11 @@ fn materialized_diff_and_status_documents_are_closed() {
         .with_next("af task run pagination-cli"),
         node: None,
         elapsed_ms: Some(12_000),
-        chargeable_tokens: 412_000u128.into(),
+        charged_tokens: 412_000u128.into(),
+        reserved_tokens: 2_000u128.into(),
+        remaining_tokens: 586_000u128.into(),
+        unknown_usage_attempts: 1,
+        last_gate: Some("check test: 51m 00s".into()),
         run: Some(run_process()),
         cancel: Some(cancel_request()),
     };
@@ -317,8 +321,16 @@ fn materialized_diff_and_status_documents_are_closed() {
         TaskStatusV2::validate,
         vec![
             (
-                Box::new(|v: &mut Value| v["chargeable_tokens"] = json!(412000)),
+                Box::new(|v: &mut Value| v["schema"] = json!("af/task-status@1")),
+                "an older status document",
+            ),
+            (
+                Box::new(|v: &mut Value| v["charged_tokens"] = json!(412000)),
                 "a token count that is not decimal text",
+            ),
+            (
+                Box::new(|v: &mut Value| v["reserved_tokens"] = json!("02")),
+                "a noncanonical reservation",
             ),
             (
                 Box::new(|v: &mut Value| v["run"]["schema"] = json!("af/task-run-process@2")),

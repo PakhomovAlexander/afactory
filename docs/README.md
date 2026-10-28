@@ -1,10 +1,10 @@
 # Documentation
 
-Where to look, by question. The [README](../README.md) covers installing, the quickstart, and the
+Where to look by what you want to do. The [README](../README.md) covers installing, the quickstart, and the
 `.af/` layout; the CLI documents itself with `af help` (every topic), `af help start`,
 `af help concepts`, `af help providers`, and `--help` on every namespace and command.
 
-## Start here
+## Try it
 
 `af` with no arguments at a terminal opens a read-first browser over this place's settings,
 Providers, Workers, pipelines, Tasks and review Campaigns; `?` there lists its keys and `:` runs
@@ -19,10 +19,31 @@ any af command ([design](design/tui.md)).
 4. [`providers.md`](providers.md) — getting model access onto a machine, safely, before running
    anything that spends tokens.
 5. [`tasks.md`](tasks.md) — the `af task` walkthrough, once review makes sense.
-6. [`architecture.md`](architecture.md) and [`adr/README.md`](adr/README.md) — the boundaries,
-   the tests that enforce them, and why each is where it is.
 
-## By document
+## Do a job
+
+- [Run a Task](tasks.md), then use the [agent loop](agents.md) to plan, inspect findings,
+  verify and deliver it.
+- [Connect a Provider](providers.md) before work that spends tokens.
+- [Use a Workspace](project.md) to keep Task state with its checkout.
+- [Run a report Task](task-execution/report.md) or a
+  [Remote Check](task-execution/remote-checks.md).
+
+## Look up a contract
+
+- [Task runtime](task-execution.md) and [Task inputs](task-execution/task-inputs.md).
+- [Experiment Tasks](task-execution/experiments.md), [self management](self-management.md),
+  [storage and telemetry](telemetry.md).
+- [CLI help](../README.md) for exact commands and `schemas/` for JSON documents.
+
+## Understand the design
+
+- [Architecture](architecture.md) and [accepted decisions](adr/README.md) explain the
+  boundaries and tests that enforce them.
+- [Vocabulary](../CONTEXT.md), [values](values.md), [non-goals](non-goals.md) and
+  [work in progress](design/README.md) explain the reasons behind those boundaries.
+
+## Detailed document index
 
 | Document | Read it when you want to know |
 |---|---|
