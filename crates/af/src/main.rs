@@ -53,7 +53,9 @@ mod project_brief;
 mod projects;
 mod providers;
 mod report_tasks;
+mod review_handoff;
 mod review_task;
+mod sarif;
 mod self_optimizer;
 mod selfmgmt;
 mod shipped_schemas;
@@ -387,6 +389,7 @@ enum ReportFormat {
     Markdown,
     Text,
     Json,
+    Sarif,
 }
 
 struct ResolveOptions {
@@ -955,6 +958,7 @@ fn review_command(namespace: cli::ReviewNamespace) -> Result<i32, String> {
             format: match (json, format) {
                 (true, _) | (_, Some(cli::ReportFormatArg::Json)) => ReportFormat::Json,
                 (_, Some(cli::ReportFormatArg::Text)) => ReportFormat::Text,
+                (_, Some(cli::ReportFormatArg::Sarif)) => ReportFormat::Sarif,
                 _ => ReportFormat::Markdown,
             },
         })
@@ -2224,8 +2228,9 @@ fn task_command(command: cli::TaskCommand) -> Result<i32, String> {
         cli::TaskCommand::Findings {
             task_id,
             round,
+            format,
             inspect,
-        } => task_execution::findings::print(&task_id, round, &inspect),
+        } => task_execution::findings::print(&task_id, round, format, &inspect),
         cli::TaskCommand::Materialize {
             task_id,
             snapshot,
@@ -4304,7 +4309,14 @@ struct ReviewReportView {
     #[serde(skip_serializing_if = "Option::is_none")]
     wall_ms: Option<u64>,
     findings_summary: FindingsSummaryView,
-    findings: Vec<review_store::Finding>,
+    /// Each finding with its agent prompt and verified fix (ADR-0248).
+    findings: Vec<review_handoff::ReportFindingView>,
+    /// What the last recorded run covered, per reviewer and per path; null when no run is recorded
+    /// or its Round's Subject is unreadable.
+    coverage: Option<review_handoff::ReportCoverageView>,
+    /// The findings' verified fixes, for the SARIF run's properties.
+    #[serde(skip)]
+    verified_fixed: Vec<review_core::task::handoff::VerifiedFixV1>,
 }
 
 #[derive(serde::Serialize)]
@@ -4484,8 +4496,36 @@ fn print_report(options: &ReportOptions) -> Result<(), String> {
             "{}",
             serde_json::to_string_pretty(&view).map_err(|error| error.to_string())?
         ),
+        ReportFormat::Sarif => sarif::print(&report_sarif(&view))?,
     }
     Ok(())
+}
+
+/// The report's findings as one SARIF 2.1.0 log (ADR-0248). A finding a verification record
+/// proved fixed is no result: it is listed in the run's `verified_fixed`.
+fn report_sarif(view: &ReviewReportView) -> sarif::SarifRun<'_> {
+    let coverage = view.coverage.as_ref();
+    sarif::SarifRun {
+        owner: ("campaign", &view.campaign),
+        round: coverage.map(|coverage| u64::from(coverage.round)),
+        snapshot_id: coverage.map(|coverage| coverage.snapshot_id.as_str()),
+        coverage: coverage.map(|coverage| &coverage.coverage),
+        verified_fixed: &view.verified_fixed,
+        findings: view
+            .findings
+            .iter()
+            .filter(|view| view.verified_fix.is_none())
+            .map(|view| sarif::SarifFinding {
+                reviewer: &view.finding.source,
+                severity: view.finding.severity,
+                title: &view.finding.title,
+                finding_id: Some(&view.finding.key),
+                status: Some(view.finding.status.as_str()),
+                prompt: &view.agent_prompt,
+                declined: matches!(view.finding.status, Status::Rejected | Status::Wontfix),
+            })
+            .collect(),
+    }
 }
 
 fn read_report_view(
@@ -4521,8 +4561,14 @@ fn read_report_view_quietly(
     let task_accounting = report_tasks::read(store, cas, &run_id, &events)?;
     let wall_ms = task_accounting.wall_ms();
     let findings = ledger.finding_views();
+    let findings_summary = findings_summary(&findings);
+    let (findings, coverage) = review_handoff::read(cas, &events, &ledger, findings)?;
+    let verified_fixed = findings
+        .iter()
+        .filter_map(|view| view.verified_fix.clone())
+        .collect();
     Ok(ReviewReportView {
-        schema: "af/review-report@4",
+        schema: "af/review-report@5",
         campaign: campaign.into(),
         runs_recorded: reports.len(),
         ledger_round: ledger.round,
@@ -4545,8 +4591,10 @@ fn read_report_view_quietly(
         task_accounting: task_accounting.tasks,
         demands: ledger.demand_views(),
         wall_ms,
-        findings_summary: findings_summary(&findings),
+        findings_summary,
         findings,
+        coverage,
+        verified_fixed,
     })
 }
 
@@ -4644,11 +4692,15 @@ fn print_report_text(report: &ReviewReportView) {
         );
         println!("    source: {}", terminal_text(&demand.source));
     }
+    for line in review_handoff::coverage_lines(report.coverage.as_ref()) {
+        println!("{line}");
+    }
     println!("Findings:");
     if report.findings.is_empty() {
         println!("  none");
     }
-    for finding in &report.findings {
+    for view in &report.findings {
+        let finding = &view.finding;
         println!(
             "  [{}; scope={}; severity={}; effective={}] {} ({}) at {}:{}",
             finding.status.as_str(),
@@ -4667,6 +4719,12 @@ fn print_report_text(report: &ReviewReportView) {
         );
         println!("    body: {}", one_line(&finding.body));
         println!("    fix: {}", one_line(&finding.fix));
+        if let Some(fix) = &view.verified_fix {
+            println!(
+                "    verified fixed: by {} on {}",
+                fix.record_id, fix.snapshot_id
+            );
+        }
         for transition in &finding.history {
             println!(
                 "    history round {}: {} - {}",
@@ -4739,6 +4797,22 @@ fn print_report_markdown(report: &ReviewReportView) {
         println!("  - Source: {}", terminal_text(&demand.source));
     }
     println!();
+    println!("## Coverage");
+    println!();
+    if let Some(coverage) = &report.coverage {
+        println!(
+            "- Last recorded run: run {}, round {}, on `{}`",
+            coverage.run, coverage.round, coverage.snapshot_id
+        );
+    }
+    // The text heading is the section's own; its lines are the items.
+    for line in review_handoff::coverage_lines(report.coverage.as_ref())
+        .iter()
+        .skip(1)
+    {
+        println!("- {}", line.trim_start());
+    }
+    println!();
     println!("## Findings");
     for effective_severity in [
         Some(Severity::Blocker),
@@ -4759,14 +4833,15 @@ fn print_report_markdown(report: &ReviewReportView) {
         let matching = report
             .findings
             .iter()
-            .filter(|finding| finding.convergence_severity == effective_severity)
+            .filter(|view| view.finding.convergence_severity == effective_severity)
             .collect::<Vec<_>>();
         if matching.is_empty() {
             println!();
             println!("None.");
             continue;
         }
-        for finding in matching {
+        for view in matching {
+            let finding = &view.finding;
             println!();
             println!(
                 "- **[{}, scope={}, severity={}, effective={}] {}** (`{}`) at `{}:{}`",
@@ -4786,6 +4861,12 @@ fn print_report_markdown(report: &ReviewReportView) {
             );
             println!("  - Body: {}", markdown_line(&finding.body));
             println!("  - Fix: {}", markdown_line(&finding.fix));
+            if let Some(fix) = &view.verified_fix {
+                println!(
+                    "  - Verified fixed: by `{}` on `{}`",
+                    fix.record_id, fix.snapshot_id
+                );
+            }
             let evidence = finding
                 .reports
                 .iter()
@@ -5987,7 +6068,7 @@ mod option_tests {
         );
         // The report document the browser reads, without a word on stderr.
         let report = browse_report(&state, "local").unwrap();
-        assert_eq!(report["schema"], "af/review-report@4");
+        assert_eq!(report["schema"], "af/review-report@5");
         assert_eq!(report["campaign"], "local");
         // A directory without a Store is no Campaign.
         let Err(error) = read_campaign_dir(&temp.path().join("review")) else {

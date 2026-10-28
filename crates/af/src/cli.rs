@@ -923,8 +923,8 @@ af review export --campaign pr-42 --finding F-01H… --allow-stale"
     },
     /// Render the Campaign report
     #[command(
-        long_about = "Render the Campaign report. --json selects the existing af/review-report@4 document, the same as --format json. The two flags cannot be combined, even when --format names json.",
-        after_long_help = "Examples:\n  af review report --campaign pr-42   # needs: Campaign pr-42\n  af review report --campaign pr-42 --json   # needs: Campaign pr-42"
+        long_about = "Render the Campaign report. --json selects the af/review-report@5 document, the same as --format json: each finding with the prompt that hands it to the agent that will fix it, and what the last Round covered per reviewer and per path, so a reviewer that did not run is never read as one that found nothing. --format sarif prints the findings as one SARIF 2.1.0 log for code-scanning tools. --json cannot be combined with --format, even when --format names json.",
+        after_long_help = "Examples:\n  af review report --campaign pr-42   # needs: Campaign pr-42\n  af review report --campaign pr-42 --json   # needs: Campaign pr-42\n  af review report --campaign pr-42 --format sarif > review.sarif   # needs: Campaign pr-42"
     )]
     Report {
         #[command(flatten)]
@@ -1235,6 +1235,17 @@ pub(crate) enum ReportFormatArg {
     Md,
     Text,
     Json,
+    /// SARIF 2.1.0 (ADR-0248)
+    Sarif,
+}
+
+/// What `af task findings` prints: text, its `af/task-findings@2` document, or SARIF 2.1.0.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
+pub(crate) enum FindingsFormatArg {
+    Text,
+    Json,
+    /// SARIF 2.1.0 (ADR-0248)
+    Sarif,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
@@ -2152,11 +2163,18 @@ quoted evidence and the reviewer's proposed fix, grouped by severity; then the e
 verdict on that round, the one the Task log recorded after it, with its reason, and the next \
 command. A round whose reduce step did not run shows each \
 reviewer's reports as recorded, not gathered. A Task that recorded no review round says so, \
-with the state it reached.\n\n--json prints one `af/task-findings@1` document. Exits 0 once \
-it read the Store.\n\nNever: dispatches a Worker, contacts a Provider or writes the Store.",
+with the state it reached. The round's coverage says which reviewers ran and which paths \
+they read: a reviewer that did not run shows `not reviewed`, never `no findings`.\n\n--json \
+(the same as --format json) prints one `af/task-findings@2` document: each finding carries an \
+`agent_prompt` (its location, evidence, the requested change and how verification will judge \
+it), the round its `coverage` and the findings a fix verification record proved fixed on its \
+Snapshot. --format sarif prints the same findings as one SARIF 2.1.0 log. --json cannot be \
+combined with --format. Exits 0 once it read the Store.\n\nNever: dispatches a Worker, \
+contacts a Provider or writes the Store.",
         after_long_help = "Examples:\n  \
 af task findings TASK_ID   # needs: a reviewed Task\n  \
-af task findings TASK_ID --round 1 --json   # needs: a reviewed Task"
+af task findings TASK_ID --round 1 --json   # needs: a reviewed Task\n  \
+af task findings TASK_ID --format sarif > findings.sarif   # needs: a reviewed Task"
     )]
     Findings {
         /// Task id
@@ -2164,6 +2182,9 @@ af task findings TASK_ID --round 1 --json   # needs: a reviewed Task"
         /// The Nth recorded review round instead of the last (1 is the first)
         #[arg(long, value_name = "N", value_parser = clap::value_parser!(u64).range(1..))]
         round: Option<u64>,
+        /// Output format; --json is --format json
+        #[arg(long, value_enum, help_heading = "Output", conflicts_with = "json")]
+        format: Option<FindingsFormatArg>,
         #[command(flatten)]
         inspect: TaskInspectArgs,
     },

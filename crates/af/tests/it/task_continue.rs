@@ -597,14 +597,14 @@ fn each_round_carries_its_own_evaluator_verdict() {
         &["task", "findings", "twice", "--round", "1"],
         0,
     );
-    valid("task-findings-v1.json", &first);
+    valid("task-findings-v2.json", &first);
     let (second, _) = json(
         &repo,
         &state,
         &["task", "findings", "twice", "--round", "2"],
         0,
     );
-    valid("task-findings-v1.json", &second);
+    valid("task-findings-v2.json", &second);
     assert_eq!(first["rounds"], 2, "{first}");
     // Both rounds reviewed the one candidate.
     assert_eq!(

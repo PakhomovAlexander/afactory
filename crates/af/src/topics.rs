@@ -503,8 +503,10 @@ Review reading commands:
                                        with the reply schema a model Worker's dispatch passes
   af review ledger --json              af/review-ledger@1 (schemas/review-ledger-v1.json)
   af review show KEY --json            af/review-show@1 (schemas/review-show-v1.json)
-  af review report --json              af/review-report@4 (schemas/review-report-v4.json)
+  af review report --json              af/review-report@5 (schemas/review-report-v5.json)
                                        --json is --format json; combining them is a usage error
+  af review report --format sarif      SARIF 2.1.0, profile af/findings-sarif@1
+                                       (schemas/findings-sarif-v1.json)
 
 The Task documents, each named by its `schema`:
 
@@ -513,7 +515,9 @@ The Task documents, each named by its `schema`:
   af task show --checks --json         af/task-checks@2
   af task list --json                  af/task-list@3, one af/task-list-entry@3 per Task
   af task report --json                af/task-report@2
-  af task findings --json              af/task-findings@1
+  af task findings --json              af/task-findings@2, each finding with its agent_prompt,
+                                       the round with its coverage and verified_fixed
+  af task findings --format sarif      SARIF 2.1.0, profile af/findings-sarif@1
   af task diff --json                  af/task-diff@1
   af task materialize --json           af/task-materialized@1
   af task status --json, wait --json   af/task-status@2
@@ -524,7 +528,7 @@ The Task documents, each named by its `schema`:
                                        planning_diagnostic.required_limits and .reserves
 
 af/task-inspection@13, af/task-collected-inspection@2, af/task-checks@2, each
-af/task-list-entry@3, af/task-report@2, af/task-findings@1, af/task-status@2, af/task-detached@2
+af/task-list-entry@3, af/task-report@2, af/task-findings@2, af/task-status@2, af/task-detached@2
 and af/task-cancelled@1 carry the Task's `state` (`af help task-states`), its `next_action`
 carrying the selectors the command was given (a report, pasted into a pull request, names no
 Store path); the diff, the materialized candidate and the refused selection describe no Task

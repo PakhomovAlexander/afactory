@@ -1139,6 +1139,73 @@ fn missing_disposition_coverage_makes_the_round_structurally_incomplete() {
         "{}",
         correctness.reason
     );
+
+    // ADR-0248: the report covers that reviewer as not run, with its reason, never as a
+    // reviewer that found nothing; its text and SARIF log say the same.
+    let state = state.to_str().unwrap();
+    let selector = ["--campaign", "missing-disposition", "--state", state];
+    let (code, json, error) = af(
+        &repo,
+        &home,
+        &[&["report"][..], &selector, &["--json"]].concat(),
+    );
+    assert_eq!(code, 0, "{error}");
+    let document: serde_json::Value = serde_json::from_str(&json).unwrap();
+    contracts::valid("review-report-v5.json", &document);
+    let covered = document["coverage"]["reviewers"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|reviewer| reviewer["reviewer"] == "correctness")
+        .expect("the plan's correctness reviewer is covered");
+    assert_eq!(covered["state"], "not_run", "{covered}");
+    assert!(
+        covered["reason"]
+            .as_str()
+            .unwrap()
+            .contains("MissingDispositionCoverage"),
+        "{covered}"
+    );
+    assert!(
+        document["coverage"]["paths"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .all(|path| path["state"] != "reviewed"),
+        "{}",
+        document["coverage"]
+    );
+    let (code, text, error) = af(
+        &repo,
+        &home,
+        &[&["report"][..], &selector, &["--format", "text"]].concat(),
+    );
+    assert_eq!(code, 0, "{error}");
+    assert!(
+        text.contains("  reviewer correctness: not reviewed, it did not run: "),
+        "{text}"
+    );
+    let (code, sarif, error) = af(
+        &repo,
+        &home,
+        &[&["report"][..], &selector, &["--format", "sarif"]].concat(),
+    );
+    assert_eq!(code, 0, "{error}");
+    let sarif: serde_json::Value = serde_json::from_str(&sarif).unwrap();
+    contracts::valid("findings-sarif-v1.json", &sarif);
+    let invocation = &sarif["runs"][0]["invocations"][0];
+    assert_eq!(invocation["executionSuccessful"], false, "{invocation}");
+    assert!(
+        invocation["toolExecutionNotifications"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|note| note["message"]["text"]
+                .as_str()
+                .unwrap()
+                .contains("The reviewer correctness did not run")),
+        "{invocation}"
+    );
 }
 
 #[test]
@@ -1255,6 +1322,14 @@ fn a_campaign_converges_after_a_scoped_nonfixed_resolution() {
         "{report_out}"
     );
     assert!(report_out.contains("Fix: bound it"), "{report_out}");
+    assert!(
+        report_out.contains("## Coverage\n\n- Last recorded run: run 1, round 1, on `sha256:"),
+        "{report_out}"
+    );
+    assert!(
+        report_out.contains("\n- reviewer architecture: reviewed\n"),
+        "{report_out}"
+    );
     assert!(report_out.contains("## Task accounting:"), "{report_out}");
     assert!(!report_out.contains("## Spend"), "{report_out}");
     assert!(report_out.contains("architecture"), "{report_out}");
@@ -1274,7 +1349,7 @@ fn a_campaign_converges_after_a_scoped_nonfixed_resolution() {
     );
     assert_eq!(code, 0, "{report_json}\n{report_err}");
     let report: serde_json::Value = serde_json::from_str(&report_json).unwrap();
-    contracts::valid("review-report-v4.json", &report);
+    contracts::valid("review-report-v5.json", &report);
     let (code, shorthand, error) = af(
         &repo,
         &home,
@@ -1283,7 +1358,7 @@ fn a_campaign_converges_after_a_scoped_nonfixed_resolution() {
     assert_eq!(code, 0, "{error}");
     let shorthand: serde_json::Value = serde_json::from_str(&shorthand).unwrap();
     assert_eq!(shorthand, report);
-    assert_eq!(report["schema"], "af/review-report@4");
+    assert_eq!(report["schema"], "af/review-report@5");
     assert_eq!(report["rounds"][0]["round"], 1);
     assert!(report.get("spend").is_none(), "{report_json}");
     let task = &report["task_accounting"][0];
@@ -1304,6 +1379,66 @@ fn a_campaign_converges_after_a_scoped_nonfixed_resolution() {
     assert!(task["wall_ms"].is_u64(), "{task}");
     assert!(report["wall_ms"].is_u64());
     assert!(report["findings_summary"]["open"].is_u64());
+    // ADR-0248: the last run's coverage names every reviewer node of the pinned plan, and each
+    // finding carries its agent prompt on the Round's Snapshot, with no verified fix.
+    let coverage = &report["coverage"];
+    assert_eq!(coverage["run"], 1, "{coverage}");
+    assert_eq!(coverage["round"], 1, "{coverage}");
+    assert!(
+        coverage["reviewers"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|reviewer| reviewer["reviewer"] == "architecture"
+                && reviewer["state"] == "reviewed"
+                && reviewer["reason"].is_null()),
+        "{coverage}"
+    );
+    let finding = report["findings"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|finding| finding["key"] == key)
+        .unwrap();
+    assert_eq!(
+        finding["agent_prompt"]["location"]["snapshot_id"],
+        coverage["snapshot_id"]
+    );
+    assert_eq!(finding["agent_prompt"]["requested_change"], "bound it");
+    assert!(
+        finding["agent_prompt"]["verification"]
+            .as_str()
+            .unwrap()
+            .contains("FixVerification@1")
+    );
+    assert!(finding["verified_fix"].is_null(), "{finding}");
+    let (code, sarif, error) = af(
+        &repo,
+        &home,
+        &[
+            "report",
+            "--campaign",
+            "loop",
+            "--state",
+            &state,
+            "--format",
+            "sarif",
+        ],
+    );
+    assert_eq!(code, 0, "{error}");
+    let sarif: serde_json::Value = serde_json::from_str(&sarif).unwrap();
+    contracts::valid("findings-sarif-v1.json", &sarif);
+    let run = &sarif["runs"][0];
+    assert_eq!(run["properties"]["campaign"], "loop");
+    assert!(
+        run["results"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|result| result["ruleId"] == "af-review/architecture"
+                && result["partialFingerprints"]["afFindingId/v1"] == key),
+        "{sarif}"
+    );
 
     let (code, report_text, report_err) = af(
         &repo,
@@ -1325,6 +1460,14 @@ fn a_campaign_converges_after_a_scoped_nonfixed_resolution() {
     );
     assert!(report_text.contains("architecture:"), "{report_text}");
     assert!(report_text.contains("Attempt"), "{report_text}");
+    assert!(
+        report_text.contains("Coverage (run 1, round 1):\n"),
+        "{report_text}"
+    );
+    assert!(
+        report_text.contains("  reviewer architecture: reviewed\n"),
+        "{report_text}"
+    );
 
     // Change the code, then record an authenticated, scoped non-fixed disposition. The separate
     // attestation/verification path is covered by the canonical projection tests.

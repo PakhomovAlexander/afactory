@@ -14,7 +14,7 @@ use super::usage::DecimalU128;
 use super::{is_name, require};
 use crate::is_digest;
 
-pub const TASK_FINDINGS_V1: &str = "af/task-findings@1";
+pub const TASK_FINDINGS_V2: &str = "af/task-findings@2";
 pub const TASK_MATERIALIZED_V1: &str = "af/task-materialized@1";
 pub const TASK_DIFF_V1: &str = "af/task-diff@1";
 pub const TASK_STATUS_V2: &str = "af/task-status@2";
@@ -43,24 +43,25 @@ fn schema_is(actual: &str, expected: &str) -> Result<(), String> {
 /// `evaluation` when no evaluator recorded a verdict.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
-pub struct TaskFindingsV1 {
+pub struct TaskFindingsV2 {
     pub schema: String,
     pub task_id: String,
     pub state: TaskStateV1,
     /// How many review rounds the Task recorded.
     pub rounds: u64,
     #[serde(deserialize_with = "Option::deserialize")]
-    pub round: Option<TaskFindingsRoundV1>,
+    pub round: Option<TaskFindingsRoundV2>,
     #[serde(deserialize_with = "Option::deserialize")]
     pub evaluation: Option<TaskFindingsEvaluationV1>,
 }
 
 /// One recorded review round: its number among the Task's rounds (1 is the first), the round
-/// number the Review recorded, the Snapshot it reviewed, its conclusion, and every reviewer's
-/// findings, a reviewer that reported none included.
+/// number the Review recorded, the Snapshot it reviewed, its conclusion, every reviewer's
+/// findings, a reviewer that reported none included, what the round covered, and the findings
+/// a verification record proved fixed on its Snapshot (ADR-0248).
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
-pub struct TaskFindingsRoundV1 {
+pub struct TaskFindingsRoundV2 {
     pub index: u64,
     pub round: u32,
     pub snapshot_id: String,
@@ -70,7 +71,12 @@ pub struct TaskFindingsRoundV1 {
     pub complete: bool,
     pub missing_reviewers: Vec<String>,
     pub counts: TaskFindingCountsV1,
-    pub reviewers: Vec<TaskReviewerFindingsV1>,
+    pub reviewers: Vec<TaskReviewerFindingsV2>,
+    /// Per reviewer and per path: reviewed, not run (and why), or outside the round.
+    pub coverage: super::handoff::CoverageV1,
+    /// Findings of an earlier round this round's Snapshot verified fixed, each with its
+    /// positive `af/TaskFixReceipt@1`. Nothing else is reported as verified fixed.
+    pub verified_fixed: Vec<super::handoff::VerifiedFixV1>,
 }
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -83,12 +89,12 @@ pub struct TaskFindingCountsV1 {
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
-pub struct TaskReviewerFindingsV1 {
+pub struct TaskReviewerFindingsV2 {
     pub reviewer: String,
     /// The reviewer's selected result, null for a reviewer whose result is missing.
     #[serde(deserialize_with = "Option::deserialize")]
     pub result_id: Option<String>,
-    pub findings: Vec<TaskFindingV1>,
+    pub findings: Vec<TaskFindingV2>,
 }
 
 /// One finding as its reviewer reported it: severity, confidence, title, location, the quoted
@@ -96,7 +102,7 @@ pub struct TaskReviewerFindingsV1 {
 /// report of an incomplete round.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
-pub struct TaskFindingV1 {
+pub struct TaskFindingV2 {
     #[serde(deserialize_with = "Option::deserialize")]
     pub finding_id: Option<String>,
     pub severity: crate::Severity,
@@ -112,6 +118,8 @@ pub struct TaskFindingV1 {
     pub evidence: String,
     #[serde(deserialize_with = "Option::deserialize")]
     pub fix: Option<String>,
+    /// The finding as a prompt for the agent that will fix it (ADR-0248).
+    pub agent_prompt: super::handoff::FindingPromptV1,
 }
 
 /// The evaluator's verdict: the node that judged, the recorded `af/TaskEvaluation@1` and what
@@ -125,9 +133,9 @@ pub struct TaskFindingsEvaluationV1 {
     pub reason: String,
 }
 
-impl TaskFindingsV1 {
+impl TaskFindingsV2 {
     pub fn validate(&self) -> Result<(), String> {
-        schema_is(&self.schema, TASK_FINDINGS_V1)?;
+        schema_is(&self.schema, TASK_FINDINGS_V2)?;
         require(is_name(&self.task_id), "Findings name an exact Task")?;
         self.state.validate()?;
         if let Some(round) = &self.round {
@@ -140,6 +148,34 @@ impl TaskFindingsV1 {
                 "A findings round names the exact Snapshot it reviewed",
             )?;
             let mut counts = TaskFindingCountsV1::default();
+            round.coverage.validate()?;
+            require(
+                round.coverage.reviewers.len() == round.reviewers.len()
+                    && round.coverage.reviewers.iter().zip(&round.reviewers).all(
+                        |(covered, reviewer)| {
+                            covered.reviewer == reviewer.reviewer
+                                && (covered.state
+                                    == super::handoff::ReviewerCoverageStateV1::Reviewed)
+                                    == reviewer.result_id.is_some()
+                        },
+                    )
+                    && round
+                        .coverage
+                        .not_run()
+                        .map(|reviewer| &reviewer.reviewer)
+                        .eq(round.missing_reviewers.iter()),
+                "A round covers exactly its reviewers: reviewed with a result, not run without \
+                 one, and its missing reviewers are the ones that did not run",
+            )?;
+            let mut fixed = std::collections::BTreeSet::new();
+            for verified in &round.verified_fixed {
+                verified.validate()?;
+                require(
+                    verified.snapshot_id == round.snapshot_id
+                        && fixed.insert(verified.finding_id.as_str()),
+                    "A finding is verified fixed once, on the Snapshot of the round",
+                )?;
+            }
             for reviewer in &round.reviewers {
                 require(
                     is_name(&reviewer.reviewer)
@@ -148,6 +184,10 @@ impl TaskFindingsV1 {
                 )?;
                 for finding in &reviewer.findings {
                     finding.validate()?;
+                    require(
+                        finding.agent_prompt.location.snapshot_id == round.snapshot_id,
+                        "A finding's prompt names the Snapshot its round reviewed",
+                    )?;
                     match finding.severity {
                         crate::Severity::Blocker => counts.blocker += 1,
                         crate::Severity::Major => counts.major += 1,
@@ -177,7 +217,7 @@ impl TaskFindingsV1 {
     }
 }
 
-impl TaskFindingV1 {
+impl TaskFindingV2 {
     pub fn validate(&self) -> Result<(), String> {
         require(
             self.finding_id.as_deref().is_none_or(is_digest)
@@ -188,6 +228,12 @@ impl TaskFindingV1 {
                 && self.fix.as_deref().is_none_or(bounded)
                 && self.file.as_deref().is_none_or(bounded),
             "A finding has a bounded title and evidence, a confidence in 0..1 and a positive line",
+        )?;
+        self.agent_prompt.validate()?;
+        require(
+            self.agent_prompt.location.file == self.file
+                && self.agent_prompt.location.line == self.line.filter(|_| self.file.is_some()),
+            "A finding's prompt names the finding's own location",
         )
     }
 }
@@ -495,14 +541,17 @@ impl TaskCancelledV1 {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::task::handoff;
     use crate::task::state::*;
+    use std::collections::BTreeMap;
 
     fn id(c: char) -> String {
         format!("sha256:{}", c.to_string().repeat(64))
     }
 
-    fn finding(severity: crate::Severity) -> TaskFindingV1 {
-        TaskFindingV1 {
+    fn finding(severity: crate::Severity) -> TaskFindingV2 {
+        let snapshot = id('2');
+        TaskFindingV2 {
             finding_id: Some(id('1')),
             severity,
             status: Some("open".into()),
@@ -512,17 +561,30 @@ mod tests {
             line: Some(1),
             evidence: "A negative offset slices from the end.".into(),
             fix: Some("Raise ValueError.".into()),
+            agent_prompt: handoff::prompt(
+                &handoff::PromptSource {
+                    reviewer: "bugs",
+                    severity,
+                    title: "Reject negative offset",
+                    file: Some("pagination.py"),
+                    line: Some(1),
+                    snapshot_id: &snapshot,
+                    evidence: "A negative offset slices from the end.",
+                    fix: Some("Raise ValueError."),
+                },
+                handoff::VerifiedBy::Task,
+            ),
         }
     }
 
     #[test]
     fn a_round_counts_its_reviewers_findings_by_severity() {
-        let mut document = TaskFindingsV1 {
-            schema: TASK_FINDINGS_V1.into(),
+        let mut document = TaskFindingsV2 {
+            schema: TASK_FINDINGS_V2.into(),
             task_id: "t".into(),
             state: TaskStateV1::ended(TaskStatePhaseV1::Finished, TaskOutcomeV1::Verified, None),
             rounds: 1,
-            round: Some(TaskFindingsRoundV1 {
+            round: Some(TaskFindingsRoundV2 {
                 index: 1,
                 round: 1,
                 snapshot_id: id('2'),
@@ -534,18 +596,65 @@ mod tests {
                     major: 1,
                     minor: 1,
                 },
-                reviewers: vec![TaskReviewerFindingsV1 {
-                    reviewer: "bugs".into(),
-                    result_id: Some(id('3')),
-                    findings: vec![
-                        finding(crate::Severity::Major),
-                        finding(crate::Severity::Minor),
-                    ],
-                }],
+                reviewers: vec![
+                    TaskReviewerFindingsV2 {
+                        reviewer: "bugs".into(),
+                        result_id: Some(id('3')),
+                        findings: vec![
+                            finding(crate::Severity::Major),
+                            finding(crate::Severity::Minor),
+                        ],
+                    },
+                    TaskReviewerFindingsV2 {
+                        reviewer: "correctness".into(),
+                        result_id: Some(id('4')),
+                        findings: vec![],
+                    },
+                ],
+                coverage: handoff::coverage(
+                    Some(&["pagination.py".to_owned()]),
+                    BTreeMap::from([("bugs".into(), None), ("correctness".into(), None)]),
+                    ["pagination.py"],
+                ),
+                verified_fixed: vec![],
             }),
             evaluation: None,
         };
         document.validate().unwrap();
+        // A reviewer whose result is missing is covered as not run, never as clean.
+        let mut missing = document.clone();
+        missing.round.as_mut().unwrap().reviewers[1].result_id = None;
+        assert!(
+            missing.validate().is_err(),
+            "a missing result covered as reviewed"
+        );
+        missing.round.as_mut().unwrap().coverage = handoff::coverage(
+            Some(&["pagination.py".to_owned()]),
+            BTreeMap::from([
+                ("bugs".into(), None),
+                ("correctness".into(), Some("no result".into())),
+            ]),
+            ["pagination.py"],
+        );
+        assert!(
+            missing.validate().is_err(),
+            "a not-run reviewer left out of missing"
+        );
+        missing.round.as_mut().unwrap().missing_reviewers = vec!["correctness".into()];
+        missing.validate().unwrap();
+        // A verified fix names the round's own Snapshot.
+        let mut fixed = document.clone();
+        fixed.round.as_mut().unwrap().verified_fixed = vec![handoff::VerifiedFixV1 {
+            finding_id: id('9'),
+            record_id: id('8'),
+            snapshot_id: id('7'),
+        }];
+        assert!(
+            fixed.validate().is_err(),
+            "a fix verified on another Snapshot"
+        );
+        fixed.round.as_mut().unwrap().verified_fixed[0].snapshot_id = id('2');
+        fixed.validate().unwrap();
         document.round.as_mut().unwrap().counts.minor = 2;
         assert!(document.validate().is_err(), "counts that disagree");
         document.round = None;

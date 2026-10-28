@@ -72,15 +72,17 @@ impl TaskAuthority for Authority {
     }
 }
 
-/// The published `af/review-report@4` schema with the schemas it refers to.
+/// The published `af/review-report@5` schema with the schemas it refers to.
 fn report_validator() -> jsonschema::Validator {
     let schema: serde_json::Value =
-        serde_json::from_str(include_str!("../../../../schemas/review-report-v4.json")).unwrap();
+        serde_json::from_str(include_str!("../../../../schemas/review-report-v5.json")).unwrap();
     let mut registry = jsonschema::Registry::new();
     for raw in [
         include_str!("../../../../schemas/task-contracts-v1.json"),
         include_str!("../../../../schemas/task-token-usage-v3.json"),
         include_str!("../../../../schemas/task-review-accounting-v1.json"),
+        include_str!("../../../../schemas/task-findings-v2.json"),
+        include_str!("../../../../schemas/task-state-v1.json"),
     ] {
         let resource: serde_json::Value = serde_json::from_str(raw).unwrap();
         let id = resource["$id"].as_str().unwrap().to_owned();
@@ -596,7 +598,7 @@ fn failures_before_first_conclusion_use_common_provider_and_business_attempts() 
     assert_eq!(provider["reserved_tokens"], "10");
     let view = crate::read_report_view(&f.store, &f.cas, "accounting").unwrap();
     let view = serde_json::to_value(view).unwrap();
-    assert_eq!(view["schema"], "af/review-report@4");
+    assert_eq!(view["schema"], "af/review-report@5");
     assert_eq!(view["runs_recorded"], 0);
     assert!(view.get("spend").is_none());
     assert_eq!(view["task_accounting"][0]["chargeable_tokens"], "12");
@@ -706,7 +708,7 @@ fn inspection_keeps_one_attempts_wide_aggregate_and_native_components_exact() {
             .unwrap();
         let view = crate::read_report_view(&f.store, &f.cas, "accounting").unwrap();
         let value = serde_json::to_value(&view).unwrap();
-        assert_eq!(value["schema"], "af/review-report@4");
+        assert_eq!(value["schema"], "af/review-report@5");
         assert_eq!(
             value["task_accounting"][0]["chargeable_tokens"],
             (exact + 7).to_string()
@@ -811,7 +813,7 @@ fn overlapping_attempt_walls_merge_within_their_round_epoch() {
 }
 
 /// A Campaign whose first Task capture failed has no Task: its report is the same
-/// `af/review-report@4` document, with empty Task accounting and no Rounds.
+/// `af/review-report@5` document, with empty Task accounting, no Rounds and no coverage.
 #[test]
 fn a_campaign_without_a_task_reports_empty_task_accounting() {
     let directory = tempfile::tempdir().unwrap();
@@ -819,9 +821,10 @@ fn a_campaign_without_a_task_reports_empty_task_accounting() {
     let store = EventStore::open(directory.path().join("events.sqlite")).unwrap();
     let view = crate::read_report_view(&store, &cas, "empty").unwrap();
     let value = serde_json::to_value(view).unwrap();
-    assert_eq!(value["schema"], "af/review-report@4");
+    assert_eq!(value["schema"], "af/review-report@5");
     assert_eq!(value["task_accounting"], json!([]));
     assert_eq!(value["rounds"], json!([]));
+    assert_eq!(value["coverage"], json!(null));
     assert!(value.get("spend").is_none());
     let validator = report_validator();
     assert!(

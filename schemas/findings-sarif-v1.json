@@ -1,0 +1,619 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:af:schema:findings-sarif:1",
+  "title": "af/findings-sarif@1 SARIF 2.1.0 findings log",
+  "$comment": "What `af task findings ID --format sarif` and `af review report --format sarif` print (ADR-0248): one SARIF 2.1.0 log with one run. This schema states the SARIF 2.1.0 required structure af writes — `version`, `$schema`, `runs[].tool.driver`, each result's `ruleId`, `message`, `locations` and `level`, each invocation's `executionSuccessful` — and af's profile in the run's `properties`, whose `schema` is af/findings-sarif@1. It is not the official OASIS schema, which a later change vendors.",
+  "type": "object",
+  "required": [
+    "$schema",
+    "version",
+    "runs"
+  ],
+  "properties": {
+    "$schema": {
+      "const": "https://docs.oasis-open.org/sarif/sarif/v2.1.0/errata01/os/schemas/sarif-schema-2.1.0.json"
+    },
+    "version": {
+      "const": "2.1.0"
+    },
+    "runs": {
+      "type": "array",
+      "minItems": 1,
+      "maxItems": 1,
+      "items": {
+        "$ref": "#/$defs/run"
+      }
+    }
+  },
+  "$defs": {
+    "digest": {
+      "type": "string",
+      "pattern": "^sha256:[0-9a-f]{64}$"
+    },
+    "run": {
+      "type": "object",
+      "required": [
+        "tool",
+        "invocations",
+        "results",
+        "properties"
+      ],
+      "properties": {
+        "tool": {
+          "type": "object",
+          "required": [
+            "driver"
+          ],
+          "properties": {
+            "driver": {
+              "type": "object",
+              "required": [
+                "name",
+                "version",
+                "rules"
+              ],
+              "properties": {
+                "name": {
+                  "const": "af"
+                },
+                "version": {
+                  "type": "string",
+                  "minLength": 1
+                },
+                "informationUri": {
+                  "type": "string"
+                },
+                "rules": {
+                  "type": "array",
+                  "items": {
+                    "type": "object",
+                    "required": [
+                      "id",
+                      "name",
+                      "shortDescription"
+                    ],
+                    "properties": {
+                      "id": {
+                        "type": "string",
+                        "pattern": "^af-review/"
+                      },
+                      "name": {
+                        "type": "string",
+                        "minLength": 1
+                      },
+                      "shortDescription": {
+                        "type": "object",
+                        "required": [
+                          "text"
+                        ],
+                        "properties": {
+                          "text": {
+                            "type": "string",
+                            "minLength": 1
+                          }
+                        }
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          }
+        },
+        "invocations": {
+          "type": "array",
+          "minItems": 1,
+          "maxItems": 1,
+          "items": {
+            "type": "object",
+            "required": [
+              "executionSuccessful",
+              "toolExecutionNotifications"
+            ],
+            "properties": {
+              "executionSuccessful": {
+                "type": "boolean"
+              },
+              "toolExecutionNotifications": {
+                "type": "array",
+                "items": {
+                  "type": "object",
+                  "required": [
+                    "level",
+                    "message"
+                  ],
+                  "properties": {
+                    "level": {
+                      "enum": [
+                        "none",
+                        "note",
+                        "warning",
+                        "error"
+                      ]
+                    },
+                    "message": {
+                      "$ref": "#/$defs/message"
+                    }
+                  }
+                }
+              }
+            }
+          }
+        },
+        "results": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/result"
+          }
+        },
+        "properties": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "schema",
+            "round",
+            "snapshot_id",
+            "coverage",
+            "verified_fixed"
+          ],
+          "properties": {
+            "schema": {
+              "const": "af/findings-sarif@1"
+            },
+            "task_id": {
+              "type": "string",
+              "minLength": 1
+            },
+            "campaign": {
+              "type": "string",
+              "minLength": 1
+            },
+            "round": {
+              "anyOf": [
+                {
+                  "type": "integer",
+                  "minimum": 1
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
+            "snapshot_id": {
+              "anyOf": [
+                {
+                  "$ref": "#/$defs/digest"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
+            "coverage": {
+              "anyOf": [
+                {
+                  "$ref": "#/$defs/coverage"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
+            "verified_fixed": {
+              "type": "array",
+              "items": {
+                "$ref": "#/$defs/verified_fix"
+              }
+            }
+          },
+          "oneOf": [
+            {
+              "required": [
+                "task_id"
+              ]
+            },
+            {
+              "required": [
+                "campaign"
+              ]
+            }
+          ],
+          "$comment": "The af profile: the Task or the Campaign, the round and Snapshot reported, what it covered (null when nothing was reviewed), and the findings a verification record proved fixed."
+        }
+      }
+    },
+    "message": {
+      "type": "object",
+      "required": [
+        "text"
+      ],
+      "properties": {
+        "text": {
+          "type": "string",
+          "minLength": 1
+        }
+      }
+    },
+    "result": {
+      "type": "object",
+      "required": [
+        "ruleId",
+        "ruleIndex",
+        "level",
+        "message",
+        "locations",
+        "properties"
+      ],
+      "properties": {
+        "ruleId": {
+          "type": "string",
+          "pattern": "^af-review/"
+        },
+        "ruleIndex": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "level": {
+          "enum": [
+            "none",
+            "note",
+            "warning",
+            "error"
+          ]
+        },
+        "message": {
+          "$ref": "#/$defs/message"
+        },
+        "locations": {
+          "type": "array",
+          "minItems": 1,
+          "items": {
+            "$ref": "#/$defs/location"
+          }
+        },
+        "partialFingerprints": {
+          "type": "object",
+          "additionalProperties": {
+            "type": "string"
+          }
+        },
+        "suppressions": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "required": [
+              "kind",
+              "status"
+            ],
+            "properties": {
+              "kind": {
+                "const": "external"
+              },
+              "status": {
+                "const": "accepted"
+              },
+              "justification": {
+                "type": "string"
+              }
+            }
+          }
+        },
+        "properties": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "title",
+            "severity",
+            "reviewer",
+            "status",
+            "agent_prompt"
+          ],
+          "properties": {
+            "title": {
+              "type": "string",
+              "minLength": 1
+            },
+            "severity": {
+              "enum": [
+                "minor",
+                "major",
+                "blocker"
+              ]
+            },
+            "reviewer": {
+              "type": "string",
+              "minLength": 1
+            },
+            "status": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "agent_prompt": {
+              "$ref": "#/$defs/agent_prompt"
+            }
+          }
+        }
+      }
+    },
+    "location": {
+      "type": "object",
+      "oneOf": [
+        {
+          "required": [
+            "physicalLocation"
+          ],
+          "properties": {
+            "physicalLocation": {
+              "type": "object",
+              "required": [
+                "artifactLocation"
+              ],
+              "properties": {
+                "artifactLocation": {
+                  "type": "object",
+                  "required": [
+                    "uri"
+                  ],
+                  "properties": {
+                    "uri": {
+                      "type": "string",
+                      "minLength": 1
+                    }
+                  }
+                },
+                "region": {
+                  "type": "object",
+                  "required": [
+                    "startLine"
+                  ],
+                  "properties": {
+                    "startLine": {
+                      "type": "integer",
+                      "minimum": 1
+                    }
+                  }
+                }
+              }
+            }
+          }
+        },
+        {
+          "required": [
+            "logicalLocations"
+          ],
+          "properties": {
+            "logicalLocations": {
+              "type": "array",
+              "minItems": 1,
+              "items": {
+                "type": "object",
+                "required": [
+                  "name"
+                ],
+                "properties": {
+                  "name": {
+                    "type": "string",
+                    "minLength": 1
+                  },
+                  "kind": {
+                    "type": "string"
+                  }
+                }
+              }
+            }
+          }
+        }
+      ]
+    },
+    "agent_prompt": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "location",
+        "evidence",
+        "requested_change",
+        "verification",
+        "text"
+      ],
+      "properties": {
+        "location": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "file",
+            "line",
+            "snapshot_id"
+          ],
+          "properties": {
+            "file": {
+              "anyOf": [
+                {
+                  "type": "string",
+                  "minLength": 1,
+                  "maxLength": 65536,
+                  "pattern": "\\S"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
+            "line": {
+              "anyOf": [
+                {
+                  "type": "integer",
+                  "minimum": 1
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
+            "snapshot_id": {
+              "$ref": "#/$defs/digest"
+            }
+          }
+        },
+        "evidence": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 65536,
+          "pattern": "\\S"
+        },
+        "requested_change": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 65536,
+          "pattern": "\\S"
+        },
+        "verification": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 65536,
+          "pattern": "\\S"
+        },
+        "text": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 65536,
+          "pattern": "\\S"
+        }
+      },
+      "$comment": "The finding handed to the agent that will fix it (ADR-0248): its location on the Snapshot the round reviewed (`file` and `line` null for a change-wide finding), the quoted evidence, the requested change (the reviewer's fix, or what is asked when it proposed none), how verification will judge a fix, and all of it as one prompt `text`."
+    },
+    "coverage": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "subject",
+        "reviewers",
+        "paths"
+      ],
+      "properties": {
+        "subject": {
+          "enum": [
+            "diff",
+            "whole_tree"
+          ]
+        },
+        "reviewers": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "reviewer",
+              "state",
+              "reason"
+            ],
+            "properties": {
+              "reviewer": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 4096,
+                "pattern": "\\S"
+              },
+              "state": {
+                "enum": [
+                  "reviewed",
+                  "not_run"
+                ]
+              },
+              "reason": {
+                "anyOf": [
+                  {
+                    "type": "string",
+                    "minLength": 1,
+                    "maxLength": 65536,
+                    "pattern": "\\S"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
+              }
+            },
+            "if": {
+              "properties": {
+                "state": {
+                  "const": "not_run"
+                }
+              }
+            },
+            "then": {
+              "properties": {
+                "reason": {
+                  "type": "string",
+                  "minLength": 1,
+                  "maxLength": 65536,
+                  "pattern": "\\S"
+                }
+              }
+            },
+            "else": {
+              "properties": {
+                "reason": {
+                  "type": "null"
+                }
+              }
+            }
+          }
+        },
+        "paths": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "path",
+              "state"
+            ],
+            "properties": {
+              "path": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 4096,
+                "pattern": "\\S"
+              },
+              "state": {
+                "enum": [
+                  "reviewed",
+                  "partially_reviewed",
+                  "not_reviewed",
+                  "outside_round"
+                ]
+              }
+            }
+          }
+        }
+      },
+      "$comment": "What the round covered (ADR-0248). Each reviewer is `reviewed` (no findings from it means none found) or `not_run` with why (no findings from it means nothing). Each path of a diff round's Subject, then each path a finding names outside it (`outside_round`); a whole-tree round lists the paths its findings name. A path inside the round is `reviewed` when every reviewer ran, `partially_reviewed` when some did, `not_reviewed` when none did."
+    },
+    "verified_fix": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "finding_id",
+        "record_id",
+        "snapshot_id"
+      ],
+      "properties": {
+        "finding_id": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 4096,
+          "pattern": "\\S"
+        },
+        "record_id": {
+          "$ref": "#/$defs/digest"
+        },
+        "snapshot_id": {
+          "$ref": "#/$defs/digest"
+        }
+      },
+      "$comment": "A finding verified fixed: the positive verification record that says so (an `af/TaskFixReceipt@1` on the Task path, a `FixVerification@1` on the Campaign path) and the Snapshot it was verified on. Nothing else is reported as verified fixed."
+    }
+  }
+}

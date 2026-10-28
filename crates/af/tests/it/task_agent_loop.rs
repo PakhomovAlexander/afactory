@@ -337,7 +337,7 @@ fn ids_elided(text: &str) -> String {
 }
 
 /// Item 1: per reviewer each finding with its severity, confidence, title, location, evidence
-/// and fix, grouped by severity, then the evaluator's verdict; one `af/task-findings@1` under
+/// and fix, grouped by severity, then the evaluator's verdict; one `af/task-findings@2` under
 /// `--json`; a Task without a review round says so with its state; a round it did not record is
 /// refused by its number.
 #[test]
@@ -388,6 +388,7 @@ fn findings_print_each_reviewers_findings_by_severity_and_the_evaluators_verdict
 Task chain-base: finished/verified; review round 1 of 1 (pass) on sha256:…
   bugs: 1 major, 1 minor
   correctness: no findings
+  coverage: every reviewer ran (2 reviewers); 4 paths reviewed
 
 major
   [bugs] Reject negative offset, confidence 0.99, open
@@ -415,9 +416,9 @@ next: af task deliver chain-base --branch af/chain-base --worktree ../chain-base
     let value = document(
         &af(&repo, &state, &["task", "findings", "chain-base", "--json"]),
         0,
-        Some("task-findings-v1.json"),
+        Some("task-findings-v2.json"),
     );
-    assert_eq!(value["schema"], "af/task-findings@1");
+    assert_eq!(value["schema"], "af/task-findings@2");
     assert_eq!(value["rounds"], 1);
     let round = &value["round"];
     assert_eq!(
@@ -436,8 +437,53 @@ next: af task deliver chain-base --branch af/chain-base --worktree ../chain-base
         "Raise ValueError for a negative offset."
     );
     assert_eq!(round["reviewers"][1]["findings"], serde_json::json!([]));
+    // Item 1 of ADR-0248: each finding is handed over as a prompt, on the reviewed Snapshot.
+    let prompt = &bugs["findings"][0]["agent_prompt"];
+    assert_eq!(prompt["location"]["file"], "pagination.py");
+    assert_eq!(prompt["location"]["line"], 1);
+    assert_eq!(prompt["location"]["snapshot_id"], round["snapshot_id"]);
+    assert_eq!(prompt["evidence"], "A negative offset slices from the end.");
+    assert_eq!(
+        prompt["requested_change"],
+        "Raise ValueError for a negative offset."
+    );
+    assert!(
+        prompt["verification"]
+            .as_str()
+            .unwrap()
+            .contains("af/TaskFixReceipt@1"),
+        "{prompt}"
+    );
+    assert!(
+        prompt["text"]
+            .as_str()
+            .unwrap()
+            .contains("Location: pagination.py:1 on Snapshot sha256:"),
+        "{prompt}"
+    );
+    // Item 2: both reviewers ran, and every path the round changed is reviewed.
+    let coverage = &round["coverage"];
+    assert_eq!(
+        coverage["reviewers"],
+        serde_json::json!([
+            {"reviewer": "bugs", "state": "reviewed", "reason": null},
+            {"reviewer": "correctness", "state": "reviewed", "reason": null},
+        ])
+    );
+    let paths = coverage["paths"].as_array().unwrap();
+    assert_eq!(paths.len(), 4, "{coverage}");
+    assert!(
+        paths.iter().all(|path| path["state"] == "reviewed"),
+        "{coverage}"
+    );
+    assert!(
+        paths.iter().any(|path| path["path"] == "pagination.py"),
+        "{coverage}"
+    );
+    // Item 4: nothing is verified fixed without a verification record.
+    assert_eq!(round["verified_fixed"], serde_json::json!([]));
     assert_eq!(value["evaluation"]["outcome"], "passed");
-    let typed: review_core::task::agent_loop::TaskFindingsV1 =
+    let typed: review_core::task::agent_loop::TaskFindingsV2 =
         serde_json::from_value(value.clone()).unwrap();
     typed.validate().unwrap();
     assert_eq!(
@@ -456,6 +502,57 @@ next: af task deliver chain-base --branch af/chain-base --worktree ../chain-base
     );
     assert_eq!(first, value);
 
+    // Item 3: the same findings as one SARIF 2.1.0 log, with its required structure.
+    let sarif = document(
+        &af(
+            &repo,
+            &state,
+            &["task", "findings", "chain-base", "--format", "sarif"],
+        ),
+        0,
+        Some("findings-sarif-v1.json"),
+    );
+    assert_eq!(sarif["version"], "2.1.0");
+    assert!(
+        sarif["$schema"]
+            .as_str()
+            .unwrap()
+            .ends_with("sarif-schema-2.1.0.json")
+    );
+    let run = &sarif["runs"][0];
+    assert_eq!(run["tool"]["driver"]["name"], "af");
+    assert_eq!(run["properties"]["schema"], "af/findings-sarif@1");
+    assert_eq!(run["properties"]["task_id"], "chain-base");
+    assert_eq!(run["invocations"][0]["executionSuccessful"], true);
+    let results = run["results"].as_array().unwrap();
+    assert_eq!(results.len(), 2);
+    for (result, level, line) in [(&results[0], "warning", 1), (&results[1], "note", 2)] {
+        assert_eq!(result["ruleId"], "af-review/bugs");
+        assert_eq!(result["level"], level);
+        assert!(
+            result["message"]["text"]
+                .as_str()
+                .unwrap()
+                .contains("Requested change:")
+        );
+        let location = &result["locations"][0]["physicalLocation"];
+        assert_eq!(location["artifactLocation"]["uri"], "pagination.py");
+        assert_eq!(location["region"]["startLine"], line);
+    }
+    let both = af(
+        &repo,
+        &state,
+        &[
+            "task",
+            "findings",
+            "chain-base",
+            "--json",
+            "--format",
+            "sarif",
+        ],
+    );
+    assert_eq!(both.status.code(), Some(2), "{}", err(&both));
+
     // A Task whose Pipeline has no review says so, with the state it reached.
     let plain = expect(&af(&repo, &state, &["task", "findings", "gc-older"]), 0);
     assert!(
@@ -468,7 +565,7 @@ next: af task deliver chain-base --branch af/chain-base --worktree ../chain-base
     let none = document(
         &af(&repo, &state, &["task", "findings", "gc-older", "--json"]),
         0,
-        Some("task-findings-v1.json"),
+        Some("task-findings-v2.json"),
     );
     assert_eq!(
         (none["rounds"].clone(), none["round"].clone()),

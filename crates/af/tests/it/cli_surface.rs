@@ -72,6 +72,12 @@ fn report_json_and_format_are_mutually_exclusive() {
     let document: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
     assert_eq!(document["schema"], "af/error@2");
     assert!(document["error"].as_str().unwrap().contains("--format"));
+    // `af task findings` follows the same rule (ADR-0248).
+    let output = af(&["task", "findings", "t", "--json", "--format", "sarif"]);
+    assert_eq!(output.status.code(), Some(2));
+    let document: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+    assert_eq!(document["schema"], "af/error@2");
+    assert!(document["error"].as_str().unwrap().contains("--format"));
 }
 
 #[test]
@@ -263,7 +269,8 @@ fn task_states_topic_and_the_state_flags_describe_the_commands() {
     for needle in [
         "af/review-ledger@1",
         "af/review-show@1",
-        "af/review-report@4",
+        "af/review-report@5",
+        "af/findings-sarif@1",
         "af/task-inspection@13",
         "af/task-checks@2",
         "af/task-list@3",
@@ -1476,7 +1483,11 @@ fn the_agent_loop_verbs_and_the_agents_topic_describe_the_commands() {
             &["task", "findings", "--help"][..],
             &[
                 "--round <N>",
-                "af/task-findings@1",
+                "--format <FORMAT>",
+                "af/task-findings@2",
+                "agent_prompt",
+                "not reviewed",
+                "SARIF 2.1.0",
                 "severity, confidence, title, location, the quoted evidence",
                 "evaluator's verdict",
                 "Never:",
@@ -1701,7 +1712,7 @@ fn the_agent_loop_verbs_and_the_agents_topic_describe_the_commands() {
     }
     let json = out(&af(&["help", "json"]));
     for document in [
-        "af/task-findings@1",
+        "af/task-findings@2",
         "af/task-diff@1",
         "af/task-materialized@1",
         "af/task-status@2",

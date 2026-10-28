@@ -24,20 +24,21 @@ macro_rules! schema {
 pub(crate) const SCHEMAS: &[(&str, &str, &str)] = &[
     schema!("command-catalog", 1),
     schema!("error", 2),
+    schema!("findings-sarif", 1),
     schema!("provider-detect", 4),
     schema!("provider-models", 1),
     schema!("provider-setup", 2),
     schema!("provider-status", 4),
     schema!("review-ledger", 1),
     schema!("review-render", 2),
-    schema!("review-report", 4),
+    schema!("review-report", 5),
     schema!("review-show", 1),
     schema!("task-cancelled", 1),
     schema!("task-checks", 2),
     schema!("task-collected-inspection", 2),
     schema!("task-detached", 2),
     schema!("task-diff", 1),
-    schema!("task-findings", 1),
+    schema!("task-findings", 2),
     schema!("task-inspection", 13),
     schema!("task-list-entry", 3),
     schema!("task-list", 3),
@@ -157,7 +158,14 @@ mod tests {
         for (id, file, text) in SCHEMAS {
             let schema: serde_json::Value =
                 serde_json::from_str(text).unwrap_or_else(|error| panic!("{file}: {error}"));
-            assert_eq!(schema["properties"]["schema"]["const"], *id, "{file}");
+            // A SARIF log names its af profile in its run's properties (ADR-0248).
+            let constant = match schema["properties"]["schema"]["const"].as_str() {
+                Some(_) => &schema["properties"]["schema"]["const"],
+                None => {
+                    &schema["$defs"]["run"]["properties"]["properties"]["properties"]["schema"]["const"]
+                }
+            };
+            assert_eq!(constant, *id, "{file}");
             assert!(!title(text).is_empty(), "{file} has no title");
         }
     }

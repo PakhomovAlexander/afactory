@@ -121,12 +121,22 @@ node past its recovery allowance, also carries `cause`, `next_action` and `detai
 
 ## 4. Read the findings
 
-`af task findings TASK_ID --json` prints the last review round as one `af/task-findings@1`
+`af task findings TASK_ID --json` prints the last review round as one `af/task-findings@2`
 document: per reviewer, each finding with its severity, confidence, title, file and line, the
 quoted evidence and the proposed fix, the round's counts by severity, and the evaluator's
 verdict on that round with its reason. `--round N` reads an earlier round, with its own
 verdict. A Task that recorded no review round has `round: null`, and its `state` says how far
 it got. After `reviewer_findings` this is the command `next_action` names.
+
+Hand a finding to the agent that will fix it through its `agent_prompt`: the location on the
+reviewed Snapshot, the evidence, the requested change, how verification will judge the fix, and
+all of it as one `text`. Read the round's `coverage` before you read an empty list as clean: a
+reviewer whose `state` is `not_run` never looked, and its `reason` says why; a path is
+`reviewed`, `partially_reviewed`, `not_reviewed` or `outside_round`. A finding is verified fixed
+only when the round's `verified_fixed` names it with its verification record; a `fixed` status
+or a later change to the file is not proof. `af task findings TASK_ID --format sarif` prints
+the same findings as one SARIF 2.1.0 log for code-scanning tools; a review Campaign's report
+takes the same `--format sarif`.
 
 ## 5. Look at the change
 

@@ -105,7 +105,7 @@ elif args[:2] == ["review", "report"]:
     findings = [{"key": "sha256:%%064x" %% index, "title": "Fixture finding %%d" %% index,
                  "status": "open", "severity": "minor", "file": "src/fixture.txt",
                  "line": index} for index in range(1, 101)]
-    sys.stdout.write(json.dumps({"schema": "af/review-report@4", "campaign": "perf-campaign",
+    sys.stdout.write(json.dumps({"schema": "af/review-report@5", "campaign": "perf-campaign",
                                  "runs_recorded": 1, "ledger_round": 1,
                                  "findings_summary": dict(SUMMARY, open=100),
                                  "findings": findings}) + "\n")
@@ -1756,7 +1756,7 @@ class CliOracle(TempDir):
         return finding
 
     def report(self, findings, **summary):
-        document = {"schema": "af/review-report@4", "campaign": "perf-campaign",
+        document = {"schema": "af/review-report@5", "campaign": "perf-campaign",
                     "runs_recorded": 1, "ledger_round": 1, "final_verdict": "pass",
                     "rounds": [], "task_accounting": [], "demands": [],
                     "findings_summary": dict(self.SUMMARY, **summary), "findings": findings}

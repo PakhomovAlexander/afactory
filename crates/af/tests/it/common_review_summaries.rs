@@ -272,7 +272,7 @@ fn common_two_round_timing_and_attempt_summaries_reopen_without_synthetic_legacy
         .stdout,
     )
     .unwrap();
-    assert_eq!(report["schema"], "af/review-report@4");
+    assert_eq!(report["schema"], "af/review-report@5");
     assert_eq!(report["wall_ms"], expected_wall);
     assert_eq!(report["task_accounting"][0]["attempts_started"], "4");
     assert_eq!(
