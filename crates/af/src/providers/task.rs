@@ -11,6 +11,7 @@ use super::*;
 use review_core::task::plan::WorkerExecutionV1;
 use review_core::task::provider_event::{ProbeSilenceV1, ProviderEventV1};
 use review_runner::native_failure::NativeFailureKind;
+use review_runner::task::reply_schema::ReplyContract;
 use review_runner::task::{ModelWorkerReturn, Unstarted, WorkerModelAdapter};
 use review_runner_claude::models as rules;
 use std::sync::Arc;
@@ -742,9 +743,6 @@ impl WorkerModelAdapter for CurrentTaskProviderAdapter {
     fn model_settings(&self) -> Option<(String, String)> {
         self.native().model_settings()
     }
-    /// Sandbox-local environment (a carried Build Cache location) and the kernel-derived access
-    /// are forwarded to the native client exactly as they arrived, and only after the identity
-    /// recheck passes.
     fn invoke(
         &self,
         cas: &Cas,
@@ -754,6 +752,60 @@ impl WorkerModelAdapter for CurrentTaskProviderAdapter {
         access: review_runner::task::WorkerAccess,
         cancellation: Option<&AtomicBool>,
         environment: &[(String, String)],
+    ) -> ModelWorkerReturn {
+        self.invoke_constrained(
+            cas,
+            workdir,
+            input,
+            timeout,
+            access,
+            cancellation,
+            environment,
+            ReplyContract::Request,
+        )
+        .unwrap_or_else(|unstarted| *unstarted.0)
+    }
+    /// Sandbox-local environment (a carried Build Cache location), the kernel-derived access and
+    /// the reply contract are forwarded to the native client exactly as they arrived, and only
+    /// after the identity recheck passes.
+    fn invoke_constrained(
+        &self,
+        cas: &Cas,
+        workdir: &Path,
+        input: Vec<u8>,
+        timeout: Duration,
+        access: review_runner::task::WorkerAccess,
+        cancellation: Option<&AtomicBool>,
+        environment: &[(String, String)],
+        contract: ReplyContract,
+    ) -> Result<ModelWorkerReturn, Unstarted> {
+        Ok(self.invoke_current(
+            cas,
+            workdir,
+            input,
+            timeout,
+            access,
+            cancellation,
+            environment,
+            contract,
+        ))
+    }
+}
+
+impl CurrentTaskProviderAdapter {
+    /// One call to the current native client after its identity recheck; an executable that
+    /// could not be started is replaced by the installed client and rechecked again.
+    #[allow(clippy::too_many_arguments)]
+    fn invoke_current(
+        &self,
+        cas: &Cas,
+        workdir: &Path,
+        input: Vec<u8>,
+        timeout: Duration,
+        access: review_runner::task::WorkerAccess,
+        cancellation: Option<&AtomicBool>,
+        environment: &[(String, String)],
+        contract: ReplyContract,
     ) -> ModelWorkerReturn {
         let refuse = |reason: &str| ModelWorkerReturn {
             notes: Default::default(),
@@ -810,7 +862,7 @@ impl WorkerModelAdapter for CurrentTaskProviderAdapter {
             if let Err(reason) = availability::check(&identity.spec) {
                 return refuse(&reason);
             }
-            let mut returned = match native.invoke_started(
+            let mut returned = match native.invoke_constrained(
                 cas,
                 workdir,
                 input.clone(),
@@ -818,6 +870,7 @@ impl WorkerModelAdapter for CurrentTaskProviderAdapter {
                 access,
                 cancellation,
                 environment,
+                contract,
             ) {
                 Ok(returned) => returned,
                 Err(Unstarted(_)) if !is_executable(&identity.program) => continue,

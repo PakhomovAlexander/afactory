@@ -15,7 +15,7 @@ import time
 from . import (admission, archive, budget, builds, calibration, compare, contracts, diagnostics,
                gitrefs, history, host, hostlock, hostprep, planning, report, runner,
                telemetrybuild, telemetrylab, tomlfile)
-from .values import ContractError, canonical_digest, require, sha256_bytes
+from .values import ContractError, add_note, canonical_digest, require, sha256_bytes
 
 ROOT = telemetrylab.ROOT
 TERMINAL = ("complete", "failed", "interrupted", "uncertain", "submitted", "expired")
@@ -436,7 +436,7 @@ class Journal:
                             old.update(state="uncertain", detail=str(error)[:4096])
                             atomic(os.path.join(self.path(ident), "state.json"), old, "executor-state")
                 except BaseException as recording:
-                    error.add_note("uncertainty publication unconfirmed; retain original claim: %s" % recording)
+                    add_note(error, "uncertainty publication unconfirmed; retain original claim: %s" % recording)
                 raise
         finally:
             if lock is not None:

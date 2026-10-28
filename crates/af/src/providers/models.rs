@@ -722,10 +722,18 @@ fn selected_specs(specs: Vec<ProviderSpec>, ids: &[String]) -> Result<Vec<Provid
         let mut selected = Vec::new();
         for id in ids {
             let spec = specs.iter().find(|spec| &spec.id == id).ok_or_else(|| {
-                format!(
-                    "Provider {} not found in this machine's Provider registry or its \
+                crate::error_document::typed(
+                    format!(
+                        "Provider {} not found in this machine's Provider registry or its \
                          discovered contexts; af provider status lists the Providers af knows",
-                    hint::shown(id)
+                        hint::shown(id)
+                    ),
+                    crate::error_document::Detail::new(
+                        crate::error_document::Cause::ProviderNotRegistered,
+                    )
+                    .next("af provider status")
+                    .with("provider", id.as_str())
+                    .with("kind", "unspecified"),
                 )
             })?;
             if !selected

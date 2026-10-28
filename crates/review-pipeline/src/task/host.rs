@@ -84,6 +84,20 @@ pub trait TaskEnvironment: Sync {
         sandbox: Sandbox,
         outputs: BTreeMap<String, ArtifactInputV1>,
     ) -> Result<BTreeMap<String, ArtifactInputV1>, String>;
+    /// The tree a source-writing Worker left when its Attempt wall ended it, sealed as `finish`
+    /// seals a candidate and kept as one `af/TaskPartialCandidate@1` (ADR-0257), whose ID is
+    /// returned; `None` when the Worker writes no source or changed nothing. The record is raw
+    /// evidence of the failed Attempt, never an output.
+    fn retain_partial(
+        &self,
+        _cas: &Cas,
+        _invocation: &TaskInvocationV1,
+        _signature: &OperatorSignature,
+        _attempt: &PreparedTaskAttempt,
+        _sandbox: Sandbox,
+    ) -> Result<Option<String>, String> {
+        Ok(None)
+    }
 }
 
 /// Deterministic data-only Workers start in a fresh empty directory. They receive their
@@ -1027,7 +1041,35 @@ impl<'a> CapturedTaskHost<'a> {
             usage_observation = result.usage_observation;
             native_failure = result.native_failure;
             notes = result.notes;
-            let reply = result.reply?;
+            notes.environment |= native_failure
+                == Some(review_runner::native_failure::NativeFailureKind::Environment);
+            let reply = match result.reply {
+                Ok(reply) => reply,
+                // The Attempt wall ended the Worker: the tree a source writer left is sealed as
+                // a candidate is and kept as the Attempt's raw evidence, never as its output
+                // (ADR-0257).
+                Err(error)
+                    if super::attempt_wall_reached(attempt, &error)
+                        && crate::task::control::check(cancellation).is_ok() =>
+                {
+                    return match self.environment.retain_partial(
+                        cas,
+                        input,
+                        &worker.signature,
+                        attempt,
+                        sandbox,
+                    ) {
+                        Ok(partial) => {
+                            raw_artifact_ids.extend(partial);
+                            Err(error)
+                        }
+                        Err(why) => Err(format!(
+                            "{error}; the tree it left could not be sealed: {why}"
+                        )),
+                    };
+                }
+                Err(error) => return Err(error),
+            };
             // The domain's shape check before anything is recorded: a refusal is retry feedback
             // with its receipt, never only a diagnostic (ADR-0208).
             if let Err(refusal) = self.domain.check_worker_reply(cas, input, &reply) {
@@ -1186,12 +1228,19 @@ impl TaskOperatorHost for CapturedTaskHost<'_> {
         attempt: &ReservedTaskAttempt,
     ) -> Result<String, String> {
         let context_id = match self.resolved_worker(cas, definition)? {
-            Some(worker) => worker.contract.prepare(
-                cas,
-                input,
-                attempt.feedback_ids(),
-                &self.instructions(cas, input, &worker)?,
-            ),
+            Some(worker) => {
+                // A judging Worker's Diff Subject is checked before its context is bound: absent
+                // where the kernel builds one, or anything else, the Attempt never starts.
+                if !worker.signature.effects.contains("write-source") {
+                    super::source::check_diff_subject(cas, input, &worker.signature)?;
+                }
+                worker.contract.prepare(
+                    cas,
+                    input,
+                    attempt.feedback_ids(),
+                    &self.instructions(cas, input, &worker)?,
+                )
+            }
             None => self.domain.prepare_context(cas, input, definition, attempt),
         }?;
         let previous = self

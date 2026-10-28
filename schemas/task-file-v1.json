@@ -2,7 +2,7 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "urn:af:schema:task-file:1",
   "title": "TaskFile af.task-file/1",
-  "$comment": "JSON representation of the JSON/TOML CLI Task file. Admission additionally checks encoded byte bounds, sorted Jira fields, captured source/package existence, kind/profile compatibility and joint resource feasibility. Omitted options use their Rust defaults; explicit null is invalid. wall_ms is an input duration, optionally capped by command-line policy before the absolute deadline is validated. wall_ms starts at the first `af task run`, not at planning. Omitted `schema` reads as af.task-file/1. Omitted `limits` and `pipeline` come from `[task.defaults]` of the Authority Snapshot's `.af/af.toml`, and a Task file without `limits` is refused when the project declares none. `continue` plans the Task from a finished Task's reviewed candidate and hands its implementer that round's findings; `context` names files the Worker reads first, bound by digest (ADR-0212).",
+  "$comment": "JSON representation of the JSON/TOML CLI Task file. Admission additionally checks encoded byte bounds, sorted Jira fields, captured source/package existence, kind/profile compatibility and joint resource feasibility. Omitted options use their Rust defaults; explicit null is invalid. wall_ms is an input duration, optionally capped by command-line policy before the absolute deadline is validated. wall_ms starts at the first `af task run`, not at planning. Omitted `schema` reads as af.task-file/1. Omitted `limits` and `pipeline` come from `[task.defaults]` of the Authority Snapshot's `.af/af.toml`, and a Task file without `limits` is refused when the project declares none. `continue` plans the Task from a finished Task's reviewed candidate and hands its implementer that round's findings; `context` names files the Worker reads first, bound by digest (ADR-0212). `acceptance` states the items the evaluator judges by ID (ADR-0255).",
   "type": "object",
   "additionalProperties": false,
   "required": [
@@ -27,7 +27,7 @@
       "maxLength": 65536
     },
     "context": {
-      "description": "Files of the Task's source tree the Worker reads before the goal: each a repository path with an optional `#section` anchor, captured by its content digest into an af/TaskReadFirst@1 record and listed at the end of the Worker's requirements, after the project's `.af/rules.md`. A changed file is a changed plan.",
+      "description": "Files of the Task's source tree the Worker reads before the goal: each a repository path with an optional `#section` anchor, captured by its content digest in that tree into an af/TaskReadFirst@2 record, which names the tree, and listed at the end of the Worker's requirements, after the tree's `.af/rules.md`. A changed file is a changed plan.",
       "type": "array",
       "maxItems": 32,
       "uniqueItems": true,
@@ -75,6 +75,15 @@
     "requirements": {
       "type": "object",
       "minProperties": 1
+    },
+    "acceptance": {
+      "description": "Structured acceptance (ADR-0255): one to 32 items the result must meet, each under the ID the evaluator judges it by, in the af/TaskAcceptance@1 item shape (`id` a name, each ID once; `text` nonblank, at most 4096 characters). Captured at plan time as an af/TaskAcceptance@1 record, carried in the Task's af/TaskCheckReceipt@2 and handed to the evaluator on the selected Pipeline's optional `acceptance` root port, which that Pipeline (or every Pipeline accepting the kind) must declare, or the plan is refused. A passing evaluation names every item ID in its reason, or the Task does not verify. Absent, the Task plans and runs exactly as without the field.",
+      "type": "array",
+      "minItems": 1,
+      "maxItems": 32,
+      "items": {
+        "$ref": "urn:af:schema:task-acceptance:1#/$defs/item"
+      }
     },
     "inputs": {
       "$comment": "Optional root input bindings (ADR-0117, widened by ADR-0134). Absent by default; a Task file written before this decision compiles to the identical revision. Any root input the selected Pipeline declares may be bound except requirements, base and continuation; those and every undeclared name are refused by name at plan time, not here, so the refusal can say which Task and port asked for them. An exact artifact binds only source, history and sources; a list of Task outputs binds only a `many` port.",

@@ -1,0 +1,560 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:af:schema:task-event:1",
+  "title": "Task event af/task-event@1",
+  "$comment": "One line of `af task events ID` (ADR-0250): one event of the Task's log as the Store recorded it, with the Store's own gap-free sequence, or the one terminal record that ends the stream once the Task settled, carrying its state (outcome and next_action) and the exit code. `af task events ID --after N` prints only the events after sequence N. Read-only.",
+  "type": "object",
+  "required": [
+    "record",
+    "schema",
+    "task_id"
+  ],
+  "properties": {
+    "record": {
+      "enum": [
+        "event",
+        "terminal"
+      ]
+    },
+    "schema": {
+      "const": "af/task-event@1"
+    },
+    "task_id": {
+      "$ref": "urn:af:schema:task-contracts:1#/$defs/name"
+    }
+  },
+  "oneOf": [
+    {
+      "$ref": "#/$defs/event"
+    },
+    {
+      "$ref": "#/$defs/terminal"
+    }
+  ],
+  "$defs": {
+    "sequence": {
+      "type": "integer",
+      "minimum": 0,
+      "maximum": 9007199254740991
+    },
+    "text": {
+      "anyOf": [
+        {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 255,
+          "pattern": "\\S"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "event": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "record",
+        "schema",
+        "task_id",
+        "sequence",
+        "event_id",
+        "event_type",
+        "at_unix_ms",
+        "change",
+        "detail",
+        "node",
+        "attempt_id",
+        "result",
+        "charged_tokens"
+      ],
+      "properties": {
+        "record": {
+          "const": "event"
+        },
+        "schema": {
+          "const": "af/task-event@1"
+        },
+        "task_id": {
+          "$ref": "urn:af:schema:task-contracts:1#/$defs/name"
+        },
+        "sequence": {
+          "$ref": "#/$defs/sequence"
+        },
+        "event_id": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{26}$"
+        },
+        "event_type": {
+          "enum": [
+            "TaskTransition@5",
+            "TaskExecutionStarted@1",
+            "TaskGateRetried@1",
+            "TaskProviderEvent@1"
+          ]
+        },
+        "at_unix_ms": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 9007199254740991
+        },
+        "change": {
+          "enum": [
+            "recording_resumed",
+            "review_integration_selected",
+            "review_integration_finished",
+            "review_continued",
+            "adoption_observation_recorded",
+            "opened",
+            "lease_taken",
+            "lease_renewed",
+            "lease_released",
+            "source_refreshed",
+            "plan_proposed",
+            "planning_completed",
+            "plan_decided",
+            "approval_revoked",
+            "plan_admitted",
+            "waiting",
+            "resumed",
+            "finished",
+            "execution_recorded",
+            "run_reported",
+            "delivery_recorded",
+            "task_collected",
+            "gate_cleanup",
+            "storage_sweep",
+            "execution_started",
+            "gate_retried",
+            "provider_event"
+          ]
+        },
+        "detail": {
+          "anyOf": [
+            {
+              "type": "string",
+              "maxLength": 64,
+              "pattern": "^[a-z][a-z0-9_]*$"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "node": {
+          "$ref": "#/$defs/text"
+        },
+        "attempt_id": {
+          "$ref": "#/$defs/text"
+        },
+        "result": {
+          "enum": [
+            "succeeded",
+            "failed",
+            "abandoned",
+            null
+          ]
+        },
+        "charged_tokens": {
+          "anyOf": [
+            {
+              "$ref": "urn:af:schema:task-token-usage:3#/$defs/decimalU128"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      },
+      "allOf": [
+        {
+          "if": {
+            "properties": {
+              "change": {
+                "const": "execution_started"
+              }
+            }
+          },
+          "then": {
+            "properties": {
+              "event_type": {
+                "const": "TaskExecutionStarted@1"
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "change": {
+                "const": "gate_retried"
+              }
+            }
+          },
+          "then": {
+            "properties": {
+              "event_type": {
+                "const": "TaskGateRetried@1"
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "change": {
+                "const": "provider_event"
+              }
+            }
+          },
+          "then": {
+            "properties": {
+              "event_type": {
+                "const": "TaskProviderEvent@1"
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "change": {
+                "enum": [
+                  "execution_started",
+                  "gate_retried",
+                  "provider_event"
+                ]
+              }
+            }
+          },
+          "else": {
+            "properties": {
+              "event_type": {
+                "const": "TaskTransition@5"
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "change": {
+                "enum": [
+                  "execution_recorded",
+                  "waiting",
+                  "provider_event"
+                ]
+              }
+            }
+          },
+          "then": {
+            "properties": {
+              "detail": {
+                "type": "string"
+              }
+            }
+          },
+          "else": {
+            "properties": {
+              "detail": {
+                "type": "null"
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "change": {
+                "const": "execution_recorded"
+              },
+              "detail": {
+                "const": "settled"
+              }
+            }
+          },
+          "then": {
+            "properties": {
+              "result": {
+                "not": {
+                  "type": "null"
+                }
+              }
+            }
+          },
+          "else": {
+            "properties": {
+              "result": {
+                "type": "null"
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "change": {
+                "const": "execution_recorded"
+              },
+              "detail": {
+                "enum": [
+                  "settled",
+                  "usage_observed"
+                ]
+              }
+            }
+          },
+          "then": {
+            "properties": {
+              "charged_tokens": {
+                "type": "string"
+              }
+            }
+          },
+          "else": {
+            "properties": {
+              "charged_tokens": {
+                "type": "null"
+              }
+            }
+          }
+        }
+      ]
+    },
+    "terminal": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "record",
+        "schema",
+        "task_id",
+        "last_sequence",
+        "state",
+        "exit_code"
+      ],
+      "properties": {
+        "record": {
+          "const": "terminal"
+        },
+        "schema": {
+          "const": "af/task-event@1"
+        },
+        "task_id": {
+          "$ref": "urn:af:schema:task-contracts:1#/$defs/name"
+        },
+        "last_sequence": {
+          "$ref": "#/$defs/sequence"
+        },
+        "state": {
+          "allOf": [
+            {
+              "$ref": "urn:af:schema:task-state:2#/$defs/state"
+            },
+            {
+              "properties": {
+                "phase": {
+                  "not": {
+                    "const": "running"
+                  }
+                }
+              }
+            }
+          ]
+        },
+        "exit_code": {
+          "enum": [
+            0,
+            3,
+            4,
+            5,
+            6,
+            7
+          ]
+        }
+      },
+      "allOf": [
+        {
+          "if": {
+            "properties": {
+              "state": {
+                "properties": {
+                  "outcome": {
+                    "enum": [
+                      "verified"
+                    ]
+                  }
+                }
+              }
+            }
+          },
+          "then": {
+            "properties": {
+              "exit_code": {
+                "const": 0
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "state": {
+                "properties": {
+                  "outcome": {
+                    "enum": [
+                      "changes_requested"
+                    ]
+                  }
+                }
+              }
+            }
+          },
+          "then": {
+            "properties": {
+              "exit_code": {
+                "const": 3
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "state": {
+                "properties": {
+                  "outcome": {
+                    "enum": [
+                      "exhausted",
+                      "cancelled"
+                    ]
+                  }
+                }
+              }
+            }
+          },
+          "then": {
+            "properties": {
+              "exit_code": {
+                "const": 4
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "state": {
+                "properties": {
+                  "outcome": {
+                    "enum": [
+                      "gate_failed"
+                    ]
+                  }
+                }
+              }
+            }
+          },
+          "then": {
+            "properties": {
+              "exit_code": {
+                "const": 5
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "state": {
+                "properties": {
+                  "outcome": {
+                    "enum": [
+                      "provider_failed"
+                    ]
+                  }
+                }
+              }
+            }
+          },
+          "then": {
+            "properties": {
+              "exit_code": {
+                "const": 6
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "state": {
+                "properties": {
+                  "outcome": {
+                    "enum": [
+                      "expired"
+                    ]
+                  }
+                }
+              }
+            }
+          },
+          "then": {
+            "properties": {
+              "exit_code": {
+                "const": 7
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "state": {
+                "properties": {
+                  "outcome": {
+                    "type": "null"
+                  },
+                  "phase": {
+                    "const": "waiting"
+                  }
+                }
+              }
+            }
+          },
+          "then": {
+            "properties": {
+              "exit_code": {
+                "const": 4
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "state": {
+                "properties": {
+                  "outcome": {
+                    "type": "null"
+                  },
+                  "phase": {
+                    "not": {
+                      "const": "waiting"
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "then": {
+            "properties": {
+              "exit_code": {
+                "const": 0
+              }
+            }
+          }
+        }
+      ]
+    }
+  }
+}

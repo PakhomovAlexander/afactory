@@ -258,12 +258,12 @@ fn text(plan: &CollectionPlan, outcome: Option<&CollectionOutcome>) -> String {
     out
 }
 
-/// The `af/task-list-entry@3` of a collected Task: its retained summary, the result its log
+/// The `af/task-list-entry@4` of a collected Task: its retained summary, the result its log
 /// named, and `collected`; nothing artifact-backed. The unknown-usage count is the tombstone's,
 /// so the collected Task still lists `(+N unknown)` (ADR-0143).
 pub(super) fn list_entry(task: &CollectedTask) -> Value {
     let mut entry = json!({
-        "schema": super::TASK_LIST_ENTRY_V3,
+        "schema": super::TASK_LIST_ENTRY_V4,
         "task_id": task.collected.task_id,
         "kind": task.collected.kind,
         "phase": {"kind": "finished", "result_id": task.result_id},
@@ -281,12 +281,12 @@ pub(super) fn list_entry(task: &CollectedTask) -> Value {
     entry
 }
 
-/// The `af/task-collected-inspection@2` document `af task show --json` prints for a collected
+/// The `af/task-collected-inspection@3` document `af task show --json` prints for a collected
 /// Task in place of the artifact-backed inspection: its retained summary and the same state
 /// `af task list` prints for it.
 pub(super) fn inspection(task: &CollectedTask) -> Value {
     json!({
-        "schema": "af/task-collected-inspection@2",
+        "schema": "af/task-collected-inspection@3",
         "task_id": task.collected.task_id,
         "phase": {"kind": "finished", "result_id": task.result_id},
         "state": super::state::collected(&task.collected.outcome),

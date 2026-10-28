@@ -21,12 +21,12 @@
 //! proves it, and an app-server that exits before one, rejects `initialize` or answers it
 //! malformed (`{"id":1}`, a `null` or non-object `result`, a line that is not JSON-RPC) is
 //! reported as the missing protocol capability ([`protocol_incompatibility`]) on every surface
-//! alike.
+//! alike, except an observed host permission refusal before `initialize`, which proves neither
+//! compatibility nor login.
 //!
 //! The help page, the version and the CLI's error line are Provider-authored text: they reach
 //! human output, stderr and Attempt diagnostics bounded and stripped of control characters, never
-//! a versioned document, which carries only the closed `incompatible` state and the af-authored
-//! [`CliIncompatibility::summary`].
+//! a versioned document, which carries only closed states and af-authored diagnostics.
 
 use super::installation::{BoundedRun, StartFailure, VersionCheck, run_bounded, version_check};
 use super::*;
@@ -50,6 +50,93 @@ pub(crate) struct CliIncompatibility {
     kind: ProviderKind,
     program: String,
     lacks: Box<Lacks>,
+}
+
+/// The host refused a probe operation before af could establish compatibility or login.
+pub(crate) struct DeniedProbe {
+    provider: String,
+    operation: String,
+}
+
+impl DeniedProbe {
+    fn new(spec: &ProviderSpec, operation: String) -> Self {
+        Self {
+            provider: spec.id.clone(),
+            operation,
+        }
+    }
+
+    pub(crate) fn summary(&self) -> String {
+        format!(
+            "provider {}: host denied the Provider capability probe; compatibility and login could not be established",
+            self.provider
+        )
+    }
+
+    pub(crate) fn message(&self) -> String {
+        let context = AgentEnvironment::detect();
+        let location = if context.sandboxed {
+            " inside a detected sandbox"
+        } else {
+            ""
+        };
+        let remedy = if context.sandboxed {
+            "retry outside that sandbox or with host-approved permissions"
+        } else {
+            "retry with host-approved permissions or outside any sandbox"
+        };
+        format!(
+            "provider {}: the probe failed with a host permission denial{location}: {}; compatibility and login could not be established; {remedy}",
+            self.provider, self.operation
+        )
+    }
+}
+
+/// Environment markers describe the caller only; they never decide a capability probe.
+pub(crate) struct AgentEnvironment {
+    pub(crate) harness: Option<&'static str>,
+    pub(crate) sandboxed: bool,
+    pub(crate) network_allowed: Option<bool>,
+}
+
+impl AgentEnvironment {
+    pub(crate) fn detect() -> Self {
+        let codex_network = std::env::var("CODEX_SANDBOX_NETWORK_DISABLED").ok();
+        let codex = std::env::var_os("CODEX_THREAD_ID").is_some()
+            || std::env::var_os("CODEX_SANDBOX").is_some()
+            || codex_network.is_some();
+        let claude = std::env::var_os("CLAUDECODE").is_some()
+            || std::env::var_os("CLAUDE_CODE_SANDBOXED").is_some();
+        let sandboxed = std::env::var_os("CODEX_SANDBOX").is_some()
+            || codex_network.is_some()
+            || std::env::var("CLAUDE_CODE_SANDBOXED").is_ok_and(|value| value == "1");
+        let network_allowed = codex_network.map(|value| value != "1");
+        Self {
+            harness: if codex {
+                Some("Codex")
+            } else if claude {
+                Some("Claude Code")
+            } else {
+                None
+            },
+            sandboxed,
+            network_allowed,
+        }
+    }
+}
+
+fn permission_denied(error: &str) -> bool {
+    let lower = error.to_ascii_lowercase();
+    [
+        "operation not permitted",
+        "permission denied",
+        "os error 1",
+        "os error 13",
+        "eperm",
+        "eacces",
+    ]
+    .iter()
+    .any(|word| lower.contains(word))
 }
 
 /// What the CLI lacks, what it said, and how to fix it.
@@ -104,6 +191,8 @@ pub(super) enum CliRefusal {
     CannotStart(CliInstallationFailure),
     /// It starts and does not accept af's invocation.
     Incompatible(CliIncompatibility),
+    /// A host permission failure says nothing about the CLI's capabilities or login.
+    Denied(DeniedProbe),
     /// af gave up waiting, through a timeout, cancellation or the Attempt deadline, or could not
     /// run the check: nothing about the CLI is known, so nothing is dispatched to it either.
     Unchecked(String),
@@ -114,6 +203,7 @@ impl CliRefusal {
         match self {
             Self::CannotStart(failure) => failure.message(),
             Self::Incompatible(incompatibility) => incompatibility.message(),
+            Self::Denied(denied) => denied.message(),
             Self::Unchecked(reason) => reason.clone(),
         }
     }
@@ -154,6 +244,16 @@ pub(super) fn check_invocation(
             )));
         }
         BoundedRun::Unstartable(error) => {
+            if permission_denied(&error) {
+                return Err(CliRefusal::Denied(DeniedProbe::new(
+                    spec,
+                    format!(
+                        "`{}`: {}",
+                        invocation.help_command(),
+                        bounded_cli_line(&error)
+                    ),
+                )));
+            }
             return Err(CliRefusal::CannotStart(CliInstallationFailure::new(
                 spec,
                 path,
@@ -185,6 +285,18 @@ pub(super) fn check_invocation(
             stdout,
             stderr,
         } => {
+            if permission_denied(&String::from_utf8_lossy(&stderr)) {
+                let (line, _) = error_and_fix(&stderr, &stdout);
+                return Err(CliRefusal::Denied(DeniedProbe::new(
+                    spec,
+                    format!(
+                        "`{}` {}{}",
+                        invocation.help_command(),
+                        exit_description(&status),
+                        line.map(|line| format!(": {line}")).unwrap_or_default()
+                    ),
+                )));
+            }
             // Without a help page af cannot confirm a single option it passes.
             let (line, _) = error_and_fix(&stderr, &stdout);
             let said = line.map(|line| format!(": {line}")).unwrap_or_default();
@@ -246,6 +358,15 @@ fn check_app_server(
         &mut observed,
     ) {
         Ok(_) => Ok(()),
+        Err(error)
+            if !observed.answered
+                && permission_denied(&error)
+                && (error.starts_with("cannot start Codex app-server probe:")
+                    || (error.starts_with("codex app-server exited")
+                        && error.contains("before answering initialize"))) =>
+        {
+            Err(CliRefusal::Denied(DeniedProbe::new(spec, error)))
+        }
         Err(error) if observed.lacks_protocol => Err(protocol_incompatibility(
             program,
             spec,
@@ -383,6 +504,47 @@ mod tests {
             "{}",
             refused.summary()
         );
+    }
+
+    /// ADR-0246: a review-Campaign reviewer's dispatch passes its native reply schema, so a CLI
+    /// whose help page lacks the option that carries it is refused by the token-free check
+    /// before any paid dispatch, on both Providers, naming exactly that option.
+    #[test]
+    fn a_cli_without_the_native_reply_schema_option_is_refused() {
+        for (kind, option, help_args, version) in [
+            (
+                ProviderKind::Claude,
+                "--json-schema",
+                "$1",
+                "2.1.299 (Claude Code)",
+            ),
+            (
+                ProviderKind::Codex,
+                "--output-schema",
+                "$1 $2",
+                "codex-cli 0.121.0",
+            ),
+        ] {
+            let directory = tempfile::tempdir().unwrap();
+            let page = invocation(kind).help_args.join(" ");
+            let help: String = help_of(kind)
+                .lines()
+                .filter(|line| !line.contains(option))
+                .map(|line| format!("{line}\n"))
+                .collect();
+            let body = format!(
+                "[ \"$1\" = --version ] && {{ echo '{version}'; exit 0; }}\n[ \"{help_args}\" = '{page}' ] && {{ printf '%s' '{help}'; exit 0; }}\n{INITIALIZES}\nexit 64"
+            );
+            let Err(CliRefusal::Incompatible(refused)) = check(directory.path(), kind, &body)
+            else {
+                panic!("{option}: a CLI without the reply schema option was not refused");
+            };
+            let message = refused.message();
+            assert!(
+                message.contains(&format!("missing: {option};")),
+                "{message}"
+            );
+        }
     }
 
     #[test]
@@ -636,5 +798,41 @@ mod tests {
             panic!("a check af gave up on was judged");
         };
         assert!(reason.contains("deadline elapsed"), "{reason}");
+    }
+
+    #[test]
+    fn a_claude_help_probe_denied_by_the_host_is_not_incompatible() {
+        let directory = tempfile::tempdir().unwrap();
+        let body = "[ \"$1\" = --version ] && { echo '2.1.299 (Claude Code)'; exit 0; }\n\
+                    echo 'Error: Permission denied (os error 13)' >&2\nexit 1";
+        let Err(CliRefusal::Denied(denied)) = check(directory.path(), ProviderKind::Claude, body)
+        else {
+            panic!("a denied Claude help probe was not classified");
+        };
+        let message = denied.message();
+        assert!(
+            message.contains("`claude --help` exited 1: Error: Permission denied"),
+            "{message}"
+        );
+        assert!(!message.contains("upgrade"), "{message}");
+    }
+
+    #[test]
+    fn an_app_server_spawn_denied_by_the_host_is_not_missing_protocol() {
+        let directory = tempfile::tempdir().unwrap();
+        let help = help_of(ProviderKind::Codex);
+        let body = format!(
+            "[ \"$1 $2\" = 'exec --help' ] && {{ chmod 600 \"$0\"; printf '%s' '{help}'; exit 0; }}\nexit 64"
+        );
+        let Err(CliRefusal::Denied(denied)) = check(directory.path(), ProviderKind::Codex, &body)
+        else {
+            panic!("an app-server the host refused to spawn was not classified");
+        };
+        let message = denied.message();
+        assert!(
+            message.contains("cannot start Codex app-server probe: Permission denied"),
+            "{message}"
+        );
+        assert!(!message.contains("upgrade"), "{message}");
     }
 }

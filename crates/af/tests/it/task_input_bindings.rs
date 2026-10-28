@@ -115,7 +115,7 @@ fn fixture(root: &Path) -> (PathBuf, PathBuf) {
 
 /// A source refresh replaces the requirements artifact and nothing else. The binding record is
 /// provenance no port carries, so it has to survive the new revision on its own — in the
-/// revision the Store admitted, in the `af/task-inspection@13` document and in every view.
+/// revision the Store admitted, in the `af/task-inspection@14` document and in every view.
 #[test]
 fn an_issue_refresh_keeps_the_binding_record_of_the_revision_it_replaces() {
     let root = tempfile::tempdir().unwrap();
@@ -144,7 +144,7 @@ fn an_issue_refresh_keeps_the_binding_record_of_the_revision_it_replaces() {
 
     let plan = ["task", "plan", "--file", "successor-issue.json"];
     let planned = json(&repo, &state, &plan, 0);
-    assert_eq!(planned["schema"], "af/task-inspection@13");
+    assert_eq!(planned["schema"], "af/task-inspection@14");
     let binding = &planned["input_bindings"]["bindings"]["history"];
     assert_eq!(binding["artifact_id"], ledger);
 
@@ -153,12 +153,12 @@ fn an_issue_refresh_keeps_the_binding_record_of_the_revision_it_replaces() {
     ));
     let refreshed = json(&repo, &state, &["task", "refresh", "chain-issue"], 0);
     assert_ne!(refreshed["revision_id"], planned["revision_id"]);
-    assert_eq!(refreshed["schema"], "af/task-inspection@13");
+    assert_eq!(refreshed["schema"], "af/task-inspection@14");
     let binding = &refreshed["input_bindings"]["bindings"]["history"];
     assert_eq!(binding["artifact_id"], ledger);
     assert_eq!(binding["task"]["task_id"], "chain-base");
     assert_eq!(binding["task"]["port"], "history");
-    valid(&validator("task-inspection-v13.json"), &refreshed);
+    valid(&validator("task-inspection-v14.json"), &refreshed);
 
     // Read back from the revision the Store admitted, not from the one it replaced.
     let cas = review_store::Cas::open_existing(state.join("cas")).unwrap();
@@ -212,7 +212,7 @@ fn a_chain_of_tasks_becomes_a_chain_of_artifact_ids_in_one_store() {
     // One inspection generation: a Task without bindings prints the same `@11` document it
     // always did, without the field.
     assert_eq!(
-        base["schema"], "af/task-inspection@13",
+        base["schema"], "af/task-inspection@14",
         "{}",
         base["schema"]
     );
@@ -227,8 +227,8 @@ fn a_chain_of_tasks_becomes_a_chain_of_artifact_ids_in_one_store() {
     //    `empty_review_history` root default is suppressed.
     let plan_args = ["task", "plan", "--file", "successor-history.json"];
     let planned = json(&repo, &state, &plan_args, 0);
-    assert_eq!(planned["schema"], "af/task-inspection@13");
-    let inspection = validator("task-inspection-v13.json");
+    assert_eq!(planned["schema"], "af/task-inspection@14");
+    let inspection = validator("task-inspection-v14.json");
     valid(&inspection, &planned);
     // This real receipt is the conformance corpus of the self-optimizer adapter's `@12` unit
     // test; regenerate it with AF_WRITE_INSPECTION_FIXTURE=1 when the document changes.
@@ -258,7 +258,7 @@ fn a_chain_of_tasks_becomes_a_chain_of_artifact_ids_in_one_store() {
     let run_args = ["task", "run", "--execute", "chain-history"];
     let ran = json(&repo, &state, &run_args, 0);
     assert_eq!(ran["result"]["acceptance"], "satisfied");
-    assert_eq!(ran["schema"], "af/task-inspection@13");
+    assert_eq!(ran["schema"], "af/task-inspection@14");
     valid(&inspection, &ran);
     let shown = text(&repo, &state, &["task", "show", "chain-history"]);
     let line = "bound history <- task chain-base/history (satisfied)";
@@ -287,7 +287,7 @@ fn a_chain_of_tasks_becomes_a_chain_of_artifact_ids_in_one_store() {
 
     let bound = start("successor-source.json");
     assert_eq!(bound["result"]["acceptance"], "satisfied");
-    assert_eq!(bound["schema"], "af/task-inspection@13");
+    assert_eq!(bound["schema"], "af/task-inspection@14");
     let binding = bound["input_bindings"]["bindings"]["source"].clone();
     assert_eq!(binding["task"]["task_id"], "chain-base");
     assert_eq!(binding["task"]["port"], "snapshot");
@@ -303,7 +303,7 @@ fn a_chain_of_tasks_becomes_a_chain_of_artifact_ids_in_one_store() {
     // Its delivery is refused, before the prepared record and any Git mutation.
     let refused_tree = root.path().join("refused");
     let refused = deliver("chain-source", "chain/source", &refused_tree, 1);
-    assert_eq!(refused["schema"], "af/error@1");
+    assert_eq!(refused["schema"], "af/error@2");
     let reason = refused["error"].as_str().unwrap();
     assert!(reason.contains("task chain-base/snapshot"), "{reason}");
     assert!(reason.contains("no commit"), "{reason}");

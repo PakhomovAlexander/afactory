@@ -301,7 +301,7 @@ fn implementation_seals_s1_and_negative_or_unavailable_checks_skip_the_evaluator
         evaluate
             .contract
             .inputs
-            .insert("checks".into(), port(TASK_CHECK_RECEIPT_V1, same("source")));
+            .insert("checks".into(), port(TASK_CHECK_RECEIPT_V2, same("source")));
         evaluate.contract.outputs =
             BTreeMap::from([("result".into(), port(TASK_EVALUATION_V1, same("source")))]);
         evaluate.effects = BTreeSet::from(["read-source".into()]);

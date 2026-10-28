@@ -1,12 +1,13 @@
-//! The `af/error@1` document a command prints on stdout under `--json` when it fails
-//! (`af help json`, `schemas/error-v1.json`): the command, the error sentence and the exit code,
+//! The `af/error@2` document a command prints on stdout under `--json` when it fails
+//! (`af help json`, `schemas/error-v2.json`): the command, the error sentence and the exit code,
 //! and for a refusal af classifies, a `cause` from a closed vocabulary, the one command to run
 //! next and the facts behind the cause, so a script branches on fields rather than on prose.
+//! Version 2 adds `interrupted`, a command SIGINT or SIGTERM stopped (ADR-0256).
 
 use serde_json::{Map, Value, json};
 
 /// The document's `schema`.
-pub(crate) const ERROR_V1: &str = "af/error@1";
+pub(crate) const ERROR_V2: &str = "af/error@2";
 
 /// Why a classified refusal was refused: the `cause` of its document.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -21,17 +22,39 @@ pub(crate) enum Cause {
     TaskFileInvalid,
     /// A file the command names cannot be opened or read.
     InputUnreadable,
+    TaskNotFound,
+    NoTaskCatalog,
+    NoAuthority,
+    NotRepository,
+    ProviderNotRegistered,
+    UnknownReviewNode,
+    PlanMismatch,
+    DirtySource,
+    ReviewSelectorsMissing,
+    ReviewBindingMissing,
+    /// SIGINT or SIGTERM stopped the command (exit 130 or 143).
+    Interrupted,
 }
 
 impl Cause {
-    /// Every cause, as `schemas/error-v1.json` lists them.
-    #[cfg(test)]
-    pub(crate) const ALL: [Self; 5] = [
+    /// Every cause, as `schemas/error-v2.json` lists them.
+    pub(crate) const ALL: [Self; 16] = [
         Self::Usage,
         Self::RecoveryExhausted,
         Self::RefreshRefused,
         Self::TaskFileInvalid,
         Self::InputUnreadable,
+        Self::TaskNotFound,
+        Self::NoTaskCatalog,
+        Self::NoAuthority,
+        Self::NotRepository,
+        Self::ProviderNotRegistered,
+        Self::UnknownReviewNode,
+        Self::PlanMismatch,
+        Self::DirtySource,
+        Self::ReviewSelectorsMissing,
+        Self::ReviewBindingMissing,
+        Self::Interrupted,
     ];
 
     pub(crate) fn as_str(self) -> &'static str {
@@ -41,7 +64,101 @@ impl Cause {
             Self::RefreshRefused => "refresh_refused",
             Self::TaskFileInvalid => "task_file_invalid",
             Self::InputUnreadable => "input_unreadable",
+            Self::TaskNotFound => "task_not_found",
+            Self::NoTaskCatalog => "no_task_catalog",
+            Self::NoAuthority => "no_authority",
+            Self::NotRepository => "not_repository",
+            Self::ProviderNotRegistered => "provider_not_registered",
+            Self::UnknownReviewNode => "unknown_review_node",
+            Self::PlanMismatch => "plan_mismatch",
+            Self::DirtySource => "dirty_source",
+            Self::ReviewSelectorsMissing => "review_selectors_missing",
+            Self::ReviewBindingMissing => "review_binding_missing",
+            Self::Interrupted => "interrupted",
         }
+    }
+
+    pub(crate) fn explanation(self) -> &'static str {
+        match self {
+            Self::Usage => {
+                "The command line has an invalid or missing argument. Read this command's --help."
+            }
+            Self::RecoveryExhausted => {
+                "A Task node has no recovery Attempts left. Start a new Task."
+            }
+            Self::RefreshRefused => {
+                "No Pipeline can run the refreshed Task source. Inspect the selection."
+            }
+            Self::TaskFileInvalid => {
+                "A Task file field has a value af cannot accept. Correct that field."
+            }
+            Self::InputUnreadable => {
+                "A named input file cannot be read. Check its path and permissions."
+            }
+            Self::TaskNotFound => {
+                "The selected Task Store has no Task with that ID. List its Tasks."
+            }
+            Self::NoTaskCatalog => {
+                "The selected committed Authority Snapshot has no `.af/task-catalog.toml`. Preview with af onboard --tasks and add it with af onboard --tasks --apply; review and commit the result, then select that commit. af catalog init --repo .. --profile software --destination af-demo creates a deterministic starter beside the checkout."
+            }
+            Self::NoAuthority => {
+                "The selected commit has no .af/ authority. Run af onboard --apply, review and commit its output, then select that commit."
+            }
+            Self::NotRepository => {
+                "The selected path is not a Git repository. Choose a repository with a commit."
+            }
+            Self::ProviderNotRegistered => {
+                "The Provider ID is absent from this machine's registry. List or register Providers."
+            }
+            Self::UnknownReviewNode => {
+                "The named node is not a model Worker in this review pipeline. Inspect the plan's nodes."
+            }
+            Self::PlanMismatch => {
+                "The --confirm-plan digest differs from the Task's captured plan. Inspect and confirm the current plan."
+            }
+            Self::DirtySource => {
+                "The operation requires a clean source checkout. Inspect and resolve its changes."
+            }
+            Self::ReviewSelectorsMissing => {
+                "Review needs explicit trusted policy and Subject selectors. Use the suggested command when authority is unambiguous."
+            }
+            Self::ReviewBindingMissing => {
+                "A model Worker needs an explicit Provider binding. Use the suggested command only when each kind has exactly one enabled Provider."
+            }
+            Self::Interrupted => {
+                "SIGINT or SIGTERM stopped the command. Run the next action to resume or continue the Task it was running."
+            }
+        }
+    }
+}
+
+/// The list and individual explanations share the exact cause table used in documents.
+pub(crate) fn explain(cause: Option<&str>) -> Result<String, String> {
+    match cause {
+        None => {
+            let mut lines = Vec::new();
+            for cause in Cause::ALL {
+                let prefix = format!("  {:<26} ", cause.as_str());
+                let mut line = prefix.clone();
+                for word in cause.explanation().split_whitespace() {
+                    if line.len() + word.len() + usize::from(!line.ends_with(' ')) > 100 {
+                        lines.push(line.trim_end().to_owned());
+                        line = " ".repeat(prefix.len());
+                    }
+                    if !line.ends_with(' ') {
+                        line.push(' ');
+                    }
+                    line.push_str(word);
+                }
+                lines.push(line);
+            }
+            Ok(lines.join("\n"))
+        }
+        Some(name) => Cause::ALL
+            .iter()
+            .find(|cause| cause.as_str() == name)
+            .map(|cause| format!("{}: {}", cause.as_str(), cause.explanation()))
+            .ok_or_else(|| format!("unknown error cause {name}; run af help errors")),
     }
 }
 
@@ -79,7 +196,7 @@ impl Detail {
 /// for: a command's errors travel to `main` as sentences, and the document is printed there.
 static NOTED: std::sync::Mutex<Option<(String, Detail)>> = std::sync::Mutex::new(None);
 
-/// `message`, with `detail` noted for the `af/error@1` document `main` prints when this error
+/// `message`, with `detail` noted for the `af/error@2` document `main` prints when this error
 /// ends the command.
 pub(crate) fn typed(message: String, detail: Detail) -> String {
     *NOTED
@@ -98,7 +215,21 @@ pub(crate) fn take(error: &str) -> Option<Detail> {
     error.contains(&noted.0).then_some(noted.1)
 }
 
-/// One `af/error@1` document.
+/// The longest `next_action` `schemas/error-v2.json` admits, in characters.
+pub(crate) const MAX_NEXT_ACTION: usize = 4096;
+
+/// Whether `command` can be a document's `next_action`, a line a person pastes: an `af`
+/// command of at most [`MAX_NEXT_ACTION`] characters with no control character (a tab or a
+/// newline in a Store selector, say), as `schemas/error-v2.json` requires.
+pub(crate) fn pasteable(command: &str) -> bool {
+    command.len() > "af ".len()
+        && command.starts_with("af ")
+        && command.chars().count() <= MAX_NEXT_ACTION
+        && !command.chars().any(char::is_control)
+}
+
+/// One `af/error@2` document. A `next_action` no pasted line can carry ([`pasteable`]) is
+/// null, whichever writer composed it (ADR-0256).
 pub(crate) fn document(
     command: &str,
     error: &str,
@@ -106,14 +237,19 @@ pub(crate) fn document(
     detail: Option<&Detail>,
 ) -> Value {
     let mut document = json!({
-        "schema": ERROR_V1,
+        "schema": ERROR_V2,
         "command": command,
         "error": error,
         "exit_code": exit_code,
     });
     if let Some(detail) = detail {
         document["cause"] = json!(detail.cause.as_str());
-        document["next_action"] = json!(detail.next_action);
+        document["next_action"] = json!(
+            detail
+                .next_action
+                .as_deref()
+                .filter(|command| pasteable(command))
+        );
         if !detail.details.is_empty() {
             document["details"] = Value::Object(detail.details.clone());
         }
@@ -126,7 +262,8 @@ pub(crate) fn document(
 /// which are not errors, and for a command line without `--json`, whose output is clap's alone.
 pub(crate) fn usage(argv: &[String], error: &clap::Error) -> Option<Value> {
     use clap::error::ErrorKind;
-    if !argv.iter().skip(1).any(|word| word == "--json")
+    // `af task events` prints JSON lines without --json, so its usage error is a line too.
+    if !(argv.iter().skip(1).any(|word| word == "--json") || command_path(argv) == "af task events")
         || matches!(
             error.kind(),
             ErrorKind::DisplayHelp | ErrorKind::DisplayVersion
@@ -179,7 +316,7 @@ mod tests {
 
     fn schema_causes() -> Vec<String> {
         let schema: Value =
-            serde_json::from_str(include_str!("../../../schemas/error-v1.json")).unwrap();
+            serde_json::from_str(include_str!("../../../schemas/error-v2.json")).unwrap();
         schema["properties"]["cause"]["enum"]
             .as_array()
             .unwrap()
@@ -194,6 +331,65 @@ mod tests {
             schema_causes(),
             Cause::ALL.map(|cause| cause.as_str().to_owned())
         );
+    }
+
+    /// #331 item 10, every writer: a `next_action` no pasted line carries (a Store selector
+    /// with a tab or a newline, or a line past 4096 characters, which `--state ./././...`
+    /// reaches) is null in the document, which then validates against `error-v2.json`, as the
+    /// interrupted Task branch's `af task run ID --state DIR` does; one that fits is kept.
+    #[test]
+    fn a_next_action_no_line_can_carry_is_null_and_the_document_validates() {
+        let schema: Value =
+            serde_json::from_str(include_str!("../../../schemas/error-v2.json")).unwrap();
+        let validator = jsonschema::validator_for(&schema).unwrap();
+        let interrupted = |next: &str| {
+            let mut detail = Detail::new(Cause::Interrupted)
+                .with("signal", "SIGINT")
+                .with("task", "interrupted-ux");
+            detail.next_action = Some(next.to_owned());
+            document("af task", "interrupted by SIGINT", 130, Some(&detail))
+        };
+        let long = format!(
+            "af task run interrupted-ux --state {}../state",
+            "./".repeat(2100)
+        );
+        for next in [
+            "af task run interrupted-ux --state '../state\twith-tab'",
+            "af task run interrupted-ux --state '../state\nwith-newline'",
+            "af task run interrupted-ux --state '../state\u{7f}'",
+            long.as_str(),
+            "af ",
+            "rm -rf x",
+        ] {
+            let document = interrupted(next);
+            assert_eq!(document["next_action"], Value::Null, "{next:?}");
+            assert!(validator.is_valid(&document), "{document}");
+        }
+        let at_limit = format!("af task run t --state {}", "x".repeat(4096 - 22));
+        assert_eq!(at_limit.chars().count(), MAX_NEXT_ACTION);
+        for next in ["af task run interrupted-ux --state '../a b'", &at_limit] {
+            let document = interrupted(next);
+            assert_eq!(document["next_action"], json!(next));
+            assert!(validator.is_valid(&document), "{document}");
+        }
+        let past = format!("{at_limit}x");
+        assert_eq!(interrupted(&past)["next_action"], Value::Null);
+        assert!(!validator.is_valid(&json!({
+            "schema": "af/error@2", "command": "af task", "error": "e", "exit_code": 130,
+            "cause": "interrupted", "next_action": past,
+            "details": {"signal": "SIGINT", "task": null}
+        })));
+    }
+
+    #[test]
+    fn every_cause_has_the_same_explanation_in_the_list_and_topic() {
+        let list = explain(None).unwrap();
+        let words = list.split_whitespace().collect::<Vec<_>>().join(" ");
+        for cause in Cause::ALL {
+            let one = explain(Some(cause.as_str())).unwrap();
+            assert!(one.contains(cause.explanation()), "{one}");
+            assert!(words.contains(cause.explanation()), "{list}");
+        }
     }
 
     #[test]
@@ -211,7 +407,7 @@ mod tests {
         let document = document("af task", "e", 1, None);
         assert_eq!(
             document,
-            json!({"schema": "af/error@1", "command": "af task", "error": "e", "exit_code": 1})
+            json!({"schema": "af/error@2", "command": "af task", "error": "e", "exit_code": 1})
         );
     }
 
@@ -241,7 +437,7 @@ mod tests {
                 .collect();
             let error = crate::cli::Af::try_parse_from(&argv).unwrap_err();
             let document = usage(&argv, &error).unwrap_or_else(|| panic!("{argv:?}: {error}"));
-            assert_eq!(document["schema"], "af/error@1", "{argv:?}");
+            assert_eq!(document["schema"], "af/error@2", "{argv:?}");
             assert_eq!(document["exit_code"], 2, "{argv:?}");
             assert_eq!(document["cause"], "usage", "{argv:?}");
             assert_eq!(

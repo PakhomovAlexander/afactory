@@ -953,12 +953,15 @@ fn print_adoption_observation(
     Ok(())
 }
 
-pub(super) fn list(options: InspectOptions, sizes: bool) -> Result<(), String> {
+pub(super) fn list(options: InspectOptions, sizes: bool, attention: bool) -> Result<(), String> {
     let repository = std::fs::canonicalize(&options.repo)
         .map_err(|error| format!("opening repository {}: {error}", options.repo.display()))?;
     let state = resolve_task_state(&options.state, &repository)?;
     let mut tasks = super::task_execution::list_common(&state)
         .map_err(|error| super::store_release::explain(&state, error))?;
+    if attention {
+        return print_attention(&options, tasks);
+    }
     let store = if sizes {
         // Each uncollected Task's CAS bytes, from the same walk `af task gc` sweeps by
         // (ADR-0135). A collected Task reaches nothing. The rows and the walk are two reads: a
@@ -1018,7 +1021,7 @@ pub(super) fn show(options: InspectOptions, checks: bool) -> Result<(), String> 
     Err(super::task_execution::task_not_found(&state, task_id))
 }
 
-/// `af task report` (ADR-0142): one Markdown block, or one `af/task-report@2` document, over
+/// `af task report` (ADR-0142): one Markdown block, or one `af/task-report@3` document, over
 /// the named Tasks of one Store. Read-only; nothing is printed unless every Task is found.
 /// `af task report --pr-body`: the template it fills, and the base its lines added block counts
 /// from.
@@ -1053,7 +1056,8 @@ pub(super) fn report(
             serde_json::to_string(&report).map_err(|error| error.to_string())?
         );
     } else if let Some(body) = pr_body {
-        let block = super::task_execution::task_report::markdown(&report);
+        let unresolved = super::task_execution::task_report::unresolved(&state, &report)?;
+        let block = super::task_execution::task_report::markdown_pr_body(&report, unresolved);
         print!(
             "{}",
             super::task_execution::pr_body::render(&repository, body.template, body.base, &block)?
@@ -1326,7 +1330,11 @@ fn verify_source_authority(
     )?;
     if !staged.status.success() {
         if staged.status.code() == Some(1) {
-            return Err("target repository has staged changes".into());
+            return Err(crate::error_document::typed(
+                "target repository has staged changes; inspect its changes and retry".into(),
+                crate::error_document::Detail::new(crate::error_document::Cause::DirtySource)
+                    .with("repo", repository.display().to_string()),
+            ));
         }
         return Err(format!(
             "checking staged changes: {}",
@@ -1340,7 +1348,11 @@ fn verify_source_authority(
         || dirty.content_digest != assets.source.content_digest
         || dirty.manifest != assets.source_manifest
     {
-        return Err("target repository worktree is not clean at the Task source Snapshot".into());
+        return Err(crate::error_document::typed(
+            "target repository worktree is not clean at the Task source Snapshot; inspect its changes and retry".into(),
+            crate::error_document::Detail::new(crate::error_document::Cause::DirtySource)
+                .with("repo", repository.display().to_string()),
+        ));
     }
     Ok(())
 }
@@ -1780,7 +1792,7 @@ fn print_task_list(
 ) -> Result<(), String> {
     if options.json {
         let mut document = serde_json::json!({
-            "schema": TASK_LIST_V3,
+            "schema": TASK_LIST_V4,
             "tasks": tasks,
         });
         if let Some(store) = store {
@@ -1890,6 +1902,27 @@ fn print_task_list(
     Ok(())
 }
 
+/// `af task list --attention`: the same entries grouped by what each Task waits for, from its
+/// state alone; `af/task-attention@1` under `--json`.
+fn print_attention(options: &InspectOptions, tasks: Vec<serde_json::Value>) -> Result<(), String> {
+    use super::task_execution::attention;
+    let groups = attention::groups(tasks)?;
+    if options.json {
+        println!(
+            "{}",
+            serde_json::to_string(&attention::document(&groups)).map_err(|e| e.to_string())?
+        );
+        return Ok(());
+    }
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |elapsed| elapsed.as_millis() as u64);
+    for line in attention::lines(&groups, now, crate::human::width())? {
+        println!("{line}");
+    }
+    Ok(())
+}
+
 /// One row of `af task list`'s table, its columns aligned to `widths` two spaces apart, or in
 /// the narrow layout one space apart and without the `NEXT` column.
 fn list_row(row: &[String; 6], widths: &[usize; 6], wide: bool) -> String {
@@ -1910,10 +1943,10 @@ fn list_row(row: &[String; 6], widths: &[usize; 6], wide: bool) -> String {
 }
 
 /// The document `af task list --json` prints.
-pub(crate) const TASK_LIST_V3: &str = "af/task-list@3";
+pub(crate) const TASK_LIST_V4: &str = "af/task-list@4";
 
 /// How long ago, as `af task list` prints it: `45s`, `12m`, `3h`, `2d`.
-fn age(ms: u64) -> String {
+pub(crate) fn age(ms: u64) -> String {
     let seconds = ms / 1_000;
     match seconds {
         0..60 => format!("{seconds}s"),

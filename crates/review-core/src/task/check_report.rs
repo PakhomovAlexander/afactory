@@ -17,7 +17,7 @@
 //! a gate that runs one nextest selection per test class writes one per class. The gate's
 //! failed and flaky tests and the step that stopped a check come from its report when the check
 //! writes one, and from the text scan of its output only for a check without one (absent or
-//! refused). The report still never decides the check's status (ADR-0254).
+//! refused). The report still never decides the check's status (ADR-0258).
 
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -47,7 +47,7 @@ const MAX_REFUSAL_CHARS: usize = 1024;
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct TaskCheckReportV1 {
-    /// The `af/TaskCheckReceipt@1` these checks' results are recorded in.
+    /// The `af/TaskCheckReceipt@2` these checks' results are recorded in.
     pub receipt_id: String,
     /// One entry per local check that started, by check name.
     pub checks: BTreeMap<String, TaskCheckRunV1>,
@@ -446,7 +446,7 @@ pub fn parse_check_report(
 ///
 /// `flaky` is the runs' entries in order, each name once, the first [`MAX_FLAKY_TESTS`].
 /// `rerun` is the strongest of the runs' by `over_bound` > `isolated` > `not_run` >
-/// `not_needed`. The result holds [`CheckTestsV1::validate`] (ADR-0254 gives the reasons).
+/// `not_needed`. The result holds [`CheckTestsV1::validate`] (ADR-0258 gives the reasons).
 pub fn fold_tests(runs: Vec<(usize, CheckTestsV1)>) -> Result<Option<CheckTestsV1>, String> {
     let precedence = |rerun: CheckRerunV1| match rerun {
         CheckRerunV1::OverBound => 3,

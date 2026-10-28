@@ -1,6 +1,6 @@
 schema = "af.worker/1"
 name = "kernel/uix"
-version = "1.5.0"
+version = "1.6.0"
 
 [signature]
 effects = ["read-source", "execute-checks"]
@@ -25,6 +25,16 @@ optional = false
 covers = []
 
 [signature.contract.inputs.checks.affinity]
+kind = "same_as"
+input = "source"
+
+[signature.contract.inputs.diff_subject]
+artifact_type = "af/DiffSubject@1"
+cardinality = "one"
+optional = true
+covers = []
+
+[signature.contract.inputs.diff_subject.affinity]
 kind = "same_as"
 input = "source"
 

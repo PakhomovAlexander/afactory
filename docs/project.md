@@ -106,7 +106,7 @@ The delivery receipt is unchanged.
 ## Commands
 
 Every command answers on stdout; `--json` prints one versioned document. Exit codes are 0 for
-success, 1 for a failure whose message names the next action (`af/error@1` under `--json`) and 2
+success, 1 for a failure whose message names the next action (`af/error@2` under `--json`) and 2
 for a usage error.
 
 ### `af project show`

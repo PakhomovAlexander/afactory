@@ -1,9 +1,9 @@
 # Review accounting inspection
 
 `af review report --format json` always uses
-[`af/review-report@4`](../../schemas/review-report-v4.json). A Campaign whose first Task capture
-failed has no Task: its report is the same document, with an empty `task_accounting` array and no
-Rounds. The `task_accounting` array reads each
+[`af/review-report@5`](../../schemas/review-report-v5.json). A Campaign whose first Task capture
+failed has no Task: its report is the same document, with an empty `task_accounting` array, no
+Rounds and a null `coverage`. The `task_accounting` array reads each
 distinct Task's validated common execution ledger, including failures before the first
 canonical report or selected Reviewer output. Inspection opens the Store and CAS read-only and
 does not create events, receipts or missing artifacts.
@@ -33,3 +33,20 @@ reservation cap.
 
 Text and Markdown distinguish “Task cumulative charge at report” from current “Task accounting”.
 The same historical snapshot label is used by Campaign listing.
+
+## Findings handoff and coverage
+
+Each finding carries an `agent_prompt` and a `verified_fix`
+([ADR-0248](../adr/0248-hand-review-findings-to-the-agent-that-will-fix-them.md)). The prompt
+names the finding's location on the head Snapshot of the Round that last saw it, its evidence,
+the requested change and how the next Round judges a fix. `verified_fix` is non-null only when
+the finding's fixed Resolution names a positive `FixVerification@1`: the record and the Snapshot
+of its Subject. A `fixed` status without that record stays `null`.
+
+`coverage` describes the last recorded run: its Round and head Snapshot, each `reviewer` and
+`scatter` node of the pinned plan as `reviewed` or `not_run` with the reason its outcome
+recorded, and each path of the Round's Subject as `reviewed`, `partially_reviewed` or
+`not_reviewed`, then each path a finding of that Round names outside it as `outside_round`. Text
+and Markdown print the same coverage before the findings. `--format sarif` prints the findings
+as one SARIF 2.1.0 log; a finding with a verified fix is listed in the run's `verified_fixed`
+instead of as a result.

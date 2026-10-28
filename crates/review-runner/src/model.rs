@@ -79,6 +79,12 @@ impl std::error::Error for RunnerError {}
 /// The words of a timeout after the Worker's name.
 const TIMED_OUT: &str = "did not answer within";
 
+/// Whether a Worker failure `message` says this layer killed the Worker at its deadline
+/// (`… did not answer within 500ms and was killed`), wherever an adapter wrapped it.
+pub fn names_timed_out(message: &str) -> bool {
+    message.contains(&format!(" {TIMED_OUT} ")) && message.contains("ms and was killed")
+}
+
 /// A Worker failure `message` that names the Worker of a Task slot: a timeout this layer
 /// reported for `reviewer`, Review's own Worker, names `worker` instead (`implementer did not
 /// answer within …`). Every other message is returned unchanged.
@@ -307,6 +313,14 @@ mod tests {
         note_cleanup_fallback, parse_proposal_declaration, parse_reviewer_result, stream_totals,
     };
 
+    #[test]
+    fn only_the_git_version_line_enters_model_metadata() {
+        assert_eq!(
+            super::model_git_version("git version 2.54.0\ncpu: arm64\nsizeof-long: 8\n"),
+            "git version 2.54.0"
+        );
+    }
+
     /// A Task slot's timeout names its own Worker, wherever the adapter wrapped the message;
     /// any other failure is left as it was.
     #[test]
@@ -327,6 +341,17 @@ mod tests {
         }
         .to_string();
         assert_eq!(super::name_timed_out_worker(&failed, "implementer"), failed);
+        assert!(super::names_timed_out(&format!(
+            "Claude Worker ended ({timed_out})"
+        )));
+        assert!(super::names_timed_out(&super::name_timed_out_worker(
+            &timed_out.to_string(),
+            "implementer"
+        )));
+        assert!(!super::names_timed_out(&failed));
+        assert!(!super::names_timed_out(
+            "Provider network request failed: request timed out"
+        ));
     }
 
     /// A stream the output cap truncated ends where its drain read, not where the kept prefix
@@ -685,6 +710,22 @@ pub struct RenderedInput {
     pub transport: InputTransport,
     pub bytes: Vec<u8>,
     pub manifest: ContextManifest,
+    /// The native reply schema a model Worker's dispatch passes beside the bytes; None for a
+    /// command Worker, whose stdout the kernel alone parses.
+    pub reply_schema: Option<NativeReplySchema>,
+}
+
+/// The Provider-native schema a review-Campaign model reviewer's dispatch passes to its CLI
+/// (ADR-0246): the option that carries it and the exact schema, as
+/// [`ReplyContract::ReviewerResult`](crate::task::reply_schema::ReplyContract::ReviewerResult)
+/// derives it for that CLI. A structural constraint only; the kernel still parses and admits the
+/// reply as before.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
+pub struct NativeReplySchema {
+    /// `--json-schema` (Claude Code, the schema inline) or `--output-schema` (Codex, the schema
+    /// written to a file of the Attempt's staging directory).
+    pub option: &'static str,
+    pub schema: serde_json::Value,
 }
 
 /// Narrow a run's attention: the Campaign focus, under its own heading after the package
@@ -933,6 +974,11 @@ impl ReviewerInputArtifact {
     }
 }
 
+/// The Change Set keeps the complete Git build identity; a reviewer needs only its version.
+fn model_git_version(version: &str) -> &str {
+    version.lines().next().unwrap_or("")
+}
+
 impl ReviewerInputs {
     fn rendered_refusal_history(&self) -> Result<Option<String>, String> {
         if self.refused_attempts.is_empty() {
@@ -1155,7 +1201,7 @@ impl ReviewerInputs {
                     "changed_paths": &change_set.changed_paths,
                     "renames": &change_set.renames,
                     "rename_detection_truncated": change_set.rename_detection_truncated,
-                    "git_version": &change_set.git_version,
+                    "git_version": model_git_version(&change_set.git_version),
                     "diff_policy_version": &change_set.diff_policy_version,
                     "canonical_patch_bytes": patch.len(),
                 });
@@ -1250,6 +1296,7 @@ impl ReviewerAdapter for CommandAdapter {
             transport: InputTransport::Json,
             bytes,
             manifest,
+            reply_schema: None,
         })
     }
 }

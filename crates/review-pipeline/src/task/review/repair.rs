@@ -36,7 +36,7 @@ pub(super) fn signatures(policy: &str, enabled: bool) -> BTreeMap<String, Operat
         BTreeMap::from([
             ("source".into(), unbound(SOURCE_TREE_V1)),
             ("repair".into(), port(TASK_REPAIR_CONTEXT_V1, same(), false)),
-            ("checks".into(), port(TASK_CHECK_RECEIPT_V1, same(), false)),
+            ("checks".into(), port(TASK_CHECK_RECEIPT_V2, same(), false)),
             (
                 "verification".into(),
                 port(TASK_FIX_VERIFICATION_V1, same(), true),

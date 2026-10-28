@@ -56,7 +56,7 @@ fn start_previews_then_exact_confirmation_runs_and_finished_replay_spends_nothin
     let refused = cli(&repo, &state, &["task", "run", "pagination-cli", "--json"]);
     assert_eq!(refused.status.code(), Some(1));
     let error: Value = serde_json::from_slice(&refused.stdout).expect("Exactly one JSON error");
-    assert_eq!(error["schema"], "af/error@1");
+    assert_eq!(error["schema"], "af/error@2");
     assert!(String::from_utf8_lossy(&refused.stderr).contains("--confirm-plan"));
     let stale = format!("sha256:{}", "0".repeat(64));
     let refused = cli(
@@ -66,6 +66,21 @@ fn start_previews_then_exact_confirmation_runs_and_finished_replay_spends_nothin
     );
     assert_eq!(refused.status.code(), Some(1));
     assert!(String::from_utf8_lossy(&refused.stderr).contains("differs"));
+    let stale_json = cli(
+        &repo,
+        &state,
+        &[
+            "task",
+            "run",
+            "pagination-cli",
+            "--confirm-plan",
+            &stale,
+            "--json",
+        ],
+    );
+    let document: Value = serde_json::from_slice(&stale_json.stdout).unwrap();
+    assert_eq!(document["cause"], "plan_mismatch", "{document}");
+    crate::schemas::valid(&crate::schemas::validator("error-v2.json"), &document);
     let unchanged = value(cli(
         &repo,
         &state,
@@ -254,4 +269,89 @@ fn preview_commands_stay_copyable_for_short_and_maximum_length_task_ids() {
             assert_eq!(done["plan_id"], plan);
         }
     }
+}
+
+#[test]
+fn missing_task_catalog_names_an_existing_starter_command() {
+    let temp = tempfile::tempdir().unwrap();
+    let (repo, state) = task_cli::fixture_named(temp.path(), "pagination");
+    std::fs::remove_file(repo.join(".af/task-catalog.toml")).unwrap();
+    let committed = std::process::Command::new("git")
+        .current_dir(&repo)
+        .args([
+            "-c",
+            "user.name=t",
+            "-c",
+            "user.email=t@example.invalid",
+            "add",
+            "-A",
+        ])
+        .status()
+        .unwrap();
+    assert!(committed.success());
+    let committed = std::process::Command::new("git")
+        .current_dir(&repo)
+        .args([
+            "-c",
+            "user.name=t",
+            "-c",
+            "user.email=t@example.invalid",
+            "commit",
+            "-qm",
+            "remove catalog",
+        ])
+        .status()
+        .unwrap();
+    assert!(committed.success());
+    let refused = cli(
+        &repo,
+        &state,
+        &["task", "plan", "--file", "ticket.json", "--json"],
+    );
+    assert_eq!(
+        refused.status.code(),
+        Some(1),
+        "{}",
+        String::from_utf8_lossy(&refused.stderr)
+    );
+    let document: Value = serde_json::from_slice(&refused.stdout).unwrap();
+    assert_eq!(document["cause"], "no_task_catalog", "{document}");
+    assert_eq!(document["next_action"], "af onboard --tasks");
+    crate::schemas::valid(&crate::schemas::validator("error-v2.json"), &document);
+    let starter = crate::common::af()
+        .current_dir(&repo)
+        .args([
+            "catalog",
+            "init",
+            "--repo",
+            "..",
+            "--profile",
+            "software",
+            "--destination",
+            "af-demo",
+        ])
+        .output()
+        .unwrap();
+    assert!(
+        starter.status.success(),
+        "{}",
+        String::from_utf8_lossy(&starter.stderr)
+    );
+    assert!(temp.path().join("af-demo/.af/task-catalog.toml").is_file());
+}
+
+#[test]
+fn task_plan_in_a_directory_without_git_has_a_stable_cause() {
+    let temp = tempfile::tempdir().unwrap();
+    let (repo, state) = task_cli::fixture_named(temp.path(), "pagination");
+    std::fs::remove_dir_all(repo.join(".git")).unwrap();
+    let refused = cli(
+        &repo,
+        &state,
+        &["task", "plan", "--file", "ticket.json", "--json"],
+    );
+    assert_eq!(refused.status.code(), Some(1));
+    let document: Value = serde_json::from_slice(&refused.stdout).unwrap();
+    assert_eq!(document["cause"], "not_repository", "{document}");
+    crate::schemas::valid(&crate::schemas::validator("error-v2.json"), &document);
 }

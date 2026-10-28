@@ -1702,7 +1702,11 @@ fn handoff(command: Option<cli::Command>) -> Handoff {
         Some(cli::Command::Config {
             command: cli::ConfigCommand::Edit { layer, repo },
         }) => Handoff::Edit(layer, repo),
-        Some(cli::Command::Help { words }) => Handoff::Help(words),
+        Some(cli::Command::Help {
+            words,
+            snippet: false,
+            json: false,
+        }) => Handoff::Help(words),
         _ => Handoff::Other,
     }
 }

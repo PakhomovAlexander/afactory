@@ -1,19 +1,19 @@
 ~/hub                       |TASKS  project: hub
 v hub  (project)            |
-  v providers/              |~/state/af/task/local/<repository>
-      claude-main           |  done/
-      codex-ambient         |    pagination-cli           verified           100%  0 tok
-  v workers/                |  failed/
-  v pipelines/              |    pagination-unfinished    changes_requested  100%  0 tok
-      review                |
-      fixture/implementation|
-  v tasks/                  |
+  v providers/              |NEEDS YOU  (af task list --attention)
+      claude-main           |  Failed gate (1)
+      codex-ambient         |    pagination-unfinished  finished/gate_failed/check_failed
+  v workers/                |      next: af task show pagination-unfinished --checks
+  v pipelines/              |  Verified, ready to deliver (1)
+      review                |    pagination-cli  finished/verified
+      fixture/implementation|      next: af task deliver pagination-cli --branch af/pagination-cli \
+  v tasks/                  |                --worktree ../pagination-cli --confirm pagination-cli
     v done/ (1)             |
-        pagination-c~  100% |
-    v failed/ (1)           |
-        pagination-u~  100% |
-  v campaigns/              |
-                            |
+        pagination-c~  100% |~/state/af/task/local/<repository>
+    v failed/ (1)           |  done/
+        pagination-u~  100% |    pagination-cli           verified           100%  0 tok
+  v campaigns/              |  failed/
+                            |    pagination-unfinished    changes_requested  100%  0 tok
                             |
                             |
                             |

@@ -68,15 +68,15 @@ on a token budget, and never publishes: `af review` folds what reviewers find in
 `af task` turns a Task file into a verified change you deliver to a new local worktree.
 
 Start here (`af help start` explains each step):
-  1. af provider detect           find the claude/codex logins on this machine and register them
+  1. af provider detect           preview claude/codex logins; --apply registers them
   2. af onboard                   in a repository: preview `.af/` (token-free); --apply writes it
   3. git add .af && git commit    review that authority, then commit it
   4. af review plan --policy-rev HEAD --base HEAD --uncommitted
-                                  token-free; `af review` with --provider NODE=ID runs it
+                                  token-free; pass --provider NODE=ID for each model Worker
   af doctor                       check this machine and repository, token-free
 
 Task, Worker, Attempt, Snapshot, Provider and the other words are explained in \
-`af help concepts`; `af help` lists every topic (config, layers, environment, exit-codes, json, \
+`af help concepts`; `af help` lists every topic (config, layers, environment, exit-codes, json, errors, \
 providers, task-states, task-file, agents, self, storage, telemetry). `af` alone at a terminal \
 opens a read-first browser over this scope's settings, Providers, Workers, pipelines, Tasks and \
 review Campaigns: `?` there lists its keys, and `:` runs any af command.";
@@ -89,6 +89,7 @@ Exit codes (`af help exit-codes`):
 Examples:
   # preview `.af/` for this repository, token-free\n  af onboard
   af onboard --apply             # needs: a repository without `.af/`
+  # needs: one registered Provider for every model Worker
   af review plan --policy-rev HEAD --base HEAD --uncommitted
   # needs: Providers claude-main and codex-main (af provider setup)
   af review --policy-rev HEAD --base HEAD --uncommitted \\
@@ -159,7 +160,8 @@ ledger; the remaining commands read or resolve that ledger. Flags given directly
 are shorthand for `af review run`.",
         after_long_help = "HEAD must contain trusted, committed `.af/`; make candidate changes first. To \
 execute, also supply --provider NODE=ID for every model Worker the policy names; `af review plan` \
-lists them.\n\nExamples:\n  af review plan --policy-rev HEAD --base HEAD --uncommitted --json\n  \
+lists them.\n\nExamples:\n  # needs: one registered Provider for every model Worker\n  \
+af review plan --policy-rev HEAD --base HEAD --uncommitted --json\n  \
 # needs: Providers claude-main and codex-main (af provider setup)\n  \
 af review --policy-rev HEAD --base HEAD --uncommitted \\\n    \
 --provider correctness=claude-main --provider architecture=codex-main\n  \
@@ -200,7 +202,7 @@ See `af help providers` for the registry model and the order of first use."
         #[command(subcommand)]
         command: ProviderCommand,
     },
-    /// Generate or validate `.af/` review authority for a repository
+    /// Generate or validate `.af/` review and Task authority for a repository
     #[command(
         display_order = 2,
         long_about = "Set up a repository for af review: write the `.af/` policy a review runs \
@@ -215,12 +217,18 @@ its exact pins, the Worker packages, the graph and the Gates. --refresh-lock: ex
 the selected pipeline, every pipeline a route or the oversized policy names, and the Worker \
 packages they reference; it drops a pin whose `.af/workers/NAME` package or \
 `.af/pipelines/NAME.toml` file no longer exists.\n\n\
+With --tasks, preview the exact files and [task.defaults] text for model-driven Tasks; \
+--tasks --apply creates a combined bundle in a new repository or adds only absent Task files \
+and the absent table to an existing `.af/` directory. With --tasks, a registered Claude and Codex \
+use the mixed profile: Claude implements and Codex reviews; one registered kind is used for all \
+Workers. Review and commit the result before a Task can plan.\n\n\
 The command never calls a model, runs a Gate, reads credentials, creates Campaign state, fetches \
-a pull request, commits, pushes, comments, or overwrites an existing `.af/` directory. Notes for \
+a pull request, commits, pushes, comments, or overwrites existing authority files. Notes for \
 agents and automation close this page.",
         after_long_help = "Runner profiles:\n  mixed   correctness = Claude Opus 5.5/high; architecture = GPT-6 Sol/high\n  claude  both Workers = Claude Opus 5.5/high\n  codex   both Workers = GPT-6 Sol/high\nWithout --runner, onboarding picks claude or codex when only that Provider kind is registered on this machine (`af provider status`), and mixed otherwise; the `profile` line says which and why.\n\nThe preview's `providers` block names, for every model Worker, a registered Provider of its kind and the --provider binding to pass, or the command that registers one; it reads the registry without starting a Provider CLI unless --probe asks.\n\nGate discovery prefers `make check`, then `scripts/verify.sh`, Rust, Go, or a package-manager test script. If none is unambiguous, pass a trusted literal.\n\nExamples:\n  \
 af onboard\n  \
 # needs: a repository without .af/\n  af onboard --gate 'check=make check' --apply\n  \
+# needs: a repository with an acceptance Gate\n  af onboard --tasks\n  # needs: a repository with review authority and an acceptance Gate\n  af onboard --tasks --apply\n  \
 af onboard --runner mixed --apply   # needs: a repository without .af/\n  \
 af onboard --refresh-lock\n  \
 # needs: release 0.9.0; moves the pin to it\n  af onboard --refresh-lock --af 0.9.0\n\n\
@@ -300,7 +308,7 @@ fits `max_bytes`. `af project brief` prints the exact bytes a plan would bind, t
 Never: writes inside a checkout, commits, pushes, or removes a Store. Results go to stdout \
 (`--json` prints `af/project@1`, `af/project-workspaces@1`, `af/ProjectSurvey@2`, \
 `af/project-history@2` or `af/project-brief-preview@1`); warnings go to stderr. Exit codes: 0 success, 1 failure (the message \
-names the next action; `af/error@1` under --json), 2 usage error.",
+names the next action; `af/error@2` under --json), 2 usage error.",
         after_long_help = "Examples:\n  \
 af project show\n  \
 af project refresh\n  \
@@ -450,7 +458,13 @@ a step to take first. A fix is offered only when running it can clear the check:
 command fixes, or whose command a file that does not load would stop (an `.af/` file, the machine \
 config.toml, the Provider registry), has only a hint, naming the file and the parse error's line. \
 The PATH fix is the line for the shell $SHELL names, the directory quoted so nothing in it is \
-expanded.\n\n\
+expanded; while the default link does not exist it installs first, on PATH or not, and a line \
+wider than the terminal is cut where that shell joins it again, so it runs as printed. `af \
+onboard` only previews, and `af provider detect --apply` registers only a login it finds, an \
+auth directory with a login marker: neither is offered as a fix that cannot clear its check.\n\n\
+  harness    the driving agent harness, if detected from environment markers\n\
+  sandbox    whether agent sandbox markers are present\n\
+  network    whether the agent sandbox reports network access; unknown without a marker\n\
   binary     the running af, its version, install receipt and how it was verified, the default link\n\
   path       the default link's directory on PATH, and whether `af` on PATH is that link\n\
   shell      completions and man pages for $SHELL\n\
@@ -468,24 +482,97 @@ or path continues on indented lines and is never cut short, and a fix command st
 its line or is broken between its arguments with ` \\`.\n\n\
 It never calls a model, logs in, installs, or writes a file, and it schedules no update check; \
 the charged end-to-end Provider check is `af provider doctor`. Exit codes: 0 nothing failed \
-(warnings allowed), 1 at least one check failed, 2 usage error. --json prints one `af/doctor@2` \
+(warnings allowed), 1 at least one check failed, 2 usage error. --json prints one `af/doctor@3` \
 document, each check with its `fix` and `hint`.",
         after_long_help = "Examples:\n  af doctor\n  af doctor --repo ../other-checkout   # needs: a checkout at ../other-checkout\n  af doctor --json | jq '.checks[] | select(.status != \"ok\")'"
     )]
     Doctor(MachineDoctorArgs),
+    /// Preview or install the af agent pointer and skills in a Git repository
+    #[command(
+        display_order = 8,
+        subcommand_required = true,
+        arg_required_else_help = true
+    )]
+    Setup {
+        #[command(subcommand)]
+        command: SetupCommand,
+    },
     /// Explain a topic or a command; `af help` lists every topic
     #[command(
         display_order = 7,
         long_about = "Explain a topic or a command.\n\n\
 `af help` alone lists every topic with what it explains; start with `af help start` and \
 `af help concepts`. A word that is not a topic is a command path, so `af help review run` \
-equals `af review run --help`.",
-        after_long_help = "Examples:\n  af help start\n  af help concepts\n  af help layers\n  af help exit-codes\n  af help review ledger"
+equals `af review run --help`.\n\n\
+--json prints the command catalog instead: one af/command-catalog@1 document \
+(schemas/command-catalog-v1.json) of every command, or with a command path of that command and \
+the commands below it, generated from the command definitions. Each command carries its usage, \
+subcommands and arguments, and each runnable one its effects: `tokens` (`free` or `charges`), \
+the state it `writes` (`store`, `files`, `machine`, `remote`) and what it needs from a `human` \
+(`login`, `approval`, `terminal`), each with the flag or condition that turns it on. Under \
+--json every word is a command path, never a topic; one that names no command is an af/error@2 \
+document, exit 2. `af help json` explains the vocabulary.",
+        after_long_help = "Examples:\n  af help start\n  af help concepts\n  af help layers\n  af help exit-codes\n  af help errors\n  af help errors no_task_catalog\n  af help review ledger\n  af help --json | jq -r '.commands[] | [.command, .effects.tokens] | @tsv'\n  af help task run --json | jq '.commands[0].effects'"
     )]
     Help {
         /// A topic name or a command path
         #[arg(value_name = "TOPIC|COMMAND")]
         words: Vec<String>,
+        /// Print only the AGENTS.md pointer (agents topic only)
+        #[arg(long)]
+        snippet: bool,
+        /// One af/command-catalog@1 document of the commands (or the one named) instead of text
+        #[arg(long, conflicts_with = "snippet")]
+        json: bool,
+    },
+    /// Print a JSON Schema af ships, by the document ID `af help json` lists
+    #[command(
+        display_order = 7,
+        subcommand_required = true,
+        arg_required_else_help = true,
+        long_about = "Print a JSON Schema af ships, by the document ID `af help json` lists.\n\n\
+Every document af prints under --json names its shape in its `schema` field (`af/task-status@2`); \
+`af schema show ID` prints the schema of that ID, the bytes of `schemas/` this release was built \
+with, and `af schema show` alone lists the IDs with their titles. It reads nothing and writes \
+nothing. Exit codes: 0 printed, 1 an ID this release does not ship (the message names the \
+versions it does ship), 2 usage error.",
+        after_long_help = "Examples:\n  af schema show\n  af schema show af/task-status@2\n  af schema show af/command-catalog@1 | jq .title"
+    )]
+    Schema {
+        #[command(subcommand)]
+        command: SchemaCommand,
+    },
+}
+
+#[derive(Debug, Subcommand)]
+pub(crate) enum SchemaCommand {
+    /// Print one shipped JSON Schema by its document ID; without an ID, list the IDs
+    #[command(
+        long_about = "Print one shipped JSON Schema by its document ID, the `schema` field of \
+the document (`af/task-status@2`), exactly as `schemas/` holds it; without an ID, list every ID \
+this release ships with its schema's title, one per line. An ID it does not ship exits 1.",
+        after_long_help = "Examples:\n  af schema show\n  af schema show af/error@2\n  af schema show af/task-status@1   # exit 1"
+    )]
+    Show {
+        /// The document ID, as `af help json` and the document's `schema` field name it
+        #[arg(value_name = "ID", add = ArgValueCompleter::new(crate::shipped_schemas::complete_id))]
+        id: Option<String>,
+    },
+}
+
+#[derive(Debug, Subcommand)]
+pub(crate) enum SetupCommand {
+    /// Preview the af agent pointer and skills; write them only with --write
+    #[command(
+        long_about = "Preview the AGENTS.md pointer and both af skills in this Git repository.\n\n--write appends or updates only the marked af block in AGENTS.md and writes .claude/skills/af/SKILL.md and .agents/skills/af/SKILL.md. A foreign skill is refused. No file is written by default."
+    )]
+    Agents {
+        /// Git repository to update [default: .]
+        #[arg(long, value_name = "DIR", default_value = ".")]
+        repo: PathBuf,
+        /// Write the previewed files
+        #[arg(long)]
+        write: bool,
     },
 }
 
@@ -495,7 +582,7 @@ pub(crate) struct MachineDoctorArgs {
     /// The repository whose `.af/`, pin and Gates to check [default: .]
     #[arg(long, value_name = "DIR", default_value = ".")]
     pub(crate) repo: PathBuf,
-    /// One `af/doctor@2` document on stdout instead of text
+    /// One `af/doctor@3` document on stdout instead of text
     #[arg(long)]
     pub(crate) json: bool,
 }
@@ -761,16 +848,28 @@ af review run --campaign pr-42 --policy-rev main --base main \\\n    --candidate
 plan.\n\nToken-free and stateless: no sandbox, no model call, no Campaign directory. The plan is \
 exactly what `run` would admit, so it is the right pre-flight for agents and CI.",
         override_usage = "af review plan [--heavy] [OPTIONS]",
-        after_long_help = "Examples:\n  af review plan --policy-rev HEAD --base HEAD --uncommitted\n  \
+        after_long_help = "Examples:\n  # needs: one registered Provider for every model Worker\n  \
+af review plan --policy-rev HEAD --base HEAD --uncommitted\n  \
+# needs: one registered Provider for every model Worker\n  \
 af review plan --policy-rev HEAD --base HEAD --uncommitted --json\n  \
-af review plan --policy-rev HEAD --base HEAD~1 --candidate HEAD"
+# needs: one registered Provider for every model Worker\n  \
+af review plan --policy-rev HEAD --base HEAD~1 --candidate HEAD --long"
     )]
-    Plan(RunArgs),
+    Plan {
+        #[command(flatten)]
+        args: RunArgs,
+        /// Include pipeline nodes and edges in the text plan
+        #[arg(long, help_heading = "Output")]
+        long: bool,
+    },
     /// Compose one Worker's exact input, token-free, without Campaign state
     #[command(
         long_about = "Compose the exact input one Worker node would receive — the bytes, their \
 transport, and every artifact the role-scoped manifest names — without a sandbox, a model call, \
-or Campaign state. This is how a human audits what a Worker sees.",
+or Campaign state. This is how a human audits what a Worker sees. A model Worker's header also \
+prints the reply schema its dispatch passes to the Provider CLI (`--json-schema` for Claude Code, \
+`--output-schema` for Codex). --json prints one af/review-render@2 document \
+(schemas/review-render-v2.json) with the bytes, the manifest and that `reply_schema`.",
         override_usage = "af review render --node <NODE> [--heavy] [OPTIONS]",
         after_long_help = "Examples:\n  \
 af review render --node correctness --policy-rev HEAD --base HEAD \\\n    --uncommitted\n  \
@@ -779,7 +878,8 @@ af review render --node correctness --policy-rev HEAD --base HEAD \\\n    --unco
     Render(RunArgs),
     /// List the ledger: findings, dispositions, and open demands
     #[command(
-        after_long_help = "Examples:\n  af review ledger --campaign pr-42 --long   # needs: Campaign pr-42"
+        long_about = "Read the current Campaign ledger. --json prints one af/review-ledger@1 document with Finding views and Demand views (schemas/review-ledger-v1.json). An empty ledger has empty arrays. --long expands each Finding in text output.",
+        after_long_help = "Examples:\n  af review ledger --campaign pr-42 --json   # needs: Campaign pr-42\n  af review ledger --campaign pr-42 --long   # needs: Campaign pr-42"
     )]
     Ledger {
         #[command(flatten)]
@@ -787,16 +887,23 @@ af review render --node correctness --policy-rev HEAD --base HEAD \\\n    --unco
         /// Full detail per finding
         #[arg(long, help_heading = "Output")]
         long: bool,
+        /// One versioned JSON document on stdout
+        #[arg(long, help_heading = "Output")]
+        json: bool,
     },
     /// Show one ledger entry by key
     #[command(
-        after_long_help = "Examples:\n  # needs: Campaign pr-42 and its finding F-01H…\n  af review show --campaign pr-42 F-01H…"
+        long_about = "Read one Finding by its ledger key. --json prints one af/review-show@1 document with the Finding, its attached reports and linked proposals (schemas/review-show-v1.json).",
+        after_long_help = "Examples:\n  # needs: Campaign pr-42 and its finding F-01H…\n  af review show --campaign pr-42 F-01H… --json"
     )]
     Show {
         #[command(flatten)]
         selector: CampaignSelector,
-        /// Finding, demand, or proposal key
+        /// Finding key
         key: String,
+        /// One versioned JSON document on stdout
+        #[arg(long, help_heading = "Output")]
+        json: bool,
     },
     /// Export a verified patch proposal, by id or by the finding it fixes
     #[command(
@@ -819,14 +926,18 @@ af review export --campaign pr-42 --finding F-01H… --allow-stale"
     },
     /// Render the Campaign report
     #[command(
-        after_long_help = "Examples:\n  af review report --campaign pr-42   # needs: Campaign pr-42\n  af review report --campaign pr-42 --format json   # needs: Campaign pr-42"
+        long_about = "Render the Campaign report. --json selects the af/review-report@5 document, the same as --format json: each finding with the prompt that hands it to the agent that will fix it, and what the last Round covered per reviewer and per path, so a reviewer that did not run is never read as one that found nothing. --format sarif prints the findings as one SARIF 2.1.0 log for code-scanning tools. --json cannot be combined with --format, even when --format names json.",
+        after_long_help = "Examples:\n  af review report --campaign pr-42   # needs: Campaign pr-42\n  af review report --campaign pr-42 --json   # needs: Campaign pr-42\n  # needs: Campaign pr-42\n  af review report --campaign pr-42 --format sarif > review.sarif"
     )]
     Report {
         #[command(flatten)]
         selector: CampaignSelector,
         /// Output format
-        #[arg(long, value_enum, default_value_t = ReportFormatArg::Md, help_heading = "Output")]
-        format: ReportFormatArg,
+        #[arg(long, value_enum, help_heading = "Output", conflicts_with = "json")]
+        format: Option<ReportFormatArg>,
+        /// Shorthand for --format json; cannot be combined with --format
+        #[arg(long, help_heading = "Output")]
+        json: bool,
     },
     /// List Campaigns under the state root
     #[command(
@@ -1127,6 +1238,17 @@ pub(crate) enum ReportFormatArg {
     Md,
     Text,
     Json,
+    /// SARIF 2.1.0 (ADR-0248)
+    Sarif,
+}
+
+/// What `af task findings` prints: text, its `af/task-findings@2` document, or SARIF 2.1.0.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
+pub(crate) enum FindingsFormatArg {
+    Text,
+    Json,
+    /// SARIF 2.1.0 (ADR-0248)
+    Sarif,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
@@ -1193,12 +1315,13 @@ the kind prefix (~/.config/claude-work is claude-work, ~/.codex-gridgain is code
 the env directory follows the sibling rule when its name is a sibling name, else claude-env or \
 codex-env; --dir follows the sibling rule, and needs one --id per --dir when \
 more than one names the same kind; a taken ID gets -2, -3; *-ambient is never generated.\n\n\
---json prints one af/provider-detect@3 document; its `install` names the install command and \
+--json prints one af/provider-detect@4 document; its `install` names the install command and \
 documentation of each kind whose CLI was not found, and `next_action` the scan to run again once \
 one is installed (null when a CLI was found). Exit codes: 0 the scan completed, 1 \
 unclassified failure, 2 usage error, 4 a found CLI cannot start or is incompatible, or a login \
 was left unregistered because its CLI is off PATH (the rows are still printed), 5 a registry \
-conflict stopped --apply.",
+conflict stopped --apply, 8 the host denied a capability probe before compatibility or login \
+could be established.",
         after_long_help = "Examples:\n  af provider detect\n  af provider detect --apply\n  af provider detect --json\n  af provider detect --dir /secure/claude-team --kind claude --apply\n  af provider detect --all"
     )]
     Detect {
@@ -1217,7 +1340,7 @@ conflict stopped --apply.",
         /// Register every authenticated, unregistered directory found
         #[arg(long)]
         apply: bool,
-        /// Emit the versioned `af/provider-detect@3` document instead of the table
+        /// Emit the versioned `af/provider-detect@4` document instead of the table
         #[arg(long)]
         json: bool,
         /// Add the account label each CLI reported (terminal only, never with --json)
@@ -1254,18 +1377,20 @@ authenticated Provider — it exits 7 and says so. End-to-end usability stays wi
 A Provider whose official CLI is missing, not executable, or exits non-zero on its own version \
 check is reported as an installation failure, with the CLI's own first error line and the fix \
 it suggests on stderr. One whose help page does not declare every option af passes is reported \
-as incompatible, with its version, the missing options and the upgrade command on stderr.\n\n\
+as incompatible, with its version, the missing options and the upgrade command on stderr. A \
+host permission denial is `probe_denied`, exit 8: retry outside the sandbox or with \
+host-approved permissions.\n\n\
 A context that does not exist or holds no login marker is not probed: its CLI would create \
 files there. Each row that needs a login names one fix, `af provider setup ID --kind KIND \
 --auth-dir DIR --login`; --verbose adds the CLI's own login command. With no registry entry, \
 directories `af provider detect` would list are named on one line, unprobed; with no CLI at \
 all, the install commands are printed.\n\n\
 Exit codes: 0 fine, 4 a Provider CLI cannot start or is incompatible, 7 optional usage \
-unavailable.",
+unavailable, 8 a host-denied probe.",
         after_long_help = "Examples:\n  af provider status\n  af provider status --json\n  af provider status --usage\n  af provider status --verbose"
     )]
     Status {
-        /// Emit the versioned `af/provider-status@3` document instead of the table
+        /// Emit the versioned `af/provider-status@4` document instead of the table
         #[arg(long)]
         json: bool,
         /// Also probe subscription and quota windows (slower, and may be unavailable)
@@ -1328,7 +1453,8 @@ credentials in transit and must never reach a pipe, chat, an agent transcript, o
 needs a home.\n\n\
 Exit codes: 0 registered, 3 human action required, 4 Provider CLI missing, cannot start or \
 incompatible, 5 \
-registry conflict, 6 authentication failed. Re-running setup for the same binding is safe.",
+registry conflict, 6 authentication failed, 8 host-denied capability probe. Re-running setup \
+for the same binding is safe.",
         after_long_help = "Examples:\n  \
 af provider setup codex-main --kind codex   # needs: the codex CLI, logged in\n  \
 # needs: the codex CLI, logged in\n  af provider setup codex-main --kind codex --json\n  \
@@ -1347,7 +1473,7 @@ af provider setup claude-work --kind claude --auth-dir /secure/claude-work \\\n 
         /// Opt in to starting the official Provider CLI login in this private terminal
         #[arg(long)]
         login: bool,
-        /// Emit the versioned non-interactive `af/provider-setup@1` document
+        /// Emit the versioned non-interactive `af/provider-setup@2` document
         #[arg(long, conflicts_with = "login")]
         json: bool,
     },
@@ -1500,6 +1626,12 @@ pub(crate) struct OnboardArgs {
         help_heading = "Selector"
     )]
     pub(crate) repo: PathBuf,
+    /// Include pipeline nodes and edges in the text preview
+    #[arg(long, help_heading = "Output")]
+    pub(crate) long: bool,
+    /// Preview or add pinned model-driven Task authority (also includes review authority in a new repository)
+    #[arg(long, help_heading = "Generate", conflicts_with = "refresh_lock")]
+    pub(crate) tasks: bool,
     /// Runner profile for the generated Workers [default: the Provider kinds registered on
     /// this machine: claude, codex, or mixed for both or none]
     #[arg(long, value_enum, help_heading = "Generate")]
@@ -1861,17 +1993,20 @@ the time since the run started and the tokens charged so far, and every 5 minute
 back. stderr's last line is always the Task's state and the next command: `Task ID: \
 phase/outcome/cause; next: COMMAND` (`af help task-states`).\n\n--detach starts the same run \
 in the background and returns once it holds the Task and its plan is admitted, printing its pid \
-and its log, `runs/<TASK_ID>-<N>.log` in the Task Store (`af/task-detached@2` under --json); a \
+and its log, `runs/<TASK_ID>-<N>.log` in the Task Store (`af/task-detached@3` under --json); a \
 run not admitted within 2 minutes exits 4 with `admitted: false`, and `af task status` is next. \
 The run has no terminal, survives the shell that started it, and is the same process a \
-foreground run is; `af task wait`, `af task status` and `af task cancel` follow it. Every run \
+foreground run is; `af task wait`, `af task status`, `af task events` and `af task cancel` \
+follow it. Every run \
 records its process in the Store, `runs/<TASK_ID>-<N>.json`, before it takes the Task.\n\n\
 --from TASK plans NEW_ID as a new Task that continues the finished Task TASK from its reviewed \
 candidate (ADR-0212): the candidate Snapshot of its last review round (--round N for another) is \
 the new source, that round's reviewer findings and evaluator verdict are the implementer's \
-`findings` input, --goal FILE replaces the goal, and TASK's Task file is the rest. Without \
---execute it prints the plan for --confirm-plan, as `af task plan` does; --from runs in the \
-foreground and cannot be combined with --detach.\n\nResuming: a run that stopped \
+`findings` input, --goal FILE replaces the goal, and TASK's Task file is the rest. A TASK that \
+recorded no review round, but whose implementer its Attempt wall stopped \
+(`exhausted/attempt_wall`), continues from the partial tree the kernel kept of it (ADR-0257), \
+without findings. Without --execute it prints the plan for --confirm-plan, as `af task plan` \
+does; --from runs in the foreground and cannot be combined with --detach.\n\nResuming: a run that stopped \
 before the Task finished (Ctrl-C, SIGTERM, a closed lid, a killed process, a lost writer lease) \
 resumes with `af task run TASK_ID`. It waits for a dead run's lease to expire (at most 60 s), \
 and its first line says what it does: the interrupted node's Attempt is settled as abandoned, \
@@ -1958,14 +2093,17 @@ af task run NEW_ID --from TASK_ID   # needs: a finished reviewed Task TASK_ID\n 
     /// Block until a Task settles, then exit with its exit code
     #[command(
         long_about = "Block until a Task settles — no writer holds it and no run of this host \
-is starting — then print its status line (`af/task-status@1` under --json) and exit with the \
+is starting — then print its status line (`af/task-status@2` under --json) and exit with the \
 Task's exit code: its outcome's (`af help exit-codes`), 4 for a Task that waits for a person. \
+--bell rings terminal stderr when it settles; --notify requests an OS notification, warning \
+without changing the exit code when the notifier is unavailable. \
 With --timeout S it gives up after S seconds, prints the status so far and exits 124. A \
 planned Task with no run in progress is refused (exit 1): there is nothing to wait for.\n\n\
 Never: starts, resumes or changes a Task.",
         after_long_help = "Examples:\n  \
 af task wait TASK_ID   # needs: a Task af task run --detach started\n  \
-af task wait TASK_ID --timeout 600 --json   # needs: a running Task"
+af task wait TASK_ID --timeout 600 --json   # needs: a running Task\n  \
+af task wait TASK_ID --bell --notify   # needs: a running Task"
     )]
     Wait {
         /// Task id
@@ -1973,16 +2111,24 @@ af task wait TASK_ID --timeout 600 --json   # needs: a running Task"
         /// Give up after S seconds and exit 124
         #[arg(long, value_name = "S", value_parser = clap::value_parser!(u64).range(1..))]
         timeout: Option<u64>,
+        /// Ring the terminal bell when the Task settles, if stderr is a terminal
+        #[arg(long)]
+        bell: bool,
+        /// Send an OS notification when the Task settles; an unavailable notifier warns
+        #[arg(long)]
+        notify: bool,
         #[command(flatten)]
         inspect: TaskInspectArgs,
     },
-    /// Print a Task's state, current node, elapsed time and tokens so far, and what is next
+    /// Print a Task's state, current node, elapsed time, tokens and what is next
     #[command(
         long_about = "Print where a Task is, now, without waiting: its state \
 (phase/outcome/cause, `af help task-states`), the node whose Attempt runs, the time since its \
-clock started, the tokens charged so far, the run that holds it (run number, pid and host) and \
+clock started, one line with tokens reserved, charged and remaining (and unknown usage), the \
+last comparable Gate duration recorded for this repository, check and code policy when one \
+exists, the run that holds it (run number, pid and host) and \
 who cancelled it, then the next command on its own line, within 100 columns (the terminal's \
-width when narrower) and broken only between arguments. --json prints one `af/task-status@1` \
+width when narrower) and broken only between arguments. --json prints one `af/task-status@2` \
 document. Exits 0: the state is data.",
         after_long_help = "Examples:\n  \
 af task status TASK_ID   # needs: a Task\n  \
@@ -1994,6 +2140,42 @@ af task status TASK_ID --json   # needs: a Task"
         #[command(flatten)]
         inspect: TaskInspectArgs,
     },
+    /// Follow a Task as JSON lines: each event of its log, then one terminal record
+    #[command(
+        long_about = "Print the events a Task's log records as JSON lines on stdout, one \
+`af/task-event@1` document per line, and follow the Task until it settles — no writer holds it \
+and no run of this host is starting — then print one terminal record and exit with the Task's \
+exit code, as `af task wait` does: its outcome's (`af help exit-codes`), 4 for a Task that waits \
+for a person.\n\nAn event line (`record: event`) is one event of the Task's log, in the order \
+the Store recorded it: its `sequence`, the Store's own, gap-free from 0; what changed (`change`, \
+and `detail` for an execution record, a wait or a Provider event); the node and Attempt it \
+concerns; a settled Attempt's `result` and exact `charged_tokens`. The terminal record (`record: \
+terminal`) comes exactly once, last: `last_sequence`, the Task's `state` with its outcome and \
+`next_action`, and `exit_code`.\n\n--after N prints only the events after sequence N: a follower \
+that lost its connection passes the last sequence it read and gets the rest, nothing twice. \
+With --timeout S it stops after S seconds without a terminal record, exits 124 and says on \
+stderr the --after that continues. A planned Task with no run in progress is refused (exit 1), \
+as by `af task wait`. A refusal is one `af/error@2` line on stdout and the same exit code. There \
+is no --json: the stream is many documents, and every other command's --json stays one.\n\n\
+Never: starts, resumes or changes a Task.",
+        after_long_help = "Examples:\n  \
+af task events TASK_ID   # needs: a Task af task run --detach started\n  \
+af task events TASK_ID --after 41   # needs: a Task that recorded event 41\n  \
+# needs: a running Task\n  \
+af task events TASK_ID --timeout 540 | jq -c 'select(.record == \"terminal\")'"
+    )]
+    Events {
+        /// Task id
+        task_id: String,
+        /// Print only the events after sequence N, the last one a follower read
+        #[arg(long, value_name = "N")]
+        after: Option<u64>,
+        /// Stop after S seconds without a terminal record and exit 124
+        #[arg(long, value_name = "S", value_parser = clap::value_parser!(u64).range(1..))]
+        timeout: Option<u64>,
+        #[command(flatten)]
+        store: TaskStoreArgs,
+    },
     /// Stop a running Task's `af task run` and its Worker processes; the Task stays resumable
     #[command(
         long_about = "Stop the `af task run` that holds a Task, and with it the Task's Worker \
@@ -2003,7 +2185,7 @@ writer: only that recorded pid is signalled (SIGTERM, and once more after 60 s),
 process found by its name. A writer on another host is refused with its pid and host.\n\n\
 The request is recorded first, with who asked (`runs/<TASK_ID>-<N>.cancel.json`), so the Task \
 shows `abandoned/cancelled/host_cancelled` and `af task show` names the requester. The Task \
-stays resumable: `af task run TASK_ID` continues it. --json prints one `af/task-cancelled@1` \
+stays resumable: `af task run TASK_ID` continues it. --json prints one `af/task-cancelled@2` \
 document. A Task no writer holds is refused (exit 1).",
         after_long_help = "Examples:\n  \
 af task cancel TASK_ID   # needs: a running Task\n  \
@@ -2023,11 +2205,18 @@ quoted evidence and the reviewer's proposed fix, grouped by severity; then the e
 verdict on that round, the one the Task log recorded after it, with its reason, and the next \
 command. A round whose reduce step did not run shows each \
 reviewer's reports as recorded, not gathered. A Task that recorded no review round says so, \
-with the state it reached.\n\n--json prints one `af/task-findings@1` document. Exits 0 once \
-it read the Store.\n\nNever: dispatches a Worker, contacts a Provider or writes the Store.",
+with the state it reached. The round's coverage says which reviewers ran and which paths \
+they read: a reviewer that did not run shows `not reviewed`, never `no findings`.\n\n--json \
+(the same as --format json) prints one `af/task-findings@2` document: each finding carries an \
+`agent_prompt` (its location, evidence, the requested change and how verification will judge \
+it), the round its `coverage` and the findings a fix verification record proved fixed on its \
+Snapshot. --format sarif prints the same findings as one SARIF 2.1.0 log. --json cannot be \
+combined with --format. Exits 0 once it read the Store.\n\nNever: dispatches a Worker, \
+contacts a Provider or writes the Store.",
         after_long_help = "Examples:\n  \
 af task findings TASK_ID   # needs: a reviewed Task\n  \
-af task findings TASK_ID --round 1 --json   # needs: a reviewed Task"
+af task findings TASK_ID --round 1 --json   # needs: a reviewed Task\n  \
+# needs: a reviewed Task\n  af task findings TASK_ID --format sarif > findings.sarif"
     )]
     Findings {
         /// Task id
@@ -2035,6 +2224,9 @@ af task findings TASK_ID --round 1 --json   # needs: a reviewed Task"
         /// The Nth recorded review round instead of the last (1 is the first)
         #[arg(long, value_name = "N", value_parser = clap::value_parser!(u64).range(1..))]
         round: Option<u64>,
+        /// Output format; --json is --format json
+        #[arg(long, value_enum, help_heading = "Output", conflicts_with = "json")]
+        format: Option<FindingsFormatArg>,
         #[command(flatten)]
         inspect: TaskInspectArgs,
     },
@@ -2222,11 +2414,29 @@ af task deliver TASK_ID --repo . --branch af/TASK_ID --worktree ../TASK_ID \\\n 
         #[command(flatten)]
         inspect: TaskInspectArgs,
     },
-    /// List Tasks with outcome and spend
+    /// List Tasks with outcome and spend, or with --attention the ones that need you
+    #[command(
+        long_about = "List every Task of the Store, collected Tasks included, in Task ID order: \
+its state (phase/outcome/cause, `af help task-states`), review round, chargeable tokens, how long \
+ago it last changed and the verb of its next command; with --json, one `af/task-list@4` \
+document.\n\n\
+--attention groups the Tasks by what they wait for, read from each Task's state alone: waiting \
+for approval (planned or waiting), a failed gate, findings to answer, verified and ready to \
+deliver, and stopped (abandoned, or a Provider, interrupt, limit or wall clock ended it). Each \
+Task in those groups is printed with its one next command. Running Tasks are named on one line \
+and the Tasks that need nothing (delivered, verified with nothing to deliver, or collected) are \
+counted. With --json, one `af/task-attention@1` document holds all seven groups, `running` and \
+`nothing` included, each Task as its `af/task-list-entry@4`. Nothing is written.",
+        after_long_help = "Examples:\n  af task list\n  af task list --attention\n  \
+af task list --attention --json"
+    )]
     List {
         /// Also print each Task's CAS bytes: those only it reaches and those it shares
-        #[arg(long)]
+        #[arg(long, conflicts_with = "attention")]
         sizes: bool,
+        /// Group the Tasks by what they wait for, each with its next command
+        #[arg(long)]
+        attention: bool,
         #[command(flatten)]
         inspect: TaskInspectArgs,
     },
@@ -2264,8 +2474,9 @@ it ended, its Plan, warm checks, failed nodes with their first error line and th
 of their whole diagnostic and stderr, and as the last line the one command to run next.\n\n\
 --checks prints the gate's last check receipt instead: each check's status, duration, warm or \
 cold, its warm layer (key, lock, source groups, build and test phases, an eviction and its \
-cause), the step that stopped it, its failing and flaky tests and the last 40 lines of its \
-stderr; with --json, one `af/task-checks@2` document.",
+cause), the step that stopped it, the wall the kernel stopped it at (`stopped at its 90 min wall \
+after 88 min`, and what to do next) or `never started`, its failing and flaky tests and the \
+last 40 lines of its stderr; with --json, one `af/task-checks@3` document.",
         after_long_help = "Examples:\n  af task show pagination-cli   # needs: Task pagination-cli\n  \
 af task show pagination-cli --checks   # needs: Task pagination-cli\n  \
 af task show pagination-cli --json   # needs: Task pagination-cli"
@@ -2288,7 +2499,7 @@ findings by severity, tokens and active time, and a Total row; then per round it
 time, failed Attempts and per node the Worker, Attempts, tokens, elapsed time and check \
 results.\n\nThe default output is one Markdown block, ready to paste into a pull request \
 description, between these two lines:\n\n  <!-- af-task-report:v1 -->\n  \
-<!-- /af-task-report -->\n\n--json prints one `af/task-report@2` document instead. Tasks \
+<!-- /af-task-report -->\n\n--json prints one `af/task-report@3` document instead. Tasks \
 appear in the order given, numbered as rounds. Active time is the sum of the Task's runs, the \
 writer leases that started an Attempt or recorded a gate retry (`af task run --retry-gate`), so \
 waiting between runs is not counted; wall time runs \
@@ -2635,6 +2846,30 @@ pub(crate) struct TaskInspectArgs {
     /// One JSON document on stdout instead of text
     #[arg(long, help_heading = "Output")]
     pub(crate) json: bool,
+}
+
+/// The Store selectors of a command whose output is JSON lines, which takes no `--json`.
+#[derive(Debug, Args, Clone)]
+pub(crate) struct TaskStoreArgs {
+    /// Repository the Task belongs to
+    #[arg(
+        long,
+        value_name = "DIR",
+        default_value = ".",
+        help_heading = "Selector"
+    )]
+    pub(crate) repo: PathBuf,
+    /// Explicit state directory
+    #[arg(long, value_name = "DIR", help_heading = "Selector")]
+    pub(crate) state: Option<PathBuf>,
+    /// The Workspace whose Store to use, by label (`af project workspaces` lists them)
+    #[arg(
+        long,
+        value_name = "LABEL",
+        conflicts_with = "state",
+        help_heading = "Selector"
+    )]
+    pub(crate) workspace: Option<String>,
 }
 
 // ------------------------------------------------------------------------------------------

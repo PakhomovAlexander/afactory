@@ -1,9 +1,10 @@
 //! One Task state model across every rendering (P5): `af task list`, `af task show`, `af task
-//! report` and the run's own output print the same `phase/outcome/cause` and next command, in
-//! text and under `--json`; a failed gate names its failing tests; a refused plan names the limits
-//! that fit and `--fit` plans with them; a Task file takes its kind's defaults; planning is
-//! idempotent and `--replace` re-plans in place; the wall clock starts at the first run; and
-//! every not-found error names what was looked for and where. The fixture pipeline's Workers are
+//! report`, `af task list --attention` and the run's own output print the same
+//! `phase/outcome/cause` and next command, in text and under `--json`; a failed gate names its
+//! failing tests; a refused plan names the limits that fit and `--fit` plans with them; a Task
+//! file takes its kind's defaults; planning is idempotent and `--replace` re-plans in place; the
+//! wall clock starts at the first run; and every not-found error names what was looked for and
+//! where. The fixture pipeline's Workers are
 //! commands: no test spends a model token.
 
 use serde_json::Value;
@@ -122,15 +123,16 @@ fn malformed_implementer(fixture: &Fixture) {
 }
 
 /// The state every rendering of the Task prints, read from each: the JSON documents of `show`,
-/// `list` and `report`, and the text of `show`, `list` and `report`. They must all agree, and
-/// the triple and the next command they agree on are returned.
-fn agreed_state(fixture: &Fixture) -> (String, Option<String>) {
+/// `list`, `list --attention` and `report`, and the text of `show`, `list`, `list --attention`
+/// and `report`. They must all agree, and the triple, the next command and the attention group
+/// they agree on are returned.
+fn agreed_state(fixture: &Fixture) -> (String, Option<String>, String) {
     let shown = fixture.json(&["task", "show", TASK]);
-    schemas::valid(&schemas::validator("task-inspection-v13.json"), &shown);
+    schemas::valid(&schemas::validator("task-inspection-v14.json"), &shown);
     let listed = fixture.json(&["task", "list"]);
-    schemas::valid(&schemas::validator("task-list-v3.json"), &listed);
+    schemas::valid(&schemas::validator("task-list-v4.json"), &listed);
     let reported = fixture.json(&["task", "report", TASK]);
-    schemas::valid(&schemas::validator("task-report-v2.json"), &reported);
+    schemas::valid(&schemas::validator("task-report-v3.json"), &reported);
     let state = shown["state"].clone();
     let entry = listed["tasks"]
         .as_array()
@@ -171,7 +173,8 @@ fn agreed_state(fixture: &Fixture) -> (String, Option<String>) {
     );
     let list = out(&fixture.af(&["task", "list"]));
     // A row names the next command by its verb; at a terminal too narrow for the table the
-    // command moves, whole, to an indented line of its own, and every line fits.
+    // command moves to an indented line of its own, and every line fits (#331 item 11): a long
+    // `--state` path is cut into quoted pieces a shell joins, never left over-wide.
     for columns in [100, 80] {
         let shown = crate::common::af()
             .current_dir(&fixture.repo)
@@ -181,25 +184,29 @@ fn agreed_state(fixture: &Fixture) -> (String, Option<String>) {
             .output()
             .unwrap();
         let shown = out(&shown);
-        // Every line fits, except one that holds a single word wider than the terminal (a long
-        // `--state` path cannot be broken): `fit_command` gives such a word a line of its own.
         for line in shown.lines() {
-            let unbreakable = !line.trim().trim_end_matches('\\').trim().contains(' ');
-            assert!(
-                line.chars().count() <= columns || unbreakable,
-                "{line:?}\n{shown}"
-            );
+            assert!(line.chars().count() <= columns, "{line:?}\n{shown}");
         }
         if let (Some(next), false) = (&next, shown.lines().next().unwrap().ends_with("NEXT")) {
             let lines: Vec<&str> = shown.lines().collect();
             let at = lines.iter().position(|l| l.starts_with(TASK)).unwrap();
-            let continued = lines[at + 1..]
-                .iter()
-                .take_while(|line| line.starts_with("  "))
-                .map(|line| line.trim().trim_end_matches('\\').trim())
-                .collect::<Vec<_>>()
-                .join(" ");
-            assert_eq!(continued, format!("next: {next}"), "{shown}");
+            // The command's lines: each but the last ends in the backslash a shell removes
+            // with the newline after it.
+            let mut command = String::new();
+            for line in &lines[at + 1..] {
+                command.push_str(line);
+                if !command.ends_with('\\') {
+                    break;
+                }
+                command.pop();
+            }
+            let words = shell_words::split(command.trim_start()).unwrap();
+            assert_eq!(words[0], "next:", "{shown}");
+            assert_eq!(
+                words[1..],
+                shell_words::split(next).unwrap()[..],
+                "{columns}\n{shown}"
+            );
         }
     }
     let row = list.lines().find(|l| l.starts_with(TASK)).unwrap();
@@ -219,12 +226,64 @@ fn agreed_state(fixture: &Fixture) -> (String, Option<String>) {
         row.starts_with(&format!("| 1 | {TASK} | {label}")),
         "{row}\n{report}"
     );
-    (label, next)
+    let group = attention_group(fixture, &entry, &label, next.as_deref());
+    (label, next, group)
+}
+
+/// The one `af task list --attention` group that holds the Task: its `--json` document carries
+/// the same list entry there and nowhere else, and its text prints the Task under that group's
+/// title with the same state and next command.
+fn attention_group(fixture: &Fixture, entry: &Value, label: &str, next: Option<&str>) -> String {
+    let attention = fixture.json(&["task", "list", "--attention"]);
+    schemas::valid(&schemas::validator("task-attention-v1.json"), &attention);
+    let holding: Vec<&Value> = attention["groups"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter(|group| {
+            group["tasks"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|task| task["task_id"] == TASK)
+        })
+        .collect();
+    assert_eq!(holding.len(), 1, "{attention}");
+    let group = holding[0]["group"].as_str().unwrap().to_owned();
+    assert_eq!(
+        holding[0]["tasks"][0], *entry,
+        "--attention and list --json"
+    );
+    let text = out(&fixture.af(&["task", "list", "--attention"]));
+    let lines: Vec<&str> = text.lines().collect();
+    let at = lines
+        .iter()
+        .position(|line| line.starts_with(&format!("  {TASK} ")))
+        .unwrap_or_else(|| panic!("{text}"));
+    let title = match group.as_str() {
+        "approval" => "Waiting for approval",
+        "gate_failed" => "Failed gate",
+        "findings" => "Findings to answer",
+        "deliver" => "Verified, ready to deliver",
+        "stopped" => "Stopped",
+        other => panic!("{other} needs no one, yet the Task names {next:?}"),
+    };
+    assert_eq!(lines[at - 1], format!("{title} (1)"), "{text}");
+    assert_eq!(lines[at].split_whitespace().nth(1), Some(label), "{text}");
+    let continued = lines[at + 1..]
+        .iter()
+        .take_while(|line| line.starts_with("    "))
+        .map(|line| line.trim().trim_end_matches('\\').trim())
+        .collect::<Vec<_>>()
+        .join(" ");
+    assert_eq!(continued, format!("next: {}", next.unwrap()), "{text}");
+    group
 }
 
 /// Each outcome the fixture pipeline reaches, driven through the CLI: the run's own output, its
-/// exit code (`af help exit-codes`), and every other rendering print the same state, and every
-/// state that did not verify names a next command.
+/// exit code (`af help exit-codes`), and every other rendering print the same state, every
+/// state that did not verify names a next command, and `af task list --attention` puts the Task
+/// in the group that state names: deliver, a failed gate, findings to answer, stopped.
 #[test]
 fn every_rendering_prints_the_same_state_for_each_outcome() {
     struct Case {
@@ -232,6 +291,7 @@ fn every_rendering_prints_the_same_state_for_each_outcome() {
         setup: fn(&Fixture),
         label: &'static str,
         next: &'static str,
+        group: &'static str,
         code: i32,
     }
     let cases = [
@@ -240,6 +300,7 @@ fn every_rendering_prints_the_same_state_for_each_outcome() {
             setup: |_| {},
             label: "finished/verified",
             next: "af task deliver pagination-cli --branch af/pagination-cli --worktree ../pagination-cli --confirm pagination-cli",
+            group: "deliver",
             code: 0,
         },
         Case {
@@ -249,6 +310,7 @@ fn every_rendering_prints_the_same_state_for_each_outcome() {
             // The fixture's limits hold no Attempt for a new check, so the retry the kernel
             // would refuse is never named; the gate's checks are.
             next: "af task show pagination-cli --checks",
+            group: "gate_failed",
             code: 5,
         },
         Case {
@@ -256,6 +318,7 @@ fn every_rendering_prints_the_same_state_for_each_outcome() {
             setup: rejecting_evaluator,
             label: "finished/changes_requested/evaluator_rejected",
             next: "af task show pagination-cli",
+            group: "findings",
             code: 3,
         },
         Case {
@@ -263,6 +326,7 @@ fn every_rendering_prints_the_same_state_for_each_outcome() {
             setup: malformed_implementer,
             label: "finished/provider_failed/malformed_reply",
             next: "af task show pagination-cli",
+            group: "stopped",
             code: 6,
         },
     ];
@@ -297,8 +361,9 @@ fn every_rendering_prints_the_same_state_for_each_outcome() {
             "{}: {printed}",
             case.name
         );
-        let (label, next) = agreed_state(&fixture);
+        let (label, next, group) = agreed_state(&fixture);
         assert_eq!(label, case.label, "{}", case.name);
+        assert_eq!(group, case.group, "{}", case.name);
         assert_eq!(next.as_deref(), Some(expected.as_str()), "{}", case.name);
         // The same run under --json prints the document on stdout and its last log line on
         // stderr.
@@ -323,14 +388,16 @@ fn every_rendering_prints_the_same_state_for_each_outcome() {
 }
 
 /// A planned Task and an interrupted one print one state too: planned with the command that
-/// confirms its plan, and abandoned, cancelled by the host, with the command that resumes it.
+/// confirms its plan, waiting for approval, and abandoned, cancelled by the host, with the
+/// command that resumes it, stopped.
 #[test]
 fn a_planned_and_an_interrupted_task_print_the_same_state_everywhere() {
     let planned = fixture("pagination");
     let file = planned.task_file("ticket.json", |_| {});
     let plan = planned.json(&["task", "plan", "--file", file.to_str().unwrap()]);
-    let (label, next) = agreed_state(&planned);
+    let (label, next, group) = agreed_state(&planned);
     assert_eq!(label, "planned");
+    assert_eq!(group, "approval");
     assert_eq!(
         next.unwrap(),
         planned.next(&format!(
@@ -350,8 +417,9 @@ fn a_planned_and_an_interrupted_task_print_the_same_state_everywhere() {
         &[nix::sys::signal::Signal::SIGINT],
     );
     assert!(!stopped.status.success(), "{}", err(&stopped));
-    let (label, next) = agreed_state(&interrupted);
+    let (label, next, group) = agreed_state(&interrupted);
     assert_eq!(label, "abandoned/cancelled/host_cancelled");
+    assert_eq!(group, "stopped");
     assert_eq!(
         next.unwrap(),
         interrupted.next(&format!("af task run {TASK}"))
@@ -564,7 +632,7 @@ fn stable(text: &str) -> String {
 /// A check that fails on two named tests: `--checks` names them with the end of its stderr, the
 /// list's `gate` and the run's own output carry them, and `--checks --json` is the receipt
 /// document. The check writes no report, so its evidence is the text of its output, as
-/// `--checks` says (`evidence: output`, ADR-0254).
+/// `--checks` says (`evidence: output`, ADR-0258).
 #[test]
 fn a_failed_gate_names_its_failing_tests_in_checks_the_list_and_the_run() {
     let fixture = fixture("pagination");
@@ -619,8 +687,8 @@ next: {show_checks}
         )
     );
     let document = fixture.json(&["task", "show", TASK, "--checks"]);
-    schemas::valid(&schemas::validator("task-checks-v2.json"), &document);
-    assert_eq!(document["schema"], "af/task-checks@2");
+    schemas::valid(&schemas::validator("task-checks-v3.json"), &document);
+    assert_eq!(document["schema"], "af/task-checks@3");
     let check = &document["receipt"]["checks"][0];
     assert_eq!(
         check["failed_tests"],
@@ -664,7 +732,7 @@ next: {show_checks}
 }
 
 /// Every refusal before any state exists exits non-zero with its reason on stderr, in text and
-/// under `--json`, where stdout carries the one `af/error@1` document.
+/// under `--json`, where stdout carries the one `af/error@2` document.
 #[test]
 fn a_refusal_names_its_reason_on_stderr_in_text_and_json() {
     let fixture = fixture("pagination");
@@ -707,8 +775,8 @@ fn a_refusal_names_its_reason_on_stderr_in_text_and_json() {
             );
             if json {
                 let document: Value = serde_json::from_slice(&refused.stdout).unwrap();
-                schemas::valid(&schemas::validator("error-v1.json"), &document);
-                assert_eq!(document["schema"], "af/error@1", "{args:?}");
+                schemas::valid(&schemas::validator("error-v2.json"), &document);
+                assert_eq!(document["schema"], "af/error@2", "{args:?}");
                 assert_eq!(document["cause"], "task_file_invalid", "{args:?}");
                 assert_eq!(document["next_action"], again.as_str(), "{args:?}");
                 assert_eq!(
@@ -1085,6 +1153,11 @@ fn not_found_errors_name_the_task_the_store_and_what_it_holds() {
             err(&missing)
         );
     }
+    let missing_json = fixture.af(&["task", "show", "nope", "--json"]);
+    let document: serde_json::Value = serde_json::from_slice(&missing_json.stdout).unwrap();
+    assert_eq!(document["cause"], "task_not_found", "{document}");
+    assert_eq!(document["details"]["task_id"], "nope");
+    crate::schemas::valid(&crate::schemas::validator("error-v2.json"), &document);
     let absent = fixture.root.join("absent.json");
     let unreadable = fixture.af(&["task", "plan", "--file", absent.to_str().unwrap()]);
     assert_eq!(unreadable.status.code(), Some(1));
@@ -1172,7 +1245,7 @@ fn task_list_prints_a_header_and_one_row_per_task() {
 /// The state section of `docs/tasks.md` says what `af help task-states` says, in the same words:
 /// every phase, outcome and cause with its meaning.
 #[test]
-fn the_documentation_states_every_phase_outcome_and_cause_as_the_binary_does() {
+fn the_documentation_states_every_phase_outcome_cause_and_attention_group_as_the_binary_does() {
     use review_core::task::state::*;
     let workspace = std::env::var_os("AF_WORKSPACE_ROOT")
         .map(PathBuf::from)
@@ -1204,4 +1277,218 @@ fn the_documentation_states_every_phase_outcome_and_cause_as_the_binary_does() {
         );
         assert!(docs.contains(&row), "{row}");
     }
+    for group in TaskAttentionV1::ALL {
+        let row = format!(
+            "| `{}` | {} | {} | {} |",
+            group.as_str(),
+            group.title(),
+            if group.needs_you() { "yes" } else { "no" },
+            group.description()
+        );
+        assert!(docs.contains(&row), "{row}");
+    }
+}
+
+/// `af ARGS --state STATE` from the fixture's checkout with every standard stream on a
+/// pseudo-terminal `columns` wide, as a person runs it: what the terminal showed.
+fn in_terminal(fixture: &Fixture, args: &[&str], columns: u16) -> String {
+    let (status, text) = in_terminal_at(fixture, args, columns, &fixture.state);
+    assert_eq!(status, 0, "{args:?}: {text}");
+    text
+}
+
+/// [`in_terminal`] with `--state STATE` as given, and the exit code.
+fn in_terminal_at(
+    fixture: &Fixture,
+    args: &[&str],
+    columns: u16,
+    state: &std::path::Path,
+) -> (u32, String) {
+    use portable_pty::{CommandBuilder, PtySize, native_pty_system};
+    use std::io::Read as _;
+
+    let pair = native_pty_system()
+        .openpty(PtySize {
+            rows: 60,
+            cols: columns,
+            pixel_width: 0,
+            pixel_height: 0,
+        })
+        .unwrap();
+    let mut command = CommandBuilder::new(crate::common::af_binary());
+    command.args(args);
+    command.arg("--state");
+    command.arg(state);
+    command.cwd(&fixture.repo);
+    command.env_clear();
+    for (name, value) in crate::common::private_home_env() {
+        command.env(name, value);
+    }
+    command.env("PATH", std::env::var_os("PATH").unwrap_or_default());
+    command.env("AF_SELF_OFFLINE", "1");
+    if let Some((name, value)) = crate::common::inherited_tmpdir() {
+        command.env(name, value);
+    }
+    let mut child = pair.slave.spawn_command(command).unwrap();
+    drop(pair.slave);
+    let mut reader = pair.master.try_clone_reader().unwrap();
+    let drained = std::thread::spawn(move || {
+        let mut bytes = Vec::new();
+        let _ = reader.read_to_end(&mut bytes);
+        bytes
+    });
+    let status = child.wait().unwrap();
+    drop(pair.master);
+    let text = String::from_utf8_lossy(&drained.join().unwrap()).replace("\r\n", "\n");
+    (status.exit_code(), text)
+}
+
+/// Each `next:` command `text` prints, the line it starts on and those its ` \` continues.
+fn next_blocks(text: &str) -> Vec<String> {
+    let mut blocks = Vec::new();
+    let mut lines = text.lines().peekable();
+    while let Some(line) = lines.next() {
+        if !line.contains("next: af ") {
+            continue;
+        }
+        let mut block = line.to_owned();
+        let mut last = line;
+        while last.ends_with('\\')
+            && let Some(next) = lines.next()
+        {
+            block.push('\n');
+            block.push_str(next);
+            last = next;
+        }
+        blocks.push(block);
+    }
+    blocks
+}
+
+/// #331 item 11, the run log and `--detach`: with a Store selector wider than the terminal, the
+/// run log's last line (`Task ID: STATE; next: af ...`) and the log an immediately finished
+/// detached run replays are held to the terminal's width at 80 and 100 columns, and each, pasted,
+/// is the command `--json` names.
+#[test]
+fn the_run_log_and_a_detached_replay_fit_the_terminal() {
+    let fixture = fixture("pagination");
+    let long = fixture
+        .root
+        .join(format!("{}state", "long-state-selector-".repeat(8)));
+    std::fs::create_dir_all(&long).unwrap();
+    let file = fixture.task_file("ticket.json", |_| {});
+    let started = crate::common::af()
+        .current_dir(&fixture.repo)
+        .args(["task", "start", "--file", file.to_str().unwrap(), "--state"])
+        .arg(&long)
+        .output()
+        .unwrap();
+    assert!(started.status.success(), "{}", err(&started));
+    let shown = |state: &std::path::Path| -> Value {
+        let output = crate::common::af()
+            .current_dir(&fixture.repo)
+            .args(["task", "show", TASK, "--json", "--state"])
+            .arg(state)
+            .output()
+            .unwrap();
+        serde_json::from_slice(&output.stdout).unwrap()
+    };
+    let plan = shown(&long)["state"]["next_action"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    let confirm = shell_words::split(&plan).unwrap();
+    let confirm = confirm
+        .windows(2)
+        .find(|pair| pair[0] == "--confirm-plan")
+        .map(|pair| pair[1].clone())
+        .unwrap_or_else(|| panic!("{plan}"));
+    let fits = |columns: u16, text: &str, next: &str| {
+        let blocks = next_blocks(text);
+        assert!(!blocks.is_empty(), "{columns}: {text}");
+        for block in &blocks {
+            for line in block.lines() {
+                assert!(
+                    line.chars().count() <= usize::from(columns),
+                    "{columns}: {line:?}\n{text}"
+                );
+            }
+        }
+        let block = blocks.last().unwrap();
+        let joined = block.replace("\\\n", "");
+        let at = joined.find("next: af ").unwrap() + "next: ".len();
+        assert_eq!(
+            shell_words::split(&joined[at..]).unwrap(),
+            shell_words::split(next).unwrap(),
+            "{columns}\n{block}"
+        );
+    };
+    let (status, text) = in_terminal_at(
+        &fixture,
+        &["task", "run", TASK, "--confirm-plan", &confirm],
+        80,
+        &long,
+    );
+    let next = shown(&long)["state"]["next_action"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    assert!(next.contains("long-state-selector-"), "{next}");
+    assert!(next.chars().count() > 100, "{next}");
+    assert!(text.contains(&format!("Task {TASK}: ")), "{status}: {text}");
+    fits(80, &text, &next);
+    for columns in [80_u16, 100] {
+        let (status, text) =
+            in_terminal_at(&fixture, &["task", "run", TASK, "--detach"], columns, &long);
+        assert_eq!(status, 0, "{text}");
+        assert!(text.contains("its run ended at once"), "{text}");
+        // The replayed log's state line and the detached result's own `next:` both fit.
+        assert!(next_blocks(&text).len() >= 2, "{text}");
+        fits(columns, &text, &next);
+    }
+}
+
+/// #331 item 11: on a terminal the `next:` line of `af task show` is held to the terminal's
+/// width, continued between its arguments, and a Store selector or plan ID wider than a line is
+/// cut into quoted pieces a shell joins: pasted as printed, it is the command `--json` names.
+/// Without a terminal the line stays whole, for the script that reads it.
+#[test]
+fn a_next_line_fits_the_terminal_and_runs_as_printed() {
+    let planned = fixture("pagination");
+    let file = planned.task_file("ticket.json", |_| {});
+    planned.json(&["task", "plan", "--file", file.to_str().unwrap()]);
+    let shown = planned.json(&["task", "show", TASK]);
+    let next = shown["state"]["next_action"].as_str().unwrap().to_owned();
+    assert!(next.contains(" --confirm-plan sha256:"), "{next}");
+    for columns in [60_u16, 80] {
+        let text = in_terminal(&planned, &["task", "show", TASK], columns);
+        let at = text.rfind("next: af ").unwrap_or_else(|| panic!("{text}"));
+        let printed = text[at..].trim_end();
+        assert!(printed.lines().count() > 1, "{columns}\n{printed}");
+        for line in printed.lines() {
+            assert!(
+                line.chars().count() <= usize::from(columns),
+                "{columns}: {line:?}\n{printed}"
+            );
+        }
+        let words = shell_words::split(&printed.replace("\\\n", "")).unwrap();
+        assert_eq!(words[0], "next:", "{printed}");
+        assert_eq!(
+            words[1..],
+            shell_words::split(&next).unwrap()[..],
+            "{printed}"
+        );
+    }
+    // A terminal wide enough for the line shows it whole, wider than 100 columns too.
+    let text = in_terminal(&planned, &["task", "show", TASK], 250);
+    assert!(
+        text.lines().any(|line| line == format!("next: {next}")),
+        "{text}"
+    );
+    let piped = out(&planned.af(&["task", "show", TASK]));
+    assert_eq!(
+        piped.lines().last(),
+        Some(format!("next: {next}").as_str()),
+        "{piped}"
+    );
 }

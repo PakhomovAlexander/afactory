@@ -15,7 +15,7 @@ use serde::Serialize;
 use crate::selfmgmt;
 
 /// The `--json` document's kind.
-pub(crate) const SCHEMA: &str = "af/doctor@2";
+pub(crate) const SCHEMA: &str = "af/doctor@3";
 /// The text output's first line.
 pub(crate) const FIRST_LINE: &str =
     "token-free; the charged end-to-end Provider check is af provider doctor";
@@ -123,7 +123,10 @@ pub(crate) fn run(repo: &Path, json: bool) -> Result<i32, String> {
         });
         println!("{document}");
     } else {
-        print!("{}", render(&checks, crate::human::width().max(MIN_WIDTH)));
+        print!(
+            "{}",
+            render(&checks, crate::human::width().max(MIN_WIDTH), fish_shell())
+        );
     }
     Ok(code)
 }
@@ -145,21 +148,29 @@ const HINT_INDENT: usize = 23;
 /// under it, and a summary. A long detail or fix continues on indented lines; a path too long for a line
 /// is broken after one of its `/`, never cut short; a command stays whole on its line, and one
 /// too long for a line is broken between its arguments, as every other rendering of a command
-/// is ([`crate::human::fit_command`]).
-fn render(checks: &[Check], width: usize) -> String {
-    let mut text = format!("{}\n", layout("", FIRST_LINE, width, 2, false));
+/// is ([`crate::human::fit_command`]). `fish` says the fixes are printed for fish, in its
+/// quoting ([`af_words`]).
+fn render(checks: &[Check], width: usize, fish: bool) -> String {
+    let mut text = format!("{}\n", layout("", FIRST_LINE, width, 2, false, fish));
     for check in checks {
         let prefix = format!("{:<5} {:<10} ", check.status.word(), check.id);
-        text.push_str(&layout(&prefix, &check.detail, width, DETAIL_INDENT, false));
+        text.push_str(&layout(
+            &prefix,
+            &check.detail,
+            width,
+            DETAIL_INDENT,
+            false,
+            fish,
+        ));
         text.push('\n');
         if let Some(fix) = &check.fix {
             let prefix = format!("{:<16} fix: ", "");
-            text.push_str(&layout(&prefix, fix, width, FIX_INDENT, true));
+            text.push_str(&layout(&prefix, fix, width, FIX_INDENT, true, fish));
             text.push('\n');
         }
         if let Some(hint) = &check.hint {
             let prefix = format!("{:<16} hint: ", "");
-            text.push_str(&layout(&prefix, hint, width, HINT_INDENT, false));
+            text.push_str(&layout(&prefix, hint, width, HINT_INDENT, false, fish));
             text.push('\n');
         }
     }
@@ -209,13 +220,31 @@ enum Unit {
 
 /// `text` as words and commands. A command starts at one of [`COMMANDS`] — at the start of a
 /// fix (`leading`), or after a word ending in `:`, `,` or `;`, or `then`, `or`, `&&` — and runs
-/// to a word ending in `,` or `;` (kept), or before `&&`, `||`, a word opening `(` or a shell
-/// comment. A span between backticks is one word.
-fn units(text: &str, leading: bool) -> Vec<Unit> {
+/// to a word ending in `,` or `;`, or to `&&` or `||` (kept), or before a word opening `(` or a
+/// shell comment. A span between backticks is one word; `fish` as for [`af_words`].
+fn units(text: &str, leading: bool, fish: bool) -> Vec<Unit> {
     // A PATH line quotes a directory that may hold spaces, quotes or backquotes: it is one
-    // command, kept exactly as written.
+    // command, laid out by [`fit_path_line`] alone.
     if leading && PATH_LINES.iter().any(|line| text.starts_with(line)) {
         return vec![Unit::Line(text.to_owned())];
+    }
+    // An install the PATH line waits for (`af self install V && export PATH=...`): the install
+    // is one command, its program `af` or this binary's quoted path, ending in the `&&` that
+    // lets a shell continue on the next line, and then the line.
+    if leading
+        && let Some(at) = PATH_LINES
+            .iter()
+            .find_map(|line| text.find(&format!(" && {line}")))
+    {
+        return vec![
+            Unit::Command(text[..at + 3].to_owned()),
+            Unit::Line(text[at + 4..].to_owned()),
+        ];
+    }
+    // A fix that runs this binary by its path (`'/opt/x/af' self install V`) is one command,
+    // however its program is quoted: its words are broken as an `af` command's are.
+    if leading && af_words(text, fish).is_some() {
+        return vec![Unit::Command(text.to_owned())];
     }
     let mut words: Vec<String> = Vec::new();
     let mut quoted = false;
@@ -238,7 +267,8 @@ fn units(text: &str, leading: bool) -> Vec<Unit> {
             units.push(Unit::Comment(words[index..].to_vec()));
             break;
         }
-        let starts = COMMANDS.contains(&words[index].as_str())
+        let starts = (COMMANDS.contains(&words[index].as_str())
+            || af_words(&words[index], fish).is_some())
             && if index == 0 {
                 leading
             } else {
@@ -251,11 +281,14 @@ fn units(text: &str, leading: bool) -> Vec<Unit> {
         }
         let mut command: Vec<&str> = Vec::new();
         while let Some(word) = words.get(index) {
-            if !command.is_empty()
-                && (matches!(word.as_str(), "&&" | "||")
-                    || word.starts_with('(')
-                    || word.starts_with('#'))
-            {
+            if !command.is_empty() && (word.starts_with('(') || word.starts_with('#')) {
+                break;
+            }
+            // The `&&` or `||` that chains it to the next command ends it: kept on its last
+            // line, where a shell continues past the newline, never a line of its own.
+            if !command.is_empty() && matches!(word.as_str(), "&&" | "||") {
+                command.push(word);
+                index += 1;
                 break;
             }
             command.push(word);
@@ -273,8 +306,16 @@ fn units(text: &str, leading: bool) -> Vec<Unit> {
 /// wrap at spaces; a word too long for a line of its own — a path — is broken after one of its
 /// `/` (by characters only when it has none), so nothing is cut short; a command stays whole on
 /// one line, and one too long for a line is broken between its arguments by
-/// [`crate::human::fit_command`]. `leading` says whether `text` may start with a command.
-fn layout(prefix: &str, text: &str, width: usize, indent: usize, leading: bool) -> String {
+/// [`crate::human::fit_command`]. `leading` says whether `text` may start with a command;
+/// `fish`, whether it is printed for fish ([`af_words`]).
+fn layout(
+    prefix: &str,
+    text: &str,
+    width: usize,
+    indent: usize,
+    leading: bool,
+    fish: bool,
+) -> String {
     let count = |text: &str| text.chars().count();
     let pad = " ".repeat(indent);
     let mut lines: Vec<String> = Vec::new();
@@ -288,23 +329,60 @@ fn layout(prefix: &str, text: &str, width: usize, indent: usize, leading: bool) 
         line.push_str(piece);
         *fresh = false;
     };
-    for unit in units(text, leading) {
+    for unit in units(text, leading, fish) {
         match unit {
-            Unit::Command(command) => {
+            Unit::Command(whole) => {
                 let space = usize::from(!fresh);
-                if count(&line) + space + count(&command) <= width {
-                    add(&mut line, &mut fresh, &command);
+                if count(&line) + space + count(&whole) <= width {
+                    add(&mut line, &mut fresh, &whole);
                     continue;
                 }
+                // The `,` or `;` that ends a command in prose is the sentence's, not its last
+                // argument's: fitted apart, so a broken command never quotes it (`'/repo;'`).
+                // So is the `&&` or `||` that chains it to the next command: it ends the
+                // command's last line, where a shell continues past the newline.
+                let (command, tail) = match whole
+                    .strip_suffix(" &&")
+                    .or_else(|| whole.strip_suffix(" ||"))
+                    .or_else(|| whole.strip_suffix([',', ';']))
+                {
+                    Some(command) if !command.is_empty() => {
+                        (command.to_owned(), whole[command.len()..].to_owned())
+                    }
+                    _ => (whole.clone(), String::new()),
+                };
+                let width = width - count(&tail);
                 if !fresh {
                     lines.push(std::mem::replace(&mut line, pad.clone()));
                 }
                 // Broken between its arguments where it starts; when an argument is still too
                 // long there, on a line of its own nearer the margin.
                 let fits = |fitted: &str| fitted.lines().all(|line| count(line) <= width);
-                let mut fitted = crate::human::fit_command(&format!("{line}{command}"), width);
+                // An `af` command, or one that runs this binary by its path, is broken between
+                // its arguments; any other is kept whole.
+                let fit = |start: &str| {
+                    let joined = format!("{start}{command}");
+                    if command.starts_with("af ") {
+                        crate::human::fit_at(&joined, start.len(), width)
+                    } else if let Some(words) = af_words(&command, fish) {
+                        // fish reads its own quoting of the program's path, which sh's
+                        // `'\''` would not spell for a path holding a backslash.
+                        let quote = |word: &str| {
+                            let plain = shell_words::quote(word);
+                            if fish && plain != word {
+                                fish_quote(word)
+                            } else {
+                                plain.into_owned()
+                            }
+                        };
+                        crate::human::fit_words(start, &words, width, &quote)
+                    } else {
+                        crate::human::fit_command(&joined, width)
+                    }
+                };
+                let mut fitted = fit(&line);
                 if !fits(&fitted) {
-                    let margin = crate::human::fit_command(&format!("  {command}"), width);
+                    let margin = fit("  ");
                     if fits(&margin) {
                         // The line it would have started on, unless that holds only its indent.
                         if !line.trim().is_empty() {
@@ -315,15 +393,23 @@ fn layout(prefix: &str, text: &str, width: usize, indent: usize, leading: bool) 
                 }
                 let mut parts: Vec<String> = fitted.lines().map(str::to_string).collect();
                 line = parts.pop().unwrap_or_default();
+                line.push_str(&tail);
                 lines.extend(parts);
                 fresh = false;
             }
             Unit::Line(command) => {
                 if !fresh && count(&line) + 1 + count(&command) > width {
+                    // After `&&`, which a shell continues on the next line.
                     lines.push(std::mem::replace(&mut line, pad.clone()));
                     fresh = true;
                 }
-                add(&mut line, &mut fresh, &command);
+                if !fresh {
+                    line.push(' ');
+                }
+                let mut fitted = fit_path_line(&line, &command, width);
+                line = fitted.pop().unwrap_or_default();
+                lines.extend(fitted);
+                fresh = false;
             }
             Unit::Comment(words) => {
                 let comment = words.join(" ");
@@ -380,7 +466,8 @@ fn layout(prefix: &str, text: &str, width: usize, indent: usize, leading: bool) 
 
 fn checks(repo: &Path) -> Vec<Check> {
     let installation = selfmgmt::installation();
-    let registry = crate::providers::read_registry_entries();
+    let mut registry = crate::providers::read_registry_entries();
+    registry.registrable = crate::providers::registrable_logins();
     // The machine's own configuration, which `af self` and `af storage` read before anything
     // else: when it does not load, no fix that runs one of them can clear its check.
     let machine = crate::config::load_machine_naming()
@@ -392,6 +479,9 @@ fn checks(repo: &Path) -> Vec<Check> {
         .filter(|toplevel| toplevel.join(".af").exists())
         .map(crate::onboard::authority_facts);
     let mut checks = vec![
+        agent_harness(),
+        agent_sandbox(),
+        agent_network(),
         binary(&installation),
         path(&installation),
         shell(),
@@ -435,6 +525,41 @@ fn checks(repo: &Path) -> Vec<Check> {
     .collect();
     withhold(&mut checks, &blockers);
     checks
+}
+
+fn agent_harness() -> Check {
+    let context = crate::providers::compatibility::AgentEnvironment::detect();
+    Check::ok(
+        "harness",
+        format!(
+            "driving agent harness: {}",
+            context.harness.unwrap_or("none detected")
+        ),
+    )
+}
+
+fn agent_sandbox() -> Check {
+    let context = crate::providers::compatibility::AgentEnvironment::detect();
+    Check::ok(
+        "sandbox",
+        if context.sandboxed {
+            "agent sandbox: detected"
+        } else {
+            "agent sandbox: not detected"
+        },
+    )
+}
+
+fn agent_network() -> Check {
+    let context = crate::providers::compatibility::AgentEnvironment::detect();
+    Check::ok(
+        "network",
+        match context.network_allowed {
+            Some(true) => "agent sandbox network: allowed",
+            Some(false) => "agent sandbox network: blocked",
+            None => "agent sandbox network: unknown",
+        },
+    )
 }
 
 // ------------------------------------------------------------------------------------------
@@ -542,7 +667,18 @@ enum Reads {
 }
 
 fn reads(command: &[String]) -> Vec<Reads> {
-    let words: Vec<&str> = command.iter().map(String::as_str).collect();
+    // This binary run by its path reads what `af` does.
+    let words: Vec<&str> = command
+        .iter()
+        .enumerate()
+        .map(|(index, word)| {
+            if index == 0 && is_af_program(word) {
+                "af"
+            } else {
+                word.as_str()
+            }
+        })
+        .collect();
     match words.as_slice() {
         ["af", "self", "setup-shell", ..] => Vec::new(),
         ["af", "self" | "storage" | "config", ..] => vec![Reads::MachineConfig],
@@ -625,7 +761,11 @@ fn binary(installation: &Result<selfmgmt::Installation, String>) -> Check {
                 "af {version} at {running} has no install receipt at {} (a source build): it cannot write a byte-bound pin or update itself; {default}",
                 installation.receipt_path.display()
             ),
-            format!("af self install {version}"),
+            // The `af` on PATH, or this binary by its path when none is (#331 D7).
+            format!(
+                "{} self install {version}",
+                install_program(installation, fish_shell()).unwrap_or_else(|| "af".to_owned())
+            ),
         ),
         Some(receipt)
             if receipt.verified_by.contains("minisign")
@@ -678,8 +818,18 @@ fn path(installation: &Result<selfmgmt::Installation, String>) -> Check {
     let path = std::env::var_os("PATH").unwrap_or_default();
     let dirs: Vec<PathBuf> = std::env::split_paths(&path).collect();
     let shell = std::env::var("SHELL").ok();
+    let absent = std::fs::symlink_metadata(bin).is_err();
     if !dirs.iter().any(|entry| same_dir(entry, dir)) {
         let (fix, hint) = path_fix(dir, shell.as_deref(), false);
+        if absent {
+            let detail = format!(
+                "{} is not on PATH, and the default link {} does not exist yet, so no `af` is \
+                 found there",
+                dir.display(),
+                bin.display()
+            );
+            return path_before_link(installation, dir, shell.as_deref(), fix, hint, detail);
+        }
         let detail = format!(
             "{} is not on PATH, so `af` there is not found",
             dir.display()
@@ -699,6 +849,17 @@ fn path(installation: &Result<selfmgmt::Installation, String>) -> Check {
             "path",
             format!("`af` on PATH is the default link {}", bin.display()),
         ),
+        // The directory is on PATH but holds no default link yet: putting it first finds no
+        // `af` there, so the fix installs first (#331 D7).
+        Some(found) if absent => {
+            let (fix, hint) = path_fix(dir, shell.as_deref(), true);
+            let detail = format!(
+                "`af` on PATH is {}, and the default link {} does not exist yet",
+                found.display(),
+                bin.display()
+            );
+            path_before_link(installation, dir, shell.as_deref(), fix, hint, detail)
+        }
         Some(found) => {
             let (fix, hint) = path_fix(dir, shell.as_deref(), true);
             let before = format!(
@@ -725,12 +886,96 @@ fn path(installation: &Result<selfmgmt::Installation, String>) -> Check {
                 ..Check::advise(Status::Warn, "path", detail, hint)
             }
         }
+        // No `af` on PATH at all: the install runs this very binary by its path.
         None => Check::warn(
             "path",
             format!("{} is on PATH but holds no af", dir.display()),
-            format!("af self install {}", selfmgmt::VERSION),
+            format!(
+                "{} self install {}",
+                install_program(installation, fish_shell()).unwrap_or_else(|| "af".to_owned()),
+                selfmgmt::VERSION
+            ),
         ),
     }
+}
+
+/// Whether `$SHELL` names fish, whose quoting differs from sh's.
+fn fish_shell() -> bool {
+    std::env::var("SHELL")
+        .ok()
+        .as_deref()
+        .and_then(|shell| Path::new(shell).file_name())
+        .and_then(|name| name.to_str())
+        .and_then(selfmgmt::shell_named)
+        == Some(crate::cli::Shell::Fish)
+}
+
+/// The program an install fix runs: the `af` on PATH, or this very binary by its path, quoted
+/// for fish when `fish`, else for sh; `None` when neither can be spelled on one line.
+fn install_program(installation: &selfmgmt::Installation, fish: bool) -> Option<String> {
+    if on_path("af") {
+        return Some("af".to_owned());
+    }
+    installation
+        .running
+        .as_deref()
+        .and_then(Path::to_str)
+        .filter(|running| path_literal(running))
+        .map(|running| {
+            if fish {
+                fish_quote(running)
+            } else {
+                shell_words::quote(running).into_owned()
+            }
+        })
+}
+
+/// The path row when the default link's directory is off PATH and the link does not exist yet
+/// (#331 D7): the PATH line alone would find no `af` there, so it cannot clear the check. Where
+/// the shell runs `&&` before its PATH line (sh, bash, zsh, fish) the fix installs first, which
+/// links the default, and then runs the line; elsewhere there is no fix and the hint orders the
+/// steps. The install runs the `af` on PATH, or this very binary by its path when none is.
+fn path_before_link(
+    installation: &selfmgmt::Installation,
+    dir: &Path,
+    shell: Option<&str>,
+    fix: Option<String>,
+    hint: Option<String>,
+    detail: String,
+) -> Check {
+    let version = selfmgmt::VERSION;
+    let bin = installation.bin.display();
+    let fish = shell
+        .and_then(|shell| Path::new(shell).file_name())
+        .and_then(|name| name.to_str())
+        .and_then(selfmgmt::shell_named)
+        == Some(crate::cli::Shell::Fish);
+    let install = install_program(installation, fish)
+        .map(|program| format!("{program} self install {version}"));
+    let chained = fix
+        .as_deref()
+        .filter(|line| line.starts_with("export PATH=") || line.starts_with("fish_add_path "));
+    if let (Some(install), Some(line)) = (&install, chained) {
+        let mut said = format!(
+            "it installs af {version}, which links {bin}, then puts {} first on PATH",
+            dir.display()
+        );
+        if let Some(hint) = hint {
+            said.push_str(&format!("; {}", hint.replace("that line", "the PATH line")));
+        }
+        return Check::warn("path", detail, format!("{install} && {line}")).hint(said);
+    }
+    let install = install.unwrap_or_else(|| format!("af self install {version}"));
+    let mut said = format!(
+        "install first, which links {bin}: {install}; then recheck: af doctor, which gives the \
+         PATH line for your shell"
+    );
+    if fix.is_none()
+        && let Some(hint) = hint
+    {
+        said.push_str(&format!("; {hint}"));
+    }
+    Check::advise(Status::Warn, "path", detail, said)
 }
 
 /// The fix a check that needs HOME gives, and its hint's start.
@@ -797,6 +1042,197 @@ pub(crate) fn path_fix(
     }
 }
 
+/// The words of `command` when it runs an `af` binary by its path (`'/opt/x/af' self install
+/// 0.14.0`), this very binary's whatever its name: `None` for any other command. `fish` says
+/// which quoting the command is in, that of the shell it is printed for ([`install_program`]
+/// writes fish's under fish): the same text can be both, `'/x/\\y/af'` naming a different
+/// program in each, so it is never guessed from the text.
+fn af_words(command: &str, fish: bool) -> Option<Vec<String>> {
+    if !fish {
+        let words = shell_words::split(command).ok()?;
+        return words
+            .first()
+            .is_some_and(|program| is_af_program(program))
+            .then_some(words);
+    }
+    // fish's single quotes: only `\\` and `\'` are escapes; plain words follow.
+    let (program, rest) = match command.strip_prefix('\'') {
+        Some(quoted) => {
+            let mut chars = quoted.chars();
+            let mut program = String::new();
+            loop {
+                match chars.next()? {
+                    '\\' => program.push(chars.next().filter(|c| matches!(c, '\\' | '\''))?),
+                    '\'' => break,
+                    c => program.push(c),
+                }
+            }
+            (program, chars.collect::<String>())
+        }
+        None => {
+            let (program, rest) = command.split_once(' ').unwrap_or((command, ""));
+            if shell_words::quote(program) != program {
+                return None;
+            }
+            (program.to_owned(), format!(" {rest}"))
+        }
+    };
+    if !(rest.is_empty() || rest.starts_with(' ')) || !is_af_program(&program) {
+        return None;
+    }
+    let mut words = vec![program];
+    for word in rest.split(' ').filter(|word| !word.is_empty()) {
+        // Only plain arguments, which fish and sh read alike.
+        if shell_words::quote(word) != word {
+            return None;
+        }
+        words.push(word.to_owned());
+    }
+    Some(words)
+}
+
+/// Whether `program` is an `af` binary named by its absolute path: one called `af`, or this
+/// very binary, whatever its name.
+fn is_af_program(program: &str) -> bool {
+    program.starts_with('/')
+        && (program.ends_with("/af")
+            || std::env::current_exe().is_ok_and(|running| running == Path::new(program)))
+}
+
+/// A PATH line ([`path_fix`]) after `start` (the row's prefix or indent) within `width` columns
+/// (#331 D6): whole when it fits; else its directory literal is cut into pieces the shell joins
+/// back into the one directory. sh, bash, zsh and fish join quoted pieces split by a backslash
+/// and a newline, which they remove, so each piece after the first starts its line; PowerShell
+/// adds them with `+`, which continues a line. Elvish continues no word across lines, but a
+/// list spans them: its pieces are the elements of a list `str:join` joins into the one
+/// directory, one piece to a line.
+fn fit_path_line(start: &str, text: &str, width: usize) -> Vec<String> {
+    let count = |text: &str| text.chars().count();
+    let whole = || vec![format!("{start}{text}")];
+    if count(start) + count(text) <= width {
+        return whole();
+    }
+    if let Some(dir) = text
+        .strip_prefix("set paths = [")
+        .and_then(|rest| rest.strip_suffix(" $@paths]"))
+        .and_then(elvish_literal)
+    {
+        const OPEN: &str = "set paths = [(str:join '' [";
+        let mut lines = if count(start) + count("use str; ") + count(OPEN) <= width {
+            vec![format!("{start}use str; {OPEN}")]
+        } else {
+            vec![format!("{start}use str"), OPEN.to_owned()]
+        };
+        let room = width.saturating_sub(4);
+        for piece in crate::human::pieces(&dir, room, room, &elvish_quote) {
+            lines.push(format!("    {piece}"));
+        }
+        lines.push("]) $@paths]".to_owned());
+        return lines;
+    }
+    let Some((head, dir, tail, style)) = path_line_parts(text) else {
+        return whole();
+    };
+    let quote = |piece: &str| match style {
+        PathStyle::Sh => sh_quote(piece),
+        PathStyle::Fish => fish_quote(piece),
+        PathStyle::Pwsh => pwsh_quote(piece),
+    };
+    // What ends a line a piece continues from, and what starts the next.
+    let (join, indent) = match style {
+        PathStyle::Sh | PathStyle::Fish => ("\\", ""),
+        PathStyle::Pwsh => (" +", "    "),
+    };
+    let first = width.saturating_sub(count(start) + count(head) + count(join));
+    let rest = width.saturating_sub(count(indent) + count(join));
+    let mut pieces = crate::human::pieces(&dir, first, rest, &quote);
+    let last = pieces.pop().unwrap_or_default();
+    let mut lines = Vec::new();
+    let mut lead = format!("{start}{head}");
+    for piece in pieces {
+        lines.push(format!("{lead}{piece}{join}"));
+        lead = indent.to_owned();
+    }
+    let ending = format!("{lead}{last}{tail}");
+    if count(&ending) <= width || tail.is_empty() {
+        lines.push(ending);
+    } else {
+        // The tail on a line of its own: `:"$PATH"` joined to the last piece, PowerShell's sum
+        // continued after its `+`.
+        lines.push(format!("{lead}{last}{join}"));
+        lines.push(match style {
+            PathStyle::Pwsh => format!("{indent}{}", tail.trim_start_matches(" + ")),
+            PathStyle::Sh | PathStyle::Fish => tail.to_owned(),
+        });
+    }
+    lines
+}
+
+#[derive(Clone, Copy)]
+enum PathStyle {
+    Sh,
+    Fish,
+    Pwsh,
+}
+
+/// A PATH line as [`path_fix`] wrote it: what comes before the quoted directory, the directory
+/// itself, what follows it and how it is quoted. `None` for anything else, or a line whose
+/// quoting is not the one this module writes.
+fn path_line_parts(text: &str) -> Option<(&str, String, &str, PathStyle)> {
+    const SH_TAIL: &str = ":\"$PATH\"";
+    const PWSH_TAIL: &str = " + [IO.Path]::PathSeparator + $env:PATH";
+    let (head, quoted, tail, style) = if let Some(rest) = text.strip_prefix("export PATH=") {
+        (
+            "export PATH=",
+            rest.strip_suffix(SH_TAIL)?,
+            SH_TAIL,
+            PathStyle::Sh,
+        )
+    } else if let Some(rest) = text.strip_prefix("fish_add_path --move ") {
+        ("fish_add_path --move ", rest, "", PathStyle::Fish)
+    } else if let Some(rest) = text.strip_prefix("fish_add_path ") {
+        ("fish_add_path ", rest, "", PathStyle::Fish)
+    } else if let Some(rest) = text.strip_prefix("$env:PATH = ") {
+        (
+            "$env:PATH = ",
+            rest.strip_suffix(PWSH_TAIL)?,
+            PWSH_TAIL,
+            PathStyle::Pwsh,
+        )
+    } else {
+        return None;
+    };
+    let inner = quoted.strip_prefix('\'')?.strip_suffix('\'')?;
+    let dir = match style {
+        PathStyle::Sh => inner.replace("'\\''", "'"),
+        PathStyle::Fish => {
+            let mut dir = String::new();
+            let mut chars = inner.chars();
+            while let Some(c) = chars.next() {
+                dir.push(if c == '\\' { chars.next()? } else { c });
+            }
+            dir
+        }
+        PathStyle::Pwsh => {
+            let mut dir = String::new();
+            let mut chars = inner.chars().peekable();
+            while let Some(c) = chars.next() {
+                if is_pwsh_quote(c) {
+                    chars.next_if_eq(&c)?;
+                }
+                dir.push(c);
+            }
+            dir
+        }
+    };
+    let again = match style {
+        PathStyle::Sh => sh_quote(&dir),
+        PathStyle::Fish => fish_quote(&dir),
+        PathStyle::Pwsh => pwsh_quote(&dir),
+    };
+    (again == quoted).then_some((head, dir, tail, style))
+}
+
 /// Whether `dir` can be one PATH entry spelled on one line: no `:`, which separates entries,
 /// and no control character, which a pasted line would not carry.
 fn path_literal(dir: &str) -> bool {
@@ -805,7 +1241,12 @@ fn path_literal(dir: &str) -> bool {
 
 /// `export PATH='DIR':"$PATH"`, DIR single-quoted, so sh, bash and zsh expand nothing in it.
 fn sh_export(dir: &str) -> String {
-    format!("export PATH='{}':\"$PATH\"", dir.replace('\'', r"'\''"))
+    format!("export PATH={}:\"$PATH\"", sh_quote(dir))
+}
+
+/// A literal for sh, bash and zsh: single-quoted, each `'` written `'\''`.
+fn sh_quote(dir: &str) -> String {
+    format!("'{}'", dir.replace('\'', r"'\''"))
 }
 
 /// A fish literal: inside fish's single quotes only `\\` and `\'` are escapes.
@@ -818,18 +1259,30 @@ fn elvish_quote(dir: &str) -> String {
     format!("'{}'", dir.replace('\'', "''"))
 }
 
+/// The directory an [`elvish_quote`] literal spells, when `quoted` is exactly one.
+fn elvish_literal(quoted: &str) -> Option<String> {
+    let inner = quoted.strip_prefix('\'')?.strip_suffix('\'')?;
+    let dir = inner.replace("''", "'");
+    (elvish_quote(&dir) == quoted).then_some(dir)
+}
+
 /// A PowerShell literal: inside single quotes every single quote, the typographic ones
 /// PowerShell also reads as one included, is written twice.
 fn pwsh_quote(dir: &str) -> String {
     let mut quoted = String::from("'");
     for c in dir.chars() {
-        if matches!(c, '\'' | '\u{2018}' | '\u{2019}' | '\u{201a}' | '\u{201b}') {
+        if is_pwsh_quote(c) {
             quoted.push(c);
         }
         quoted.push(c);
     }
     quoted.push('\'');
     quoted
+}
+
+/// A character PowerShell reads as a single quote.
+fn is_pwsh_quote(c: char) -> bool {
+    matches!(c, '\'' | '\u{2018}' | '\u{2019}' | '\u{201a}' | '\u{201b}')
 }
 
 fn shell() -> Check {
@@ -940,6 +1393,27 @@ fn update(machine: Option<&Problem>) -> Check {
     // same fix.
     if let Some((said, fix)) = &facts.stalled {
         return Check::warn("update", format!("{said}; {checked}; {policy_text}"), fix);
+    }
+    // A release source that is no directory stops every release check, install and update the
+    // same way, `af self update --check` and `af self status --refresh` among them: no `af`
+    // command clears it, so the hint says what to change (#331 D1).
+    if let Some(root) = selfmgmt::release_source_override()
+        && !root.is_dir()
+    {
+        return Check::advise(
+            Status::Warn,
+            "update",
+            format!(
+                "AF_RELEASE_SOURCE {} is not a directory, so no release check, install or \
+                 update can read it; {checked}; {policy_text}",
+                root.display()
+            ),
+            format!(
+                "point AF_RELEASE_SOURCE at the directory that holds the releases, or unset it \
+                 to read github:{}; then recheck: af doctor",
+                policy.source
+            ),
+        );
     }
     if let Some((when, error)) = &facts.failed {
         return Check::warn(
@@ -1287,16 +1761,28 @@ fn providers(registry: &crate::providers::RegistryRead) -> Check {
         );
     }
     // The same names-only scan `af provider status` and `af onboard` list (ADR-0206).
-    let found: Vec<String> = registry
-        .unregistered
-        .iter()
-        .map(|dir| crate::providers::detect::display_path(dir))
-        .collect();
+    let found = found_dirs(registry);
     let found_text = if found.is_empty() {
         String::new()
     } else {
         format!("; found but not registered: {}", found.join(", "))
     };
+    let statuses = crate::providers::probed_statuses();
+    if let Some(denied) = statuses
+        .iter()
+        .find(|status| status.status == "probe denied")
+    {
+        return Check::advise(
+            Status::Warn,
+            "providers",
+            format!(
+                "provider {}: host denied a capability probe; compatibility and login could not be established",
+                denied.id
+            ),
+            "retry outside the sandbox or with host-approved permissions; then run af doctor"
+                .into(),
+        );
+    }
     if registry.registered.is_empty() {
         let kind = registry
             .candidates
@@ -1307,17 +1793,27 @@ fn providers(registry: &crate::providers::RegistryRead) -> Check {
             .as_deref()
             .map(|path| format!(" in {}", path.display()))
             .unwrap_or_default();
-        return Check::warn(
-            "providers",
-            format!("no Provider registered{registry_text}{found_text}"),
-            "af provider detect --apply",
-        )
-        .hint(format!(
-            "it registers the logins it finds; or, at your terminal: af provider setup \
-             {kind}-main --kind {kind} --login"
+        let detail = format!("no Provider registered{registry_text}{found_text}");
+        // `af provider detect --apply` registers only a login an available CLI on PATH reports
+        // logged in: with none, a marker alone or a logged-out context included, it cannot
+        // clear this check, so there is no fix (#331 D5).
+        if registry.registrable.is_empty() {
+            return Check::advise(
+                Status::Warn,
+                "providers",
+                detail,
+                format!(
+                    "{}; log in and register one yourself at a private terminal: {}",
+                    no_login(&found),
+                    setup_login(kind)
+                ),
+            );
+        }
+        return Check::warn("providers", detail, "af provider detect --apply").hint(format!(
+            "it registers the logins it finds; or, at a private terminal: {}",
+            setup_login(kind)
         ));
     }
-    let statuses = crate::providers::probed_statuses();
     let mut good = Vec::new();
     let mut bad = Vec::new();
     for entry in &registry.registered {
@@ -1350,10 +1846,66 @@ fn providers(registry: &crate::providers::RegistryRead) -> Check {
             ),
         )
         .hint("at your terminal, where it logs in; af provider status shows why first"),
-        None if !found.is_empty() => Check::warn("providers", detail, "af provider detect --apply")
-            .hint("it registers what it finds"),
+        None if !registry.registrable.is_empty() => {
+            Check::warn("providers", detail, "af provider detect --apply")
+                .hint("it registers what it finds")
+        }
         None => Check::ok("providers", detail),
     }
+}
+
+/// Why no login can be registered: none was found, or no CLI on PATH reports one logged in in
+/// the directories found (no marker, a logged-out context, no CLI of its kind), so `af provider
+/// detect --apply` would register none of them.
+fn no_login(found: &[String]) -> String {
+    if found.is_empty() {
+        "no login was found to register".to_owned()
+    } else {
+        format!(
+            "no login was found to register: no CLI on PATH reports a login in {}",
+            found.join(", ")
+        )
+    }
+}
+
+/// Why no `kind` login can be registered, for a Worker that needs one. A login of another kind
+/// `af provider detect --apply` would register is named as that, never denied (#331): only when
+/// it would register none is every directory found one no CLI reports a login in.
+fn no_login_of(kind: &str, registry: &crate::providers::RegistryRead) -> String {
+    let mut others: Vec<&str> = registry
+        .registrable
+        .iter()
+        .map(|(_, found)| *found)
+        .collect();
+    others.sort_unstable();
+    others.dedup();
+    if others.is_empty() {
+        return no_login(&found_dirs(registry)).replacen(
+            "no login",
+            &format!("no {kind} login"),
+            1,
+        );
+    }
+    format!(
+        "no {kind} login was found to register; af provider detect --apply registers only the {} \
+         login it finds",
+        others.join(" and ")
+    )
+}
+
+/// The auth directories found but not registered, as `af provider status` names them.
+fn found_dirs(registry: &crate::providers::RegistryRead) -> Vec<String> {
+    registry
+        .unregistered
+        .iter()
+        .map(|dir| crate::providers::detect::display_path(dir))
+        .collect()
+}
+
+/// The command that logs in to a new `kind` Provider and registers it, run by a person at a
+/// private terminal, never through an agent or a pipe.
+fn setup_login(kind: &str) -> String {
+    format!("af provider setup {kind}-main --kind {kind} --login")
 }
 
 fn storage(
@@ -1537,13 +2089,18 @@ fn project(
         "af onboard --repo {}",
         shell_words::quote(&repo.to_string())
     );
+    // `af onboard` alone only previews: no command creates `.af/` without the operator reading
+    // it first, so there is no fix, and the hint gives both steps (#331 D4, ADR-0032).
     let Some(authority) = authority else {
-        return Check::warn(
+        return Check::advise(
+            Status::Warn,
             "project",
             format!("{repo} has no .af/ review authority"),
-            onboard,
-        )
-        .hint("a token-free preview of the .af/ it would write; nothing is written");
+            format!(
+                "preview the .af/ it would write, token-free, writing nothing: {onboard}; then \
+                 write it, to review and commit: {onboard} --apply"
+            ),
+        );
     };
     let authority = match authority {
         Ok(authority) => authority,
@@ -1551,8 +2108,32 @@ fn project(
         // the same error: there is no fix, and the hint names the file and the line.
         Err(error) => {
             let recheck = format!("af doctor --repo {}", shell_words::quote(&repo.to_string()));
-            let hint = match authority_problem(toplevel) {
-                Some(problem) => problem.hint(&recheck),
+            let repin = format!("{onboard} --refresh-lock");
+            let hint = match crate::onboard::authority_stop(toplevel) {
+                // The file changed since the lock pinned it: restored, or re-pinned when it
+                // changed on purpose, after any correction its own error needs.
+                Some(stop) if stop.repin => {
+                    let problem = authority_problem(stop);
+                    let place = problem.place().unwrap_or_default();
+                    match problem.line {
+                        Some(_) => format!(
+                            "correct {place} by hand ({}), then re-pin it, as its package changed \
+                             since .af/af.lock pinned it: {repin}; then recheck: {recheck}",
+                            problem.message
+                        ),
+                        None if stop_is_lock(&problem, toplevel) => format!(
+                            "{place} does not match the files it pins ({}): re-pin them: \
+                             {repin}; then recheck: {recheck}",
+                            problem.message
+                        ),
+                        None => format!(
+                            "{place} no longer matches .af/af.lock ({}): restore it, or re-pin \
+                             it if you changed it on purpose: {repin}; then recheck: {recheck}",
+                            problem.message
+                        ),
+                    }
+                }
+                Some(stop) => authority_problem(stop).hint(&recheck),
                 None if error.contains("af.lock") || error.contains("--refresh-lock") => format!(
                     "correct .af/ by hand as the error says, then recheck: {recheck}; a lock \
                      that no longer matches files you changed on purpose is re-pinned by: \
@@ -1616,11 +2197,21 @@ fn project(
         };
         match registry.ids_of(kind).first() {
             Some(id) => parts.push(format!("{node} can bind {id}")),
+            // With no login found, an empty directory included, `af provider detect --apply`
+            // registers nothing: no fix.
+            None if !registry.registrable.iter().any(|(_, found)| *found == kind) => {
+                warns.hint(format!(
+                    "{node} needs a {kind} Provider and {}; log in and register one yourself at a \
+                 private terminal: {}",
+                    no_login_of(kind, registry),
+                    setup_login(kind)
+                ))
+            }
             None => {
                 warns.command("af provider detect --apply");
                 warns.hint(format!(
-                    "{node} needs a {kind} Provider; or, at your terminal: af provider setup \
-                     {kind}-main --kind {kind} --login"
+                    "{node} needs a {kind} Provider; or, at a private terminal: {}",
+                    setup_login(kind)
                 ));
             }
         }
@@ -1641,42 +2232,20 @@ fn project(
     }
 }
 
-/// The first `.af/` file `af onboard` reads that is not TOML, in the order it reads them: the
-/// project file, the lock, the pipelines, the Worker packages.
-fn authority_problem(toplevel: &Path) -> Option<Problem> {
-    let af = toplevel.join(".af");
-    let listed = |dir: PathBuf| -> Vec<PathBuf> {
-        let mut found: Vec<PathBuf> = std::fs::read_dir(dir)
-            .into_iter()
-            .flatten()
-            .flatten()
-            .map(|entry| entry.path())
-            .collect();
-        found.sort();
-        found
-    };
-    let workers = listed(af.join("workers"))
-        .into_iter()
-        .filter(|dir| dir.is_dir())
-        .flat_map(listed);
-    [af.join("af.toml"), af.join("af.lock")]
-        .into_iter()
-        .chain(listed(af.join("pipelines")))
-        .chain(workers)
-        .filter(|path| {
-            std::fs::symlink_metadata(path).is_ok_and(|metadata| metadata.file_type().is_file())
-                && (path
-                    .extension()
-                    .is_some_and(|extension| extension == "toml")
-                    || path.file_name().is_some_and(|name| name == "af.lock"))
-        })
-        .find_map(|path| {
-            toml_problem(&path).map(|(line, message)| Problem {
-                file: Some(path),
-                line: Some(line),
-                message,
-            })
-        })
+/// Whether `problem` names the lock itself.
+fn stop_is_lock(problem: &Problem, toplevel: &Path) -> bool {
+    problem.file.as_deref() == Some(toplevel.join(".af/af.lock").as_path())
+}
+
+/// Where `af onboard`'s reader stopped on a `.af/` ([`crate::onboard::authority_stop`]): the
+/// file the failing step read, with the line a TOML error names, a typed one (`version = "one"`)
+/// included (#331 D2, D3).
+fn authority_problem(stop: crate::onboard::AuthorityStop) -> Problem {
+    Problem {
+        file: Some(stop.file),
+        line: stop.line,
+        message: stop.message,
+    }
 }
 
 // ------------------------------------------------------------------------------------------
@@ -1709,32 +2278,81 @@ fn same_file(found: &Path, link: &Path) -> bool {
 mod tests {
     use super::*;
 
-    /// A malformed `.af/` file is named, but a symbolic link (here to a malformed file outside
-    /// `.af/`) and a file above the scan bound are never read.
+    /// The `.af/` file named is the one onboarding's reader stops at, in its order (#331 D2): with
+    /// both the lock and the selected pipeline malformed, the pipeline, which it reads first; a
+    /// typed error is located by its line (D3); a symbolic link (here to a malformed file outside
+    /// `.af/`) and a file above the bound are named without being read; and a pipeline no
+    /// route selects is never read at all.
     #[test]
-    fn the_authority_scan_reads_no_link_and_no_oversized_file() {
+    fn the_authority_scan_follows_the_reader_and_reads_no_link_or_oversized_file() {
         let root = tempfile::tempdir().unwrap();
         let outside = root.path().join("outside.toml");
         std::fs::write(&outside, "secret = [\n").unwrap();
         let repo = root.path().join("repo");
-        std::fs::create_dir_all(repo.join(".af/pipelines")).unwrap();
-        std::os::unix::fs::symlink(&outside, repo.join(".af/pipelines/a-link.toml")).unwrap();
-        let big = "# padding\n".repeat(usize::try_from(MAX_SCAN_BYTES).unwrap() / 10 + 1);
-        std::fs::write(repo.join(".af/pipelines/b-big.toml"), big + "broken = [\n").unwrap();
-        assert!(super::toml_problem(&repo.join(".af/pipelines/a-link.toml")).is_none());
-        assert!(super::toml_problem(&repo.join(".af/pipelines/b-big.toml")).is_none());
-        assert!(super::authority_problem(&repo).is_none());
+        let af = repo.join(".af");
+        std::fs::create_dir_all(af.join("pipelines")).unwrap();
+        let project = format!(
+            "version = 1\n[project]\nname = \"x\"\nmin_af = \"{}\"\n[defaults]\npipeline = \"review\"\n",
+            selfmgmt::VERSION
+        );
+        std::fs::write(af.join("af.toml"), &project).unwrap();
+        std::fs::write(af.join("af.lock"), "version = 1\nbroken = [\n").unwrap();
+        std::fs::write(af.join("pipelines/review.toml"), "x = 1\nbroken = [\n").unwrap();
+        // Sorted before `review.toml`, and read by no reader: never named.
+        std::fs::write(af.join("pipelines/a-unused.toml"), "broken = [\n").unwrap();
+        let stop = |repo: &Path| crate::onboard::authority_stop(repo).map(authority_problem);
+        let named = |stop: Option<Problem>| {
+            let stop = stop.expect("a stop");
+            (
+                stop.file.unwrap().strip_prefix(&af).unwrap().to_path_buf(),
+                stop.line,
+                stop.message,
+            )
+        };
+        let (file, line, _) = named(stop(&repo));
+        assert_eq!(
+            (file.to_str().unwrap(), line),
+            ("pipelines/review.toml", Some(2))
+        );
+        std::fs::write(af.join("pipelines/review.toml"), "version = \"one\"\n").unwrap();
+        let (file, line, message) = named(stop(&repo));
+        assert_eq!(
+            (file.to_str().unwrap(), line),
+            ("pipelines/review.toml", Some(1))
+        );
+        assert!(message.contains("invalid type"), "{message}");
+        // A typed error in the project file is located too, before anything else is read.
         std::fs::write(
-            repo.join(".af/pipelines/c-small.toml"),
-            "x = 1\nbroken = [\n",
+            af.join("af.toml"),
+            project.replace("version = 1", "version = \"one\""),
         )
         .unwrap();
-        let problem = super::authority_problem(&repo).expect("the small malformed file is named");
+        let (file, line, message) = named(stop(&repo));
+        assert_eq!((file.to_str().unwrap(), line), ("af.toml", Some(1)));
+        assert!(message.contains("invalid type"), "{message}");
+        std::fs::write(af.join("af.toml"), &project).unwrap();
+        // A link is named without its target being read.
+        std::fs::remove_file(af.join("pipelines/review.toml")).unwrap();
+        std::os::unix::fs::symlink(&outside, af.join("pipelines/review.toml")).unwrap();
+        let (file, line, message) = named(stop(&repo));
         assert_eq!(
-            problem.file.as_deref(),
-            Some(repo.join(".af/pipelines/c-small.toml").as_path())
+            (file.to_str().unwrap(), line),
+            ("pipelines/review.toml", None)
         );
-        assert_eq!(problem.line, Some(2));
+        assert!(message.contains("not a symlink"), "{message}");
+        assert!(!message.contains("secret"), "{message}");
+        assert!(super::toml_problem(&af.join("pipelines/review.toml")).is_none());
+        // So is a file above the bound.
+        std::fs::remove_file(af.join("pipelines/review.toml")).unwrap();
+        let big = "# padding\n".repeat(usize::try_from(MAX_SCAN_BYTES).unwrap() / 10 + 1);
+        std::fs::write(af.join("pipelines/review.toml"), big + "broken = [\n").unwrap();
+        let (file, line, message) = named(stop(&repo));
+        assert_eq!(
+            (file.to_str().unwrap(), line),
+            ("pipelines/review.toml", None)
+        );
+        assert!(message.contains("onboarding reads at most"), "{message}");
+        assert!(super::toml_problem(&af.join("pipelines/review.toml")).is_none());
     }
 
     /// C3 item 29: a root `mdutil -s` reports indexed is named, one named `*.noindex` is never
@@ -1870,10 +2488,17 @@ esac
     const HOSTILE: &str = "a $TAG \"b' c`id`d$(touch x)e\u{2019}";
 
     /// A real directory with [`HOSTILE`] in its name, inside a fresh temporary directory that
-    /// also serves as the shell's working directory, so a `$(touch x)` that ran leaves `x`.
+    /// also serves as the shell's working directory, so a `$(touch x)` that ran leaves `x`. A
+    /// long fixed directory between them makes every PATH line for it wider than 100 columns
+    /// whatever the temporary root is (`/tmp/.tmpXXXXXX` on Linux, longer on macOS), so the
+    /// tests that cut the line at 100 columns cut it on every platform.
     fn hostile_dir() -> (tempfile::TempDir, PathBuf) {
         let root = tempfile::tempdir().unwrap();
-        let dir = root.path().join(HOSTILE).join("bin");
+        let dir = root
+            .path()
+            .join("a-fixed-directory-long-enough-that-every-path-line-is-cut")
+            .join(HOSTILE)
+            .join("bin");
         std::fs::create_dir_all(&dir).unwrap();
         (root, dir)
     }
@@ -1906,15 +2531,411 @@ esac
                 assert_eq!(printed, format!("{literal}:/usr/bin:/bin"), "{runner}");
             }
             assert!(!root.path().join("x").exists(), "{fix} ran $(touch x)");
-            // The text form prints the line exactly as the JSON carries it, at any width.
+            // #331 D6: the text form holds the line to the width, cut where the shell joins it
+            // again, and the lines it prints, pasted into each shell, are the JSON's command.
             for width in [100, 60] {
-                let text = render(&[Check::warn("path", "off PATH", fix.clone())], width);
+                let text = render(
+                    &[Check::warn("path", "off PATH", fix.clone())],
+                    width,
+                    false,
+                );
                 assert!(
-                    text.lines()
-                        .any(|line| line.trim_start() == format!("fix: {fix}")),
+                    text.lines().all(|line| line.chars().count() <= width),
                     "{width}\n{text}"
                 );
+                let printed = printed_fix(&text);
+                assert!(printed.lines().count() > 1, "{width}\n{text}");
+                for runner in ["sh", "bash", "zsh"] {
+                    if which(runner).is_none() {
+                        continue;
+                    }
+                    let script = format!("{printed}\nprintf %s \"$PATH\"");
+                    let shown = run_in(&root, runner, &["-c", &script]);
+                    assert_eq!(
+                        shown,
+                        format!("{literal}:/usr/bin:/bin"),
+                        "{runner}\n{text}"
+                    );
+                }
+                assert!(!root.path().join("x").exists(), "{printed} ran $(touch x)");
             }
+        }
+    }
+
+    /// The fix as the text form printed it: from past `fix: ` to the line before the hint or
+    /// the summary, its lines as printed.
+    fn printed_fix(text: &str) -> String {
+        let mut lines = text.lines().skip_while(|line| !line.contains(" fix: "));
+        let first = lines.next().unwrap();
+        let mut printed = first[first.find(" fix: ").unwrap() + 6..].to_owned();
+        for line in lines.take_while(|line| {
+            !line.trim_start().starts_with("hint: ")
+                && !line.starts_with("nothing failed")
+                && !line.contains("check(s) failed")
+        }) {
+            printed.push('\n');
+            printed.push_str(line);
+        }
+        printed
+    }
+
+    /// #331 D6: the fish line, cut at 60 and 100 columns, run in fish puts the literal directory
+    /// first; the PowerShell line's pieces are its directory in order, and so are the elvish
+    /// line's, one element to a line of the list `str:join` joins; each fits the width.
+    #[test]
+    fn a_long_path_line_is_cut_where_its_shell_joins_it() {
+        let (root, dir) = hostile_dir();
+        let literal = dir.to_str().unwrap();
+        for width in [100, 60] {
+            let fits = |text: &str| text.lines().all(|line| line.chars().count() <= width);
+            let (fish, _) = path_fix(&dir, Some("/usr/bin/fish"), true);
+            let text = render(
+                &[Check::warn("path", "off PATH", fish.unwrap())],
+                width,
+                true,
+            );
+            assert!(fits(&text), "{width}\n{text}");
+            let printed = printed_fix(&text);
+            assert!(printed.lines().count() > 1, "{text}");
+            if let Some(binary) = which("fish") {
+                let script = format!("{printed}\nprintf %s\\n $PATH[1]\n");
+                let shown = run_in(&root, binary.to_str().unwrap(), &["-c", &script]);
+                assert_eq!(shown.trim_end_matches('\n'), literal, "{text}");
+            } else {
+                eprintln!("skipped: fish is not on PATH, so `{printed}` was not run");
+            }
+            let (pwsh, _) = path_fix(&dir, Some("/usr/bin/pwsh"), false);
+            let text = render(
+                &[Check::warn("path", "off PATH", pwsh.unwrap())],
+                width,
+                false,
+            );
+            assert!(fits(&text), "{width}\n{text}");
+            let printed = printed_fix(&text);
+            // Every line but the last continues after its `+`; the literals, read as PowerShell
+            // reads them, are the directory.
+            let lines: Vec<&str> = printed.lines().collect();
+            assert!(lines.len() > 1, "{text}");
+            assert!(
+                lines[..lines.len() - 1]
+                    .iter()
+                    .all(|line| line.ends_with(" +"))
+            );
+            let mut read = String::new();
+            let mut inside = false;
+            let mut chars = printed.chars().peekable();
+            while let Some(c) = chars.next() {
+                if is_pwsh_quote(c) && !inside {
+                    inside = true;
+                } else if is_pwsh_quote(c) {
+                    if chars.next_if_eq(&c).is_some() {
+                        read.push(c);
+                    } else {
+                        inside = false;
+                    }
+                } else if inside {
+                    read.push(c);
+                }
+            }
+            assert_eq!(read, literal, "{text}");
+            // Elvish: the pieces are the elements of the list `str:join` joins, each a literal
+            // of its own; read as elvish reads them, they are the directory.
+            let (elvish, _) = path_fix(&dir, Some("/usr/bin/elvish"), false);
+            let elvish = elvish.unwrap();
+            let text = render(
+                &[Check::warn("path", "off PATH", elvish.clone())],
+                width,
+                false,
+            );
+            assert!(fits(&text), "{width}\n{text}");
+            let printed = printed_fix(&text);
+            let lines: Vec<&str> = printed.lines().collect();
+            assert_eq!(lines[0], "use str; set paths = [(str:join '' [", "{text}");
+            assert_eq!(lines[lines.len() - 1], "]) $@paths]", "{text}");
+            let read: String = lines[1..lines.len() - 1]
+                .iter()
+                .map(|line| elvish_literal(line.trim_start()).unwrap())
+                .collect();
+            assert_eq!(read, literal, "{text}");
+            if let Some(binary) = which("elvish") {
+                let script = format!("{printed}\necho $paths[0]\n");
+                let shown = run_in(&root, binary.to_str().unwrap(), &["-norc", "-c", &script]);
+                assert_eq!(shown.trim_end_matches('\n'), literal, "{text}");
+            } else {
+                eprintln!("skipped: elvish is not on PATH, so `{printed}` was not run");
+            }
+        }
+        // A line that fits stays whole on its row.
+        let short = path_fix(Path::new("/home/o/.local/bin"), Some("/bin/zsh"), false)
+            .0
+            .unwrap();
+        let text = render(
+            &[Check::warn("path", "off PATH", short.clone())],
+            100,
+            false,
+        );
+        assert!(text.contains(&format!(" fix: {short}\n")), "{text}");
+    }
+
+    /// #331 D7: with the default link absent, the PATH line alone finds no `af`: the fix
+    /// installs first, then puts the directory on PATH, and the text form keeps both pasteable;
+    /// a shell that runs no `&&` before its line gets no fix and the order in its hint.
+    #[test]
+    fn the_path_fix_installs_first_when_the_default_link_is_absent() {
+        let root = tempfile::tempdir().unwrap();
+        let dir = root.path().join("a long home/.local/bin");
+        let installation = selfmgmt::Installation {
+            running: Some(root.path().join("downloads/af")),
+            receipt: None,
+            receipt_path: root.path().join("receipt.toml"),
+            bin: dir.join("af"),
+            default: None,
+            default_status: "absent",
+            abandoned_stagings: Vec::new(),
+        };
+        let version = selfmgmt::VERSION;
+        let (line, hint) = path_fix(&dir, Some("/bin/zsh"), false);
+        let detail = "the default link does not exist yet".to_owned();
+        let check = path_before_link(
+            &installation,
+            &dir,
+            Some("/bin/zsh"),
+            line.clone(),
+            hint,
+            detail.clone(),
+        );
+        let fix = check.fix.clone().unwrap();
+        let line = line.unwrap();
+        assert!(
+            fix.ends_with(&format!(" self install {version} && {line}")),
+            "{fix}"
+        );
+        let words = shell_words::split(&fix).unwrap();
+        assert!(
+            words[0] == "af" || words[0] == root.path().join("downloads/af").to_str().unwrap(),
+            "{fix}"
+        );
+        assert!(check.detail.contains("does not exist yet"), "{check:?}");
+        let hint = check.hint.clone().unwrap();
+        assert!(
+            hint.starts_with(&format!("it installs af {version}, which links ")),
+            "{hint}"
+        );
+        assert!(
+            hint.ends_with("add the PATH line to ~/.zshrc, then open a new shell"),
+            "{hint}"
+        );
+        for width in [100, 60] {
+            let text = render(&[check_clone(&check)], width, false);
+            assert!(
+                text.lines().all(|row| row.chars().count() <= width),
+                "{width}\n{text}"
+            );
+            // Pasted into sh as printed, the lines install first and then put the directory
+            // first on PATH: a stand-in `af`, at either name the fix may use, records its words.
+            let printed = printed_fix(&text);
+            assert!(printed.lines().count() > 1, "{text}");
+            let fake = root.path().join("fake");
+            for program in [fake.join("af"), root.path().join("downloads/af")] {
+                std::fs::create_dir_all(program.parent().unwrap()).unwrap();
+                std::fs::write(&program, "#!/bin/sh\necho \"$*\" > \"$0.args\"\n").unwrap();
+                use std::os::unix::fs::PermissionsExt as _;
+                std::fs::set_permissions(&program, std::fs::Permissions::from_mode(0o755)).unwrap();
+            }
+            let script = format!("{printed}\nprintf %s \"$PATH\"");
+            let shown = std::process::Command::new("/bin/sh")
+                .args(["-c", &script])
+                .env("PATH", format!("{}:/usr/bin:/bin", fake.display()))
+                .output()
+                .unwrap();
+            assert!(shown.status.success(), "{shown:?}\n{text}");
+            let shown = String::from_utf8(shown.stdout).unwrap();
+            assert!(
+                shown.starts_with(&format!("{}:", dir.display())),
+                "{shown}\n{text}"
+            );
+            let ran = [fake.join("af.args"), root.path().join("downloads/af.args")]
+                .iter()
+                .find_map(|args| std::fs::read_to_string(args).ok())
+                .unwrap_or_else(|| panic!("no install ran\n{text}"));
+            assert_eq!(ran, format!("self install {version}\n"));
+        }
+        // PowerShell runs no `&&` before its assignment, and elvish runs none: no fix.
+        for shell in ["/usr/bin/pwsh", "/usr/bin/elvish"] {
+            let (line, hint) = path_fix(&dir, Some(shell), false);
+            let check =
+                path_before_link(&installation, &dir, Some(shell), line, hint, detail.clone());
+            assert_eq!(check.fix, None, "{shell}");
+            let hint = check.hint.unwrap();
+            assert!(hint.starts_with("install first, which links "), "{hint}");
+            assert!(hint.contains(&format!(" self install {version}; then recheck: af doctor")));
+        }
+    }
+
+    /// #331 UX close-out: an install fix that runs this binary by a long absolute path, alone
+    /// (the binary row, the path row whose directory holds no `af`) or chained by `&&` to the
+    /// PATH line, is one command at 80 and 100 columns: every line fits, its program's path is
+    /// cut into pieces the shell joins, `&&` ends a line, and sh runs it as printed. The same
+    /// path quoted for fish, apostrophe included, is recognized and fits too.
+    #[test]
+    fn a_long_program_path_fix_fits_and_runs_as_printed_alone_and_chained() {
+        let root = tempfile::tempdir().unwrap();
+        let long = root
+            .path()
+            .join("a-very-long-directory-name-for-a-source-build")
+            .join("another-long-directory-of-the-checkout")
+            .join("user's-bin");
+        std::fs::create_dir_all(&long).unwrap();
+        let program = long.join("af");
+        std::fs::write(&program, "#!/bin/sh\necho \"$*\" >> \"$0.args\"\n").unwrap();
+        use std::os::unix::fs::PermissionsExt as _;
+        std::fs::set_permissions(&program, std::fs::Permissions::from_mode(0o755)).unwrap();
+        let path = program.to_str().unwrap();
+        let version = selfmgmt::VERSION;
+        let install = format!("{} self install {version}", shell_words::quote(path));
+        let dir = root.path().join("bin");
+        let line = sh_export(dir.to_str().unwrap());
+        for fix in [install.clone(), format!("{install} && {line}")] {
+            let check = Check::warn("binary", "af at a source build", fix.clone());
+            for width in [80, 100] {
+                let text = render(&[check_clone(&check)], width, false);
+                assert!(
+                    text.lines().all(|row| row.chars().count() <= width),
+                    "{width}\n{text}"
+                );
+                let printed = printed_fix(&text);
+                assert!(printed.lines().count() > 1, "{text}");
+                let _ = std::fs::remove_file(long.join("af.args"));
+                let script = format!("{printed}\nprintf %s \"$PATH\"");
+                let shown = std::process::Command::new("/bin/sh")
+                    .args(["-c", &script])
+                    .env("PATH", "/usr/bin:/bin")
+                    .output()
+                    .unwrap();
+                assert!(shown.status.success(), "{shown:?}\n{text}");
+                assert_eq!(
+                    std::fs::read_to_string(long.join("af.args")).unwrap(),
+                    format!("self install {version}\n"),
+                    "{text}"
+                );
+                if fix.contains(" && ") {
+                    let shown = String::from_utf8(shown.stdout).unwrap();
+                    assert!(shown.starts_with(&format!("{}:", dir.display())), "{text}");
+                }
+            }
+        }
+        // fish's quoting of the same path, as `install_program` writes it under fish.
+        let fish = format!("{} self install {version}", fish_quote(path));
+        assert_eq!(
+            af_words(&fish, true),
+            Some(vec![
+                path.to_owned(),
+                "self".into(),
+                "install".into(),
+                version.into()
+            ])
+        );
+        let check = Check::warn("path", "no af on PATH", fish);
+        for width in [80, 100] {
+            let text = render(&[check_clone(&check)], width, true);
+            assert!(
+                text.lines().all(|row| row.chars().count() <= width),
+                "{width}\n{text}"
+            );
+            let printed = printed_fix(&text);
+            assert!(printed.lines().count() > 1, "{text}");
+            if let Some(binary) = which("fish") {
+                let _ = std::fs::remove_file(long.join("af.args"));
+                run_in(&root, binary.to_str().unwrap(), &["-c", &printed]);
+                assert_eq!(
+                    std::fs::read_to_string(long.join("af.args")).unwrap(),
+                    format!("self install {version}\n"),
+                    "{text}"
+                );
+            } else {
+                eprintln!("skipped: fish is not on PATH, so the fish fix was not run");
+            }
+        }
+    }
+
+    /// #331 final review: an install fix whose program's path holds a backslash and no
+    /// apostrophe is read in the quoting of the shell it is printed for. fish's `'…\\…'` also
+    /// parses as sh's, naming another program, and wrapping it as sh's split fish's escape: the
+    /// printed fix no longer parsed in fish at 80 and 100 columns. Every cut position across
+    /// those widths is tried: under fish the fix runs in `fish --no-config -c`, under sh in
+    /// `/bin/sh -c`, and each runs the binary at that path.
+    #[test]
+    fn an_install_fix_with_a_backslash_in_its_path_runs_as_printed_in_fish_and_sh() {
+        let root = tempfile::tempdir().unwrap();
+        let version = selfmgmt::VERSION;
+        let fish = which("fish");
+        let shells = [
+            (true, fish.as_deref().and_then(Path::to_str)),
+            (false, Some("/bin/sh")),
+        ];
+        // One script linked at every path: the host scans each new file at its first exec.
+        let program = root.path().join("af");
+        std::fs::write(&program, "#!/bin/sh\necho \"$*\" >> \"$0.args\"\n").unwrap();
+        use std::os::unix::fs::PermissionsExt as _;
+        std::fs::set_permissions(&program, std::fs::Permissions::from_mode(0o755)).unwrap();
+        for width in [80, 100] {
+            let mut dirs = Vec::new();
+            for length in 20..=width {
+                let dir = root
+                    .path()
+                    .join(width.to_string())
+                    .join(format!("{}\\team", "x".repeat(length)));
+                std::fs::create_dir_all(&dir).unwrap();
+                std::os::unix::fs::symlink(&program, dir.join("af")).unwrap();
+                dirs.push(dir);
+            }
+            for (in_fish, shell) in shells {
+                // One script of every printed fix, each on its own lines, run by one shell.
+                let mut script = String::new();
+                for dir in &dirs {
+                    let path = dir.join("af");
+                    let path = path.to_str().unwrap();
+                    let program = if in_fish {
+                        fish_quote(path)
+                    } else {
+                        shell_words::quote(path).into_owned()
+                    };
+                    let fix = format!("{program} self install {version}");
+                    let check = Check::warn("binary", "af at a source build", fix);
+                    let text = render(&[check], width, in_fish);
+                    assert!(
+                        text.lines().all(|row| row.chars().count() <= width),
+                        "{width}\n{text}"
+                    );
+                    script.push_str(&printed_fix(&text));
+                    script.push('\n');
+                    let _ = std::fs::remove_file(dir.join("af.args"));
+                }
+                let Some(shell) = shell else {
+                    eprintln!("skipped: fish is not on PATH, so the fish fixes were not run");
+                    continue;
+                };
+                let flags: &[&str] = if in_fish { &["--no-config"] } else { &[] };
+                run_in(&root, shell, &[flags, &["-c", &script]].concat());
+                for dir in &dirs {
+                    assert_eq!(
+                        std::fs::read_to_string(dir.join("af.args")).ok(),
+                        Some(format!("self install {version}\n")),
+                        "{shell} at {width} columns, {}:\n{script}",
+                        dir.display()
+                    );
+                }
+            }
+        }
+    }
+
+    fn check_clone(check: &Check) -> Check {
+        Check {
+            id: check.id,
+            status: check.status,
+            detail: check.detail.clone(),
+            fix: check.fix.clone(),
+            hint: check.hint.clone(),
         }
     }
 
@@ -1989,7 +3010,7 @@ esac
             Check::warn("path", "off PATH", "fish_add_path /x"),
         ];
         assert_eq!(exit_code(&checks), 0);
-        let text = render(&checks, 100);
+        let text = render(&checks, 100, false);
         assert_eq!(text.lines().next(), Some(FIRST_LINE));
         assert!(text.contains("fix: fish_add_path /x"), "{text}");
         assert!(text.ends_with("nothing failed (1 warning(s))\n"), "{text}");
@@ -1999,7 +3020,57 @@ esac
             "brew install git",
         )];
         assert_eq!(exit_code(&failed), 1);
-        assert!(render(&failed, 100).contains("1 check(s) failed"));
+        assert!(render(&failed, 100, false).contains("1 check(s) failed"));
+    }
+
+    /// #331, Linux CI review: the project check's chained fix for an unbound, uninstalled
+    /// release pin (`af onboard --repo PATH --refresh-lock --af V && af self install V`), wrapped
+    /// at 80 and 100 columns for every length of a long checkout path. No line is wider than the
+    /// terminal, its `&&` never starts a line, the printed lines parse in `sh -n`, and they are
+    /// the command's words.
+    #[test]
+    fn a_wrapped_chained_fix_keeps_its_operator_and_parses() {
+        for width in [80, 100] {
+            for length in 1..=120 {
+                let repo = format!("/r/{}", "x".repeat(length));
+                let onboard = format!("af onboard --repo {}", shell_words::quote(&repo));
+                let mut warns = Fixes::default();
+                warns.command(format!("{onboard} --refresh-lock --af 0.13.0"));
+                warns.hint("the lock binds no bytes for this target; --refresh-lock binds them");
+                warns.command("af self install 0.13.0");
+                warns.hint("the pinned release is not installed");
+                let check = warns.check(Status::Warn, "project", format!("{repo}/.af validates"));
+                let command = check.fix.clone().unwrap();
+                let text = render(&[check], width, false);
+                assert!(
+                    text.lines().all(|line| line.chars().count() <= width),
+                    "{width} {length}\n{text}"
+                );
+                let printed = printed_fix(&text);
+                assert!(
+                    printed
+                        .lines()
+                        .all(|line| !line.trim_start().starts_with("&&")),
+                    "{width} {length}\n{text}"
+                );
+                let parsed = std::process::Command::new("/bin/sh")
+                    .args(["-n", "-c", &printed])
+                    .env_clear()
+                    .output()
+                    .unwrap();
+                assert!(
+                    parsed.status.success(),
+                    "{width} {length}: {parsed:?}\n{text}"
+                );
+                // A shell removes each backslash and newline, and reads a newline after `&&`
+                // as a space.
+                assert_eq!(
+                    shell_words::split(&printed.replace("\\\n", "")).unwrap(),
+                    shell_words::split(&command).unwrap(),
+                    "{width} {length}\n{text}"
+                );
+            }
+        }
     }
 
     /// GA final fix item 7: every row of the text form fits the width, at 100, 80 and 60
@@ -2056,7 +3127,7 @@ esac
         // One shell word too long for any line, printed whole on its own line.
         let export = format!("fix: export PATH=\"{bin}:$PATH\"");
         for width in [100, 80, 60] {
-            let text = render(&checks, width);
+            let text = render(&checks, width, false);
             for line in text.lines().filter(|line| line.trim_start() != export) {
                 assert!(line.chars().count() <= width, "{width}: `{line}`\n{text}");
             }
@@ -2127,7 +3198,7 @@ esac
         }
         // At 100 columns what fits a line is never broken, and a path too long for one is
         // broken only after a `/`.
-        let text = render(&checks, 100);
+        let text = render(&checks, 100, false);
         assert!(
             text.contains(
                 "fix: af provider detect --apply\n                 hint: it registers the logins \
@@ -2142,7 +3213,7 @@ esac
                 .all(|line| line.ends_with('/') || line.contains(".local/bin")),
             "{text}"
         );
-        let narrow = render(&checks, 80);
+        let narrow = render(&checks, 80, false);
         assert!(
             narrow.contains(
                 "fix: export PATH=\"$HOME/.local/bin:$PATH\"\n                 hint: add that \
@@ -2157,7 +3228,8 @@ esac
                 "export A=1   # in ~/.zshrc, then open a new shell",
                 24,
                 5,
-                true
+                true,
+                false
             ),
             "fix: export A=1\n     # in ~/.zshrc, then\n     # open a new shell"
         );
@@ -2169,15 +3241,11 @@ esac
     #[test]
     fn every_af_fix_parses_with_the_cli() {
         use clap::Parser as _;
-        let registry = crate::providers::RegistryRead {
-            path: None,
-            registered: Vec::new(),
-            warning: None,
-            unregistered: Vec::new(),
-            candidates: Vec::new(),
-        };
-        let fixes = [
-            providers(&registry).fix.unwrap(),
+        // Parse the command for the empty-registry branch directly. `providers()` probes the
+        // host's real Provider state even with a synthetic RegistryRead, so calling it here
+        // makes this parser fixture depend on the machine running the test.
+        let fixes: [String; 12] = [
+            "af provider detect --apply".into(),
             "af self remove 0.1.0 && af self install 0.1.0".into(),
             "af onboard --repo '/w x' --refresh-lock --af 0.1.0".into(),
             "af provider setup claude-main --kind claude --login".into(),
@@ -2236,34 +3304,6 @@ esac
             Problem::said("HOME is not set").hint("af doctor"),
             "HOME is not set; correct it, then recheck: af doctor"
         );
-    }
-
-    /// GA third fix item 3: the `.af/` file a project check names is the first one `af onboard`
-    /// reads that is not TOML: the project file, the lock, a pipeline, a Worker package.
-    #[test]
-    fn the_af_file_that_does_not_parse_is_named_in_onboards_order() {
-        let root = tempfile::tempdir().unwrap();
-        let af = root.path().join(".af");
-        for dir in ["pipelines", "workers/correctness"] {
-            std::fs::create_dir_all(af.join(dir)).unwrap();
-        }
-        let files = [
-            "af.toml",
-            "af.lock",
-            "pipelines/review.toml",
-            "workers/correctness/reviewer.toml",
-        ];
-        for file in files {
-            std::fs::write(af.join(file), "version = 1\n").unwrap();
-        }
-        std::fs::write(af.join("README.md"), "x = [\n").unwrap();
-        assert_eq!(authority_problem(root.path()), None, "only TOML is read");
-        for file in files.iter().rev() {
-            std::fs::write(af.join(file), "version = 1\nx = [\n").unwrap();
-            let problem = authority_problem(root.path()).unwrap();
-            assert_eq!(problem.file.as_deref(), Some(af.join(file).as_path()));
-            assert_eq!(problem.line, Some(2), "{problem:?}");
-        }
     }
 
     /// GA third fix item 3: a fix that runs a command an unreadable file stops would fail with

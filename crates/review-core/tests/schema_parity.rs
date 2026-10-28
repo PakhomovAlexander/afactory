@@ -30,21 +30,25 @@ use review_core::{
 };
 use serde_json::{Value, json};
 
-const SCHEMAS: [&str; 226] = [
-    "error-v1.json",
-    "task-findings-v1.json",
+const SCHEMAS: [&str; 236] = [
+    "error-v2.json",
+    "findings-sarif-v1.json",
+    "task-attempt-wall-end-v1.json",
+    "task-partial-candidate-v1.json",
+    "task-findings-v2.json",
     "task-materialized-v1.json",
     "task-diff-v1.json",
-    "task-status-v1.json",
-    "task-detached-v2.json",
-    "task-cancelled-v1.json",
+    "task-status-v2.json",
+    "task-detached-v3.json",
+    "task-cancelled-v2.json",
+    "task-event-v1.json",
     "task-run-process-v1.json",
     "task-cancel-request-v1.json",
     "task-delivery-proof-v1.json",
     "task-base-v1.json",
     "diff-subject-v1.json",
     "task-review-findings-v1.json",
-    "task-read-first-v1.json",
+    "task-read-first-v2.json",
     "task-check-report-v1.json",
     "seal-ignored-v1.json",
     "task-check-layer-v1.json",
@@ -52,15 +56,18 @@ const SCHEMAS: [&str; 226] = [
     "warm-holder-v1.json",
     "warm-eviction-v1.json",
     "task-gate-retried-v1.json",
-    "task-state-v1.json",
+    "task-state-v2.json",
     "task-selection-v3.json",
     "pipeline-selection-v1.json",
-    "task-collected-inspection-v2.json",
-    "task-list-v3.json",
-    "task-checks-v2.json",
+    "task-collected-inspection-v3.json",
+    "task-list-v4.json",
+    "task-attention-v1.json",
+    "task-checks-v3.json",
     "provider-detect-v3.json",
+    "provider-detect-v4.json",
     "store-writer-v1.json",
     "doctor-v2.json",
+    "doctor-v3.json",
     "project-registered-v1.json",
     "project-brief-v1.json",
     "project-survey-pin-v1.json",
@@ -77,7 +84,7 @@ const SCHEMAS: [&str; 226] = [
     "project-workspace-delivered-v1.json",
     "project-v1.json",
     "project-workspaces-v1.json",
-    "task-report-v2.json",
+    "task-report-v3.json",
     "provider-models-v1.json",
     "code-task-policy-v1.json",
     "remote-check-evidence-v1.json",
@@ -86,8 +93,10 @@ const SCHEMAS: [&str; 226] = [
     "task-input-bindings-v1.json",
     "task-source-origin-v2.json",
     "provider-status-v3.json",
+    "provider-status-v4.json",
     "provider-disables-v1.json",
     "provider-setup-v1.json",
+    "provider-setup-v2.json",
     "build-cache-v1.json",
     "worker-notes-v1.json",
     "head-delta-v1.json",
@@ -104,7 +113,7 @@ const SCHEMAS: [&str; 226] = [
     "optimization-adoption-task-evidence-v1.json",
     "optimization-evaluation-v1.json",
     "experimental-slot-v2.json",
-    "task-inspection-v13.json",
+    "task-inspection-v14.json",
     "experiment-execution-plan-v1.json",
     "task-runtime-evidence-v1.json",
     "optimization-sources-v1.json",
@@ -122,7 +131,7 @@ const SCHEMAS: [&str; 226] = [
     "harness-materialization-v1.json",
     "provider-doctor-v2.json",
     "review-outcome-v3.json",
-    "review-report-v4.json",
+    "review-report-v5.json",
     "task-context-v1.json",
     "task-builtin-context-v1.json",
     "task-provider-context-v1.json",
@@ -132,7 +141,7 @@ const SCHEMAS: [&str; 226] = [
     "task-catalog-v2.json",
     "compiled-task-v1.json",
     "compiled-task-v2.json",
-    "task-list-entry-v3.json",
+    "task-list-entry-v4.json",
     "task-owned-child-set-v1.json",
     "task-token-usage-v3.json",
     "task-usage-observation-v1.json",
@@ -174,7 +183,8 @@ const SCHEMAS: [&str; 226] = [
     "legacy-review-invocation-policy-v1.json",
     "legacy-review-gate-outcome-v1.json",
     "task-review-result-selected-v1.json",
-    "task-check-receipt-v1.json",
+    "task-check-receipt-v2.json",
+    "task-acceptance-v1.json",
     "task-evaluation-v1.json",
     "verification-result-v1.json",
     "reviewed-implementation-v1.json",
@@ -451,16 +461,18 @@ fn task_verification_contracts_preserve_negative_results_and_require_positive_ev
         ReceiptOutcomeV1::Failed,
         ReceiptOutcomeV1::Inconclusive,
     ] {
-        let check = TaskCheckReceiptV1 {
+        let check = TaskCheckReceiptV2 {
             plan_id: id.clone(),
             snapshot_id: id.clone(),
             policy_id: id.clone(),
             outcome,
             checks: std::collections::BTreeMap::from([("unit".into(), id.clone())]),
+            stopped: Default::default(),
+            acceptance: None,
         };
         check.validate().unwrap();
         assert_valid(
-            "task-check-receipt-v1.json",
+            "task-check-receipt-v2.json",
             &serde_json::to_value(check).unwrap(),
         );
         let evaluation = TaskEvaluationV1 {
@@ -2415,8 +2427,12 @@ fn finding_set_roundtrips_as_an_exact_reducer_projection() {
     }
 }
 
+#[path = "schema_parity/attempt_wall.rs"]
+mod attempt_wall;
 #[path = "schema_parity/task_agent_loop.rs"]
 mod task_agent_loop;
+#[path = "schema_parity/task_check_receipt.rs"]
+mod task_check_receipt;
 #[path = "schema_parity/task_contracts.rs"]
 mod task_contracts;
 #[path = "schema_parity/task_reports.rs"]

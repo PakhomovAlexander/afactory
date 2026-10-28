@@ -6,8 +6,9 @@
 //! artifact: every report of the continued review round's selected reviewer results and the
 //! evaluator's verdict, each under a stable ID the implementer answers by. The artifact is typed input data,
 //! never authority: no acceptance, verification or budget crosses the Task boundary through it
-//! (ADR-0212). `af/TaskReadFirst@1` names, by content digest, the standing rules and the context
-//! files a Task file points at, so a changed file is a changed plan.
+//! (ADR-0212). `af/TaskReadFirst@2` names the tree the Task's Worker reads and, by content digest
+//! in that tree, the standing rules and the context files a Task file points at, so a changed file
+//! is a changed plan and a listed file is one the Worker's tree holds (ADR-0254).
 
 use std::collections::BTreeSet;
 
@@ -19,10 +20,13 @@ use crate::is_digest;
 
 pub const TASK_REVIEW_FINDINGS_V1: &str = "af/TaskReviewFindings@1";
 pub const TASK_REVIEW_FINDINGS_SCHEMA: &str = "af.task-review-findings/1";
+/// The read-first record of an earlier release: it named no tree, so its rules could be another
+/// Snapshot's than the Worker read. Never written; a reader refuses it by this name (ADR-0254).
 pub const TASK_READ_FIRST_V1: &str = "af/TaskReadFirst@1";
+pub const TASK_READ_FIRST_V2: &str = "af/TaskReadFirst@2";
 pub const TASK_BASE_V1: &str = "af/TaskBase@1";
 pub const TASK_BASE_SCHEMA: &str = "af.task-base/1";
-pub const TASK_READ_FIRST_SCHEMA: &str = "af.task-read-first/1";
+pub const TASK_READ_FIRST_SCHEMA: &str = "af.task-read-first/2";
 
 /// The most findings one continuation carries: 64 reviewers of 16 rounds' worth of reports
 /// would never fit a Worker's context, and a bound keeps the artifact admissible.
@@ -208,19 +212,19 @@ impl TaskReviewFindingsV1 {
     }
 }
 
-/// One file a Worker reads first, as the Task file named it and as the Snapshot holds it.
+/// One file a Worker reads first, as the Task file named it and as the record's tree holds it.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
-pub struct TaskReadFirstEntryV1 {
+pub struct TaskReadFirstEntryV2 {
     /// What the Task file wrote: a repository path, optionally with a `#section` anchor.
     pub reference: String,
     /// The repository path the reference names.
     pub path: String,
-    /// The captured file's content digest.
+    /// The content digest of that path in the record's tree.
     pub digest: String,
 }
 
-impl TaskReadFirstEntryV1 {
+impl TaskReadFirstEntryV2 {
     pub fn validate(&self) -> Result<(), String> {
         require(
             one_line(&self.reference)
@@ -233,28 +237,33 @@ impl TaskReadFirstEntryV1 {
     }
 }
 
-/// `af/TaskReadFirst@1`: the standing rules and context a Worker is told to read before the
-/// goal, each bound by the digest of the bytes the Task captured.
+/// `af/TaskReadFirst@2`: the standing rules and context a Worker is told to read before the
+/// goal, each bound by the digest of its bytes in one named tree: the Snapshot the Task's Worker
+/// reads (ADR-0254). The rules are that tree's `.af/rules.md`, so a continued Task reads the
+/// rules of the candidate it continues, never those of another Snapshot.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
-pub struct TaskReadFirstV1 {
+pub struct TaskReadFirstV2 {
     pub schema: String,
-    /// `.af/rules.md` of the Authority Snapshot, when the project keeps one.
+    /// The Snapshot every entry was read from: the tree the Task's Worker reads.
+    pub snapshot_id: String,
+    /// `.af/rules.md` of that tree, when it holds one.
     #[serde(
         default,
         skip_serializing_if = "Option::is_none",
         deserialize_with = "present_option"
     )]
-    pub rules: Option<TaskReadFirstEntryV1>,
+    pub rules: Option<TaskReadFirstEntryV2>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub context: Vec<TaskReadFirstEntryV1>,
+    pub context: Vec<TaskReadFirstEntryV2>,
 }
 
-impl TaskReadFirstV1 {
+impl TaskReadFirstV2 {
     pub fn validate(&self) -> Result<(), String> {
         require(
-            self.schema == TASK_READ_FIRST_SCHEMA,
-            "A read-first record requires schema af.task-read-first/1",
+            self.schema == TASK_READ_FIRST_SCHEMA && is_digest(&self.snapshot_id),
+            "A read-first record requires schema af.task-read-first/2 and the Snapshot its \
+             files were read from",
         )?;
         require(
             (self.rules.is_some() || !self.context.is_empty()) && self.context.len() <= MAX_CONTEXT,
@@ -274,10 +283,14 @@ impl TaskReadFirstV1 {
         Ok(())
     }
 
-    /// The lines the Worker's requirements text ends with: the rules first, then each context
-    /// file, each with the digest of the bytes the Task captured.
+    /// The lines the Worker's requirements text ends with: the tree they were read from, then
+    /// the rules, then each context file, each with the digest of its bytes in that tree.
     pub fn lines(&self) -> Vec<String> {
-        let mut lines = vec!["Read first (captured by digest; the tree holds these bytes):".into()];
+        let mut lines = vec![format!(
+            "Read first (captured by digest from Snapshot {}, the tree this Task reads; it holds \
+             these bytes):",
+            self.snapshot_id
+        )];
         if let Some(rules) = &self.rules {
             lines.push(format!(
                 "- {} ({}) — the project's standing rules",
@@ -393,25 +406,32 @@ mod tests {
 
     #[test]
     fn read_first_lists_the_rules_before_the_context() {
-        let entry = |reference: &str, path: &str| TaskReadFirstEntryV1 {
+        let entry = |reference: &str, path: &str| TaskReadFirstEntryV2 {
             reference: reference.into(),
             path: path.into(),
             digest: id('a'),
         };
-        let record = TaskReadFirstV1 {
+        let record = TaskReadFirstV2 {
             schema: TASK_READ_FIRST_SCHEMA.into(),
+            snapshot_id: id('b'),
             rules: Some(entry(".af/rules.md", ".af/rules.md")),
             context: vec![entry("docs/design.md#items", "docs/design.md")],
         };
         record.validate().unwrap();
         let lines = record.lines();
+        assert!(
+            lines[0].contains(&id('b')),
+            "the tree is named: {}",
+            lines[0]
+        );
         assert!(lines[1].starts_with("- .af/rules.md ("));
         assert!(lines[2].starts_with("- docs/design.md#items ("));
         let mut wrong = record.clone();
         wrong.context[0].path = "docs/other.md".into();
         assert!(wrong.validate().is_err(), "the path is the reference's own");
-        let empty = TaskReadFirstV1 {
+        let empty = TaskReadFirstV2 {
             schema: TASK_READ_FIRST_SCHEMA.into(),
+            snapshot_id: id('b'),
             rules: None,
             context: Vec::new(),
         };
@@ -419,5 +439,11 @@ mod tests {
             empty.validate().is_err(),
             "an empty record is never written"
         );
+        let mut treeless = record.clone();
+        treeless.snapshot_id = "HEAD".into();
+        assert!(treeless.validate().is_err(), "the tree is a Snapshot ID");
+        let mut first = record;
+        first.schema = "af.task-read-first/1".into();
+        assert!(first.validate().is_err(), "@1 is never read");
     }
 }

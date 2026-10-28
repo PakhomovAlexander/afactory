@@ -186,7 +186,7 @@ fn verified_task_ends_at_a_materializable_internal_snapshot() {
     let (code, stdout, stderr) = run_task(&repo, &home, &state);
     assert_eq!(code, 0, "{stderr}\n{stdout}");
     let outcome: serde_json::Value = serde_json::from_str(stdout.trim()).unwrap();
-    assert_eq!(outcome["schema"], "af/task-inspection@13");
+    assert_eq!(outcome["schema"], "af/task-inspection@14");
     assert_eq!(outcome["result"]["acceptance"], "satisfied");
     assert!(outcome.get("delivery").is_none());
     assert_eq!(outcome["attempts"], 3);
@@ -393,7 +393,7 @@ fn verified_task_delivery_is_local_exact_recoverable_and_inspectable() {
     );
     assert_eq!(code, 0, "{stderr}");
     let shown: serde_json::Value = serde_json::from_str(shown.trim()).unwrap();
-    assert_eq!(shown["schema"], "af/task-inspection@13");
+    assert_eq!(shown["schema"], "af/task-inspection@14");
     assert_eq!(shown["result"]["acceptance"], "satisfied");
     assert!(shown["history"].as_array().unwrap().len() >= 8);
 }
@@ -777,6 +777,30 @@ fn delivery_refuses_unverified_and_dirty_sources_without_creating_a_target() {
     assert_eq!(code, 1);
     assert!(stderr.contains("not clean"), "{stderr}");
     assert!(!refused.exists());
+    let (code, stdout, _) = run_af(
+        &repo,
+        &home,
+        &[
+            "task",
+            "deliver",
+            task_id,
+            "--repo",
+            repo.to_str().unwrap(),
+            "--branch",
+            "af/dirty-refused",
+            "--worktree",
+            refused.to_str().unwrap(),
+            "--confirm",
+            task_id,
+            "--state",
+            state.to_str().unwrap(),
+            "--json",
+        ],
+    );
+    assert_eq!(code, 1);
+    let document: serde_json::Value = serde_json::from_str(stdout.trim()).unwrap();
+    assert_eq!(document["cause"], "dirty_source", "{document}");
+    crate::schemas::valid(&crate::schemas::validator("error-v2.json"), &document);
 }
 
 #[test]

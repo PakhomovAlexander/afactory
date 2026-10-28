@@ -42,8 +42,8 @@ use review_core::{Arg, Command};
 use review_runner::ResolvedReviewer;
 use review_runner::cli::{CliFlag, CliInvocation};
 use review_runner::{
-    InputTransport, ModelRunner, RenderedInput, ReviewerAdapter, ReviewerInputs, RunnerError,
-    compose_model_prompt,
+    InputTransport, ModelRunner, NativeReplySchema, RenderedInput, ReviewerAdapter, ReviewerInputs,
+    RunnerError, compose_model_prompt,
 };
 use review_runner_claude::models;
 use review_store::Cas;
@@ -175,10 +175,11 @@ pub const CODEX_INVOCATION: CliInvocation = CliInvocation {
     upgrade: "npm install -g @openai/codex@latest",
 };
 
-/// The `codex exec` command of one Attempt. `schema` is the file holding the typed reply's
-/// strict output schema ([`review_runner::task::reply_schema::strict`]), when the Worker declares
-/// a typed reply with a strict projection: Codex then refuses a structurally wrong final message
-/// itself, before it is charged as a typed-reply failure (ADR-0208).
+/// The `codex exec` command of one Attempt. `schema` is the file holding the reply's strict
+/// output schema ([`review_runner::task::reply_schema::ReplyContract::strict`]), when the Worker
+/// declares a typed reply with a strict projection or is a review-Campaign reviewer: Codex then
+/// refuses a structurally wrong final message itself, before it is charged as a reply failure
+/// (ADR-0208, ADR-0246).
 fn codex_command(
     program: &str,
     model_flags: &[String],
@@ -216,10 +217,19 @@ impl ReviewerAdapter for CodexAdapter {
     fn render_input(&self, inputs: &ReviewerInputs) -> Result<RenderedInput, RunnerError> {
         let (prompt, manifest) =
             compose_model_prompt(&self.prompt, inputs).map_err(RunnerError::Refused)?;
+        // The schema the Task adapter derives for a Campaign reviewer's dispatch (ADR-0246).
+        let schema = review_runner::task::reply_schema::ReplyContract::ReviewerResult
+            .strict(&[])
+            .map_err(RunnerError::Refused)?
+            .ok_or_else(|| RunnerError::Refused("Reviewer Result has no native schema".into()))?;
         Ok(RenderedInput {
             transport: InputTransport::Prompt,
             bytes: prompt.into_bytes(),
             manifest,
+            reply_schema: Some(NativeReplySchema {
+                option: "--output-schema",
+                schema,
+            }),
         })
     }
 }

@@ -41,13 +41,13 @@ use std::os::unix::process::CommandExt;
 
 pub mod auth_handoff;
 pub mod availability;
-mod compatibility;
+pub(crate) mod compatibility;
 pub mod detect;
 mod installation;
 pub mod models;
 pub mod task;
 
-use compatibility::{CliIncompatibility, CliRefusal, check_invocation};
+use compatibility::{CliIncompatibility, CliRefusal, DeniedProbe, check_invocation};
 use installation::{
     CliInstallationFailure, diagnose_cli, locate_cli, probe_gave_up, status_answered,
 };
@@ -87,6 +87,8 @@ pub const EXIT_PROVIDER_CLI_MISSING: i32 = 4;
 pub const EXIT_REGISTRY_CONFLICT: i32 = 5;
 pub const EXIT_AUTHENTICATION_FAILED: i32 = 6;
 pub const EXIT_USAGE_UNAVAILABLE: i32 = 7;
+/// The host denied a Provider capability probe; no compatibility or login conclusion follows.
+pub const EXIT_PROBE_DENIED: i32 = 8;
 
 /// Printed before the official CLI takes over the terminal, never after: an operator who sees it
 /// only in a scrollback they later paste has already been told too late.
@@ -100,6 +102,7 @@ const INSTALLATION_FAILED: &str = "installation failed";
 /// The status a context gets when its official CLI starts but does not accept af's invocation;
 /// `incompatible` in JSON (ADR-0146).
 const INCOMPATIBLE: &str = "incompatible";
+const PROBE_DENIED: &str = "probe denied";
 /// The status a context gets when it is absent or holds no login marker, so af did not ask its CLI
 /// about it: that CLI would create files there (ADR-0206). `not_probed` in JSON.
 const UNMARKED: &str = "not probed";
@@ -360,7 +363,14 @@ pub fn print_status(json: bool, usage: UsageProbe, verbose: bool) -> Result<i32,
         .filter(|provider| matches!(provider.status.as_str(), INSTALLATION_FAILED | INCOMPATIBLE))
         .collect();
     // A CLI that cannot serve af outranks an unanswered optional usage probe.
-    let code = if !uninstalled.is_empty() {
+    let denied: Vec<&ProviderStatus> = inventory
+        .providers
+        .iter()
+        .filter(|provider| provider.status == PROBE_DENIED)
+        .collect();
+    let code = if !denied.is_empty() {
+        EXIT_PROBE_DENIED
+    } else if !uninstalled.is_empty() {
         EXIT_PROVIDER_CLI_MISSING
     } else if unavailable_usage {
         EXIT_USAGE_UNAVAILABLE
@@ -376,6 +386,9 @@ pub fn print_status(json: bool, usage: UsageProbe, verbose: bool) -> Result<i32,
         print_status_table(&inventory, usage, verbose);
     }
     for provider in &uninstalled {
+        eprintln!("af provider status: {}", provider.detail);
+    }
+    for provider in &denied {
         eprintln!("af provider status: {}", provider.detail);
     }
     if code == EXIT_USAGE_UNAVAILABLE {
@@ -527,6 +540,10 @@ pub(crate) struct RegistryRead {
     /// The auth directories found on this machine that no registry entry names, by
     /// [`unregistered_dirs`]: what status, doctor and onboarding list as found but not registered.
     pub(crate) unregistered: Vec<PathBuf>,
+    /// The logins `af provider detect --apply` would register, each with its kind
+    /// ([`registrable_logins`]): the only case `af doctor` offers it as a fix (#331 D5). Probing
+    /// runs the CLIs, so only doctor fills it; [`read_registry_entries`] leaves it empty.
+    pub(crate) registrable: Vec<(PathBuf, &'static str)>,
 }
 
 /// The auth directories a names-only scan finds (the selector variables', the CLIs' defaults and
@@ -582,7 +599,18 @@ pub(crate) fn read_registry_entries() -> RegistryRead {
         registered,
         candidates,
         unregistered,
+        registrable: Vec::new(),
     }
+}
+
+/// The logins `af provider detect --apply` would register now, each with its kind: an
+/// authenticated login, probed by an available CLI of its kind on `PATH`, in a safe directory
+/// no registry entry names. A login marker alone is not one (#331 D5).
+pub(crate) fn registrable_logins() -> Vec<(PathBuf, &'static str)> {
+    detect::registrable_logins()
+        .into_iter()
+        .map(|(dir, kind)| (dir, kind.name()))
+        .collect()
 }
 
 /// Every Provider's status as `af provider status` probes it, token-free, without the usage
@@ -702,7 +730,7 @@ fn status_document(
         .map(|dir| dir.display().to_string())
         .collect();
     serde_json::json!({
-        "schema": "af/provider-status@3",
+        "schema": "af/provider-status@4",
         "exit_code": exit_code,
         "usage_requested": usage == UsageProbe::Probe,
         "registry": {
@@ -757,6 +785,7 @@ fn auth_state_name(status: &str) -> &'static str {
         "unavailable" => "unavailable",
         INSTALLATION_FAILED => "installation_failed",
         INCOMPATIBLE => "incompatible",
+        PROBE_DENIED => "probe_denied",
         "not probed" | "disabled" => "not_probed",
         _ => "unknown",
     }
@@ -777,9 +806,8 @@ fn credential_name(kind: &str, auth_type: &str) -> &'static str {
 pub(crate) fn usability_name(status: &str) -> &'static str {
     match status {
         "authenticated" => "usable_or_untested",
-        "not authenticated" | "unavailable" | "disabled" | INSTALLATION_FAILED | INCOMPATIBLE => {
-            "unusable"
-        }
+        "not authenticated" | "unavailable" | "disabled" | INSTALLATION_FAILED | INCOMPATIBLE
+        | PROBE_DENIED => "unusable",
         _ => "unknown",
     }
 }
@@ -890,6 +918,13 @@ fn refuse_unauthenticated_add(id: &str, kind: ProviderKind, auth_dir: &Path) -> 
                 incompatibility.message()
             ),
         ),
+        Err(AuthenticationProbe::Denied(denied)) => (
+            EXIT_PROBE_DENIED,
+            format!(
+                "{}; provider {id} was not registered; retry with host-approved permissions",
+                denied.message()
+            ),
+        ),
     };
     eprintln!("af provider add: {reason}");
     Some(code)
@@ -942,6 +977,10 @@ enum SetupOutcome {
         diagnostic: String,
         report: String,
     },
+    ProbeDenied {
+        diagnostic: String,
+        report: String,
+    },
     RegistryConflict(String),
     AuthenticationFailed(String),
 }
@@ -960,6 +999,7 @@ impl SetupOutcome {
             Self::AlreadyRegistered => "already_registered",
             Self::HumanActionRequired(_) => "human_action_required",
             Self::ProviderCliMissing { .. } => "provider_cli_missing",
+            Self::ProbeDenied { .. } => "probe_denied",
             Self::RegistryConflict(_) => "registry_conflict",
             Self::AuthenticationFailed(_) => "authentication_failed",
         }
@@ -970,6 +1010,7 @@ impl SetupOutcome {
             Self::Registered { .. } | Self::AlreadyRegistered => EXIT_OK,
             Self::HumanActionRequired(_) => EXIT_HUMAN_ACTION_REQUIRED,
             Self::ProviderCliMissing { .. } => EXIT_PROVIDER_CLI_MISSING,
+            Self::ProbeDenied { .. } => EXIT_PROBE_DENIED,
             Self::RegistryConflict(_) => EXIT_REGISTRY_CONFLICT,
             Self::AuthenticationFailed(_) => EXIT_AUTHENTICATION_FAILED,
         }
@@ -979,6 +1020,7 @@ impl SetupOutcome {
     fn diagnostic(&self) -> Option<&str> {
         match self {
             Self::ProviderCliMissing { diagnostic, .. } => Some(diagnostic),
+            Self::ProbeDenied { diagnostic, .. } => Some(diagnostic),
             Self::RegistryConflict(detail) | Self::AuthenticationFailed(detail) => Some(detail),
             Self::Registered { .. } | Self::AlreadyRegistered => None,
             Self::HumanActionRequired(action) => Some(&action.reason),
@@ -989,6 +1031,7 @@ impl SetupOutcome {
     fn report(&self) -> Option<&str> {
         match self {
             Self::ProviderCliMissing { report, .. } => Some(report),
+            Self::ProbeDenied { report, .. } => Some(report),
             _ => self.diagnostic(),
         }
     }
@@ -1006,6 +1049,13 @@ impl SetupOutcome {
         Self::ProviderCliMissing {
             diagnostic: incompatibility.summary(),
             report: incompatibility.message(),
+        }
+    }
+
+    fn probe_denied(denied: &DeniedProbe) -> Self {
+        Self::ProbeDenied {
+            diagnostic: denied.summary(),
+            report: denied.message(),
         }
     }
 }
@@ -1150,6 +1200,7 @@ fn probe_authentication(spec: &ProviderSpec, report: &SetupReport<'_>) -> Result
         AuthenticationProbe::CliIncompatible(incompatibility) => {
             report.emit(&SetupOutcome::cli_incompatible(&incompatibility))
         }
+        AuthenticationProbe::Denied(denied) => report.emit(&SetupOutcome::probe_denied(&denied)),
     })
 }
 
@@ -1258,7 +1309,7 @@ impl SetupReport<'_> {
         };
         let auth_context = self.auth_dir.display().to_string();
         serde_json::json!({
-            "schema": "af/provider-setup@1",
+            "schema": "af/provider-setup@2",
             "result": outcome.name(),
             "exit_code": code,
             "login_launched": false,
@@ -1305,6 +1356,7 @@ impl SetupReport<'_> {
                 );
             }
             SetupOutcome::ProviderCliMissing { report: detail, .. }
+            | SetupOutcome::ProbeDenied { report: detail, .. }
             | SetupOutcome::RegistryConflict(detail)
             | SetupOutcome::AuthenticationFailed(detail) => {
                 println!("provider {id} was not registered ({})", outcome.name());
@@ -2095,6 +2147,7 @@ enum AuthenticationProbe {
     Failed(String),
     CliCannotStart(CliInstallationFailure),
     CliIncompatible(CliIncompatibility),
+    Denied(DeniedProbe),
 }
 
 impl From<String> for AuthenticationProbe {
@@ -2118,6 +2171,7 @@ fn authentication_ready(spec: &ProviderSpec) -> Result<bool, AuthenticationProbe
             CliRefusal::Incompatible(incompatibility) => {
                 AuthenticationProbe::CliIncompatible(incompatibility)
             }
+            CliRefusal::Denied(denied) => AuthenticationProbe::Denied(denied),
             CliRefusal::Unchecked(reason) => AuthenticationProbe::Failed(reason),
         },
     )?;
@@ -4338,6 +4392,7 @@ fn refused_status(spec: &ProviderSpec, refusal: CliRefusal) -> ProviderStatus {
     match refusal {
         CliRefusal::CannotStart(failure) => installation_failed_status(spec, &failure),
         CliRefusal::Incompatible(incompatibility) => incompatible_status(spec, &incompatibility),
+        CliRefusal::Denied(denied) => denied_status(spec, &denied),
         CliRefusal::Unchecked(reason) => unavailable_status(spec, &reason),
     }
 }
@@ -4352,6 +4407,15 @@ fn incompatible_status(
         disabled_until: None,
         status: INCOMPATIBLE.to_string(),
         detail: incompatibility.message(),
+        ..unavailable_status(spec, "")
+    }
+}
+
+fn denied_status(spec: &ProviderSpec, denied: &DeniedProbe) -> ProviderStatus {
+    ProviderStatus {
+        disabled_until: None,
+        status: PROBE_DENIED.to_string(),
+        detail: denied.message(),
         ..unavailable_status(spec, "")
     }
 }

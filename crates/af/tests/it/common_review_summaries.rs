@@ -272,7 +272,7 @@ fn common_two_round_timing_and_attempt_summaries_reopen_without_synthetic_legacy
         .stdout,
     )
     .unwrap();
-    assert_eq!(report["schema"], "af/review-report@4");
+    assert_eq!(report["schema"], "af/review-report@5");
     assert_eq!(report["wall_ms"], expected_wall);
     assert_eq!(report["task_accounting"][0]["attempts_started"], "4");
     assert_eq!(
@@ -413,7 +413,7 @@ fn missing_common_task_refuses_without_reopening_legacy_execution() {
 
     let output = checked(invoke(&repo, &home, &args), 1);
     let document: Value = serde_json::from_slice(&output.stdout).unwrap();
-    assert_eq!(document["schema"], "af/error@1");
+    assert_eq!(document["schema"], "af/error@2");
     assert_eq!(document["exit_code"], 1);
     assert!(document.get("outcome").is_none());
     assert!(

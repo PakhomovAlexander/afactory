@@ -1068,3 +1068,147 @@ fn captured_integration_allowance_is_dormant_and_cannot_collide_or_add_paid_work
     null["review_integration"] = serde_json::Value::Null;
     assert!(serde_json::from_value::<review_graph::task::CompiledTask>(null).is_err());
 }
+
+/// #331 item 3 (ADR-0254): the Diff Subject is a kernel-supplied typed input. Only a Worker that
+/// reads its `source` without writing it declares it, on its optional `diff_subject` port with
+/// `same_as source` affinity; no Pipeline binds it, takes it or returns it.
+#[test]
+fn only_a_judging_worker_declares_the_diff_subject_and_no_pipeline_binds_it() {
+    use review_core::task::diff_subject::DIFF_SUBJECT_V1;
+    let (mut task, mut pipelines, mut signatures) = fixture();
+    task.authority.allowed_effects.insert("write-source".into());
+    let template = pipelines["builtin/document"].contract.inputs["requirements"].clone();
+    let port = |artifact_type: &str, optional: bool, affinity: PortAffinityV1| PipelinePortV1 {
+        artifact_type: artifact_type.into(),
+        optional,
+        affinity,
+        ..template.clone()
+    };
+    let same_as_source = PortAffinityV1::SameAs {
+        input: "source".into(),
+    };
+    let compile = |pipelines: &BTreeMap<String, PipelineDefinitionV1>,
+                   signatures: &BTreeMap<String, OperatorSignature>| {
+        compile_task(
+            &task,
+            "builtin/document",
+            &CompileContext {
+                slot_workers: BTreeMap::new(),
+                acceptance_outputs: BTreeMap::from([("checked".into(), "document".into())]),
+                pipelines,
+                signatures,
+                max_nodes: 64,
+                max_depth: 4,
+            },
+        )
+    };
+    let key = "worker/builtin/document-author";
+    // A reading Worker that declares it, on its source's Snapshot, compiles; the port is not a
+    // node input, because the kernel supplies it.
+    {
+        let signature = signatures.get_mut(key).unwrap();
+        signature.contract.inputs.insert(
+            "source".into(),
+            port("af/SourceTree@1", true, PortAffinityV1::Unbound {}),
+        );
+        signature.contract.inputs.insert(
+            "diff_subject".into(),
+            port(DIFF_SUBJECT_V1, true, same_as_source.clone()),
+        );
+    }
+    let graph = compile(&pipelines, &signatures).unwrap();
+    assert!(
+        !graph.nodes["root.nodes.write"]
+            .inputs
+            .contains_key("diff_subject")
+    );
+    // A required port, another name, another affinity or a Worker that writes its source is
+    // refused by name.
+    type Edit = Box<dyn Fn(&mut OperatorSignature)>;
+    let edits: [(&str, Edit); 4] = [
+        (
+            "required",
+            Box::new(|s| s.contract.inputs.get_mut("diff_subject").unwrap().optional = false),
+        ),
+        (
+            "renamed",
+            Box::new(|s| {
+                let declared = s.contract.inputs.remove("diff_subject").unwrap();
+                s.contract.inputs.insert("change".into(), declared);
+            }),
+        ),
+        (
+            "unbound",
+            Box::new(|s| {
+                s.contract.inputs.get_mut("diff_subject").unwrap().affinity =
+                    PortAffinityV1::Unbound {};
+            }),
+        ),
+        (
+            "writer",
+            Box::new(|s| {
+                s.effects.insert("write-source".into());
+            }),
+        ),
+    ];
+    for (label, edit) in edits {
+        let mut changed = signatures.clone();
+        edit(changed.get_mut(key).unwrap());
+        let error = compile(&pipelines, &changed).unwrap_err();
+        assert!(error.contains("takes the Diff Subject"), "{label}: {error}");
+    }
+    // A port named `diff_subject` of another type is refused when it is compiled, even when a
+    // Pipeline binds it: invocation admission would read it as the Diff Subject and refuse the
+    // planned Task before its Worker starts.
+    let mut misdeclared = signatures.clone();
+    misdeclared
+        .get_mut(key)
+        .unwrap()
+        .contract
+        .inputs
+        .insert("diff_subject".into(), template.clone());
+    let mut bound = pipelines.clone();
+    let definition = bound.get_mut("builtin/document").unwrap();
+    let input = definition.nodes[0].inputs["input"].clone();
+    definition.nodes[0]
+        .inputs
+        .insert("diff_subject".into(), input);
+    for pipelines in [&pipelines, &bound] {
+        let error = compile(pipelines, &misdeclared).unwrap_err();
+        assert!(
+            error.contains("declares `diff_subject` as af/")
+                && error.contains("that input name is the kernel's Diff Subject"),
+            "{error}"
+        );
+    }
+    // A Pipeline that wires the port is refused: the kernel supplies it.
+    let mut wired = pipelines.clone();
+    let definition = wired.get_mut("builtin/document").unwrap();
+    let input = definition.nodes[0].inputs["input"].clone();
+    definition.nodes[0]
+        .inputs
+        .insert("diff_subject".into(), input);
+    let error = compile(&wired, &signatures).unwrap_err();
+    assert!(error.contains("which the kernel supplies"), "{error}");
+    // No Pipeline takes one as a root input or returns one.
+    let definition = pipelines.get_mut("builtin/document").unwrap();
+    definition.contract.inputs.insert(
+        "change".into(),
+        port(DIFF_SUBJECT_V1, true, PortAffinityV1::Unbound {}),
+    );
+    let error = compile(&pipelines, &signatures).unwrap_err();
+    assert!(
+        error.contains("no Pipeline takes or returns one"),
+        "{error}"
+    );
+    // No operator returns one.
+    let definition = pipelines.get_mut("builtin/document").unwrap();
+    definition.contract.inputs.remove("change");
+    let signature = signatures.get_mut(key).unwrap();
+    signature
+        .contract
+        .outputs
+        .insert("change".into(), port(DIFF_SUBJECT_V1, true, same_as_source));
+    let error = compile(&pipelines, &signatures).unwrap_err();
+    assert!(error.contains("only the kernel builds"), "{error}");
+}

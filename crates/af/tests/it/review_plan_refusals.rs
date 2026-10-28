@@ -21,7 +21,10 @@ fn af(repo: &Path, args: &[&str]) -> Output {
         .env("NO_COLOR", "1")
         .env_remove("CLAUDE_CONFIG_DIR")
         .env_remove("CODEX_HOME")
-        .env_remove("AF_PROVIDERS_FILE")
+        .env(
+            "AF_PROVIDERS_FILE",
+            repo.parent().unwrap().join("providers.toml"),
+        )
         .output()
         .unwrap()
 }
@@ -133,6 +136,126 @@ fn register(repo: &Path, id: &str, kind: &str) {
     assert!(added.status.success(), "{}", err(&added));
 }
 
+/// The suggestion path runs before a sandbox exists. A same-size tracked edit forces ordinary
+/// `git status` to hash it and run the filter selected by the committed attributes file.
+#[test]
+fn selector_suggestions_do_not_run_checkout_git_programs() {
+    use std::os::unix::fs::PermissionsExt;
+
+    let root = tempfile::tempdir().unwrap();
+    let root = root.path().canonicalize().unwrap();
+    let repo = onboarded(&root);
+    std::fs::remove_file(repo.join("notes.md")).unwrap();
+    std::fs::write(
+        repo.join(".gitattributes"),
+        "victim.txt filter=evil diff=evil\n",
+    )
+    .unwrap();
+    std::fs::write(repo.join("victim.txt"), "before\n").unwrap();
+    git(&repo, &["add", ".gitattributes", "victim.txt"]);
+    git(&repo, &["commit", "-q", "-m", "hostile attributes"]);
+    register(&repo, "codex-main", "codex");
+    let clean = af(&repo, &["review", "plan", "--json"]);
+    assert_eq!(clean.status.code(), Some(1), "{}", err(&clean));
+    let clean_document: Value = serde_json::from_slice(&clean.stdout).unwrap();
+    assert_eq!(clean_document["cause"], "review_selectors_missing");
+    assert_eq!(clean_document["next_action"], Value::Null);
+
+    let marker = root.join("marker");
+    let script = root.join("evil.sh");
+    std::fs::write(
+        &script,
+        format!(
+            "#!/bin/sh\nprintf 'called:%s\\n' \"$*\" >> '{}'\ncat\n",
+            marker.display()
+        ),
+    )
+    .unwrap();
+    std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o755)).unwrap();
+    let script = script.to_str().unwrap();
+    for key in [
+        "filter.evil.clean",
+        "filter.evil.smudge",
+        "diff.evil.textconv",
+        "core.fsmonitor",
+    ] {
+        git(&repo, &["config", key, script]);
+    }
+    std::fs::write(repo.join("victim.txt"), "after!\n").unwrap();
+    assert!(
+        !marker.exists(),
+        "the fixture itself ran a configured program"
+    );
+
+    for args in [
+        &["review", "plan", "--json"][..],
+        &["review", "run", "--json"][..],
+    ] {
+        let refused = af(&repo, args);
+        assert_eq!(refused.status.code(), Some(1), "{}", err(&refused));
+        let document: Value = serde_json::from_slice(&refused.stdout).unwrap();
+        assert_eq!(document["cause"], "review_selectors_missing", "{document}");
+        assert!(
+            document["next_action"]
+                .as_str()
+                .unwrap()
+                .contains("--policy-rev HEAD --base HEAD --uncommitted"),
+            "{document}"
+        );
+        assert!(!marker.exists(), "{args:?} ran a checkout Git program");
+    }
+    let bare = af(&repo, &["review"]);
+    assert_eq!(bare.status.code(), Some(2), "{}", err(&bare));
+    assert!(
+        err(&bare).contains("--policy-rev HEAD --base HEAD --uncommitted"),
+        "{}",
+        err(&bare)
+    );
+    assert!(!marker.exists(), "bare review ran a checkout Git program");
+
+    let status = Command::new("git")
+        .arg("status")
+        .current_dir(&repo)
+        .output()
+        .unwrap();
+    assert!(status.status.success(), "{status:?}");
+    assert!(
+        marker.exists(),
+        "ordinary git status did not arm the fixture"
+    );
+    assert!(
+        std::fs::read_to_string(marker)
+            .unwrap()
+            .contains("called:\n"),
+        "ordinary git status did not run the clean filter"
+    );
+}
+
+#[test]
+fn review_plan_names_timeout_scope_beside_value() {
+    let temp = tempfile::tempdir().unwrap();
+    let repo = onboarded(temp.path());
+    register(&repo, "codex-main", "codex");
+    let output = plan(
+        &repo,
+        &[
+            "--timeout-secs",
+            "37",
+            "--provider",
+            "architecture=codex-main",
+            "--provider",
+            "correctness=codex-main",
+        ],
+        false,
+    );
+    assert!(output.status.success(), "{}", err(&output));
+    assert!(
+        out(&output).contains("timeout  --timeout-secs 37: per reviewer Attempt"),
+        "{}",
+        out(&output)
+    );
+}
+
 const PLAN: [&str; 8] = [
     "review",
     "plan",
@@ -150,7 +273,7 @@ fn plan(repo: &Path, extra: &[&str], json: bool) -> Output {
     af(repo, &args)
 }
 
-/// The refusal, as text on stderr and as the one `af/error@1` document `--json` prints.
+/// The refusal, as text on stderr and as the one `af/error@2` document `--json` prints.
 fn refused(repo: &Path, extra: &[&str], expected: &str) {
     let text = plan(repo, extra, false);
     assert_eq!(text.status.code(), Some(1), "{}", err(&text));
@@ -159,7 +282,7 @@ fn refused(repo: &Path, extra: &[&str], expected: &str) {
     assert_eq!(json.status.code(), Some(1), "{}", err(&json));
     let document: Value = serde_json::from_slice(&json.stdout)
         .unwrap_or_else(|_| panic!("not one document: {}", out(&json)));
-    assert_eq!(document["schema"], "af/error@1");
+    assert_eq!(document["schema"], "af/error@2");
     assert!(
         document["error"].as_str().unwrap().contains(expected),
         "{document}"
@@ -223,41 +346,27 @@ fn plan_refuses_an_unregistered_provider_and_a_node_the_pipeline_does_not_have()
 fn ready_comes_from_the_registry_and_a_ready_plan_names_the_run_command() {
     let root = tempfile::tempdir().unwrap();
     let repo = onboarded(&root.path().canonicalize().unwrap());
-    // Nothing registered: each missing binding names how to register a Provider of its kind.
-    let text = plan(&repo, &[], false);
-    assert!(text.status.success(), "{}", err(&text));
-    assert!(
-        unwrapped(&out(&text)).contains(
-            "provider architecture -> MISSING; fix: no codex Provider is registered: `af \
-             provider status` lists what this machine has, and `af provider setup codex-main \
-             --kind codex --login` registers one"
-        ),
-        "{}",
-        out(&text)
-    );
-    // No command fixes that alone: the document names none, as the text does.
-    let document: Value = serde_json::from_slice(&plan(&repo, &[], true).stdout).unwrap();
+    let unregistered = plan(&repo, &[], true);
+    assert_eq!(unregistered.status.code(), Some(1));
+    let document: Value = serde_json::from_slice(&unregistered.stdout).unwrap();
+    assert_eq!(document["cause"], "review_binding_missing", "{document}");
     assert_eq!(document["next_action"], Value::Null, "{document}");
-    // Registered: the fix is the binding, and next is the plan that binds it.
     register(&repo, "codex-main", "codex");
-    let text = unwrapped(&out(&plan(&repo, &[], false)));
+    let suggested = plan(&repo, &[], true);
+    assert_eq!(suggested.status.code(), Some(1));
+    let document: Value = serde_json::from_slice(&suggested.stdout).unwrap();
+    assert_eq!(document["cause"], "review_binding_missing", "{document}");
+    let next = document["next_action"].as_str().unwrap();
     assert!(
-        text.contains("provider architecture -> MISSING; fix: --provider architecture=codex-main"),
-        "{text}"
+        next.contains("--provider 'architecture=codex-main'"),
+        "{next}"
     );
-    let next = text.lines().last().unwrap();
     assert!(
-        next.starts_with(
-            "next:    af review plan --policy-rev HEAD --base HEAD --uncommitted --provider"
-        ),
-        "{text}"
+        next.contains("--provider 'correctness=codex-main'"),
+        "{next}"
     );
-    let document: Value = serde_json::from_slice(&plan(&repo, &[], true).stdout).unwrap();
-    assert_eq!(
-        document["next_action"].as_str(),
-        next.strip_prefix("next:    "),
-        "the document names the command the text prints"
-    );
+    let text = err(&plan(&repo, &[], false));
+    assert_eq!(text.lines().last(), Some(next), "{text}");
     let bound = [
         "--provider",
         "architecture=codex-main",
@@ -266,6 +375,20 @@ fn ready_comes_from_the_registry_and_a_ready_plan_names_the_run_command() {
     ];
     let document: Value = serde_json::from_slice(&plan(&repo, &bound, true).stdout).unwrap();
     assert_eq!(document["schema"], "af/review-plan@1");
+    assert!(
+        document["pipeline"]["topology"]["nodes"]
+            .as_array()
+            .unwrap()
+            .len()
+            > 1
+    );
+    assert_eq!(
+        document["resolved"]["policy_snapshot_id"]
+            .as_str()
+            .unwrap()
+            .len(),
+        71
+    );
     for provider in document["providers"].as_array().unwrap() {
         assert_eq!(provider["ready"], true, "{provider}");
     }
@@ -273,6 +396,14 @@ fn ready_comes_from_the_registry_and_a_ready_plan_names_the_run_command() {
                'architecture=codex-main' --provider 'correctness=codex-main'";
     assert_eq!(document["next_action"], run, "{document}");
     let text = unwrapped(&out(&plan(&repo, &bound, false)));
+    assert!(
+        text.contains("binding  architecture => codex-main"),
+        "{text}"
+    );
+    assert!(
+        text.contains("binding  correctness => codex-main"),
+        "{text}"
+    );
     assert_eq!(
         text.lines().last().unwrap(),
         format!("next:    {run}"),
@@ -294,17 +425,16 @@ fn the_first_run_plan_fits_the_terminal_and_keeps_commands_whole() {
         "correctness=codex-main",
     ];
     register(&repo, "codex-main", "codex");
-    for (extra, columns) in [
-        (&[][..], 100),
-        (&[][..], 80),
-        (&bound[..], 100),
-        (&bound[..], 80),
-    ] {
+    for (extra, columns) in [(&bound[..], 100), (&bound[..], 80)] {
         let mut args: Vec<&str> = PLAN[..7].to_vec();
         args.extend(extra);
         let shown = crate::common::af()
             .args(&args)
             .current_dir(&repo)
+            .env(
+                "AF_PROVIDERS_FILE",
+                repo.parent().unwrap().join("providers.toml"),
+            )
             .env("PATH", "/usr/bin:/bin:/usr/sbin:/sbin")
             .env("NO_COLOR", "1")
             .env("COLUMNS", columns.to_string())
@@ -312,6 +442,12 @@ fn the_first_run_plan_fits_the_terminal_and_keeps_commands_whole() {
             .unwrap();
         assert!(shown.status.success(), "{}", err(&shown));
         let text = out(&shown);
+        assert!(
+            text.lines().count() <= 24,
+            "{} lines:\n{text}",
+            text.lines().count()
+        );
+        assert!(!text.contains("topology\n"), "{text}");
         for line in text.lines() {
             assert!(
                 line.chars().count() <= columns,
@@ -324,36 +460,13 @@ fn the_first_run_plan_fits_the_terminal_and_keeps_commands_whole() {
             .collect();
         let command = next.join("\n").replace(" \\\n", " ");
         let words = shell_words::split(command.trim_start_matches("next:")).unwrap();
-        assert_eq!(
-            words[..3],
-            [
-                "af",
-                "review",
-                if extra.is_empty() { "plan" } else { "run" }
-            ]
-        );
+        assert_eq!(words[..3], ["af", "review", "run"]);
         assert!(words.contains(&"--provider".to_owned()), "{command}");
     }
-    // Without a registered Provider the fix names both commands, each on one line.
-    let bare = onboarded(&root.path().canonicalize().unwrap().join("unregistered"));
-    let shown = crate::common::af()
-        .args(&PLAN[..7])
-        .current_dir(&bare)
-        .env("PATH", "/usr/bin:/bin:/usr/sbin:/sbin")
-        .env("COLUMNS", "80")
-        .env("AF_PROVIDERS_FILE", root.path().join("none.toml"))
-        .output()
-        .unwrap();
-    let text = out(&shown);
-    assert!(
-        text.lines().all(|line| line.chars().count() <= 80),
-        "{text}"
-    );
-    assert!(
-        text.lines()
-            .any(|line| line.contains("`af provider setup codex-main --kind codex --login`")),
-        "{text}"
-    );
+    // The same plan without bindings is still a classified refusal.
+    let unregistered = plan(&repo, &[], true);
+    let error: Value = serde_json::from_slice(&unregistered.stdout).unwrap();
+    assert_eq!(error["cause"], "review_binding_missing");
 }
 
 #[test]
@@ -374,6 +487,7 @@ fn first_run_refusals_name_the_fix() {
     );
     // A policy revision git does not know: its own one line, not the command af ran.
     let repo = onboarded(&root.join("onboarded"));
+    register(&repo, "codex-main", "codex");
     let refused = af(
         &repo,
         &[
@@ -399,18 +513,28 @@ fn first_run_refusals_name_the_fix() {
     // No policy revision at all: what it is and the command to try.
     let refused = af(&repo, &["review", "plan"]);
     assert_eq!(refused.status.code(), Some(1));
+    let document: Value =
+        serde_json::from_slice(&af(&repo, &["review", "plan", "--json"]).stdout).unwrap();
+    assert_eq!(document["cause"], "review_selectors_missing");
     assert!(
-        err(&refused).contains(
-            "af review plan needs --policy-rev REV, the commit whose committed .af/ governs the \
-             review (usually HEAD); try: af review plan --policy-rev HEAD --base HEAD \
-             --uncommitted"
-        ),
-        "{}",
-        err(&refused)
+        document["next_action"]
+            .as_str()
+            .unwrap()
+            .contains("--policy-rev HEAD --base HEAD --uncommitted"),
+        "{document}"
     );
     // An empty diff says what is empty and the selectors that would fill it.
     std::fs::remove_file(repo.join("notes.md")).unwrap();
-    let empty = out(&plan(&repo, &[], false));
+    let empty = out(&plan(
+        &repo,
+        &[
+            "--provider",
+            "architecture=codex-main",
+            "--provider",
+            "correctness=codex-main",
+        ],
+        false,
+    ));
     assert!(empty.contains("EMPTY — run will refuse"), "{empty}");
     let collapsed = empty.split_whitespace().collect::<Vec<_>>().join(" ");
     assert!(
@@ -426,12 +550,175 @@ fn first_run_refusals_name_the_fix() {
         "{empty}"
     );
     assert!(
-        empty
-            .lines()
-            .last()
-            .unwrap()
-            .trim_start()
-            .starts_with("af review plan --policy-rev HEAD --base HEAD --uncommitted"),
+        empty.contains("af review plan --policy-rev HEAD --base HEAD --uncommitted --provider"),
         "{empty}"
+    );
+}
+
+#[test]
+fn review_refusal_command_plans_and_never_trusts_a_feature_branch() {
+    let root = tempfile::tempdir().unwrap();
+    let repo = onboarded(&root.path().canonicalize().unwrap());
+    register(&repo, "codex-main", "codex");
+    let refusal = af(&repo, &["review", "plan", "--json"]);
+    assert_eq!(refusal.status.code(), Some(1), "{}", err(&refusal));
+    let document: Value = serde_json::from_slice(&refusal.stdout).unwrap();
+    assert_eq!(document["cause"], "review_selectors_missing");
+    crate::schemas::valid(&crate::schemas::validator("error-v2.json"), &document);
+    let command = document["next_action"].as_str().unwrap();
+    assert!(
+        command.contains("--policy-rev HEAD --base HEAD --uncommitted"),
+        "{command}"
+    );
+    let words = shell_words::split(command).unwrap();
+    let args: Vec<&str> = words.iter().skip(1).map(String::as_str).collect();
+    let planned = af(&repo, &args);
+    assert!(
+        planned.status.success(),
+        "{}\n{}",
+        err(&planned),
+        out(&planned)
+    );
+    git(&repo, &["checkout", "-q", "-b", "feature"]);
+    git(&repo, &["add", "notes.md"]);
+    git(&repo, &["commit", "-q", "-m", "feature"]);
+    let refusal = af(&repo, &["review", "plan", "--json"]);
+    let document: Value = serde_json::from_slice(&refusal.stdout).unwrap();
+    let command = document["next_action"].as_str().unwrap();
+    assert!(!command.contains("--policy-rev HEAD"), "{command}");
+    assert!(command.contains("--candidate HEAD"), "{command}");
+}
+
+#[test]
+fn two_registered_providers_leave_the_binding_to_the_caller() {
+    let root = tempfile::tempdir().unwrap();
+    let repo = onboarded(&root.path().canonicalize().unwrap());
+    register(&repo, "codex-one", "codex");
+    register(&repo, "codex-two", "codex");
+    let refusal = plan(&repo, &[], true);
+    assert_eq!(refusal.status.code(), Some(1));
+    let document: Value = serde_json::from_slice(&refusal.stdout).unwrap();
+    assert_eq!(document["cause"], "review_binding_missing");
+    assert_eq!(document["next_action"], Value::Null);
+    let candidates = &document["details"]["candidates"]["architecture"];
+    assert!(
+        candidates
+            .as_array()
+            .unwrap()
+            .contains(&Value::from("codex-one"))
+    );
+    assert!(
+        candidates
+            .as_array()
+            .unwrap()
+            .contains(&Value::from("codex-two"))
+    );
+    crate::schemas::valid(&crate::schemas::validator("error-v2.json"), &document);
+}
+
+#[test]
+fn first_run_review_causes_are_structured() {
+    let root = tempfile::tempdir().unwrap();
+    let bare = bare(&root.path().canonicalize().unwrap());
+    let no_authority = plan(&bare, &[], true);
+    let document: Value = serde_json::from_slice(&no_authority.stdout).unwrap();
+    assert_eq!(document["cause"], "no_authority");
+    assert_eq!(document["details"]["revision"], "HEAD");
+    let not_repo = root.path().join("not-a-repo");
+    std::fs::create_dir_all(&not_repo).unwrap();
+    let output = af(
+        &not_repo,
+        &["review", "plan", "--policy-rev", "HEAD", "--json"],
+    );
+    let document: Value = serde_json::from_slice(&output.stdout).unwrap();
+    assert_eq!(document["cause"], "not_repository", "{document}");
+    let repo = onboarded(&root.path().join("policy"));
+    for (args, cause) in [
+        (
+            &["--provider", "architecture=nope"][..],
+            "provider_not_registered",
+        ),
+        (
+            &["--provider", "nosuchnode=nope"][..],
+            "unknown_review_node",
+        ),
+    ] {
+        let output = plan(&repo, args, true);
+        let document: Value = serde_json::from_slice(&output.stdout).unwrap();
+        assert_eq!(document["cause"], cause, "{document}");
+        crate::schemas::valid(&crate::schemas::validator("error-v2.json"), &document);
+    }
+}
+
+#[test]
+fn bare_review_shows_the_copyable_command_before_help() {
+    let root = tempfile::tempdir().unwrap();
+    let repo = onboarded(&root.path().canonicalize().unwrap());
+    register(&repo, "codex-main", "codex");
+    let shown = af(&repo, &["review"]);
+    assert_eq!(shown.status.code(), Some(2), "{}", err(&shown));
+    assert!(
+        err(&shown).contains("af review plan --policy-rev HEAD --base HEAD --uncommitted"),
+        "{}",
+        err(&shown)
+    );
+    let text = err(&shown);
+    assert!(text.contains("Usage: af review"), "{text}");
+    assert!(
+        text.find("af review plan --policy-rev").unwrap() < text.find("Usage: af review").unwrap(),
+        "{text}"
+    );
+}
+
+#[test]
+fn review_run_missing_binding_returns_its_explicit_command() {
+    let root = tempfile::tempdir().unwrap();
+    let repo = onboarded(&root.path().canonicalize().unwrap());
+    register(&repo, "codex-main", "codex");
+    let refused = af(
+        &repo,
+        &[
+            "review",
+            "run",
+            "--policy-rev",
+            "HEAD",
+            "--base",
+            "HEAD",
+            "--uncommitted",
+            "--json",
+        ],
+    );
+    assert_eq!(refused.status.code(), Some(1), "{}", err(&refused));
+    let document: Value = serde_json::from_slice(&refused.stdout).unwrap();
+    assert_eq!(document["cause"], "review_binding_missing", "{document}");
+    let next = document["next_action"].as_str().unwrap();
+    assert!(
+        next.starts_with("af review run --policy-rev HEAD --base HEAD --uncommitted"),
+        "{next}"
+    );
+    assert!(
+        next.contains("--provider 'architecture=codex-main'"),
+        "{next}"
+    );
+    crate::schemas::valid(&crate::schemas::validator("error-v2.json"), &document);
+}
+
+#[test]
+fn unknown_default_branch_requires_a_trusted_policy_choice() {
+    let root = tempfile::tempdir().unwrap();
+    let repo = onboarded(&root.path().canonicalize().unwrap());
+    register(&repo, "codex-main", "codex");
+    git(&repo, &["branch", "-m", "feature"]);
+    git(&repo, &["config", "init.defaultBranch", "absent"]);
+    let refused = af(&repo, &["review", "plan", "--json"]);
+    let document: Value = serde_json::from_slice(&refused.stdout).unwrap();
+    assert_eq!(document["cause"], "review_selectors_missing");
+    assert_eq!(document["next_action"], Value::Null, "{document}");
+    assert!(
+        document["error"]
+            .as_str()
+            .unwrap()
+            .contains("trusted policy revision must be chosen"),
+        "{document}"
     );
 }

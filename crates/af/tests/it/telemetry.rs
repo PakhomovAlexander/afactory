@@ -286,7 +286,7 @@ fn telemetry_commands_refuse_and_report_with_their_exit_codes() {
     );
     assert_eq!(output.status.code(), Some(2));
     let document: Value = serde_json::from_slice(&output.stdout).unwrap();
-    assert_eq!(document["schema"], "af/error@1");
+    assert_eq!(document["schema"], "af/error@2");
     assert_eq!(document["exit_code"], 2);
     assert!(
         document["error"]

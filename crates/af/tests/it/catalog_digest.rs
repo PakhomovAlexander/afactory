@@ -403,3 +403,45 @@ fn digest_of(package: &Path) -> Output {
     assert!(output.status.success(), "{}", err(&output));
     output
 }
+
+/// A package that declares the typed `diff_subject` input tells its Worker to read that input,
+/// never the `../diff-subject.json` sidecar ADR-0254 retired: the kernel materializes only
+/// `../base` beside a judge's tree and injects the Diff Subject on the port.
+#[test]
+fn every_package_declaring_diff_subject_tells_its_worker_to_read_the_input() {
+    let packages = workspace().join(".af/task-packages");
+    let mut declaring = 0;
+    for owner in std::fs::read_dir(&packages).unwrap() {
+        let owner = owner.unwrap().path();
+        if !owner.is_dir() {
+            continue;
+        }
+        for package in std::fs::read_dir(&owner).unwrap() {
+            let package = package.unwrap().path();
+            let worker = package.join("worker.toml");
+            if !worker.is_file() {
+                continue;
+            }
+            let manifest = std::fs::read_to_string(&worker).unwrap();
+            if !manifest.contains("[signature.contract.inputs.diff_subject]") {
+                continue;
+            }
+            declaring += 1;
+            let instructions = std::fs::read_to_string(package.join("instructions.md")).unwrap();
+            assert!(
+                instructions.contains("`diff_subject` input"),
+                "{} declares diff_subject but its instructions never name the input",
+                package.display()
+            );
+            assert!(
+                !instructions.contains("diff-subject.json"),
+                "{} declares diff_subject but its instructions still name the retired sidecar",
+                package.display()
+            );
+        }
+    }
+    assert!(
+        declaring >= 8,
+        "expected the kernel's and the default reviewer packages, found {declaring}"
+    );
+}

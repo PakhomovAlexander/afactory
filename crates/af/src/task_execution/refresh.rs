@@ -322,7 +322,7 @@ struct Refusal {
 
 /// The refused refresh, recorded: its reason on stderr, then the Task as `present` shows it and
 /// the state line. Under `--json`, when the Task now waits for a person (exit 4), the one
-/// `af/error@1` document carrying that reason, its decision and the next command stands in for
+/// `af/error@2` document carrying that reason, its decision and the next command stands in for
 /// the inspection.
 fn present_refusal(
     cas: &Cas,

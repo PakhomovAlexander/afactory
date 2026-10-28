@@ -91,7 +91,7 @@ are at any point, token-free.
    the onboard preview printed:
 
    ```sh
-   af review plan --policy-rev HEAD --base HEAD --uncommitted
+   af review plan --policy-rev HEAD --base HEAD --uncommitted --provider correctness=PROVIDER --provider architecture=PROVIDER
    af review --policy-rev HEAD --base HEAD --uncommitted --provider correctness=PROVIDER --provider architecture=PROVIDER
    ```
 
@@ -220,7 +220,7 @@ Rules for a coding agent, or a script, that drives af for someone:
 - **Read JSON, not prose.** Most commands take `--json` and print one document on stdout, with
   progress on stderr; `af review report` and `af review campaigns` take `--format json`, and a
   command's `--help` names its output flags. Branch on the document's `schema`: most refusals
-  are `af/error@1`, while `af provider` commands and a refused Task plan print their own
+  are `af/error@2`, while `af provider` commands and a refused Task plan print their own
   documents (`af help json`). `af telemetry tail --json` prints one object per line, and
   `af config show --json` a document with no `schema`.
 - **Branch on the exit code.** `af review run` exits 0 pass, 3 fail, 4 incomplete. A foreground
@@ -242,7 +242,7 @@ Rules for a coding agent, or a script, that drives af for someone:
 - **One review, then fix.** A review that finds defects exits non-zero by design: fix the
   Findings, run the project's Gate, and stop. Do not start another Campaign to check your fix;
   `--heavy` is for when a human asks for convergence review.
-- **Ask the doctor.** `af doctor --json` prints one `af/doctor@2` document: every check with its
+- **Ask the doctor.** `af doctor --json` prints one `af/doctor@3` document: every check with its
   status, a `fix` command where one command fixes it, and a `hint` otherwise.
 
 The whole Task loop (plan, run or `--detach`, wait, findings, diff, materialize, deliver, and
@@ -280,6 +280,13 @@ tools a Gate calls, but not `gh` or its login for a Remote Check; it does not ru
   pipelines/     pipeline definitions; af onboard writes review.toml
   workers/       Worker packages: <name>/reviewer.md (the prompt) and reviewer.toml (the manifest)
 ```
+
+For model-driven implementation Tasks, `af onboard --tasks` previews a pinned Task
+catalog, code policy, Worker packages and `[task.defaults]` without spending tokens.
+`af onboard --tasks --apply` creates review and Task authority together, or adds
+absent Task files to an existing review `.af/` and appends the defaults. It refuses an
+existing Task target or `[task]` table. Review and commit the resulting diff before
+`af task plan` can use it.
 
 Configuration merges, lowest to highest: built-in defaults, `/etc/af`, `~/.config/af`, every
 `.af/af.toml` above the repository, the repository's `.af/af.toml`, its gitignored

@@ -3207,7 +3207,7 @@ fn telemetry_tail_refuses_interior_corruption_of_a_live_segment() {
     );
     reader.join().unwrap();
     assert_eq!(status.code(), Some(1), "{stderr}");
-    // With `--json` the refusal is the `af/error@1` document on stdout.
+    // With `--json` the refusal is the `af/error@2` document on stdout.
     let rest: Vec<Value> = received
         .try_iter()
         .map(|line| serde_json::from_str(&line).unwrap())
@@ -3215,7 +3215,7 @@ fn telemetry_tail_refuses_interior_corruption_of_a_live_segment() {
     let [refusal] = rest.as_slice() else {
         panic!("only the refusal, nothing of the corrupt read: {rest:?}");
     };
-    assert_eq!(refusal["schema"], "af/error@1", "{refusal}");
+    assert_eq!(refusal["schema"], "af/error@2", "{refusal}");
     assert_eq!(refusal["exit_code"], 1, "{refusal}");
     let error = refusal["error"].as_str().unwrap();
     assert!(
@@ -3246,9 +3246,9 @@ fn telemetry_tail_of_an_unknown_run_exits_1() {
         std::io::Read::read_to_string(&mut tail.stdout.take().unwrap(), &mut stdout).unwrap();
         assert_eq!(status.code(), Some(1), "{args:?}: {stderr}");
         if args.contains(&"--json") {
-            // The refusal is the `af/error@1` document, and nothing else.
+            // The refusal is the `af/error@2` document, and nothing else.
             let refusal: Value = serde_json::from_str(stdout.trim()).unwrap();
-            assert_eq!(refusal["schema"], "af/error@1", "{refusal}");
+            assert_eq!(refusal["schema"], "af/error@2", "{refusal}");
             assert_eq!(refusal["exit_code"], 1, "{refusal}");
             assert!(
                 refusal["error"]
@@ -3372,9 +3372,9 @@ fn telemetry_tail_refuses_an_unreadable_segment_before_startup() {
         std::io::Read::read_to_string(&mut tail.stdout.take().unwrap(), &mut stdout).unwrap();
         assert_eq!(status.code(), Some(1), "{args:?}: {stderr}");
         let error = if args.contains(&"--json") {
-            // The refusal is the `af/error@1` document, and nothing else.
+            // The refusal is the `af/error@2` document, and nothing else.
             let refusal: Value = serde_json::from_str(stdout.trim()).unwrap();
-            assert_eq!(refusal["schema"], "af/error@1", "{refusal}");
+            assert_eq!(refusal["schema"], "af/error@2", "{refusal}");
             assert_eq!(refusal["exit_code"], 1, "{refusal}");
             refusal["error"].as_str().unwrap().to_string()
         } else {
@@ -3546,7 +3546,7 @@ fn telemetry_tail_refuses_a_segment_recovered_as_corrupt_underneath() {
     let [refusal] = rest.as_slice() else {
         panic!("only the refusal, nothing of the corrupt segment: {rest:?}");
     };
-    assert_eq!(refusal["schema"], "af/error@1", "{refusal}");
+    assert_eq!(refusal["schema"], "af/error@2", "{refusal}");
     assert_eq!(refusal["exit_code"], 1, "{refusal}");
     let error = refusal["error"].as_str().unwrap();
     assert!(
@@ -3641,9 +3641,9 @@ fn tail_refuses_naming(machine: &Machine, corrupt: &Path) {
         std::io::Read::read_to_string(&mut tail.stdout.take().unwrap(), &mut stdout).unwrap();
         assert_eq!(status.code(), Some(1), "{args:?}: {stderr}");
         let error = if args.contains(&"--json") {
-            // The refusal is the `af/error@1` document, and nothing else.
+            // The refusal is the `af/error@2` document, and nothing else.
             let refusal: Value = serde_json::from_str(stdout.trim()).unwrap();
-            assert_eq!(refusal["schema"], "af/error@1", "{refusal}");
+            assert_eq!(refusal["schema"], "af/error@2", "{refusal}");
             assert_eq!(refusal["exit_code"], 1, "{refusal}");
             refusal["error"].as_str().unwrap().to_string()
         } else {
