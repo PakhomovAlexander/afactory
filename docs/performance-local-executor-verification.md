@@ -680,9 +680,12 @@ an indented line; a bare `\` after a cut piece, then the next piece at column 0.
 
 - **Without the repair**, at `TMPDIR` lengths 104 and 144, all three tests failed at the
   gate's lines: `task_cli.rs:114` and `task_outcomes.rs:279`.
-- **With the repair**, the `task_outcomes::` module and the onboard test (17 tests) all
-  passed at lengths 104, 144 and 224, and with `TMPDIR` unset.
-- **Not repaired.** At lengths 144 and 224,
-  `task_outcomes::a_next_line_fits_the_terminal_and_runs_as_printed` fails because its whole
-  `next:` line is wider than the test's 250-column terminal. It passes at 104 and did not fail
-  in the gate. It is out of this repair's scope.
+- **With the repair**, the complete selection, the `task_outcomes::` module and the onboard
+  test (17 tests), passed at length 104 and with `TMPDIR` unset. It was not complete at 144
+  or 224: one of its tests failed there, as the next bullet records.
+- **With the repair**, the three targeted regressions, the three tests that failed without
+  it under the read-only copy and long `TMPDIR` above, passed at lengths 104, 144 and 224.
+- **Not repaired.** At lengths 144 and 224, the separate existing test
+  `task_outcomes::a_next_line_fits_the_terminal_and_runs_as_printed` failed because the printed
+  command is wider than the test's 250-column terminal. It passes at 104 and did not fail in
+  the gate. Its assertions were kept unchanged; it is out of this repair's scope.
