@@ -353,7 +353,7 @@ fn findings_print_each_reviewers_findings_by_severity_and_the_evaluators_verdict
     let previous = document(
         &af(&repo, &state, &["task", "report", "chain-base", "--json"]),
         0,
-        Some("task-report-v2.json"),
+        Some("task-report-v3.json"),
     );
     let recorded_check = previous["tasks"][0]["nodes"]
         .as_array()

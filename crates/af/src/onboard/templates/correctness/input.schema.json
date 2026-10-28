@@ -58,7 +58,7 @@
             "type": "string"
           },
           "artifact_type": {
-            "const": "af/TaskCheckReceipt@1"
+            "const": "af/TaskCheckReceipt@2"
           },
           "payload": {
             "type": "object"
