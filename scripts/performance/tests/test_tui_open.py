@@ -1,6 +1,8 @@
 """The PTY driver and its private registry fixture."""
 
+import contextlib
 import importlib.util
+import io
 import json
 import os
 import select
@@ -51,6 +53,10 @@ BROWSER = (
     "    paint(b'\\x1b[30;1H\\x1b[0;7mNORMAL  browser')\n"
     "elif mode == 'erased':\n"
     "    paint(b'\\x1b[30;1HNORMAL\\x1b[2J')\n"
+    "    sys.exit(0)\n"
+    "elif mode == 'erased-split':\n"
+    "    paint(b'\\x1b[30;1HNORMAL')\n"
+    "    paint(b'\\x1b[2J')\n"
     "    sys.exit(0)\n"
     "elif mode == 'stray':\n"
     "    if os.fork() == 0:\n"
@@ -281,11 +287,42 @@ class TuiOpen(unittest.TestCase):
             driver.measure(self.argv("hang"))
 
     def test_a_status_line_a_later_clear_erased_never_counts(self):
-        # The only NORMAL precedes the clear: no browser frame is on the screen.
+        # The only NORMAL precedes the clear, in one write: no browser frame is on the screen,
+        # whether the driver read the two together or apart.
         code, stdout, stderr = self.run_driver("erased")
         self.assertEqual(code, 1, stderr)
         self.assertEqual(stdout, "")
-        self.assertIn("before browser status-line frame", stderr)
+        self.assertRegex(stderr, "before browser status-line frame|frame erased before exit")
+
+    def test_a_status_line_a_clear_in_a_later_read_erased_never_counts(self):
+        # The status line and the clear that erases it are two writes, so the driver may well
+        # read them apart: it reads the terminal through the browser's exit and refuses the
+        # sample either way.
+        code, stdout, stderr = self.run_driver("erased-split")
+        self.assertEqual(code, 1, stderr)
+        self.assertEqual(stdout, "")
+        self.assertRegex(stderr, "before browser status-line frame|frame erased before exit")
+
+    def test_a_process_listing_that_fails_leaves_the_cleanup_unconfirmed(self):
+        # A `/proc` of the test's own that cannot be listed stands in for Linux's: no
+        # settlement can be confirmed, so the driver exits 3 with no document, the exit the
+        # runner keeps a sample's scratch for (`DRIVER_UNCONFIRMED_EXIT`).
+        if os.geteuid() == 0:
+            self.skipTest("root lists every directory")
+        driver = load_driver()
+        proc = os.path.join(self.root, "proc")
+        os.makedirs(os.path.join(proc, "self", "task"))
+        os.chmod(proc, 0o100)
+        self.addCleanup(os.chmod, proc, 0o700)
+        driver.PROC = proc
+        handlers = {number: signal.getsignal(number) for number in driver.SIGNALS}
+        self.addCleanup(lambda: [signal.signal(n, h) for n, h in handlers.items()])
+        stdout, stderr = io.StringIO(), io.StringIO()
+        with contextlib.redirect_stdout(stdout), contextlib.redirect_stderr(stderr):
+            code = driver.main(self.argv("paint"))
+        self.assertEqual(code, clicases.DRIVER_UNCONFIRMED_EXIT, stderr.getvalue())
+        self.assertEqual(stdout.getvalue(), "")
+        self.assertIn("the process listing failed", stderr.getvalue())
 
     def test_the_interval_ends_when_the_status_line_arrives_not_at_an_earlier_clear(self):
         # The first output is a clear and a splash; the status line follows without another
@@ -304,7 +341,10 @@ class TuiOpen(unittest.TestCase):
                 ("late clear", [(driver.CLEAR + b"splash", 5), (status, 12)], 5, 12),
                 ("one read", [(b"splash" + driver.CLEAR + status, 9)], 9, 9),
                 ("split line", [(status[:10], 3), (status[10:], 8)], 3, 8),
-                ("erased", [(status + driver.CLEAR, 4), (b"more", 6)], 4, None)):
+                ("erased", [(status + driver.CLEAR, 4), (b"more", 6)], 4, None),
+                ("erased in a later read", [(status, 11), (driver.CLEAR, 12)], 11, None),
+                ("repainted after a clear", [(status, 4), (driver.CLEAR, 6), (status, 8)],
+                 4, 8)):
             with self.subTest(name):
                 screen = driver.Screen()
                 for data, at in chunks:
@@ -350,6 +390,36 @@ class TuiOpen(unittest.TestCase):
         # Without the browser's start, what this user's started before it is suspect too.
         with self.assertRaisesRegex(driver.Unconfirmed, "process 10[46], this user's, cannot"):
             driver.proc_listed(marker, set(), None, proc)
+
+        def drop(pid):
+            for name in os.listdir(os.path.join(proc, str(pid))):
+                os.chmod(os.path.join(proc, str(pid), name), 0o600)
+            subprocess.run(["rm", "-r", os.path.join(proc, str(pid))], check=True)
+
+        # An owner or a start that cannot be read, and a listing that cannot be made, leave
+        # the cleanup unconfirmed; so does a status that names no uid.
+        drop(106)
+        process(107, b"", uid, 500, readable=False)
+        os.chmod(os.path.join(proc, "107", "stat"), 0)
+        with self.assertRaisesRegex(driver.Unconfirmed, "start of process 107"):
+            driver.proc_listed(marker, set(), 400, proc)
+        drop(107)
+        process(108, b"", uid, 500, readable=False)
+        os.chmod(os.path.join(proc, "108", "status"), 0)
+        with self.assertRaisesRegex(driver.Unconfirmed, "owner of process 108"):
+            driver.proc_listed(marker, set(), 400, proc)
+        drop(108)
+        process(109, b"", uid, 500, readable=False)
+        with open(os.path.join(proc, "109", "status"), "wb") as output:
+            output.write(b"Name:\tx\n")
+        with self.assertRaisesRegex(driver.Unconfirmed, "owner of process 109 is not named"):
+            driver.proc_listed(marker, set(), 400, proc)
+        drop(109)
+        self.assertEqual(driver.proc_listed(marker, set(), 400, proc), {101})
+        os.chmod(proc, 0o100)
+        self.addCleanup(os.chmod, proc, 0o700)
+        with self.assertRaisesRegex(driver.Unconfirmed, "the process listing failed"):
+            driver.proc_listed(marker, set(), 400, proc)
 
     def test_a_descendant_that_outlives_the_browser_is_killed_and_fails_the_sample(self):
         # The stray sleeps for 30 s holding the driver's stderr: the pipe ends within the

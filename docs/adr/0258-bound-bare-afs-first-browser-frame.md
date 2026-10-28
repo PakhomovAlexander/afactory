@@ -47,8 +47,11 @@ and a splash followed later by a status line, written without another clear, are
 The status line's arrival is the earliest instant the browser frame is shown, and it is never
 earlier than that frame's first byte, so a sample is never below the target because of the
 driver; the product writes each frame in one write, so the difference is the transfer of at
-most one frame. A status line an earlier clear erased never counts. A missing line, expired
-deadline or failed quit produces no sample metric. The driver writes canonical decimal
+most one frame. A status line a clear erased never counts, whether the clear came before it or
+after it: the driver reads the terminal through the browser's exit, a clear after the line
+that nothing repaints refuses the sample, and a line repainted after a clear is the frame, at
+its own arrival (the browser clears only on its first frame and on a resize, never on quit). A
+missing line, expired deadline or failed quit produces no sample metric. The driver writes canonical decimal
 millisecond strings so the laboratory's strict JSON reader can retain exact decimal values.
 
 The browser needs a controlling terminal, so the driver starts it as the leader of a new
@@ -65,8 +68,9 @@ same: the browser runs with a token of the run in `AF_PERF_TUI_OPEN_SESSION`, an
 session is settled every live process whose environment carries the token (`/proc` on Linux,
 `ps -E` elsewhere) is killed and fails the sample. On Linux a process of this user's whose
 environment cannot be read, one that made itself undumpable, and that started no earlier than
-the browser leaves the listing unconfirmed; another user's, or one that predates the browser,
-is not the browser's. SIGTERM, SIGINT and SIGHUP, the supervisor's cancellation, end the
+the browser leaves the listing unconfirmed, as does a `/proc` that cannot be listed or a
+process whose `status` or `stat` cannot be read; another user's, or one that predates the
+browser, is not the browser's. SIGTERM, SIGINT and SIGHUP, the supervisor's cancellation, end the
 session the same way before the driver exits with 128 plus the signal; a cancellation that
 lands once the session is already being settled stays pending until the settlement, the token
 listing included, is confirmed, and ends the sample then with the same exit. A cleanup it

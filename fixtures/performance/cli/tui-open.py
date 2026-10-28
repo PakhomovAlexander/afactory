@@ -7,7 +7,9 @@ a new session (the browser needs a controlling terminal), and prints one
 `browser_ms`, launch to the read that completes the last-row `NORMAL` status line of the screen
 after its last clear. A pseudo-terminal carries no write boundaries, so the instant the status
 line reaches the terminal is the earliest the browser frame is shown on it; a status line that
-an earlier clear erased never counts.
+a clear erased never counts, whether the clear came before it or after it: the terminal is
+read through the browser's exit, a clear after the line that nothing repaints refuses the
+sample, and a line repainted after a clear is the frame.
 
 The session is this driver's to end. The child holds a duplicate of the driver's stderr, the
 supervisor's pipe, so a process of the session that keeps it cannot outlive the driver unseen by
@@ -21,7 +23,8 @@ live process whose environment carries the token (`/proc` on Linux, `ps -E` else
 killed and fails the sample; one that also replaced its environment before `exec` is beyond
 the driver, as beyond any process-group sample. On Linux a process of this user's whose
 environment cannot be read, one that made itself undumpable, and that started no earlier than
-the browser leaves the listing unconfirmed. SIGTERM, SIGINT and SIGHUP, the supervisor's
+the browser leaves the listing unconfirmed, as does a `/proc` that cannot be listed or a
+process whose `status` or `stat` cannot be read. SIGTERM, SIGINT and SIGHUP, the supervisor's
 cancellation, end the session the same way before the driver exits; one that lands once the
 session is already being settled stays pending until that settlement is confirmed, and ends the
 sample then. A cleanup that cannot be confirmed, a listing included, exits 3, and the processes
@@ -95,18 +98,33 @@ class Exit:
         return self.done
 
 
+def gone(error):
+    """Whether `error`, from reading a process's `/proc` entry, says the process is gone."""
+    return isinstance(error, FileNotFoundError) or error.errno == errno.ESRCH
+
+
+def proc_names(proc):
+    """The process ids `proc` lists; a listing that fails leaves the cleanup unconfirmed."""
+    try:
+        return [name for name in os.listdir(proc) if name.isdigit()]
+    except OSError as error:
+        raise Unconfirmed("the process listing failed: %s" % error) from error
+
+
 def live_members(group):
     """Whether a process of `group` other than its exited, unreaped leader still runs. Linux
-    lists the group's live members; XNU refuses a signal to a group of zombies with EPERM."""
-    if os.path.isdir("/proc/self/task"):
-        for name in os.listdir("/proc"):
-            if not name.isdigit():
-                continue
+    lists the group's live members (a `stat` that cannot be read, or a `/proc` that cannot be
+    listed, leaves the cleanup unconfirmed); XNU refuses a signal to a group of zombies with
+    EPERM."""
+    if os.path.isdir(PROC + "/self/task"):
+        for name in proc_names(PROC):
             try:
-                with open("/proc/%s/stat" % name, "rb") as source:
+                with open("%s/%s/stat" % (PROC, name), "rb") as source:
                     stat = source.read()
-            except OSError:
-                continue
+            except OSError as error:
+                if gone(error):
+                    continue
+                raise Unconfirmed("process %s cannot be read: %s" % (name, error)) from error
             fields = stat[stat.rindex(b")") + 2:].split()
             if int(fields[2]) == group and fields[0] not in (b"Z", b"X", b"x"):
                 return True
@@ -136,52 +154,54 @@ def settle(group, deadline):
     return True
 
 
-def proc_started(name, proc=PROC):
+def proc_started(name, proc):
     """When process `name` under `proc` started, in clock ticks since boot, from its `stat`,
-    which is readable whatever the process did to itself; None once it is gone."""
+    which is readable whatever the process did to itself; None once it is gone. A `stat` that
+    cannot be read otherwise leaves the cleanup unconfirmed."""
     try:
         with open("%s/%s/stat" % (proc, name), "rb") as source:
             stat = source.read()
-    except OSError:
-        return None
+    except OSError as error:
+        if gone(error):
+            return None
+        raise Unconfirmed("the start of process %s cannot be read: %s" % (name, error)) from error
     return int(stat[stat.rindex(b")") + 2:].split()[19])
 
 
-def proc_owned(name, proc=PROC):
+def proc_owned(name, proc):
     """Whether process `name` under `proc` runs as this user: its `status`, readable by anyone,
     names its uids. One that is gone is nobody's; one whose status cannot be read, or names no
-    uid, is taken as this user's."""
+    uid, leaves the cleanup unconfirmed."""
     try:
         with open("%s/%s/status" % (proc, name), "rb") as source:
             status = source.read()
-    except FileNotFoundError:
-        return False
-    except OSError:
-        return True
+    except OSError as error:
+        if gone(error):
+            return False
+        raise Unconfirmed("the owner of process %s cannot be read: %s" % (name, error)) from error
     for line in status.splitlines():
         if line.startswith(b"Uid:"):
             return str(os.getuid()).encode("utf-8") in line.split()[1:]
-    return True
+    raise Unconfirmed("the owner of process %s is not named by its status" % name)
 
 
-def proc_listed(marker, exclude, born, proc=PROC):
+def proc_listed(marker, exclude, born, proc):
     """`listed` on Linux: the environments under `proc`. A process that is gone is skipped, and
     so is one whose environment another user's permissions keep, since the browser runs as
     this user, or one of this user's that started before the browser did (`born`, its start
     in clock ticks; None when unknown). One of this user's that started no earlier and whose
     environment cannot be read, as a process that made itself undumpable, may be the
-    browser's doing: the listing is unconfirmed."""
+    browser's doing: the listing is unconfirmed, as it is when `proc` cannot be listed or a
+    process's owner or start cannot be read."""
     found = set()
-    for name in os.listdir(proc):
-        if not name.isdigit() or int(name) in exclude:
+    for name in proc_names(proc):
+        if int(name) in exclude:
             continue
         try:
             with open("%s/%s/environ" % (proc, name), "rb") as source:
                 environment = source.read()
-        except FileNotFoundError:
-            continue
         except OSError as error:
-            if error.errno == errno.ESRCH or not proc_owned(name, proc):
+            if gone(error) or not proc_owned(name, proc):
                 continue
             started = proc_started(name, proc)
             if started is None or (born is not None and started < born):
@@ -202,7 +222,7 @@ def listed(token, exclude, born):
     marker = "%s=%s" % (SESSION_VARIABLE, token)
     found = set()
     if os.path.isdir(PROC + "/self/task"):
-        return proc_listed(marker.encode("utf-8"), exclude, born)
+        return proc_listed(marker.encode("utf-8"), exclude, born, PROC)
     try:
         listing = subprocess.run(["ps", "-E", "-ww", "-ax", "-o", "pid=", "-o", "command="],
                                  stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
@@ -264,15 +284,19 @@ def end(child, watch, token, deadline, born):
     return settle_listed(token, {child.pid}, CLEANUP_SECONDS, born)[1]
 
 
-def drain(master, timeout):
-    """Read and discard what the terminal holds; False once it ended."""
+def drain(master, screen, timeout):
+    """Read what the terminal holds into `screen`; False once it ended."""
     ready, _, _ = select.select([master], [], [], timeout)
     if not ready:
         return True
     try:
-        return bool(os.read(master, 65536))
+        data = os.read(master, 65536)
     except OSError:
         return False
+    if not data:
+        return False
+    screen.feed(data, time.monotonic_ns())
+    return True
 
 
 def milliseconds(nanoseconds):
@@ -283,9 +307,11 @@ def milliseconds(nanoseconds):
 class Screen:
     """What the terminal shows since its last clear, and when: `first`, the arrival of the
     first byte of any output, and `browser`, the arrival of the read that completed the status
-    line on the screen the last clear left. A status line an earlier clear erased never counts,
-    and a read that holds the splash and the frame at once gives both one instant, since
-    nothing separates them on the terminal either."""
+    line on the screen the last clear left, None while no line stands after the last clear. A
+    status line a clear erased never counts, whether the clear came before it or in a later
+    read; a line repainted after a clear is the frame, at its own arrival. A read that holds
+    the splash and the frame at once gives both one instant, since nothing separates them on
+    the terminal either."""
 
     def __init__(self):
         self.shown = b""
@@ -300,6 +326,7 @@ class Screen:
         clear = self.shown.rfind(CLEAR)
         if clear >= 0:
             self.shown = self.shown[clear + len(CLEAR):]
+            self.browser = None
         self.shown = self.shown[-SCREEN_MAX:]
         if self.browser is None and STATUS.search(self.shown):
             self.browser = observed
@@ -341,7 +368,7 @@ def measure(argv):
         os.close(slave)
         slave = -1
         if os.path.isdir(PROC + "/self/task"):
-            born = proc_started(child.pid)
+            born = proc_started(child.pid, PROC)
         screen = Screen()
         deadline = started + DEADLINE_SECONDS * 1000000000
         while screen.browser is None:
@@ -360,14 +387,17 @@ def measure(argv):
             if not data:
                 raise RuntimeError("PTY ended before browser status-line frame")
             screen.feed(data, time.monotonic_ns())
-        os.write(master, b"q")
+        try:
+            os.write(master, b"q")
+        except OSError:
+            pass  # the browser is gone already: its exit is observed below
         quit_by = time.monotonic() + QUIT_SECONDS
         open_terminal = True
         while not watch.seen():
             if time.monotonic() >= quit_by:
                 raise RuntimeError("child did not exit after q")
             if open_terminal:
-                open_terminal = drain(master, 0.02)
+                open_terminal = drain(master, screen, 0.02)
             else:
                 time.sleep(0.005)
         # The session is ending: a cancellation from here on asks for the settlement that
@@ -387,11 +417,13 @@ def measure(argv):
             if time.monotonic() >= held_by:
                 raise Unconfirmed("a process outside the browser's group still holds its "
                                   "terminal")
-            open_terminal = drain(master, 0.02)
+            open_terminal = drain(master, screen, 0.02)
         # The settlement is confirmed: a cancellation that waited for it ends the sample now.
         pending = signal.sigpending() & set(SIGNALS)
         if pending:
             raise Cancelled(int(signal.sigwait(pending)))
+        if screen.browser is None:
+            raise RuntimeError("browser status-line frame erased before exit")
         if stray or escaped:
             raise RuntimeError("a process the browser started outlived it; it was killed")
         if code != 0:

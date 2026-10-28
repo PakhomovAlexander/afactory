@@ -97,10 +97,19 @@ holds that rule. The empty instance's 24 measured samples passed, 8.8 to 29.5 ms
 
 After the run these paths changed, and nothing else: `docs/README.md`,
 `docs/adr/0258-bound-bare-afs-first-browser-frame.md`,
-`docs/design/continuous-performance.md`, `docs/performance-acceptance.md`, this directory, the
-docstrings of `scripts/performance/perflab/capability.py` and of the driver
-`fixtures/performance/cli/tui-open.py`, the test
-`scripts/performance/tests/test_tui_open.py`, and the protected-harness inventory
+`docs/design/continuous-performance.md`, `docs/performance-acceptance.md`,
+`changelog.d/perf-tui-open-target.md`, `fixtures/performance/README.md`, this directory, the
+docstring of `scripts/performance/perflab/capability.py`, the driver
+`fixtures/performance/cli/tui-open.py`, the tests `scripts/performance/tests/test_tui_open.py`,
+`test_runner.py` and `support.py`, and the protected-harness inventory
 `fixtures/performance/kernel-measure/code-policy-measures.toml` and `inventory.json`,
-re-rendered for them. No registry, setup, runner or product code and no driver statement
-changed; the tree's harness digest differs from the measured one only by those edits.
+re-rendered for them. No registry, setup, runner or product code changed. The driver did
+change after the run, in its cleanup and its reading of the terminal, not in what it
+measures: the review rounds after it made the driver find a process that left the browser's
+session by a token in its environment and fail closed on a listing it cannot confirm, hold a
+cancellation that lands during the settlement until the settlement is confirmed, keep the
+first-byte and status-line arrivals in a `Screen` that a later clear erases, and read the
+terminal through the browser's exit. The measurements above were taken with the driver as it
+was at the run (its `browser_ms` and `splash_ms` are the same two reads, taken the same
+way), so they do not measure the final driver revision; its regression coverage is the test
+module's, not this run's.
