@@ -453,3 +453,5 @@ future readers need.
   profile](0251-run-the-task-gate-on-the-fast-validation-profile.md)
 - [0252 — Keep the kernel experiment measurement out of every
   gate](0252-keep-the-kernel-experiment-measurement-out-of-every-gate.md)
+- [0253 — The default Task pipeline lives in the
+  catalog](0253-the-default-task-pipeline-lives-in-the-catalog.md)
