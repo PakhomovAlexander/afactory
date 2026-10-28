@@ -62,6 +62,29 @@ fn load_pinned_pipeline(
     })
 }
 
+/// The route of a review whose pipeline routing chooses. Routing reads the changed paths, and
+/// with no Base there are none, so `routing.unmatched = "refuse"` refuses even a review of an
+/// uncommitted change. When every pipeline a route selects is a diff pipeline, what is missing
+/// is the Base: the error is then `base_refusal`, the refusal a diff pipeline without a Base
+/// gets (#363, ADR-0259).
+fn route_or_base_refusal(
+    project: &crate::project::ProjectFile,
+    changed_paths: &[String],
+    has_base: bool,
+    load: impl Fn(&str) -> Result<PinnedPipeline, String>,
+    base_refusal: impl FnOnce() -> String,
+) -> Result<crate::project::RouteDecision, String> {
+    project.select_route(changed_paths).map_err(|error| {
+        let routes = project.route_pipeline_paths();
+        let needs_base = !has_base
+            && !routes.is_empty()
+            && routes.iter().all(|path| {
+                load(path).is_ok_and(|pipeline| pipeline.loaded.subject_kind() == SubjectKind::Diff)
+            });
+        if needs_base { base_refusal() } else { error }
+    })
+}
+
 /// The project policy under `.af/`.
 fn captured_project(
     manifest: &Manifest,
@@ -241,27 +264,28 @@ pub(super) fn resolve_plan(
         .and_then(|(_, _, change_set)| change_set.as_ref())
         .map(|change_set| change_set.changed_paths.clone())
         .unwrap_or_default();
+    let base_refusal = || {
+        let command = crate::review_next_command("plan", &["--base".into(), policy_ref.into()]);
+        crate::error_document::typed(
+            format!("diff review plan requires `--base REV`; run:\n{command}"),
+            crate::error_document::Detail::new(
+                crate::error_document::Cause::ReviewSelectorsMissing,
+            )
+            .next(command)
+            .with("repo", options.repo.display().to_string())
+            .with("selector", "--base"),
+        )
+    };
+    let load = |path: &str| load_pinned_pipeline(&policy.manifest, cas, &lockfile, &registry, path);
     let mut route = if options.pipeline_explicit {
         crate::project::RouteDecision::explicit(&requested_path)
     } else {
-        project.select_route(&changed_paths)?
+        route_or_base_refusal(&project, &changed_paths, base.is_some(), load, base_refusal)?
     };
-    let load = |path: &str| load_pinned_pipeline(&policy.manifest, cas, &lockfile, &registry, path);
     let pipeline = load(&route.pipeline_path)?;
     validate_af_project(&project_bytes, &pipeline.path)?;
     match (pipeline.loaded.subject_kind(), base.is_some()) {
-        (SubjectKind::Diff, false) => {
-            let command = crate::review_next_command("plan", &["--base".into(), policy_ref.into()]);
-            return Err(crate::error_document::typed(
-                format!("diff review plan requires `--base REV`; run:\n{command}"),
-                crate::error_document::Detail::new(
-                    crate::error_document::Cause::ReviewSelectorsMissing,
-                )
-                .next(command)
-                .with("repo", options.repo.display().to_string())
-                .with("selector", "--base"),
-            ));
-        }
+        (SubjectKind::Diff, false) => return Err(base_refusal()),
         (SubjectKind::WholeTree, true) => {
             return Err("whole-tree review plan does not accept `--base`".into());
         }
@@ -1032,28 +1056,28 @@ fn open_new(
         .as_ref()
         .map(|change_set| change_set.changed_paths.clone())
         .unwrap_or_default();
-    let mut route = if options.pipeline_explicit {
-        crate::project::RouteDecision::explicit(pipeline_path)
-    } else {
-        project.select_route(&changed_paths)?
+    let base_refusal = || {
+        let command = crate::review_next_command("run", &["--base".into(), authority_ref.into()]);
+        crate::error_document::typed(
+            format!("a new diff Campaign requires `--base REV`; run:\n{command}"),
+            crate::error_document::Detail::new(
+                crate::error_document::Cause::ReviewSelectorsMissing,
+            )
+            .next(command)
+            .with("repo", options.repo.display().to_string())
+            .with("selector", "--base"),
+        )
     };
     let load =
         |path: &str| load_pinned_pipeline(&snapshot.manifest, cas, &lockfile, &registry, path);
+    let mut route = if options.pipeline_explicit {
+        crate::project::RouteDecision::explicit(pipeline_path)
+    } else {
+        route_or_base_refusal(&project, &changed_paths, base.is_some(), load, base_refusal)?
+    };
     let pipeline = load(&route.pipeline_path)?;
     match (pipeline.loaded.subject_kind(), base.is_some()) {
-        (SubjectKind::Diff, false) => {
-            let command =
-                crate::review_next_command("run", &["--base".into(), authority_ref.into()]);
-            return Err(crate::error_document::typed(
-                format!("a new diff Campaign requires `--base REV`; run:\n{command}"),
-                crate::error_document::Detail::new(
-                    crate::error_document::Cause::ReviewSelectorsMissing,
-                )
-                .next(command)
-                .with("repo", options.repo.display().to_string())
-                .with("selector", "--base"),
-            ));
-        }
+        (SubjectKind::Diff, false) => return Err(base_refusal()),
         (SubjectKind::WholeTree, true) => {
             return Err(
                 "whole-tree review does not accept a Base; select a whole-tree pipeline with --policy-rev only"

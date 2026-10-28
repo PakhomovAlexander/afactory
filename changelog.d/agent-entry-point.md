@@ -28,4 +28,5 @@
   names `af provider detect` or the choice.
 - `af review plan --uncommitted --policy-rev REV` without `--base` is refused like `af review run`:
   `review_selectors_missing`, with the command that adds `--base REV`, instead of an internal
-  capture error.
+  capture error. Both give that refusal, instead of "no route covers the 0 changed path(s)",
+  when the project's routing refuses unmatched paths and every route is on a diff pipeline.

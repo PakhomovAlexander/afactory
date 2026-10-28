@@ -1916,6 +1916,13 @@ fn agent_setup_previews_writes_once_and_refuses_foreign_skills() {
         std::fs::read_to_string(empty.join("AGENTS.md")).unwrap(),
         snippet
     );
+    assert_the_pointer_is_four_rules_and_one_source(
+        &snippet,
+        [
+            &std::fs::read_to_string(empty.join(".claude/skills/af/SKILL.md")).unwrap(),
+            &std::fs::read_to_string(empty.join(".agents/skills/af/SKILL.md")).unwrap(),
+        ],
+    );
     // An AGENTS.md holding the earlier seven-line block gets the current one; its own text stays.
     std::fs::write(
         root.join("AGENTS.md"),
@@ -1970,11 +1977,11 @@ Run `af help agents` for the full loop.
 ";
 
 /// #363: the pointer is four rules in at most six lines of at most 100 columns, names no
-/// command but `af help agents`, and `af help agents --snippet`, the installed `AGENTS.md`
-/// block and both skills hold the same bytes.
-#[test]
-fn the_agent_pointer_is_four_rules_and_one_source() {
-    let snippet = out(&af(&["help", "agents", "--snippet"]));
+/// command but `af help agents`, and `af help agents --snippet` (`snippet`) and the block of
+/// both installed skills hold the same bytes; the caller checks that a fresh `AGENTS.md` is
+/// `snippet`. Called by `agent_setup_previews_writes_once_and_refuses_foreign_skills` with what
+/// it installed, so the pointer costs no fixture of its own.
+fn assert_the_pointer_is_four_rules_and_one_source(snippet: &str, skills: [&str; 2]) {
     let inner = snippet
         .split_once("<!-- af-agent-help:start -->\n")
         .and_then(|(_, rest)| rest.split_once("<!-- af-agent-help:end -->"))
@@ -2009,36 +2016,14 @@ fn the_agent_pointer_is_four_rules_and_one_source() {
     ] {
         assert!(!snippet.contains(removed), "{removed}:\n{snippet}");
     }
-    let temp = tempfile::tempdir().unwrap();
-    let root = temp.path();
-    assert!(
-        std::process::Command::new("git")
-            .arg("init")
-            .arg(root)
-            .output()
-            .unwrap()
-            .status
-            .success()
-    );
-    let written = af(&[
-        "setup",
-        "agents",
-        "--repo",
-        root.to_str().unwrap(),
-        "--write",
-    ]);
-    assert!(written.status.success(), "{}", err(&written));
-    let agents = std::fs::read_to_string(root.join("AGENTS.md")).unwrap();
-    assert_eq!(agents, snippet);
     let marked = |text: &str| -> String {
         let start = text.find("<!-- af-agent-help:start -->").unwrap();
         let end = text.find("<!-- af-agent-help:end -->").unwrap();
         text[start..end].to_owned()
     };
-    for skill in [".claude/skills/af/SKILL.md", ".agents/skills/af/SKILL.md"] {
-        let skill = std::fs::read_to_string(root.join(skill)).unwrap();
-        assert!(skill.contains(&snippet), "{skill}");
-        assert_eq!(marked(&skill), marked(&snippet));
+    for skill in skills {
+        assert!(skill.contains(snippet), "{skill}");
+        assert_eq!(marked(skill), marked(snippet));
     }
 }
 

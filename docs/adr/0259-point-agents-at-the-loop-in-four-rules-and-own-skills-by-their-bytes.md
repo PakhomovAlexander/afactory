@@ -140,7 +140,11 @@ caused it:
 8. **A diff plan without a Base.** `af review plan --uncommitted` without `--base` is refused
    before the worktree's Snapshot is captured, as `af review run` refuses it:
    `review_selectors_missing`, `details.selector` `--base`, and a `next_action` that adds
-   `--base` to the command as given. No capture error reaches the person.
+   `--base` to the command as given. No capture error reaches the person. Routing reads the
+   changed paths, and without a Base there are none: when `routing.unmatched = "refuse"` would
+   refuse that empty set and every pipeline a route selects is a diff pipeline, `af review plan`
+   and `af review run` give this same refusal, since the Base is what is missing. With a
+   whole-tree pipeline among the routes, or with no route, the routing refusal stands.
 
 ## Consequences
 
