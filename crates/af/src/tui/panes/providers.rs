@@ -8,9 +8,10 @@
 //! All of it runs on a thread the event loop polls and cancels, so a key is never waiting on a
 //! Provider. Each window is a bar of twenty cells in the brand's colour for how much is used,
 //! green under half, blue from half, pink from four fifths, drawn so that two bars one under
-//! the other keep a hairline between them. A Provider's `models` section is
-//! folded to its header line in the list and unfolds to one row per exact ID when the Provider
-//! is opened or `m` unfolds every section, and shows that Provider's own catalog only. The
+//! the other keep a hairline between them. The model catalogs are not on screen until asked
+//! for: one muted row at the end says `<m> to show models`, and `m` shows every listed
+//! Provider's `models` section, one row per exact ID of that Provider's own catalog, until `m`
+//! hides them again. The
 //! catalogs read are shared with the Workers pane under each Provider's id, which gives a
 //! runner's verdict once per Provider of its kind and follows the catalogs as they arrive: each
 //! hand-over advances the shared generation the Workers pane polls.
@@ -39,6 +40,9 @@ const BAR: usize = 20;
 const READING_LIMITS: &str = "limit  reading the quota windows";
 /// Row text for a login that exposes no quota window to read.
 const NO_LIMITS: &str = "limit  no quota window is reported for this login";
+/// The pane's last row while the model catalogs are off screen, and while they show.
+const MODELS_SHOW: &str = "<m> to show models";
+const MODELS_HIDE: &str = "<m> to hide models";
 
 /// What `d` says where no Provider is selected.
 pub(crate) const REMOVE_NEEDS_A_PROVIDER: &str =
@@ -139,7 +143,7 @@ pub(crate) struct ProvidersPane {
     spinner: usize,
     /// Each Provider's catalog, as the last complete discovery read it.
     catalogs: Vec<ProviderCatalog>,
-    /// `m` unfolds every Provider's `models` section in the list.
+    /// `m` shows every Provider's `models` section; off until asked.
     models_open: bool,
     shared: SharedCatalogs,
     /// The variables pointing a Provider CLI at its directory (`CLAUDE_CONFIG_DIR`,
@@ -377,7 +381,7 @@ impl Pane for ProvidersPane {
     }
 
     /// `d` fills the `:` line with `provider remove ID` for the opened Provider; nothing is
-    /// removed until the user runs that line. `m` folds or unfolds the `models` sections.
+    /// removed until the user runs that line. `m` shows or hides the `models` sections.
     fn key(&mut self, key: Key, _row: usize) -> Result<Option<Effect>, String> {
         if key == Key::Char('m') {
             self.models_open = !self.models_open;
@@ -395,7 +399,7 @@ impl Pane for ProvidersPane {
 
     fn legend(&self) -> &'static str {
         match self.selected {
-            Some(_) => "d remove  y yank id  gf registry  Tab bar  :cmd  q quit",
+            Some(_) => "m models  d remove  y yank id  gf registry  Tab bar  :cmd  q quit",
             None => "j/k move  m models  y yank id  gf registry  Tab bar  :cmd  q quit",
         }
     }
@@ -477,7 +481,7 @@ impl Pane for ProvidersPane {
     }
 }
 
-/// The catalogs a rebuild shows, and whether `m` unfolded them.
+/// The catalogs a rebuild may show, and whether `m` asked for them.
 struct Models<'a> {
     catalogs: &'a [ProviderCatalog],
     open: bool,
@@ -486,7 +490,8 @@ struct Models<'a> {
 }
 
 /// The `af provider status` table for the selected provider, or for all of them, then each
-/// provider's limit bars, note and models, and the setup line for an ambient candidate.
+/// provider's limit bars and note, the setup line for an ambient candidate, and, once `m` asked
+/// for them, each provider's models; the last row says what `m` does while a catalog was read.
 /// `reading` while a discovery or probe runs: a login whose windows it has not read yet says so.
 fn inventory_rows(
     inventory: &ProviderInventory,
@@ -509,6 +514,7 @@ fn inventory_rows(
         ids.insert(provider.id.clone());
     }
     rows.push(Row::painted(providers::status_table_header(), Paint::Title));
+    let mut any_catalog = false;
     for provider in &inventory.providers {
         if selected.is_none_or(|id| id == provider.id) {
             provider_rows(
@@ -521,11 +527,23 @@ fn inventory_rows(
             );
             let catalog = models.catalogs.iter().find(|c| c.id == provider.id);
             if let Some(catalog) = catalog {
-                // The models stand apart from the login's windows and note.
-                rows.push(Row::blank());
-                model_rows(catalog, selected.is_some() || models.open, rows);
+                any_catalog = true;
+                if models.open {
+                    // The models stand apart from the login's windows and note.
+                    rows.push(Row::blank());
+                    model_rows(catalog, rows);
+                }
             }
         }
+    }
+    if any_catalog {
+        rows.push(Row::blank());
+        let hint = if models.open {
+            MODELS_HIDE
+        } else {
+            MODELS_SHOW
+        };
+        rows.push(Row::painted(hint, Paint::Muted));
     }
 }
 
@@ -559,10 +577,10 @@ fn provider_rows(
     }
 }
 
-/// A Provider's `models` section: the header line of `af provider models`, then, unfolded, one
-/// row per exact ID (ID, display name, effort levels, aliases); a catalog that could not be read
-/// says why.
-fn model_rows(catalog: &ProviderCatalog, unfolded: bool, rows: &mut Vec<Row>) {
+/// A Provider's `models` section: the header line of `af provider models`, then one row per
+/// exact ID (ID, display name, effort levels, aliases); a catalog that could not be read says
+/// why.
+fn model_rows(catalog: &ProviderCatalog, rows: &mut Vec<Row>) {
     let report = match &catalog.outcome {
         CatalogOutcome::Listed(report) => report,
         CatalogOutcome::CliRefused(reason) | CatalogOutcome::Unavailable(reason) => {
@@ -574,14 +592,10 @@ fn model_rows(catalog: &ProviderCatalog, unfolded: bool, rows: &mut Vec<Row>) {
         }
     };
     let count = report.catalog.models.len();
-    let fold = if unfolded { "" } else { "  (m unfolds)" };
     rows.push(Row::plain(format!(
-        "models {}  {count} exact IDs{fold}",
+        "models {}  {count} exact IDs",
         report.header()
     )));
-    if !unfolded {
-        return;
-    }
     for model in &report.catalog.models {
         let aliases = if model.aliases.is_empty() {
             String::new()
@@ -948,7 +962,7 @@ pub(crate) mod tests {
     }
 
     #[test]
-    fn each_provider_shows_its_models_folded_in_the_list_and_unfolded_when_opened() {
+    fn the_models_are_off_screen_until_m_shows_them() {
         let mut catalogs = fixture_catalogs();
         catalogs.push(ProviderCatalog {
             id: "codex-work".into(),
@@ -956,36 +970,38 @@ pub(crate) mod tests {
             outcome: CatalogOutcome::Unavailable("codex app-server exited 1".into()),
         });
         let mut pane = ProvidersPane::with_inventory(with_kinds()).with_catalogs(catalogs);
-        let rows: Vec<String> = pane.rows().iter().map(Row::text).collect();
-        let claude = rows
-            .iter()
-            .position(|row| {
-                row == "models source claude list_models  version 2.1.300  freshness live  4 exact IDs  (m unfolds)"
-            })
-            .unwrap_or_else(|| panic!("{rows:#?}"));
-        // The models stand one blank row under the login's row.
-        assert_eq!(rows[claude - 1], "", "{rows:#?}");
-        assert!(rows[claude - 2].starts_with("claude-work "), "{rows:#?}");
+        let texts = |pane: &ProvidersPane| pane.rows().iter().map(Row::text).collect::<Vec<_>>();
+        // The list: no models row, one hint at the end.
+        let rows = texts(&pane);
         assert!(
-            rows.iter().any(|row| row.starts_with(
-                "models source codex app-server model/list  version 0.162.1  freshness \
-                 models_cache.json fetched_at 2026-10-15T09:58:12Z  5 exact IDs"
-            )),
-            "{rows:#?}"
-        );
-        assert!(
-            rows.contains(
-                &"models unavailable: codex app-server exited 1; the static rules apply".to_owned()
-            ),
+            !rows.iter().any(|row| row.starts_with("models ")),
             "{rows:#?}"
         );
         assert!(
             !rows.iter().any(|row| row.starts_with("  model ")),
-            "folded"
+            "{rows:#?}"
         );
-        // Opened, a Provider's section unfolds to one row per exact ID and what it proves.
+        assert_eq!(rows[rows.len() - 2], "");
+        assert_eq!(rows[rows.len() - 1], MODELS_SHOW);
+        // An opened Provider likewise.
         pane.open(Some("claude-work"));
-        let rows: Vec<String> = pane.rows().iter().map(Row::text).collect();
+        let rows = texts(&pane);
+        assert!(
+            !rows.iter().any(|row| row.starts_with("models ")),
+            "{rows:#?}"
+        );
+        assert_eq!(rows[rows.len() - 1], MODELS_SHOW);
+        // `m` shows the opened Provider's section: the header, one row per exact ID and what it
+        // proves, one blank row under the login's rows.
+        assert_eq!(pane.key(Key::Char('m'), 0), Ok(None));
+        let rows = texts(&pane);
+        let header = rows
+            .iter()
+            .position(|row| {
+                row == "models source claude list_models  version 2.1.300  freshness live  4 exact IDs"
+            })
+            .unwrap_or_else(|| panic!("{rows:#?}"));
+        assert_eq!(rows[header - 1], "", "{rows:#?}");
         let fable = rows
             .iter()
             .find(|row| row.starts_with("  model  claude-fable-5-1"))
@@ -994,22 +1010,40 @@ pub(crate) mod tests {
             assert!(fable.contains(part), "{part}: {fable}");
         }
         assert!(rows.iter().any(|row| row.contains("af provider doctor")));
-        // `m` unfolds every section in the list, and folds them again.
+        assert_eq!(rows[rows.len() - 1], MODELS_HIDE);
+        // Back in the list, every Provider's section shows, a catalog that could not be read
+        // as its reason.
         pane.open(None);
-        assert_eq!(pane.key(Key::Char('m'), 0), Ok(None));
-        let rows: Vec<String> = pane.rows().iter().map(Row::text).collect();
+        let rows = texts(&pane);
+        assert!(
+            rows.iter().any(|row| row.starts_with(
+                "models source codex app-server model/list  version 0.162.1  freshness \
+                 models_cache.json fetched_at 2026-10-15T09:58:12Z  5 exact IDs"
+            )),
+            "{rows:#?}"
+        );
         assert!(
             rows.iter()
                 .any(|row| row.starts_with("  model  gpt-6-luna") && !row.contains("ultra")),
             "{rows:#?}"
         );
-        assert_eq!(pane.key(Key::Char('m'), 0), Ok(None));
         assert!(
-            !pane
-                .rows()
-                .iter()
-                .any(|row| row.text().starts_with("  model "))
+            rows.contains(
+                &"models unavailable: codex app-server exited 1; the static rules apply".to_owned()
+            ),
+            "{rows:#?}"
         );
+        // `m` again hides them; the hint says so.
+        assert_eq!(pane.key(Key::Char('m'), 0), Ok(None));
+        let rows = texts(&pane);
+        assert!(
+            !rows.iter().any(|row| row.starts_with("  model ")),
+            "{rows:#?}"
+        );
+        assert_eq!(rows[rows.len() - 1], MODELS_SHOW);
+        // Without any catalog there is nothing to show and no hint.
+        let bare = ProvidersPane::with_inventory(with_kinds());
+        assert!(!texts(&bare).iter().any(|row| row.contains("<m>")));
     }
 
     #[test]
@@ -1083,6 +1117,7 @@ pub(crate) mod tests {
         let mut pane =
             ProvidersPane::with_inventory(inventory).with_catalogs(two_claude_catalogs());
         pane.share(shared.clone());
+        pane.models_open = true;
         let section = |pane: &mut ProvidersPane, id: &str| {
             pane.open(Some(id));
             pane.rows()

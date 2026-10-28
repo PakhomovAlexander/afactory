@@ -7,3 +7,6 @@
   under them.
 - The Claude usage probe reads the five-hour session window from the `/usage` screen as well as
   the weekly ones: `af provider status --usage` and the browser list `Claude session 5h` first.
+- The Providers pane keeps the model catalogs off screen until asked for: its last row says
+  `<m> to show models`, and `m` shows every listed Provider's `models` section (one row per exact
+  ID) until `m` hides them again.
