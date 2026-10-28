@@ -290,13 +290,19 @@ def end(child, watch, drain, token, deadline, born):
     and, whether or not the leader was reaped before, clear what left the group; whether every
     step was confirmed, the group's before `deadline` and what left it within CLEANUP_SECONDS
     of its first kill. `watch` is None when the leader's exit could not be watched (its
-    `Exit` was refused): the settlement observes it then, since the leader is a live member
-    of its group until it exits, and the reap confirms it. Every wait reads the terminal
-    (`drain`, a `Drain`): on macOS an exiting session leader's close of its terminal waits
-    until its pending output is read."""
+    `Exit` was refused), and a watch that fails here is given up the same way: the settlement
+    observes the exit then, since the leader is a live member of its group until it exits,
+    and the reap confirms it. Every wait reads the terminal (`drain`, a `Drain`): on macOS an
+    exiting session leader's close of its terminal waits until its pending output is read."""
     if child.returncode is None:
         kill_group(child.pid)
-        while watch is not None and not watch.seen():
+        while watch is not None:
+            try:
+                if watch.seen():
+                    break
+            except OSError:
+                watch = None  # the settlement observes the exit instead
+                break
             if time.monotonic() >= deadline:
                 return False
             drain.step()

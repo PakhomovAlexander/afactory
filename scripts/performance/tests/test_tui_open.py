@@ -362,18 +362,29 @@ class TuiOpen(unittest.TestCase):
         # the session is killed all the same, its group settled with the leader among the live
         # members until it exits, the leader reaped, and what left the session found by its
         # token and killed. The refusal is the ordinary failure, with no document, and nothing
-        # of the browser's is left. The refusal waits for the browser's readiness, so that the
+        # of the browser's is left. The refusal waits for the browser's readiness, within 10 s
+        # and while the browser runs (the real watcher says whether it exited), so that the
         # descendant that left its session exists when the cleanup begins; the browser paints
         # nothing before it (`escape-first`), since `tcdrain` on this platform's terminal
         # waits for a read of the driver's that comes after the watcher.
         driver = self.loaded()
         pids = []
-        fifo = self.fifo
+        fifo = os.open(self.fifo, os.O_RDONLY | os.O_NONBLOCK)
+        self.addCleanup(os.close, fifo)
 
         class Refused(driver.Exit):
             def __init__(self, pid):
-                with open(fifo, encoding="utf-8") as ready:
-                    pids.extend(int(word) for word in ready.readline().split())
+                super().__init__(pid)
+                line = b""
+                deadline = time.monotonic() + 10
+                while b"\n" not in line:
+                    if self.seen():
+                        raise RuntimeError("the browser exited before it was ready")
+                    if time.monotonic() >= deadline:
+                        raise RuntimeError("the browser was not ready within 10 s")
+                    ready, _, _ = select.select([fifo], [], [], 0.05)
+                    line += os.read(fifo, 4096) if ready else b""
+                pids.extend(int(word) for word in line.split())
                 raise OSError(errno.EMFILE, "too many open files")
 
         driver.Exit = Refused
@@ -383,6 +394,29 @@ class TuiOpen(unittest.TestCase):
         self.assertIn("too many open files", stderr)
         self.assertEqual(len(pids), 2, pids)
         browser, escaped = pids
+        self.assert_not_running(escaped)
+        self.assert_not_running(browser)
+
+    def test_a_watcher_that_fails_once_the_browser_ran_still_ends_and_clears_the_session(self):
+        # The watcher registered, and fails on every read once the browser painted its frame
+        # (its kqueue or waitid refuses): the quit wait fails, and the cleanup gives the
+        # watcher up rather than fail on it again, settles the group, reaps the leader and
+        # finds what left the session by its token. The ordinary failure, no document, and
+        # nothing of the browser's left.
+        driver = self.loaded()
+        fifo = os.open(self.fifo, os.O_RDONLY | os.O_NONBLOCK)
+        self.addCleanup(os.close, fifo)
+
+        class Failing(driver.Exit):
+            def seen(self):
+                raise OSError(errno.EIO, "the exit watcher cannot be read")
+
+        driver.Exit = Failing
+        code, stdout, stderr = self.run_main(driver, "escape")
+        self.assertEqual(code, 1, stderr)
+        self.assertEqual(stdout, "")
+        self.assertIn("the exit watcher cannot be read", stderr)
+        browser, escaped = [int(pid) for pid in os.read(fifo, 4096).split()]
         self.assert_not_running(escaped)
         self.assert_not_running(browser)
 

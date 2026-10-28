@@ -64,9 +64,9 @@ observes the child's exit without reaping it (a kqueue `NOTE_EXIT` on macOS, `wa
 still names only that group, reaps the leader only after that, and refuses the sample when a
 member outlived the browser or a process still holds its terminal. What the settlement finds
 is what counts, not a probe before it: a member born between two listings, whose parent exited
-before the first read it, is the kill's to find. A watcher the platform refuses leaves the
-session no less ended: the settlement counts the leader among the live members until it exits,
-and the reap confirms it. Every wait of the cleanup reads the terminal, the reap included: on
+before the first read it, is the kill's to find. A watcher the platform refuses, or one that
+fails once the cleanup began, leaves the session no less ended: the settlement counts the
+leader among the live members until it exits, and the reap confirms it. Every wait of the cleanup reads the terminal, the reap included: on
 macOS an exiting session leader's close of its terminal waits until its pending output is
 read, so a cleanup that only waited for the exit could wait for itself. A process of the browser's
 doing that left its group by `setsid` and closed every descriptor it inherited is found all the
