@@ -123,7 +123,7 @@ impl Cause {
                 "Review needs explicit trusted policy and Subject selectors. Use the suggested command when authority is unambiguous."
             }
             Self::ReviewBindingMissing => {
-                "A model Worker needs an explicit Provider binding. Use the suggested command only when each kind has exactly one enabled Provider."
+                "A model Worker needs an explicit Provider binding. With no enabled Provider of a Worker's kind the next action is af provider detect, with exactly one per kind it is the command that binds each, and with a choice there is none: pass --provider NODE=ID for one listed ID per Worker."
             }
             Self::Interrupted => {
                 "SIGINT or SIGTERM stopped the command. Run the next action to resume or continue the Task it was running."

@@ -452,7 +452,8 @@ future readers need.
 - [0240 — Execute performance experiments independently on a locked
   VM](0240-execute-performance-experiments-independently-on-a-locked-vm.md)
 - [0241 — Install an agent entry point from the help
-  page](0241-install-an-agent-entry-point-from-the-help-page.md)
+  page](0241-install-an-agent-entry-point-from-the-help-page.md) (superseded in part by
+  [ADR-0259](0259-point-agents-at-the-loop-in-four-rules-and-own-skills-by-their-bytes.md))
 - [0242 — Classify first-run refusals and suggest only explicit trusted review
   commands](0242-classify-first-run-refusals.md)
 - [0243 — Add pinned Task authority through additive
@@ -463,7 +464,8 @@ future readers need.
 - [0246 — Carry the Reviewer Result schema natively on the Campaign
   path](0246-carry-the-reviewer-result-schema-natively-on-the-campaign-path.md)
 - [0247 — Generate a machine-readable command catalog and ship the
-  schemas](0247-generate-a-machine-readable-command-catalog.md)
+  schemas](0247-generate-a-machine-readable-command-catalog.md) (superseded in part by
+  [ADR-0259](0259-point-agents-at-the-loop-in-four-rules-and-own-skills-by-their-bytes.md))
 - [0248 — Hand review findings to the agent that will fix
   them](0248-hand-review-findings-to-the-agent-that-will-fix-them.md)
 - [0249 — Distinguish host-denied Provider probes from incompatible
@@ -486,3 +488,5 @@ future readers need.
   it](0257-seal-the-implementers-tree-when-its-attempt-wall-ends-it.md)
 - [0258 — Task gate evidence comes from the check
   report](0258-task-gate-evidence-comes-from-the-check-report.md)
+- [0259 — Point agents at the loop in four rules and own skills by their
+  bytes](0259-point-agents-at-the-loop-in-four-rules-and-own-skills-by-their-bytes.md)

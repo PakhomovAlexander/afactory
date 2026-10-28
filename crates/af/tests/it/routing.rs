@@ -294,6 +294,59 @@ fn unmatched_and_ambiguous_routes_fail_by_policy() {
     );
 }
 
+/// #363: routing reads the changed paths, and with no Base there are none. Under
+/// `routing.unmatched = "refuse"`, with every route on a diff pipeline, a review of the
+/// uncommitted change given no `--base` gets the missing-Base refusal a diff pipeline gets:
+/// `review_selectors_missing`, selector `--base` and the command that adds it, in `plan` and
+/// `run` alike, never the refusal of zero changed paths.
+#[test]
+fn routing_without_a_base_refuses_for_the_base() {
+    let routed = Routed::new(&format!("[routing]\nunmatched = \"refuse\"\n{DOCS_ROUTE}"));
+    std::fs::write(routed.repo.join("docs/guide.md"), "# Guide\n\nchanged\n").unwrap();
+    for subcommand in ["plan", "run"] {
+        let args = [
+            "review",
+            subcommand,
+            "--repo",
+            routed.repo.to_str().unwrap(),
+            "--uncommitted",
+            "--policy-rev",
+            "HEAD",
+            "--provider",
+            "architecture=codex-main",
+            "--provider",
+            "correctness=codex-main",
+        ];
+        let refused = af(&routed.state_home(), &[&args[..], &["--json"]].concat());
+        assert_eq!(
+            refused.status.code(),
+            Some(1),
+            "{subcommand}: {}",
+            stderr(&refused)
+        );
+        let document: serde_json::Value =
+            serde_json::from_slice(&refused.stdout).unwrap_or_else(|_| {
+                panic!(
+                    "{subcommand}: not one document: {}",
+                    String::from_utf8_lossy(&refused.stdout)
+                )
+            });
+        crate::schemas::valid(&crate::schemas::validator("error-v2.json"), &document);
+        assert_eq!(document["cause"], "review_selectors_missing", "{document}");
+        assert_eq!(document["details"]["selector"], "--base", "{document}");
+        assert_eq!(
+            shell_words::split(document["next_action"].as_str().unwrap()).unwrap(),
+            [&["af"][..], &args[..], &["--base", "HEAD"]].concat(),
+            "{document}"
+        );
+        assert!(
+            !stderr(&refused).contains("no route covers"),
+            "{}",
+            stderr(&refused)
+        );
+    }
+}
+
 #[test]
 fn an_oversized_input_switches_to_the_declared_pipeline_and_explicit_is_never_overridden() {
     let routed = Routed::new(&format!("[routing]\noversized = \"docs\"\n{DOCS_ROUTE}"));

@@ -7,13 +7,11 @@ with `af setup agents`; `af setup agents --write` installs the block and the two
 
 <!-- af-agent-snippet:start -->
 <!-- af-agent-help:start -->
-For repository work with af, run `af help agents` first.
-Read `af help json`, `af help exit-codes`, and `af help task-file` for machine contracts.
-Start with `af provider status --json` and `af onboard` to inspect readiness.
-Plan a Task with `af task plan --file TASK_FILE --json` before running it.
-Follow `state.next_action` in each JSON result; do not guess a next command.
-Use `af task findings TASK_ID --json` and `af task diff TASK_ID --json` for evidence.
-Never add `--login` inside an agent session; ask the person to log in privately.
+For work with af in this repository, run `af help agents` first: it is the whole loop
+(plan, run, status, findings, diff, deliver, report).
+Add `--json` to each command: it then prints one versioned document.
+Branch on `state.outcome` and run `state.next_action`; never guess a next command.
+Never add `--login` in an agent session: a login is the person's and is done privately.
 <!-- af-agent-help:end -->
 <!-- af-agent-snippet:end -->
 
@@ -57,6 +55,20 @@ Attempt. A Snapshot is an exact tree of files the Task recorded: its source, and
 its implementer produced. The Store is the directory that keeps all of it (`--state`, or a
 default per checkout). `af help task-states` lists every state a Task can be in.
 
+Start at step 1, with no readiness check first. A refusal under `--json` names its fix in
+`next_action` when one command can fix it; `af provider status`, `af provider detect`,
+`af doctor` and `af onboard` are for when a refusal points there or the person asks. Read the
+references when a document, an exit code, a Task file, a state or a refusal needs them, not as
+steps before work: `af help json`, `af help exit-codes`, `af help task-file`,
+`af help task-states` and `af help errors CAUSE`.
+
+A review outside a Task starts the same way: `af review plan --json` previews it token-free,
+and when selectors or Provider bindings are missing, its refusal's `next_action` names the next
+command when one command fixes it, and a refusal for missing bindings carries in `details.plan`
+what the review would run. When af finds the default branch, the selectors refusal names the
+command with the selectors af would choose, even while reviewers still need a Provider: the
+refusal of that command then names how to bind them.
+
 ## Running af from inside an agent
 
 An agent's host sandbox may deny a CLI probe, such as `codex app-server` before it answers
@@ -73,9 +85,14 @@ the command definitions the binary parses: its usage, subcommands and arguments,
 runnable command its `effects`: whether it may charge tokens (`tokens`, `charges_when`), the
 state it may write (`store`, `files`, `machine`, `remote`) and what it needs from a person
 (`login`, `approval`, `terminal`), each with the flag that turns it on. `af help task run --json`
-prints one command. Read a command's `effects` before you run it for the first time: one with
-`tokens` `free`, no `writes` and no `human` only reads. `af schema show ID` prints the schema of
-any document `af help json` names, and `af schema show` lists the IDs.
+prints one command. A command this page describes, or one a `next_action` names, needs no such
+lookup first. Before you run any other command for the first time, read its `effects`: one with
+`tokens` `free`, no `writes` and no `human` only reads. Every page is a document too:
+`af help agents --json` prints this page as one `af/help-topic@1` document whose `text` is the
+page `af help agents` prints below its title line, and so does every other topic and
+`af help errors CAUSE` with `--json` added; a word that is also a command, such as `config`,
+prints the command's catalog. `af schema show ID` prints the schema of any document
+`af help json` names, and `af schema show` lists the IDs.
 
 ## 1. Plan
 

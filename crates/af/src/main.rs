@@ -1203,7 +1203,10 @@ fn review_next_command(subcommand: &str, extra: &[String]) -> String {
 }
 
 /// Local Git metadata and isolated captures. Never consult the candidate's `.af/` to choose
-/// authority.
+/// authority. When the default branch is found and the selectors af would choose from it
+/// resolve, the refusal names the command with them, and with `--provider NODE=ID` only when
+/// every unbound model Worker has exactly one enabled candidate; otherwise it says why it names
+/// none, and only a default branch it cannot find leaves the policy revision to the person.
 fn review_selector_refusal(options: &Options, subcommand: &str) -> Result<(), String> {
     if options.policy_rev.is_some()
         || subcommand == "run"
@@ -1274,97 +1277,148 @@ fn review_selector_refusal(options: &Options, subcommand: &str) -> Result<(), St
             })
             .map(|commit| (name, commit))
         });
+    // The selectors af would choose from the default branch, then the bindings: each part on
+    // its own, so a binding that remains open never hides the selectors (#363, ADR-0259).
     let mut candidate_details = serde_json::Map::new();
-    let next = chosen.as_ref().and_then(|(branch, commit)| {
-        let on_default = current.as_deref() == Some(branch.as_str());
-        let scratch = tempfile::tempdir().ok()?;
-        let cas = Cas::open(scratch.path().join("cas")).ok()?;
-        let git_home = scratch.path().join("git-home");
-        std::fs::create_dir_all(&git_home).ok()?;
-        let repo = Repo::open(&options.repo, &git_home);
-        let policy = if on_default {
-            "HEAD".to_owned()
-        } else {
-            commit.clone()
-        };
-        let mut flags = vec!["--policy-rev".into(), policy.clone()];
-        if options.base.is_none() {
-            flags.extend(["--base".to_owned(), policy.clone()]);
-        }
-        let mut uncommitted = options.uncommitted;
-        let mut candidate = options.candidate.clone();
-        if on_default {
-            // Capture reads worktree bytes directly. Git sees only isolated plumbing, so a
-            // candidate-selected clean filter cannot run before review has a sandbox.
-            let capture = review_source_git::Capture::new(&repo, &cas);
-            let dirty = capture
-                .committed("HEAD")
-                .and_then(|head| {
-                    capture
-                        .dirty()
-                        .map(|worktree| head.content_digest != worktree.content_digest)
-                })
-                .unwrap_or(false);
-            if !dirty && candidate.is_none() && !uncommitted {
-                return None;
-            }
-            if candidate.is_none() && !uncommitted {
-                flags.push("--uncommitted".into());
-                uncommitted = true;
-            }
-        } else if candidate.is_none() && !uncommitted {
-            flags.extend(["--candidate".to_owned(), "HEAD".to_owned()]);
-            candidate = Some("HEAD".to_owned());
-        }
-        let mut selected = options.clone();
-        selected.campaign = None;
-        selected.restart_round = false;
-        selected.policy_rev = Some(policy.clone());
-        selected.base = options.base.clone().or(Some(policy));
-        selected.candidate = candidate;
-        selected.uncommitted = uncommitted;
-        let resolved = authority::resolve_plan(&selected, &cas, &repo).ok()?;
-        let registered = providers::registered().ok()?.0;
-        let mut unique = true;
-        for (node, kind) in authority::model_workers(&resolved.loaded) {
-            if selected.provider_bindings.contains_key(&node) {
-                continue;
-            }
-            let ids: Vec<String> = registered
-                .iter()
-                .filter(|(id, registered_kind)| {
-                    *registered_kind == kind && providers::availability::check_id(id).is_ok()
-                })
-                .map(|(id, _)| id.clone())
-                .collect();
-            if ids.len() == 1 {
-                flags.extend(["--provider".to_owned(), format!("{node}={}", ids[0])]);
+    let mut registry_unread = None;
+    let suggestion = match chosen.as_ref() {
+        None => Err(None),
+        Some((branch, commit)) => (|| -> Result<(String, bool), Option<String>> {
+            let unresolved = |reason: String| Err(Some(reason));
+            let on_default = current.as_deref() == Some(branch.as_str());
+            let scratch = tempfile::tempdir().map_err(|error| Some(error.to_string()))?;
+            let cas =
+                Cas::open(scratch.path().join("cas")).map_err(|error| Some(error.to_string()))?;
+            let git_home = scratch.path().join("git-home");
+            std::fs::create_dir_all(&git_home).map_err(|error| Some(error.to_string()))?;
+            let repo = Repo::open(&options.repo, &git_home);
+            let policy = if on_default {
+                "HEAD".to_owned()
             } else {
-                unique = false;
+                commit.clone()
+            };
+            let mut flags = vec!["--policy-rev".into(), policy.clone()];
+            if options.base.is_none() {
+                flags.extend(["--base".to_owned(), policy.clone()]);
             }
-            candidate_details.insert(node, serde_json::json!(ids));
-        }
-        unique
-            .then(|| review_next_command(subcommand, &flags))
-            .filter(|command| command.len() <= 4095 && !command.chars().any(char::is_control))
-    });
-    let message = if let Some(command) = &next {
-        format!(
-            "af review {subcommand} needs --policy-rev REV and an explicit Subject; run:\n{command}"
-        )
-    } else {
-        let candidates = if candidate_details.is_empty() {
-            String::new()
-        } else {
-            format!(
-                "; Provider candidates: {}",
-                serde_json::Value::Object(candidate_details.clone())
-            )
-        };
-        format!(
-            "af review {subcommand} needs --policy-rev REV; the trusted policy revision must be chosen when the default branch cannot be determined, and Provider bindings must be chosen when ambiguous{candidates}"
-        )
+            let mut uncommitted = options.uncommitted;
+            let mut candidate = options.candidate.clone();
+            if on_default {
+                // Capture reads worktree bytes directly. Git sees only isolated plumbing, so a
+                // candidate-selected clean filter cannot run before review has a sandbox.
+                let capture = review_source_git::Capture::new(&repo, &cas);
+                let dirty = capture
+                    .committed("HEAD")
+                    .and_then(|head| {
+                        capture
+                            .dirty()
+                            .map(|worktree| head.content_digest != worktree.content_digest)
+                    })
+                    .unwrap_or(false);
+                if !dirty && candidate.is_none() && !uncommitted {
+                    return unresolved(format!(
+                        "HEAD is the default branch {} and the worktree has no uncommitted \
+                         change, so there is no change to review; change files and review them \
+                         with --uncommitted, or name other revisions with --base REV and \
+                         --candidate REV",
+                        terminal_text(branch)
+                    ));
+                }
+                if candidate.is_none() && !uncommitted {
+                    flags.push("--uncommitted".into());
+                    uncommitted = true;
+                }
+            } else if candidate.is_none() && !uncommitted {
+                flags.extend(["--candidate".to_owned(), "HEAD".to_owned()]);
+                candidate = Some("HEAD".to_owned());
+            }
+            let mut selected = options.clone();
+            selected.campaign = None;
+            selected.restart_round = false;
+            selected.policy_rev = Some(policy.clone());
+            selected.base = options.base.clone().or(Some(policy));
+            selected.candidate = candidate;
+            selected.uncommitted = uncommitted;
+            let resolved = match authority::resolve_plan(&selected, &cas, &repo) {
+                Ok(resolved) => resolved,
+                Err(error) => {
+                    return unresolved(format!(
+                        "the selectors af would choose from the default branch {}, {}, do not \
+                         resolve: {error}",
+                        terminal_text(branch),
+                        terminal_text(&shell_words::join(&flags))
+                    ));
+                }
+            };
+            // `--provider NODE=ID` only when every unbound model Worker has exactly one enabled
+            // candidate; otherwise the command's own `review_binding_missing` names the next step.
+            let registered = match providers::registered() {
+                Ok((registered, _)) => Some(registered),
+                Err(error) => {
+                    registry_unread = Some(error);
+                    None
+                }
+            };
+            let mut bindings = Vec::new();
+            let mut unique = true;
+            for (node, kind) in authority::model_workers(&resolved.loaded) {
+                if selected.provider_bindings.contains_key(&node) {
+                    continue;
+                }
+                let Some(registered) = &registered else {
+                    unique = false;
+                    continue;
+                };
+                let ids = binding_candidates(registered, &kind);
+                if let [id] = ids.as_slice() {
+                    bindings.extend(["--provider".to_owned(), format!("{node}={id}")]);
+                } else {
+                    unique = false;
+                }
+                candidate_details.insert(node, serde_json::json!(ids));
+            }
+            if unique {
+                flags.extend(bindings);
+            }
+            let command = review_next_command(subcommand, &flags);
+            if command.len() > 4095 || command.chars().any(char::is_control) {
+                return unresolved(
+                    "the command af would suggest is not one line a person can paste".to_owned(),
+                );
+            }
+            Ok((command, unique))
+        })(),
     };
+    let message = match &suggestion {
+        Ok((command, true)) => format!(
+            "af review {subcommand} needs --policy-rev REV and an explicit Subject; run:\n{command}"
+        ),
+        Ok((command, false)) => {
+            let open = match &registry_unread {
+                Some(error) => format!("the Provider registry cannot be read ({error})"),
+                None => format!(
+                    "Provider candidates: {}",
+                    candidate_words(&candidate_details)
+                ),
+            };
+            format!(
+                "af review {subcommand} needs --policy-rev REV and an explicit Subject; this \
+                 command chooses them, and its refusal then names how to bind the reviewers that \
+                 still need a Provider ({open}); run:\n{command}"
+            )
+        }
+        Err(Some(reason)) => {
+            format!(
+                "af review {subcommand} needs --policy-rev REV and an explicit Subject; {reason}"
+            )
+        }
+        Err(None) => format!(
+            "af review {subcommand} needs --policy-rev REV; the default branch cannot be \
+             determined (none of origin/HEAD, init.defaultBranch, main and master names a branch \
+             with a commit), so the trusted policy revision must be chosen"
+        ),
+    };
+    let next = suggestion.ok().map(|(command, _)| command);
     let mut detail = error_document::Detail::new(error_document::Cause::ReviewSelectorsMissing)
         .with("repo", options.repo.display().to_string())
         .with("selector", "--policy-rev");
@@ -1377,16 +1431,66 @@ fn review_selector_refusal(options: &Options, subcommand: &str) -> Result<(), St
     Err(error_document::typed(message, detail))
 }
 
+/// The enabled Providers of `kind` this machine registers: what a binding of a model Worker of
+/// that kind may name (ADR-0242).
+fn binding_candidates(registered: &[(String, &'static str)], kind: &str) -> Vec<String> {
+    registered
+        .iter()
+        .filter(|(id, registered_kind)| {
+            *registered_kind == kind && providers::availability::check_id(id).is_ok()
+        })
+        .map(|(id, _)| id.clone())
+        .collect()
+}
+
+/// A node-to-candidates map in words, `NODE: ID, ID; NODE: none registered`: a refusal's
+/// sentence never prints a map as Rust debug output or as JSON (ADR-0259).
+fn candidate_words(candidates: &serde_json::Map<String, serde_json::Value>) -> String {
+    candidates
+        .iter()
+        .map(|(node, ids)| {
+            let ids: Vec<&str> = ids
+                .as_array()
+                .into_iter()
+                .flatten()
+                .filter_map(serde_json::Value::as_str)
+                .collect();
+            if ids.is_empty() {
+                format!("{node}: none registered")
+            } else {
+                format!("{node}: {}", ids.join(", "))
+            }
+        })
+        .collect::<Vec<_>>()
+        .join("; ")
+}
+
+/// `a`, `a and b`, `a, b and c`.
+fn and_list(items: &[&str]) -> String {
+    match items {
+        [] => String::new(),
+        [one] => (*one).to_owned(),
+        [rest @ .., last] => format!("{} and {last}", rest.join(", ")),
+    }
+}
+
+/// The `review_binding_missing` refusal when a model Worker has no `--provider NODE=ID`
+/// (ADR-0242, ADR-0259): with no enabled Provider of a Worker's kind, `af provider detect` is
+/// next; with exactly one per kind, the whole command with each binding; with a choice, no
+/// command and the choices in words. `plan` is the token-free plan `af review plan` computed,
+/// carried whole in `details.plan`; `af review run` passes none.
 fn review_binding_refusal(
     options: &Options,
     workers: &[(String, String)],
     subcommand: &str,
+    plan: Option<&serde_json::Value>,
 ) -> Result<(), String> {
     let registered = providers::registered()
         .map(|(ids, _)| ids)
         .unwrap_or_default();
     let mut missing = Vec::new();
     let mut candidates = serde_json::Map::new();
+    let mut unregistered: Vec<(&str, Vec<&str>)> = Vec::new();
     let mut flags = Vec::new();
     let mut unique = true;
     for (node, kind) in workers {
@@ -1394,40 +1498,80 @@ fn review_binding_refusal(
             continue;
         }
         missing.push(node.clone());
-        let ids: Vec<String> = registered
-            .iter()
-            .filter(|(id, registered_kind)| {
-                *registered_kind == kind && providers::availability::check_id(id).is_ok()
-            })
-            .map(|(id, _)| id.clone())
-            .collect();
-        if ids.len() == 1 {
-            flags.extend(["--provider".to_owned(), format!("{node}={}", ids[0])]);
-        } else {
-            unique = false;
+        let ids = binding_candidates(&registered, kind);
+        match ids.as_slice() {
+            [id] => flags.extend(["--provider".to_owned(), format!("{node}={id}")]),
+            [] => {
+                unique = false;
+                match unregistered.iter_mut().find(|(seen, _)| seen == kind) {
+                    Some((_, nodes)) => nodes.push(node),
+                    None => unregistered.push((kind, vec![node])),
+                }
+            }
+            _ => unique = false,
         }
         candidates.insert(node.clone(), serde_json::json!(ids));
     }
     if missing.is_empty() {
         return Ok(());
     }
-    let next = unique
-        .then(|| review_next_command(subcommand, &flags))
-        .filter(|command| command.len() <= 4095 && !command.chars().any(char::is_control));
-    let message = match &next {
-        Some(command) => format!(
-            "model Workers {} need explicit Provider bindings; run:\n{command}",
-            missing.join(", ")
-        ),
-        None => format!(
-            "model Workers {} need explicit Provider bindings; choose one enabled Provider per Worker from {:?}, then pass --provider NODE=ID",
-            missing.join(", "),
-            candidates
-        ),
+    let head = format!(
+        "model Workers {} need explicit Provider bindings",
+        missing.join(", ")
+    );
+    let (message, next) = if !unregistered.is_empty() {
+        let none = unregistered
+            .iter()
+            .map(|(kind, nodes)| {
+                format!("no {kind} Provider is registered for {}", and_list(nodes))
+            })
+            .collect::<Vec<_>>()
+            .join("; ");
+        let setup = unregistered
+            .iter()
+            .map(|(kind, _)| format!("af provider setup ID --kind {kind}"))
+            .collect::<Vec<_>>()
+            .join(" or ");
+        let mut chosen = candidates.clone();
+        chosen.retain(|_, ids| ids.as_array().is_some_and(|ids| !ids.is_empty()));
+        let choices = if chosen.is_empty() {
+            String::new()
+        } else {
+            format!(
+                " (registered choices for the others: {})",
+                candidate_words(&chosen)
+            )
+        };
+        (
+            format!(
+                "{head}: {none}{choices}. Register one with af provider detect --apply, or with \
+                 {setup} once the person has logged in privately, then rerun this command; to see \
+                 the logins this machine has, run:\naf provider detect"
+            ),
+            Some("af provider detect".to_owned()),
+        )
+    } else {
+        let next = unique
+            .then(|| review_next_command(subcommand, &flags))
+            .filter(|command| command.len() <= 4095 && !command.chars().any(char::is_control));
+        let message = match &next {
+            Some(command) => format!("{head}; run:\n{command}"),
+            None => format!(
+                "{head}; choose one enabled Provider per Worker ({}), then pass --provider NODE=ID",
+                candidate_words(&candidates)
+            ),
+        };
+        (message, next)
     };
     let mut detail = error_document::Detail::new(error_document::Cause::ReviewBindingMissing)
         .with("missing", serde_json::json!(missing))
         .with("candidates", serde_json::Value::Object(candidates));
+    if let Some(plan) = plan {
+        // The plan as the success path prints it, its next command the refusal's.
+        let mut plan = plan.clone();
+        plan["next_action"] = serde_json::json!(next);
+        detail = detail.with("plan", plan);
+    }
     if let Some(command) = next {
         detail = detail.next(command);
     }
@@ -1452,16 +1596,17 @@ fn help_command(words: &[String], snippet: bool, json: bool) -> Result<i32, Stri
         println!("\n{}", topics::listing());
         return Ok(0);
     }
-    if words.first().is_some_and(|word| word == "errors") && words.len() == 2 {
-        println!("{}", error_document::explain(Some(&words[1]))?);
-        return Ok(0);
-    }
-    if words.len() == 1
-        && let Some((topic, about, text)) = topics::find(&words[0])
-    {
-        let body = topics::page(topic, text);
-        println!("af help {topic} — {about}\n\n{body}");
-        return Ok(0);
+    match topics::help_page(words) {
+        Some(Ok(page)) => {
+            println!("{}", page.text_form());
+            return Ok(0);
+        }
+        // `errors` and no known cause name no page: usage, as an unknown topic is.
+        Some(Err(error)) => {
+            eprintln!("af help: {}", terminal_text(&error));
+            return Ok(2);
+        }
+        None => {}
     }
     let mut current = &mut root;
     for word in words {
@@ -1489,23 +1634,39 @@ fn help_command(words: &[String], snippet: bool, json: bool) -> Result<i32, Stri
     Ok(0)
 }
 
-/// `af help [COMMAND...] --json`: the command catalog (ADR-0247), or for a path that names no
-/// command one `af/error@2` document with the usage exit code the text form also exits with.
+/// `af help [WORDS...] --json`: the command catalog of the command the words name (ADR-0247);
+/// for words that name no command but a page the text form prints, a topic or `errors CAUSE`,
+/// that page as one `af/help-topic@1` document (ADR-0259); for words that name neither, one
+/// `af/error@2` document with the usage exit code the text form also exits with.
 fn help_catalog(words: &[String]) -> Result<i32, String> {
-    match command_catalog::document(words) {
-        Ok(document) => {
-            println!(
-                "{}",
-                serde_json::to_string_pretty(&document).map_err(|error| error.to_string())?
-            );
-            Ok(0)
-        }
-        Err(error) => {
-            println!("{}", error_document::document("af help", &error, 2, None));
-            eprintln!("af help: {error}");
-            Ok(2)
-        }
-    }
+    let document = match command_catalog::document(words) {
+        Ok(document) => document,
+        Err(_) => match topics::help_page(words) {
+            Some(Ok(page)) => page.document(),
+            Some(Err(error)) => return Ok(help_refusal(&error)),
+            None => {
+                return Ok(help_refusal(&format!(
+                    "no command or help page named {}; run af help for every page, or af help \
+                     --json for every command",
+                    words.join(" ")
+                )));
+            }
+        },
+    };
+    println!(
+        "{}",
+        serde_json::to_string_pretty(&document).map_err(|error| error.to_string())?
+    );
+    Ok(0)
+}
+
+/// `af help WORDS --json` for words that name no command and no page, `errors` and an unknown
+/// cause included: one `af/error@2` document and its sentence on stderr, exit 2 (usage).
+fn help_refusal(error: &str) -> i32 {
+    let error = terminal_text(error);
+    println!("{}", error_document::document("af help", &error, 2, None));
+    eprintln!("af help: {error}");
+    2
 }
 
 fn main() {
@@ -2804,7 +2965,16 @@ fn print_plan(options: &Options, long: bool) -> Result<(), String> {
             )
         })
         .collect();
-    review_binding_refusal(options, &workers, "plan")?;
+    // A missing binding refuses the plan, and the refusal carries what the plan computed: under
+    // --json the document in `details.plan` and the `model` lines on stderr, in text the plan's
+    // lines before the refusal's sentence (ADR-0259).
+    let refusal = review_binding_refusal(options, &workers, "plan", Some(&plan)).err();
+    if let Some(refusal) = refusal.as_ref().filter(|_| options.json) {
+        for line in &models {
+            eprintln!("{}", terminal_text(line));
+        }
+        return Err(refusal.clone());
+    }
     let empty = plan["subject"]["empty"].as_bool() == Some(true);
     let unfit = plan["pipeline"]["inputs_fit"].as_bool() == Some(false);
     let missing = missing_bindings(&plan);
@@ -2855,7 +3025,7 @@ fn print_plan(options: &Options, long: bool) -> Result<(), String> {
         plan_line!("ids      abbreviated; --long or --json shows full digests");
     }
     for provider in plan["providers"].as_array().into_iter().flatten() {
-        if provider["required"] == true {
+        if provider["required"] == true && provider["binding"].is_string() {
             plan_line!(
                 "binding  {} => {}",
                 terminal_text(provider["node"].as_str().unwrap_or("?")),
@@ -2974,6 +3144,17 @@ fn print_plan(options: &Options, long: bool) -> Result<(), String> {
                 .unwrap_or(0)
         );
     }
+    if refusal.is_some() {
+        // A refused plan prints no next command, so its first screen has room for this line.
+        let convergence = &plan["pipeline"]["convergence"];
+        plan_line!(
+            "converge {}: {} clean Round; {} Round maximum; {} findings block",
+            terminal_text(convergence["mode"].as_str().unwrap_or("?")),
+            convergence["clean_rounds"].as_u64().unwrap_or(0),
+            convergence["max_rounds"].as_u64().unwrap_or(0),
+            terminal_text(convergence["gate"].as_str().unwrap_or("?"))
+        );
+    }
     if let Some(reservations) = plan["pipeline"]["reservations"]
         .as_array()
         .filter(|reservations| !reservations.is_empty())
@@ -3031,17 +3212,18 @@ fn print_plan(options: &Options, long: bool) -> Result<(), String> {
             ),
             Some(_) => {}
             None if provider["required"] == true => {
-                let fix = match missing
+                let ids = missing
                     .iter()
                     .find(|(missing, _)| missing == node)
-                    .and_then(|(_, id)| id.as_deref())
-                {
-                    Some(id) => format!("--provider {node}={id}"),
-                    None => format!(
-                        "no {kind} Provider is registered: `af provider status` lists what this \
-                         machine has, and `af provider setup {kind}-main --kind {kind} --login` \
-                         registers one"
+                    .map(|(_, ids)| ids.as_slice())
+                    .unwrap_or_default();
+                let fix = match ids {
+                    [id] => format!("--provider {node}={id}"),
+                    [] => format!(
+                        "no {kind} Provider is registered: `af provider detect --apply` registers \
+                         a login this machine has"
                     ),
+                    ids => format!("choose one of {} with --provider {node}=ID", ids.join(", ")),
                 };
                 plan_line!(
                     "provider {} -> MISSING; fix: {}",
@@ -3067,6 +3249,10 @@ fn print_plan(options: &Options, long: bool) -> Result<(), String> {
         );
     } else {
         plan_line!("effects  no state, Gates, Provider calls, Workers, or token spend");
+    }
+    if let Some(refusal) = refusal {
+        // The refusal's sentence follows on stderr, its last line the next command.
+        return Err(refusal);
     }
     // What to do, then the one command, whole: continued between its arguments when it is
     // wider than the terminal, so it still runs as copied.
@@ -3116,9 +3302,9 @@ fn wrap_plan_line(line: &str) -> String {
     human::wrap(line, width, column)
 }
 
-/// The model Workers of `plan` without a Provider binding, each with a registered Provider of
-/// its kind when this machine has one.
-fn missing_bindings(plan: &serde_json::Value) -> Vec<(String, Option<String>)> {
+/// The model Workers of `plan` without a Provider binding, each with the enabled Providers of
+/// its kind this machine registers.
+fn missing_bindings(plan: &serde_json::Value) -> Vec<(String, Vec<String>)> {
     let registered = providers::registered()
         .map(|(ids, _)| ids)
         .unwrap_or_default();
@@ -3128,14 +3314,9 @@ fn missing_bindings(plan: &serde_json::Value) -> Vec<(String, Option<String>)> {
         .flatten()
         .filter(|provider| provider["binding"].is_null() && provider["required"] == true)
         .map(|provider| {
-            let kind = provider["runner"].as_str().unwrap_or("?");
-            let candidate = registered
-                .iter()
-                .find(|(_, registered_kind)| *registered_kind == kind)
-                .map(|(id, _)| id.clone());
             (
                 provider["node"].as_str().unwrap_or("?").to_owned(),
-                candidate,
+                binding_candidates(&registered, provider["runner"].as_str().unwrap_or("?")),
             )
         })
         .collect()
@@ -3150,7 +3331,7 @@ struct NextStep {
 
 /// What `af review plan` tells a person to do next: the exact `af review run` command when the
 /// plan is what run admits, else the first thing that keeps it from running.
-fn plan_next_step(empty: bool, unfit: bool, missing: &[(String, Option<String>)]) -> NextStep {
+fn plan_next_step(empty: bool, unfit: bool, missing: &[(String, Vec<String>)]) -> NextStep {
     let words: Vec<String> = std::env::args().skip(1).collect();
     let rerun = |subcommand: &str, extra: &[String]| {
         let mut command = vec!["af".to_string()];
@@ -3186,15 +3367,10 @@ fn plan_next_step(empty: bool, unfit: bool, missing: &[(String, Option<String>)]
         };
     }
     if !missing.is_empty() {
-        if missing.iter().all(|(_, id)| id.is_some()) {
+        if missing.iter().all(|(_, ids)| ids.len() == 1) {
             let flags: Vec<String> = missing
                 .iter()
-                .flat_map(|(node, id)| {
-                    [
-                        "--provider".to_string(),
-                        format!("{node}={}", id.as_deref().unwrap_or_default()),
-                    ]
-                })
+                .flat_map(|(node, ids)| ["--provider".to_string(), format!("{node}={}", ids[0])])
                 .collect();
             return NextStep {
                 prose: None,
