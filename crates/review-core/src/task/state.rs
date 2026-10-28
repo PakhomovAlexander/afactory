@@ -436,6 +436,103 @@ impl TaskStateV1 {
     }
 }
 
+/// What a Task waits for, as `af task list --attention` and the browser's Tasks pane group it:
+/// a pure reading of its [`TaskStateV1`] (phase, outcome, cause and whether it names a next
+/// command), never recorded. Every state is in exactly one group; the first five need a person,
+/// [`TaskAttentionV1::Running`] and [`TaskAttentionV1::Nothing`] do not.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum TaskAttentionV1 {
+    /// A plan waits for `af task run --confirm-plan`, or the Task waits for a plan review,
+    /// resources, input or a decision.
+    Approval,
+    /// A required check of the gate failed or could not run.
+    GateFailed,
+    /// The review or the evaluator asked for changes.
+    Findings,
+    /// Verified, with a result `af task deliver` has not delivered yet.
+    Deliver,
+    /// It stopped on a Provider, an interrupt, a limit or its wall clock.
+    Stopped,
+    /// A writer runs it now; it names no command until it settles.
+    Running,
+    /// Nothing to run: delivered, verified with nothing to deliver, or collected.
+    Nothing,
+}
+
+impl TaskAttentionV1 {
+    /// Every group, in the order `af task list --attention` prints them.
+    pub const ALL: [Self; 7] = [
+        Self::Approval,
+        Self::GateFailed,
+        Self::Findings,
+        Self::Deliver,
+        Self::Stopped,
+        Self::Running,
+        Self::Nothing,
+    ];
+
+    /// The group a Task in `state` belongs to. A collected Task names no command and needs
+    /// nothing, whatever outcome its tombstone retained.
+    pub fn of(state: &TaskStateV1) -> Self {
+        if state.cause == Some(TaskCauseV1::Collected) {
+            return Self::Nothing;
+        }
+        match (state.phase, state.outcome) {
+            (TaskStatePhaseV1::Running, _) => Self::Running,
+            (TaskStatePhaseV1::Planned | TaskStatePhaseV1::Waiting, _) => Self::Approval,
+            (_, Some(TaskOutcomeV1::Verified)) if state.next_action.is_some() => Self::Deliver,
+            (_, Some(TaskOutcomeV1::Verified)) => Self::Nothing,
+            (_, Some(TaskOutcomeV1::GateFailed)) => Self::GateFailed,
+            (_, Some(TaskOutcomeV1::ChangesRequested)) => Self::Findings,
+            (_, _) => Self::Stopped,
+        }
+    }
+
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Approval => "approval",
+            Self::GateFailed => "gate_failed",
+            Self::Findings => "findings",
+            Self::Deliver => "deliver",
+            Self::Stopped => "stopped",
+            Self::Running => "running",
+            Self::Nothing => "nothing",
+        }
+    }
+
+    /// The group's heading in `af task list --attention` and the browser.
+    pub fn title(self) -> &'static str {
+        match self {
+            Self::Approval => "Waiting for approval",
+            Self::GateFailed => "Failed gate",
+            Self::Findings => "Findings to answer",
+            Self::Deliver => "Verified, ready to deliver",
+            Self::Stopped => "Stopped",
+            Self::Running => "Running",
+            Self::Nothing => "Nothing to do",
+        }
+    }
+
+    /// Whether a Task in this group waits for a person.
+    pub fn needs_you(self) -> bool {
+        !matches!(self, Self::Running | Self::Nothing)
+    }
+
+    /// One line a person reads in `af help task-states`: which states the group holds.
+    pub fn description(self) -> &'static str {
+        match self {
+            Self::Approval => "planned, or waiting for a plan review, resources or input",
+            Self::GateFailed => "gate_failed: a required check failed or could not run",
+            Self::Findings => "changes_requested: reviewer findings or the evaluator",
+            Self::Deliver => "verified, with `af task deliver` as its next command",
+            Self::Stopped => "abandoned, provider_failed, cancelled, exhausted, expired",
+            Self::Running => "a writer holds its lease; no next command until it ends",
+            Self::Nothing => "delivered, verified with nothing to deliver, or collected",
+        }
+    }
+}
+
 /// What the gate's last check receipt said, in `af task list --json` and `af task show --json`.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -655,6 +752,108 @@ mod tests {
                 .with_next("rm -rf /")
                 .validate()
                 .is_err()
+        );
+    }
+
+    /// Each attention group from the states the Store derives, and every valid state in one.
+    #[test]
+    fn every_state_waits_for_exactly_one_thing() {
+        use TaskAttentionV1 as A;
+        let finished =
+            |outcome, cause| TaskStateV1::ended(TaskStatePhaseV1::Finished, outcome, cause);
+        let cases = [
+            (
+                TaskStateV1::new(TaskStatePhaseV1::Planned)
+                    .with_next("af task run t --confirm-plan sha256:1"),
+                A::Approval,
+            ),
+            (
+                TaskStateV1::new(TaskStatePhaseV1::Waiting).with_next("af task explain t --tree"),
+                A::Approval,
+            ),
+            (
+                finished(TaskOutcomeV1::GateFailed, Some(TaskCauseV1::CheckFailed))
+                    .with_next("af task run t --retry-gate"),
+                A::GateFailed,
+            ),
+            (
+                finished(
+                    TaskOutcomeV1::GateFailed,
+                    Some(TaskCauseV1::PreflightFailed),
+                )
+                .with_next("af task show t --checks"),
+                A::GateFailed,
+            ),
+            (
+                finished(
+                    TaskOutcomeV1::ChangesRequested,
+                    Some(TaskCauseV1::ReviewerFindings),
+                )
+                .with_next("af task findings t"),
+                A::Findings,
+            ),
+            (
+                finished(
+                    TaskOutcomeV1::ChangesRequested,
+                    Some(TaskCauseV1::EvaluatorRejected),
+                )
+                .with_next("af task show t"),
+                A::Findings,
+            ),
+            (
+                finished(TaskOutcomeV1::Verified, None)
+                    .with_next("af task deliver t --branch af/t --worktree ../t --confirm t"),
+                A::Deliver,
+            ),
+            (
+                TaskStateV1::ended(
+                    TaskStatePhaseV1::Abandoned,
+                    TaskOutcomeV1::Cancelled,
+                    Some(TaskCauseV1::HostCancelled),
+                )
+                .with_next("af task run t"),
+                A::Stopped,
+            ),
+            (
+                finished(
+                    TaskOutcomeV1::ProviderFailed,
+                    Some(TaskCauseV1::ProviderCapacity),
+                )
+                .with_next("af provider status"),
+                A::Stopped,
+            ),
+            (
+                finished(TaskOutcomeV1::Expired, Some(TaskCauseV1::Deadline))
+                    .with_next("af task plan --file TASK_FILE --fit"),
+                A::Stopped,
+            ),
+            (TaskStateV1::new(TaskStatePhaseV1::Running), A::Running),
+            (finished(TaskOutcomeV1::Verified, None), A::Nothing),
+            (
+                finished(TaskOutcomeV1::GateFailed, Some(TaskCauseV1::Collected)),
+                A::Nothing,
+            ),
+            (
+                finished(TaskOutcomeV1::Verified, Some(TaskCauseV1::Collected)),
+                A::Nothing,
+            ),
+        ];
+        for (state, group) in &cases {
+            state.validate().unwrap();
+            assert_eq!(A::of(state), *group, "{}", state.label());
+            // Every group that needs a person has a command to run; the other two may not.
+            if group.needs_you() {
+                assert!(state.next_action.is_some(), "{}", state.label());
+            }
+        }
+        for group in A::ALL {
+            assert!(cases.iter().any(|(_, g)| *g == group), "{group:?} untested");
+            assert_eq!(serde_json::to_value(group).unwrap(), group.as_str());
+        }
+        assert_eq!(
+            A::ALL.iter().filter(|group| group.needs_you()).count(),
+            5,
+            "running and nothing are the only groups that need no one"
         );
     }
 

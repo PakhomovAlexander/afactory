@@ -157,7 +157,7 @@ fn start_bindings(registry: &crate::providers::RegistryRead) -> String {
     }
 }
 
-/// The phase, outcome and cause tables of `af help task-states`, from
+/// The phase, outcome, cause and attention tables of `af help task-states`, from
 /// `review_core::task::state`; `docs/tasks.md` carries the same rows.
 pub(crate) fn task_state_tables() -> String {
     use review_core::task::state::*;
@@ -188,6 +188,17 @@ pub(crate) fn task_state_tables() -> String {
             cause.description()
         );
         out.push_str(&crate::human::wrap(&row, 100, 46));
+        out.push('\n');
+    }
+    out.push_str("\nAttention groups, as af task list --attention prints them\n\n");
+    for group in TaskAttentionV1::ALL {
+        let row = format!(
+            "  {:<12} {:<27} {}",
+            group.as_str(),
+            group.title(),
+            group.description()
+        );
+        out.push_str(&crate::human::wrap(&row, 100, 43));
         out.push('\n');
     }
     out.trim_end().to_owned()
@@ -514,6 +525,8 @@ The Task documents, each named by its `schema`:
                                        af/task-collected-inspection@2
   af task show --checks --json         af/task-checks@2
   af task list --json                  af/task-list@3, one af/task-list-entry@3 per Task
+  af task list --attention --json      af/task-attention@1: seven groups by what each Task
+                                       waits for, each Task its af/task-list-entry@3
   af task report --json                af/task-report@2
   af task findings --json              af/task-findings@2, each finding with its agent_prompt,
                                        the round with its coverage and verified_fixed
@@ -528,11 +541,11 @@ The Task documents, each named by its `schema`:
                                        planning_diagnostic.required_limits and .reserves
 
 af/task-inspection@13, af/task-collected-inspection@2, af/task-checks@2, each
-af/task-list-entry@3, af/task-report@2, af/task-findings@2, af/task-status@2, af/task-detached@2
-and af/task-cancelled@1 carry the Task's `state` (`af help task-states`), its `next_action`
-carrying the selectors the command was given (a report, pasted into a pull request, names no
-Store path); the diff, the materialized candidate and the refused selection describe no Task
-state. A previous version is refused, never read.
+af/task-list-entry@3, the groups of af/task-attention@1, af/task-report@2, af/task-findings@2,
+af/task-status@2, af/task-detached@2 and af/task-cancelled@1 carry the Task's `state` (`af help
+task-states`), its `next_action` carrying the selectors the command was given (a report, pasted
+into a pull request, names no Store path); the diff, the materialized candidate and the refused
+selection describe no Task state. A previous version is refused, never read.
 
 The command catalog and the schemas:
 
@@ -603,7 +616,12 @@ reserved, charged and remaining tokens (plus unknown usage). It shows the last c
 duration when recorded. `af task wait ID` blocks until the Task settles and exits with its
 outcome's code.
 A run `af task cancel ID` stopped is `abandoned/cancelled/host_cancelled`, and `af task show`
-names who cancelled it. `af help agents` walks the whole loop.";
+names who cancelled it. `af help agents` walks the whole loop.
+
+`af task list --attention` groups the Tasks by what they wait for, read from each state alone and
+never recorded; the browser's Tasks folder opens on the same groups. The first five need a person
+and print each Task with its next command; running Tasks are named on one line and the Tasks that
+need nothing are counted. Under --json, `af/task-attention@1` holds all seven groups.";
 
 const TASK_FILE: &str = "\
 A Task file (JSON, or TOML for any other extension) is what `af task plan --file` and `af task

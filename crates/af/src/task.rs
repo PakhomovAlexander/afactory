@@ -953,12 +953,15 @@ fn print_adoption_observation(
     Ok(())
 }
 
-pub(super) fn list(options: InspectOptions, sizes: bool) -> Result<(), String> {
+pub(super) fn list(options: InspectOptions, sizes: bool, attention: bool) -> Result<(), String> {
     let repository = std::fs::canonicalize(&options.repo)
         .map_err(|error| format!("opening repository {}: {error}", options.repo.display()))?;
     let state = resolve_task_state(&options.state, &repository)?;
     let mut tasks = super::task_execution::list_common(&state)
         .map_err(|error| super::store_release::explain(&state, error))?;
+    if attention {
+        return print_attention(&options, tasks);
+    }
     let store = if sizes {
         // Each uncollected Task's CAS bytes, from the same walk `af task gc` sweeps by
         // (ADR-0135). A collected Task reaches nothing. The rows and the walk are two reads: a
@@ -1899,6 +1902,27 @@ fn print_task_list(
     Ok(())
 }
 
+/// `af task list --attention`: the same entries grouped by what each Task waits for, from its
+/// state alone; `af/task-attention@1` under `--json`.
+fn print_attention(options: &InspectOptions, tasks: Vec<serde_json::Value>) -> Result<(), String> {
+    use super::task_execution::attention;
+    let groups = attention::groups(tasks)?;
+    if options.json {
+        println!(
+            "{}",
+            serde_json::to_string(&attention::document(&groups)).map_err(|e| e.to_string())?
+        );
+        return Ok(());
+    }
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |elapsed| elapsed.as_millis() as u64);
+    for line in attention::lines(&groups, now, crate::human::width())? {
+        println!("{line}");
+    }
+    Ok(())
+}
+
 /// One row of `af task list`'s table, its columns aligned to `widths` two spaces apart, or in
 /// the narrow layout one space apart and without the `NEXT` column.
 fn list_row(row: &[String; 6], widths: &[usize; 6], wide: bool) -> String {
@@ -1922,7 +1946,7 @@ fn list_row(row: &[String; 6], widths: &[usize; 6], wide: bool) -> String {
 pub(crate) const TASK_LIST_V3: &str = "af/task-list@3";
 
 /// How long ago, as `af task list` prints it: `45s`, `12m`, `3h`, `2d`.
-fn age(ms: u64) -> String {
+pub(crate) fn age(ms: u64) -> String {
     let seconds = ms / 1_000;
     match seconds {
         0..60 => format!("{seconds}s"),

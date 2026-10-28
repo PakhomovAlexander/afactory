@@ -33,6 +33,7 @@ pub(crate) const SCHEMAS: &[(&str, &str, &str)] = &[
     schema!("review-render", 2),
     schema!("review-report", 5),
     schema!("review-show", 1),
+    schema!("task-attention", 1),
     schema!("task-cancelled", 1),
     schema!("task-checks", 2),
     schema!("task-collected-inspection", 2),

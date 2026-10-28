@@ -258,6 +258,17 @@ The bar groups by state: `running/`, `awaiting approval/`, `done/`, `failed/`; u
 one level for the repository. Row text is `task-id  outcome  progress%` where progress is
 `settled stages / stages in graph.order`.
 
+The folder's main pane opens on the attention view, `NEEDS YOU  (af task list --attention)`,
+above the Stores: the groups `af task list --attention` prints, read from each listed Task's
+`state` alone (`docs/tasks.md`, "Which Tasks need you"). Each group that waits for a person and
+holds a Task is a heading with its count, then per Task its bar id and state and, on the line
+below, `next:` and its next command, broken between its arguments to fit the pane. A Task of a
+Store reached only by naming it gets `--state DIR` in an `af task` command, as `r` and `D` add
+it; a Task of a user-scope repository keeps its command, and one muted line says to run it in
+that repository. Then `Running (N): IDS` names the running Tasks and `Nothing to do (N)` counts
+the rest; with nothing waiting it reads `No Task needs you now.` A scope whose Stores list no
+Task shows no attention view. A collected Task is not listed by the pane, so it is not counted.
+
 Beside the scope's own Stores, the pane lists every Task Store the Store registry
 (`$XDG_STATE_HOME/af/stores.toml`) records, the Stores `af task … --state DIR` made, and the
 ones `:state DIR` added for the session. Each is one more bar level named by the end of its path,

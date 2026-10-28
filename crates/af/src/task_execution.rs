@@ -37,6 +37,7 @@ use review_store::store::task::{TaskLease, TaskProjection};
 use review_store::{Cas, EventStore, validate_envelope};
 use serde::{Deserialize, Serialize};
 use serde_json::json;
+pub(crate) mod attention;
 mod bindings;
 pub(super) mod candidate;
 pub(crate) mod catalog;

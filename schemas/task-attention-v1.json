@@ -1,0 +1,297 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:af:schema:task-attention:1",
+  "title": "Task attention af/task-attention@1",
+  "$comment": "What `af task list --attention --json` prints: every Task of the Store, collected Tasks included, in exactly one group by what it waits for, read from its `state` alone (`af help task-states`) each time the Store is read, never persisted. All seven groups are present, in this order; a group's Tasks are in Task ID order, each one `af/task-list-entry@3` whose `state.next_action` is the one command to run next. `needs_you` is true for the five groups that wait for a person and false for `running` and `nothing`.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema",
+    "groups"
+  ],
+  "properties": {
+    "schema": {
+      "const": "af/task-attention@1"
+    },
+    "groups": {
+      "type": "array",
+      "minItems": 7,
+      "prefixItems": [
+        {
+          "$ref": "#/$defs/approval"
+        },
+        {
+          "$ref": "#/$defs/gate_failed"
+        },
+        {
+          "$ref": "#/$defs/findings"
+        },
+        {
+          "$ref": "#/$defs/deliver"
+        },
+        {
+          "$ref": "#/$defs/stopped"
+        },
+        {
+          "$ref": "#/$defs/running"
+        },
+        {
+          "$ref": "#/$defs/nothing"
+        }
+      ],
+      "items": false
+    }
+  },
+  "$defs": {
+    "group": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "group",
+        "needs_you",
+        "tasks"
+      ],
+      "properties": {
+        "group": {
+          "enum": [
+            "approval",
+            "gate_failed",
+            "findings",
+            "deliver",
+            "stopped",
+            "running",
+            "nothing"
+          ]
+        },
+        "needs_you": {
+          "type": "boolean"
+        },
+        "tasks": {
+          "type": "array",
+          "items": {
+            "$ref": "urn:af:schema:task-list-entry:3"
+          }
+        }
+      }
+    },
+    "uncollected": {
+      "description": "A state whose cause is not `collected`: a collected Task needs nothing.",
+      "properties": {
+        "cause": {
+          "not": {
+            "const": "collected"
+          }
+        }
+      }
+    },
+    "approval": {
+      "description": "Planned, or waiting for a plan review, resources, input or a decision.",
+      "$ref": "#/$defs/group",
+      "properties": {
+        "group": {
+          "const": "approval"
+        },
+        "needs_you": {
+          "const": true
+        },
+        "tasks": {
+          "items": {
+            "properties": {
+              "state": {
+                "properties": {
+                  "phase": {
+                    "enum": [
+                      "planned",
+                      "waiting"
+                    ]
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "gate_failed": {
+      "description": "Finished with a failed gate.",
+      "$ref": "#/$defs/group",
+      "properties": {
+        "group": {
+          "const": "gate_failed"
+        },
+        "needs_you": {
+          "const": true
+        },
+        "tasks": {
+          "items": {
+            "properties": {
+              "state": {
+                "$ref": "#/$defs/uncollected",
+                "properties": {
+                  "outcome": {
+                    "const": "gate_failed"
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "findings": {
+      "description": "Finished with changes requested, by reviewer findings or the evaluator.",
+      "$ref": "#/$defs/group",
+      "properties": {
+        "group": {
+          "const": "findings"
+        },
+        "needs_you": {
+          "const": true
+        },
+        "tasks": {
+          "items": {
+            "properties": {
+              "state": {
+                "$ref": "#/$defs/uncollected",
+                "properties": {
+                  "outcome": {
+                    "const": "changes_requested"
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "deliver": {
+      "description": "Verified, and its next command delivers it.",
+      "$ref": "#/$defs/group",
+      "properties": {
+        "group": {
+          "const": "deliver"
+        },
+        "needs_you": {
+          "const": true
+        },
+        "tasks": {
+          "items": {
+            "properties": {
+              "state": {
+                "properties": {
+                  "outcome": {
+                    "const": "verified"
+                  },
+                  "cause": {
+                    "type": "null"
+                  },
+                  "next_action": {
+                    "type": "string"
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "stopped": {
+      "description": "Abandoned, or finished on a Provider, an interrupt, a limit or the wall clock.",
+      "$ref": "#/$defs/group",
+      "properties": {
+        "group": {
+          "const": "stopped"
+        },
+        "needs_you": {
+          "const": true
+        },
+        "tasks": {
+          "items": {
+            "properties": {
+              "state": {
+                "$ref": "#/$defs/uncollected",
+                "properties": {
+                  "outcome": {
+                    "enum": [
+                      "provider_failed",
+                      "cancelled",
+                      "exhausted",
+                      "expired"
+                    ]
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "running": {
+      "description": "A writer holds its lease; it names no command until it settles.",
+      "$ref": "#/$defs/group",
+      "properties": {
+        "group": {
+          "const": "running"
+        },
+        "needs_you": {
+          "const": false
+        },
+        "tasks": {
+          "items": {
+            "properties": {
+              "state": {
+                "properties": {
+                  "phase": {
+                    "const": "running"
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "nothing": {
+      "description": "Delivered, verified with nothing to deliver, or collected.",
+      "$ref": "#/$defs/group",
+      "properties": {
+        "group": {
+          "const": "nothing"
+        },
+        "needs_you": {
+          "const": false
+        },
+        "tasks": {
+          "items": {
+            "properties": {
+              "state": {
+                "anyOf": [
+                  {
+                    "properties": {
+                      "cause": {
+                        "const": "collected"
+                      }
+                    }
+                  },
+                  {
+                    "properties": {
+                      "outcome": {
+                        "const": "verified"
+                      },
+                      "cause": {
+                        "type": "null"
+                      },
+                      "next_action": {
+                        "type": "null"
+                      }
+                    }
+                  }
+                ]
+              }
+            }
+          }
+        }
+      }
+    }
+  }
+}

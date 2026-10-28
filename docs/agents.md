@@ -29,6 +29,7 @@ Never add `--login` inside an agent session; ask the person to log in privately.
 | Build a PR body | `af task report TASK_ID --pr-body` |
 | Check disk before launch | `[storage] min_free_bytes` |
 | Retry a failed Gate | `af task run TASK_ID --retry-gate` |
+| Find the Tasks that need you | `af task list --attention --json` |
 
 The findings command reads a recorded review round; an absent round appears in state.
 Materialize requires a clean Git worktree unless `--force`; add `--allow-unverified` for an
@@ -38,7 +39,8 @@ Continuation uses OLD's reviewed candidate and recorded findings, then requires 
 the exact new plan. The PR body requires the repository template and a valid lines block; failure
 prints no partial body. The machine's free-disk floor refuses work before spend. Gate retry needs
 an eligible failed check on the same sealed candidate and remains bound by approval, deadline and
-budgets; it does not decide that a failure was flaky.
+budgets; it does not decide that a failure was flaky. The attention list groups every Task of
+the Store by what it waits for and names each one's next command.
 
 This is the loop a coding agent, or a script, runs to get a change made through af: plan a
 Task, run it, read how it ended, read its findings, look at its change, run another round
@@ -118,6 +120,12 @@ stderr's last line is always `Task TASK_ID: phase/outcome/cause; next: COMMAND`.
 under `--json` is one `af/error@2` document with the same exit code; one af classifies, such as a
 node past its recovery allowance, also carries `cause`, `next_action` and `details`
 (`af help json`).
+
+Across many Tasks, `af task list --attention --json` prints one `af/task-attention@1` document:
+every Task of the Store in exactly one group, read from its `state` alone. `approval`,
+`gate_failed`, `findings`, `deliver` and `stopped` have `needs_you` true, and each of their
+Tasks names its `state.next_action`; `running` and `nothing` have it false. Run the next
+command of each Task in a group that needs you, or tell the person which ones wait for them.
 
 ## 4. Read the findings
 

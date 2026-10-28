@@ -275,6 +275,7 @@ fn task_states_topic_and_the_state_flags_describe_the_commands() {
         "af/task-checks@2",
         "af/task-list@3",
         "af/task-list-entry@3",
+        "af/task-attention@1",
         "af/task-report@2",
         "af/task-selection@3",
         "af/error@2",
@@ -300,6 +301,15 @@ fn task_states_topic_and_the_state_flags_describe_the_commands() {
             &["--checks", "af/task-checks@2", "next"][..],
         ),
         (&["task", "plan", "--help"], &["--fit", "--replace"]),
+        (
+            &["task", "list", "--help"],
+            &[
+                "--attention",
+                "af/task-attention@1",
+                "af/task-list@3",
+                "next command",
+            ],
+        ),
     ] {
         let help = af(command);
         assert!(help.status.success(), "{}", err(&help));
@@ -1668,6 +1678,7 @@ fn the_agent_loop_verbs_and_the_agents_topic_describe_the_commands() {
         "af task report TASK_ID --pr-body",
         "[storage] min_free_bytes",
         "af task run TASK_ID --retry-gate",
+        "af task list --attention --json",
     ] {
         assert!(table.contains(command), "{command}: {table}");
     }

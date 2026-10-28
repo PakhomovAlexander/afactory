@@ -2372,11 +2372,29 @@ af task deliver TASK_ID --repo . --branch af/TASK_ID --worktree ../TASK_ID \\\n 
         #[command(flatten)]
         inspect: TaskInspectArgs,
     },
-    /// List Tasks with outcome and spend
+    /// List Tasks with outcome and spend, or with --attention the ones that need you
+    #[command(
+        long_about = "List every Task of the Store, collected Tasks included, in Task ID order: \
+its state (phase/outcome/cause, `af help task-states`), review round, chargeable tokens, how long \
+ago it last changed and the verb of its next command; with --json, one `af/task-list@3` \
+document.\n\n\
+--attention groups the Tasks by what they wait for, read from each Task's state alone: waiting \
+for approval (planned or waiting), a failed gate, findings to answer, verified and ready to \
+deliver, and stopped (abandoned, or a Provider, interrupt, limit or wall clock ended it). Each \
+Task in those groups is printed with its one next command. Running Tasks are named on one line \
+and the Tasks that need nothing (delivered, verified with nothing to deliver, or collected) are \
+counted. With --json, one `af/task-attention@1` document holds all seven groups, `running` and \
+`nothing` included, each Task as its `af/task-list-entry@3`. Nothing is written.",
+        after_long_help = "Examples:\n  af task list\n  af task list --attention\n  \
+af task list --attention --json"
+    )]
     List {
         /// Also print each Task's CAS bytes: those only it reaches and those it shares
-        #[arg(long)]
+        #[arg(long, conflicts_with = "attention")]
         sizes: bool,
+        /// Group the Tasks by what they wait for, each with its next command
+        #[arg(long)]
+        attention: bool,
         #[command(flatten)]
         inspect: TaskInspectArgs,
     },

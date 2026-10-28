@@ -2334,11 +2334,13 @@ fn task_command(command: cli::TaskCommand) -> Result<i32, String> {
             inspect.json,
         )
         .map(|()| 0),
-        cli::TaskCommand::List { sizes, inspect } => {
-            task::inspect_from_cli(None, inspect.repo, inspect.state, inspect.json)
-                .and_then(|options| task::list(options, sizes))
-                .map(|()| 0)
-        }
+        cli::TaskCommand::List {
+            sizes,
+            attention,
+            inspect,
+        } => task::inspect_from_cli(None, inspect.repo, inspect.state, inspect.json)
+            .and_then(|options| task::list(options, sizes, attention))
+            .map(|()| 0),
         cli::TaskCommand::Gc {
             older_than,
             keep,

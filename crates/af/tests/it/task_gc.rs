@@ -2,8 +2,9 @@
 //!
 //! Two finished Tasks, `--keep 1`: the preview writes nothing, `--apply` tombstones the older
 //! one and removes exactly the bytes the preview named, the retained Task's `show --json` is
-//! byte-identical, and the collected Task is listed and shown as `collected` while its outputs
-//! and its delivery are refused with the same word. A bound Task is refused by name, a sweep
+//! byte-identical, and the collected Task is listed and shown as `collected` (and counted by
+//! `--attention` among the Tasks that need nothing) while its outputs and its delivery are
+//! refused with the same word. A bound Task is refused by name, a sweep
 //! stopped after the tombstone is finished by the next run, and a Campaign's records keep every
 //! object they reach.
 
@@ -281,6 +282,29 @@ fn keeping_one_collects_the_older_task_and_removes_exactly_the_previewed_bytes()
         gone["state"],
         serde_json::json!({"phase": "finished", "outcome": "verified", "cause": "collected", "next_action": null})
     );
+    // A collected Task needs nothing: `--attention` counts it with the Tasks nobody waits on,
+    // and names no command for it.
+    let attention = json_of(&repo, &state, &["task", "list", "--attention"], 0);
+    schemas::valid(&schemas::validator("task-attention-v1.json"), &attention);
+    let nothing = &attention["groups"][6];
+    assert_eq!(nothing["group"], "nothing", "{attention}");
+    assert_eq!(nothing["needs_you"], false);
+    assert_eq!(nothing["tasks"][0], *gone, "{attention}");
+    let shown = text(&repo, &state, &["task", "list", "--attention"]);
+    assert!(!shown.contains("  gc-older "), "{shown}");
+    assert!(
+        shown
+            .lines()
+            .any(|line| line.starts_with("Nothing to do (")),
+        "{shown}"
+    );
+    let both = af(
+        &repo,
+        &state,
+        &["task", "list", "--attention", "--sizes"],
+        &[],
+    );
+    assert_eq!(both.status.code(), Some(2), "--attention lists no sizes");
     // Under --sizes a collected Task reaches nothing, and its row says so in numbers.
     let sized = json_of(&repo, &state, &["task", "list", "--sizes"], 0);
     let gone_sized = entry(&sized, "gc-older");

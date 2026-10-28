@@ -181,9 +181,10 @@ spellings a Provider accepts ([model bindings](task-execution/model-bindings.md)
 The [ASCII preview guide](task-execution/preview.md) covers the two plan views and agent
 approval. `task list` prints a header row and one line per Task: its ID, its state, its review
 round, chargeable tokens, how long ago it last changed and the verb of its next command, then its
-delivery once there is one. `task show` adds the plan, the checks, each failed node and the next
-command; `--json` adds exact Snapshot IDs and the append-only event history. Both accept `--json`
-([Task states](#task-states)).
+delivery once there is one. `task list --attention` groups the Tasks by what they wait for,
+each with its whole next command ([Which Tasks need you](#which-tasks-need-you)). `task show`
+adds the plan, the checks, each failed node and the next command; `--json` adds exact Snapshot
+IDs and the append-only event history. Both accept `--json` ([Task states](#task-states)).
 
 ## Follow a run
 
@@ -346,6 +347,43 @@ Task ID is also the delivery confirmation. An unverified Task is evidence, not a
 read `task show`, fix the catalog, check, Worker or goal problem, then start a corrected Task
 under a new Task ID, or continue it from its reviewed candidate with `af task run NEW --from ID`
 ([Continue a reviewed Task](#continue-a-reviewed-task)).
+
+### Which Tasks need you
+
+`af task list --attention` answers "what needs me now?" for one Store. It groups every Task by
+what it waits for, read from its state alone (phase, outcome, cause and whether it names a next
+command) each time the Store is read; nothing is recorded. Each Task is in exactly one group:
+
+| Group | Title | Needs you | Holds |
+| --- | --- | --- | --- |
+| `approval` | Waiting for approval | yes | planned, or waiting for a plan review, resources or input |
+| `gate_failed` | Failed gate | yes | gate_failed: a required check failed or could not run |
+| `findings` | Findings to answer | yes | changes_requested: reviewer findings or the evaluator |
+| `deliver` | Verified, ready to deliver | yes | verified, with `af task deliver` as its next command |
+| `stopped` | Stopped | yes | abandoned, provider_failed, cancelled, exhausted, expired |
+| `running` | Running | no | a writer holds its lease; no next command until it ends |
+| `nothing` | Nothing to do | no | delivered, verified with nothing to deliver, or collected |
+
+The text prints each group that needs you and holds a Task under its title and count, one line
+per Task with its ID, state and age, and its next command on the line below, broken between its
+arguments to fit the terminal. Running Tasks are named on one line (`Running (1): docs-index`)
+and the Tasks that need nothing are only counted (``Nothing to do (4): `af task list` shows
+every Task``); when no Task needs you the first line says `No Task needs you now.`
+
+```text
+Failed gate (1)
+  pagination-cli  finished/gate_failed/check_failed  3m
+    next: af task run pagination-cli --retry-gate
+Running (1): docs-index
+Nothing to do (2): `af task list` shows every Task
+```
+
+`--json` prints one [`af/task-attention@1`](../schemas/task-attention-v1.json) document with all
+seven groups in this order, the `running` and `nothing` groups included, each with its `group`,
+`needs_you` and `tasks`, every Task the same `af/task-list-entry@3` that `af task list --json`
+prints. `--attention` lists no sizes: with `--sizes` it is a usage error (exit 2). In the
+browser (`af` alone at a terminal) the Tasks folder opens on the same groups under `NEEDS YOU`
+([TUI design](design/tui.md#55-tasks)).
 
 ## Resume an interrupted Task
 
