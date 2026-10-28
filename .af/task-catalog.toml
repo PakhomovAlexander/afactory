@@ -202,23 +202,23 @@ digest = "sha256:e7112e57284398f86883227607b30fb74a10b1e3c2d980ea64a840e64a6dda6
 path = ".af/task-packages/default/implementer"
 
 [packages."default/bugs"]
-version = "1.0.0"
-digest = "sha256:fa6bd3b6a26c3ff6f38af55457d67953eecde159d69499a730e48db6209f8695"
+version = "1.1.0"
+digest = "sha256:7831b7113bc6f0fe4784cf48ae6d6df2e431715496ded5cb6651e8129b8b8c10"
 path = ".af/task-packages/default/bugs"
 
 [packages."default/correctness"]
-version = "1.0.0"
-digest = "sha256:a50d89425234ab759533e9e63c5798471b2cc63749434860cc8b55c4af6952a0"
+version = "1.1.0"
+digest = "sha256:3f206e7c081ae57b43bd0c1b4bbd3cecc7d1aae73de6d409dc8a129332cce70c"
 path = ".af/task-packages/default/correctness"
 
 [packages."default/advisor"]
-version = "1.0.0"
-digest = "sha256:9bea08d881828f0cd2d07af7e482df770f0be684fb361c4acf8d5a2e1b731e57"
+version = "1.1.0"
+digest = "sha256:2b198d072a13d16323f2b3006b0607c82575608a03561f5757785876c3475627"
 path = ".af/task-packages/default/advisor"
 
 [packages."default/evaluator"]
-version = "1.0.0"
-digest = "sha256:53f4590e23df30e604142fe3358b0351e5006855a41b0256ab492943c2773176"
+version = "1.1.0"
+digest = "sha256:4f94921a1362ee37067d5faefd2860500eebd5ee17628daa37aa304dd85e1bd9"
 path = ".af/task-packages/default/evaluator"
 
 [packages."default/implementation"]
