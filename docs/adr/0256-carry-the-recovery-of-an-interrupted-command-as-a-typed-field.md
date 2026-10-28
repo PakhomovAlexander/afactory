@@ -33,7 +33,8 @@ vocabulary that gains a value is a changed shape: a script that validates agains
 ## Decision
 
 1. The error document is **`af/error@2`** (`schemas/error-v2.json`). Version 2 is version 1 with
-   one more cause, `interrupted`: exit code 130 or 143, `details` with the `signal` (`SIGINT`
+   the first-run causes of [ADR-0242](0242-classify-first-run-refusals.md), which introduced the
+   same version, and one more cause, `interrupted`: exit code 130 or 143, `details` with the `signal` (`SIGINT`
    or `SIGTERM`) and the `task` the command was running (null when it ran none), and
    `next_action` the command that continues it, the one the sentence names: `af task run
    TASK_ID` with the command's `--repo`, `--state` or `--workspace` as typed, `af task start
