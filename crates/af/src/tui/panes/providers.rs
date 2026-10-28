@@ -6,8 +6,9 @@
 //! runs on its own and hands the same inventory over with every quota window, so the limits are
 //! always on screen, a moment after the rows. `R` and a command's return run the probe again.
 //! All of it runs on a thread the event loop polls and cancels, so a key is never waiting on a
-//! Provider. Each window is a bar of twenty cells in the brand's colour for how much is used:
-//! green under half, blue from half, pink from four fifths. A Provider's `models` section is
+//! Provider. Each window is a bar of twenty cells in the brand's colour for how much is used,
+//! green under half, blue from half, pink from four fifths, drawn so that two bars one under
+//! the other keep a hairline between them. A Provider's `models` section is
 //! folded to its header line in the list and unfolds to one row per exact ID when the Provider
 //! is opened or `m` unfolds every section, and shows that Provider's own catalog only. The
 //! catalogs read are shared with the Workers pane under each Provider's id, which gives a
@@ -650,9 +651,10 @@ fn limit_rows(provider: &ProviderStatus, reading: bool, paint: Paint, rows: &mut
 }
 
 /// A window as `limit  NAME  [####................]   20% used  resets in 6d 20h`: the bar's
-/// used cells are solid in the band's colour (green under half, blue from half, pink from four
-/// fifths), the rest a grey track; in the terminal's own colours the same, and without colour
-/// `#` and `.`. The text is what the CLI prints, the words put in bar order.
+/// used cells are drawn in the band's colour (green under half, blue from half, pink from four
+/// fifths), the rest as a grey track, each cell a block that keeps a hairline from the row
+/// above ([`Paint::Bar`]); in the terminal's own colours the same, and without colour `#` and
+/// `.`. The text is what the CLI prints, the words put in bar order.
 fn limit_row(kind: &str, limit: &ProviderLimit, width: usize, paint: Paint) -> Row {
     let used = usize::from(limit.used_percent.min(100));
     let filled = (used * BAR + 50) / 100;
@@ -663,14 +665,11 @@ fn limit_row(kind: &str, limit: &ProviderLimit, width: usize, paint: Paint) -> R
     if filled > 0 {
         spans.push(Span::new(
             "#".repeat(filled),
-            Paint::Pixel(band(limit.used_percent)),
+            Paint::Bar(band(limit.used_percent)),
         ));
     }
     if filled < BAR {
-        spans.push(Span::new(
-            ".".repeat(BAR - filled),
-            Paint::Pixel(Pixel::Grey),
-        ));
+        spans.push(Span::new(".".repeat(BAR - filled), Paint::Bar(Pixel::Grey)));
     }
     spans.push(Span::new(
         format!(
@@ -751,7 +750,7 @@ pub(crate) mod tests {
         let cells = row
             .spans
             .iter()
-            .filter(|span| matches!(span.paint, Paint::Pixel(_)))
+            .filter(|span| matches!(span.paint, Paint::Bar(_)))
             .map(|span| (span.text.len(), span.paint))
             .collect();
         (text[start..=end].to_owned(), cells)
@@ -762,25 +761,22 @@ pub(crate) mod tests {
         let row = |used| limit_row("claude", &window("weekly", used, None), 6, Paint::Plain);
         let (bar, cells) = bar_of(&row(0));
         assert_eq!(bar, "[....................]");
-        assert_eq!(cells, [(20, Paint::Pixel(Pixel::Grey))]);
+        assert_eq!(cells, [(20, Paint::Bar(Pixel::Grey))]);
         let (bar, cells) = bar_of(&row(41));
         assert_eq!(bar, "[########............]");
         assert_eq!(
             cells,
-            [
-                (8, Paint::Pixel(Pixel::Green)),
-                (12, Paint::Pixel(Pixel::Grey))
-            ]
+            [(8, Paint::Bar(Pixel::Green)), (12, Paint::Bar(Pixel::Grey))]
         );
         let (bar, cells) = bar_of(&row(68));
         assert_eq!(bar, "[##############......]");
-        assert_eq!(cells[0], (14, Paint::Pixel(Pixel::Blue)));
+        assert_eq!(cells[0], (14, Paint::Bar(Pixel::Blue)));
         let (bar, cells) = bar_of(&row(85));
         assert_eq!(bar, "[#################...]");
-        assert_eq!(cells[0], (17, Paint::Pixel(Pixel::Pink)));
+        assert_eq!(cells[0], (17, Paint::Bar(Pixel::Pink)));
         let (bar, cells) = bar_of(&row(100));
         assert_eq!(bar, "[####################]");
-        assert_eq!(cells, [(20, Paint::Pixel(Pixel::Pink))]);
+        assert_eq!(cells, [(20, Paint::Bar(Pixel::Pink))]);
         // A percentage past 100 fills the bar and is printed as reported.
         let (bar, _) = bar_of(&row(255));
         assert_eq!(bar, "[####################]");
@@ -809,7 +805,7 @@ pub(crate) mod tests {
         // An ambient Provider's words are muted; its bar keeps its colour.
         let muted = limit_row("codex", &window("codex 1w", 5, Some(far)), 8, Paint::Muted);
         assert_eq!(muted.spans[0].paint, Paint::Muted);
-        assert_eq!(muted.spans[1].paint, Paint::Pixel(Pixel::Green));
+        assert_eq!(muted.spans[1].paint, Paint::Bar(Pixel::Green));
     }
 
     /// Discovery hands the rows over first; the quota windows follow from a probe the pane

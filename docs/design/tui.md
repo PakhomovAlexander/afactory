@@ -92,6 +92,10 @@ status line is blue, and pink while it carries an error. State chips put the bra
 words that carry a state: blue for running, green for passed, pink for failed or awaiting a
 person, on the Task header's STATE, the stage marks, the progress at the end of a Task's bar row,
 a Provider's STATUS, the Workers pane's Attempt counts and the `error` that starts an error row.
+A Provider's limit bars are the one place the terminal gets a glyph that is not the frame's
+byte: in colour each cell of a bar is U+2587 LOWER SEVEN EIGHTHS BLOCK in the bar's colour on
+the terminal's own ground, so two bars one under the other keep a hairline between them; the
+frame holds `#` and `.`, and without colour that is what is written.
 `COLORTERM=truecolor` takes the brand's values, other terminals black on their own blue, green
 and red, and `NO_COLOR` attributes only. This keeps the existing
 `terminal_data_is_printable_ascii` test meaningful and matches the CLI's own tree output.
@@ -188,11 +192,11 @@ Mirrors `af provider status --usage`; the left bar lists every entry from `provi
 The main pane shows the same columns as the CLI table for the selected provider, then one row per
 `ProviderLimit` as a bar of twenty cells with `used_percent` and when the window resets (or who
 does not report that), then `detail` as `note`, and one blank row before the `models` section.
-A Claude login's
-windows are the ones its `/usage` screen shows: the five-hour session, then the weekly ones. The
-bar's used cells are solid in the brand's
-colour for how much is used, green under half, blue from half and pink from four fifths, on a
-grey track; without colour they are `#` and `.`. The quota windows are always on screen: the
+A Claude login's windows are the ones its `/usage` screen shows: the five-hour session, then the
+weekly ones. The bar's used cells are drawn in the brand's colour for how much is used, green
+under half, blue from half and pink from four fifths, the rest as a grey track, each cell the
+block glyph of §3 so the bars keep a hairline between them; without colour they are `#` and
+`.`. The quota windows are always on screen: the
 pane discovers first (one bounded authentication check per context, and the catalogs), hands
 the rows over, and then runs the bounded usage probe `--usage` runs (a Provider process or an
 app-server round trip per login, no tokens, a couple of seconds) on its own; an authenticated
