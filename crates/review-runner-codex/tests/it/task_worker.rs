@@ -552,6 +552,106 @@ fn a_typed_request_passes_its_reply_contract_as_the_output_schema_file() {
     assert!(!copy.exists());
 }
 
+/// ADR-0246: a review-Campaign reviewer's prompt is no typed request, yet its dispatch writes
+/// the strict Reviewer Result schema for `--output-schema`, byte for byte what `af review render`
+/// shows. What the strict schema made the model write — `null` for an absent proposal, notes or
+/// line — is removed before the kernel's unchanged parser reads the reply; the `-o` file is kept
+/// as it was written. A reply that never reached the `-o` file is no reply, its usage kept.
+#[test]
+fn a_campaign_reviewer_passes_the_strict_reviewer_result_schema_file() {
+    use review_runner::ReviewerAdapter;
+    use review_runner::task::reply_schema::ReplyContract;
+    let temp = tempfile::tempdir().unwrap();
+    let cas = Cas::open(temp.path().join("cas")).unwrap();
+    let copy = temp.path().join("schema-copy.json");
+    let reply = r#"{"reports":[{"severity":"minor","file":"a.rs","line":null,"title":"t","body":"b","fix":"f","confidence":null,"rule_id":null,"occurrence_key":null}],"benchmark_demands":[],"dispositions":[],"proposal":null,"notes":null}"#;
+    let script = |write: &str| {
+        format!(
+            "#!/bin/sh\ncat >/dev/null\nprintf '%s\\n' \"$@\" >&2\nschema=; prev=; for arg in \"$@\"; do [ \"$prev\" = --output-schema ] && schema=$arg; prev=$arg; done\n[ -n \"$schema\" ] && cp \"$schema\" '{}'\n{write}printf '%s\\n' '{{\"type\":\"turn.completed\",\"usage\":{{\"input_tokens\":7,\"output_tokens\":2}}}}'\n",
+            copy.display(),
+        )
+    };
+    let program = temp.path().join("fake-codex");
+    std::fs::write(&program, script(&write_reply(reply))).unwrap();
+    std::fs::set_permissions(&program, std::fs::Permissions::from_mode(0o700)).unwrap();
+    let adapter = CodexTaskAdapter::new(&Command::new(program.to_str().unwrap(), vec![])).unwrap();
+    let invoke = || {
+        adapter
+            .invoke_constrained(
+                &cas,
+                temp.path(),
+                b"Review the change.\n\n## Output contract\n\n...".to_vec(),
+                LOAD_SAFE_WALL,
+                WorkerAccess::WriteSource,
+                None,
+                &[],
+                ReplyContract::ReviewerResult,
+            )
+            .unwrap_or_else(|unstarted| *unstarted.0)
+    };
+    let returned = invoke();
+    let message = returned.message.unwrap();
+    assert_eq!(
+        serde_json::from_slice::<serde_json::Value>(&message).unwrap(),
+        serde_json::json!({"reports":[{"severity":"minor","file":"a.rs","title":"t","body":"b","fix":"f"}],
+            "benchmark_demands":[],"dispositions":[]})
+    );
+    let text = std::str::from_utf8(&message).unwrap();
+    assert_eq!(
+        review_runner::parse_reviewer_result(text)
+            .unwrap()
+            .reports
+            .len(),
+        1
+    );
+    assert_eq!(review_runner::parse_proposal_declaration(text), Ok(None));
+    assert_eq!(review_runner::parse_notes_declaration(text), Ok(None));
+    let flags = String::from_utf8(cas.get(&returned.raw_artifact_ids[1]).unwrap()).unwrap();
+    let flags: Vec<_> = flags.lines().collect();
+    let at = flags
+        .iter()
+        .position(|flag| *flag == "--output-schema")
+        .expect("the schema argument is passed");
+    assert!(flags[at + 1].ends_with("/reply-schema.json"), "{flags:?}");
+    let package = review_runner::ResolvedReviewer::new(
+        "fixture",
+        "1.0.0",
+        "fixture-digest",
+        "/fixture",
+        Command::new("codex", vec![]),
+        std::collections::BTreeMap::from([("reviewer.md".to_string(), b"Review it.".to_vec())]),
+    );
+    let rendered = review_runner_codex::CodexAdapter::from_package(&package)
+        .unwrap()
+        .render_input(&review_runner::ReviewerInputs::default())
+        .unwrap()
+        .reply_schema
+        .unwrap();
+    assert_eq!(rendered.option, "--output-schema");
+    assert_eq!(
+        std::fs::read_to_string(&copy).unwrap(),
+        rendered.schema.to_string()
+    );
+    assert!(
+        returned
+            .raw_artifact_ids
+            .iter()
+            .any(|id| cas.get(id).unwrap() == reply.as_bytes()),
+        "the -o file is kept as written"
+    );
+
+    // No final message: nothing for the kernel to parse, and the call's usage stays.
+    std::fs::write(&program, script("")).unwrap();
+    let returned = invoke();
+    assert!(
+        returned
+            .message
+            .unwrap_err()
+            .starts_with("Codex Worker returned no final message")
+    );
+    assert_eq!(returned.usage.unwrap().chargeable_tokens.get(), 9);
+}
+
 /// ADR-0208, issue #295: an exit 1 that wrote nothing is a transient ending, and so is an
 /// overloaded model; an authentication failure is not.
 #[test]

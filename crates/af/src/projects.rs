@@ -1022,6 +1022,9 @@ pub(crate) fn resolve_task_workspace(
             &mut inspect.workspace,
             &mut inspect.state,
         )),
+        T::Events { store, .. } => {
+            Some((store.repo.as_path(), &mut store.workspace, &mut store.state))
+        }
     };
     if let Some((repo, workspace, state)) = selector
         && let Some(label) = workspace.take()

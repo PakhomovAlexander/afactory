@@ -503,8 +503,16 @@ document, each check with its `fix` and `hint`.",
         long_about = "Explain a topic or a command.\n\n\
 `af help` alone lists every topic with what it explains; start with `af help start` and \
 `af help concepts`. A word that is not a topic is a command path, so `af help review run` \
-equals `af review run --help`.",
-        after_long_help = "Examples:\n  af help start\n  af help concepts\n  af help layers\n  af help exit-codes\n  af help errors\n  af help errors no_task_catalog\n  af help review ledger"
+equals `af review run --help`.\n\n\
+--json prints the command catalog instead: one af/command-catalog@1 document \
+(schemas/command-catalog-v1.json) of every command, or with a command path of that command and \
+the commands below it, generated from the command definitions. Each command carries its usage, \
+subcommands and arguments, and each runnable one its effects: `tokens` (`free` or `charges`), \
+the state it `writes` (`store`, `files`, `machine`, `remote`) and what it needs from a `human` \
+(`login`, `approval`, `terminal`), each with the flag or condition that turns it on. Under \
+--json every word is a command path, never a topic; one that names no command is an af/error@2 \
+document, exit 2. `af help json` explains the vocabulary.",
+        after_long_help = "Examples:\n  af help start\n  af help concepts\n  af help layers\n  af help exit-codes\n  af help errors\n  af help errors no_task_catalog\n  af help review ledger\n  af help --json | jq -r '.commands[] | [.command, .effects.tokens] | @tsv'\n  af help task run --json | jq '.commands[0].effects'"
     )]
     Help {
         /// A topic name or a command path
@@ -513,6 +521,42 @@ equals `af review run --help`.",
         /// Print only the AGENTS.md pointer (agents topic only)
         #[arg(long)]
         snippet: bool,
+        /// One af/command-catalog@1 document of the commands (or the one named) instead of text
+        #[arg(long, conflicts_with = "snippet")]
+        json: bool,
+    },
+    /// Print a JSON Schema af ships, by the document ID `af help json` lists
+    #[command(
+        display_order = 7,
+        subcommand_required = true,
+        arg_required_else_help = true,
+        long_about = "Print a JSON Schema af ships, by the document ID `af help json` lists.\n\n\
+Every document af prints under --json names its shape in its `schema` field (`af/task-status@2`); \
+`af schema show ID` prints the schema of that ID, the bytes of `schemas/` this release was built \
+with, and `af schema show` alone lists the IDs with their titles. It reads nothing and writes \
+nothing. Exit codes: 0 printed, 1 an ID this release does not ship (the message names the \
+versions it does ship), 2 usage error.",
+        after_long_help = "Examples:\n  af schema show\n  af schema show af/task-status@2\n  af schema show af/command-catalog@1 | jq .title"
+    )]
+    Schema {
+        #[command(subcommand)]
+        command: SchemaCommand,
+    },
+}
+
+#[derive(Debug, Subcommand)]
+pub(crate) enum SchemaCommand {
+    /// Print one shipped JSON Schema by its document ID; without an ID, list the IDs
+    #[command(
+        long_about = "Print one shipped JSON Schema by its document ID, the `schema` field of \
+the document (`af/task-status@2`), exactly as `schemas/` holds it; without an ID, list every ID \
+this release ships with its schema's title, one per line. An ID it does not ship exits 1.",
+        after_long_help = "Examples:\n  af schema show\n  af schema show af/error@2\n  af schema show af/task-status@1   # exit 1"
+    )]
+    Show {
+        /// The document ID, as `af help json` and the document's `schema` field name it
+        #[arg(value_name = "ID", add = ArgValueCompleter::new(crate::shipped_schemas::complete_id))]
+        id: Option<String>,
     },
 }
 
@@ -822,7 +866,10 @@ af review plan --policy-rev HEAD --base HEAD~1 --candidate HEAD --long"
     #[command(
         long_about = "Compose the exact input one Worker node would receive — the bytes, their \
 transport, and every artifact the role-scoped manifest names — without a sandbox, a model call, \
-or Campaign state. This is how a human audits what a Worker sees.",
+or Campaign state. This is how a human audits what a Worker sees. A model Worker's header also \
+prints the reply schema its dispatch passes to the Provider CLI (`--json-schema` for Claude Code, \
+`--output-schema` for Codex). --json prints one af/review-render@2 document \
+(schemas/review-render-v2.json) with the bytes, the manifest and that `reply_schema`.",
         override_usage = "af review render --node <NODE> [--heavy] [OPTIONS]",
         after_long_help = "Examples:\n  \
 af review render --node correctness --policy-rev HEAD --base HEAD \\\n    --uncommitted\n  \
@@ -879,8 +926,8 @@ af review export --campaign pr-42 --finding F-01H… --allow-stale"
     },
     /// Render the Campaign report
     #[command(
-        long_about = "Render the Campaign report. --json selects the existing af/review-report@4 document, the same as --format json. The two flags cannot be combined, even when --format names json.",
-        after_long_help = "Examples:\n  af review report --campaign pr-42   # needs: Campaign pr-42\n  af review report --campaign pr-42 --json   # needs: Campaign pr-42"
+        long_about = "Render the Campaign report. --json selects the af/review-report@5 document, the same as --format json: each finding with the prompt that hands it to the agent that will fix it, and what the last Round covered per reviewer and per path, so a reviewer that did not run is never read as one that found nothing. --format sarif prints the findings as one SARIF 2.1.0 log for code-scanning tools. --json cannot be combined with --format, even when --format names json.",
+        after_long_help = "Examples:\n  af review report --campaign pr-42   # needs: Campaign pr-42\n  af review report --campaign pr-42 --json   # needs: Campaign pr-42\n  # needs: Campaign pr-42\n  af review report --campaign pr-42 --format sarif > review.sarif"
     )]
     Report {
         #[command(flatten)]
@@ -1191,6 +1238,17 @@ pub(crate) enum ReportFormatArg {
     Md,
     Text,
     Json,
+    /// SARIF 2.1.0 (ADR-0248)
+    Sarif,
+}
+
+/// What `af task findings` prints: text, its `af/task-findings@2` document, or SARIF 2.1.0.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
+pub(crate) enum FindingsFormatArg {
+    Text,
+    Json,
+    /// SARIF 2.1.0 (ADR-0248)
+    Sarif,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
@@ -1938,7 +1996,8 @@ in the background and returns once it holds the Task and its plan is admitted, p
 and its log, `runs/<TASK_ID>-<N>.log` in the Task Store (`af/task-detached@3` under --json); a \
 run not admitted within 2 minutes exits 4 with `admitted: false`, and `af task status` is next. \
 The run has no terminal, survives the shell that started it, and is the same process a \
-foreground run is; `af task wait`, `af task status` and `af task cancel` follow it. Every run \
+foreground run is; `af task wait`, `af task status`, `af task events` and `af task cancel` \
+follow it. Every run \
 records its process in the Store, `runs/<TASK_ID>-<N>.json`, before it takes the Task.\n\n\
 --from TASK plans NEW_ID as a new Task that continues the finished Task TASK from its reviewed \
 candidate (ADR-0212): the candidate Snapshot of its last review round (--round N for another) is \
@@ -2081,6 +2140,42 @@ af task status TASK_ID --json   # needs: a Task"
         #[command(flatten)]
         inspect: TaskInspectArgs,
     },
+    /// Follow a Task as JSON lines: each event of its log, then one terminal record
+    #[command(
+        long_about = "Print the events a Task's log records as JSON lines on stdout, one \
+`af/task-event@1` document per line, and follow the Task until it settles — no writer holds it \
+and no run of this host is starting — then print one terminal record and exit with the Task's \
+exit code, as `af task wait` does: its outcome's (`af help exit-codes`), 4 for a Task that waits \
+for a person.\n\nAn event line (`record: event`) is one event of the Task's log, in the order \
+the Store recorded it: its `sequence`, the Store's own, gap-free from 0; what changed (`change`, \
+and `detail` for an execution record, a wait or a Provider event); the node and Attempt it \
+concerns; a settled Attempt's `result` and exact `charged_tokens`. The terminal record (`record: \
+terminal`) comes exactly once, last: `last_sequence`, the Task's `state` with its outcome and \
+`next_action`, and `exit_code`.\n\n--after N prints only the events after sequence N: a follower \
+that lost its connection passes the last sequence it read and gets the rest, nothing twice. \
+With --timeout S it stops after S seconds without a terminal record, exits 124 and says on \
+stderr the --after that continues. A planned Task with no run in progress is refused (exit 1), \
+as by `af task wait`. A refusal is one `af/error@2` line on stdout and the same exit code. There \
+is no --json: the stream is many documents, and every other command's --json stays one.\n\n\
+Never: starts, resumes or changes a Task.",
+        after_long_help = "Examples:\n  \
+af task events TASK_ID   # needs: a Task af task run --detach started\n  \
+af task events TASK_ID --after 41   # needs: a Task that recorded event 41\n  \
+# needs: a running Task\n  \
+af task events TASK_ID --timeout 540 | jq -c 'select(.record == \"terminal\")'"
+    )]
+    Events {
+        /// Task id
+        task_id: String,
+        /// Print only the events after sequence N, the last one a follower read
+        #[arg(long, value_name = "N")]
+        after: Option<u64>,
+        /// Stop after S seconds without a terminal record and exit 124
+        #[arg(long, value_name = "S", value_parser = clap::value_parser!(u64).range(1..))]
+        timeout: Option<u64>,
+        #[command(flatten)]
+        store: TaskStoreArgs,
+    },
     /// Stop a running Task's `af task run` and its Worker processes; the Task stays resumable
     #[command(
         long_about = "Stop the `af task run` that holds a Task, and with it the Task's Worker \
@@ -2110,11 +2205,18 @@ quoted evidence and the reviewer's proposed fix, grouped by severity; then the e
 verdict on that round, the one the Task log recorded after it, with its reason, and the next \
 command. A round whose reduce step did not run shows each \
 reviewer's reports as recorded, not gathered. A Task that recorded no review round says so, \
-with the state it reached.\n\n--json prints one `af/task-findings@2` document. Exits 0 once \
-it read the Store.\n\nNever: dispatches a Worker, contacts a Provider or writes the Store.",
+with the state it reached. The round's coverage says which reviewers ran and which paths \
+they read: a reviewer that did not run shows `not reviewed`, never `no findings`.\n\n--json \
+(the same as --format json) prints one `af/task-findings@2` document: each finding carries an \
+`agent_prompt` (its location, evidence, the requested change and how verification will judge \
+it), the round its `coverage` and the findings a fix verification record proved fixed on its \
+Snapshot. --format sarif prints the same findings as one SARIF 2.1.0 log. --json cannot be \
+combined with --format. Exits 0 once it read the Store.\n\nNever: dispatches a Worker, \
+contacts a Provider or writes the Store.",
         after_long_help = "Examples:\n  \
 af task findings TASK_ID   # needs: a reviewed Task\n  \
-af task findings TASK_ID --round 1 --json   # needs: a reviewed Task"
+af task findings TASK_ID --round 1 --json   # needs: a reviewed Task\n  \
+# needs: a reviewed Task\n  af task findings TASK_ID --format sarif > findings.sarif"
     )]
     Findings {
         /// Task id
@@ -2122,6 +2224,9 @@ af task findings TASK_ID --round 1 --json   # needs: a reviewed Task"
         /// The Nth recorded review round instead of the last (1 is the first)
         #[arg(long, value_name = "N", value_parser = clap::value_parser!(u64).range(1..))]
         round: Option<u64>,
+        /// Output format; --json is --format json
+        #[arg(long, value_enum, help_heading = "Output", conflicts_with = "json")]
+        format: Option<FindingsFormatArg>,
         #[command(flatten)]
         inspect: TaskInspectArgs,
     },
@@ -2309,11 +2414,29 @@ af task deliver TASK_ID --repo . --branch af/TASK_ID --worktree ../TASK_ID \\\n 
         #[command(flatten)]
         inspect: TaskInspectArgs,
     },
-    /// List Tasks with outcome and spend
+    /// List Tasks with outcome and spend, or with --attention the ones that need you
+    #[command(
+        long_about = "List every Task of the Store, collected Tasks included, in Task ID order: \
+its state (phase/outcome/cause, `af help task-states`), review round, chargeable tokens, how long \
+ago it last changed and the verb of its next command; with --json, one `af/task-list@4` \
+document.\n\n\
+--attention groups the Tasks by what they wait for, read from each Task's state alone: waiting \
+for approval (planned or waiting), a failed gate, findings to answer, verified and ready to \
+deliver, and stopped (abandoned, or a Provider, interrupt, limit or wall clock ended it). Each \
+Task in those groups is printed with its one next command. Running Tasks are named on one line \
+and the Tasks that need nothing (delivered, verified with nothing to deliver, or collected) are \
+counted. With --json, one `af/task-attention@1` document holds all seven groups, `running` and \
+`nothing` included, each Task as its `af/task-list-entry@4`. Nothing is written.",
+        after_long_help = "Examples:\n  af task list\n  af task list --attention\n  \
+af task list --attention --json"
+    )]
     List {
         /// Also print each Task's CAS bytes: those only it reaches and those it shares
-        #[arg(long)]
+        #[arg(long, conflicts_with = "attention")]
         sizes: bool,
+        /// Group the Tasks by what they wait for, each with its next command
+        #[arg(long)]
+        attention: bool,
         #[command(flatten)]
         inspect: TaskInspectArgs,
     },
@@ -2723,6 +2846,30 @@ pub(crate) struct TaskInspectArgs {
     /// One JSON document on stdout instead of text
     #[arg(long, help_heading = "Output")]
     pub(crate) json: bool,
+}
+
+/// The Store selectors of a command whose output is JSON lines, which takes no `--json`.
+#[derive(Debug, Args, Clone)]
+pub(crate) struct TaskStoreArgs {
+    /// Repository the Task belongs to
+    #[arg(
+        long,
+        value_name = "DIR",
+        default_value = ".",
+        help_heading = "Selector"
+    )]
+    pub(crate) repo: PathBuf,
+    /// Explicit state directory
+    #[arg(long, value_name = "DIR", help_heading = "Selector")]
+    pub(crate) state: Option<PathBuf>,
+    /// The Workspace whose Store to use, by label (`af project workspaces` lists them)
+    #[arg(
+        long,
+        value_name = "LABEL",
+        conflicts_with = "state",
+        help_heading = "Selector"
+    )]
+    pub(crate) workspace: Option<String>,
 }
 
 // ------------------------------------------------------------------------------------------

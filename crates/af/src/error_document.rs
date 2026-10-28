@@ -262,7 +262,8 @@ pub(crate) fn document(
 /// which are not errors, and for a command line without `--json`, whose output is clap's alone.
 pub(crate) fn usage(argv: &[String], error: &clap::Error) -> Option<Value> {
     use clap::error::ErrorKind;
-    if !argv.iter().skip(1).any(|word| word == "--json")
+    // `af task events` prints JSON lines without --json, so its usage error is a line too.
+    if !(argv.iter().skip(1).any(|word| word == "--json") || command_path(argv) == "af task events")
         || matches!(
             error.kind(),
             ErrorKind::DisplayHelp | ErrorKind::DisplayVersion

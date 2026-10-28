@@ -3,8 +3,9 @@
 //! materialize` and `af task diff` over a candidate that adds, deletes and changes the mode of
 //! files; delivering a verified verification Task of another Task's retained candidate; `af task
 //! report --pr-body` through `scripts/check-pr-report.py`; and one background run that `af task
-//! run --detach` starts, `af task status` and `af task wait` follow, and `af task cancel` stops,
-//! after which a foreground run resumes it and prints its progress lines and last line.
+//! run --detach` starts, `af task status`, `af task wait` and `af task events` follow, and `af
+//! task cancel` stops, after which a foreground run resumes it and prints its progress lines and
+//! last line.
 
 use review_store::{Cas, EventStore};
 use serde_json::Value;
@@ -388,6 +389,7 @@ fn findings_print_each_reviewers_findings_by_severity_and_the_evaluators_verdict
 Task chain-base: finished/verified; review round 1 of 1 (pass) on sha256:…
   bugs: 1 major, 1 minor
   correctness: no findings
+  coverage: every reviewer ran (2 reviewers); 4 paths reviewed
 
 major
   [bugs] Reject negative offset, confidence 0.99, open
@@ -436,6 +438,51 @@ next: af task deliver chain-base --branch af/chain-base --worktree ../chain-base
         "Raise ValueError for a negative offset."
     );
     assert_eq!(round["reviewers"][1]["findings"], serde_json::json!([]));
+    // Item 1 of ADR-0248: each finding is handed over as a prompt, on the reviewed Snapshot.
+    let prompt = &bugs["findings"][0]["agent_prompt"];
+    assert_eq!(prompt["location"]["file"], "pagination.py");
+    assert_eq!(prompt["location"]["line"], 1);
+    assert_eq!(prompt["location"]["snapshot_id"], round["snapshot_id"]);
+    assert_eq!(prompt["evidence"], "A negative offset slices from the end.");
+    assert_eq!(
+        prompt["requested_change"],
+        "Raise ValueError for a negative offset."
+    );
+    assert!(
+        prompt["verification"]
+            .as_str()
+            .unwrap()
+            .contains("af/TaskFixReceipt@1"),
+        "{prompt}"
+    );
+    assert!(
+        prompt["text"]
+            .as_str()
+            .unwrap()
+            .contains("Location: pagination.py:1 on Snapshot sha256:"),
+        "{prompt}"
+    );
+    // Item 2: both reviewers ran, and every path the round changed is reviewed.
+    let coverage = &round["coverage"];
+    assert_eq!(
+        coverage["reviewers"],
+        serde_json::json!([
+            {"reviewer": "bugs", "state": "reviewed", "reason": null},
+            {"reviewer": "correctness", "state": "reviewed", "reason": null},
+        ])
+    );
+    let paths = coverage["paths"].as_array().unwrap();
+    assert_eq!(paths.len(), 4, "{coverage}");
+    assert!(
+        paths.iter().all(|path| path["state"] == "reviewed"),
+        "{coverage}"
+    );
+    assert!(
+        paths.iter().any(|path| path["path"] == "pagination.py"),
+        "{coverage}"
+    );
+    // Item 4: nothing is verified fixed without a verification record.
+    assert_eq!(round["verified_fixed"], serde_json::json!([]));
     assert_eq!(value["evaluation"]["outcome"], "passed");
     let typed: review_core::task::agent_loop::TaskFindingsV2 =
         serde_json::from_value(value.clone()).unwrap();
@@ -455,6 +502,57 @@ next: af task deliver chain-base --branch af/chain-base --worktree ../chain-base
         None,
     );
     assert_eq!(first, value);
+
+    // Item 3: the same findings as one SARIF 2.1.0 log, with its required structure.
+    let sarif = document(
+        &af(
+            &repo,
+            &state,
+            &["task", "findings", "chain-base", "--format", "sarif"],
+        ),
+        0,
+        Some("findings-sarif-v1.json"),
+    );
+    assert_eq!(sarif["version"], "2.1.0");
+    assert!(
+        sarif["$schema"]
+            .as_str()
+            .unwrap()
+            .ends_with("sarif-schema-2.1.0.json")
+    );
+    let run = &sarif["runs"][0];
+    assert_eq!(run["tool"]["driver"]["name"], "af");
+    assert_eq!(run["properties"]["schema"], "af/findings-sarif@1");
+    assert_eq!(run["properties"]["task_id"], "chain-base");
+    assert_eq!(run["invocations"][0]["executionSuccessful"], true);
+    let results = run["results"].as_array().unwrap();
+    assert_eq!(results.len(), 2);
+    for (result, level, line) in [(&results[0], "warning", 1), (&results[1], "note", 2)] {
+        assert_eq!(result["ruleId"], "af-review/bugs");
+        assert_eq!(result["level"], level);
+        assert!(
+            result["message"]["text"]
+                .as_str()
+                .unwrap()
+                .contains("Requested change:")
+        );
+        let location = &result["locations"][0]["physicalLocation"];
+        assert_eq!(location["artifactLocation"]["uri"], "pagination.py");
+        assert_eq!(location["region"]["startLine"], line);
+    }
+    let both = af(
+        &repo,
+        &state,
+        &[
+            "task",
+            "findings",
+            "chain-base",
+            "--json",
+            "--format",
+            "sarif",
+        ],
+    );
+    assert_eq!(both.status.code(), Some(2), "{}", err(&both));
 
     // A Task whose Pipeline has no review says so, with the state it reached.
     let plain = expect(&af(&repo, &state, &["task", "findings", "gc-older"]), 0);
@@ -1162,10 +1260,41 @@ fn leftovers(pids: &[u32]) -> crate::common::recorded::Leftovers {
     )
 }
 
+/// The lines of `af task events`, each one `af/task-event@1` document, its events numbered
+/// without a gap from `first` and at most one terminal record, the last line.
+fn event_lines(text: &str, first: u64) -> Vec<Value> {
+    let schema = schemas::validator("task-event-v1.json");
+    let lines: Vec<Value> = text
+        .lines()
+        .map(|line| serde_json::from_str(line).unwrap_or_else(|_| panic!("not one line: {line}")))
+        .collect();
+    for (at, line) in lines.iter().enumerate() {
+        schemas::valid(&schema, line);
+        assert_eq!(line["schema"], "af/task-event@1", "{line}");
+        if line["record"] == "terminal" {
+            assert_eq!(
+                at + 1,
+                lines.len(),
+                "the terminal record is the last line:\n{text}"
+            );
+        } else {
+            assert_eq!(
+                line["sequence"],
+                first + at as u64,
+                "a gap or repeat:\n{text}"
+            );
+        }
+    }
+    lines
+}
+
 /// Items 4, 5 and 8: a detached run returns at once with its pid and log, outlives the shell
 /// that started it, logs its progress and heartbeat; `status` names it running at its node,
 /// by the run that holds the lease even when a newer run recorded itself;
-/// `wait --timeout` gives up with 124; `cancel` refuses a writer of another host, then stops the
+/// `wait --timeout` gives up with 124; `af task events` follows the running Task as JSON lines
+/// with the Store's gap-free sequences, stops at `--timeout` naming the `--after` that continues,
+/// ends with exactly one terminal record once the Task settles, and `--after N` returns only the
+/// rest (ADR-0250); `cancel` refuses a writer of another host, then stops the
 /// recorded run and its Worker, leaving the Task cancelled by its requester and resumable; a
 /// foreground run resumes it, printing its node lines and its state as stderr's last line; and
 /// `wait` returns the Task's exit code.
@@ -1236,6 +1365,19 @@ fn a_detached_run_is_followed_cancelled_and_resumed() {
         i32::try_from(worker[0]).unwrap(),
     ));
     assert!(alive(pid), "the run outlived the shell that started it");
+    // A follower of the running Task, ended by the cancel below.
+    let follower = crate::common::af()
+        .current_dir(&repo)
+        .args(["task", "events", task, "--state"])
+        .arg(&state)
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
+        .spawn()
+        .unwrap();
+    let follower_pid = follower.id();
+    leftovers.0.extend(crate::common::recorded::Recorded::now(
+        i32::try_from(follower_pid).unwrap(),
+    ));
 
     let status = expect(&af(&repo, &state, &["task", "status", task]), 0);
     assert!(
@@ -1278,6 +1420,33 @@ fn a_detached_run_is_followed_cancelled_and_resumed() {
         err(&waited).contains("still runs after"),
         "{}",
         err(&waited)
+    );
+    // The stream so far: every recorded event, no terminal record, and the --after that goes on.
+    let partial = af(&repo, &state, &["task", "events", task, "--timeout", "1"]);
+    assert_eq!(partial.status.code(), Some(124), "{}", err(&partial));
+    let so_far = event_lines(&out(&partial), 0);
+    assert!(
+        so_far.iter().all(|line| line["record"] == "event"),
+        "{}",
+        out(&partial)
+    );
+    assert!(
+        so_far
+            .iter()
+            .any(|line| line["change"] == "execution_recorded"
+                && line["detail"] == "started"
+                && line["node"] == "implement"),
+        "{}",
+        out(&partial)
+    );
+    let seen = so_far.last().unwrap()["sequence"].as_u64().unwrap();
+    assert!(
+        err(&partial).contains(&format!(
+            "continue with `af task events {task} --after {seen} --state {}`",
+            state.display()
+        )),
+        "{}",
+        err(&partial)
     );
 
     // The heartbeat reaches the log while the Worker holds.
@@ -1342,6 +1511,57 @@ fn a_detached_run_is_followed_cancelled_and_resumed() {
         )),
         "{shown}"
     );
+    // The follower saw the cancel: every event from 0, then the one terminal record.
+    let followed = follower.wait_with_output().unwrap();
+    leftovers
+        .0
+        .retain(|recorded| recorded.pid() != i32::try_from(follower_pid).unwrap());
+    assert_eq!(followed.status.code(), Some(4), "{}", err(&followed));
+    let lines = event_lines(&out(&followed), 0);
+    let terminal = lines.last().unwrap();
+    assert_eq!(terminal["record"], "terminal", "{}", out(&followed));
+    assert_eq!(terminal["exit_code"], 4);
+    assert_eq!(terminal["state"]["outcome"], "cancelled");
+    assert_eq!(
+        terminal["state"]["next_action"],
+        format!("af task run {task} --state {}", state.display())
+    );
+    let followed_last = terminal["last_sequence"].as_u64().unwrap();
+    assert_eq!(lines[lines.len() - 2]["sequence"], followed_last);
+    // Read again from the start, the stream is the follower's, then what the stopped run
+    // recorded after it, under the same state.
+    let whole = af(&repo, &state, &["task", "events", task]);
+    assert_eq!(whole.status.code(), Some(4), "{}", err(&whole));
+    let whole = event_lines(&out(&whole), 0);
+    let whole_terminal = whole.last().unwrap();
+    assert_eq!(whole_terminal["state"], terminal["state"]);
+    assert_eq!(&whole[..lines.len() - 1], &lines[..lines.len() - 1]);
+    let last = whole_terminal["last_sequence"].as_u64().unwrap();
+    // Reconnecting with the last sequence it read, a follower gets only the rest.
+    let rest = af(
+        &repo,
+        &state,
+        &["task", "events", task, "--after", &seen.to_string()],
+    );
+    assert_eq!(rest.status.code(), Some(4), "{}", err(&rest));
+    let rest_lines = event_lines(&out(&rest), seen + 1);
+    assert_eq!(
+        &rest_lines[..],
+        &whole[usize::try_from(seen).unwrap() + 1..]
+    );
+    let beyond = af(
+        &repo,
+        &state,
+        &["task", "events", task, "--after", &(last + 1).to_string()],
+    );
+    assert_eq!(beyond.status.code(), Some(1), "{}", err(&beyond));
+    assert!(
+        err(&beyond).contains(&format!("so --after {} names none of them", last + 1)),
+        "{}",
+        err(&beyond)
+    );
+    let refusal: Value = serde_json::from_slice(&beyond.stdout).unwrap();
+    schemas::valid(&schemas::validator("error-v2.json"), &refusal);
     let again = af(&repo, &state, &["task", "cancel", task]);
     assert_eq!(again.status.code(), Some(1));
     assert!(err(&again).contains("is not running"), "{}", err(&again));
@@ -1424,6 +1644,35 @@ fn a_detached_run_is_followed_cancelled_and_resumed() {
         Some("task-status-v2.json"),
     );
     assert_eq!(settled["state"]["outcome"], "verified");
+    // The resumed run's events follow the cancelled stream's last sequence, under one terminal.
+    let resumed_events = af(
+        &repo,
+        &state,
+        &["task", "events", task, "--after", &last.to_string()],
+    );
+    assert_eq!(
+        resumed_events.status.code(),
+        Some(0),
+        "{}",
+        err(&resumed_events)
+    );
+    let lines = event_lines(&out(&resumed_events), last + 1);
+    assert!(
+        lines.iter().any(|line| line["change"] == "finished"),
+        "{}",
+        out(&resumed_events)
+    );
+    assert!(
+        lines.iter().any(|line| line["detail"] == "settled"
+            && line["result"] == "succeeded"
+            && line["charged_tokens"].is_string()),
+        "{}",
+        out(&resumed_events)
+    );
+    let terminal = lines.last().unwrap();
+    assert_eq!(terminal["record"], "terminal");
+    assert_eq!(terminal["exit_code"], 0);
+    assert_eq!(terminal["state"], settled["state"]);
     let notified = crate::common::af()
         .current_dir(&repo)
         .args(["task", "wait", task, "--notify", "--bell", "--state"])

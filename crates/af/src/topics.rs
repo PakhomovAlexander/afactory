@@ -157,7 +157,7 @@ fn start_bindings(registry: &crate::providers::RegistryRead) -> String {
     }
 }
 
-/// The phase, outcome and cause tables of `af help task-states`, from
+/// The phase, outcome, cause and attention tables of `af help task-states`, from
 /// `review_core::task::state`; `docs/tasks.md` carries the same rows.
 pub(crate) fn task_state_tables() -> String {
     use review_core::task::state::*;
@@ -188,6 +188,17 @@ pub(crate) fn task_state_tables() -> String {
             cause.description()
         );
         out.push_str(&crate::human::wrap(&row, 100, 46));
+        out.push('\n');
+    }
+    out.push_str("\nAttention groups, as af task list --attention prints them\n\n");
+    for group in TaskAttentionV1::ALL {
+        let row = format!(
+            "  {:<12} {:<27} {}",
+            group.as_str(),
+            group.title(),
+            group.description()
+        );
+        out.push_str(&crate::human::wrap(&row, 100, 43));
         out.push('\n');
     }
     out.trim_end().to_owned()
@@ -226,8 +237,8 @@ Where such a code's result goes to stdout alone (under --json, `af task explain`
 of a Task that already finished), stderr ends with `Task ID: phase/outcome/cause; next: COMMAND`,
 so a non-zero exit always says why there.
 
-`af task wait` ends with the same code once the Task settles (4 for a Task that was cancelled or
-waits for a person), and with 124 when its --timeout passes first.
+`af task wait` and `af task events` end with the same code once the Task settles (4 for a Task
+that was cancelled or waits for a person), and with 124 when their --timeout passes first.
 
 `af task show`, `af task list`, `af task report`, `af task status` and `af task findings` exit 0
 once they read the Store: the state they print is data, not their outcome.",
@@ -495,6 +506,10 @@ documents are af/provider-detect@4 (`af provider detect`), af/provider-status@4,
 af/provider-setup@2 and af/provider-models@1; none carries an account, a credential or the
 Provider CLI's own words.
 
+One command prints JSON lines instead and takes no --json: `af task events ID` writes one
+af/task-event@1 document per line while it follows a Task, and its refusal or usage error is one
+af/error@2 line with the same exit code.
+
 Documents carry `kind@version` identifiers where they describe persisted records; a payload shape
 change bumps the version rather than reinterpreting an old one. Nothing af prints under --json is
 affected by a TTY, colours, or the update check: its notice goes to stderr, only on a TTY, and
@@ -502,10 +517,14 @@ never under --json.
 
 Review reading commands:
 
+  af review render --json              af/review-render@2 (schemas/review-render-v2.json),
+                                       with the reply schema a model Worker's dispatch passes
   af review ledger --json              af/review-ledger@1 (schemas/review-ledger-v1.json)
   af review show KEY --json            af/review-show@1 (schemas/review-show-v1.json)
-  af review report --json              af/review-report@4 (schemas/review-report-v4.json)
+  af review report --json              af/review-report@5 (schemas/review-report-v5.json)
                                        --json is --format json; combining them is a usage error
+  af review report --format sarif      SARIF 2.1.0, profile af/findings-sarif@1
+                                       (schemas/findings-sarif-v1.json)
 
 The Task documents, each named by its `schema`:
 
@@ -513,11 +532,19 @@ The Task documents, each named by its `schema`:
                                        af/task-collected-inspection@3
   af task show --checks --json         af/task-checks@3
   af task list --json                  af/task-list@4, one af/task-list-entry@4 per Task
+  af task list --attention --json      af/task-attention@1: seven groups by what each Task
+                                       waits for, each Task its af/task-list-entry@4
   af task report --json                af/task-report@3
-  af task findings --json              af/task-findings@2
+  af task findings --json              af/task-findings@2, each finding with its agent_prompt,
+                                       the round with its coverage and verified_fixed
+  af task findings --format sarif      SARIF 2.1.0, profile af/findings-sarif@1
   af task diff --json                  af/task-diff@1
   af task materialize --json           af/task-materialized@1
   af task status --json, wait --json   af/task-status@2
+  af task events                       JSON lines, no --json: one af/task-event@1 per event
+                                       of the Task's log, with the Store's gap-free
+                                       `sequence` (--after N resumes), then one terminal
+                                       record with the Task's state and exit_code
   af task run --detach --json          af/task-detached@3
   af task cancel --json                af/task-cancelled@2
   af task plan --json, refused         af/task-selection@3, exit 1, with `error`, `exit_code`
@@ -525,15 +552,49 @@ The Task documents, each named by its `schema`:
                                        planning_diagnostic.required_limits and .reserves
 
 af/task-inspection@14, af/task-collected-inspection@3, af/task-checks@3, each
-af/task-list-entry@4, af/task-report@3, af/task-findings@2, af/task-status@2, af/task-detached@3
-and af/task-cancelled@2 carry the Task's `state` (`af help task-states`), its `next_action`
-carrying the selectors the command was given (a report, pasted into a pull request, names no
-Store path); the diff, the materialized candidate and the refused selection describe no Task
-state. A previous version is refused, never read.
+af/task-list-entry@4, the groups of af/task-attention@1, af/task-report@3, af/task-findings@2,
+af/task-status@2, af/task-detached@3, af/task-cancelled@2 and the terminal record of
+af/task-event@1 carry the Task's `state` (`af help task-states`), its `next_action` carrying the
+selectors the command was given (a report, pasted into a pull request, names no Store path); the
+diff, the materialized candidate and the refused selection describe no Task state. A previous
+version is refused, never read.
+
+The command catalog and the schemas:
+
+  af help --json                       af/command-catalog@1 (schemas/command-catalog-v1.json):
+                                       every command with its usage, arguments and effects
+  af help COMMAND... --json            the same document for that command and those below it;
+                                       a path that names no command is exit 2
+  af schema show ID                    the JSON Schema of any document this page names, by its
+                                       ID; `af schema show` lists the IDs
+
+The catalog is generated from the command definitions the binary parses. Each runnable command's
+`effects` say what it may do, never that it will:
+
+  tokens     `free`: never calls a model; `charges`: may dispatch model Workers, charged
+             against a budget, under `charges_when` (null: any run may)
+  writes     `store`: a Task Store or a review Campaign's Store; `files`: files outside af's
+             own state, in the repository, a worktree, a branch or a directory or file the
+             command names; `machine`: af's machine-local state, the Provider and Project
+             registries and Project Stores, configuration, installed releases, shell
+             completions and man pages, telemetry and caches; `remote`: something off this
+             machine, the gate branches and draft pull request of a Remote Check
+  human      `login`: a person completes a Provider's official login, at a private terminal
+             or through the host's private channel; `approval`: a developer's signature over
+             an exact decision payload, made outside af; `terminal`: an interactive terminal,
+             for a screen or an editor
+  when       on every write and need: null always, else the flag as typed (`--apply`) or a
+             short phrase naming the condition
+
+Housekeeping every command shares is not an effect: telemetry, the storage sweep after a run, the
+release check's schedule, a pinned release installed on demand, and the lazy registration of the
+repository's Project and checkout.
 
 Examples:
   af task list --json
-  af task show nope --json   # exit 1";
+  af task show nope --json   # exit 1
+  af help task run --json
+  af schema show af/task-status@2";
 
 const TASK_STATES: &str = "\
 Every af task command that shows a Task prints one state for it, in text and under --json alike:
@@ -571,9 +632,15 @@ only a check that did not start says `never started`.
 `af task status ID` prints the state in one line without waiting, with the node that runs and the
 reserved, charged and remaining tokens (plus unknown usage). It shows the last comparable Gate
 duration when recorded. `af task wait ID` blocks until the Task settles and exits with its
-outcome's code.
+outcome's code; `af task events ID` follows it as JSON lines, one per event of its log, and ends
+with one terminal record that carries the same state.
 A run `af task cancel ID` stopped is `abandoned/cancelled/host_cancelled`, and `af task show`
-names who cancelled it. `af help agents` walks the whole loop.";
+names who cancelled it. `af help agents` walks the whole loop.
+
+`af task list --attention` groups the Tasks by what they wait for, read from each state alone and
+never recorded; the browser's Tasks folder opens on the same groups. The first five need a person
+and print each Task with its next command; running Tasks are named on one line and the Tasks that
+need nothing are counted. Under --json, `af/task-attention@1` holds all seven groups.";
 
 const TASK_FILE: &str = "\
 A Task file (JSON, or TOML for any other extension) is what `af task plan --file` and `af task

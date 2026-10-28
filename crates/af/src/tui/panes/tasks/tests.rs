@@ -1432,6 +1432,146 @@ fn unavailable_registered_stores_are_each_their_own_row() {
     assert!(same_store(&locked, &root.join("locked/../locked")));
 }
 
+/// A Store of `origin` listing one Task in each `state`, named `t-0`, `t-1`, ...
+fn attention_store(dir: &str, repo: Option<&str>, origin: Origin, states: &[Value]) -> Store {
+    let tasks = states
+        .iter()
+        .enumerate()
+        .map(|(n, state)| Listed {
+            task_id: format!("t-{n}"),
+            entry: json!({"task_id": format!("t-{n}"), "state": state}),
+            summary: Err("not inspected".to_owned()),
+        })
+        .collect();
+    Store {
+        dir: PathBuf::from(dir),
+        shown: dir.to_owned(),
+        repo: repo.map(str::to_owned),
+        origin,
+        tasks: Ok(tasks),
+        release: None,
+    }
+}
+
+/// The folder's attention view groups the list entries as `af task list --attention` does, one
+/// group per thing a person is waited for, each Task with its next command; running Tasks are
+/// named and the ones that need nothing counted. A Store a command reaches only with `--state`
+/// gets it in the command, and a user-scope repository's Tasks say where to run theirs.
+#[test]
+fn the_folder_opens_on_what_needs_you_with_each_next_command() {
+    let state = |phase: &str, outcome: Value, cause: Value, next: Value| json!({"phase": phase, "outcome": outcome, "cause": cause, "next_action": next});
+    let states = [
+        state(
+            "planned",
+            Value::Null,
+            Value::Null,
+            json!("af task run t-0 --confirm-plan sha256:ab"),
+        ),
+        state(
+            "finished",
+            json!("gate_failed"),
+            json!("check_failed"),
+            json!("af task run t-1 --retry-gate"),
+        ),
+        state(
+            "finished",
+            json!("changes_requested"),
+            json!("reviewer_findings"),
+            json!("af task findings t-2"),
+        ),
+        state(
+            "finished",
+            json!("verified"),
+            Value::Null,
+            json!("af task deliver t-3 --branch af/t-3 --worktree ../t-3 --confirm t-3"),
+        ),
+        state(
+            "abandoned",
+            json!("cancelled"),
+            json!("writer_lost"),
+            json!("af task run t-4"),
+        ),
+        state("running", Value::Null, Value::Null, Value::Null),
+        state("finished", json!("verified"), Value::Null, Value::Null),
+    ];
+    let mut pane = TasksPane {
+        stores: vec![attention_store("/scope", None, Origin::Scope, &states)],
+        ..TasksPane::default()
+    };
+    let text =
+        |pane: &TasksPane| -> Vec<String> { pane.attention_rows().iter().map(Row::text).collect() };
+    assert_eq!(
+        text(&pane),
+        [
+            "NEEDS YOU  (af task list --attention)",
+            "  Waiting for approval (1)",
+            "    t-0  planned",
+            "      next: af task run t-0 --confirm-plan sha256:ab",
+            "  Failed gate (1)",
+            "    t-1  finished/gate_failed/check_failed",
+            "      next: af task run t-1 --retry-gate",
+            "  Findings to answer (1)",
+            "    t-2  finished/changes_requested/reviewer_findings",
+            "      next: af task findings t-2",
+            "  Verified, ready to deliver (1)",
+            "    t-3  finished/verified",
+            // Wider than the pane, a command continues between its arguments.
+            "      next: af task deliver t-3 --branch af/t-3 --worktree ../t-3 \\",
+            "                --confirm t-3",
+            "  Stopped (1)",
+            "    t-4  abandoned/cancelled/writer_lost",
+            "      next: af task run t-4",
+            "  Running (1): t-5",
+            "  Nothing to do (1)",
+            "",
+        ]
+    );
+    // Nothing waits for a person: the view says so and still names what runs.
+    pane.stores = vec![attention_store("/scope", None, Origin::Scope, &states[5..])];
+    assert_eq!(
+        text(&pane)[1..3],
+        ["  No Task needs you now.", "  Running (1): t-0"]
+    );
+    // An explicit Store's commands name it; a user-scope repository's say where they run.
+    pane.stores = vec![
+        attention_store(
+            "/elsewhere/my state",
+            Some("/elsewhere/my state"),
+            Origin::Session,
+            &states[1..2],
+        ),
+        attention_store(
+            "/x/opaque",
+            Some("opaque"),
+            Origin::Repository,
+            &states[4..5],
+        ),
+    ];
+    let rows = text(&pane);
+    assert!(
+        rows.contains(
+            &"      next: af task run t-1 --retry-gate --state '/elsewhere/my state'".to_owned()
+        ),
+        "{rows:#?}"
+    );
+    assert!(
+        rows.contains(&"    opaque/t-0  abandoned/cancelled/writer_lost".to_owned()),
+        "{rows:#?}"
+    );
+    assert!(
+        rows.contains(&"      next: af task run t-4".to_owned()),
+        "{rows:#?}"
+    );
+    assert!(
+        rows.iter()
+            .any(|row| row.contains("Run a next command in its Task's repository")),
+        "{rows:#?}"
+    );
+    // No readable Store lists a Task: no view, only the folder below it.
+    pane.stores = vec![attention_store("/scope", None, Origin::Scope, &[])];
+    assert!(pane.attention_rows().is_empty());
+}
+
 /// A load starts the read of every Store on a thread and lists nothing until the event loop
 /// collects it: the bar shows the folder with a spinner meanwhile, so the browser's first frame
 /// never waits on a Store (ADR-0240).

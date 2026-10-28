@@ -30,8 +30,9 @@ use review_core::{
 };
 use serde_json::{Value, json};
 
-const SCHEMAS: [&str; 233] = [
+const SCHEMAS: [&str; 236] = [
     "error-v2.json",
+    "findings-sarif-v1.json",
     "task-attempt-wall-end-v1.json",
     "task-partial-candidate-v1.json",
     "task-findings-v2.json",
@@ -40,6 +41,7 @@ const SCHEMAS: [&str; 233] = [
     "task-status-v2.json",
     "task-detached-v3.json",
     "task-cancelled-v2.json",
+    "task-event-v1.json",
     "task-run-process-v1.json",
     "task-cancel-request-v1.json",
     "task-delivery-proof-v1.json",
@@ -59,6 +61,7 @@ const SCHEMAS: [&str; 233] = [
     "pipeline-selection-v1.json",
     "task-collected-inspection-v3.json",
     "task-list-v4.json",
+    "task-attention-v1.json",
     "task-checks-v3.json",
     "provider-detect-v3.json",
     "provider-detect-v4.json",
@@ -128,7 +131,7 @@ const SCHEMAS: [&str; 233] = [
     "harness-materialization-v1.json",
     "provider-doctor-v2.json",
     "review-outcome-v3.json",
-    "review-report-v4.json",
+    "review-report-v5.json",
     "task-context-v1.json",
     "task-builtin-context-v1.json",
     "task-provider-context-v1.json",

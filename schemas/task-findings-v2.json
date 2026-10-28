@@ -2,7 +2,7 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "urn:af:schema:task-findings:2",
   "title": "Task findings af/task-findings@2",
-  "$comment": "What `af task findings ID --json` prints (ADR-0211): the Task's state, how many review rounds it recorded, the last (or `--round N`) round with every reviewer's findings — severity, confidence, title, location, quoted evidence and proposed fix — and its counts by severity, and the evaluator's verdict. `round` is null when the Task recorded no round, `evaluation` when no evaluator recorded a verdict. Read-only.",
+  "$comment": "What `af task findings ID --json` prints (ADR-0211, ADR-0248): the Task's state, how many review rounds it recorded, the last (or `--round N`) round with every reviewer's findings — severity, confidence, title, location, quoted evidence, proposed fix and the agent prompt that hands the finding to the agent that will fix it — its counts by severity, what the round covered per reviewer and per path, the findings a verification record proved fixed on its Snapshot, and the evaluator's verdict. `round` is null when the Task recorded no round, `evaluation` when no evaluator recorded a verdict. Read-only.",
   "type": "object",
   "additionalProperties": false,
   "required": [
@@ -62,7 +62,8 @@
         "file",
         "line",
         "evidence",
-        "fix"
+        "fix",
+        "agent_prompt"
       ],
       "properties": {
         "finding_id": {
@@ -152,9 +153,12 @@
               "type": "null"
             }
           ]
+        },
+        "agent_prompt": {
+          "$ref": "#/$defs/agent_prompt"
         }
       },
-      "$comment": "One finding as its reviewer reported it. `finding_id` and `status` are the Finding Set's, null for a report of an incomplete round."
+      "$comment": "One finding as its reviewer reported it, with its agent prompt. `finding_id` and `status` are the Finding Set's, null for a report of an incomplete round. A `fixed` status is never a verified fix by itself: only `round.verified_fixed` names one."
     },
     "counts": {
       "type": "object",
@@ -223,7 +227,9 @@
         "complete",
         "missing_reviewers",
         "counts",
-        "reviewers"
+        "reviewers",
+        "coverage",
+        "verified_fixed"
       ],
       "properties": {
         "index": {
@@ -264,6 +270,15 @@
           "items": {
             "$ref": "#/$defs/reviewer"
           }
+        },
+        "coverage": {
+          "$ref": "#/$defs/coverage"
+        },
+        "verified_fixed": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/verified_fix"
+          }
         }
       }
     },
@@ -300,6 +315,214 @@
           "pattern": "\\S"
         }
       }
+    },
+    "agent_prompt": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "location",
+        "evidence",
+        "requested_change",
+        "verification",
+        "text"
+      ],
+      "properties": {
+        "location": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "file",
+            "line",
+            "snapshot_id"
+          ],
+          "properties": {
+            "file": {
+              "anyOf": [
+                {
+                  "type": "string",
+                  "minLength": 1,
+                  "maxLength": 65536,
+                  "pattern": "\\S"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
+            "line": {
+              "anyOf": [
+                {
+                  "type": "integer",
+                  "minimum": 1
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
+            "snapshot_id": {
+              "$ref": "urn:af:schema:task-contracts:1#/$defs/digest"
+            }
+          }
+        },
+        "evidence": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 65536,
+          "pattern": "\\S"
+        },
+        "requested_change": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 65536,
+          "pattern": "\\S"
+        },
+        "verification": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 65536,
+          "pattern": "\\S"
+        },
+        "text": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 65536,
+          "pattern": "\\S"
+        }
+      },
+      "$comment": "The finding handed to the agent that will fix it (ADR-0248): its location on the Snapshot the round reviewed (`file` and `line` null for a change-wide finding), the quoted evidence, the requested change (the reviewer's fix, or what is asked when it proposed none), how verification will judge a fix, and all of it as one prompt `text`."
+    },
+    "coverage": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "subject",
+        "reviewers",
+        "paths"
+      ],
+      "properties": {
+        "subject": {
+          "enum": [
+            "diff",
+            "whole_tree"
+          ]
+        },
+        "reviewers": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "reviewer",
+              "state",
+              "reason"
+            ],
+            "properties": {
+              "reviewer": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 4096,
+                "pattern": "\\S"
+              },
+              "state": {
+                "enum": [
+                  "reviewed",
+                  "not_run"
+                ]
+              },
+              "reason": {
+                "anyOf": [
+                  {
+                    "type": "string",
+                    "minLength": 1,
+                    "maxLength": 65536,
+                    "pattern": "\\S"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
+              }
+            },
+            "if": {
+              "properties": {
+                "state": {
+                  "const": "not_run"
+                }
+              }
+            },
+            "then": {
+              "properties": {
+                "reason": {
+                  "type": "string",
+                  "minLength": 1,
+                  "maxLength": 65536,
+                  "pattern": "\\S"
+                }
+              }
+            },
+            "else": {
+              "properties": {
+                "reason": {
+                  "type": "null"
+                }
+              }
+            }
+          }
+        },
+        "paths": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "path",
+              "state"
+            ],
+            "properties": {
+              "path": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 4096,
+                "pattern": "\\S"
+              },
+              "state": {
+                "enum": [
+                  "reviewed",
+                  "partially_reviewed",
+                  "not_reviewed",
+                  "outside_round"
+                ]
+              }
+            }
+          }
+        }
+      },
+      "$comment": "What the round covered (ADR-0248). Each reviewer is `reviewed` (no findings from it means none found) or `not_run` with why (no findings from it means nothing). Each path of a diff round's Subject, then each path a finding names outside it (`outside_round`); a whole-tree round lists the paths its findings name. A path inside the round is `reviewed` when every reviewer ran, `partially_reviewed` when some did, `not_reviewed` when none did."
+    },
+    "verified_fix": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "finding_id",
+        "record_id",
+        "snapshot_id"
+      ],
+      "properties": {
+        "finding_id": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 4096,
+          "pattern": "\\S"
+        },
+        "record_id": {
+          "$ref": "urn:af:schema:task-contracts:1#/$defs/digest"
+        },
+        "snapshot_id": {
+          "$ref": "urn:af:schema:task-contracts:1#/$defs/digest"
+        }
+      },
+      "$comment": "A finding verified fixed: the positive verification record that says so (an `af/TaskFixReceipt@1` on the Task path, a `FixVerification@1` on the Campaign path) and the Snapshot it was verified on. Nothing else is reported as verified fixed."
     }
   }
 }

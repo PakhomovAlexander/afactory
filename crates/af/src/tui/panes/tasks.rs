@@ -2,11 +2,12 @@
 //! the functions behind `af task list --json` (`task_execution::list_common`) and `af task
 //! explain --json`, which is the `af task show --json` document with the plan and its graph.
 //!
-//! The bar groups the Tasks by state; one Task's main pane shows its identity, one row per
-//! stage of its plan's graph order, its token and time totals, and its event history. Every
-//! value is a field of those documents or of an artifact they name by ID: the node an
-//! invocation ran and the goal of the revision. Nothing is written. Every read of the Stores
-//! runs on a thread: the one a load or `R` starts, and the one that reads the opened running
+//! The bar groups the Tasks by state, and the folder's main pane opens on what needs a person,
+//! grouped as `af task list --attention` groups the same entries; one Task's main pane shows its
+//! identity, one row per stage of its plan's graph order, its token and time totals, and its
+//! event history. Every value is a field of those documents or of an artifact they name by ID:
+//! the node an invocation ran and the goal of the revision. Nothing is written. Every read of the
+//! Stores runs on a thread: the one a load or `R` starts, and the one that reads the opened running
 //! Task again about once a second. The event loop collects each Store as it is read, so the bar
 //! fills Store by Store and the browser never waits on one (ADR-0240).
 
@@ -1779,6 +1780,7 @@ impl TasksPane {
             rows.extend(Row::errors("warning", bounded(warning, MAIN - 10, "")));
             rows.push(Row::blank());
         }
+        rows.extend(self.attention_rows());
         let earlier_stores: Vec<&Store> = self.stores.iter().filter(|s| earlier(s)).collect();
         if let Some(first) = earlier_stores.first() {
             let count = earlier_stores.len();
@@ -1854,6 +1856,100 @@ impl TasksPane {
             rows.push(Row::blank());
         }
         rows
+    }
+
+    /// The attention view at the top of the folder, as `af task list --attention` groups the
+    /// same list entries: each group that waits for a person, its Tasks by bar id and state
+    /// with the next command each names, then the running Tasks and how many need nothing.
+    /// Read from each entry's `state` alone; empty when no readable Store lists a Task.
+    fn attention_rows(&self) -> Vec<Row> {
+        use review_core::task::state::TaskAttentionV1;
+        type Entry<'a> = (&'a Store, &'a Listed, review_core::task::state::TaskStateV1);
+        let mut groups: Vec<(TaskAttentionV1, Vec<Entry>)> = TaskAttentionV1::ALL
+            .into_iter()
+            .map(|group| (group, Vec::new()))
+            .collect();
+        for store in self.stores.iter().filter(|store| !earlier(store)) {
+            for task in store.tasks.iter().flatten() {
+                // An entry whose state does not read is left out; its folder row still lists it.
+                let Ok(state) = task_execution::attention::state_of(&task.entry) else {
+                    continue;
+                };
+                let group = TaskAttentionV1::of(&state);
+                if let Some((_, tasks)) = groups.iter_mut().find(|(each, _)| *each == group) {
+                    tasks.push((store, task, state));
+                }
+            }
+        }
+        if groups.iter().all(|(_, tasks)| tasks.is_empty()) {
+            return Vec::new();
+        }
+        let mut rows = vec![Row::painted(
+            "NEEDS YOU  (af task list --attention)",
+            Paint::Title,
+        )];
+        let mut unreachable = false;
+        for (group, tasks) in groups
+            .iter()
+            .filter(|(g, t)| g.needs_you() && !t.is_empty())
+        {
+            rows.push(Row::painted(
+                format!("  {} ({})", group.title(), tasks.len()),
+                Paint::Title,
+            ));
+            for (store, task, state) in tasks {
+                rows.push(Row::plain(format!(
+                    "    {}  {}",
+                    TasksPane::id(store, &task.task_id),
+                    state.label()
+                )));
+                let next = state.next_action.as_deref().unwrap_or("none");
+                unreachable |= store.origin == Origin::Repository;
+                let line =
+                    crate::human::fit_command(&format!("      next: {}", reach(store, next)), MAIN);
+                rows.extend(line.lines().map(Row::plain));
+            }
+        }
+        if rows.len() == 1 {
+            rows.push(Row::plain("  No Task needs you now."));
+        }
+        for (group, tasks) in groups
+            .iter()
+            .filter(|(g, t)| !g.needs_you() && !t.is_empty())
+        {
+            let line = match group {
+                TaskAttentionV1::Running => {
+                    let ids: Vec<String> = tasks
+                        .iter()
+                        .map(|(store, task, _)| TasksPane::id(store, &task.task_id))
+                        .collect();
+                    format!("  {} ({}): {}", group.title(), tasks.len(), ids.join(", "))
+                }
+                _ => format!("  {} ({})", group.title(), tasks.len()),
+            };
+            for line in bounded(&line, MAIN, "") {
+                rows.push(Row::painted(line, Paint::Muted));
+            }
+        }
+        if unreachable {
+            let why = "Run a next command in its Task's repository: the user scope cannot name it.";
+            for line in bounded(why, MAIN, "  ") {
+                rows.push(Row::painted(line, Paint::Muted));
+            }
+        }
+        rows.push(Row::blank());
+        rows
+    }
+}
+
+/// `next` as a command that reaches `store`: an `af task` command for a Store a command reaches
+/// only by naming it gets `--state DIR`, as `r` and `D` prefill it.
+fn reach(store: &Store, next: &str) -> String {
+    if store.origin.explicit() && next.starts_with("af task ") && !next.contains(" --state ") {
+        let dir = store.dir.display().to_string();
+        format!("{next} --state {}", shell_words::quote(&dir))
+    } else {
+        next.to_owned()
     }
 }
 

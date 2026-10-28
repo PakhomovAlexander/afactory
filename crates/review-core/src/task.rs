@@ -19,6 +19,7 @@ pub mod execution_started;
 pub mod feedback;
 pub mod findings;
 pub mod gate_retry;
+pub mod handoff;
 pub mod input_bindings;
 pub mod limits_fit;
 pub mod measurement;

@@ -29,6 +29,8 @@ Never add `--login` inside an agent session; ask the person to log in privately.
 | Build a PR body | `af task report TASK_ID --pr-body` |
 | Check disk before launch | `[storage] min_free_bytes` |
 | Retry a failed Gate | `af task run TASK_ID --retry-gate` |
+| Find the Tasks that need you | `af task list --attention --json` |
+| Poll a running Task in a loop | `af task events TASK_ID` |
 
 The findings command reads a recorded review round; an absent round appears in state.
 Materialize requires a clean Git worktree unless `--force`; add `--allow-unverified` for an
@@ -38,7 +40,10 @@ Continuation uses OLD's reviewed candidate and recorded findings, then requires 
 the exact new plan. The PR body requires the repository template and a valid lines block; failure
 prints no partial body. The machine's free-disk floor refuses work before spend. Gate retry needs
 an eligible failed check on the same sealed candidate and remains bound by approval, deadline and
-budgets; it does not decide that a failure was flaky.
+budgets; it does not decide that a failure was flaky. The attention list groups every Task of
+the Store by what it waits for and names each one's next command. The event stream prints each
+event the Store records as one JSON line and ends with one terminal record; `--after N` resumes
+it.
 
 This is the loop a coding agent, or a script, runs to get a change made through af: plan a
 Task, run it, read how it ended, read its findings, look at its change, run another round
@@ -60,6 +65,17 @@ An agent's host sandbox may deny a CLI probe, such as `codex app-server` before 
 that sandbox or approve the needed host permission, then retry the command. Reinstalling the CLI
 does not grant a sandbox permission. `af doctor` shows the detected harness, sandbox and network
 context; these markers explain the environment but never prove that a Provider CLI is compatible.
+
+## Learning the commands
+
+`af help --json` prints every command as one `af/command-catalog@1` document, generated from
+the command definitions the binary parses: its usage, subcommands and arguments, and for each
+runnable command its `effects`: whether it may charge tokens (`tokens`, `charges_when`), the
+state it may write (`store`, `files`, `machine`, `remote`) and what it needs from a person
+(`login`, `approval`, `terminal`), each with the flag that turns it on. `af help task run --json`
+prints one command. Read a command's `effects` before you run it for the first time: one with
+`tokens` `free`, no `writes` and no `human` only reads. `af schema show ID` prints the schema of
+any document `af help json` names, and `af schema show` lists the IDs.
 
 ## 1. Plan
 
@@ -96,6 +112,18 @@ its Worker processes, recording who asked, and prints `af/task-cancelled@2`; the
 resumable with
 `af task run TASK_ID`.
 
+To follow the run instead of only waiting for it, `af task events TASK_ID` prints JSON lines on
+stdout, one `af/task-event@1` document per event of the Task's log: its `sequence`, the Store's
+own, gap-free from 0, what changed (`change`, and `detail` for an execution record, a wait or a
+Provider event), the node and Attempt it concerns, and a settled Attempt's `result` and exact
+`charged_tokens`. Once the Task settles it prints exactly one terminal record, `record:
+terminal`, with the Task's `state` (its outcome and `next_action`) and `exit_code`, and exits
+with that code as `af task wait` does. A follower that lost its connection passes the last
+`sequence` it read, `af task events TASK_ID --after N`, and gets only the rest; `--timeout S`
+stops without a terminal record, exit 124, and names on stderr the `--after` that continues.
+The command takes no `--json`: every other command's `--json` stays one document, and a refusal
+here is one `af/error@2` line.
+
 ## 3. Read how it ended
 
 Every document above carries `state`: `phase`, `outcome`, `cause` and `next_action`, the one
@@ -109,6 +137,12 @@ node past its recovery allowance, also carries `cause`, `next_action` and `detai
 (`af help json`). A run SIGINT or SIGTERM stopped is one too, exit 130 or 143, `cause`
 `interrupted`, and its `next_action` continues it.
 
+Across many Tasks, `af task list --attention --json` prints one `af/task-attention@1` document:
+every Task of the Store in exactly one group, read from its `state` alone. `approval`,
+`gate_failed`, `findings`, `deliver` and `stopped` have `needs_you` true, and each of their
+Tasks names its `state.next_action`; `running` and `nothing` have it false. Run the next
+command of each Task in a group that needs you, or tell the person which ones wait for them.
+
 ## 4. Read the findings
 
 `af task findings TASK_ID --json` prints the last review round as one `af/task-findings@2`
@@ -117,6 +151,16 @@ quoted evidence and the proposed fix, the round's counts by severity, and the ev
 verdict on that round with its reason. `--round N` reads an earlier round, with its own
 verdict. A Task that recorded no review round has `round: null`, and its `state` says how far
 it got. After `reviewer_findings` this is the command `next_action` names.
+
+Hand a finding to the agent that will fix it through its `agent_prompt`: the location on the
+reviewed Snapshot, the evidence, the requested change, how verification will judge the fix, and
+all of it as one `text`. Read the round's `coverage` before you read an empty list as clean: a
+reviewer whose `state` is `not_run` never looked, and its `reason` says why; a path is
+`reviewed`, `partially_reviewed`, `not_reviewed` or `outside_round`. A finding is verified fixed
+only when the round's `verified_fixed` names it with its verification record; a `fixed` status
+or a later change to the file is not proof. `af task findings TASK_ID --format sarif` prints
+the same findings as one SARIF 2.1.0 log for code-scanning tools; a review Campaign's report
+takes the same `--format sarif`.
 
 ## 5. Look at the change
 

@@ -1,8 +1,8 @@
 //! The one Task state every rendering prints (`schemas/task-state-v2.json`) and the documents
-//! that carry it: `af/task-list@4` with its `af/task-list-entry@4`, `af/task-checks@3`,
-//! `af/task-collected-inspection@3` and the `state` of `af/task-inspection@14`. The Rust
-//! validator and the schema accept exactly the same states, and the previous versions fail
-//! closed.
+//! that carry it: `af/task-list@4` with its `af/task-list-entry@4`, `af/task-attention@1`,
+//! `af/task-checks@3`, `af/task-collected-inspection@3` and the `state` of
+//! `af/task-inspection@14`. The Rust validator and the schema accept exactly the same states,
+//! and the previous versions fail closed.
 use super::{assert_invalid, assert_valid, validator};
 use review_core::task::state::*;
 use serde_json::{Value, json};
@@ -156,6 +156,129 @@ fn a_list_document_carries_each_task_s_state_and_gate() {
     let mut old = document.clone();
     old["schema"] = json!("af/task-list@3");
     assert_invalid("task-list-v4.json", &old, "the previous list version");
+}
+
+/// A list entry in `state`, consistent with it: the Store phase each state is read from, and a
+/// collected Task's tombstone.
+fn entry_in(state: &TaskStateV1) -> Value {
+    let mut entry = entry();
+    entry.as_object_mut().unwrap().remove("gate");
+    entry["state"] = serde_json::to_value(state).unwrap();
+    entry["phase"] = match state.phase {
+        TaskStatePhaseV1::Finished => json!({"kind": "finished", "result_id": id('1')}),
+        TaskStatePhaseV1::Planned => json!({"kind": "ready"}),
+        TaskStatePhaseV1::Waiting => json!({"kind": "waiting", "reason": "needs_plan_review"}),
+        TaskStatePhaseV1::Running | TaskStatePhaseV1::Abandoned => json!({"kind": "running"}),
+    };
+    if state.phase != TaskStatePhaseV1::Finished || state.cause == Some(TaskCauseV1::Collected) {
+        entry["derived_snapshot_id"] = Value::Null;
+    }
+    if state.cause == Some(TaskCauseV1::Collected) {
+        entry["collected"] = json!({
+            "schema": "af/TaskCollected@1", "task_id": "pagination-cli", "kind": "implement",
+            "revision_id": id('2'), "outcome": "changes_requested", "chargeable_tokens": "0",
+            "last_event_unix_ms": 1, "collected_unix_ms": 2, "collected_bytes": 3
+        });
+    }
+    entry
+}
+
+/// `af/task-attention@1` with `entry` in `group` and every other group empty.
+fn attention(group: TaskAttentionV1, entry: &Value) -> Value {
+    let groups: Vec<Value> = TaskAttentionV1::ALL
+        .iter()
+        .map(|each| {
+            let tasks = if *each == group {
+                vec![entry.clone()]
+            } else {
+                vec![]
+            };
+            json!({"group": each.as_str(), "needs_you": each.needs_you(), "tasks": tasks})
+        })
+        .collect();
+    json!({"schema": "af/task-attention@1", "groups": groups})
+}
+
+/// The attention groups the schema states are the ones `TaskAttentionV1::of` derives: every
+/// valid state is accepted in its own group and refused in each of the six others.
+#[test]
+fn the_attention_schema_puts_every_state_where_the_rust_grouping_does() {
+    let outcomes = std::iter::once(None).chain(TaskOutcomeV1::ALL.map(Some));
+    let mut seen = std::collections::BTreeSet::new();
+    for phase in TaskStatePhaseV1::ALL {
+        for outcome in outcomes.clone() {
+            for cause in std::iter::once(None).chain(TaskCauseV1::ALL.map(Some)) {
+                for next in [None, Some("af task run pagination-cli")] {
+                    let state = TaskStateV1 {
+                        phase,
+                        outcome,
+                        cause,
+                        next_action: next.map(str::to_owned),
+                    };
+                    if state.validate().is_err() {
+                        continue;
+                    }
+                    let entry = entry_in(&state);
+                    assert_valid("task-list-entry-v4.json", &entry);
+                    let group = TaskAttentionV1::of(&state);
+                    seen.insert(group);
+                    assert_valid("task-attention-v1.json", &attention(group, &entry));
+                    for other in TaskAttentionV1::ALL.into_iter().filter(|g| *g != group) {
+                        assert_invalid(
+                            "task-attention-v1.json",
+                            &attention(other, &entry),
+                            &format!("{} in {}", state.label(), other.as_str()),
+                        );
+                    }
+                }
+            }
+        }
+    }
+    assert_eq!(seen.len(), TaskAttentionV1::ALL.len(), "{seen:?}");
+    let empty = attention(
+        TaskAttentionV1::Nothing,
+        &entry_in(&TaskStateV1::ended(
+            TaskStatePhaseV1::Finished,
+            TaskOutcomeV1::Verified,
+            None,
+        )),
+    );
+    for (edit, why) in [
+        (
+            Box::new(|v: &mut Value| v["schema"] = json!("af/task-list@3"))
+                as Box<dyn Fn(&mut Value)>,
+            "another document's id",
+        ),
+        (
+            Box::new(|v: &mut Value| {
+                v["groups"].as_array_mut().unwrap().pop();
+            }),
+            "a group left out",
+        ),
+        (
+            Box::new(|v: &mut Value| v["groups"].as_array_mut().unwrap().swap(0, 1)),
+            "the groups out of order",
+        ),
+        (
+            Box::new(|v: &mut Value| v["groups"][5]["needs_you"] = json!(true)),
+            "a running Task that needs you",
+        ),
+        (
+            Box::new(|v: &mut Value| v["groups"][0]["count"] = json!(0)),
+            "an undeclared field",
+        ),
+        (
+            Box::new(|v: &mut Value| {
+                let extra = v["groups"][6].clone();
+                v["groups"].as_array_mut().unwrap().push(extra);
+            }),
+            "an eighth group",
+        ),
+    ] {
+        let mut changed = empty.clone();
+        edit(&mut changed);
+        assert_invalid("task-attention-v1.json", &changed, why);
+    }
 }
 
 #[test]

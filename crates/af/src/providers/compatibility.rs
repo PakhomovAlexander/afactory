@@ -506,6 +506,47 @@ mod tests {
         );
     }
 
+    /// ADR-0246: a review-Campaign reviewer's dispatch passes its native reply schema, so a CLI
+    /// whose help page lacks the option that carries it is refused by the token-free check
+    /// before any paid dispatch, on both Providers, naming exactly that option.
+    #[test]
+    fn a_cli_without_the_native_reply_schema_option_is_refused() {
+        for (kind, option, help_args, version) in [
+            (
+                ProviderKind::Claude,
+                "--json-schema",
+                "$1",
+                "2.1.299 (Claude Code)",
+            ),
+            (
+                ProviderKind::Codex,
+                "--output-schema",
+                "$1 $2",
+                "codex-cli 0.121.0",
+            ),
+        ] {
+            let directory = tempfile::tempdir().unwrap();
+            let page = invocation(kind).help_args.join(" ");
+            let help: String = help_of(kind)
+                .lines()
+                .filter(|line| !line.contains(option))
+                .map(|line| format!("{line}\n"))
+                .collect();
+            let body = format!(
+                "[ \"$1\" = --version ] && {{ echo '{version}'; exit 0; }}\n[ \"{help_args}\" = '{page}' ] && {{ printf '%s' '{help}'; exit 0; }}\n{INITIALIZES}\nexit 64"
+            );
+            let Err(CliRefusal::Incompatible(refused)) = check(directory.path(), kind, &body)
+            else {
+                panic!("{option}: a CLI without the reply schema option was not refused");
+            };
+            let message = refused.message();
+            assert!(
+                message.contains(&format!("missing: {option};")),
+                "{message}"
+            );
+        }
+    }
+
     #[test]
     fn codex_is_judged_on_its_exec_help_and_a_failed_help_is_reported_with_its_line() {
         let directory = tempfile::tempdir().unwrap();

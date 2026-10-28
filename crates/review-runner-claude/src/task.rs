@@ -8,6 +8,7 @@ use review_runner::cli::{
 use review_runner::native_failure::{
     NativeFailureKind, classify_native_failure, says_safeguards_flagged,
 };
+use review_runner::task::reply_schema::ReplyContract;
 use review_runner::task::{ModelWorkerReturn, Unstarted, WorkerAccess, WorkerModelAdapter};
 
 mod model_usage;
@@ -29,7 +30,8 @@ pub fn task_tools(access: WorkerAccess) -> &'static str {
 }
 
 /// The whole command one Task Attempt runs: [`claude_command`] with the access's tool grant in
-/// place of the read-only one, then `--json-schema` when the Worker declares a structured reply.
+/// place of the read-only one, then `--json-schema` when the Worker declares a structured reply
+/// or is a review-Campaign reviewer (ADR-0103, ADR-0246).
 /// The same restricted root and customization isolation as review; only the tool list widens,
 /// and only as far as the kernel-derived access.
 fn task_command(
@@ -236,6 +238,28 @@ impl WorkerModelAdapter for ClaudeTaskAdapter {
         cancellation: Option<&std::sync::atomic::AtomicBool>,
         environment: &[(String, String)],
     ) -> Result<ModelWorkerReturn, Unstarted> {
+        self.invoke_constrained(
+            cas,
+            workdir,
+            input,
+            timeout,
+            access,
+            cancellation,
+            environment,
+            ReplyContract::Request,
+        )
+    }
+    fn invoke_constrained(
+        &self,
+        cas: &Cas,
+        workdir: &Path,
+        input: Vec<u8>,
+        timeout: Duration,
+        access: WorkerAccess,
+        cancellation: Option<&std::sync::atomic::AtomicBool>,
+        environment: &[(String, String)],
+        contract: ReplyContract,
+    ) -> Result<ModelWorkerReturn, Unstarted> {
         if cancellation.is_some_and(|flag| flag.load(std::sync::atomic::Ordering::Acquire)) {
             return Ok(ModelWorkerReturn {
                 notes: Default::default(),
@@ -246,7 +270,7 @@ impl WorkerModelAdapter for ClaudeTaskAdapter {
                 native_failure: None,
             });
         }
-        let output_schema = match structured::output_schema(&input) {
+        let output_schema = match structured::output_schema(contract, &input) {
             Ok(schema) => schema,
             Err(error) => {
                 return Ok(ModelWorkerReturn {

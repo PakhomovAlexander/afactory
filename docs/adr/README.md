@@ -460,8 +460,16 @@ future readers need.
 - [0244 — Version review inspection views](0244-version-review-inspection-views.md)
 - [0245 — Show recorded Gate history and version Task
   status](0245-show-recorded-gate-history-and-version-task-status.md)
+- [0246 — Carry the Reviewer Result schema natively on the Campaign
+  path](0246-carry-the-reviewer-result-schema-natively-on-the-campaign-path.md)
+- [0247 — Generate a machine-readable command catalog and ship the
+  schemas](0247-generate-a-machine-readable-command-catalog.md)
+- [0248 — Hand review findings to the agent that will fix
+  them](0248-hand-review-findings-to-the-agent-that-will-fix-them.md)
 - [0249 — Distinguish host-denied Provider probes from incompatible
   CLIs](0249-distinguish-host-denied-provider-probes.md)
+- [0250 — Follow a Task as a stream of its Store
+  events](0250-follow-a-task-as-a-stream-of-its-store-events.md)
 - [0251 — Run the Task gate on the fast validation
   profile](0251-run-the-task-gate-on-the-fast-validation-profile.md)
 - [0252 — Keep the kernel experiment measurement out of every

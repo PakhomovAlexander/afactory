@@ -1,9 +1,10 @@
 //! One Task state model across every rendering (P5): `af task list`, `af task show`, `af task
-//! report` and the run's own output print the same `phase/outcome/cause` and next command, in
-//! text and under `--json`; a failed gate names its failing tests; a refused plan names the limits
-//! that fit and `--fit` plans with them; a Task file takes its kind's defaults; planning is
-//! idempotent and `--replace` re-plans in place; the wall clock starts at the first run; and
-//! every not-found error names what was looked for and where. The fixture pipeline's Workers are
+//! report`, `af task list --attention` and the run's own output print the same
+//! `phase/outcome/cause` and next command, in text and under `--json`; a failed gate names its
+//! failing tests; a refused plan names the limits that fit and `--fit` plans with them; a Task
+//! file takes its kind's defaults; planning is idempotent and `--replace` re-plans in place; the
+//! wall clock starts at the first run; and every not-found error names what was looked for and
+//! where. The fixture pipeline's Workers are
 //! commands: no test spends a model token.
 
 use serde_json::Value;
@@ -122,9 +123,10 @@ fn malformed_implementer(fixture: &Fixture) {
 }
 
 /// The state every rendering of the Task prints, read from each: the JSON documents of `show`,
-/// `list` and `report`, and the text of `show`, `list` and `report`. They must all agree, and
-/// the triple and the next command they agree on are returned.
-fn agreed_state(fixture: &Fixture) -> (String, Option<String>) {
+/// `list`, `list --attention` and `report`, and the text of `show`, `list`, `list --attention`
+/// and `report`. They must all agree, and the triple, the next command and the attention group
+/// they agree on are returned.
+fn agreed_state(fixture: &Fixture) -> (String, Option<String>, String) {
     let shown = fixture.json(&["task", "show", TASK]);
     schemas::valid(&schemas::validator("task-inspection-v14.json"), &shown);
     let listed = fixture.json(&["task", "list"]);
@@ -224,12 +226,64 @@ fn agreed_state(fixture: &Fixture) -> (String, Option<String>) {
         row.starts_with(&format!("| 1 | {TASK} | {label}")),
         "{row}\n{report}"
     );
-    (label, next)
+    let group = attention_group(fixture, &entry, &label, next.as_deref());
+    (label, next, group)
+}
+
+/// The one `af task list --attention` group that holds the Task: its `--json` document carries
+/// the same list entry there and nowhere else, and its text prints the Task under that group's
+/// title with the same state and next command.
+fn attention_group(fixture: &Fixture, entry: &Value, label: &str, next: Option<&str>) -> String {
+    let attention = fixture.json(&["task", "list", "--attention"]);
+    schemas::valid(&schemas::validator("task-attention-v1.json"), &attention);
+    let holding: Vec<&Value> = attention["groups"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter(|group| {
+            group["tasks"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|task| task["task_id"] == TASK)
+        })
+        .collect();
+    assert_eq!(holding.len(), 1, "{attention}");
+    let group = holding[0]["group"].as_str().unwrap().to_owned();
+    assert_eq!(
+        holding[0]["tasks"][0], *entry,
+        "--attention and list --json"
+    );
+    let text = out(&fixture.af(&["task", "list", "--attention"]));
+    let lines: Vec<&str> = text.lines().collect();
+    let at = lines
+        .iter()
+        .position(|line| line.starts_with(&format!("  {TASK} ")))
+        .unwrap_or_else(|| panic!("{text}"));
+    let title = match group.as_str() {
+        "approval" => "Waiting for approval",
+        "gate_failed" => "Failed gate",
+        "findings" => "Findings to answer",
+        "deliver" => "Verified, ready to deliver",
+        "stopped" => "Stopped",
+        other => panic!("{other} needs no one, yet the Task names {next:?}"),
+    };
+    assert_eq!(lines[at - 1], format!("{title} (1)"), "{text}");
+    assert_eq!(lines[at].split_whitespace().nth(1), Some(label), "{text}");
+    let continued = lines[at + 1..]
+        .iter()
+        .take_while(|line| line.starts_with("    "))
+        .map(|line| line.trim().trim_end_matches('\\').trim())
+        .collect::<Vec<_>>()
+        .join(" ");
+    assert_eq!(continued, format!("next: {}", next.unwrap()), "{text}");
+    group
 }
 
 /// Each outcome the fixture pipeline reaches, driven through the CLI: the run's own output, its
-/// exit code (`af help exit-codes`), and every other rendering print the same state, and every
-/// state that did not verify names a next command.
+/// exit code (`af help exit-codes`), and every other rendering print the same state, every
+/// state that did not verify names a next command, and `af task list --attention` puts the Task
+/// in the group that state names: deliver, a failed gate, findings to answer, stopped.
 #[test]
 fn every_rendering_prints_the_same_state_for_each_outcome() {
     struct Case {
@@ -237,6 +291,7 @@ fn every_rendering_prints_the_same_state_for_each_outcome() {
         setup: fn(&Fixture),
         label: &'static str,
         next: &'static str,
+        group: &'static str,
         code: i32,
     }
     let cases = [
@@ -245,6 +300,7 @@ fn every_rendering_prints_the_same_state_for_each_outcome() {
             setup: |_| {},
             label: "finished/verified",
             next: "af task deliver pagination-cli --branch af/pagination-cli --worktree ../pagination-cli --confirm pagination-cli",
+            group: "deliver",
             code: 0,
         },
         Case {
@@ -254,6 +310,7 @@ fn every_rendering_prints_the_same_state_for_each_outcome() {
             // The fixture's limits hold no Attempt for a new check, so the retry the kernel
             // would refuse is never named; the gate's checks are.
             next: "af task show pagination-cli --checks",
+            group: "gate_failed",
             code: 5,
         },
         Case {
@@ -261,6 +318,7 @@ fn every_rendering_prints_the_same_state_for_each_outcome() {
             setup: rejecting_evaluator,
             label: "finished/changes_requested/evaluator_rejected",
             next: "af task show pagination-cli",
+            group: "findings",
             code: 3,
         },
         Case {
@@ -268,6 +326,7 @@ fn every_rendering_prints_the_same_state_for_each_outcome() {
             setup: malformed_implementer,
             label: "finished/provider_failed/malformed_reply",
             next: "af task show pagination-cli",
+            group: "stopped",
             code: 6,
         },
     ];
@@ -302,8 +361,9 @@ fn every_rendering_prints_the_same_state_for_each_outcome() {
             "{}: {printed}",
             case.name
         );
-        let (label, next) = agreed_state(&fixture);
+        let (label, next, group) = agreed_state(&fixture);
         assert_eq!(label, case.label, "{}", case.name);
+        assert_eq!(group, case.group, "{}", case.name);
         assert_eq!(next.as_deref(), Some(expected.as_str()), "{}", case.name);
         // The same run under --json prints the document on stdout and its last log line on
         // stderr.
@@ -328,14 +388,16 @@ fn every_rendering_prints_the_same_state_for_each_outcome() {
 }
 
 /// A planned Task and an interrupted one print one state too: planned with the command that
-/// confirms its plan, and abandoned, cancelled by the host, with the command that resumes it.
+/// confirms its plan, waiting for approval, and abandoned, cancelled by the host, with the
+/// command that resumes it, stopped.
 #[test]
 fn a_planned_and_an_interrupted_task_print_the_same_state_everywhere() {
     let planned = fixture("pagination");
     let file = planned.task_file("ticket.json", |_| {});
     let plan = planned.json(&["task", "plan", "--file", file.to_str().unwrap()]);
-    let (label, next) = agreed_state(&planned);
+    let (label, next, group) = agreed_state(&planned);
     assert_eq!(label, "planned");
+    assert_eq!(group, "approval");
     assert_eq!(
         next.unwrap(),
         planned.next(&format!(
@@ -355,8 +417,9 @@ fn a_planned_and_an_interrupted_task_print_the_same_state_everywhere() {
         &[nix::sys::signal::Signal::SIGINT],
     );
     assert!(!stopped.status.success(), "{}", err(&stopped));
-    let (label, next) = agreed_state(&interrupted);
+    let (label, next, group) = agreed_state(&interrupted);
     assert_eq!(label, "abandoned/cancelled/host_cancelled");
+    assert_eq!(group, "stopped");
     assert_eq!(
         next.unwrap(),
         interrupted.next(&format!("af task run {TASK}"))
@@ -1181,7 +1244,7 @@ fn task_list_prints_a_header_and_one_row_per_task() {
 /// The state section of `docs/tasks.md` says what `af help task-states` says, in the same words:
 /// every phase, outcome and cause with its meaning.
 #[test]
-fn the_documentation_states_every_phase_outcome_and_cause_as_the_binary_does() {
+fn the_documentation_states_every_phase_outcome_cause_and_attention_group_as_the_binary_does() {
     use review_core::task::state::*;
     let workspace = std::env::var_os("AF_WORKSPACE_ROOT")
         .map(PathBuf::from)
@@ -1210,6 +1273,16 @@ fn the_documentation_states_every_phase_outcome_and_cause_as_the_binary_does() {
             "| `{}` | {outcome} | {} |",
             cause.as_str(),
             cause.description()
+        );
+        assert!(docs.contains(&row), "{row}");
+    }
+    for group in TaskAttentionV1::ALL {
+        let row = format!(
+            "| `{}` | {} | {} | {} |",
+            group.as_str(),
+            group.title(),
+            if group.needs_you() { "yes" } else { "no" },
+            group.description()
         );
         assert!(docs.contains(&row), "{row}");
     }

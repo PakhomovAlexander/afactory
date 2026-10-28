@@ -216,9 +216,10 @@ spellings a Provider accepts ([model bindings](task-execution/model-bindings.md)
 The [ASCII preview guide](task-execution/preview.md) covers the two plan views and agent
 approval. `task list` prints a header row and one line per Task: its ID, its state, its review
 round, chargeable tokens, how long ago it last changed and the verb of its next command, then its
-delivery once there is one. `task show` adds the plan, the checks, each failed node and the next
-command; `--json` adds exact Snapshot IDs and the append-only event history. Both accept `--json`
-([Task states](#task-states)).
+delivery once there is one. `task list --attention` groups the Tasks by what they wait for,
+each with its whole next command ([Which Tasks need you](#which-tasks-need-you)). `task show`
+adds the plan, the checks, each failed node and the next command; `--json` adds exact Snapshot
+IDs and the append-only event history. Both accept `--json` ([Task states](#task-states)).
 
 ## Follow a run
 
@@ -242,6 +243,7 @@ process there as `runs/ID-N.json` before it takes the Task
 af task run pagination-cli --confirm-plan PLAN_ID --detach
 af task status pagination-cli
 af task wait pagination-cli --timeout 3600
+af task events pagination-cli --after 41
 af task cancel pagination-cli
 ```
 
@@ -259,7 +261,12 @@ writer lease names: it finds the process by the lease's writer in the run record
 another host with its pid and host, records who asked in `runs/ID-N.cancel.json`, and signals that
 recorded pid only, which stops its Worker processes as Ctrl-C does. The Task is then
 `abandoned/cancelled/host_cancelled`, `af task show` names who cancelled it, and `af task run ID`
-resumes it. [docs/agents.md](agents.md) walks the whole loop as an agent runs it.
+resumes it. `af task events ID` follows the Task as JSON lines, one `af/task-event@1` document per
+event of its log with the Store's own gap-free `sequence`, and once the Task settles one terminal
+record with its state and exit code; `--after N` prints only the events after sequence N, so a
+follower that reconnects gets the rest, and the command takes no `--json`
+([ADR-0250](adr/0250-follow-a-task-as-a-stream-of-its-store-events.md)).
+[docs/agents.md](agents.md) walks the whole loop as an agent runs it.
 
 ## Task states
 
@@ -402,6 +409,43 @@ read `task show`, fix the catalog, check, Worker or goal problem, then start a c
 under a new Task ID, or continue it from its reviewed candidate with `af task run NEW --from ID`
 ([Continue a reviewed Task](#continue-a-reviewed-task)).
 
+### Which Tasks need you
+
+`af task list --attention` answers "what needs me now?" for one Store. It groups every Task by
+what it waits for, read from its state alone (phase, outcome, cause and whether it names a next
+command) each time the Store is read; nothing is recorded. Each Task is in exactly one group:
+
+| Group | Title | Needs you | Holds |
+| --- | --- | --- | --- |
+| `approval` | Waiting for approval | yes | planned, or waiting for a plan review, resources or input |
+| `gate_failed` | Failed gate | yes | gate_failed: a required check failed or could not run |
+| `findings` | Findings to answer | yes | changes_requested: reviewer findings or the evaluator |
+| `deliver` | Verified, ready to deliver | yes | verified, with `af task deliver` as its next command |
+| `stopped` | Stopped | yes | abandoned, provider_failed, cancelled, exhausted, expired |
+| `running` | Running | no | a writer holds its lease; no next command until it ends |
+| `nothing` | Nothing to do | no | delivered, verified with nothing to deliver, or collected |
+
+The text prints each group that needs you and holds a Task under its title and count, one line
+per Task with its ID, state and age, and its next command on the line below, broken between its
+arguments to fit the terminal. Running Tasks are named on one line (`Running (1): docs-index`)
+and the Tasks that need nothing are only counted (``Nothing to do (4): `af task list` shows
+every Task``); when no Task needs you the first line says `No Task needs you now.`
+
+```text
+Failed gate (1)
+  pagination-cli  finished/gate_failed/check_failed  3m
+    next: af task run pagination-cli --retry-gate
+Running (1): docs-index
+Nothing to do (2): `af task list` shows every Task
+```
+
+`--json` prints one [`af/task-attention@1`](../schemas/task-attention-v1.json) document with all
+seven groups in this order, the `running` and `nothing` groups included, each with its `group`,
+`needs_you` and `tasks`, every Task the same `af/task-list-entry@4` that `af task list --json`
+prints. `--attention` lists no sizes: with `--sizes` it is a usage error (exit 2). In the
+browser (`af` alone at a terminal) the Tasks folder opens on the same groups under `NEEDS YOU`
+([TUI design](design/tui.md#55-tasks)).
+
 ## Resume an interrupted Task
 
 A run that stopped before its Task finished resumes with the same command, `af task run
@@ -467,7 +511,10 @@ and when the plan's approval or deadline has passed or the limits leave no room.
 severity, confidence, title, location, the quoted evidence and the proposed fix, grouped by
 severity, then the evaluator's verdict on that round (the one the Task log recorded after it)
 and its reason; `--round N` reads an earlier round with its own verdict, and `--json` prints
-`af/task-findings@2`. `af task diff ID` prints the candidate's change against the
+`af/task-findings@2`, whose findings each carry an `agent_prompt` and whose round says what it
+covered: a reviewer that did not run shows as `not reviewed`, never as `no findings`.
+`--format sarif` prints the same findings as SARIF 2.1.0
+([ADR-0248](adr/0248-hand-review-findings-to-the-agent-that-will-fix-them.md)). `af task diff ID` prints the candidate's change against the
 Task's source as the unified diff `git diff` prints for the same trees, without touching any
 worktree; `--stat` and `--name-only` print its summary, `--snapshot` and `--base` pick two
 Snapshots the Task recorded, and `--json` prints `af/task-diff@1`.
@@ -642,6 +689,12 @@ adds up, and nothing is reset or refunded.
   admitted as that object. Any other reply that does not parse is re-asked once from the same
   Worker, with the parser's message, line, column and the offending excerpt. Both replies are
   kept, and a second failure names them in the diagnostic: `raw reply kept: sha256:…`.
+- **A structurally wrong reply.** A typed reply, and a review-Campaign reviewer's Reviewer
+  Result, travels under a native schema: `--json-schema` for Claude Code, `--output-schema` for
+  Codex ([ADR-0246](adr/0246-carry-the-reviewer-result-schema-natively-on-the-campaign-path.md)).
+  The CLI refuses a reply of the wrong shape inside the same call, charged to it; the kernel
+  still judges every reply it receives. A call that ends without a constrained reply fails the
+  Attempt as `provider_failure`, charged the usage it reported, not as `invalid_output_contract`.
 - **A transient Provider failure** — `network`, `capacity`, `timeout`, or an exit 1 that wrote
   nothing (`exited_without_output`) — is waited out and the call is made again: the wait the
   Provider asked for, else 60 s, then 120 s, then 240 s; at most three retries and ten minutes

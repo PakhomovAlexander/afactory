@@ -13,11 +13,11 @@ pub mod stream;
 pub mod task;
 
 pub use model::{
-    CommandAdapter, ContextEntry, ContextManifest, InputTransport, ModelRunner, NotesRequest,
-    RenderedInput, ReviewerAdapter, ReviewerAttemptContext, ReviewerInputArtifact, ReviewerInputs,
-    ReviewerNoteHint, ReviewerNotesDeclaration, ReviewerProposalDeclaration, RunnerError,
-    TokenUsage, append_focus, compose_command_input, compose_model_prompt, estimate_tokens,
-    parse_notes_declaration, parse_proposal_declaration, parse_reviewer_result,
+    CommandAdapter, ContextEntry, ContextManifest, InputTransport, ModelRunner, NativeReplySchema,
+    NotesRequest, RenderedInput, ReviewerAdapter, ReviewerAttemptContext, ReviewerInputArtifact,
+    ReviewerInputs, ReviewerNoteHint, ReviewerNotesDeclaration, ReviewerProposalDeclaration,
+    RunnerError, TokenUsage, append_focus, compose_command_input, compose_model_prompt,
+    estimate_tokens, parse_notes_declaration, parse_proposal_declaration, parse_reviewer_result,
 };
 pub use review_core::{MAX_CHANGE_SET_BYTES, MAX_PRIOR_FINDINGS_BYTES};
 pub use review_process::run_supervised;
