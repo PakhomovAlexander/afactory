@@ -447,6 +447,8 @@ future readers need.
   results](0238-retain-refused-physical-telemetry-measurements-in-incomplete-results.md)
 - [0239 — Default every pull request to fast
   validation](0239-default-every-pull-request-to-fast-validation.md)
+- [0240 — Execute performance experiments independently on a locked
+  VM](0240-execute-performance-experiments-independently-on-a-locked-vm.md)
 - [0251 — Run the Task gate on the fast validation
   profile](0251-run-the-task-gate-on-the-fast-validation-profile.md)
 - [0252 — Keep the kernel experiment measurement out of every

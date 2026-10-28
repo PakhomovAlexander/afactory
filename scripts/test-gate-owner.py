@@ -5,6 +5,7 @@ Launch by absolute filename from any cwd, with no inherited PYTHONPATH. Evidence
 only known fixture PIDs, never host process command lines or environments.
 """
 import ctypes
+import errno
 import importlib.util
 import json
 import os
@@ -25,7 +26,7 @@ SELF = Path(__file__).resolve()
 def state(pid):
     try:
         raw = Path(f'/proc/{pid}/stat').read_bytes()
-    except FileNotFoundError:
+    except (FileNotFoundError, ProcessLookupError):
         return None
     fields = raw[raw.rindex(b')') + 1:].split()
     return [pid, fields[0].decode(), int(fields[1]), int(fields[2]), int(fields[3])]
@@ -250,6 +251,24 @@ def hard_outer(root, owner_path):
         finally:
             sibling.kill()
             sibling.wait(timeout=2)
+
+
+class StateObservation(unittest.TestCase):
+    def test_disappearance_is_absent_but_other_read_errors_propagate(self):
+        pid = 12345
+        for error in (FileNotFoundError(errno.ENOENT, 'fixture disappeared'),
+                      ProcessLookupError(errno.ESRCH, 'fixture disappeared'),
+                      PermissionError(errno.EACCES, 'fixture denied'),
+                      OSError(errno.EIO, 'fixture I/O failure')):
+            with self.subTest(error=type(error).__name__), mock.patch.object(
+                    Path, 'read_bytes', autospec=True, side_effect=error) as read:
+                if isinstance(error, (FileNotFoundError, ProcessLookupError)):
+                    self.assertIsNone(state(pid))
+                else:
+                    with self.assertRaises(type(error)) as raised:
+                        state(pid)
+                    self.assertIs(raised.exception, error)
+                read.assert_called_once_with(Path(f'/proc/{pid}/stat'))
 
 
 @unittest.skipUnless(sys.platform == 'linux', 'actual Linux subreaper and /proc required')
