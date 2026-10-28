@@ -79,7 +79,11 @@ fallback's message would, and for the opening the entry found gone, as when open
 gone, with the cause on the Store's row in the folder. In the user scope the targets the load
 resolved (the registered Stores and the session's) stay apart from what a read discovers, so a
 discovered Store that went between two reads goes when the read after is done, never to come
-back as a target of the load's.
+back as a target of the load's; a walk that fails answers the load's targets alone, so the
+Stores discovered before go the same way and the folder shows why. A Task opened while an
+explicit read is in flight has its detail read again when its Store answers, since a read
+started before carries none for it: the detail it was opened with never stands over the
+Store's newer answer.
 
 ## Consequences
 

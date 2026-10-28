@@ -1553,6 +1553,7 @@ fn the_opened_tasks_detail_comes_with_its_stores_message() {
         origin: Origin::Scope,
     };
     let mut pane = TasksPane {
+        loaded: vec![target.clone()],
         targets: vec![target.clone()],
         ..TasksPane::default()
     };
@@ -1669,6 +1670,7 @@ fn a_refusal_taken_on_open_restarts_a_read_in_flight() {
         origin: Origin::Scope,
     };
     let mut pane = TasksPane {
+        loaded: vec![target.clone()],
         targets: vec![target.clone()],
         ..TasksPane::default()
     };
@@ -1719,6 +1721,9 @@ fn a_refusal_taken_on_open_restarts_a_read_in_flight() {
         "the read in flight was dropped"
     );
     assert!(pane.busy().is_some(), "a read started over");
+    // Listed readable by hand meanwhile: what the restarted read delivers for the Store is
+    // what stands once it is collected, and it was read after the refusal.
+    pane.stores[0].tasks = Ok(Vec::new());
     pane.settle();
     assert!(
         pane.stores[0].tasks.is_err(),
@@ -1810,6 +1815,110 @@ fn a_discovered_store_that_went_between_two_reads_goes_when_the_read_is_done() {
         pane.loaded.is_empty(),
         "a discovered Store is never a target of the load's"
     );
+}
+
+/// The user scope's walk of the state root fails after a read that discovered a Store (the
+/// directory of the repositories' Stores is no directory any more): the read answers the
+/// load's targets alone, so the Store discovered before goes when the read is done, with its
+/// opened Task, and the folder shows why.
+#[test]
+fn a_failed_discovery_unlists_the_stores_it_cannot_answer_for_when_the_read_is_done() {
+    let temp = tempfile::tempdir().unwrap();
+    let root = std::fs::canonicalize(temp.path()).unwrap();
+    let (_repo, state) = crate::tui::tests::hub_with_tasks(&root);
+    let scope = crate::tui::tests::user_scope(&root);
+    let mut pane = TasksPane::default();
+    pane.load(&scope).unwrap();
+    pane.settle();
+    assert_eq!(pane.stores.len(), 1);
+    let id = TasksPane::id_of(&pane.stores[0].repo, "pagination-cli");
+    pane.open(Some(&id));
+    assert_eq!(pane.selected.as_deref(), Some(id.as_str()));
+    assert!(pane.detail.as_ref().is_some_and(Result::is_ok));
+    let local = state.parent().unwrap().to_path_buf();
+    std::fs::remove_dir_all(&local).unwrap();
+    std::fs::write(&local, "").unwrap();
+    pane.read_now();
+    assert!(pane.busy().is_some());
+    pane.settle();
+    assert!(pane.error.is_some(), "the folder says why the walk failed");
+    assert!(
+        pane.targets.is_empty(),
+        "the read answered the load's targets alone"
+    );
+    assert!(
+        pane.stores.is_empty(),
+        "the Store discovered before went with the read"
+    );
+    assert!(pane.selected.is_none() && pane.detail.is_none());
+    assert!(pane.loaded.is_empty());
+}
+
+/// A Task opened while an explicit read is in flight, started before for no Task: the read
+/// answers its Store without a detail for it, and the pane reads the detail then, so the
+/// detail the Task was opened with never stands over the Store's newer answer. Here that
+/// detail can no longer be read: the Store refuses, as it would on the reader's thread.
+#[test]
+fn a_task_opened_during_a_read_has_its_detail_read_again_when_its_store_answers() {
+    let temp = tempfile::tempdir().unwrap();
+    let root = std::fs::canonicalize(temp.path()).unwrap();
+    let (_repo, state) = crate::tui::tests::hub_with_tasks(&root);
+    let target = Target {
+        dir: state.clone(),
+        shown: "state".to_owned(),
+        repo: None,
+        origin: Origin::Scope,
+    };
+    let mut pane = TasksPane {
+        loaded: vec![target.clone()],
+        targets: vec![target.clone()],
+        ..TasksPane::default()
+    };
+    let mut cache = Cache::default();
+    let sender = pane.fed();
+    sender
+        .send(Read::Store {
+            store: Box::new(read_target(&target, &mut cache)),
+            detail: None,
+        })
+        .unwrap();
+    sender.send(Read::Done(cache.clone())).unwrap();
+    assert!(pane.poll());
+    // An explicit read in flight, started for no Task; the Task is opened meanwhile, and the
+    // read goes on (a load's read lists every Store).
+    let sender = pane.fed();
+    pane.open(Some("pagination-cli"));
+    assert!(pane.detail.as_ref().is_some_and(Result::is_ok));
+    assert!(pane.busy().is_some(), "the explicit read goes on");
+    // The read answers the Store as it stood, readable, with no detail for the Task; the
+    // Task's revision goes before that answer is collected.
+    let store = read_target(&target, &mut cache);
+    assert!(store.tasks.is_ok());
+    let done = document(&state, "pagination-cli");
+    let revision = done["revision_id"]
+        .as_str()
+        .unwrap()
+        .trim_start_matches("sha256:");
+    std::fs::remove_file(
+        state
+            .join("cas/objects")
+            .join(&revision[..2])
+            .join(&revision[2..]),
+    )
+    .unwrap();
+    sender
+        .send(Read::Store {
+            store: Box::new(store),
+            detail: None,
+        })
+        .unwrap();
+    assert!(pane.poll());
+    assert!(
+        pane.stores[0].tasks.is_err(),
+        "the detail read when the Store answered refuses it: {:?}",
+        pane.stores[0].tasks.as_ref().err()
+    );
+    assert!(pane.selected.is_none() && pane.detail.is_none());
 }
 
 /// A target list that changed within the scope (a Store registered meanwhile, `:state DIR`)
@@ -1915,6 +2024,7 @@ fn a_refusal_taken_on_a_history_row_restarts_a_read_in_flight() {
         origin: Origin::Scope,
     };
     let mut pane = TasksPane {
+        loaded: vec![target.clone()],
         targets: vec![target.clone()],
         ..TasksPane::default()
     };
@@ -1973,6 +2083,9 @@ fn a_refusal_taken_on_a_history_row_restarts_a_read_in_flight() {
         "the read in flight was dropped"
     );
     assert!(pane.busy().is_some(), "a read started over");
+    // Listed readable by hand meanwhile: what the restarted read delivers for the Store is
+    // what stands once it is collected, and it was read after the refusal.
+    pane.stores[0].tasks = Ok(Vec::new());
     pane.settle();
     assert!(pane.selected.is_none());
     assert!(

@@ -555,9 +555,7 @@ fn the_prompt_is_the_file_the_kernel_sends_and_nothing_else() {
 fn the_user_scope_lists_no_workers_and_says_they_belong_to_a_project() {
     let temp = tempfile::tempdir().unwrap();
     let home = temp.path();
-    let mut scope = Scope::user().unwrap();
-    scope.home = Some(home.to_path_buf());
-    scope.state = Some(home.join("state"));
+    let scope = crate::tui::tests::user_scope(home);
     let mut pane = WorkersPane::default();
     pane.load(&scope).unwrap();
     pane.settle();

@@ -293,7 +293,10 @@ never one whose Store is merely unread: a target list that changed within the sc
 registered meanwhile, `:state DIR`) keeps every Store listed until the read answers for it, and
 a Store of a target no longer named until the read is done, so the opened Task stays opened
 while its Store is read again; the Stores stand in the order of the targets as they are now.
-Another scope lists nothing of the old.
+In the user scope the read discovers the repositories' Stores, and a walk that fails lists the
+registered and session Stores alone once the read is done, with the cause in the folder. A Task
+opened while an explicit read is in flight has its detail read again when its Store answers,
+since a read started before carries none for it. Another scope lists nothing of the old.
 
 Main pane for one Task, top to bottom:
 

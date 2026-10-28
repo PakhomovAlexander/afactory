@@ -1638,9 +1638,19 @@ impl TasksPane {
                 self.targets = targets;
                 self.error = None;
             }
-            Read::Targets(Err(error)) => self.error = Some(error),
+            Read::Targets(Err(error)) => {
+                // The walk failed: this read answers the load's targets alone, so the Stores
+                // discovered before go when it is done, and the folder shows why.
+                self.targets = self.loaded.clone();
+                self.error = Some(error);
+            }
             Read::Store { store, detail } => {
-                self.place(*store);
+                let mut store = *store;
+                let detail = match detail {
+                    None => self.detail_of_opened(&mut store),
+                    detail => detail,
+                };
+                self.place(store);
                 match detail {
                     // The Store was refused with the cause; the folder shows it, not the Task.
                     Some(Err(_)) => {
@@ -1676,7 +1686,23 @@ impl TasksPane {
         self.rebuild();
     }
 
-    /// Whether the opened Task is running, so the pane reads it again.
+    /// The opened Task's detail, read here when its Store answers a read that carries none
+    /// for it (a read started before the Task was opened, for another Task or for none):
+    /// the detail the Task was opened with must not stand over the Store's newer summary.
+    /// One Task's inspection, as `open` does it; the Store refuses when it fails, as it does
+    /// on the reader's thread. `None` for any other Store.
+    fn detail_of_opened(&mut self, store: &mut Store) -> Option<Result<Detail, String>> {
+        let (dir, task_id) = self.opened_task()?;
+        if dir != store.dir {
+            return None;
+        }
+        let detail = Detail::read(&dir, &task_id, &mut self.cache);
+        if let Err(error) = &detail {
+            refuse(std::slice::from_mut(store), &dir, &task_id, error);
+        }
+        Some(detail)
+    }
+
     /// Whether the opened Task is unfinished, so the pane reads it again: a Task awaiting
     /// approval may start running at any moment from the CLI.
     fn live(&self) -> bool {

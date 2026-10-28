@@ -1642,9 +1642,7 @@ fn a_hand_off_rereads_a_workers_pane_that_has_read_even_when_not_opened() {
 fn a_user_scope_task_is_neither_prefilled_nor_completed() {
     let (_temp, root) = temp_root();
     let (_repo, _state) = hub_with_tasks(&root);
-    let mut scope = Scope::user().unwrap();
-    scope.home = Some(root.clone());
-    scope.state = Some(root.join("state"));
+    let scope = user_scope(&root);
     let providers = ProvidersPane::with_inventory(inventory(), UsageProbe::Probe);
     let mut app = App::new(scope, None, Panes::new(providers));
     app.settle();
