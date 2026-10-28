@@ -940,8 +940,10 @@ available to af, which af measures itself, and what the check wrote, `admitted`,
 wrote nothing, or `refused` with the reason when its lines are not this contract. A check's own
 account never changes its result; its exit code does. The gate's failed and flaky tests and the
 step that stopped a check come from its report when the check writes one, and from the text scan
-of its output only for a check without one (absent or refused); a reported step whose stage is
-before `tests` (`preflight`, `lint`, `build`) makes the cause `preflight_failed`. The nested
+of its output only for a check without one (absent or refused). The cause is `preflight_failed`
+when every failed check stopped at a step before its tests and named no failed test: a reported
+step by its stage (`preflight`, `lint`, `build`), a step read from a log by its label; a check the
+kernel stopped at its wall is `check_failed` (or `check_flaky_then_failed`) first. The nested
 output of a project's own preflight, such as the failing fixture gates
 `scripts/test-nextest-gate.py` prints, never becomes a Task's failing or flaky test when the
 check writes a report. `af task show` prints, per check, where it
