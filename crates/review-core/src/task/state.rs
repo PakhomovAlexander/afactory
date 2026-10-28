@@ -564,10 +564,11 @@ impl TaskAttentionV1 {
 #[serde(deny_unknown_fields)]
 pub struct TaskGateV1 {
     pub status: TaskGateStatusV1,
-    /// The failing tests the checks' runners named (`FAIL`, `TIMEOUT`, `SIGABRT`), in the order
+    /// The failing tests each check's admitted report names, or for a check without one those
+    /// its runner's output names (`FAIL`, `TIMEOUT`, `SIGABRT`, [`failing_tests`]), in the order
     /// they first appeared, each once.
     pub failed_tests: Vec<String>,
-    /// The tests the runners named flaky: failed at first, passed on a retry.
+    /// The tests named flaky the same way: failed at first, passed on a retry.
     pub flaky: Vec<String>,
 }
 
@@ -596,7 +597,8 @@ pub const MAX_FAILED_TESTS: usize = 200;
 /// nextest's status lines (`FAIL [ 0.004s] crate path::to::test`, `TIMEOUT`, `SIGABRT`,
 /// `SIGSEGV`, and `FLAKY 2/3 [...]`), libtest's `test path::to::test ... FAILED`, and a
 /// `flaky: a, b` line. A test is named by its last word, its path; a name is listed once, in
-/// first-appearance order, and a test that is flaky and later failed for good is failing.
+/// first-appearance order, and a test that is flaky and later failed for good is failing. Read
+/// only for a check without an admitted check report, whose report names its tests instead.
 pub fn failing_tests(output: &str) -> (Vec<String>, Vec<String>) {
     let mut failed: Vec<String> = Vec::new();
     let mut flaky: Vec<String> = Vec::new();
@@ -651,7 +653,8 @@ pub fn failing_tests(output: &str) -> (Vec<String>, Vec<String>) {
 }
 
 /// The step a gate's own step log says stopped it: the label of the first `[label] 1.234s,
-/// exit N` line with a non-zero N (`scripts/ci-step.py` prints one per step).
+/// exit N` line with a non-zero N (`scripts/ci-step.py` prints one per step). Read only for a
+/// check without an admitted check report, whose report names its steps instead.
 pub fn stopped_step(output: &str) -> Option<(String, i64)> {
     output.lines().find_map(|line| {
         let line = line.trim();
