@@ -1664,6 +1664,7 @@ fn handoff(command: Option<cli::Command>) -> Handoff {
         Some(cli::Command::Help {
             words,
             snippet: false,
+            json: false,
         }) => Handoff::Help(words),
         _ => Handoff::Other,
     }

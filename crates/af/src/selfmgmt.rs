@@ -1656,9 +1656,10 @@ fn exempt_from_dispatch(argv: &[String]) -> bool {
     // instead of running early neither dispatches, installs nor schedules a check.
     // `doctor` reads this machine as it is and writes nothing: it never dispatches to a pin,
     // installs one, or schedules an update check.
+    // `schema` prints the schemas of the running af, as `help` lists them, and writes nothing.
     matches!(
         first,
-        None | Some("help" | "completions" | "config" | "doctor")
+        None | Some("help" | "schema" | "completions" | "config" | "doctor")
     ) || binary_management_self
         || matches!(
             (first, argv.get(command_index + 1).map(String::as_str)),
@@ -5160,6 +5161,14 @@ mod tests {
         ])));
         // `doctor` reads the machine as it is: no pin dispatch, install or update check.
         assert!(exempt_from_dispatch(&argv(&["af", "doctor", "--json"])));
+        // `schema` prints the running af's schemas, as `help --json` describes its commands.
+        assert!(exempt_from_dispatch(&argv(&[
+            "af",
+            "schema",
+            "show",
+            "af/error@2"
+        ])));
+        assert!(exempt_from_dispatch(&argv(&["af", "help", "--json"])));
         assert!(exempt_from_dispatch(&argv(&[
             "af", "--repo", "/w", "doctor"
         ])));

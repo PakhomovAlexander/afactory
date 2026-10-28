@@ -530,9 +530,42 @@ carrying the selectors the command was given (a report, pasted into a pull reque
 Store path); the diff, the materialized candidate and the refused selection describe no Task
 state. A previous version is refused, never read.
 
+The command catalog and the schemas:
+
+  af help --json                       af/command-catalog@1 (schemas/command-catalog-v1.json):
+                                       every command with its usage, arguments and effects
+  af help COMMAND... --json            the same document for that command and those below it;
+                                       a path that names no command is exit 2
+  af schema show ID                    the JSON Schema of any document this page names, by its
+                                       ID; `af schema show` lists the IDs
+
+The catalog is generated from the command definitions the binary parses. Each runnable command's
+`effects` say what it may do, never that it will:
+
+  tokens     `free`: never calls a model; `charges`: may dispatch model Workers, charged
+             against a budget, under `charges_when` (null: any run may)
+  writes     `store`: a Task Store or a review Campaign's Store; `files`: files outside af's
+             own state, in the repository, a worktree, a branch or a directory or file the
+             command names; `machine`: af's machine-local state, the Provider and Project
+             registries and Project Stores, configuration, installed releases, shell
+             completions and man pages, telemetry and caches; `remote`: something off this
+             machine, the gate branches and draft pull request of a Remote Check
+  human      `login`: a person completes a Provider's official login, at a private terminal
+             or through the host's private channel; `approval`: a developer's signature over
+             an exact decision payload, made outside af; `terminal`: an interactive terminal,
+             for a screen or an editor
+  when       on every write and need: null always, else the flag as typed (`--apply`) or a
+             short phrase naming the condition
+
+Housekeeping every command shares is not an effect: telemetry, the storage sweep after a run, the
+release check's schedule, a pinned release installed on demand, and the lazy registration of the
+repository's Project and checkout.
+
 Examples:
   af task list --json
-  af task show nope --json   # exit 1";
+  af task show nope --json   # exit 1
+  af help task run --json
+  af schema show af/task-status@2";
 
 const TASK_STATES: &str = "\
 Every af task command that shows a Task prints one state for it, in text and under --json alike:

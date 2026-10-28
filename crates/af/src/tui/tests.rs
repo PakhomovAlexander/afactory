@@ -497,7 +497,8 @@ fn command_lines_go_through_the_cli_parser() {
     assert!(first.starts_with("af help layers -- "), "{first}");
     press(&mut app, &mut host, b"q");
     assert!(app.help.is_none() && !app.quit, "q closes help first");
-    press(&mut app, &mut host, b":sc\t");
+    // `:sc` is `schema` or `scope`; `:sco` is the browser's own verb.
+    press(&mut app, &mut host, b":sco\t");
     assert_eq!(app.prompt.text, "scope ");
     press(&mut app, &mut host, b"\x03");
     assert_eq!(app.mode, Mode::Normal);
@@ -1770,7 +1771,8 @@ fn completion_comes_from_the_clap_definition() {
     for (typed, completed) in [
         (&b":provider st\t"[..], "provider status "),
         (b":help ta\t", "help task "),
-        (b":sc\t", "scope "),
+        (b":sco\t", "scope "),
+        (b":sch\t", "schema "),
         (b":scope u\t", "scope user "),
         (b":e lo\t", "e local "),
     ] {

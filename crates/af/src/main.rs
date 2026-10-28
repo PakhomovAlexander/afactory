@@ -36,6 +36,7 @@ mod agent_setup;
 mod authority;
 mod caches;
 mod cli;
+mod command_catalog;
 mod config;
 mod doctor;
 mod error_document;
@@ -55,6 +56,7 @@ mod report_tasks;
 mod review_task;
 mod self_optimizer;
 mod selfmgmt;
+mod shipped_schemas;
 mod storage;
 mod store_release;
 mod task;
@@ -1428,8 +1430,11 @@ fn review_binding_refusal(
     Err(error_document::typed(message, detail))
 }
 
-fn help_command(words: &[String], snippet: bool) -> Result<i32, String> {
+fn help_command(words: &[String], snippet: bool, json: bool) -> Result<i32, String> {
     use clap::CommandFactory as _;
+    if json {
+        return help_catalog(words);
+    }
     if snippet {
         if words == ["agents"] {
             print!("{}", topics::agent_snippet());
@@ -1478,6 +1483,25 @@ fn help_command(words: &[String], snippet: bool) -> Result<i32, String> {
         .print_long_help()
         .map_err(|error| error.to_string())?;
     Ok(0)
+}
+
+/// `af help [COMMAND...] --json`: the command catalog (ADR-0247), or for a path that names no
+/// command one `af/error@2` document with the usage exit code the text form also exits with.
+fn help_catalog(words: &[String]) -> Result<i32, String> {
+    match command_catalog::document(words) {
+        Ok(document) => {
+            println!(
+                "{}",
+                serde_json::to_string_pretty(&document).map_err(|error| error.to_string())?
+            );
+            Ok(0)
+        }
+        Err(error) => {
+            println!("{}", error_document::document("af help", &error, 2, None));
+            eprintln!("af help: {error}");
+            Ok(2)
+        }
+    }
 }
 
 fn main() {
@@ -1934,7 +1958,16 @@ fn main() {
             }),
         ),
         cli::Command::Doctor(args) => ("af doctor", doctor::run(&args.repo, args.json)),
-        cli::Command::Help { words, snippet } => ("af help", help_command(&words, snippet)),
+        cli::Command::Help {
+            words,
+            snippet,
+            json,
+        } => ("af help", help_command(&words, snippet, json)),
+        cli::Command::Schema { command } => match command {
+            cli::SchemaCommand::Show { id } => {
+                ("af schema show", shipped_schemas::show(id.as_deref()))
+            }
+        },
         cli::Command::Setup { command } => match command {
             cli::SetupCommand::Agents { repo, write } => {
                 ("af setup agents", agent_setup::run(&repo, write))

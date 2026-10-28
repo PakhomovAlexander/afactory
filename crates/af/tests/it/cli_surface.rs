@@ -1627,6 +1627,7 @@ fn the_agent_loop_verbs_and_the_agents_topic_describe_the_commands() {
             (Some(&"doctor"), None) => af(&["doctor", "--help"]),
             (Some(&"help"), Some(topic)) => af(&["help", topic]),
             (Some(&"setup"), Some(verb)) => af(&["setup", verb, "--help"]),
+            (Some(&"schema"), Some(verb)) => af(&["schema", verb, "--help"]),
             _ => panic!("docs/agents.md names `{span}`, which is not an af task command"),
         };
         assert!(help.status.success(), "`{span}`: {}", err(&help));
@@ -2014,4 +2015,150 @@ fn onboard_tasks_help_names_preview_and_additive_apply() {
     assert!(help.contains("--tasks"), "{help}");
     assert!(help.contains("model-driven Tasks"), "{help}");
     assert!(help.contains("adds only absent Task files"), "{help}");
+}
+
+fn workspace_schemas() -> std::path::PathBuf {
+    std::env::var_os("AF_WORKSPACE_ROOT")
+        .map(std::path::PathBuf::from)
+        .unwrap_or_else(|| std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../.."))
+        .join("schemas")
+}
+
+/// #374: `af help --json` is one `af/command-catalog@1` document generated from the binary's
+/// own command tree, every runnable command with its effects; `af help COMMAND --json` is the
+/// same document for that command's subtree, an alias naming its command; a path that names no
+/// command is one `af/error@2` document with exit 2, never a topic.
+#[test]
+fn help_json_prints_the_generated_command_catalog() {
+    let catalog = crate::schemas::validator("command-catalog-v1.json");
+    let whole = af(&["help", "--json"]);
+    assert!(whole.status.success(), "{}", err(&whole));
+    let document: serde_json::Value = serde_json::from_slice(&whole.stdout).unwrap();
+    crate::schemas::valid(&catalog, &document);
+    assert_eq!(document["scope"], "af");
+    assert_eq!(document["af_version"], VERSION);
+    let commands = document["commands"].as_array().unwrap();
+    let named = |name: &str| {
+        commands
+            .iter()
+            .find(|command| command["command"] == name)
+            .unwrap_or_else(|| panic!("{name} missing from the catalog"))
+    };
+    // Every command the tree holds, the ones the agent-ux steps added among them.
+    for name in [
+        "af setup agents",
+        "af onboard",
+        "af review ledger",
+        "af task wait",
+        "af task findings",
+        "af schema show",
+        "af help",
+    ] {
+        assert!(!named(name)["effects"].is_null(), "{name}");
+    }
+    assert!(named("af task")["effects"].is_null());
+    assert_eq!(named("af task")["runnable"], false);
+    assert_eq!(named("af review plan")["effects"]["tokens"], "free");
+    assert_eq!(
+        named("af task start")["effects"]["charges_when"],
+        "--execute"
+    );
+    assert_eq!(
+        named("af onboard")["effects"]["writes"][0],
+        serde_json::json!({"state": "files", "when": "--apply"})
+    );
+    assert_eq!(
+        named("af provider setup")["effects"]["human"],
+        serde_json::json!([{"need": "login", "when": "--login"}])
+    );
+    for command in commands {
+        assert_eq!(
+            command["runnable"] == true,
+            command["effects"].is_object(),
+            "{command}"
+        );
+    }
+
+    let run = af(&["help", "task", "run", "--json"]);
+    assert!(run.status.success(), "{}", err(&run));
+    let run: serde_json::Value = serde_json::from_slice(&run.stdout).unwrap();
+    crate::schemas::valid(&catalog, &run);
+    assert_eq!(run["scope"], "af task run");
+    assert_eq!(run["commands"].as_array().unwrap().len(), 1);
+    assert_eq!(run["commands"][0], *named("af task run"));
+
+    let alias = af(&["help", "providers", "--json"]);
+    let alias: serde_json::Value = serde_json::from_slice(&alias.stdout).unwrap();
+    assert_eq!(alias["scope"], "af provider");
+    assert_eq!(alias["commands"][0]["subcommands"][0], "detect");
+
+    for words in [
+        &["help", "nope", "--json"][..],
+        &["help", "json", "--json"][..],
+    ] {
+        let refused = af(words);
+        assert_eq!(refused.status.code(), Some(2), "{words:?}");
+        let error: serde_json::Value = serde_json::from_slice(&refused.stdout).unwrap();
+        crate::schemas::valid(&crate::schemas::validator("error-v2.json"), &error);
+        assert_eq!(error["exit_code"], 2);
+        assert!(
+            error["error"]
+                .as_str()
+                .unwrap()
+                .ends_with("; run af help --json for every command"),
+            "{error}"
+        );
+        assert!(
+            err(&refused).starts_with("af help: no command af "),
+            "{}",
+            err(&refused)
+        );
+    }
+}
+
+/// #374: `af schema show` lists exactly the document IDs `af help json` names, and prints each
+/// one's schema as `schemas/` holds it; an ID it does not ship exits 1 and names the one it does.
+#[test]
+fn schema_show_prints_every_id_af_help_json_lists() {
+    let help = af(&["help", "json"]);
+    assert!(help.status.success(), "{}", err(&help));
+    let mut listed: Vec<String> = out(&help)
+        .split(|c: char| c.is_whitespace() || "(),;:`".contains(c))
+        .filter(|word| word.starts_with("af/") && word.contains('@'))
+        .map(|word| word.trim_end_matches('.').to_owned())
+        .collect();
+    listed.sort();
+    listed.dedup();
+    assert!(
+        listed.contains(&"af/command-catalog@1".to_owned()),
+        "{listed:?}"
+    );
+    assert!(listed.len() >= 20, "{listed:?}");
+
+    let ids = af(&["schema", "show"]);
+    assert!(ids.status.success(), "{}", err(&ids));
+    let mut shipped: Vec<String> = out(&ids)
+        .lines()
+        .map(|line| line.split_whitespace().next().unwrap().to_owned())
+        .collect();
+    shipped.sort();
+    assert_eq!(shipped, listed);
+
+    let schemas = workspace_schemas();
+    for id in &listed {
+        let (kind, version) = id.trim_start_matches("af/").split_once('@').unwrap();
+        let file = schemas.join(format!("{kind}-v{version}.json"));
+        let shown = af(&["schema", "show", id]);
+        assert!(shown.status.success(), "{id}: {}", err(&shown));
+        assert_eq!(shown.stdout, std::fs::read(&file).unwrap(), "{id}");
+    }
+
+    let old = af(&["schema", "show", "af/task-status@1"]);
+    assert_eq!(old.status.code(), Some(1));
+    assert!(old.stdout.is_empty());
+    assert!(
+        err(&old).contains("only af/task-status@2; run af schema show af/task-status@2"),
+        "{}",
+        err(&old)
+    );
 }

@@ -500,8 +500,16 @@ document, each check with its `fix` and `hint`.",
         long_about = "Explain a topic or a command.\n\n\
 `af help` alone lists every topic with what it explains; start with `af help start` and \
 `af help concepts`. A word that is not a topic is a command path, so `af help review run` \
-equals `af review run --help`.",
-        after_long_help = "Examples:\n  af help start\n  af help concepts\n  af help layers\n  af help exit-codes\n  af help errors\n  af help errors no_task_catalog\n  af help review ledger"
+equals `af review run --help`.\n\n\
+--json prints the command catalog instead: one af/command-catalog@1 document \
+(schemas/command-catalog-v1.json) of every command, or with a command path of that command and \
+the commands below it, generated from the command definitions. Each command carries its usage, \
+subcommands and arguments, and each runnable one its effects: `tokens` (`free` or `charges`), \
+the state it `writes` (`store`, `files`, `machine`, `remote`) and what it needs from a `human` \
+(`login`, `approval`, `terminal`), each with the flag or condition that turns it on. Under \
+--json every word is a command path, never a topic; one that names no command is an af/error@2 \
+document, exit 2. `af help json` explains the vocabulary.",
+        after_long_help = "Examples:\n  af help start\n  af help concepts\n  af help layers\n  af help exit-codes\n  af help errors\n  af help errors no_task_catalog\n  af help review ledger\n  af help --json | jq -r '.commands[] | [.command, .effects.tokens] | @tsv'\n  af help task run --json | jq '.commands[0].effects'"
     )]
     Help {
         /// A topic name or a command path
@@ -510,6 +518,42 @@ equals `af review run --help`.",
         /// Print only the AGENTS.md pointer (agents topic only)
         #[arg(long)]
         snippet: bool,
+        /// One af/command-catalog@1 document of the commands (or the one named) instead of text
+        #[arg(long, conflicts_with = "snippet")]
+        json: bool,
+    },
+    /// Print a JSON Schema af ships, by the document ID `af help json` lists
+    #[command(
+        display_order = 7,
+        subcommand_required = true,
+        arg_required_else_help = true,
+        long_about = "Print a JSON Schema af ships, by the document ID `af help json` lists.\n\n\
+Every document af prints under --json names its shape in its `schema` field (`af/task-status@2`); \
+`af schema show ID` prints the schema of that ID, the bytes of `schemas/` this release was built \
+with, and `af schema show` alone lists the IDs with their titles. It reads nothing and writes \
+nothing. Exit codes: 0 printed, 1 an ID this release does not ship (the message names the \
+versions it does ship), 2 usage error.",
+        after_long_help = "Examples:\n  af schema show\n  af schema show af/task-status@2\n  af schema show af/command-catalog@1 | jq .title"
+    )]
+    Schema {
+        #[command(subcommand)]
+        command: SchemaCommand,
+    },
+}
+
+#[derive(Debug, Subcommand)]
+pub(crate) enum SchemaCommand {
+    /// Print one shipped JSON Schema by its document ID; without an ID, list the IDs
+    #[command(
+        long_about = "Print one shipped JSON Schema by its document ID, the `schema` field of \
+the document (`af/task-status@2`), exactly as `schemas/` holds it; without an ID, list every ID \
+this release ships with its schema's title, one per line. An ID it does not ship exits 1.",
+        after_long_help = "Examples:\n  af schema show\n  af schema show af/error@2\n  af schema show af/task-status@1   # exit 1"
+    )]
+    Show {
+        /// The document ID, as `af help json` and the document's `schema` field name it
+        #[arg(value_name = "ID", add = ArgValueCompleter::new(crate::shipped_schemas::complete_id))]
+        id: Option<String>,
     },
 }
 

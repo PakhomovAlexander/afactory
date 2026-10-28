@@ -61,6 +61,17 @@ that sandbox or approve the needed host permission, then retry the command. Rein
 does not grant a sandbox permission. `af doctor` shows the detected harness, sandbox and network
 context; these markers explain the environment but never prove that a Provider CLI is compatible.
 
+## Learning the commands
+
+`af help --json` prints every command as one `af/command-catalog@1` document, generated from
+the command definitions the binary parses: its usage, subcommands and arguments, and for each
+runnable command its `effects`: whether it may charge tokens (`tokens`, `charges_when`), the
+state it may write (`store`, `files`, `machine`, `remote`) and what it needs from a person
+(`login`, `approval`, `terminal`), each with the flag that turns it on. `af help task run --json`
+prints one command. Read a command's `effects` before you run it for the first time: one with
+`tokens` `free`, no `writes` and no `human` only reads. `af schema show ID` prints the schema of
+any document `af help json` names, and `af schema show` lists the IDs.
+
 ## 1. Plan
 
 `af task plan --file TASK_FILE --json` captures the Task file and the checkout and compiles the
