@@ -121,13 +121,17 @@ impl Scope {
 
     /// A path with the home directory written `~`.
     pub(crate) fn abbreviate(&self, path: &Path) -> String {
-        let home = self.home.as_deref();
-        let relative = home.and_then(|home| path.strip_prefix(home).ok());
-        match relative {
-            Some(relative) if relative.as_os_str().is_empty() => "~".to_owned(),
-            Some(relative) => format!("~/{}", relative.display()),
-            None => path.display().to_string(),
-        }
+        abbreviate(self.home.as_deref(), path)
+    }
+}
+
+/// `path` as the panes show it: `~` for `home` and what is under it, the path itself otherwise.
+pub(crate) fn abbreviate(home: Option<&Path>, path: &Path) -> String {
+    let relative = home.and_then(|home| path.strip_prefix(home).ok());
+    match relative {
+        Some(relative) if relative.as_os_str().is_empty() => "~".to_owned(),
+        Some(relative) => format!("~/{}", relative.display()),
+        None => path.display().to_string(),
     }
 }
 
