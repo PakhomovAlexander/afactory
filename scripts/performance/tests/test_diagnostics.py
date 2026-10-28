@@ -28,6 +28,7 @@ from perflab import (clicases, contracts, counters, diagcontracts, diagnostics, 
                      toolrun)
 from perflab import suite as suite_module
 from perflab.values import ContractError, sha256_bytes
+from tests import build_fixtures
 from tests import diagnostic_fixtures as fakes
 from tests.support import ROOT, SUITE, TempDir, fake_supervisor, lab_repo, read
 
@@ -2200,6 +2201,53 @@ class Command(TempDir):
         with open(self.path("parent.json"), "wb") as stream:
             stream.write(contracts.write_bytes(parent, "run"))
         return git
+
+    def test_unconfirmed_build_retains_standalone_fence_and_recovery_before_any_launch(self):
+        git = self.parent()
+        os.mkdir(self.path("lock"))
+        options = diagnostics.Options(plan=self.path("parent.json"), cases=[SMALL],
+            recipe="linux_gnu_cpu_profile", output=self.path("child"),
+            host_os="linux", mode="trusted_local", lock_directory=self.path("lock"))
+        def build(plan, deadline):
+            with self.assertRaises(diagnostics.hostlock.Refused) as busy:
+                diagnostics.hostlock.MachineLock(self.path("lock"))
+            self.assertEqual(busy.exception.reason, "concurrent_shard")
+            image = "sha256:" + "a" * 64
+            docker = build_fixtures.fake_docker(self.path("docker"), {image: (image, [])},
+                                               lingering="af-perf-probe-")
+            diagnostics.builds.BuildImage(docker, image).run_once(["/bin/true"])
+        options.builder = build
+        with mock.patch.object(diagnostics, "_probes") as probes, \
+                mock.patch.object(diagnostics, "probe_tools") as tools, \
+                self.assertRaises(diagnostics.Unavailable) as caught:
+            diagnostics.run_profile(git, options)
+        self.assertFalse(caught.exception.cleanup_confirmed)
+        self.assertEqual(caught.exception.reason, "build_container_unconfirmed")
+        probes.assert_not_called()
+        tools.assert_not_called()
+        self.assertTrue(os.path.isfile(self.path("child", diagnostics.PLAN_FILE)))
+        self.assertIn(b"af-perf-probe-", read(self.path("child", "cleanup-uncertain.txt")))
+        # No diagnostic scratch existed; the owned build alone retains exclusion.
+        self.assertFalse(os.path.exists(self.path("child", diagnostics.WORK_DIR)))
+        with self.assertRaisesRegex(diagnostics.hostlock.Refused, "unfinished experiment"):
+            diagnostics.hostlock.MachineLock(self.path("lock"))
+
+    def test_confirmed_clean_build_failure_remains_a_reportable_omission(self):
+        git = self.parent()
+        os.mkdir(self.path("lock"))
+        def build(plan, deadline):
+            raise diagnostics.builds.Unavailable("toolchain_mismatch", "confirmed-clean tool mismatch")
+        options = diagnostics.Options(plan=self.path("parent.json"), cases=[SMALL],
+            recipe="linux_gnu_cpu_profile", output=self.path("child"), builder=build,
+            host_os="linux", mode="trusted_local", lock_directory=self.path("lock"))
+        code, path, _ = diagnostics.run_profile(git, options,
+            authority_factory=lambda plan: (suite_module.load(SUITE).doc, golden()))
+        self.assertEqual(code, 4)
+        doc = contracts.read_file(path, "profiles")
+        self.assertEqual(doc["execution"]["retained_scratch"], 0)
+        self.assertIn("toolchain_mismatch", [o["reason"] for o in doc["omissions"]])
+        with diagnostics.hostlock.MachineLock(self.path("lock")):
+            pass
 
     def test_explicit_zero_negative_and_over_limit_bounds_are_refused_before_anything(self):
         git = self.parent()

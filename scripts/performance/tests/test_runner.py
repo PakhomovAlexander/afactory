@@ -679,7 +679,8 @@ class Shards(ShardHarness):
         os.mkdir(locks, 0o755)
         bootstrap = ("import runpy,sys; sys.path.insert(0,%r); "
                      "from perflab import runner; original=runner.machine_lock; "
-                     "runner.machine_lock=lambda directory=None: original(%r); "
+                     "runner.machine_lock=lambda directory=None,register=None,lease=None: "
+                     "original(%r,register=register,lease=lease); "
                      "sys.argv=[%r]+sys.argv[1:]; runpy.run_path(%r,run_name='__main__')"
                      % (os.path.join(ROOT, "scripts", "performance"), locks, CLI, CLI))
         base = [sys.executable, "-I", "-B", "-c", bootstrap, "run", "--plan", plan_path,
