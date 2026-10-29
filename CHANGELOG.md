@@ -28,8 +28,12 @@ Committed .af/ policy valid under 0.13.0 needs no hand edit. Run af onboard --re
 ### Changes
 
 - release: v0.14.0-rc.2 (#458)
+- tests: the TUI hand-off tests wait for the panes' re-read to settle before reading the bar; on the macOS release runner the spinner frame was still showing, which stopped v0.14.0-rc.2
+- CI: a `release/` pull request runs the macOS leg the release runs, so a macOS-only failure stops the pull request before its merge cuts the tag
 
-## [0.14.0-rc.2] - 2026-10-29
+## [0.14.0-rc.2] - 2026-10-29 [YANKED]
+
+Tagged but never published: two TUI hand-off tests raced the panes' re-read on the macOS release runner. Its changes ship in 0.14.0-rc.3.
 
 ### Authority compatibility
 

@@ -1094,12 +1094,15 @@ fn hand_off(browser: &mut Browser, line: &str, ended: &str) -> (Screen, usize) {
 }
 
 /// Enter on the released screen: the browser again, at 100x30, its status line naming the
-/// command's exit.
+/// command's exit. Returning re-reads the panes, whose bar rows carry a spinner frame until the
+/// reads finish (ADR-0240), so the wait includes the settled `tasks/` row.
 fn back_in_the_browser(browser: &mut Browser, status: &str) -> Screen {
     browser.keys(b"\r");
     let back = |screen: &Screen| {
         let lines = screen.lines();
-        lines[ROWS - 1].starts_with("NORMAL  hub") && lines[ROWS - 1].ends_with(status)
+        lines[ROWS - 1].starts_with("NORMAL  hub")
+            && lines[ROWS - 1].ends_with(status)
+            && bar_rows(screen).contains(&"  v tasks/".to_owned())
     };
     let screen = browser.wait_for("the browser again", back);
     let text = screen.text();
