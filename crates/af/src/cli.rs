@@ -3571,7 +3571,8 @@ af task output TASK_ID --port report --format markdown \\\n    --output optimiza
         /// Versioned strategy declaration; light uses an installed policy when present
         #[arg(long, default_value = "light", value_parser = ["light", "heavy"])]
         strategy: String,
-        /// Declared source configuration; paths are never discovered implicitly
+        /// Declared source configuration; paths are never discovered implicitly, and a relative
+        /// source path resolves from the repository root
         #[arg(
             long,
             value_name = "FILE",

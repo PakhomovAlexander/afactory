@@ -146,7 +146,10 @@ means all available sessions explicitly associated with this project, not every
 conversation accessible on the machine. Configuration enumerates adapters and
 roots; the capture preview reports included, missing, excluded and unsupported
 sources. New history adapters are explicit capabilities, not model-authored shell
-commands that search the user's home directory.
+commands that search the user's home directory. A relative `[[sources]].path` in
+`.af/optimization-sources.toml` resolves from the repository root, not from `.af/`;
+a source that is missing or unreadable is a gap and a stderr warning that names
+its `source_id`, its resolved path and which of the two it is, never an empty history.
 
 Sources, in descending evidentiary strength:
 

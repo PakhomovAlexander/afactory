@@ -134,7 +134,7 @@ fn parse_since(value: Option<&str>, cutoff: u64) -> Result<Option<u64>, String> 
     ))
 }
 
-fn read_config(repo: &Path, requested: &Path) -> Result<(SourceConfig, PathBuf), String> {
+fn read_config(repo: &Path, requested: &Path) -> Result<SourceConfig, String> {
     let path = if requested.is_absolute() {
         requested.to_path_buf()
     } else {
@@ -186,7 +186,7 @@ fn read_config(repo: &Path, requested: &Path) -> Result<(SourceConfig, PathBuf),
     {
         return Err("Optimization source configuration violates M1 capture bounds".into());
     }
-    Ok((config, path))
+    Ok(config)
 }
 
 fn latest_capture(
@@ -233,24 +233,115 @@ fn latest_capture(
     Ok(candidates.into_iter().next())
 }
 
-fn source_path(config_path: &Path, declared: &Path) -> Result<PathBuf, String> {
-    let path = if declared.is_absolute() {
+/// Why one declared source produced no receipt. `Missing` and `Unreadable` carry the resolved
+/// path so `capture` can name the source on stderr; the recorded gap keeps the
+/// `OptimizationHistory@1` identifier (`unavailable_<adapter>_<hash>`) either way.
+#[derive(Debug)]
+enum SourceError {
+    /// The declared path does not exist.
+    Missing(PathBuf),
+    /// The path exists but cannot be opened, read or re-checked as a regular file, including an
+    /// I/O failure after a successful open.
+    Unreadable(PathBuf),
+    Other(String),
+}
+
+impl From<String> for SourceError {
+    fn from(error: String) -> Self {
+        Self::Other(error)
+    }
+}
+
+impl From<&str> for SourceError {
+    fn from(error: &str) -> Self {
+        Self::Other(error.into())
+    }
+}
+
+impl std::fmt::Display for SourceError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Missing(path) => {
+                write!(f, "declared history source is missing: {}", path.display())
+            }
+            Self::Unreadable(path) => {
+                write!(
+                    f,
+                    "declared history source is unreadable: {}",
+                    path.display()
+                )
+            }
+            Self::Other(error) => f.write_str(error),
+        }
+    }
+}
+
+impl SourceError {
+    /// The gap reason the capture records for this failure.
+    fn reason(&self) -> UnavailableSourceReason {
+        match self {
+            Self::Missing(_) | Self::Unreadable(_) => UnavailableSourceReason::Unavailable,
+            Self::Other(error) => unavailable_reason(error),
+        }
+    }
+
+    /// The stderr warning that names an unavailable source, or `None` for other failures.
+    fn warning(&self, source_id: &str, gap: &str) -> Option<String> {
+        let (state, path) = match self {
+            Self::Missing(path) => ("missing", path),
+            Self::Unreadable(path) => ("unreadable", path),
+            Self::Other(_) => return None,
+        };
+        Some(format!(
+            "warning: history source `{source_id}` is {state} at {}; it is recorded as gap {gap}",
+            path.display()
+        ))
+    }
+}
+
+/// A relative `[[sources]].path` is relative to the repository root, like every other `.af/`
+/// path; an absolute path is used as given.
+fn resolve_source(repo: &Path, declared: &Path) -> PathBuf {
+    if declared.is_absolute() {
         declared.to_path_buf()
     } else {
-        config_path
-            .parent()
-            .unwrap_or(Path::new("."))
-            .join(declared)
+        repo.join(declared)
+    }
+}
+
+fn source_path(repo: &Path, declared: &Path) -> Result<PathBuf, SourceError> {
+    let resolved = resolve_source(repo, declared);
+    let path = match std::fs::canonicalize(&resolved) {
+        Ok(path) => path,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+            return Err(SourceError::Missing(resolved));
+        }
+        Err(_) => return Err(SourceError::Unreadable(resolved)),
     };
-    let path = std::fs::canonicalize(&path)
-        .map_err(|error| format!("opening declared source {}: {error}", path.display()))?;
     if !path.is_file() {
-        return Err(format!(
-            "declared history source {} is not a regular file",
-            path.display()
-        ));
+        return Err(SourceError::Unreadable(path));
     }
     Ok(path)
+}
+
+/// Any I/O failure on an opened source makes it unreadable at `path`.
+fn unreadable(path: &Path) -> impl FnOnce(std::io::Error) -> SourceError + '_ {
+    move |_| SourceError::Unreadable(path.to_path_buf())
+}
+
+/// Classify a failed source capture into the gap reason the capture records.
+fn unavailable_reason(error: &str) -> UnavailableSourceReason {
+    if error.contains("Retained source bytes changed") {
+        UnavailableSourceReason::Changed
+    } else if error.contains("Retained source range was truncated") {
+        UnavailableSourceReason::Truncated
+    } else if error.contains("Retained source verification exceeds") {
+        UnavailableSourceReason::VerificationLimit
+    } else if error.contains("Declared source identity changed") {
+        UnavailableSourceReason::IdentityChanged
+    } else {
+        UnavailableSourceReason::Unavailable
+    }
 }
 
 #[cfg(test)]
@@ -263,12 +354,14 @@ fn digest(bytes: &[u8]) -> String {
 
 /// The legacy field `prefix_digest` hashes the exact receipted byte range. Recheck all
 /// retained ranges before continuing a source; an empty last capture must not hide rotation.
+/// A seek or read failure on the opened `file` makes the source unreadable at `path`.
 fn verify_retained_ranges(
-    file: &mut std::fs::File,
+    file: &mut (impl Read + Seek),
+    path: &Path,
     source: &DeclaredSource,
     receipts: &[OptimizationSourceReceiptV1],
     remaining_raw: &mut u64,
-) -> Result<(), String> {
+) -> Result<(), SourceError> {
     let mut checked = BTreeSet::new();
     let mut buffer = [0u8; 64 * 1024];
     for receipt in receipts
@@ -290,15 +383,13 @@ fn verify_retained_ranges(
             return Err("Retained source verification exceeds the captured raw-read limit".into());
         }
         file.seek(SeekFrom::Start(start))
-            .map_err(|error| error.to_string())?;
+            .map_err(unreadable(path))?;
         let mut left = length;
         let mut hash = Sha256::new();
         while left > 0 {
             let wanted = usize::try_from(left.min(buffer.len() as u64))
                 .map_err(|error| error.to_string())?;
-            let count = file
-                .read(&mut buffer[..wanted])
-                .map_err(|error| error.to_string())?;
+            let count = file.read(&mut buffer[..wanted]).map_err(unreadable(path))?;
             if count == 0 {
                 return Err("Retained source range was truncated or rotated".into());
             }
@@ -348,7 +439,6 @@ fn retained_receipts(
 #[allow(clippy::too_many_arguments)]
 fn capture_source(
     config: &SourceConfig,
-    config_path: &Path,
     project_root: &Path,
     source: &DeclaredSource,
     start: u64,
@@ -363,34 +453,28 @@ fn capture_source(
         Vec<OptimizationObservationV1>,
         BTreeSet<String>,
     ),
-    String,
+    SourceError,
 > {
     if !matches!(
         source.adapter.as_str(),
         "af" | "codex" | "claude" | "external"
     ) {
-        return Err(format!(
-            "unsupported declared history adapter {}",
-            source.adapter
-        ));
+        return Err(format!("unsupported declared history adapter {}", source.adapter).into());
     }
-    let path = source_path(config_path, &source.path)?;
-    let before = std::fs::metadata(&path).map_err(|error| error.to_string())?;
+    let path = source_path(project_root, &source.path)?;
+    let before = std::fs::metadata(&path).map_err(unreadable(&path))?;
     let end = before.len();
     if start > end {
-        return Err(format!(
-            "declared history source {} was truncated",
-            source.source_id
-        ));
+        return Err(format!("declared history source {} was truncated", source.source_id).into());
     }
-    let mut file = std::fs::File::open(&path).map_err(|error| error.to_string())?;
-    verify_retained_ranges(&mut file, source, prior_receipts, remaining_raw)?;
+    let mut file = std::fs::File::open(&path).map_err(unreadable(&path))?;
+    verify_retained_ranges(&mut file, &path, source, prior_receipts, remaining_raw)?;
     let available = end - start;
     let selected = available.min(*remaining_raw);
     let mut complete = selected == available;
     let mut filtered = false;
     file.seek(SeekFrom::Start(start))
-        .map_err(|error| error.to_string())?;
+        .map_err(unreadable(&path))?;
     let mut reader = BufReader::new(file.take(selected));
     let mut hasher = Sha256::new();
     let mut records = Vec::new();
@@ -409,7 +493,7 @@ fn capture_source(
         line.clear();
         let read = reader
             .read_until(b'\n', &mut line)
-            .map_err(|error| error.to_string())?;
+            .map_err(unreadable(&path))?;
         if read == 0 {
             break;
         }
@@ -422,7 +506,8 @@ fn capture_source(
             return Err(format!(
                 "{} contains a record over the captured limit",
                 source.source_id
-            ));
+            )
+            .into());
         }
         hasher.update(&line);
         let parsed = parse_adapter_record(&mut adapter_state, &line)
@@ -432,7 +517,8 @@ fn capture_source(
                 return Err(format!(
                     "{} adapter emitted a foreign project observation",
                     source.source_id
-                ));
+                )
+                .into());
             }
             record.attribution.validate()?;
             if since.is_none_or(|minimum| record.observed_unix_ms.get() >= minimum)
@@ -452,12 +538,13 @@ fn capture_source(
             .checked_add(read as u64)
             .ok_or("History byte offset overflow")?;
     }
-    let after = std::fs::metadata(&path).map_err(|error| error.to_string())?;
+    let after = std::fs::metadata(&path).map_err(unreadable(&path))?;
     if before.len() != after.len() || before.modified().ok() != after.modified().ok() {
         return Err(format!(
             "declared history source {} changed during stable prefix capture",
             source.source_id
-        ));
+        )
+        .into());
     }
     *remaining_raw -= selected;
     complete &= !filtered && !adapter_state.has_coverage_gap();
@@ -527,8 +614,15 @@ fn observation_identity(
     content_id(&identity).map_err(|error| error.to_string())
 }
 
-fn capture(options: &Options, repo: &Path, state: &Path) -> Result<OptimizationHistoryV1, String> {
-    let (config, config_path) = read_config(repo, &options.history_config)?;
+/// Capture the declared history. A source that cannot be opened or read is written to `warn`
+/// (stderr from `run`) with its resolved path before any Task starts.
+fn capture(
+    options: &Options,
+    repo: &Path,
+    state: &Path,
+    warn: &mut dyn Write,
+) -> Result<OptimizationHistoryV1, String> {
+    let config = read_config(repo, &options.history_config)?;
     OptimizationPolicyV1 {
         schema: "af.optimization-policy/1".into(),
         project_id: config.project_id.clone(),
@@ -577,7 +671,6 @@ fn capture(options: &Options, repo: &Path, state: &Path) -> Result<OptimizationH
         };
         match capture_source(
             &config,
-            &config_path,
             repo,
             source,
             start,
@@ -596,22 +689,14 @@ fn capture(options: &Options, repo: &Path, state: &Path) -> Result<OptimizationH
                 gaps.extend(source_gaps);
             }
             Err(error) => {
-                let reason = if error.contains("Retained source bytes changed") {
-                    UnavailableSourceReason::Changed
-                } else if error.contains("Retained source range was truncated") {
-                    UnavailableSourceReason::Truncated
-                } else if error.contains("Retained source verification exceeds") {
-                    UnavailableSourceReason::VerificationLimit
-                } else if error.contains("Declared source identity changed") {
-                    UnavailableSourceReason::IdentityChanged
-                } else {
-                    UnavailableSourceReason::Unavailable
-                };
-                gaps.insert(unavailable_source_gap(
-                    &source.adapter,
-                    &source.source_id,
-                    reason,
-                ));
+                let gap =
+                    unavailable_source_gap(&source.adapter, &source.source_id, error.reason());
+                // Warn before the run so an all-unavailable capture is not read as an empty
+                // history.
+                if let Some(warning) = error.warning(&source.source_id, &gap) {
+                    let _ = writeln!(warn, "{warning}");
+                }
+                gaps.insert(gap);
             }
         }
     }
@@ -699,7 +784,7 @@ pub(crate) fn run(mut options: Options) -> Result<i32, String> {
         && repo
             .join(review_pipeline::task::optimization_configuration::POLICY_PATH)
             .is_file();
-    let history = capture(&options, &repo, &state)?;
+    let history = capture(&options, &repo, &state, &mut std::io::stderr())?;
     let capture_digest =
         content_id(&serde_json::to_value(&history).map_err(|error| error.to_string())?)
             .map_err(|error| error.to_string())?;
@@ -821,7 +906,7 @@ mod tests {
             state: Some(state.clone()),
             json: true,
         };
-        let history = capture(&options, dir.path(), &state).unwrap();
+        let history = capture(&options, dir.path(), &state, &mut Vec::new()).unwrap();
         assert_eq!(history.receipts.len(), 2);
         assert_eq!(history.observations.len(), 2);
         let economics = review_store::optimization::project_economics(&[(
@@ -861,18 +946,20 @@ mod tests {
         let receipts = vec![empty, receipt];
         let mut file = std::fs::File::open(&path).unwrap();
         let mut budget = 8;
-        verify_retained_ranges(&mut file, &source, &receipts, &mut budget).unwrap();
+        verify_retained_ranges(&mut file, &path, &source, &receipts, &mut budget).unwrap();
         assert_eq!(budget, 4);
         std::fs::write(&path, b"new\n").unwrap();
         let mut file = std::fs::File::open(&path).unwrap();
         assert!(
-            verify_retained_ranges(&mut file, &source, &receipts, &mut 8)
+            verify_retained_ranges(&mut file, &path, &source, &receipts, &mut 8)
                 .unwrap_err()
+                .to_string()
                 .contains("changed")
         );
         assert!(
-            verify_retained_ranges(&mut file, &source, &receipts, &mut 3)
+            verify_retained_ranges(&mut file, &path, &source, &receipts, &mut 3)
                 .unwrap_err()
+                .to_string()
                 .contains("limit")
         );
     }
@@ -919,7 +1006,6 @@ mod tests {
         let mut normalized = 100_000;
         let (receipt, observations, _) = capture_source(
             &config,
-            &dir.path().join("sources.json"),
             dir.path(),
             &config.sources[0],
             0,
@@ -977,7 +1063,6 @@ mod tests {
             ]
         }))
         .unwrap();
-        let config_path = root.join("sources.json");
         let mut raw = 1_000_000;
         let mut normalized = 1_000_000;
         let mut receipts = Vec::new();
@@ -986,7 +1071,6 @@ mod tests {
         for source in &config.sources {
             let (receipt, mut records, source_gaps) = capture_source(
                 &config,
-                &config_path,
                 &root,
                 source,
                 0,
@@ -1073,7 +1157,6 @@ mod tests {
         let mut normalized = 1_000_000;
         let (first_receipt, first, _) = capture_source(
             &config,
-            &dir.path().join("sources.json"),
             dir.path(),
             &config.sources[0],
             0,
@@ -1094,7 +1177,6 @@ mod tests {
         let mut normalized = 1_000_000;
         let (second_receipt, second, _) = capture_source(
             &config,
-            &dir.path().join("sources.json"),
             dir.path(),
             &config.sources[0],
             first_receipt.byte_end.get(),
@@ -1109,7 +1191,6 @@ mod tests {
         let mut normalized = 1_000_000;
         let (third_receipt, third, _) = capture_source(
             &config,
-            &dir.path().join("sources.json"),
             dir.path(),
             &config.sources[0],
             second_receipt.byte_end.get(),
@@ -1150,5 +1231,245 @@ mod tests {
         let economics = review_store::optimization::project_economics(&captures).unwrap();
         assert_eq!(economics.outer_session_usage.chargeable_tokens.get(), 100);
         assert_eq!(economics.capture_ids, ids);
+    }
+}
+
+#[cfg(test)]
+mod source_tests {
+    //! Functional: where a declared source is read from and how a missing one is reported.
+    use super::*;
+
+    fn options() -> Options {
+        Options {
+            since: None,
+            all_history: false,
+            strategy: "light".into(),
+            history_config: PathBuf::from(".af/optimization-sources.toml"),
+            execute: false,
+            experiment: false,
+            candidate: None,
+            repo: PathBuf::new(),
+            state: None,
+            json: false,
+        }
+    }
+
+    /// A repository whose `.af/optimization-sources.toml` declares one `external` source at
+    /// `declared`; `history` is one valid normalized record for that project.
+    fn repository(declared: &str) -> (tempfile::TempDir, String) {
+        let repo = tempfile::tempdir().unwrap();
+        let project = format!("sha256:{}", "1".repeat(64));
+        std::fs::create_dir_all(repo.path().join(".af")).unwrap();
+        let config = serde_json::json!({
+            "schema":"af.optimization-sources/1","project_id":project,
+            "sources":[{"adapter":"external","path":declared,"source_id":"fixture","execution_id":"run"}]
+        });
+        std::fs::write(
+            repo.path().join(".af/optimization-sources.toml"),
+            toml::to_string(&config).unwrap(),
+        )
+        .unwrap();
+        let history = serde_json::json!({"observed_unix_ms":"1",
+            "attribution":{"project_id":project,"case_family":"fixture","execution_id":"run"}})
+        .to_string()
+            + "\n";
+        (repo, history)
+    }
+
+    fn run_capture(repo: &Path) -> (OptimizationHistoryV1, String) {
+        let mut warned = Vec::new();
+        let history = capture(&options(), repo, &repo.join("state"), &mut warned).unwrap();
+        (history, String::from_utf8(warned).unwrap())
+    }
+
+    #[test]
+    fn a_relative_source_path_resolves_from_the_repository_root() {
+        let (repo, history) = repository("captured-history/task.jsonl");
+        std::fs::create_dir_all(repo.path().join("captured-history")).unwrap();
+        std::fs::write(repo.path().join("captured-history/task.jsonl"), &history).unwrap();
+        let (captured, warned) = run_capture(repo.path());
+        assert!(captured.gaps.is_empty(), "{:?}", captured.gaps);
+        assert_eq!(captured.receipts.len(), 1);
+        assert_eq!(captured.receipts[0].byte_end.get(), history.len() as u64);
+        assert_eq!(captured.observations.len(), 1);
+        assert!(warned.is_empty(), "{warned}");
+    }
+
+    /// The gap `OptimizationHistory@1` records for an unavailable `fixture` source: the base's
+    /// `unavailable_<adapter>_<first 12 hex of SHA-256(source_id)>`, with no reason infix.
+    fn recorded_gap() -> String {
+        let gap = format!(
+            "unavailable_external_{}",
+            &review_core::hex::encode(&Sha256::digest(b"fixture"))[..12]
+        );
+        assert_eq!(
+            gap,
+            unavailable_source_gap("external", "fixture", UnavailableSourceReason::Unavailable)
+        );
+        gap
+    }
+
+    #[test]
+    fn a_relative_source_path_is_not_read_from_the_sources_file_directory() {
+        // The old base was `.af/`: a file there under the declared name is not the source.
+        let (repo, history) = repository("task.jsonl");
+        std::fs::write(repo.path().join(".af/task.jsonl"), &history).unwrap();
+        let (captured, warned) = run_capture(repo.path());
+        assert!(captured.receipts.is_empty());
+        assert_eq!(captured.gaps, BTreeSet::from([recorded_gap()]));
+        assert!(
+            warned.contains(&repo.path().join("task.jsonl").display().to_string()),
+            "{warned}"
+        );
+    }
+
+    #[test]
+    fn a_missing_source_keeps_the_recorded_gap_format_and_warns_with_its_resolved_path() {
+        let (repo, _) = repository("captured-history/absent.jsonl");
+        let (captured, warned) = run_capture(repo.path());
+        let gap = recorded_gap();
+        assert!(captured.receipts.is_empty());
+        assert_eq!(captured.gaps, BTreeSet::from([gap.clone()]));
+        let resolved = repo.path().join("captured-history/absent.jsonl");
+        assert_eq!(
+            warned,
+            format!(
+                "warning: history source `fixture` is missing at {}; it is recorded as gap {gap}\n",
+                resolved.display()
+            )
+        );
+    }
+
+    #[test]
+    fn a_source_that_is_not_a_regular_file_keeps_the_recorded_gap_and_warns_unreadable() {
+        let (repo, _) = repository("captured-history");
+        std::fs::create_dir_all(repo.path().join("captured-history")).unwrap();
+        let (captured, warned) = run_capture(repo.path());
+        let gap = recorded_gap();
+        assert_eq!(captured.gaps, BTreeSet::from([gap.clone()]));
+        let resolved = std::fs::canonicalize(repo.path().join("captured-history")).unwrap();
+        assert_eq!(
+            warned,
+            format!(
+                "warning: history source `fixture` is unreadable at {}; it is recorded as gap {gap}\n",
+                resolved.display()
+            )
+        );
+    }
+
+    #[test]
+    fn an_absolute_source_path_is_used_as_given() {
+        let (repo, history) = repository("placeholder");
+        let elsewhere = tempfile::tempdir().unwrap();
+        let absolute = elsewhere.path().join("task.jsonl");
+        std::fs::write(&absolute, &history).unwrap();
+        assert_eq!(resolve_source(repo.path(), &absolute), absolute);
+        assert_eq!(
+            source_path(repo.path(), &absolute).unwrap(),
+            std::fs::canonicalize(&absolute).unwrap()
+        );
+    }
+
+    /// An opened source whose seek or read fails. A real file cannot be made to fail a read
+    /// after a successful open hermetically, so this reader stands in for it at the
+    /// `verify_retained_ranges` seam.
+    struct FailingSource {
+        fail_seek: bool,
+    }
+
+    impl Read for FailingSource {
+        fn read(&mut self, _: &mut [u8]) -> std::io::Result<usize> {
+            Err(std::io::Error::other("injected read failure"))
+        }
+    }
+
+    impl Seek for FailingSource {
+        fn seek(&mut self, _: SeekFrom) -> std::io::Result<u64> {
+            if self.fail_seek {
+                Err(std::io::Error::other("injected seek failure"))
+            } else {
+                Ok(0)
+            }
+        }
+    }
+
+    #[test]
+    fn a_read_failure_after_open_is_an_unreadable_source_warned_with_its_path() {
+        let source: DeclaredSource = serde_json::from_value(serde_json::json!({
+            "adapter":"external","path":"history.jsonl","source_id":"fixture","execution_id":"run"
+        }))
+        .unwrap();
+        let receipt = OptimizationSourceReceiptV1 {
+            receipt_id: format!("sha256:{}", "1".repeat(64)),
+            adapter: "external".into(),
+            adapter_version: "normalized-v1".into(),
+            project_id: format!("sha256:{}", "2".repeat(64)),
+            source_id: "fixture".into(),
+            execution_id: "run".into(),
+            byte_start: 0.into(),
+            byte_end: 4.into(),
+            prefix_digest: digest(b"old\n"),
+            cutoff_unix_ms: 1.into(),
+            redaction_version: "allowlist-v1".into(),
+            completeness: SourceCompletenessV1::Complete,
+        };
+        let path = Path::new("/repo/history.jsonl");
+        let gap = recorded_gap();
+        for fail_seek in [true, false] {
+            let error = verify_retained_ranges(
+                &mut FailingSource { fail_seek },
+                path,
+                &source,
+                std::slice::from_ref(&receipt),
+                &mut 8,
+            )
+            .unwrap_err();
+            assert!(
+                matches!(&error, SourceError::Unreadable(at) if at == path),
+                "{error:?}"
+            );
+            assert_eq!(error.reason(), UnavailableSourceReason::Unavailable);
+            assert_eq!(
+                error.warning("fixture", &gap).unwrap(),
+                format!(
+                    "warning: history source `fixture` is unreadable at /repo/history.jsonl; it is recorded as gap {gap}"
+                )
+            );
+        }
+    }
+
+    /// The metadata re-check after the read cannot be made to fail hermetically either: this
+    /// proves the mapping `capture_source` applies there (and to every other I/O error on the
+    /// opened source) with a constructed `io::Error`.
+    #[test]
+    fn an_io_error_on_an_opened_source_is_classified_unreadable() {
+        let path = Path::new("/repo/history.jsonl");
+        let error = unreadable(path)(std::io::Error::from(std::io::ErrorKind::PermissionDenied));
+        assert!(matches!(&error, SourceError::Unreadable(at) if at == path));
+        assert_eq!(error.reason(), UnavailableSourceReason::Unavailable);
+        assert!(
+            error
+                .warning("fixture", "gap")
+                .unwrap()
+                .contains("is unreadable at /repo/")
+        );
+    }
+
+    #[test]
+    fn only_missing_and_unreadable_sources_are_warned_about() {
+        let changed = SourceError::from("Retained source bytes changed for fixture");
+        assert_eq!(changed.reason(), UnavailableSourceReason::Changed);
+        assert_eq!(changed.warning("fixture", "gap"), None);
+        let foreign = SourceError::from("fixture adapter emitted a foreign project observation");
+        assert_eq!(foreign.reason(), UnavailableSourceReason::Unavailable);
+        assert_eq!(foreign.warning("fixture", "gap"), None);
+        let missing = SourceError::Missing(PathBuf::from("/repo/absent.jsonl"));
+        assert_eq!(missing.reason(), UnavailableSourceReason::Unavailable);
+        assert!(
+            missing
+                .warning("fixture", "gap")
+                .unwrap()
+                .contains("is missing at /repo/")
+        );
     }
 }
