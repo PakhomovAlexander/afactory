@@ -101,9 +101,14 @@ class SchemaSubset:
         return "pattern" not in schema or re.search(schema["pattern"], value) is not None
 
 
-def schema_for(contract):
+def schema_for(contract, doc=None):
+    """The committed schema of the version `doc` names when its reader still admits that
+    earlier version (ADR-0266), else of the contract's current version."""
+    earlier = doc.get("schema") if isinstance(doc, dict) else None
+    if earlier not in contracts.READABLE.get(contract, {}):
+        earlier = None
     return SchemaSubset(json.loads(read(os.path.join(SCHEMAS,
-                                                     contracts.schema_file(contract)))))
+                                                     contracts.schema_file(contract, earlier)))))
 
 
 def parse(entry):
@@ -191,7 +196,7 @@ class Parity(unittest.TestCase):
                     # Refused before any schema applies (a TOML float, for instance).
                     self.assertTrue(not entry["valid"] and entry["shape"])
                     continue
-                accepted = schema_for(entry["contract"]).valid(doc)
+                accepted = schema_for(entry["contract"], doc).valid(doc)
                 if entry["valid"] or not entry["shape"]:
                     self.assertTrue(accepted, "the schema refuses a shape-valid fixture")
                 else:
@@ -204,6 +209,11 @@ class Parity(unittest.TestCase):
             with self.subTest(fixture=entry["path"]):
                 doc = read_with_contract(entry)
                 if entry["contract"] == "readiness":
+                    continue
+                if doc["schema"] in contracts.READABLE.get(entry["contract"], {}):
+                    # An earlier readable version is never written again.
+                    with self.assertRaises(ContractError):
+                        contracts.write_bytes(doc, entry["contract"])
                     continue
                 data = contracts.write_bytes(doc, entry["contract"])
                 self.assertEqual(contracts.read_json(data, entry["contract"]), doc)
@@ -246,14 +256,22 @@ class Parity(unittest.TestCase):
         # cache, shipping/3 one target per product identity and environment group with its
         # distribution, and activation-verification/3 a fetched bridge run's producer
         # (ADR-0185); readiness/6 binds each case to its observed shard CPU group
-        # (ADR-0194); nothing reads an earlier version.
+        # (ADR-0194). executor-request/2 adds the nightly submission and executor-result/3 the
+        # measured binaries; their previous versions stay readable for a journal's immutable
+        # originals and every older one is refused (ADR-0266). Nothing else reads an earlier
+        # version.
         changed = ("run", "capabilities", "tui-open", "builds", "verdict", "sample",
                    "shard", "supervisor-request",
                    "supervisor-result", "probe-request", "golden", "cohort",
                    "calibration-parameters", "readiness", "activation-verification", "cost",
-                   "shipping", "profiles", "executor", "executor-state", "executor-result")
+                   "shipping", "profiles", "executor", "executor-state", "executor-result",
+                   "executor-request")
         self.assertEqual([contracts.schema_version(name) for name in changed],
-                         [7, 3, 1, 6, 2, 2, 4, 4, 5, 2, 2, 4, 2, 6, 3, 3, 3, 6, 2, 2, 2])
+                         [7, 3, 1, 6, 2, 2, 4, 4, 5, 2, 2, 4, 2, 6, 3, 3, 3, 6, 2, 2, 3, 2])
+        self.assertEqual(dict((name, sorted(versions)) for name, versions
+                              in contracts.READABLE.items()),
+                         {"executor-request": ["af.perf-executor-request/1"],
+                          "executor-result": ["af.perf-executor-result/2"]})
         self.assertEqual(contracts.schema_version("activation"), 3)
         # profiles/6 binds retained archives (ADR-0224); report/3 keeps telemetry (ADR-0214).
         self.assertEqual((contracts.schema_version("profiles"), contracts.schema_version("report")),
@@ -266,6 +284,8 @@ class Parity(unittest.TestCase):
             doc, _ = parse(entry)
             for version in range(1, contracts.schema_version(contract)):
                 doc["schema"] = doc["schema"].rsplit("/", 1)[0] + "/%d" % version
+                if doc["schema"] in contracts.READABLE.get(contract, {}):
+                    continue
                 with self.assertRaises(ContractError) as caught:
                     contracts.read_json(json.dumps(doc).encode(), contract)
                 self.assertIn("expected %s" % contracts.CONTRACTS[contract][0],

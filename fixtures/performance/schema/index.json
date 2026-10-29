@@ -2418,7 +2418,7 @@
       "path": "executor-request/invalid-version.json",
       "contract": "executor-request",
       "valid": false,
-      "error": "expected af.perf-executor-request/1",
+      "error": "expected af.perf-executor-request/2",
       "shape": true
     },
     {
@@ -2442,7 +2442,7 @@
       "path": "executor-result/invalid-version.json",
       "contract": "executor-result",
       "valid": false,
-      "error": "expected af.perf-executor-result/2",
+      "error": "expected af.perf-executor-result/3",
       "shape": true
     },
     {
@@ -2521,6 +2521,87 @@
       "path": "executor-result/valid-expired.json",
       "contract": "executor-result",
       "valid": true
+    },
+    {
+      "path": "executor-request/valid-manual.json",
+      "contract": "executor-request",
+      "valid": true
+    },
+    {
+      "path": "executor-request/valid-nightly.json",
+      "contract": "executor-request",
+      "valid": true
+    },
+    {
+      "path": "executor-request/valid-nightly-explicit-base.json",
+      "contract": "executor-request",
+      "valid": true
+    },
+    {
+      "path": "executor-request/invalid-nightly-key.json",
+      "contract": "executor-request",
+      "valid": false,
+      "error": "keyed by its tag",
+      "shape": false
+    },
+    {
+      "path": "executor-request/invalid-nightly-profile.json",
+      "contract": "executor-request",
+      "valid": false,
+      "error": "keyed by its tag",
+      "shape": false
+    },
+    {
+      "path": "executor-request/invalid-nightly-baseline.json",
+      "contract": "executor-request",
+      "valid": false,
+      "error": "names the frozen baseline",
+      "shape": false
+    },
+    {
+      "path": "executor-request/invalid-nightly-prerelease-baseline.json",
+      "contract": "executor-request",
+      "valid": false,
+      "error": "does not match",
+      "shape": true
+    },
+    {
+      "path": "executor-request/invalid-nightly-date.json",
+      "contract": "executor-request",
+      "valid": false,
+      "error": "names no calendar date",
+      "shape": false
+    },
+    {
+      "path": "executor-request/invalid-manual-tag.json",
+      "contract": "executor-request",
+      "valid": false,
+      "error": "unknown field tag",
+      "shape": true
+    },
+    {
+      "path": "executor-result/valid-core-binaries.json",
+      "contract": "executor-result",
+      "valid": true
+    },
+    {
+      "path": "executor-result/valid-no-binaries.json",
+      "contract": "executor-result",
+      "valid": true
+    },
+    {
+      "path": "executor-result/invalid-missing-binaries.json",
+      "contract": "executor-result",
+      "valid": false,
+      "error": "missing field binaries",
+      "shape": true
+    },
+    {
+      "path": "executor-result/invalid-hosted-binaries.json",
+      "contract": "executor-result",
+      "valid": false,
+      "error": "only a completed local original",
+      "shape": false
     },
     {
       "path": "telemetry-result/invalid-version.json",

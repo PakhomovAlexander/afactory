@@ -5033,21 +5033,31 @@ CONTRACTS = {
 }
 
 
-def schema_version(name):
-    """The version number of contract `name`, the integer after the slash of its schema ID."""
-    return int(CONTRACTS[name][0].rsplit("/", 1)[1])
+# Earlier versions a reader still admits beside the current one, by contract and schema ID:
+# (node, validator, description). Only an append-only original journal has them (ADR-0266);
+# writers write only the current version and every other earlier version fails closed.
+READABLE = {}
 
 
-def schema_file(name):
-    return "performance-%s-v%d.json" % (name, schema_version(name))
+def schema_version(name, schema_id=None):
+    """The version number of contract `name`, the integer after the slash of its schema ID
+    (the current one, or the readable earlier `schema_id`)."""
+    return int((schema_id or CONTRACTS[name][0]).rsplit("/", 1)[1])
+
+
+def schema_file(name, schema_id=None):
+    return "performance-%s-v%d.json" % (name, schema_version(name, schema_id))
 
 
 def schema_documents():
     out = {}
     for name, (schema_id, node, _, description) in sorted(CONTRACTS.items()):
-        out[schema_file(name)] = json_schema("urn:af:schema:performance-%s:%d"
-                                             % (name, schema_version(name)), schema_id,
-                                             description, node)
+        versions = [(schema_id, node, description)] + [
+            (earlier, entry[0], entry[2]) for earlier, entry in sorted(READABLE.get(name, {}).items())]
+        for version_id, version_node, text in versions:
+            version = schema_version(name, version_id)
+            out[schema_file(name, version_id)] = json_schema(
+                "urn:af:schema:performance-%s:%d" % (name, version), version_id, text, version_node)
     return out
 
 
@@ -5057,6 +5067,9 @@ def read_json(data, name, where=None):
     schema_id, _, validate, _ = CONTRACTS[name]
     doc = loads_strict(data, where, limits.MAX_JSON_BYTES)
     require(isinstance(doc, dict), where + ": expected a JSON object")
+    earlier = READABLE.get(name, {}).get(doc.get("schema"))
+    if earlier is not None:
+        return earlier[1](doc, where)
     require(doc.get("schema") == schema_id, where + ".schema: expected %s, found %r"
             % (schema_id, doc.get("schema")))
     return validate(doc, where)

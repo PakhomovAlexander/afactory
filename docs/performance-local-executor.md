@@ -59,7 +59,10 @@ refuse. GNU needs no setting. Both parent and diagnostic builders receive the fr
 and verify the unchanged recipe pins: cargo-zigbuild 0.23.4, Zig 0.15.2 and Rust 1.88.0.
 Changing the directory changes the frozen configuration and environment identity.
 Finish or discard prior-version journals with their original control before upgrading;
-state/result v1 receipts are also refused rather than migrated. Profile limits, oracles, N/K, tolerances,
+state/result v1 receipts are also refused rather than migrated. New originals are written as
+`af.perf-executor-request/2` and `af.perf-executor-result/3`; request/1 and result/2 originals
+already in a journal stay readable, so `status` and `verify` keep working on them
+([ADR-0266](adr/0266-measure-nightlies-as-originals-of-the-independent-executor.md)). Profile limits, oracles, N/K, tolerances,
 sentinel rules and the free-disk floor are unchanged. The example reserves 256 GiB overall,
 32 GiB each for native core archive and local telemetry history; capacity exhaustion stops
 new work, never deletes original receipts. Provision a filesystem/quota at that overall bound
@@ -129,8 +132,9 @@ Calibration originals recheck their frozen cohort/member day after capacity scan
 again after source preparation, immediately before the first builder can launch. A missed
 original becomes terminal `expired` in `af.perf-executor-state/2`, without a build or sample,
 and is never retried or replaced. If the day expires during source preparation after claim,
-`af.perf-executor-result/2` records `not_executed_off_schedule`; its start timestamp records the
-claim, not an executed sample. Pre-claim expiry retains null start/result fields. Native local
+`af.perf-executor-result/3` (result/2 before it) records `not_executed_off_schedule`; its start
+timestamp records the claim, not an executed sample. Pre-claim expiry retains null start/result
+fields. Native local
 readiness reports either case as `invalid` / `off_schedule`, retains the request provenance
 and original denominator, and grants no qualification. Future-day submissions still refuse.
 
@@ -166,6 +170,7 @@ alter core verdict samples. Tool unavailability remains an explicit diagnostic o
 A request has `requests/exp_<opaque>/request.json`, its frozen configuration/plan and
 `state.json`. After completion `result.json` binds actual backend, persistent-machine environment,
 producer/source identities, observed host/CPU/Python and every retained evidence file by hash.
+A core result also names each side's built `af` in `binaries` (see Nightly originals).
 Native build manifests hold actual image/tool identities. `sources.git` retains original
 commit/tree/blob objects, independent of later mirror GC. Reports are at:
 
@@ -216,6 +221,7 @@ the controller verifies the Git objects. For a release use `--kind release --tag
 `--base`/`--head`; the existing release/predecessor resolver must agree. Published-release
 eligibility is an explicit trusted submission here; the existing hosted release handoff remains
 unchanged. This controller does not automatically watch PR metadata or assert a GitHub check.
+A nightly uses `--kind nightly` under its own configuration, below.
 
 A journal command can report busy while another holds the journal for a long experiment.
 Retry a rejected submission later with the same key. Already queued items persist. The synced journal index detects deleted or unindexed originals;
@@ -232,6 +238,75 @@ same machine lock through operator maintenance. Do not delete/recreate the lock 
 candidate permissions automatically or rerun the original. A new experiment needs a new key;
 a calibration original is never backfilled. This implementation supplies no unsafe automatic
 fence-reset command.
+
+## Nightly originals
+
+Each nightly is measured as one original of a second executor configuration
+([ADR-0266](adr/0266-measure-nightlies-as-originals-of-the-independent-executor.md)). It compares
+the frozen main commit the nightly was built from with the highest stable `vX.Y.Z` release tag
+reachable from that commit, release candidates excluded, as the `nightly` tier of
+`fixtures/performance/suite.toml` defines it. Copy the executor example a second time to
+`/etc/af-nightly/executor.toml`, with the same owner and mode rules, and change these keys:
+
+```toml
+root = "/var/lib/af-perf-executor/nightly-journal" # its own journal, never the quick one's
+journal_id = "claw_nightly_1"
+build_image = "..." # the verified digest of the image's musl stage
+zigbuild_bin = "/opt/af-perf-tools/bin"
+poll_main = false # nightlies are submitted, never polled
+
+[core]
+tier = "nightly"
+environment = "linux_x86_64_musl_claw"
+shards = 4
+cases = []
+
+[diagnostic]
+recipe = "linux_musl_trace"
+```
+
+Keep `machine_id`, the source mirror and the installed control of the quick configuration.
+Both configurations take the same machine lock, so a nightly and a quick original never run
+at the same time. The musl stage of
+[`scripts/performance/images/Dockerfile`](../scripts/performance/images/Dockerfile) puts
+`cargo-zigbuild` and `zig` together in `/opt/af-perf-tools/bin`; the operator pins that image's
+digest by hand.
+
+Submit a night's core and telemetry originals, then run `cycle` against the same configuration:
+
+```sh
+python3 -I -B /opt/af-perf/control/scripts/performance/cli.py executor \
+  --config /etc/af-nightly/executor.toml submit --work core \
+  --kind nightly --tag "$NIGHTLY_TAG" --head "$MAIN_SHA"
+python3 -I -B /opt/af-perf/control/scripts/performance/cli.py executor \
+  --config /etc/af-nightly/executor.toml submit --work telemetry \
+  --kind nightly --tag "$NIGHTLY_TAG" --head "$MAIN_SHA"
+python3 -I -B /opt/af-perf/control/scripts/performance/cli.py executor \
+  --config /etc/af-nightly/executor.toml cycle
+```
+
+`--tag` must be `nightly-YYYY.MM.DD`, a real calendar date, and there is no `--key`: the key is
+`nightly:<tag>:<work>`. Without `--base` the baseline is derived as above, and the request's
+`submission.baseline` records the derived tag and commit; an explicit `--base` is used as given
+and recorded as `null`. No reachable stable tag refuses the submission. Submitting the same
+night again with the same arguments prints the existing original; another `--head` under the
+same tag is refused as a reused key. `--work profile` is refused. A core nightly is refused
+unless the configuration's `core.tier` is `nightly`, naming the tier it found, so the quick
+configuration cannot take one by mistake.
+
+Shards still run one after another. A core nightly is one build, then four shards of at most
+45 sampling minutes each. The plan freezes the tier's 120-minute run deadline, counted from the
+start of the build, so all four shards fit only when they finish early. A shard cut by that
+deadline, or not started, stays incomplete, and its missing slots stay visible. Expect about
+two hours plus source retention and the report; `run_seconds = 28800` bounds the whole original.
+
+`verify --request-id` prints the result. For a core original, `binaries.baseline` and
+`binaries.candidate` hold the `sha256` and `bytes` of each side's built `af`, as the run's
+`run/builds.json` names them; `verify` refuses a result whose `binaries` differ from it. If
+`binaries.candidate.sha256` equals the SHA-256 of the `af` inside the nightly archive shipped
+from the same commit, the measured candidate is that archive's binary; if not, the measurement
+used another build of the same source. A side that built no `af` is `null`. Telemetry, profile,
+hosted and non-executed results carry `binaries: null`; telemetry builds its own binaries.
 
 ## Local calibration declaration and review checkpoint
 

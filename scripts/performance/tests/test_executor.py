@@ -3,6 +3,7 @@
 Synthetic samples and tool stand-ins exercise orchestration only, never Docker or speed.
 """
 import copy
+import io
 import json
 import os
 import shutil
@@ -16,7 +17,7 @@ from unittest import mock
 from perflab import (archive, budget, builds, bundle, calibration, contracts, diagnostics, executor, gitrefs,
                      hostlock, localcalibration, planning, runner, synthetic, telemetrylab,
                      tomlfile, telemetryexec)
-from perflab.values import ContractError, canonical_digest, sha256_bytes
+from perflab.values import ContractError, canonical_digest, document_bytes, sha256_bytes
 from tests import build_fixtures
 from tests import telemetry_fixtures as tf
 from tests.support import ROOT, TempDir, lab_repo, read
@@ -300,49 +301,62 @@ class Journal(ExecutorFixture):
             with self.assertRaisesRegex(ContractError, "membership changed"):
                 j.cycle(execute=lambda *a: self.fail("replacement original"), lock_directory=self.locks)
 
+    def complete_core(self, j, request, calls):
+        """Run one queued core original through the real local path with synthetic builder,
+        shards and filesystem stand-ins."""
+        path = j.path(request["request_id"])
+        plan = contracts.read_json(read(os.path.join(path, "plan.json")), "run")
+        staged = synthetic.write_run(plan, self.path("synthetic_" + request["request_id"]),
+            lambda slot, case: 200 if slot["side"] == "candidate" else 100)
+        class Builder:
+            def __init__(self, owner, plan, toolchain, **kw):
+                self.layout = SimpleNamespace(build=os.path.join(owner, "target/performance/test/build"))
+                self.plan = plan
+            def build(self):
+                calls.append("build")
+                os.makedirs(self.layout.build)
+                return synthetic.builds(self.plan)
+        def prepare(image, mount, size_bytes, **kwargs):
+            calls.append("prepare")
+            with open(image, "xb") as f:
+                f.write(b"x")
+            os.mkdir(mount)
+        def shard(options, machine_lease=None):
+            machine_lease.check()
+            calls.append("shard_%d" % options.shard)
+            shutil.copytree(os.path.join(staged, "shards", str(options.shard)),
+                            os.path.join(options.run_dir, "shards", str(options.shard)))
+            return contracts.read_file(os.path.join(options.run_dir, "shards", str(options.shard), "shard.json"), "shard")
+        def cleanup(image, mount, **kwargs):
+            calls.append("cleanup")
+            os.rmdir(mount)
+            os.unlink(image)
+            return []
+        with mock.patch.object(executor.builds, "Builder", Builder), \
+                mock.patch.object(executor.hostprep, "prepare", prepare), \
+                mock.patch.object(executor.hostprep, "cleanup", cleanup), \
+                mock.patch.object(executor.runner, "run_shard", shard), \
+                mock.patch.object(executor, "dispatch_actions", side_effect=AssertionError("network transport")), \
+                mock.patch.dict(os.environ, {"HOME": self.path("private-home"), "TMPDIR": self.tmp}, clear=True):
+            self.assertEqual(j.cycle(lock_directory=self.locks), "complete")
+        return path, plan
+
     def test_core_path_uses_retained_git_native_archive_and_reports_failed_verdict(self):
         """Real local orchestration; synthetic builder/shards and filesystem stand-ins."""
         with executor.Journal(self.c) as j:
             request = self.submit(j)
-            path = j.path(request["request_id"])
-            plan = contracts.read_json(read(os.path.join(path, "plan.json")), "run")
-            staged = synthetic.write_run(plan, self.path("synthetic"),
-                lambda slot, case: 200 if slot["side"] == "candidate" else 100)
             calls = []
-            class Builder:
-                def __init__(self, owner, plan, toolchain, **kw):
-                    self.layout = SimpleNamespace(build=os.path.join(owner, "target/performance/test/build"))
-                    self.plan = plan
-                def build(self):
-                    calls.append("build")
-                    os.makedirs(self.layout.build)
-                    return synthetic.builds(self.plan)
-            def prepare(image, mount, size_bytes, **kwargs):
-                calls.append("prepare")
-                with open(image, "xb") as f:
-                    f.write(b"x")
-                os.mkdir(mount)
-            def shard(options, machine_lease=None):
-                machine_lease.check()
-                calls.append("shard_%d" % options.shard)
-                shutil.copytree(os.path.join(staged, "shards", str(options.shard)),
-                                os.path.join(options.run_dir, "shards", str(options.shard)))
-                return contracts.read_file(os.path.join(options.run_dir, "shards", str(options.shard), "shard.json"), "shard")
-            def cleanup(image, mount, **kwargs):
-                calls.append("cleanup")
-                os.rmdir(mount)
-                os.unlink(image)
-                return []
-            with mock.patch.object(executor.builds, "Builder", Builder), \
-                    mock.patch.object(executor.hostprep, "prepare", prepare), \
-                    mock.patch.object(executor.hostprep, "cleanup", cleanup), \
-                    mock.patch.object(executor.runner, "run_shard", shard), \
-                    mock.patch.object(executor, "dispatch_actions", side_effect=AssertionError("network transport")), \
-                    mock.patch.dict(os.environ, {"HOME": self.path("private-home"), "TMPDIR": self.tmp}, clear=True):
-                self.assertEqual(j.cycle(lock_directory=self.locks), "complete")
+            path, plan = self.complete_core(j, request, calls)
             self.assertEqual(calls, ["build", "prepare", "shard_0", "cleanup"])
             original, state, result = executor.verify_original(j, request["request_id"])
             self.assertEqual(result["measurement_status"], "fail")
+            # result/3 names the af each side measured, as the run's builds record has it.
+            built = contracts.read_json(read(os.path.join(path, "run/builds.json")), "builds")
+            self.assertEqual(result["schema"], "af.perf-executor-result/3")
+            self.assertEqual(result["binaries"], dict((side, {
+                "sha256": built["sides"][side]["artifacts"]["af"]["sha256"],
+                "bytes": built["sides"][side]["artifacts"]["af"]["size"]}) for side in contracts.SIDES))
+            self.assertNotEqual(result["binaries"]["baseline"], result["binaries"]["candidate"])
             self.assertEqual(result["backend"], "local")
             self.assertFalse(result["required_check"])
             self.assertTrue(os.path.isfile(os.path.join(path, "report/report.html")))
@@ -357,6 +371,62 @@ class Journal(ExecutorFixture):
             with self.assertRaisesRegex(ContractError, "changed"):
                 executor.verify_original(j, request["request_id"])
 
+    def rebind(self, j, ident, request=None, result=None):
+        """Rewrite an original's receipts as an earlier writer or a forger would, rebinding
+        every digest the journal holds so only the reader's own checks remain."""
+        path = j.path(ident)
+        if request is not None:
+            with open(os.path.join(path, "request.json"), "wb") as f:
+                f.write(document_bytes(request))
+            digest = canonical_digest(request)
+            j.index["originals"] = [dict(item, request_digest=digest) if item["request_id"] == ident
+                                    else item for item in j.index["originals"]]
+            with open(os.path.join(j.root, "journal.json"), "wb") as f:
+                f.write(document_bytes(j.index))
+            result = dict(result, request_digest=digest)
+        with open(os.path.join(path, "result.json"), "wb") as f:
+            f.write(document_bytes(result))
+        state = json.loads(read(os.path.join(path, "state.json")))
+        state.update(request_digest=result["request_digest"],
+                     result_sha256=sha256_bytes(document_bytes(result)))
+        with open(os.path.join(path, "state.json"), "wb") as f:
+            f.write(document_bytes(state))
+
+    def test_old_journal_request_v1_and_result_v2_still_verify_and_report_status(self):
+        import cli
+        with executor.Journal(self.c) as j:
+            request = self.submit(j)
+            self.complete_core(j, request, [])
+            ident = request["request_id"]
+            _, _, result = executor.verify_original(j, ident)
+            forged = copy.deepcopy(result)
+            forged["binaries"]["candidate"]["bytes"] += 1
+            self.rebind(j, ident, result=forged)
+            with self.assertRaisesRegex(ContractError, "binaries are not the ones"):
+                executor.verify_original(j, ident)
+            # What the previous release wrote: request/1, result/2 without binaries.
+            old_request = dict(request, schema="af.perf-executor-request/1")
+            old_result = dict(result, schema="af.perf-executor-result/2")
+            del old_result["binaries"]
+            self.rebind(j, ident, request=old_request, result=old_result)
+            original, state, verified = executor.verify_original(j, ident)
+            self.assertEqual((original["schema"], verified["schema"], state["state"]),
+                             ("af.perf-executor-request/1", "af.perf-executor-result/2", "complete"))
+            self.assertNotIn("binaries", verified)
+            # The same submission is still the same original, never a second one.
+            self.assertEqual(self.submit(j), old_request)
+            with self.assertRaises(ContractError):
+                contracts.write_bytes(verified, "executor-result")
+        output = io.BytesIO()
+        with mock.patch.object(executor, "load_config", return_value=self.c), \
+                mock.patch.object(sys, "stdout", io.TextIOWrapper(output, encoding="utf-8")) as stdout:
+            self.assertEqual(cli.main(["executor", "--config", "operator.toml", "status"]), 0)
+            self.assertEqual(cli.main(["executor", "--config", "operator.toml", "verify",
+                                       "--request-id", ident]), 0)
+            stdout.flush()
+        status, printed = output.getvalue().decode().splitlines()
+        self.assertEqual([item["state"] for item in json.loads(status)], ["complete"])
+        self.assertEqual(json.loads(printed)["schema"], "af.perf-executor-result/2")
 
     def test_local_diagnostic_uses_native_child_planner_report_and_admission(self):
         control = self.repo.commit("diagnostic authority", {diagnostics.REGISTRY_PATH:
@@ -586,6 +656,128 @@ class Journal(ExecutorFixture):
             self.assertEqual(len(hist["results"]), 1)
             self.assertTrue(hist["results"][0]["result_id"].startswith("local_"))
             self.assertFalse(os.path.exists(os.path.join(self.c["root"], "hosted-telemetry-history")))
+
+
+class Nightly(ExecutorFixture):
+    """`submit --kind nightly` through the real CLI, journal and Git history (ADR-0266)."""
+    TAG = "nightly-2026.10.29"
+
+    def setUp(self):
+        super().setUp()
+        # lab (v0.12.0) - v0.13.0 - v0.14.0-rc.3 - main tip (the nightly's frozen commit), and
+        # a later stable v0.14.0 on a side branch, which the tip cannot reach.
+        self.repo.tag("v0.12.0", self.base)
+        self.stable = self.repo.commit("release 0.13.0", {"README": "0.13.0"})
+        self.repo.tag("v0.13.0", self.stable, annotated=True)
+        self.rc = self.repo.commit("release candidate", {"README": "0.14.0-rc.3"})
+        self.repo.tag("v0.14.0-rc.3", self.rc)
+        self.repo.git("checkout", "-q", "-b", "side")
+        self.repo.tag("v0.14.0", self.repo.commit("unreachable release", {"README": "side"}))
+        self.repo.git("checkout", "-q", "main")
+        self.head = self.repo.commit("frozen main", {"README": "nightly"})
+        self.repo.tag(self.TAG, self.head)
+        self.c["core"].update(tier="nightly", environment="linux_x86_64_musl_claw",
+                              cases=["cli_discovery__command_version"])
+        self.c["zigbuild_bin"] = "/opt/af-perf-tools/bin"
+
+    def cli(self, *argv):
+        """(exit status, stdout, stderr) of `cli.py executor ... submit --kind nightly`."""
+        import cli
+        output, errors = io.BytesIO(), io.StringIO()
+        stdout = io.TextIOWrapper(output, encoding="utf-8")
+        with mock.patch.object(executor, "load_config", return_value=self.c), \
+                mock.patch.object(sys, "stdout", stdout), mock.patch.object(sys, "stderr", errors):
+            code = cli.main(["executor", "--config", "operator.toml", "submit", "--kind", "nightly"]
+                            + list(argv))
+            stdout.flush()
+        return code, output.getvalue().decode(), errors.getvalue()
+
+    def originals(self):
+        with executor.Journal(self.c) as j:
+            return [j.request(ident) for ident in j.names()]
+
+    def test_nightly_core_derives_the_highest_reachable_stable_release_and_is_idempotent(self):
+        code, out, _ = self.cli("--work", "core", "--tag", self.TAG, "--head", self.head)
+        self.assertEqual(code, 0)
+        request = json.loads(out)
+        self.assertEqual(request["schema"], "af.perf-executor-request/2")
+        self.assertEqual(request["submission"], {"kind": "nightly", "key": "nightly:%s:core" % self.TAG,
+            "tag": self.TAG, "baseline": {"tag": "v0.13.0", "sha": self.stable}})
+        self.assertEqual((request["sources"]["baseline_sha"], request["sources"]["candidate_sha"]),
+                         (self.stable, self.head))
+        plan = contracts.read_json(read(os.path.join(self.c["root"], "requests", request["request_id"],
+                                                     "plan.json")), "run")
+        self.assertEqual((plan["tier"], plan["profile"]["environment_id"]),
+                         ("nightly", "linux_x86_64_musl_claw"))
+        # The same night again is the same original.
+        code, again, _ = self.cli("--work", "core", "--tag", self.TAG, "--head", self.head)
+        self.assertEqual((code, json.loads(again)), (0, request))
+        # Another head under the same tag is a reused key, not a second original.
+        later = self.repo.commit("later main", {"README": "later"})
+        code, _, errors = self.cli("--work", "core", "--tag", self.TAG, "--head", later)
+        self.assertEqual(code, 4)
+        self.assertIn("reused for another source", errors)
+        # Telemetry of the same night is its own original; an explicit --base is recorded as such.
+        code, out, _ = self.cli("--work", "telemetry", "--tag", self.TAG, "--head", self.head,
+                                "--base", self.rc)
+        self.assertEqual(code, 0)
+        telemetry = json.loads(out)
+        self.assertEqual(telemetry["submission"], {"kind": "nightly", "key": "nightly:%s:telemetry" % self.TAG,
+                                                   "tag": self.TAG, "baseline": None})
+        self.assertEqual(telemetry["sources"]["baseline_sha"], self.rc)
+        self.assertEqual(sorted(r["request_id"] for r in self.originals()),
+                         sorted([request["request_id"], telemetry["request_id"]]))
+
+    def test_nightly_refusals_reserve_no_original(self):
+        quick = copy.deepcopy(self.c)
+        quick["core"].update(tier="quick", environment="linux_x86_64_gnu_claw", cases=[])
+        quick["zigbuild_bin"] = None
+        nightly, self.c = self.c, quick
+        code, out, errors = self.cli("--work", "core", "--tag", self.TAG, "--head", self.head)
+        self.assertEqual(code, 4)
+        self.assertIn('tier is "quick"', errors)
+        self.assertEqual(json.loads(out)["reason"], "executor_refused")
+        self.c = nightly
+        for argv, message in (
+                (["--work", "profile", "--tag", self.TAG, "--head", self.head], "never --work profile"),
+                (["--work", "core", "--tag", "v0.13.0", "--head", self.head], "nightly-YYYY.MM.DD"),
+                (["--work", "core", "--tag", "nightly-2026.02.30", "--head", self.head], "no calendar date"),
+                (["--work", "core", "--head", self.head], "needs --tag and --head"),
+                (["--work", "core", "--tag", self.TAG, "--head", self.head, "--key", "manual"], "no --key")):
+            with self.subTest(argv=argv):
+                code, _, errors = self.cli(*argv)
+                self.assertEqual(code, 4)
+                self.assertIn(message, errors)
+        # A frozen main with no stable release behind it has no baseline to derive.
+        orphan = self.repo.git("commit-tree", "-m", "unreleased", self.repo.git("rev-parse", "HEAD^{tree}"))
+        code, _, errors = self.cli("--work", "telemetry", "--tag", self.TAG, "--head", orphan)
+        self.assertEqual(code, 4)
+        self.assertIn("no stable release tag is reachable", errors)
+        self.assertEqual(self.originals(), [])
+
+    def test_existing_kinds_keep_their_submission_and_identity(self):
+        self.c = config(self.path("manual-journal"), self.repo.path, self.base)
+        with executor.Journal(self.c) as j:
+            manual = self.submit(j)
+        self.assertEqual(manual["submission"], {"kind": "manual", "key": "manual_1"})
+        self.assertEqual(manual["request_id"], "exp_" + canonical_digest(
+            {"submission": {"kind": "manual", "key": "manual_1"}, "work": "core"})[7:55])
+
+
+class ToolImage(TempDir):
+    def test_musl_stage_holds_both_shipping_tools_in_the_executor_tool_directory(self):
+        text = read(os.path.join(LAB, "images/Dockerfile")).decode()
+        musl = text[text.index("FROM gnu AS musl"):]
+        tools = "/opt/af-perf-tools/bin"
+        self.assertIn('ln -s "$(command -v cargo-zigbuild)" %s/cargo-zigbuild' % tools, musl)
+        self.assertIn("ln -s /opt/zig/zig %s/zig" % tools, musl)
+        self.assertIn('test "$(%s/zig version)" = 0.15.2' % tools, musl)
+        self.assertIn("%s/cargo-zigbuild --version | grep '0.23.4'" % tools, musl)
+        # The earlier locations stay: cargo's own bin directory and /usr/local/bin/zig.
+        self.assertIn("cargo install --locked cargo-zigbuild --version 0.23.4", musl)
+        self.assertIn("ln -s /opt/zig/zig /usr/local/bin/zig", musl)
+        example = read(os.path.join(LAB, "service/executor.example.toml")).decode()
+        self.assertIn('# zigbuild_bin = "%s"' % tools, example)
 
 
 PROCESS = r'''
