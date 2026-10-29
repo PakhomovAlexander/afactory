@@ -120,6 +120,54 @@ fn display_rows(text: &str, columns: usize) -> usize {
         .sum()
 }
 
+/// The rows the preview `text` takes on an 80-column terminal where the repository sits at
+/// `/tmp/repo` instead of `path`. The path is as long as the host's temp root, not the
+/// preview's: its `repository` line takes the placeholder, and the apply command, which the
+/// preview continues between its arguments and cuts inside a path wider than a line, is laid
+/// out again with it as `fit_command` lays a command: its words after a five-column label while
+/// each leaves room for ` \`, each continuation nine columns in.
+fn rows_with_short_repo(text: &str, path: &str) -> usize {
+    let mut rest = Vec::new();
+    let mut lines = text.lines();
+    let mut command = None;
+    while let Some(line) = lines.next() {
+        if command.is_some() || !line.trim_start().starts_with("af onboard ") {
+            rest.push(line.replace(path, "/tmp/repo"));
+            continue;
+        }
+        let mut block = line.to_owned();
+        while block.ends_with('\\') {
+            let Some(next) = lines.next() else { break };
+            block.push('\n');
+            block.push_str(next);
+        }
+        command = Some(shell_words::split(&block).unwrap());
+    }
+    let command_rows = command.map_or(0, |words| {
+        let mut rows = 1;
+        let mut current = 5;
+        let mut fresh = true;
+        for word in words {
+            let word = if word == path {
+                "/tmp/repo".to_owned()
+            } else {
+                word
+            };
+            let width = shell_words::quote(&word).chars().count();
+            let space = usize::from(!fresh);
+            if current + space + width + 2 <= 80 {
+                current += space + width;
+            } else {
+                rows += 1;
+                current = 9 + width;
+            }
+            fresh = false;
+        }
+        rows
+    });
+    display_rows(&rest.join("\n"), 80) + command_rows
+}
+
 /// The preview of a source build (no install receipt) on a machine with no Provider registered,
 /// its longest case, reads on one 80x24 terminal: no line wraps and it takes at most 24 rows.
 #[test]
@@ -133,19 +181,17 @@ fn default_preview_fits_one_screen_and_long_shows_topology() {
     let text = stdout(&short);
     assert!(text.contains("none registered"), "{text}");
     assert!(text.contains("warning     no install receipt"), "{text}");
-    // Only the repository's own path, which no line breaks, may be wider.
     let path = repo.canonicalize().unwrap().display().to_string();
+    // Only the `repository` line, which prints the path whole, may be wider.
     for line in text.lines() {
         assert!(
-            line.chars().count() <= 80 || line.contains(&path),
+            line.chars().count() <= 80 || line == format!("repository  {path}"),
             "{line:?}\n{text}"
         );
     }
-    assert!(
-        display_rows(&text, 80) <= 24,
-        "{} rows:\n{text}",
-        display_rows(&text, 80)
-    );
+    // The rows are counted with the repository at a short path: its length is the host's.
+    let rows = rows_with_short_repo(&text, &path);
+    assert!(rows <= 24, "{rows} rows at /tmp/repo:\n{text}");
     assert!(!text.contains("topology\n"), "{text}");
     assert!(text.contains("--long lists each"), "{text}");
     // The apply command, continued between its arguments, still runs as copied.
