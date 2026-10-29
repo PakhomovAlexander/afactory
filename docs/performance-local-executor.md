@@ -229,8 +229,8 @@ Combine a release comparison's originals into one overview from their retained n
 
 ```sh
 python3 -I -B /opt/af-perf/control/scripts/performance/cli.py executor \
-  --config /etc/af-perf/executor.toml overview --member "$CORE_ID" \
-  --member "$TELEMETRY_ID" --member "$PROFILE_ID" --output "$OVERVIEW_DIR"
+  --config /etc/af-perf/executor.toml overview --scope full --member "$CORE_ID" \
+  --member "$TELEMETRY_ID" --member "$TRACE_ID" --member "$CPU_ID" --output "$OVERVIEW_DIR"
 ```
 
 It writes a new directory with `overview.json` (`af.perf-comparison-overview/1`),
@@ -239,12 +239,22 @@ comparison, 4 otherwise. Each original keeps four separate judgments: its state 
 terminal detail; its verification, recomputed now by `verify` (`verified`, `refused`, or
 `not_terminal` for a queued, claimed, failed, interrupted or uncertain one); its coverage
 (core: planned, matched, failed and missing records; telemetry: planned, run, failed and not-run
-runs); and its performance verdict with the regressed cases. A comparison is `complete` only
-when a core, a telemetry and a profile original of the same exact sources are all complete,
-verified, fully covered and the profile available; every other state is `incomplete` with every
-reason listed. A complete comparison may still hold a real regression, and a refused or partial
-original never contributes coverage or a verdict. Links point at the native reports in the
-journal, which stays the evidence.
+runs); and its performance verdict with the regressed cases. `--scope` is the operator's declaration
+of what the overview compares. Under `full` it is `complete` only when a core, a telemetry, a
+trace profile and a CPU profile original of the same exact sources are all complete, verified
+and fully covered, the core aggregate result is not `incomplete` (a missing closing health
+sentinel or an unstable environment leaves even a fully observed shard ineligible), and every
+profile's `--parent` is a core original of the same overview; every other state is `incomplete`
+with every reason listed. A `partial` scope, for a smoke or one family, is at best `partial`,
+never `complete`. A complete comparison may still hold a real regression, and a refused or
+partial original never contributes coverage or a verdict. Links point at the native reports in
+the journal, which stays the evidence; copy the overview directory together with the journal
+root (`requests/`) it links into, so its relative links keep working.
+
+`status`, `verify` and `overview` take no journal lock: they read the retained, atomically
+published state while a `cycle` holding the journal's exclusive lock executes an original, so a
+running comparison can be watched natively. `submit`, `preflight` and `cycle` still take the
+lock and report busy when another controller holds it.
 
 Core admission rehashes retained objects, plans and raw evidence and recomputes the native
 comparison. Telemetry's matching native verifier is also used at execution/import. Keep the
@@ -314,9 +324,15 @@ CLI preflight --work profile --kind release --tag "$TAG" --base "$BASE" --head "
 CLI submit --work profile --kind release --tag "$TAG" --base "$BASE" --head "$HEAD" \
   --key rel_prof_1 --parent "$CORE_ID"
 CLI cycle
+CLI status  # usable while another `cycle` executes
 CLI verify --request-id "$CORE_ID"
-CLI overview --member "$CORE_ID" --member "$TEL_ID" --member "$PROF_ID" --output "$OUT"
+CLI overview --scope full --member "$CORE_ID" --member "$TEL_ID" --member "$TRACE_ID" \
+  --member "$CPU_ID" --output "$OUT"
 ```
+
+The trace and CPU profiles are two profile originals with `--parent "$CORE_ID"`, one submitted
+with a `linux_*_trace` recipe and one with a `linux_*_cpu_profile` recipe configured. Copy
+`$OUT` and the journal's `requests/` directory together to keep the overview's links working.
 
 `preflight` refuses a release core whose shards cannot fit the serial schedule; set
 `core.shards` to the count it names (2 for release) and keep the whole family, sample counts
@@ -331,13 +347,29 @@ is valid evidence but `not_judged`, and qualifying it needs a separate telemetry
 `corpus_runs = 10000` that fits the profile's timeout. Keep the historical failed report
 unchanged beside new evidence.
 
-Not supported by this executor, and reported as not covered rather than passed: a trusted host
+Telemetry overhead and invocation-cost runs select each side's fixture contract from the
+version its `af --version` prints: v0.13.0 measures under `check-receipt@1` (the same packages
+declaring `af/TaskCheckReceipt@1`, re-pinned to the digests the contract declares and its own
+`af catalog digest` prints), v0.14.0-rc.1 under the committed `check-receipt@2`; the documents
+(`af/telemetry-overhead@2`, `af/telemetry-invocation-cost@2`) record the contract and every
+package pin. Their drain latency runs from the harness's last write to the command's observed
+exit on `CLOCK_MONOTONIC` (`harness_last_write_to_command_exit`), never from file timestamps.
+
+The 10,000-event seeds (the native `state_projection` seed and the `task show` and Campaign CLI
+seeds) are written by each side's own probe through the same protected public writers, but in
+a bounded tmpfs at `/perf/prep` (512 MiB, owned by the compute user, inside the container's
+memory limit; only seed writers get it): their 10,000 commits no longer wait for a flush of the
+scratch disk each. The finished Store is then copied, every file flushed, into the seed's
+directory, re-read through a fresh Store and judged by the seed's oracle; the probe's stderr
+names both paths. Whether this alone brings each writer under its 120-second bound on Claw is
+for that run to show: the per-event protected-writer CPU cost is unchanged.
+
+Not implemented by this change, and reported as not covered rather than passed: a trusted host
 perf observer of the contained child (contained perf needs `CAP_PERFMON` under Docker's
-default seccomp profile, which the contained child never holds); per-release telemetry fixture
-contracts for releases whose task authority the current fixtures do not match (v0.13.0 refuses
-`root.nodes.check.result`); and a faster 10,000-event CLI seed, which each side's own probe
-writes through its public Store writer one commit per event under the unchanged 120-second
-setup bound.
+default seccomp profile, which the contained child never holds, so a CPU profile original on
+Claw ends `unavailable` before any build), and a partition of a release core comparison that
+does not fit one serial run into bounded sequential native child originals (`preflight` still
+refuses it, naming the shards that fit).
 
 ## Local calibration declaration and review checkpoint
 

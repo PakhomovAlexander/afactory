@@ -39,10 +39,18 @@
         "authority_sha"
       ]
     },
+    "scope": {
+      "type": "string",
+      "enum": [
+        "full",
+        "partial"
+      ]
+    },
     "status": {
       "type": "string",
       "enum": [
         "complete",
+        "partial",
         "incomplete"
       ]
     },
@@ -191,6 +199,21 @@
               }
             ]
           },
+          "diagnostic_kind": {
+            "anyOf": [
+              {
+                "type": "null"
+              },
+              {
+                "type": "string",
+                "enum": [
+                  "cpu_profile",
+                  "trace",
+                  "counters"
+                ]
+              }
+            ]
+          },
           "coverage": {
             "anyOf": [
               {
@@ -289,6 +312,7 @@
           "ended_unix_ms",
           "verification",
           "measurement_status",
+          "diagnostic_kind",
           "coverage",
           "performance",
           "links",
@@ -304,6 +328,7 @@
     "journal_id",
     "machine_id",
     "sources",
+    "scope",
     "status",
     "reasons",
     "members"

@@ -64,8 +64,8 @@
             "document": {
               "type": "string",
               "enum": [
-                "af/telemetry-invocation-cost@1",
-                "af/telemetry-overhead@1",
+                "af/telemetry-invocation-cost@2",
+                "af/telemetry-overhead@2",
                 "af/telemetry-read-latency@2"
               ]
             },
@@ -125,8 +125,8 @@
             "document": {
               "type": "string",
               "enum": [
-                "af/telemetry-invocation-cost@1",
-                "af/telemetry-overhead@1",
+                "af/telemetry-invocation-cost@2",
+                "af/telemetry-overhead@2",
                 "af/telemetry-read-latency@2"
               ]
             },
@@ -186,8 +186,8 @@
             "document": {
               "type": "string",
               "enum": [
-                "af/telemetry-invocation-cost@1",
-                "af/telemetry-overhead@1",
+                "af/telemetry-invocation-cost@2",
+                "af/telemetry-overhead@2",
                 "af/telemetry-read-latency@2"
               ]
             },

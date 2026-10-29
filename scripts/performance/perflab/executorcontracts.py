@@ -93,6 +93,7 @@ def register(c):
         Field("verification", Obj(Field("status", Str(enum=("verified", "refused", "not_terminal"))),
                                   Field("detail", Str(max_len=4096)))),
         Field("measurement_status", Nullable(Str(max_len=128))),
+        Field("diagnostic_kind", Nullable(Str(enum=("cpu_profile", "trace", "counters")))),
         Field("coverage", Nullable(Obj(Field("required", count), Field("observed", count),
                                        Field("failed", count), Field("missing", count)))),
         Field("performance", Obj(Field("verdict", Nullable(Str(max_len=32))),
@@ -100,7 +101,8 @@ def register(c):
         Field("links", Arr(c.REL_PATH, 0, 16)), Field("reasons", Arr(Str(max_len=4096), 0, 64)))
     comparison = Obj(Field("schema", Const("af.perf-comparison-overview/1")),
         Field("journal_id", ID), Field("machine_id", ID), Field("sources", frozen),
-        Field("status", Str(enum=("complete", "incomplete"))),
+        Field("scope", Str(enum=("full", "partial"))),
+        Field("status", Str(enum=("complete", "partial", "incomplete"))),
         Field("reasons", Arr(Str(max_len=4096), 0, 1024)),
         Field("members", Arr(overview_member, 1, 16)))
 
@@ -118,13 +120,24 @@ def register(c):
                     == m["coverage"]["required"], "coverage must account for every required item")
             require(not m["reasons"] or all(r in doc["reasons"] for r in m["reasons"]),
                     "every member reason is a comparison reason")
-        works = set(m["work"] for m in doc["members"])
-        complete = (not doc["reasons"] and works == {"core", "telemetry", "profile"}
-                    and all(m["state"] == "complete" and m["verification"]["status"] == "verified"
-                            and not m["reasons"] for m in doc["members"]))
-        require((doc["status"] == "complete") == complete,
-                "a comparison is complete only when every required original is complete, "
-                "verified and fully covered")
+        for m in doc["members"]:
+            require(m["diagnostic_kind"] is None or (m["work"] == "profile"
+                    and m["verification"]["status"] == "verified"),
+                    "only a verified profile names its diagnostic kind")
+        kinds = set((m["work"], m["diagnostic_kind"]) for m in doc["members"])
+        cores = set(m["request_id"] for m in doc["members"] if m["work"] == "core")
+        covered = (not doc["reasons"]
+                   and {("core", None), ("telemetry", None), ("profile", "trace"),
+                        ("profile", "cpu_profile")} <= kinds
+                   and all(m["state"] == "complete" and m["verification"]["status"] == "verified"
+                           and not m["reasons"] and (m["work"] != "profile" or m["parent"] in cores)
+                           and (m["work"] != "core" or m["performance"]["verdict"] != "incomplete")
+                           for m in doc["members"]))
+        require((doc["status"] == "complete") == (doc["scope"] == "full" and covered),
+                "a comparison is complete only when its full scope's every required original is "
+                "complete, verified, healthy and fully covered")
+        require((doc["status"] == "partial") == (doc["scope"] == "partial" and not doc["reasons"]),
+                "a partial scope is never a complete release comparison")
         return doc
 
     states = ("queued", "claimed", "complete", "failed", "interrupted", "uncertain", "submitted", "expired")

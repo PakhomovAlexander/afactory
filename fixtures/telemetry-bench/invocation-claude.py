@@ -11,7 +11,7 @@ same tool output, chunk by chunk, and answers the same final result; under `json
 only the result envelope, under `stream-json` every message as a line — init, one assistant
 `tool_use` and one user `tool_result` per chunk, the final assistant message, then the very same
 result line. Its last write is one stderr line naming the unix nanosecond it was made at, the
-same moment on the filesystem clock (`last_write_fs_ns`) and the bytes it wrote to stdout
+same moment on the host's `CLOCK_MONOTONIC` (`last_write_monotonic_ns`) and the bytes it wrote to stdout
 (unless `report` is false). The `af` integration tests use the shape `requested`, which prints
 the shape af asked for, and these optional keys, all absent in the measurements: `record_stdin` (a file name in the auth directory the request bytes are written
 to, as received), `thinking` (texts printed as `thinking` blocks under `stream-json`: the first
@@ -24,7 +24,6 @@ Credential-free; never touches the network.
 import json
 import os
 import sys
-import tempfile
 import time
 
 HELP = """Usage: claude [options] [command] [prompt]
@@ -51,19 +50,6 @@ USAGE = {'input_tokens': 10, 'output_tokens': 2, 'cache_creation_input_tokens': 
 REPLY = {'schema': 'af.worker-reply/1',
          'outputs': {'result': [{'reports': [], 'benchmark_demands': [], 'dispositions': []}]}}
 WORDS = 'the tool reports what it read from the captured source and keeps going '
-
-
-def file_clock_ns():
-    """The filesystem clock now: the modification time a file written at this moment gets.
-
-    The drain's end is the drained result's modification time in the Store, a reading of the
-    kernel's file timestamp clock, which can trail `time.time_ns()` by up to a tick. A start
-    taken from that same clock, after every earlier write, orders the two readings.
-    """
-    with tempfile.TemporaryFile() as marker:
-        marker.write(b'.')
-        marker.flush()
-        return os.fstat(marker.fileno()).st_mtime_ns
 
 
 def write(fd, data):
@@ -160,9 +146,11 @@ def main():
     write(1, batch)
     written += len(batch)
     if harness.get('report', True):
-        last, last_fs = time.time_ns(), file_clock_ns()
+        last = time.time_ns()
+        last_monotonic = time.clock_gettime_ns(time.CLOCK_MONOTONIC)
         write(2, b'{"type":"result","subtype":"af_bench_last_write","last_write_unix_ns":"%d",'
-              b'"last_write_fs_ns":"%d","stdout_bytes":%d}\n' % (last, last_fs, written))
+              b'"last_write_monotonic_ns":"%d","stdout_bytes":%d}\n'
+              % (last, last_monotonic, written))
     os.close(1)
     os.close(2)
     os._exit(0)

@@ -1165,15 +1165,18 @@ the pristine repository's own config that every copy inherits holds, `gc.auto=0`
 --auto` after a commit holds a lock the copy trips over and can run inside a measured command. Per
 fixture the script reports the paired differences `(spans - off) / off`, their median and a 95%
 percentile-bootstrap interval of the median (10,000 resamples, seeded). **Drain latency** is
-measured on the dense fixture's runs: from the harness's last write (its final stderr line names
-the moment on the filesystem clock, `last_write_fs_ns`, the modification time of a file it wrote
-after every earlier write) to the supervisor's drain completion (the modification time of the
-Worker's drained stdout in the Store, which `ModelRunner` writes first thing after the supervisor
-returns, at the file system's timestamp resolution), `spans` minus `off` per pair. Both ends are
-readings of the one filesystem clock, so they are ordered; the harness's `last_write_unix_ns`
-reads a finer clock the file timestamp can trail by up to a tick and is never subtracted from it.
-A run's drain is a physical duration and the pair's difference a signed one: a negative drain is
-kept as measured and leaves the gate `not_judged`, never clamped or dropped. The gate
+measured on the dense fixture's runs, and named for its boundaries
+(`harness_last_write_to_command_exit`): from the harness's last write (its final stderr line
+names the moment on the host's `CLOCK_MONOTONIC`, `last_write_monotonic_ns`) to the script's own
+reading of `CLOCK_MONOTONIC` right after `wait4` returned the command's exit, `spans` minus `off`
+per pair. The harness writes before it exits and the command exits only after it reaped the
+harness, so the two readings of the one monotonic clock are causally ordered; no file timestamp
+is read, so a wall-clock step, a filesystem's timestamp rounding or a de-duplicated Store object
+that keeps an earlier run's modification time cannot reorder them. It is not the Store's commit
+time: it covers the drain, the rest of the command and its exit. Both ends name the clock
+explicitly, because `time.monotonic_ns` is not one clock across Python builds. A run's drain is
+a physical duration and the pair's difference a signed one: a negative drain is kept as measured
+and leaves the gate `not_judged`, never clamped or dropped. The gate
 passes when every fixture's median is at most 2% and its interval's upper bound at most 3%, and
 the drain latency's median difference is at most 10 ms; it is judged only over all three
 fixtures at full scale with 20 pairs, and anything less is `not_judged`.
@@ -1184,9 +1187,18 @@ python3 scripts/telemetry-overhead.py --af target/release/af --pairs 5 --fixture
 python3 scripts/telemetry-overhead.py --judge target/telemetry-gate/overhead.json
 ```
 
+Each release is measured on the workload it accepts (`fixture_contract`, ADR-0240): the
+committed fixtures declare `af/TaskCheckReceipt@2`; a release a contract of
+`FIXTURE_CONTRACTS` names (`check-receipt@1`: af 0.13.0) gets the same packages with only that
+artifact type renamed and each re-pinned with the digest the contract declares, which the
+measured binary's own `af catalog digest` must print, and every other release the committed
+one. The contract is selected by the version `af --version` prints; `--fixture-contract NAME`
+only asserts it and is refused when the version selects another. It is benchmark fixture
+production, never a reader of state an earlier release wrote.
+
 `make telemetry-gate` prints the table, fails when the script exits 3 (the gate failed), and
-writes the `af/telemetry-overhead@1` document
-([`schemas/telemetry-overhead-v1.json`](../schemas/telemetry-overhead-v1.json)) to
+writes the `af/telemetry-overhead@2` document
+([`schemas/telemetry-overhead-v2.json`](../schemas/telemetry-overhead-v2.json)) to
 `target/telemetry-gate/overhead.json`; `--json` prints the document instead, `--judge`
 recomputes every figure and the verdict from a recorded document's own pairs, and `--keep`
 keeps every run's directory. `make check` runs only a one-pair smoke of the script
@@ -1273,8 +1285,8 @@ the stream's bytes plus 16 MiB; a failed gate keeps two shapes, `json` at `off` 
 and `stream-json` at `spans` and `content`, which the envelope-parity fixtures
 (`claude_stream_result_envelope_is_the_json_envelope`, `claude_accounting_identical_at_every_level`)
 pin to the same accounting, classification and Store bytes. `--json` prints the
-`af/telemetry-invocation-cost@1` document
-([`schemas/telemetry-invocation-cost-v1.json`](../schemas/telemetry-invocation-cost-v1.json)),
+`af/telemetry-invocation-cost@2` document
+([`schemas/telemetry-invocation-cost-v2.json`](../schemas/telemetry-invocation-cost-v2.json)),
 `--judge` recomputes a recorded one, and `make check` runs its one-pair smoke
 (`telemetry_stream_json_cost_gate`), always `not_judged`.
 

@@ -1308,6 +1308,9 @@ class Shard(object):
             environment = dict(CLI_ENVIRONMENT)
             environment.update(supervise.scratch_environment(scratch))
             environment.update(case["af_environment"])
+            if self.mode == LINUX_CONTAINER:
+                # The writer's probe prepares the state in its bounded tmpfs (ADR-0170).
+                environment[supervise.FIXTURE_PREP_ENV] = supervise.FIXTURE_PREP
             request = canonical_bytes(clicases.seed_request(self.authority.cli, seed_id,
                                                             scratch)).decode("utf-8")
             order = supervise.request(
@@ -1374,8 +1377,12 @@ class Shard(object):
                     CONTAINER_BINARIES["probe"], supervise.SEED_OUTPUT, seed.path
                 containment = "pid_namespace"
             request = oracle.seed_request(self.authority.doc, declared["seed_id"], output)
+            environment = supervise.probe_environment(scratch)
+            if self.mode == LINUX_CONTAINER:
+                # The writer prepares its log in its bounded tmpfs, then publishes it (ADR-0170).
+                environment[supervise.FIXTURE_PREP_ENV] = supervise.FIXTURE_PREP
             order = supervise.request(
-                [program], supervise.probe_environment(scratch), scratch,
+                [program], environment, scratch,
                 canonical_bytes(request).decode("utf-8"), SEED_WRITER_TIMEOUT_MS,
                 limits.RECORD_BYTES_MAX, SEED_LOG_BYTES, containment=containment,
                 scratch=None if self.mode == TRUSTED_LOCAL else supervise.SCRATCH,

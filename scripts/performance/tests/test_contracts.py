@@ -274,7 +274,7 @@ class Parity(unittest.TestCase):
                 self.assertIn("expected %s" % contracts.CONTRACTS[contract][0],
                               str(caught.exception))
         # Only the laboratory's own files: another family's schema may share a suffix
-        # (`telemetry-invocation-cost-v1.json` ends in `cost-v1.json`).
+        # (`telemetry-invocation-cost-v2.json` ends in `cost-v1.json`).
         self.assertFalse(any(name.startswith("performance-")
                              and name.endswith(("run-v1.json", "run-v2.json", "run-v3.json",
                                                 "run-v4.json", "run-v5.json", "readiness-v4.json",

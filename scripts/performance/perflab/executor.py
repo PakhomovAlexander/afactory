@@ -229,12 +229,27 @@ class Journal:
     A directory is the original reservation. Torn directories, pending writes and claims
     are never silently requeued. Capacity refuses new work rather than deleting originals.
     """
-    def __init__(self, config):
+    def __init__(self, config, readonly=False):
         self.config = contracts.validate_executor(config)
         self.root = config["root"]
         self.fd = None
+        # A reader (`status`, `verify`, `overview`) takes no lock and writes nothing: it reads
+        # the retained, atomically published state while a controller executes an original.
+        self.readonly = readonly
 
     def __enter__(self):
+        if self.readonly:
+            private_directory(self.root)
+            self.requests = os.path.join(self.root, "requests")
+            private_directory(self.requests)
+            marker = os.path.join(self.root, "journal.json")
+            require(not os.path.lexists(marker + ".pending"),
+                    "the original journal index is being published; read it again")
+            self.index = contracts.read_json(read(marker), "executor-journal")
+            require(self.index["journal_id"] == self.config["journal_id"]
+                    and self.index["repository"] == self.config["repository"],
+                    "journal identity changed")
+            return self
         private_directory(self.root, create=True)
         with budget.defer_alarm():
             self.fd = os.open(os.path.join(self.root, "journal.lock"),

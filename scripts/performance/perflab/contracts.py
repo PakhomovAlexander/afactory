@@ -4259,10 +4259,10 @@ def validate_telemetry_binding(doc, where="binding.json"):
 
 TELEMETRY_EXPERIMENTS = ("overhead", "invocation_cost", "read_latency")
 TELEMETRY_PROFILES = ("pr", "nightly", "release", "manual")
-TELEMETRY_DOCUMENTS = {"overhead": ("af/telemetry-overhead@1", "telemetry-overhead-v1.json",
+TELEMETRY_DOCUMENTS = {"overhead": ("af/telemetry-overhead@2", "telemetry-overhead-v2.json",
                                     "scripts/telemetry-overhead.py", ("off", "spans")),
-                       "invocation_cost": ("af/telemetry-invocation-cost@1",
-                                           "telemetry-invocation-cost-v1.json",
+                       "invocation_cost": ("af/telemetry-invocation-cost@2",
+                                           "telemetry-invocation-cost-v2.json",
                                            "scripts/telemetry-invocation-cost.py",
                                            ("off", "spans")),
                        "read_latency": ("af/telemetry-read-latency@2",

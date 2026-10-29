@@ -85,5 +85,10 @@ deadline is refused before any original, claim or build, and `preflight` shows t
 checks without reserving. Executor configuration v3 names the diagnostic perf and Inferno
 tools; request v2 binds a profile to a verified parent core original whose verdict selects
 its cases; `overview` combines retained originals into `af.perf-comparison-overview/1` with
-state, verification, coverage and verdict apart. A run that fits may still stop incomplete.
+state, verification, coverage and verdict apart under a declared `full` or `partial` scope
+(a full one needs core, telemetry, trace and CPU profile originals, a healthy core aggregate and
+profiles whose parent is its core; a partial one is never complete), read without the journal
+lock. A run that fits may still stop incomplete. Each telemetry side is measured on the fixture
+contract its release accepts, and drain latency is read from two `CLOCK_MONOTONIC` readings.
+A 10,000-event seed writer prepares its Store in a bounded tmpfs and publishes it flushed.
 The [operator guide](../performance-local-executor.md) gives the commands.

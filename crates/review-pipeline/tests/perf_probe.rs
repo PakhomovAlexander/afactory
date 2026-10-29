@@ -656,6 +656,52 @@ fn state_instance(projection: &str) {
     assert!(detail.contains("projection:by_parameter"), "{detail}");
 }
 
+/// A seed writer the driver gives a preparation directory writes its 10,000-event log there
+/// through the same protected writers, publishes the finished Store into its work directory and
+/// leaves the preparation directory empty; the published seed passes the writer's oracle and a
+/// fresh Store reads exactly 10,000 events from it. A preparation path that is not an existing
+/// absolute directory is the writer's fixture failure, never a silent fallback.
+#[test]
+fn a_seed_writer_prepares_its_log_in_memory_and_publishes_it_for_the_oracle() {
+    let entry = seed_entry("state_projection_seed__log_events_10000");
+    let (_owner, scratch) = empty_scratch();
+    let (_prep_owner, prep) = empty_scratch();
+    let writer = request(&entry, &scratch);
+    let reply = probe_process_with(
+        &writer,
+        &[(cases::FIXTURE_PREP_ENV, prep.to_str().unwrap())],
+    );
+    let stderr = String::from_utf8_lossy(&reply.stderr).into_owned();
+    assert_eq!(reply.code, 0, "{stderr}");
+    assert_eq!(judge(&writer, &reply)["status"], "passed", "{stderr}");
+    let work = scratch.join(protocol::WORK_DIR);
+    assert!(
+        stderr.contains(&format!("published to {}", work.display())),
+        "{stderr}"
+    );
+    assert_eq!(std::fs::read_dir(&prep).unwrap().count(), 0, "{stderr}");
+    let store = review_store::EventStore::open(work.join("events.sqlite")).unwrap();
+    let run = review_store::store::task::task_run_id(authority::TASK_ID).unwrap();
+    assert_eq!(store.len(&run).unwrap(), fixtures::PROJECTION_EVENTS);
+    // The published seed is the golden one, the same a writer without preparation writes.
+    let message: Value = serde_json::from_slice(&reply.stdout).unwrap();
+    assert_eq!(
+        message["correctness"]["digest"], entry["digest"],
+        "{message}"
+    );
+    for refused in ["relative/prep", "/nonexistent/af-perf-prep"] {
+        let (_owner, scratch) = empty_scratch();
+        let request = request(&entry, &scratch);
+        let reply = probe_process_with(&request, &[(cases::FIXTURE_PREP_ENV, refused)]);
+        assert_ne!(reply.code, 0, "{refused}");
+        let message: Value = serde_json::from_slice(&reply.stdout).unwrap();
+        assert!(
+            message.to_string().contains("AF_PERF_FIXTURE_PREP"),
+            "{refused}: {message}"
+        );
+    }
+}
+
 #[test]
 fn an_application_cold_projection_of_10000_events_passes_the_oracle() {
     state_instance("application_cold");

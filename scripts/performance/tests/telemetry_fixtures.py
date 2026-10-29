@@ -19,13 +19,23 @@ HOST = dict((key, {"value": "stand-in %s" % key}) for key in contracts.HOST_KEYS
 VERSION = "af 0.0.0"
 
 
+def _contract(version):
+    """The fixture contract the bench script records for `version` (`af X`)."""
+    module = telemetrylab.script_module("scripts/telemetry-overhead.py")
+    release = module.release_version(version)
+    name = module.select_contract(release)
+    return {"name": name, "release": release,
+            "check_receipt": module.FIXTURE_CONTRACTS[name]["check_receipt"], "fixtures": []}
+
+
 def _run(wall, rss=1000, segments=0):
     return {"wall_ms": wall, "exit_code": 0, "peak_rss_bytes": rss, "segments": segments}
 
 
 def overhead_doc(seed, pairs, slow=1.0, scale="smoke", extra=None, version=VERSION):
     module = telemetrylab.script_module("scripts/telemetry-overhead.py")
-    doc = {"schema": "af/telemetry-overhead@1", "af": {"path": "/x/af", "version": version},
+    doc = {"schema": "af/telemetry-overhead@2", "af": {"path": "/x/af", "version": version},
+           "fixture_contract": _contract(version),
            "machine": {"os": "linux", "arch": "x86_64", "cpus": 4, "load1": 0.5},
            "protocol": {"pairs": pairs, "scale": scale, "seed": seed, "resamples": 10000,
                         "median_bound_pct": 2.0, "upper_bound_pct": 3.0},
@@ -35,6 +45,7 @@ def overhead_doc(seed, pairs, slow=1.0, scale="smoke", extra=None, version=VERSI
                                     "spans": _run(round(1010.0 * slow + index, 3), 1100, 1)}
                                    for index in range(pairs)]} for name in FIXTURES],
            "drain": {"fixture": "telemetry-bench-dense", "bound_ms": 10.0,
+                     "boundary": module.DRAIN_BOUNDARY, "clock": module.DRAIN_CLOCK,
                      "pairs": [{"off_ms": 0.5, "spans_ms": 0.75} for _ in range(pairs)]}}
     doc = module.summarize(doc)
     if extra:
@@ -47,8 +58,11 @@ def invocation_doc(seed, pairs, slow=1.0, version=VERSION):
 
     def run(wall):
         return dict(_run(wall), drain_ms=None, stdout_bytes=65536)
-    doc = {"schema": "af/telemetry-invocation-cost@1",
+    doc = {"schema": "af/telemetry-invocation-cost@2",
            "af": {"path": "/x/af", "version": version},
+           "fixture_contract": _contract(version),
+           "drain": {"boundary": "harness_last_write_to_command_exit",
+                     "clock": "CLOCK_MONOTONIC"},
            "machine": {"os": "linux", "arch": "x86_64", "cpus": 4, "load1": None},
            "protocol": {"pairs": pairs, "scale": "smoke", "seed": seed, "resamples": 10000,
                         "wall_bound_pct": 2.0, "rss_slack_bytes": 16 << 20},

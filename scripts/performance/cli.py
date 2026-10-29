@@ -1422,7 +1422,10 @@ def cmd_executor(args):
                 args.days, args.preparation_members)
             _emit(contracts.write_bytes(doc, "local-cohort-declaration"), args.output)
             return 0
-        with executor.cancellation(), executor.Journal(config) as journal:
+        # Readers take no journal lock: status, verify and an overview are usable while the
+        # controller holding it executes an original.
+        readonly = args.operation in ("status", "verify", "overview")
+        with executor.cancellation(), executor.Journal(config, readonly=readonly) as journal:
             if args.operation in ("submit", "preflight"):
                 require(args.base and args.head and args.key,
                         args.operation + " needs exact --base, --head and --key")
@@ -1465,7 +1468,9 @@ def cmd_executor(args):
                 # process exit or a file's existence; incomplete exits 4.
                 from perflab import overview
                 require(args.member and args.output, "overview needs --member REQUEST_ID... and --output")
-                doc = overview.overview(journal, args.member, executor.verify_original)
+                require(args.scope, "overview needs --scope full|partial")
+                doc = overview.overview(journal, args.member, executor.verify_original,
+                                        args.scope)
                 overview.write(doc, args.output, config["root"])
                 _emit(contracts.write_bytes(doc, "comparison-overview"), None)
                 return 0 if doc["status"] == "complete" else 4
@@ -1516,6 +1521,10 @@ def parser():
         execution.add_argument("--" + option)
     execution.add_argument("--group", nargs=3, action="append")
     execution.add_argument("--member", action="append", help="an original of the overview")
+    execution.add_argument("--scope", choices=("full", "partial"),
+                           help="the overview's declared scope: `full` requires a core, a "
+                           "telemetry, a trace and a CPU profile original; `partial` is never "
+                           "a complete release comparison")
     execution.add_argument("--days", type=int, default=7)
     execution.add_argument("--preparation-members", type=int, default=2)
     execution.set_defaults(handler=cmd_executor)

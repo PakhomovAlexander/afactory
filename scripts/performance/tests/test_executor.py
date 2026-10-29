@@ -377,8 +377,8 @@ class Journal(ExecutorFixture):
             self.run_synthetic_core(j, core)
             telemetry = self.submit(j, "telemetry", "telemetry_1")
             doc = overview.overview(j, [core["request_id"], telemetry["request_id"]],
-                                    executor.verify_original)
-        self.assertEqual(doc["status"], "incomplete")
+                                    executor.verify_original, "full")
+        self.assertEqual((doc["scope"], doc["status"]), ("full", "incomplete"))
         measured, queued = doc["members"]
         self.assertEqual(measured["verification"]["status"], "verified")
         self.assertEqual(measured["performance"]["verdict"], "fail")
@@ -389,7 +389,9 @@ class Journal(ExecutorFixture):
         self.assertEqual((queued["state"], queued["verification"]["status"], queued["coverage"]),
                          ("queued", "not_terminal", None))
         self.assertIn("telemetry original is queued: no terminal result", doc["reasons"])
-        self.assertIn("no profile original: its coverage is missing, not passed", doc["reasons"])
+        for kind in ("trace", "cpu_profile"):
+            self.assertIn("no %s profile original: its coverage is missing, not passed" % kind,
+                          doc["reasons"])
         # Claiming completeness for this evidence is refused by the contract itself.
         with self.assertRaisesRegex(ContractError, "complete only when"):
             contracts.write_bytes(dict(doc, status="complete"), "comparison-overview")
@@ -399,7 +401,7 @@ class Journal(ExecutorFixture):
                 mock.patch("sys.stdout", new=SimpleNamespace(buffer=io.BytesIO(), flush=lambda: None)):
             code = cli.main(["executor", "--config", "operator.toml", "overview", "--member",
                              core["request_id"], "--member", telemetry["request_id"],
-                             "--output", output])
+                             "--scope", "full", "--output", output])
         self.assertEqual(code, 4)
         self.assertEqual(sorted(os.listdir(output)), sorted(overview.FILES))
         written = contracts.read_json(read(os.path.join(output, "overview.json")), "comparison-overview")
@@ -412,11 +414,79 @@ class Journal(ExecutorFixture):
         with executor.Journal(self.c) as j:
             with open(os.path.join(j.path(core["request_id"]), "run/shards/0/samples.jsonl"), "ab") as f:
                 f.write(b"tampered")
-            refused = overview.overview(j, [core["request_id"]], executor.verify_original)
+            refused = overview.overview(j, [core["request_id"]], executor.verify_original,
+                                        "partial")
         member = refused["members"][0]
         self.assertEqual(member["verification"]["status"], "refused")
         self.assertEqual((member["coverage"], member["performance"]["verdict"]), (None, None))
         self.assertEqual(refused["status"], "incomplete")
+
+    def test_overview_scope_health_and_diagnostic_affinity_decide_completeness(self):
+        """A verified, fully covered core alone is at best a `partial` comparison; under the
+        `full` scope it is incomplete without telemetry, trace and CPU profile originals; an
+        `incomplete` core aggregate (a missing closing sentinel) is never complete; a profile
+        whose parent is not a core original of the overview is not this comparison's diagnosis;
+        and the contract refuses every relabelling of that evidence."""
+        from perflab import overview
+        with executor.Journal(self.c) as j:
+            core = self.submit(j)
+            self.run_synthetic_core(j, core)
+            partial = overview.overview(j, [core["request_id"]], executor.verify_original,
+                                        "partial")
+            full = overview.overview(j, [core["request_id"]], executor.verify_original, "full")
+        self.assertEqual((partial["status"], partial["reasons"]), ("partial", []))
+        self.assertEqual(full["status"], "incomplete")
+        for refusal in (dict(partial, status="complete"), dict(full, status="partial"),
+                        dict(full, status="complete", reasons=[])):
+            with self.assertRaisesRegex(ContractError, "complete only when|partial scope"):
+                contracts.write_bytes(refusal, "comparison-overview")
+        # The core aggregate's own health result decides eligibility, not its counts alone.
+        with mock.patch.object(overview, "_core", lambda path: (
+                {"required": 4, "observed": 4, "failed": 0, "missing": 0},
+                {"verdict": "incomplete", "regressions": []})), executor.Journal(self.c) as j:
+            unhealthy = overview.overview(j, [core["request_id"]], executor.verify_original,
+                                          "partial")
+        self.assertEqual(unhealthy["status"], "incomplete")
+        self.assertIn("core aggregate result is incomplete", " ".join(unhealthy["reasons"]))
+        # A complete full scope, with the four required originals, verifies; a profile of
+        # another comparison's core does not count.
+        members = [dict(full["members"][0], reasons=[], performance={"verdict": "fail",
+                                                                     "regressions": []})]
+        for index, (work, kind) in enumerate((("telemetry", None), ("profile", "trace"),
+                                              ("profile", "cpu_profile"))):
+            members.append(dict(members[0], request_id="exp_" + "%d" % index * 48, work=work,
+                                diagnostic_kind=kind, plan_sha256=None,
+                                parent=core["request_id"] if kind else None))
+        complete = dict(full, status="complete", reasons=[], members=members)
+        self.assertEqual(contracts.read_json(contracts.write_bytes(complete,
+                                                                   "comparison-overview"),
+                                             "comparison-overview")["status"], "complete")
+        stray = copy.deepcopy(complete)
+        stray["members"][3]["parent"] = "exp_" + "9" * 48
+        with self.assertRaisesRegex(ContractError, "complete only when"):
+            contracts.write_bytes(stray, "comparison-overview")
+
+    def test_status_reads_the_journal_while_its_controller_holds_the_lock(self):
+        """`status` and an overview take no lock: they read retained native state while the
+        controller that holds the journal's exclusive lock executes."""
+        import cli
+        from perflab import overview
+        with executor.Journal(self.c) as controller:
+            request = self.submit(controller)
+            with self.assertRaises(executor.JournalBusy):
+                with executor.Journal(self.c):
+                    pass
+            with executor.Journal(self.c, readonly=True) as reader:
+                self.assertEqual(reader.state(request["request_id"])["state"], "queued")
+                doc = overview.overview(reader, [request["request_id"]],
+                                        executor.verify_original, "partial")
+            self.assertEqual(doc["status"], "incomplete")
+            out = io.StringIO()
+            with mock.patch.object(executor, "load_config", return_value=self.c), \
+                    mock.patch("sys.stdout", new=out):
+                code = cli.main(["executor", "--config", "operator.toml", "status"])
+            self.assertEqual(code, 0)
+            self.assertEqual(json.loads(out.getvalue())[0]["state"], "queued")
 
     def test_profile_selects_regressed_cases_of_its_verified_parent_with_configured_tools(self):
         """A profile without named cases diagnoses the regressions of a verified parent core
