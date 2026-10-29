@@ -173,6 +173,76 @@ fn emitted_starters_validate_and_execute_without_credentials_on_one_common_runti
     }
 }
 
+/// #425 item 5: the emitted reviewed implementation names no `strategy`, `verification` or
+/// `facts.standard`, and plans with the values its kind's defaults supply: the same revision as
+/// the file that names them.
+#[test]
+fn the_reviewed_starter_leaves_its_kind_defaults_and_plans_with_them() {
+    let root = tempfile::tempdir().unwrap();
+    let (repo, state) = setup(root.path(), None);
+    let file: Value =
+        serde_json::from_slice(&std::fs::read(repo.join("implementation-reviewed.json")).unwrap())
+            .unwrap();
+    for field in ["strategy", "verification"] {
+        assert!(file.get(field).is_none(), "{field}: {file:#}");
+    }
+    assert_eq!(
+        file["facts"],
+        json!({"capability": "tutorial.pagination/1"}),
+        "{file:#}"
+    );
+    let revision = |file: &Path, state: &Path| {
+        let planned = task(
+            &repo,
+            state,
+            &["task", "plan", "--file", file.to_str().unwrap()],
+            0,
+        );
+        assert_eq!(planned["state"]["phase"], "planned", "{planned:#}");
+        assert_eq!(
+            planned["selection"]["assessment"]["decision"]["pipeline"],
+            "builtin/implementation-reviewed",
+            "{planned:#}"
+        );
+        let id = planned["revision_id"].as_str().unwrap();
+        let cas = review_store::Cas::open_existing(state.join("cas")).unwrap();
+        cas.get_json(id).unwrap()["payload"].clone()
+    };
+    let mut defaulted = revision(&repo.join("implementation-reviewed.json"), &state);
+    assert_eq!(defaulted["strategy"], "reviewed");
+    assert_eq!(
+        defaulted["facts"],
+        json!({"standard": true, "capability": "tutorial.pagination/1"})
+    );
+    let mut stated = file.clone();
+    stated["strategy"] = json!("reviewed");
+    stated["verification"] = json!("review");
+    stated["facts"]["standard"] = json!(true);
+    let stated_file = root.path().join("stated.json");
+    std::fs::write(&stated_file, serde_json::to_vec(&stated).unwrap()).unwrap();
+    let mut stated = revision(&stated_file, &root.path().join("stated-state"));
+    // Each plan's absolute deadline is its own clock's.
+    for revision in [&mut defaulted, &mut stated] {
+        revision["limits"]
+            .as_object_mut()
+            .unwrap()
+            .remove("deadline_unix_ms")
+            .expect("a planned deadline");
+    }
+    for field in [
+        "kind",
+        "goal",
+        "strategy",
+        "pipeline",
+        "facts",
+        "limits",
+        "required_outputs",
+        "acceptance",
+    ] {
+        assert_eq!(defaulted[field], stated[field], "{field}");
+    }
+}
+
 fn starter_repair_uses_current_evidence(name: &str, attempts: u64) {
     let root = tempfile::tempdir().unwrap();
     let (repo, state) = setup(root.path(), None);

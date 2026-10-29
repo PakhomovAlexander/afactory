@@ -1179,7 +1179,7 @@ pub(super) fn files(developer_key: Option<String>) -> Result<BTreeMap<String, Ve
         ("review-light", "review", None, 3, 3),
         ("review-heavy", "review", None, 6, 6),
     ] {
-        let task = TaskFile {
+        let mut task = TaskFile {
         issue: None,
             acceptance: None,
             inputs: None,
@@ -1227,6 +1227,14 @@ pub(super) fn files(developer_key: Option<String>) -> Result<BTreeMap<String, Ve
                 },
             }),
         };
+        if name == "implementation-reviewed" {
+            // The `implement` kind's defaults supply the review verification and
+            // `facts.standard = true`, with strategy `reviewed`; the file names its pipeline, so
+            // its strategy selects none.
+            task.strategy = None;
+            task.verification = None;
+            task.facts.remove("standard");
+        }
         files.insert(format!("{name}.json"), json_bytes(&task)?);
     }
     let mut task: TaskFile = serde_json::from_slice(&files["implementation-reviewed.json"])

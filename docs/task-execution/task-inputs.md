@@ -21,9 +21,6 @@ One optional top-level table, `inputs`, maps a root input port name to a referen
     "source":  { "task": "layout-l3b", "port": "snapshot" },
     "history": { "task": "layout-l3b", "port": "history" }
   },
-  "strategy": "standard",
-  "verification": "review",
-  "facts": { "standard": true },
   "limits": {
     "tokens": 900000,
     "max_attempts": 4,

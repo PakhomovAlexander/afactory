@@ -861,7 +861,7 @@ af review plan --policy-rev HEAD --base HEAD~1 --candidate HEAD --long"
     Plan {
         #[command(flatten)]
         args: RunArgs,
-        /// Include pipeline nodes and edges in the text plan
+        /// Include pipeline nodes and edges and every changed path in the text plan
         #[arg(long, help_heading = "Output")]
         long: bool,
     },
@@ -1629,7 +1629,7 @@ pub(crate) struct OnboardArgs {
         help_heading = "Selector"
     )]
     pub(crate) repo: PathBuf,
-    /// Include pipeline nodes and edges in the text preview
+    /// Include pipeline nodes and edges, every file, convergence and whole warnings in the preview
     #[arg(long, help_heading = "Output")]
     pub(crate) long: bool,
     /// Preview or add pinned model-driven Task authority (also includes review authority in a new repository)
