@@ -1132,7 +1132,7 @@ pub(crate) mod tests {
         assert!(
             rows.iter().any(|row| row.starts_with(
                 "models source codex app-server model/list  version 0.162.1  freshness \
-                 models_cache.json fetched_at 2026-10-15T09:58:12Z  5 exact IDs"
+                 models_cache.json fetched_at 2026-10-15T09:58:12Z  6 exact IDs"
             )),
             "{rows:#?}"
         );
