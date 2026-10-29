@@ -280,7 +280,8 @@
     "af::bin/af": {
       "cli::": "uix",
       "option_tests::": "uix",
-      "self_optimizer::": "perf",
+      "self_optimizer::optimization_adapters::": "perf",
+      "self_optimizer::tests::": "perf",
       "terminal_text_tests::": "uix",
       "topics::": "uix",
       "tui::": "uix"

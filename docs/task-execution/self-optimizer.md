@@ -30,11 +30,14 @@ max_normalized_bytes = 16777216
 
 [[sources]]
 adapter = "af" # `af task show --json` receipts; codex | claude | external are also supported
-path = "../captured-history/task.jsonl"
+path = "captured-history/task.jsonl" # relative to the repository root
 source_id = "af-task-inspection"
 execution_id = "TASK_ID"
 attest_project = true
 ```
+
+A relative `path` resolves from the repository root, like every other `.af/` path, not from
+the directory that holds the sources file; an absolute `path` is used as given.
 
 `external` is the normalized import and fixture adapter. Each JSONL line has
 `observed_unix_ms`, exact `attribution`, and optional typed `tokens`, `spans`, `caches`, `outcome`,
@@ -63,10 +66,16 @@ makes coverage visibly partial.
 
 Without a collection selector, capture resumes each declared source after the latest retained
 receipt. `--since 30d` filters by the captured cutoff; `--all-history` starts each range at zero.
-Partial and unavailable sources become visible gaps. Appended captures reference their exact
-predecessor; projection deduplicates exact observations and cumulative snapshots without erasing
-distinct repeated failures. Case families disclosed by the report are retained as exposed and
-are not fresh holdout evidence for later milestones.
+Partial and unavailable sources become visible gaps. A declared source that does not exist, or
+that cannot be opened or read (including a read that fails after it opened), becomes the gap
+`unavailable_<adapter>_<hash>`, where `<hash>` is the first 12 hex digits of the SHA-256 of its
+`source_id`; the gap does not name the source. Before the run, `af self optimize` names it on
+stderr instead:
+``warning: history source `<source_id>` is missing at <resolved path>; ...`` (or `unreadable`),
+so a capture whose every source is unavailable is not read as an empty history.
+Appended captures reference their exact predecessor; projection deduplicates exact observations
+and cumulative snapshots without erasing distinct repeated failures. Case families disclosed by
+the report are retained as exposed and are not fresh holdout evidence for later milestones.
 
 An analysis-kind catalog remains report-only. A candidate-kind catalog that installs
 `builtin/optimization-light` and a captured `.af/optimization-policy.json` makes
