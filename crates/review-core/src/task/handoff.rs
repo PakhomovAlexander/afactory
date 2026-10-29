@@ -586,6 +586,10 @@ mod tests {
         huge.validate().unwrap();
         assert_eq!(huge.text.chars().count(), MAX_PROMPT_TEXT);
         assert!(huge.text.contains(&format!("f{TRUNCATED}\nVerification: ")));
+        assert!(
+            huge.text
+                .ends_with(&format!("\nVerification: {TASK_VERIFICATION}"))
+        );
         assert!(huge.text.contains("Location: src/pagination.py:3"));
         assert_eq!(huge.requested_change, fix);
     }
