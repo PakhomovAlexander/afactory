@@ -103,6 +103,14 @@ const fn writes(writes: &'static [(State, When)]) -> Effects {
 /// A pipeline whose check node lists `remote_checks` pushes its gate branches (ADR-0140).
 const REMOTE_CHECKS: When = Some("a pipeline with remote checks");
 
+/// `af review run --file` (and bare `af review --file`) executes a Review Task, whose pipeline's
+/// remote checks push gate branches and a draft gate pull request like `af task run`'s.
+const REVIEW_TASK_REMOTE_CHECKS: When = Some("--file, a pipeline with remote checks");
+
+/// `codex app-server` answers `model/list` against the Provider's `CODEX_HOME` and caches the
+/// catalog in `$CODEX_HOME/models_cache.json` (ADR-0146).
+const CODEX_MODELS: When = Some("a Codex Provider");
+
 /// Every runnable command and what it may do, by the command as typed. A runnable command is a
 /// visible one without subcommands, or a namespace that also runs on its own (`af`, `af review`,
 /// `af storage`).
@@ -118,7 +126,7 @@ pub(crate) const EFFECTS: &[(&str, Effects)] = &[
     ("af provider disable", writes(&[(Machine, None)])),
     ("af provider enable", writes(&[(Machine, None)])),
     ("af provider status", READS),
-    ("af provider models", READS),
+    ("af provider models", writes(&[(Machine, CODEX_MODELS)])),
     (
         "af provider setup",
         Effects {
@@ -157,17 +165,17 @@ pub(crate) const EFFECTS: &[(&str, Effects)] = &[
         "af review",
         Effects {
             tokens: Tokens::Charges(None),
-            ..writes(&[(Store, None)])
+            ..writes(&[(Store, None), (Remote, REVIEW_TASK_REMOTE_CHECKS)])
         },
     ),
     (
         "af review run",
         Effects {
             tokens: Tokens::Charges(None),
-            ..writes(&[(Store, None)])
+            ..writes(&[(Store, None), (Remote, REVIEW_TASK_REMOTE_CHECKS)])
         },
     ),
-    ("af review plan", READS),
+    ("af review plan", writes(&[(Store, Some("--file"))])),
     ("af review render", READS),
     ("af review ledger", READS),
     ("af review show", READS),
@@ -229,7 +237,7 @@ pub(crate) const EFFECTS: &[(&str, Effects)] = &[
     ("af task diff", READS),
     ("af task explain", READS),
     ("af task export", writes(&[(Files, None)])),
-    ("af task deliver", writes(&[(Files, None)])),
+    ("af task deliver", writes(&[(Files, None), (Store, None)])),
     ("af task observe-adoption", writes(&[(Store, None)])),
     ("af task list", READS),
     ("af task gc", writes(&[(Store, Some("--apply"))])),
@@ -628,5 +636,80 @@ mod tests {
             .iter()
             .any(|command| command["command"] == "af self man");
         assert!(!hidden, "a hidden command is not in the catalog");
+    }
+
+    /// The `writes` of one command as the catalog prints them: `(state, when)` pairs.
+    fn printed_writes(command: &str) -> Vec<(String, Value)> {
+        let document = document(&[]).unwrap();
+        let entry = document["commands"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|entry| entry["command"] == command)
+            .unwrap_or_else(|| panic!("{command} is in the catalog"))
+            .clone();
+        entry["effects"]["writes"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|write| {
+                (
+                    write["state"].as_str().unwrap().to_owned(),
+                    write["when"].clone(),
+                )
+            })
+            .collect()
+    }
+
+    /// For a Codex Provider, `af provider models` starts `codex app-server`, which caches the
+    /// catalog in the Provider's `$CODEX_HOME/models_cache.json`: machine-local state.
+    #[test]
+    fn provider_models_writes_machine_state_for_a_codex_provider() {
+        assert_eq!(
+            printed_writes("af provider models"),
+            [("machine".to_owned(), json!("a Codex Provider"))]
+        );
+    }
+
+    /// `af review plan --file` opens a Task and records its proposed plan; without `--file` the
+    /// plan is token-free and stateless.
+    #[test]
+    fn review_plan_writes_the_store_only_with_file() {
+        assert_eq!(
+            printed_writes("af review plan"),
+            [("store".to_owned(), json!("--file"))]
+        );
+    }
+
+    /// `af review run --file`, and bare `af review --file`, executes a Review Task whose pipeline's
+    /// remote checks may push gate branches and a draft gate pull request (ADR-0140).
+    #[test]
+    fn review_run_with_file_and_remote_checks_writes_remote_state() {
+        for command in ["af review run", "af review"] {
+            assert_eq!(
+                printed_writes(command),
+                [
+                    ("store".to_owned(), Value::Null),
+                    (
+                        "remote".to_owned(),
+                        json!("--file, a pipeline with remote checks")
+                    ),
+                ],
+                "{command}"
+            );
+        }
+    }
+
+    /// Delivery writes the delivered files and persists its preparation and terminal delivery
+    /// records in the Task Store (ADR-0031).
+    #[test]
+    fn task_deliver_writes_files_and_the_store() {
+        assert_eq!(
+            printed_writes("af task deliver"),
+            [
+                ("files".to_owned(), Value::Null),
+                ("store".to_owned(), Value::Null),
+            ]
+        );
     }
 }
