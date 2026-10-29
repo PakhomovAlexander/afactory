@@ -1260,6 +1260,53 @@ fn leftovers(pids: &[u32]) -> crate::common::recorded::Leftovers {
     )
 }
 
+/// The output of a follower `af task events` that must end by itself: its stdout (`stdout`, the
+/// rest of the pipe the caller took) and its stderr are drained as it runs, so a full pipe never
+/// holds it, while `try_wait` is polled. The deadline is a fail-safe, never what a test waits
+/// for: past `limit` the follower is killed and reaped and the test fails with what it printed,
+/// instead of waiting forever when terminal detection regresses.
+fn bounded_follower(
+    mut follower: std::process::Child,
+    stdout: impl std::io::Read + Send + 'static,
+    limit: Duration,
+) -> Output {
+    fn drain(mut pipe: impl std::io::Read + Send + 'static) -> std::thread::JoinHandle<Vec<u8>> {
+        std::thread::spawn(move || {
+            let mut bytes = Vec::new();
+            let _ = pipe.read_to_end(&mut bytes);
+            bytes
+        })
+    }
+    let stdout = drain(stdout);
+    let stderr = drain(follower.stderr.take().unwrap());
+    let deadline = Instant::now() + limit;
+    let status = loop {
+        if let Some(status) = follower.try_wait().unwrap() {
+            break Some(status);
+        }
+        if Instant::now() >= deadline {
+            let _ = follower.kill();
+            follower.wait().unwrap();
+            break None;
+        }
+        std::thread::sleep(Duration::from_millis(20));
+    };
+    let stdout = stdout.join().unwrap();
+    let stderr = stderr.join().unwrap();
+    let Some(status) = status else {
+        panic!(
+            "the follower printed no terminal record within {limit:?}; killed:\n{}\n{}",
+            String::from_utf8_lossy(&stdout),
+            String::from_utf8_lossy(&stderr)
+        );
+    };
+    Output {
+        status,
+        stdout,
+        stderr,
+    }
+}
+
 /// The lines of `af task events`, each one `af/task-event@1` document, its events numbered
 /// without a gap from `first` and at most one terminal record, the last line.
 fn event_lines(text: &str, first: u64) -> Vec<Value> {
@@ -1366,7 +1413,7 @@ fn a_detached_run_is_followed_cancelled_and_resumed() {
     ));
     assert!(alive(pid), "the run outlived the shell that started it");
     // A follower of the running Task, ended by the cancel below.
-    let follower = crate::common::af()
+    let mut follower = crate::common::af()
         .current_dir(&repo)
         .args(["task", "events", task, "--state"])
         .arg(&state)
@@ -1512,7 +1559,8 @@ fn a_detached_run_is_followed_cancelled_and_resumed() {
         "{shown}"
     );
     // The follower saw the cancel: every event from 0, then the one terminal record.
-    let followed = follower.wait_with_output().unwrap();
+    let stdout = follower.stdout.take().unwrap();
+    let followed = bounded_follower(follower, stdout, Duration::from_secs(60));
     leftovers
         .0
         .retain(|recorded| recorded.pid() != i32::try_from(follower_pid).unwrap());
@@ -1695,6 +1743,100 @@ fn a_detached_run_is_followed_cancelled_and_resumed() {
         "the resumed run is run 2: {settled:#}"
     );
     leftovers.0.clear();
+}
+
+/// Issue #433: a planned Task whose run was starting when `af task events` first polled, and
+/// whose process ended before it took the Task, is refused at the poll that finds no run
+/// starting, as at a first poll (ADR-0250): exit 1, one `af/error@2` line and no terminal record.
+/// The base tree refused only at the first poll, so this follower printed a terminal record of
+/// the planned state and exited 0. The run here is a record of this host, written as `af task
+/// run` writes it before its lease, for a process the test holds: the follower's first line
+/// proves its first poll saw the run starting, and the process is ended and reaped before the
+/// next poll reads the record again.
+#[test]
+fn a_planned_task_whose_starting_run_died_is_refused_at_a_later_poll() {
+    let root = tempfile::tempdir().unwrap();
+    let (repo, state) = task_cli::fixture_named(root.path(), "pagination");
+    let task = task_interrupt::TASK;
+    expect(
+        &af(&repo, &state, &["task", "plan", "--file", "ticket.json"]),
+        0,
+    );
+    // A process that lives until the test ends it, or until its stdin closes when the test
+    // fails first.
+    let mut run = Command::new("/bin/cat")
+        .stdin(std::process::Stdio::piped())
+        .stdout(std::process::Stdio::null())
+        .spawn()
+        .unwrap();
+    let started_unix_ms = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_millis();
+    std::fs::create_dir_all(state.join("runs")).unwrap();
+    std::fs::write(
+        state.join(format!("runs/{task}-1.json")),
+        serde_json::to_vec(&serde_json::json!({
+            "schema": "af/task-run-process@1",
+            "task_id": task,
+            "run": 1,
+            "pid": run.id(),
+            "host": review_process::host::host_name().unwrap_or_else(|| "unknown".into()),
+            "writer": "cli-starting",
+            "started_unix_ms": u64::try_from(started_unix_ms).unwrap(),
+            "detached": false,
+            "log": null,
+        }))
+        .unwrap(),
+    )
+    .unwrap();
+    let mut follower = crate::common::af()
+        .current_dir(&repo)
+        .args(["task", "events", task, "--state"])
+        .arg(&state)
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
+        .spawn()
+        .unwrap();
+    let mut stdout = std::io::BufReader::new(follower.stdout.take().unwrap());
+    let mut first = String::new();
+    std::io::BufRead::read_line(&mut stdout, &mut first).unwrap();
+    let first: Value = serde_json::from_str(&first)
+        .unwrap_or_else(|_| panic!("not one line at the first poll: {first:?}"));
+    assert_eq!(first["schema"], "af/task-event@1", "{first}");
+    assert_eq!(first["record"], "event", "{first}");
+    run.kill().unwrap();
+    run.wait().unwrap();
+    let followed = bounded_follower(follower, stdout, Duration::from_secs(60));
+    assert_eq!(
+        followed.status.code(),
+        Some(1),
+        "{}\n{}",
+        out(&followed),
+        err(&followed)
+    );
+    assert!(
+        err(&followed).contains("is planned and no run of it is in progress"),
+        "{}",
+        err(&followed)
+    );
+    let lines: Vec<Value> = out(&followed)
+        .lines()
+        .map(|line| serde_json::from_str(line).unwrap_or_else(|_| panic!("not one line: {line}")))
+        .collect();
+    let errors: Vec<&Value> = lines
+        .iter()
+        .filter(|line| line["schema"] == "af/error@2")
+        .collect();
+    assert_eq!(errors.len(), 1, "{}", out(&followed));
+    schemas::valid(&schemas::validator("error-v2.json"), errors[0]);
+    assert!(
+        lines
+            .iter()
+            .all(|line| line["schema"] == "af/error@2" || line["record"] == "event"),
+        "no terminal record:\n{}",
+        out(&followed)
+    );
 }
 
 /// A detached run that is neither holding the Task nor admitted when the window passes is not
