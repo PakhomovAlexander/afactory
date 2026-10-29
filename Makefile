@@ -95,11 +95,13 @@ telemetry-gate:
 
 # Exercise release selection and tag races against disposable local Git remotes, check that
 # CHANGELOG.md's [Unreleased] holds only its pointer and every changelog.d/ note only bullets,
+# exercise the test quarantine scan on test-local task lists (ADR-0264),
 # and keep this repository's own .af/af.lock on the newest release (ADR-0138).
 release-check:
 	$(CI_STEP) --stage release release-resolution python3 scripts/test-class-python.py test-release-resolve.py "$(BASE_EVIDENCE)/test-release-resolve.py.xml"
 	$(CI_STEP) --stage release changelog-notes-tests python3 scripts/test-class-python.py test-changelog-notes.py "$(BASE_EVIDENCE)/test-changelog-notes.py.xml"
 	$(CI_STEP) --stage release changelog-notes python3 scripts/changelog-notes.py --check
+	$(CI_STEP) --stage release quarantine-scan-tests python3 scripts/test-class-python.py test-test-quarantine.py "$(BASE_EVIDENCE)/test-test-quarantine.py.xml"
 	$(CI_STEP) --stage release af-pin-tests python3 scripts/test-class-python.py test-af-pin.py "$(BASE_EVIDENCE)/test-af-pin.py.xml"
 	$(CI_STEP) --stage release af-pin python3 scripts/af-pin.py --check
 

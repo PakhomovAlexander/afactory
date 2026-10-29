@@ -108,6 +108,20 @@ prints fixture lines such as `flaky: gate-store-regression fails_when_crowded` a
 text fallback read those fixture names as the gate's own flaky tests (#436). An identity taken
 from text would quarantine a test that does not exist, or one that never flaked.
 
+**Amended 2026-10-30** ([#466](https://github.com/PakhomovAlexander/afactory/issues/466), Q2).
+No command gives the scan the structured report alone: an `af task list --json` row's
+`gate.flaky` does not say whether its names came from the report or the text fallback, and
+`af task show --checks --json` deliberately omits `evidence`. What counts now is the list rows'
+flaky names, admitted only through inventory resolution: `scripts/test-quarantine.py scan` takes
+a name as evidence only when it resolves to exactly one identity of the default-feature nextest
+inventory, as that `<binary_id> <test name>` exactly or as a bare test name exactly one identity
+carries (af 0.13.0's fallback drops the binary), and never to an `#[ignore]` test or one a
+feature build's fixed selector reaches. Fixture names still cannot enter: `gate-store-regression`,
+`fails_when_crowded`, `af::it` and `many_0` name no test of the inventory, so they never resolve
+and the scan lists them as rejected. A real test the fallback reports flaky without its gate
+having rerun it is a false positive this rule admits; Q3's confirmation catches it, removing an
+entry whose test never fails in its 50 runs.
+
 ## Consequences
 
 - A flaky test costs the gates that met it, then leaves every gate until it is fixed or its 14
