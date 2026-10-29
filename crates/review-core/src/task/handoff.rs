@@ -113,7 +113,54 @@ fn severity_word(severity: crate::Severity) -> &'static str {
     }
 }
 
-/// The prompt of one finding. Every field is bounded to [`MAX_PROMPT_TEXT`].
+/// What replaces the end of a part `text` cuts to fit [`MAX_PROMPT_TEXT`].
+pub const TRUNCATED: &str = " [… truncated to fit the prompt]";
+
+/// `text` in at most `budget` characters: as it is when it fits, else its start and
+/// [`TRUNCATED`].
+fn fit(text: &str, budget: usize) -> String {
+    if text.chars().count() <= budget {
+        return text.to_owned();
+    }
+    let keep = budget.saturating_sub(TRUNCATED.chars().count());
+    if keep == 0 {
+        return TRUNCATED.trim_start().to_owned();
+    }
+    let mut fitted: String = text.chars().take(keep).collect();
+    fitted.push_str(TRUNCATED);
+    fitted
+}
+
+/// The rendering of `parts` within [`MAX_PROMPT_TEXT`]: when the whole does not fit, each part in
+/// turn, first to last, is cut to what the others leave it, down to the marker alone, until the
+/// whole fits; [`cut`] bounds whatever the parts cannot.
+fn budgeted<const N: usize>(
+    mut parts: [String; N],
+    render: impl Fn(&[String; N]) -> String,
+) -> String {
+    let mut text = render(&parts);
+    for part in 0..N {
+        let length = text.chars().count();
+        if length <= MAX_PROMPT_TEXT {
+            break;
+        }
+        let others = length - parts[part].chars().count();
+        let budget = MAX_PROMPT_TEXT
+            .saturating_sub(others)
+            .max(TRUNCATED.chars().count());
+        parts[part] = fit(&parts[part], budget);
+        text = render(&parts);
+    }
+    cut(&text)
+}
+
+/// The prompt of one finding. Every field is bounded to [`MAX_PROMPT_TEXT`], and the structured
+/// fields hold their complete bounded values. `text` keeps its header, location, requested
+/// change and verification whole whenever they fit together: a long evidence is cut first, then
+/// a long title, each marked with [`TRUNCATED`]; only when the requested change alone cannot
+/// fit in what is left is it cut, marked the same way, and the location and verification stay
+/// whole. The location is cut last, and only when it alone cannot fit beside the header and the
+/// verification.
 pub fn prompt(source: &PromptSource<'_>, by: VerifiedBy) -> FindingPromptV1 {
     let file = source
         .file
@@ -140,15 +187,25 @@ pub fn prompt(source: &PromptSource<'_>, by: VerifiedBy) -> FindingPromptV1 {
         VerifiedBy::Campaign => CAMPAIGN_VERIFICATION,
     }
     .to_owned();
-    let text = cut(&format!(
-        "Fix this {} review finding from the reviewer {}.\nTitle: {}\nLocation: {place} on \
-         Snapshot {}\nEvidence: {evidence}\nRequested change: {requested_change}\nVerification: \
-         {verification}",
-        severity_word(source.severity),
-        source.reviewer,
-        source.title.trim(),
-        source.snapshot_id,
-    ));
+    let render = |[evidence, title, requested_change, place]: &[String; 4]| {
+        format!(
+            "Fix this {} review finding from the reviewer {}.\nTitle: {title}\nLocation: {place} \
+             on Snapshot {}\nEvidence: {evidence}\nRequested change: {requested_change}\n\
+             Verification: {verification}",
+            severity_word(source.severity),
+            source.reviewer,
+            source.snapshot_id,
+        )
+    };
+    let text = budgeted(
+        [
+            evidence.clone(),
+            source.title.trim().to_owned(),
+            requested_change.clone(),
+            place,
+        ],
+        render,
+    );
     FindingPromptV1 {
         location: FindingLocationV1 {
             file,
@@ -438,6 +495,99 @@ mod tests {
         assert_eq!(wide.evidence, "(no evidence recorded)");
         assert!(wide.text.contains("the change as a whole"), "{}", wide.text);
         assert!(wide.verification.contains("FixVerification@1"));
+    }
+
+    /// Maximum-length evidence and a long title still leave the requested change, the
+    /// verification and the location whole in `text`, within [`MAX_PROMPT_TEXT`], with each cut
+    /// marked. Catches the base tree, which cut the whole rendering at the bound and so ended
+    /// `text` inside the evidence, without `Requested change:` or `Verification:`.
+    #[test]
+    fn long_evidence_and_title_are_cut_before_the_requested_change_and_verification() {
+        let snapshot = id('a');
+        let evidence = "e".repeat(MAX_PROMPT_TEXT);
+        let title = "t".repeat(MAX_PROMPT_TEXT);
+        let source = PromptSource {
+            reviewer: "bugs",
+            severity: crate::Severity::Major,
+            title: &title,
+            file: Some("src/pagination.py"),
+            line: Some(3),
+            snapshot_id: &snapshot,
+            evidence: &evidence,
+            fix: Some("Raise ValueError."),
+        };
+        let long = prompt(&source, VerifiedBy::Task);
+        long.validate().unwrap();
+        assert!(long.text.chars().count() <= MAX_PROMPT_TEXT);
+        for needle in [
+            "Location: src/pagination.py:3 on Snapshot sha256:aaaa",
+            "\nRequested change: Raise ValueError.\n",
+            &format!("\nVerification: {TASK_VERIFICATION}"),
+        ] {
+            assert!(long.text.contains(needle), "{needle}");
+        }
+        assert!(long.text.ends_with(TASK_VERIFICATION));
+        // The evidence is cut first, here to its marker alone, then the title, each marked.
+        assert_eq!(long.text.chars().count(), MAX_PROMPT_TEXT);
+        let marker = TRUNCATED.trim_start();
+        assert!(
+            long.text
+                .contains(&format!("\nEvidence: {marker}\nRequested change:"))
+        );
+        assert!(long.text.contains(&format!("ttt{TRUNCATED}\nLocation:")));
+        // The structured fields stay complete.
+        assert_eq!(long.evidence, evidence);
+        assert_eq!(long.requested_change, "Raise ValueError.");
+
+        // Evidence that fits beside a long title is cut alone; the title stays whole.
+        let half = "e".repeat(MAX_PROMPT_TEXT / 2);
+        let title = "t".repeat(MAX_PROMPT_TEXT / 4);
+        let fitting = prompt(
+            &PromptSource {
+                evidence: &half,
+                title: &title,
+                ..source
+            },
+            VerifiedBy::Task,
+        );
+        fitting.validate().unwrap();
+        assert!(
+            !fitting.text.contains(TRUNCATED),
+            "nothing cut when it all fits"
+        );
+        let tight = "e".repeat(MAX_PROMPT_TEXT - MAX_PROMPT_TEXT / 8);
+        let cut_evidence = prompt(
+            &PromptSource {
+                evidence: &tight,
+                title: &title,
+                ..source
+            },
+            VerifiedBy::Campaign,
+        );
+        cut_evidence.validate().unwrap();
+        assert_eq!(cut_evidence.text.chars().count(), MAX_PROMPT_TEXT);
+        assert!(cut_evidence.text.contains(&format!("\nTitle: {title}\n")));
+        assert!(
+            cut_evidence
+                .text
+                .contains(&format!("e{TRUNCATED}\nRequested change:"))
+        );
+        assert!(cut_evidence.text.ends_with(CAMPAIGN_VERIFICATION));
+
+        // A requested change too long to fit beside the rest is cut last, still bounded.
+        let fix = "f".repeat(MAX_PROMPT_TEXT);
+        let huge = prompt(
+            &PromptSource {
+                fix: Some(&fix),
+                ..source
+            },
+            VerifiedBy::Task,
+        );
+        huge.validate().unwrap();
+        assert_eq!(huge.text.chars().count(), MAX_PROMPT_TEXT);
+        assert!(huge.text.contains(&format!("f{TRUNCATED}\nVerification: ")));
+        assert!(huge.text.contains("Location: src/pagination.py:3"));
+        assert_eq!(huge.requested_change, fix);
     }
 
     /// A reviewer that never ran is `not_run` with its reason, and the paths it should have
