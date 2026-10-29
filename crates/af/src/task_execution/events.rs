@@ -43,14 +43,15 @@ pub(crate) fn events(
     let started = std::time::Instant::now();
     let limit = timeout.map(Duration::from_secs);
     let mut next = after.map_or(0, |after| after.saturating_add(1));
-    let mut first = true;
     loop {
         // The state and the events come from one projection: the terminal record never claims
         // a state whose events it has not printed.
         let (_, view) = opened.view()?;
         let running = view.state.phase == TaskStatePhaseV1::Running;
         let starting = !running && runs::starting_run(&opened.state, &opened.task).is_some();
-        if first && !running && !starting && view.state.phase == TaskStatePhaseV1::Planned {
+        // On every poll, not only the first: a run that was starting at an earlier poll and
+        // ended before it took the Task leaves it planned, which no terminal record settles.
+        if !running && !starting && view.state.phase == TaskStatePhaseV1::Planned {
             let next = view
                 .state
                 .next_action
@@ -63,7 +64,6 @@ pub(crate) fn events(
                 preview::text(next)
             ));
         }
-        first = false;
         let through = opened.task.next_sequence;
         if next < through {
             let attempts = attempt_nodes(&opened.task);
