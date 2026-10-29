@@ -240,8 +240,8 @@ path = ".af/task-packages/default/verification"
 # The correctness prompt also owns the concrete functional defects no bugs reviewer looks for.
 
 [packages."default-light/implementer"]
-version = "1.0.1"
-digest = "sha256:50e1f32e3c3182579e591bf753c17cfc1186c07ba1a0d0d0134077e09f5cffd4"
+version = "1.0.2"
+digest = "sha256:c5750c42151cfe5d1f832a6ba2c8aa3e53d9ca752fe6e40a352026f7d904980c"
 path = ".af/task-packages/default-light/implementer"
 
 [packages."default-light/correctness"]

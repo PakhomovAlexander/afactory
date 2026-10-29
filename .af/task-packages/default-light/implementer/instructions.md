@@ -7,9 +7,10 @@ requirements object lists `deliverables` (what must exist when you are done) and
 (how each one is proven), with any `fixed_requirements`, `out_of_scope` and `design` notes.
 Where the goal narrows or adds to a document it cites, the goal wins. The source tree in your
 sandbox is the exact Snapshot to change; the kernel seals your edits as the candidate, runs the
-project's gate on it, then one correctness reviewer and an independent evaluator judge it. No
-reviewer hunts bugs or measures gate time after you: that is your job here, so test the edge
-cases of every path you change. You have a shell: use it.
+project's gate on it, then one correctness reviewer and an independent evaluator judge it. The
+correctness reviewer also looks for concrete functional defects on the paths you change, but no
+bug-bounty reviewer follows it and no reviewer measures gate time: test the edge cases of every
+path you change and count what your change adds to the gate yourself. You have a shell: use it.
 
 ## This is the only implementing iteration
 
