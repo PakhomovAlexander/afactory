@@ -90,6 +90,17 @@ class Fragments(unittest.TestCase):
         self.assertEqual((self.repo / 'CHANGELOG.md').read_bytes(), changelog)
         self.assertEqual((self.repo / 'changelog.d/indented.md').read_bytes(), fragment)
 
+    def test_a_backtick_in_the_info_string_opens_no_fence(self):
+        # "```lang`" is inline code, not a fence: the heading after it is outside any fence.
+        self.note('info.md', BULLETS + '\n```lang`\n# Title\n')
+        self.assertRefused(self.notes('--check'), 'info.md:5', '# Title')
+        changelog = (self.repo / 'CHANGELOG.md').read_bytes()
+        fragment = (self.repo / 'changelog.d/info.md').read_bytes()
+        self.assertRefused(self.notes('--write', '## [9.9.9] - 2026-10-29'), 'info.md:5',
+                           '# Title')
+        self.assertEqual((self.repo / 'CHANGELOG.md').read_bytes(), changelog)
+        self.assertEqual((self.repo / 'changelog.d/info.md').read_bytes(), fragment)
+
     def test_check_still_refuses_an_entry_under_unreleased(self):
         (self.repo / 'CHANGELOG.md').write_text(CHANGELOG.replace(POINTER, POINTER + '\n\n- entry'))
         result = self.notes('--check')

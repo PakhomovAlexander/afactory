@@ -63,6 +63,10 @@ def headings():
         fence = None
         for number, line in enumerate(path.read_text().splitlines(), 1):
             opened = FENCE.match(line)
+            # A backtick fence's info string holds no backtick (CommonMark): such a line is
+            # inline code, not a fence.
+            if opened and opened.group(1)[0] == "`" and "`" in line[opened.end() :]:
+                opened = None
             if fence is None:
                 if opened:
                     fence = opened.group(1)
