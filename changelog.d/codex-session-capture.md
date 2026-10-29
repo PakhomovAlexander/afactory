@@ -14,3 +14,7 @@
   and a quarantine carry over the capture cursor.
   `docs/task-execution/self-optimizer.md` ("Native Codex sessions") lists the records
   ([ADR-0264](docs/adr/0264-own-codex-session-records-and-quarantine-after-a-foreign-one.md)).
+  The malformed-project-evidence regressions are classified `functional` and run in the fast
+  gate. Their matrix does not yet prove declared identity, membership and spans through a
+  cursor-continued capture; that coverage is tracked in
+  [issue #465](https://github.com/PakhomovAlexander/afactory/issues/465).
