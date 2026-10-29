@@ -1,13 +1,13 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "$id": "urn:af:schema:performance-executor-request:1",
-  "title": "af.perf-executor-request/1",
+  "$id": "urn:af:schema:performance-executor-request:2",
+  "title": "af.perf-executor-request/2",
   "description": "Independent performance executor: executor-request (ADR-0240).",
   "type": "object",
   "additionalProperties": false,
   "properties": {
     "schema": {
-      "const": "af.perf-executor-request/1"
+      "const": "af.perf-executor-request/2"
     },
     "request_id": {
       "$ref": "#/$defs/id"
@@ -135,6 +135,41 @@
           "$ref": "#/$defs/digest"
         }
       ]
+    },
+    "parent": {
+      "anyOf": [
+        {
+          "type": "null"
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "request_id": {
+              "$ref": "#/$defs/id"
+            },
+            "request_digest": {
+              "$ref": "#/$defs/digest"
+            },
+            "result_sha256": {
+              "$ref": "#/$defs/digest"
+            },
+            "plan_sha256": {
+              "$ref": "#/$defs/digest"
+            },
+            "verdict_sha256": {
+              "$ref": "#/$defs/digest"
+            }
+          },
+          "required": [
+            "request_id",
+            "request_digest",
+            "result_sha256",
+            "plan_sha256",
+            "verdict_sha256"
+          ]
+        }
+      ]
     }
   },
   "required": [
@@ -153,7 +188,8 @@
     "plan_sha256",
     "cohort_digest",
     "member_id",
-    "parameters_sha256"
+    "parameters_sha256",
+    "parent"
   ],
   "$defs": {
     "digest": {

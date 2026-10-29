@@ -18,10 +18,12 @@ stops the measurement.
 Per fixture the report gives the paired differences, `(spans - off) / off` in percent, their
 median and a 95% percentile-bootstrap interval of the median (10,000 resamples, seeded). Drain
 latency is the second figure of `telemetry-bench-dense`: from the scripted harness's last write
-(the unix nanosecond its final stderr line names) to the supervisor's drain completion (the
-modification time of the Worker's drained stdout in the Store, which `ModelRunner` writes first
-thing after the supervisor returns), `spans` minus `off` per pair in milliseconds, reported the
-same way.
+(the filesystem clock reading its final stderr line names, `last_write_fs_ns`) to the
+supervisor's drain completion (the modification time of the Worker's drained stdout in the Store,
+which `ModelRunner` writes first thing after the supervisor returns), both on the one filesystem
+clock so they are ordered, `spans` minus `off` per pair in milliseconds, reported the same way.
+Each run's drain is a physical duration and the pair's difference a signed one: a negative
+duration is kept as measured and leaves the gate `not_judged`, never clamped or dropped.
 
 The gate passes when every fixture's median is at most 2% and its interval's upper bound at
 most 3%, and the drain latency's median difference is at most 10 ms. It is judged only over all
@@ -133,6 +135,12 @@ def bootstrap_interval(values, seed, label):
             round(medians[int(RESAMPLES * 0.975) - 1], 3)]
 
 
+def negative_drains(records, keys):
+    """How many of the records' physical drain durations under `keys` are below zero."""
+    return sum(1 for record in records for key in keys
+               if record.get(key) is not None and record[key] < 0)
+
+
 def summarize(document):
     """Recompute every difference, median, interval and the verdict from the recorded pairs."""
     protocol = document['protocol']
@@ -143,7 +151,7 @@ def summarize(document):
             != (MEDIAN_BOUND_PCT, UPPER_BOUND_PCT, RESAMPLES)
             or (drain is not None and drain['bound_ms'] != DRAIN_BOUND_MS)):
         raise BenchError('the document names other bounds or resamples than the protocol')
-    reasons = []
+    reasons, invalid_drains = [], []
     for fixture in document['fixtures']:
         differences = []
         for pair in fixture['pairs']:
@@ -170,14 +178,20 @@ def summarize(document):
             differences.append(pair['difference_ms'])
         if not differences:
             raise BenchError('drain: no pairs')
+        # A drain is a physical duration: a negative one is an ordering failure of the
+        # measurement, kept in the pairs as measured and never clamped, filtered or judged.
+        negative = negative_drains(drain['pairs'], ('off_ms', 'spans_ms'))
         drain['median_ms'] = round(statistics.median(differences), 3)
         drain['interval_ms'] = bootstrap_interval(differences, seed, 'drain')
         drain['passed'] = drain['median_ms'] <= drain['bound_ms']
-        if not drain['passed']:
+        if negative:
+            invalid_drains = [f'drain latency: {negative} negative physical duration'
+                              f"{'s' if negative != 1 else ''}, kept as measured and not judged"]
+        elif not drain['passed']:
             reasons.append(f"drain latency: median difference {drain['median_ms']:+.3f} ms "
                            f"(bound {drain['bound_ms']} ms)")
     names = sorted(fixture['name'] for fixture in document['fixtures'])
-    unjudged = []
+    unjudged = list(invalid_drains)
     if names != sorted(FIXTURES):
         unjudged.append(f'{len(names)} of the {len(FIXTURES)} fixtures measured')
     if drain is None:
@@ -309,7 +323,14 @@ def store_events(state):
 
 
 def drain_latency(state):
-    """Milliseconds from the dense harness's last write to the drained stdout's store time."""
+    """Milliseconds from the dense harness's last write to the drained stdout's store time.
+
+    Both ends are readings of the one filesystem clock: the drained answer's modification time
+    and the harness's `last_write_fs_ns`, the modification time of a file it wrote after every
+    earlier write. Its `last_write_unix_ns` reads a finer clock that the file timestamp can trail
+    by up to a tick, so it is never subtracted from a modification time. A negative duration is
+    kept as measured: `summarize` leaves the drain unjudged rather than clamp it.
+    """
     objects = state / 'cas' / 'objects'
     drained, last_write = None, None
     for path in sorted(objects.glob('*/*')):
@@ -323,10 +344,11 @@ def drain_latency(state):
                 file.seek(max(0, size - 4096))
                 tail = file.read().rstrip(b'\n').rsplit(b'\n', 1)[-1]
             if LAST_WRITE in tail:
-                last_write = int(json.loads(tail)['last_write_unix_ns'])
+                last_write = json.loads(tail).get('last_write_fs_ns')
     if drained is None or last_write is None:
-        raise BenchError(f'{state}: the dense harness left no drained answer and last write')
-    return round((drained - last_write) / 1e6, 3)
+        raise BenchError(f'{state}: the dense harness left no drained answer and last write '
+                         'on the filesystem clock')
+    return round((drained - int(last_write)) / 1e6, 3)
 
 
 def segments(run):

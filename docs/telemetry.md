@@ -1166,9 +1166,14 @@ the pristine repository's own config that every copy inherits holds, `gc.auto=0`
 fixture the script reports the paired differences `(spans - off) / off`, their median and a 95%
 percentile-bootstrap interval of the median (10,000 resamples, seeded). **Drain latency** is
 measured on the dense fixture's runs: from the harness's last write (its final stderr line names
-the unix nanosecond) to the supervisor's drain completion (the modification time of the Worker's
-drained stdout in the Store, which `ModelRunner` writes first thing after the supervisor
-returns, at the file system's timestamp resolution), `spans` minus `off` per pair. The gate
+the moment on the filesystem clock, `last_write_fs_ns`, the modification time of a file it wrote
+after every earlier write) to the supervisor's drain completion (the modification time of the
+Worker's drained stdout in the Store, which `ModelRunner` writes first thing after the supervisor
+returns, at the file system's timestamp resolution), `spans` minus `off` per pair. Both ends are
+readings of the one filesystem clock, so they are ordered; the harness's `last_write_unix_ns`
+reads a finer clock the file timestamp can trail by up to a tick and is never subtracted from it.
+A run's drain is a physical duration and the pair's difference a signed one: a negative drain is
+kept as measured and leaves the gate `not_judged`, never clamped or dropped. The gate
 passes when every fixture's median is at most 2% and its interval's upper bound at most 3%, and
 the drain latency's median difference is at most 10 ms; it is judged only over all three
 fixtures at full scale with 20 pairs, and anything less is `not_judged`.

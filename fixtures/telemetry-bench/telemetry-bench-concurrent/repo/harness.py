@@ -5,13 +5,14 @@ process (`ModelRunner::capture_filtered`). It reads its request, writes stream-j
 `assistant` lines to stderr, and answers a clean reviewer result on stdout. `bench.json` beside
 it says how: `paced` writes `lines` lines of `line_bytes` bytes, one every `interval_ms`, then
 answers; `dense` answers first, then writes `bytes` bytes of lines at pipe speed, and its last
-write is one line naming the unix nanosecond it was made at, after which it closes both streams
-and exits at once. Credential-free; never touches the network.
+write is one line naming the unix nanosecond it was made at and the same moment on the
+filesystem clock (`last_write_fs_ns`), after which it closes both streams and exits at once. Credential-free; never touches the network.
 """
 
 import json
 import os
 import sys
+import tempfile
 import time
 
 REPLY = (
@@ -30,6 +31,19 @@ def line(name, index, width):
     tail = b'"}]}}\n'
     filler = max(0, width - len(head) - len(tail))
     return head + (WORDS * (filler // len(WORDS) + 1))[:filler] + tail
+
+
+def file_clock_ns():
+    """The filesystem clock now: the modification time a file written at this moment gets.
+
+    The drain's end is the drained answer's modification time in the Store, a reading of
+    the kernel's file timestamp clock, which can trail `time.time_ns()` by up to a tick. A
+    start taken from that same clock, after every earlier write, orders the two readings.
+    """
+    with tempfile.TemporaryFile() as marker:
+        marker.write(b".")
+        marker.flush()
+        return os.fstat(marker.fileno()).st_mtime_ns
 
 
 def write_all(fd, data):
@@ -65,11 +79,11 @@ def main():
             batch = bytearray()
     if batch:
         write_all(2, batch)
-    last = time.time_ns()
+    last, last_fs = time.time_ns(), file_clock_ns()
     write_all(
         2,
-        b'{"type":"result","subtype":"af_bench_last_write","last_write_unix_ns":"%d"}\n'
-        % last,
+        b'{"type":"result","subtype":"af_bench_last_write","last_write_unix_ns":"%d",'
+        b'"last_write_fs_ns":"%d"}\n' % (last, last_fs),
     )
     os.close(1)
     os.close(2)

@@ -1423,8 +1423,9 @@ def cmd_executor(args):
             _emit(contracts.write_bytes(doc, "local-cohort-declaration"), args.output)
             return 0
         with executor.cancellation(), executor.Journal(config) as journal:
-            if args.operation == "submit":
-                require(args.base and args.head and args.key, "submit needs exact --base, --head and --key")
+            if args.operation in ("submit", "preflight"):
+                require(args.base and args.head and args.key,
+                        args.operation + " needs exact --base, --head and --key")
                 git = executor.source_repository(config)
                 base, head = args.base, args.head
                 # PR/release metadata is an explicit trusted operator submission. Never read
@@ -1439,7 +1440,15 @@ def cmd_executor(args):
                     tagged, _, _, predecessor = gitrefs.release_baseline(git, args.tag)
                     require(git.resolve(head, "release") == tagged and git.resolve(base, "predecessor") == predecessor,
                             "release submission disagrees with the tag/predecessor rule")
-                doc = journal.submit(args.work, base, head, args.key, args.kind)
+                if args.operation == "preflight":
+                    # Every submission check as this account, nothing reserved: a refusal
+                    # prints its exact reason and exits 4 before any claim or build.
+                    doc = journal.preflight(args.work, base, head, args.key, args.kind,
+                                            parent=args.parent)
+                    _emit(contracts.write_bytes(doc, "executor-preflight"), None)
+                    return 0 if doc["status"] == "ready" else 4
+                doc = journal.submit(args.work, base, head, args.key, args.kind,
+                                     parent=args.parent)
                 print(json.dumps(doc, sort_keys=True))
             elif args.operation in ("cycle", "service"):
                 outcome = journal.cycle()
@@ -1451,6 +1460,15 @@ def cmd_executor(args):
                         if outcome == "idle":
                             outcome = journal.cycle()
                 print(outcome)
+            elif args.operation == "overview":
+                # One combined report of retained native originals: never inferred from a
+                # process exit or a file's existence; incomplete exits 4.
+                from perflab import overview
+                require(args.member and args.output, "overview needs --member REQUEST_ID... and --output")
+                doc = overview.overview(journal, args.member, executor.verify_original)
+                overview.write(doc, args.output, config["root"])
+                _emit(contracts.write_bytes(doc, "comparison-overview"), None)
+                return 0 if doc["status"] == "complete" else 4
             elif args.operation == "status":
                 print(json.dumps([journal.state(i) for i in journal.names()], sort_keys=True))
             elif args.operation == "verify":
@@ -1488,14 +1506,16 @@ def parser():
 
     execution = commands.add_parser("executor", help="independent local or GitHub performance backend")
     execution.add_argument("--config", required=True)
-    execution.add_argument("operation", choices=("submit", "cycle", "service", "status", "verify",
+    execution.add_argument("operation", choices=("submit", "preflight", "cycle", "service",
+        "status", "verify", "overview",
         "cohort-declare", "calibration-dispatch", "calibration-prepare", "readiness"))
     execution.add_argument("--work", choices=("core", "telemetry", "profile"), default="core")
     execution.add_argument("--kind", choices=("manual", "pr", "release"), default="manual")
     for option in ("base", "head", "key", "pr-head", "tag", "request-id", "cohort", "parameters",
-                   "cohort-id", "start-date", "output"):
+                   "cohort-id", "start-date", "output", "parent"):
         execution.add_argument("--" + option)
     execution.add_argument("--group", nargs=3, action="append")
+    execution.add_argument("--member", action="append", help="an original of the overview")
     execution.add_argument("--days", type=int, default=7)
     execution.add_argument("--preparation-members", type=int, default=2)
     execution.set_defaults(handler=cmd_executor)

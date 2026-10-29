@@ -17,7 +17,8 @@ intermediate tool output per Attempt (`--scale smoke`: 64 KiB); the harness
 same final result under both shapes and prints only the result under `json`. Per run it records
 the command's wall time, its peak RSS (`wait4`, the command with its reaped children), the drain
 latency of the one-Attempt fixture (from the harness's last write to the drained result's store
-time, as the overhead gate takes it) and the bytes the harness wrote to stdout; and it requires
+time, both on the filesystem clock, as the overhead gate takes it; a negative one is kept as
+measured and leaves the gate `not_judged`) and the bytes the harness wrote to stdout; and it requires
 the run to finish with the same accounting under both shapes and at both levels (the Task's
 charge, its Attempts and every Attempt's usage records), stopping the measurement otherwise.
 
@@ -127,7 +128,15 @@ def summarize(document):
                                    f"stream's {entry['stream_bytes'] / 2**20:.1f} MiB plus 16 MiB)")
             else:
                 entry['passed'] = None
+    # A run's drain is a physical duration: a negative one is an ordering failure of the
+    # measurement, kept as measured and never clamped or filtered, and leaves the gate unjudged.
+    negative = sum(overhead.negative_drains([pair['json'], pair['stream-json']], ('drain_ms',))
+                   for case in document['cases'] for level in LEVELS
+                   for pair in case['levels'][level]['pairs'])
     unjudged = []
+    if negative:
+        unjudged.append(f"drain latency: {negative} negative physical duration"
+                        f"{'s' if negative != 1 else ''}, kept as measured and not judged")
     expected = len(FIXTURES) * len(SIZES['full'])
     if protocol['scale'] != 'full':
         unjudged.append(f"scale `{protocol['scale']}`, not `full`")
@@ -189,13 +198,21 @@ def objects(state):
 
 
 def harness_report(state):
-    """The harness's last writes (unix ns, stdout bytes) and the drained result's store time."""
+    """The harness's last writes and the drained result's store time.
+
+    Each last write is the filesystem clock reading the harness took after every earlier write
+    (`last_write_fs_ns`) and its stdout bytes; the store time is the drained result's
+    modification time on that same clock, so the two are ordered (`overhead.drain_latency`).
+    """
     lasts, drained = [], None
     for path in objects(state):
         data = path.read_bytes() if path.stat().st_size < 1 << 16 else b''
         if LAST_WRITE in data:
             line = json.loads(data.strip().rsplit(b'\n', 1)[-1])
-            lasts.append((int(line['last_write_unix_ns']), int(line['stdout_bytes'])))
+            if 'last_write_fs_ns' not in line:
+                raise BenchError(f'{path}: the harness named no last write on the filesystem '
+                                 'clock')
+            lasts.append((int(line['last_write_fs_ns']), int(line['stdout_bytes'])))
         elif data.startswith(b'{"type":"result","subtype":"success"') and b'af.worker-reply' in data:
             drained = path.stat().st_mtime_ns
     return lasts, drained

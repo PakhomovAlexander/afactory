@@ -3,6 +3,7 @@
 Synthetic samples and tool stand-ins exercise orchestration only, never Docker or speed.
 """
 import copy
+import io
 import json
 import os
 import shutil
@@ -52,8 +53,8 @@ class ExecutorFixture(TempDir):
         self.producer.start()
         self.addCleanup(self.producer.stop)
 
-    def submit(self, journal, work="core", key="manual_1"):
-        return journal.submit(work, self.base, self.head, key)
+    def submit(self, journal, work="core", key="manual_1", **kwargs):
+        return journal.submit(work, self.base, self.head, key, **kwargs)
 
 
 class Journal(ExecutorFixture):
@@ -300,46 +301,54 @@ class Journal(ExecutorFixture):
             with self.assertRaisesRegex(ContractError, "membership changed"):
                 j.cycle(execute=lambda *a: self.fail("replacement original"), lock_directory=self.locks)
 
+    def run_synthetic_core(self, j, request):
+        """Execute a submitted local core original with synthetic builds and shards whose
+        candidate is twice as slow; returns the orchestration calls."""
+        path = j.path(request["request_id"])
+        plan = contracts.read_json(read(os.path.join(path, "plan.json")), "run")
+        staged = synthetic.write_run(plan, self.path("synthetic-" + request["request_id"]),
+            lambda slot, case: 200 if slot["side"] == "candidate" else 100)
+        calls = []
+        class Builder:
+            def __init__(self, owner, plan, toolchain, **kw):
+                self.layout = SimpleNamespace(build=os.path.join(owner, "target/performance/test/build"))
+                self.plan = plan
+            def build(self):
+                calls.append("build")
+                os.makedirs(self.layout.build)
+                return synthetic.builds(self.plan)
+        def prepare(image, mount, size_bytes, **kwargs):
+            calls.append("prepare")
+            with open(image, "xb") as f:
+                f.write(b"x")
+            os.mkdir(mount)
+        def shard(options, machine_lease=None):
+            machine_lease.check()
+            calls.append("shard_%d" % options.shard)
+            shutil.copytree(os.path.join(staged, "shards", str(options.shard)),
+                            os.path.join(options.run_dir, "shards", str(options.shard)))
+            return contracts.read_file(os.path.join(options.run_dir, "shards", str(options.shard), "shard.json"), "shard")
+        def cleanup(image, mount, **kwargs):
+            calls.append("cleanup")
+            os.rmdir(mount)
+            os.unlink(image)
+            return []
+        with mock.patch.object(executor.builds, "Builder", Builder), \
+                mock.patch.object(executor.hostprep, "prepare", prepare), \
+                mock.patch.object(executor.hostprep, "cleanup", cleanup), \
+                mock.patch.object(executor.runner, "run_shard", shard), \
+                mock.patch.object(executor, "dispatch_actions", side_effect=AssertionError("network transport")), \
+                mock.patch.dict(os.environ, {"HOME": self.path("private-home"), "TMPDIR": self.tmp}, clear=True):
+            self.assertEqual(j.cycle(lock_directory=self.locks), "complete")
+        return calls
+
     def test_core_path_uses_retained_git_native_archive_and_reports_failed_verdict(self):
         """Real local orchestration; synthetic builder/shards and filesystem stand-ins."""
         with executor.Journal(self.c) as j:
             request = self.submit(j)
             path = j.path(request["request_id"])
             plan = contracts.read_json(read(os.path.join(path, "plan.json")), "run")
-            staged = synthetic.write_run(plan, self.path("synthetic"),
-                lambda slot, case: 200 if slot["side"] == "candidate" else 100)
-            calls = []
-            class Builder:
-                def __init__(self, owner, plan, toolchain, **kw):
-                    self.layout = SimpleNamespace(build=os.path.join(owner, "target/performance/test/build"))
-                    self.plan = plan
-                def build(self):
-                    calls.append("build")
-                    os.makedirs(self.layout.build)
-                    return synthetic.builds(self.plan)
-            def prepare(image, mount, size_bytes, **kwargs):
-                calls.append("prepare")
-                with open(image, "xb") as f:
-                    f.write(b"x")
-                os.mkdir(mount)
-            def shard(options, machine_lease=None):
-                machine_lease.check()
-                calls.append("shard_%d" % options.shard)
-                shutil.copytree(os.path.join(staged, "shards", str(options.shard)),
-                                os.path.join(options.run_dir, "shards", str(options.shard)))
-                return contracts.read_file(os.path.join(options.run_dir, "shards", str(options.shard), "shard.json"), "shard")
-            def cleanup(image, mount, **kwargs):
-                calls.append("cleanup")
-                os.rmdir(mount)
-                os.unlink(image)
-                return []
-            with mock.patch.object(executor.builds, "Builder", Builder), \
-                    mock.patch.object(executor.hostprep, "prepare", prepare), \
-                    mock.patch.object(executor.hostprep, "cleanup", cleanup), \
-                    mock.patch.object(executor.runner, "run_shard", shard), \
-                    mock.patch.object(executor, "dispatch_actions", side_effect=AssertionError("network transport")), \
-                    mock.patch.dict(os.environ, {"HOME": self.path("private-home"), "TMPDIR": self.tmp}, clear=True):
-                self.assertEqual(j.cycle(lock_directory=self.locks), "complete")
+            calls = self.run_synthetic_core(j, request)
             self.assertEqual(calls, ["build", "prepare", "shard_0", "cleanup"])
             original, state, result = executor.verify_original(j, request["request_id"])
             self.assertEqual(result["measurement_status"], "fail")
@@ -357,6 +366,211 @@ class Journal(ExecutorFixture):
             with self.assertRaisesRegex(ContractError, "changed"):
                 executor.verify_original(j, request["request_id"])
 
+    def test_overview_keeps_state_verification_coverage_and_verdict_apart(self):
+        """The combined overview reads retained native state: a verified core with a real
+        regression, a queued telemetry original and no profile is an incomplete comparison
+        whose verdict still shows; tampered evidence is refused, never reported as measured."""
+        import cli
+        from perflab import overview
+        with executor.Journal(self.c) as j:
+            core = self.submit(j)
+            self.run_synthetic_core(j, core)
+            telemetry = self.submit(j, "telemetry", "telemetry_1")
+            doc = overview.overview(j, [core["request_id"], telemetry["request_id"]],
+                                    executor.verify_original)
+        self.assertEqual(doc["status"], "incomplete")
+        measured, queued = doc["members"]
+        self.assertEqual(measured["verification"]["status"], "verified")
+        self.assertEqual(measured["performance"]["verdict"], "fail")
+        self.assertTrue(measured["performance"]["regressions"])
+        coverage = measured["coverage"]
+        self.assertEqual(coverage["observed"] + coverage["missing"], coverage["required"])
+        self.assertIn("report/report.html", " ".join(measured["links"]))
+        self.assertEqual((queued["state"], queued["verification"]["status"], queued["coverage"]),
+                         ("queued", "not_terminal", None))
+        self.assertIn("telemetry original is queued: no terminal result", doc["reasons"])
+        self.assertIn("no profile original: its coverage is missing, not passed", doc["reasons"])
+        # Claiming completeness for this evidence is refused by the contract itself.
+        with self.assertRaisesRegex(ContractError, "complete only when"):
+            contracts.write_bytes(dict(doc, status="complete"), "comparison-overview")
+        # Through the operator CLI: three renderings, exit 4 for an incomplete comparison.
+        output = self.path("overview")
+        with mock.patch.object(executor, "load_config", return_value=self.c), \
+                mock.patch("sys.stdout", new=SimpleNamespace(buffer=io.BytesIO(), flush=lambda: None)):
+            code = cli.main(["executor", "--config", "operator.toml", "overview", "--member",
+                             core["request_id"], "--member", telemetry["request_id"],
+                             "--output", output])
+        self.assertEqual(code, 4)
+        self.assertEqual(sorted(os.listdir(output)), sorted(overview.FILES))
+        written = contracts.read_json(read(os.path.join(output, "overview.json")), "comparison-overview")
+        self.assertEqual(written, doc)
+        self.assertIn(b"Performance comparison: incomplete", read(os.path.join(output, "overview.html")))
+        self.assertIn(b"| fail |", read(os.path.join(output, "overview.md")))
+        with self.assertRaises(FileExistsError):
+            overview.write(doc, output, self.c["root"])
+        # Changed raw evidence: the member is refused and carries no coverage or verdict.
+        with executor.Journal(self.c) as j:
+            with open(os.path.join(j.path(core["request_id"]), "run/shards/0/samples.jsonl"), "ab") as f:
+                f.write(b"tampered")
+            refused = overview.overview(j, [core["request_id"]], executor.verify_original)
+        member = refused["members"][0]
+        self.assertEqual(member["verification"]["status"], "refused")
+        self.assertEqual((member["coverage"], member["performance"]["verdict"]), (None, None))
+        self.assertEqual(refused["status"], "incomplete")
+
+    def test_profile_selects_regressed_cases_of_its_verified_parent_with_configured_tools(self):
+        """A profile without named cases diagnoses the regressions of a verified parent core
+        original: its exact plan and verdict bytes, and the configured perf and Inferno."""
+        control = self.repo.commit("diagnostic authority", {diagnostics.REGISTRY_PATH:
+            read(os.path.join(ROOT, diagnostics.REGISTRY_PATH))})
+        self.base = self.head = control
+        self.c["control_sha"] = control
+        tools = self.path("tools")
+        os.mkdir(tools)
+        for name in ("perf", "inferno-collapse-perf", "inferno-diff-folded", "inferno-flamegraph"):
+            with open(os.path.join(tools, name), "w") as f:
+                f.write("#!/bin/sh\nexit 0\n")
+            os.chmod(os.path.join(tools, name), 0o755)
+        self.c["diagnostic"].update(cases=[], max_cases=2, recipe="linux_gnu_cpu_profile",
+                                    perf=os.path.join(tools, "perf"), inferno_bin=tools)
+        paranoid = self.path("paranoid")
+        with open(paranoid, "w") as f:
+            f.write("2\n")
+        with mock.patch.object(executor, "PERF_PARANOID", paranoid), executor.Journal(self.c) as j:
+            core = self.submit(j)
+            with self.assertRaisesRegex(ContractError, "not a completed local original"):
+                self.submit(j, "profile", "early_profile", parent=core["request_id"])
+            self.run_synthetic_core(j, core)
+            with self.assertRaisesRegex(ContractError, "selects from a verified parent"):
+                self.submit(j, "profile", "orphan_profile")
+            with self.assertRaisesRegex(ContractError, "only a profile names a parent"):
+                self.submit(j, "telemetry", "telemetry_parent", parent=core["request_id"])
+            profile = self.submit(j, "profile", "profile_of_parent", parent=core["request_id"])
+            parent_path = j.path(core["request_id"])
+            verdict_bytes = read(os.path.join(parent_path, "report/verdict.json"))
+            self.assertEqual(profile["parent"]["request_id"], core["request_id"])
+            self.assertEqual(profile["parent"]["verdict_sha256"], sha256_bytes(verdict_bytes))
+            self.assertEqual(profile["plan_sha256"], core["plan_sha256"])
+            path = j.path(profile["request_id"])
+            self.assertEqual(read(os.path.join(path, executor.PARENT_VERDICT)), verdict_bytes)
+            # Resubmitting the key for another parent (or none) is refused, never rebound.
+            with self.assertRaisesRegex(ContractError, "another parent"):
+                self.submit(j, "profile", "profile_of_parent")
+            seen = []
+            class Builder:
+                def __init__(self, owner, plan, toolchain, **kw):
+                    self.layout = SimpleNamespace(build=os.path.join(owner, "target/performance/p/build"))
+                def build(self):
+                    seen.append("build")
+                    os.makedirs(self.layout.build)
+                    return {"cleanup": {"status": "removed"}}
+            def profile_run(git, options, machine_lease=None):
+                seen.append("profile")
+                self.assertEqual((options.cases, options.max_cases), ([], 2))
+                self.assertEqual(options.perf, os.path.join(tools, "perf"))
+                self.assertEqual(options.inferno_bin, tools)
+                # The native selection reads the frozen parent verdict against the exact plan.
+                parent_plan = contracts.read_json(read(options.plan), "run")
+                verdict = contracts.read_json(read(options.verdict), "verdict")
+                selection, cases = diagnostics.select(parent_plan, verdict, options.cases,
+                    options.max_cases, sha256_bytes(read(options.verdict)))
+                self.assertEqual(selection["mode"], "automatic")
+                self.assertTrue(cases and all(case["reason"] == "regressed"
+                                              for case in selection["cases"]))
+                return 0, None, "selection checked; nothing launched"
+            def prepare(image, mount, size_bytes, **kwargs):
+                os.mkdir(mount)
+            def cleanup(image, mount, **kwargs):
+                os.rmdir(mount)
+                return []
+            with mock.patch.object(executor.builds, "Builder", Builder), \
+                    mock.patch.object(executor.hostprep, "prepare", prepare), \
+                    mock.patch.object(executor.hostprep, "cleanup", cleanup), \
+                    mock.patch.object(diagnostics, "run_profile", profile_run):
+                self.assertEqual(j.cycle(lock_directory=self.locks), "complete")
+            self.assertEqual(seen, ["build", "profile"])
+            # A changed frozen parent verdict is refused at admission.
+            with open(os.path.join(path, executor.PARENT_VERDICT), "ab") as f:
+                f.write(b" ")
+            with self.assertRaisesRegex(ContractError, "changed"):
+                executor.verify_original(j, profile["request_id"])
+
+    def test_profile_tools_are_refused_before_any_build(self):
+        """Missing configured tools or a kernel denying every unprivileged perf event end a
+        profile with its exact reason at submission and again before the first build."""
+        control = self.repo.commit("diagnostic authority", {diagnostics.REGISTRY_PATH:
+            read(os.path.join(ROOT, diagnostics.REGISTRY_PATH))})
+        self.base = self.head = control
+        self.c["control_sha"] = control
+        self.c["diagnostic"]["recipe"] = "linux_gnu_cpu_profile"
+        with executor.Journal(self.c) as j:
+            with self.assertRaisesRegex(ContractError, "perf: not configured on this executor"):
+                self.submit(j, "profile", "unconfigured")
+            refused = j.preflight("profile", self.base, self.head, "unconfigured")
+            self.assertEqual(refused["status"], "refused")
+            tools = dict((tool["name"], tool) for tool in refused["tools"])
+            self.assertEqual(sorted(tools), ["inferno_collapse_perf", "inferno_diff_folded",
+                                             "inferno_flamegraph", "perf"])
+            self.assertEqual((tools["perf"]["state"], tools["perf"]["detail"]),
+                             ("unavailable", "not configured on this executor"))
+            self.assertIn("perf: not configured on this executor", refused["detail"])
+            contracts.write_bytes(refused, "executor-preflight")
+            self.assertEqual(j.names(), [])
+        tools = self.path("tools")
+        os.mkdir(tools)
+        for name in ("perf", "inferno-collapse-perf", "inferno-diff-folded", "inferno-flamegraph"):
+            with open(os.path.join(tools, name), "w") as f:
+                f.write("#!/bin/sh\nexit 0\n")
+            os.chmod(os.path.join(tools, name), 0o755)
+        self.c["diagnostic"].update(perf=os.path.join(tools, "perf"), inferno_bin=tools)
+        paranoid = self.path("paranoid")
+        with open(paranoid, "w") as f:
+            f.write("4\n")
+        with mock.patch.object(executor, "PERF_PARANOID", paranoid), executor.Journal(self.c) as j:
+            with self.assertRaisesRegex(ContractError, "perf_event_paranoid=4 denies every perf"):
+                self.submit(j, "profile", "paranoid")
+            with open(paranoid, "w") as f:
+                f.write("2\n")
+            request = self.submit(j, "profile", "paranoid_later")
+            # The host tightened after submission: nothing is built, the reason is exact.
+            with open(paranoid, "w") as f:
+                f.write("4\n")
+            with mock.patch.object(executor.builds, "Builder",
+                                   side_effect=AssertionError("built before tool check")):
+                self.assertEqual(j.cycle(lock_directory=self.locks), "failed")
+            state = j.state(request["request_id"])
+            self.assertIn("refused before any build: kernel.perf_event_paranoid=4", state["detail"])
+
+    def test_serial_local_schedule_is_planned_and_infeasible_work_refused_before_reservation(self):
+        """The local backend runs shards one after another: a plan whose build and sampling
+        windows cannot fit the run deadline is refused before any original exists."""
+        self.c["core"].update(tier="nightly", environment="linux_x86_64_musl_claw", cases=[],
+                              shards=4)
+        self.c["zigbuild_bin"] = "/opt/pinned-tools/bin"
+        with executor.Journal(self.c) as j:
+            refused = j.preflight("core", self.base, self.head, "serial_4")
+            contracts.write_bytes(refused, "executor-preflight")
+            self.assertEqual(refused["status"], "refused")
+            serial = refused["serial"]
+            self.assertEqual((serial["shards"], serial["shard_sampling_seconds"],
+                              serial["build_seconds"], serial["available_seconds"]),
+                             (4, 45 * 60, 20 * 60, 120 * 60))
+            self.assertFalse(serial["feasible"])
+            self.assertEqual(serial["fitting_shards"], 2)
+            self.assertIn("at most 2 shards fit", refused["detail"])
+            with self.assertRaisesRegex(ContractError, "infeasible on the serial local backend"):
+                self.submit(j, key="serial_4")
+            self.assertEqual(j.names(), [])
+        self.c["core"]["shards"] = 2
+        with executor.Journal(self.c) as j:
+            ready = j.preflight("core", self.base, self.head, "serial_2")
+            contracts.write_bytes(ready, "executor-preflight")
+            self.assertEqual(ready["status"], "ready", ready["detail"])
+            self.assertEqual((ready["serial"]["shards"], ready["serial"]["needed_seconds"]),
+                             (2, 20 * 60 + 2 * 45 * 60 + executor.runner.FINISH_RESERVE_SECONDS))
+            self.assertEqual(j.names(), [], "a preflight reserves no original")
+            self.submit(j, key="serial_2")
+            self.assertEqual(len(j.names()), 1)
 
     def test_local_diagnostic_uses_native_child_planner_report_and_admission(self):
         control = self.repo.commit("diagnostic authority", {diagnostics.REGISTRY_PATH:
@@ -845,8 +1059,8 @@ class AuthorityAndShapes(TempDir):
         with self.assertRaisesRegex(ContractError, "requires zigbuild_bin"):
             contracts.validate_executor(c)
         obsolete = config(self.path("old"), self.tmp, "1" * 40)
-        obsolete["schema"] = "af.perf-executor/1"
-        with self.assertRaisesRegex(ContractError, "expected.*af.perf-executor/2"):
+        obsolete["schema"] = "af.perf-executor/2"
+        with self.assertRaisesRegex(ContractError, "expected.*af.perf-executor/3"):
             contracts.validate_executor(obsolete)
 
     def test_service_refuses_missing_or_invalid_shipping_configuration_before_reservation(self):

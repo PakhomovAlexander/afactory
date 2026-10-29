@@ -1,13 +1,13 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "$id": "urn:af:schema:performance-executor:2",
-  "title": "af.perf-executor/2",
+  "$id": "urn:af:schema:performance-executor:3",
+  "title": "af.perf-executor/3",
   "description": "Independent performance executor: executor (ADR-0240).",
   "type": "object",
   "additionalProperties": false,
   "properties": {
     "schema": {
-      "const": "af.perf-executor/2"
+      "const": "af.perf-executor/3"
     },
     "backend": {
       "type": "string",
@@ -231,9 +231,45 @@
           "items": {
             "$ref": "#/$defs/id"
           },
-          "minItems": 1,
+          "minItems": 0,
           "maxItems": 16,
           "uniqueItems": true
+        },
+        "max_cases": {
+          "anyOf": [
+            {
+              "type": "null"
+            },
+            {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 8
+            }
+          ]
+        },
+        "perf": {
+          "anyOf": [
+            {
+              "type": "null"
+            },
+            {
+              "type": "string",
+              "maxLength": 1024,
+              "pattern": "^/[A-Za-z0-9_./+-]{1,1023}$"
+            }
+          ]
+        },
+        "inferno_bin": {
+          "anyOf": [
+            {
+              "type": "null"
+            },
+            {
+              "type": "string",
+              "maxLength": 1024,
+              "pattern": "^/[A-Za-z0-9_./+-]{1,1023}$"
+            }
+          ]
         },
         "total_minutes": {
           "type": "integer",

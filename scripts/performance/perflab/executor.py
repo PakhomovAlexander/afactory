@@ -20,8 +20,89 @@ from .values import ContractError, add_note, canonical_digest, require, sha256_b
 ROOT = telemetrylab.ROOT
 TERMINAL = ("complete", "failed", "interrupted", "uncertain", "submitted", "expired")
 RESERVE = 30
-EVIDENCE_PREFIXES = ("plan.json", "cohort.json", "parameters.json", "sources.git", "run",
-                     "report", "profile", "baseline-build", "candidate-build")
+EVIDENCE_PREFIXES = ("plan.json", "cohort.json", "parameters.json", "parent-verdict.json",
+                     "sources.git", "run", "report", "profile", "baseline-build", "candidate-build")
+PARENT_VERDICT = "parent-verdict.json"
+PERF_PARANOID = "/proc/sys/kernel/perf_event_paranoid"
+
+
+def serial_bounds(plan, run_seconds):
+    """The local backend's worst-case serial schedule of a core plan, in seconds.
+
+    The local executor builds once and then runs the plan's shards one after another, each
+    bounded by the plan's frozen sampling window (start and end health sentinels included),
+    under the run deadline the build starts and the executor's own `run_seconds` wall, with the
+    runner's finish reserve kept for publication and cleanup. Hosted Actions runs the shards in
+    parallel; its feasibility is not this one.
+    """
+    limits = plan["limits"]
+    shards = len(plan["shards"])
+    build = limits["build_minutes"] * 60
+    sampling = limits["shard_sampling_minutes"] * 60
+    reserve = runner.FINISH_RESERVE_SECONDS
+    needed = build + shards * sampling + reserve
+    available = min(limits["run_total_minutes"] * 60, run_seconds)
+    fitting = max(0, (available - build - reserve) // sampling)
+    return {"backend": "local_serial", "shards": shards, "build_seconds": build,
+            "shard_sampling_seconds": sampling, "finish_reserve_seconds": reserve,
+            "needed_seconds": needed, "run_total_seconds": limits["run_total_minutes"] * 60,
+            "run_seconds": run_seconds, "available_seconds": available,
+            "fitting_shards": fitting, "feasible": needed <= available}
+
+
+def require_serial(plan, run_seconds):
+    bounds = serial_bounds(plan, run_seconds)
+    require(bounds["feasible"], "infeasible on the serial local backend: %(shards)d shards of "
+            "%(shard_sampling_seconds)d s sampling after a %(build_seconds)d s build and a "
+            "%(finish_reserve_seconds)d s finish reserve need %(needed_seconds)d s, but the run "
+            "deadline allows %(available_seconds)d s; at most %(fitting_shards)d shards fit, and "
+            "no sampling window, sentinel or deadline is relaxed to fit" % bounds)
+    return bounds
+
+
+def reachable(path, name):
+    """Refuse a configured path the executing account cannot reach through every ancestor."""
+    current = "/"
+    for part in [part for part in path.split("/") if part]:
+        require(os.access(current, os.X_OK), "%s: %s is not searchable by uid %d"
+                % (name, current, os.geteuid()))
+        current = os.path.join(current, part)
+    require(os.path.exists(path), "%s: %s does not exist" % (name, path))
+    require(os.access(path, os.R_OK | os.X_OK), "%s: %s is not readable by uid %d"
+            % (name, path, os.geteuid()))
+
+
+def diagnostic_tools(config, registry, recipe, mode, paranoid_path=None):
+    """The configured tools a profile's recipe needs, checked before anything is built.
+
+    Returns (records, refusal or None). Tools come only from the executor's explicit `perf`
+    and `inferno_bin`; nothing is searched for on PATH. A path is not proof the tool runs:
+    the native child run still probes each tool's version and perf's actual capture inside the
+    same contained boundary. What is refused here is only what makes that probe certain to
+    fail: a missing or unexecutable configured tool, or, in the contained mode (whose child
+    holds no capability), a kernel that denies every unprivileged perf event.
+    """
+    d = config["diagnostic"]
+    entry = registry["recipes"][recipe]
+    configured = diagnostics.configured_tools(d["perf"], d["inferno_bin"])
+    found = diagnostics.probe_tools(registry, configured, "linux", entry["tools"])
+    records = [record for record, _ in found.values()]
+    missing = ["%s: %s" % (name, record["detail"]) for name, (record, path) in sorted(found.items())
+               if path is None]
+    if missing:
+        return records, "recipe %s needs tools this executor cannot run: %s" % (recipe, "; ".join(missing))
+    if "perf" in entry["tools"] and mode == diagnostics.LINUX_CONTAINER:
+        paranoid_path = paranoid_path or PERF_PARANOID
+        try:
+            with open(paranoid_path, "rb") as stream:
+                paranoid = int(stream.read(64).strip())
+        except (OSError, ValueError) as error:
+            return records, "cannot read %s: %s" % (paranoid_path, error)
+        if paranoid > 2:
+            return records, ("kernel.perf_event_paranoid=%d denies every perf event to the "
+                             "contained child, which holds no capability; the executor never "
+                             "changes host sysctls or grants capabilities" % paranoid)
+    return records, None
 
 
 class JournalBusy(ContractError):
@@ -253,9 +334,30 @@ class Journal:
         with timing.enforce("freezing original request"):
             return self._submit(*args, **kwargs)
 
+    def preflight(self, work, base, head, key, kind="manual", *, parent=None, **kwargs):
+        """Everything a submission checks, as the account that runs it, without reserving an
+        original: the `af.perf-executor-preflight/1` document, `ready` or `refused` with the
+        exact first refusal, and the local serial bounds and diagnostic tools it checked."""
+        timing = budget.Budget(time.monotonic() + self.config["cycle_seconds"], time.monotonic, 0)
+        checked = {"serial": None, "tools": []}
+        try:
+            with timing.enforce("preflight"):
+                for key_name in ("root", "repository_path"):
+                    reachable(self.config[key_name], key_name)
+                request = self._submit(work, base, head, key, kind, parent=parent,
+                                       checked=checked, **kwargs)
+        except ContractError as error:
+            return {"schema": "af.perf-executor-preflight/1", "work": work, "status": "refused",
+                    "detail": str(error)[:4096], "request": None, "serial": checked["serial"],
+                    "tools": checked["tools"]}
+        return {"schema": "af.perf-executor-preflight/1", "work": work, "status": "ready",
+                "detail": "", "request": request, "serial": checked["serial"],
+                "tools": checked["tools"]}
+
     def _submit(self, work, base, head, key, kind="manual", *, git=None, installed=ROOT,
-               cohort=None, member=None, parameters=None):
+               cohort=None, member=None, parameters=None, parent=None, checked=None):
         require(work in ("core", "telemetry", "profile"), "unknown experiment kind")
+        require(parent is None or work == "profile", "only a profile names a parent comparison")
         timing = budget.Budget(time.monotonic() + self.config["cycle_seconds"], time.monotonic, 0)
         git = git or source_repository(self.config, timing)
         c = self.config
@@ -267,11 +369,15 @@ class Journal:
                    "control_sha": control, "authority_sha": control}
         submission = {"kind": kind, "key": key}
         ident = "exp_" + canonical_digest({"submission": submission, "work": work})[7:55]
-        if ident in self.names():
+        if ident in self.names() and checked is None:
             original = self.request(ident)
             require(original["sources"] == sources and original["submission"] == submission
                     and original["work"] == work, "original submission key was reused for another source")
+            require(original["parent"] is None if parent is None
+                    else (original["parent"] or {}).get("request_id") == parent,
+                    "original submission key was reused for another parent comparison")
             return original
+        require(ident not in self.names(), "the submission key already names an original")
         require(len(self.names()) < c["max_requests"], "original journal is full")
         require(sum(self.state(i)["state"] == "queued" for i in self.names()) < c["max_queue"], "queue is full")
         produced = producer(git, control, installed)
@@ -300,8 +406,42 @@ class Journal:
                         "sealed parameters must be committed on reviewed main at the documented path")
         elif kind == "calibration":
             raise ContractError("calibration submissions need their immutable declaration")
-        plan = None
-        if work in ("core", "profile") and c["backend"] == "local":
+        plan = parent_record = verdict_bytes = None
+        if work == "profile" and c["backend"] == "local":
+            d = c["diagnostic"]
+            suite = planning.read_suite(git, control)
+            raw = git.read_file(control, diagnostics.REGISTRY_PATH)
+            require(raw is not None, "control has no diagnostic registry")
+            registry = diagnostics.load_bytes(raw, diagnostics.REGISTRY_PATH, suite.doc)
+            require(d["recipe"] in registry["recipes"], "diagnostic.recipe is not in the registry")
+            records, refusal = diagnostic_tools(c, registry, d["recipe"], diagnostics.LINUX_CONTAINER)
+            if checked is not None:
+                checked["tools"] = [{"name": r["name"], "state": r["state"], "detail": r["detail"]}
+                                    for r in records]
+            require(refusal is None, "profile refused before any build: " + str(refusal))
+            if parent is not None:
+                require(not d["cases"], "a parent-selected profile names no diagnostic.cases")
+                # Only a verified completed local core original selects; its retained plan
+                # and verdict are this profile's exact parent identity.
+                parent_request, parent_state, _ = verify_original(self, parent, installed)
+                require(parent_request["work"] == "core" and parent_request["sources"] == sources,
+                        "the parent is not a core comparison of these exact sources")
+                parent_path = self.path(parent)
+                plan = contracts.read_json(read(os.path.join(parent_path, "plan.json")), "run")
+                verdict_bytes = read(os.path.join(parent_path, "report", report.VERDICT_JSON))
+                verdict = contracts.read_json(verdict_bytes, "verdict")
+                require(verdict["run_id"] == plan["run_id"]
+                        and verdict["plan_digest"] == plan["plan_digest"],
+                        "the parent verdict is of another plan")
+                parent_record = {"request_id": parent,
+                    "request_digest": canonical_digest(parent_request),
+                    "result_sha256": parent_state["result_sha256"],
+                    "plan_sha256": parent_request["plan_sha256"],
+                    "verdict_sha256": sha256_bytes(verdict_bytes)}
+            else:
+                require(d["cases"], "a profile without diagnostic.cases selects from a verified "
+                        "parent comparison: submit with --parent REQUEST_ID")
+        if plan is None and work in ("core", "profile") and c["backend"] == "local":
             core = c["core"]
             plan = planning.plan(git, planning.Request(trigger="manual", tier=core["tier"],
                 scope="calibration" if cohort else ("partial_scope" if core["cases"] else "bootstrap"),
@@ -314,20 +454,27 @@ class Journal:
                 require(plan["profile"]["environment"]["runner"] == "dedicated"
                         and plan["profile"]["environment"]["containment"] == "linux_container",
                         "local core needs a dedicated contained environment")
+            if work == "core":
+                if checked is not None:
+                    checked["serial"] = serial_bounds(plan, c["run_seconds"])
+                require_serial(plan, c["run_seconds"])
         elif work == "telemetry":
             registry = telemetrylab.load_registry(installed)[0]
             t = c["telemetry"]
             telemetrylab.configuration(registry, t["profile"], t["experiments"], t["rounds"],
                                        t["pairs"], t["scale"], t["corpus_runs"])
-        request = {"schema": "af.perf-executor-request/1", "request_id": ident,
+        request = {"schema": "af.perf-executor-request/2", "request_id": ident,
             "backend": c["backend"], "journal_id": c["journal_id"], "machine_id": c["machine_id"],
             "configuration_digest": canonical_digest(c), "sources": sources, "submission": submission,
             "work": work, "created_unix_ms": int(time.time() * 1000), "environment_digest": env,
             "producer_digest": produced, "plan_sha256": None if plan is None else sha256_bytes(contracts.write_bytes(plan, "run")),
             "cohort_digest": None if cohort is None else canonical_digest(cohort), "member_id": member,
-            "parameters_sha256": None if parameters is None else sha256_bytes(contracts.write_bytes(parameters, "calibration-parameters"))}
+            "parameters_sha256": None if parameters is None else sha256_bytes(contracts.write_bytes(parameters, "calibration-parameters")),
+            "parent": parent_record}
         contracts.CONTRACTS["executor-request"][2](request, "request")
         self.capacity(16 * 1024 * 1024)
+        if checked is not None:
+            return request
         path = self.path(ident)
         os.mkdir(path, 0o700)  # original identity precedes every possible launch
         sync_dir(self.requests)
@@ -336,6 +483,11 @@ class Journal:
                 ("cohort.json", cohort, "local-cohort-declaration"), ("parameters.json", parameters, "calibration-parameters")):
             if doc is not None:
                 atomic(os.path.join(path, filename), doc, contract)
+        if verdict_bytes is not None:
+            with open(os.path.join(path, PARENT_VERDICT), "xb") as stream:
+                stream.write(verdict_bytes)
+                stream.flush()
+                os.fsync(stream.fileno())
         self.index["originals"].append({"request_id": ident, "request_digest": canonical_digest(request)})
         atomic(os.path.join(self.root, "journal.json"), self.index, "executor-journal")
         atomic(os.path.join(path, "state.json"), {"schema": "af.perf-executor-state/2",
@@ -561,6 +713,20 @@ def execute_local(config, request, path, lease, installed=ROOT):
             return {"status": "expired", "measurement_status": "not_executed_off_schedule",
                     "evidence": file_manifest(path, EVIDENCE_PREFIXES, terminal), "actions": None,
                     "detail": "not executed: frozen calibration member day expired during preparation"}
+        if work == "profile":
+            # Tools are checked again as the executing compute user, before the first build:
+            # an unavailable capability ends here with its exact reason, nothing built.
+            git = gitrefs.Git(sources, budget=timing)
+            authority = request["sources"]["authority_sha"]
+            registry = diagnostics.load_bytes(git.read_file(authority, diagnostics.REGISTRY_PATH),
+                diagnostics.REGISTRY_PATH, planning.read_suite(git, authority).doc)
+            _, refusal = diagnostic_tools(config, registry, config["diagnostic"]["recipe"],
+                                          diagnostics.LINUX_CONTAINER)
+            if refusal is not None:
+                return {"status": "failed", "measurement_status": "unavailable",
+                        "evidence": file_manifest(path, EVIDENCE_PREFIXES, terminal),
+                        "actions": None, "detail": ("profile refused before any build: "
+                                                    + refusal)[:4096]}
         build = builds.Builder(owner, plan, None, bounded_container=True,
                                zigbuild_bin=config["zigbuild_bin"], deadline_unix_ms=deadline_ms)
         built = build.build()
@@ -609,8 +775,17 @@ def execute_local(config, request, path, lease, installed=ROOT):
                 doc = builder.build()
                 require(doc["cleanup"]["status"] == "removed", "diagnostic build cleanup unconfirmed")
                 return builder.layout.build
+            # A parent-selected profile reads the verified parent verdict it froze at
+            # submission; named cases are an explicit selection that reads none.
+            verdict = None
+            if request["parent"] is not None:
+                verdict = os.path.join(path, PARENT_VERDICT)
+                require(sha256_bytes(read(verdict)) == request["parent"]["verdict_sha256"],
+                        "the frozen parent verdict changed")
             code, profiles, detail = diagnostics.run_profile(gitrefs.Git(sources, budget=timing),
                 diagnostics.Options(plan=os.path.join(path, "plan.json"), cases=d["cases"],
+                    verdict=verdict, max_cases=d["max_cases"], perf=d["perf"],
+                    inferno_bin=d["inferno_bin"],
                     recipe=d["recipe"], output=os.path.join(path, "profile"), parent_build=build.layout.build,
                     repo=sources, mode=diagnostics.LINUX_CONTAINER, image=config["sample_image"],
                     scratch_fs=scratch, builder=diagnostic_builder, build_image=config["build_image"],
@@ -788,6 +963,9 @@ def verify_original(journal, ident, installed=ROOT):
         parent = contracts.read_json(read(os.path.join(path, "plan.json")), "run")
         require(sha256_bytes(contracts.write_bytes(parent, "run")) == request["plan_sha256"],
                 "diagnostic parent plan changed")
+        if request["parent"] is not None:
+            require(sha256_bytes(read(os.path.join(path, PARENT_VERDICT)))
+                    == request["parent"]["verdict_sha256"], "the frozen parent verdict changed")
         report.admit_children([os.path.join(path, "profile")], parent)
     return request, state, result
 

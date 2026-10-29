@@ -1039,8 +1039,13 @@ Actions remains a selectable dispatch backend and preserves original hosted rece
 dedicated Claw profiles and a local telemetry history keep persistent VM evidence distinct.
 The common machine lock covers preparation through terminal evidence and retains a crash fence
 when owned cleanup is uncertain, including a diagnostic build container whose removal is
-unconfirmed even with clean diagnostic scratch. Executor configuration v2 freezes the pinned
-image's Zig/cargo-zigbuild directory for shipping and diagnostic builders. Service invocations
+unconfirmed even with clean diagnostic scratch. Executor configuration v3 freezes the pinned
+image's Zig/cargo-zigbuild directory for shipping and diagnostic builders and names the
+diagnostic perf and Inferno tools. A core plan whose serial schedule cannot fit its run
+deadline is refused before reservation; `preflight` runs the same checks without reserving, a
+profile may select the regressions of a verified parent core original (request v2), and
+`overview` reports retained originals with state, verification, coverage and verdict apart.
+Service invocations
 drain admitted work before polling; calibration launch decisions recheck the frozen member day
 after capacity and source preparation. Missed originals retire as non-executed `expired` in
 state/result v2 and remain off schedule in readiness with their original denominator.

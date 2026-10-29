@@ -175,6 +175,12 @@ fn telemetry_overhead_smoke() {
     }
     assert_eq!(measured["drain"]["fixture"], "telemetry-bench-dense");
     assert_eq!(measured["drain"]["pairs"].as_array().unwrap().len(), 1);
+    // Both ends of a drain are readings of the one filesystem clock, so a run's physical drain
+    // through the real binary is never negative.
+    for level in ["off_ms", "spans_ms"] {
+        let drain = measured["drain"]["pairs"][0][level].as_f64().unwrap();
+        assert!(drain >= 0.0, "{level}: {measured}");
+    }
     assert_eq!(measured["protocol"]["scale"], "smoke");
     assert_eq!(measured["gate"]["verdict"], "not_judged", "{measured}");
     // The work directory held every run, each removed once measured.
@@ -682,6 +688,26 @@ fn telemetry_overhead_gate_rule() {
     );
     assert_eq!(judged["gate"]["verdict"], "fail");
 
+    // A negative physical drain (the clocks' order violated) is kept as measured, never
+    // clamped or dropped, and leaves the gate unjudged; the signed pair difference stays signed.
+    let mut disordered = DRAIN.to_vec();
+    disordered[0] = (-0.126, 0.5);
+    let (code, judged) = judge(
+        &machine,
+        &build(all(&CONCURRENT, &DENSE, &STORE), &disordered, "full"),
+    );
+    assert_eq!(code, Some(0), "{judged}");
+    assert_eq!(judged["gate"]["verdict"], "not_judged", "{judged}");
+    assert_eq!(judged["drain"]["pairs"][0]["off_ms"], -0.126, "{judged}");
+    assert_eq!(
+        judged["drain"]["pairs"][0]["difference_ms"], 0.626,
+        "{judged}"
+    );
+    assert_eq!(
+        judged["gate"]["reasons"][0],
+        "drain latency: 1 negative physical duration, kept as measured and not judged"
+    );
+
     // Fewer than 20 pairs, the smoke scale or a missing fixture is never judged, even when a
     // figure is past its bound: the exit is 0 and the reasons say why.
     for (document, why) in [
@@ -1106,4 +1132,25 @@ fn telemetry_stream_json_cost_gate() {
         assert_eq!(judged["gate"]["verdict"], verdict, "{judged}");
         assert_eq!(judged["decision"], decision);
     }
+    // A negative physical drain of one run is kept as measured and leaves a passing rule unjudged.
+    let mut disordered = invocation_document(0.01, 1 << 20);
+    disordered["cases"][0]["levels"]["off"]["pairs"][0]["json"]["drain_ms"] = json!(-0.589);
+    disordered["cases"][0]["levels"]["off"]["pairs"][0]["stream-json"]["drain_ms"] = json!(1.0);
+    let path = machine.root.join("work/rule-negative-drain.json");
+    std::fs::write(&path, disordered.to_string()).unwrap();
+    let judged = machine.script(
+        "telemetry-invocation-cost.py",
+        &["--judge", path.to_str().unwrap(), "--json"],
+    );
+    assert_eq!(judged.status.code(), Some(0), "{}", text(&judged));
+    let judged = document(&judged);
+    assert_eq!(judged["gate"]["verdict"], "not_judged", "{judged}");
+    assert_eq!(
+        judged["cases"][0]["levels"]["off"]["pairs"][0]["json"]["drain_ms"],
+        -0.589
+    );
+    assert_eq!(
+        judged["gate"]["reasons"][0],
+        "drain latency: 1 negative physical duration, kept as measured and not judged"
+    );
 }

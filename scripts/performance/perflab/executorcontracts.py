@@ -11,8 +11,10 @@ def register(c):
     ID, SHA, DIGEST = c.ID, c.GIT_SHA, c.DIGEST
     path = Str(pattern=r"^/[^\x00\n]{1,1023}$", max_len=1024)
     backend = Str(enum=("local", "github_actions"))
+    # An explicitly configured host tool or tool directory: never searched for on PATH.
+    tool = Str(pattern=r"^/[A-Za-z0-9_./+-]{1,1023}$", max_len=1024)
     configuration = Obj(
-        Field("schema", Const("af.perf-executor/2")), Field("backend", backend),
+        Field("schema", Const("af.perf-executor/3")), Field("backend", backend),
         Field("root", path), Field("repository_path", path), Field("repository", c.REPOSITORY),
         Field("control_sha", SHA), Field("trusted_ref", Str(pattern=r"^refs/heads/[A-Za-z0-9._/-]+$")),
         Field("machine_id", ID), Field("journal_id", ID),
@@ -31,7 +33,10 @@ def register(c):
              Field("rounds", Int(1, c.TELEMETRY_ROUNDS_MAX)), Field("pairs", Nullable(Int(1, 40)), required=False),
              Field("scale", Nullable(Str(enum=("smoke", "full"))), required=False),
              Field("corpus_runs", Nullable(Int(1, 10000)), required=False))),
-        Field("diagnostic", Obj(Field("recipe", ID), Field("cases", Arr(ID, 1, 16, unique=True)),
+        Field("diagnostic", Obj(Field("recipe", ID), Field("cases", Arr(ID, 0, 16, unique=True)),
+             Field("max_cases", Nullable(Int(1, c.limits.DIAGNOSTIC_CASES_MAX)), required=False),
+             Field("perf", Nullable(tool), required=False),
+             Field("inferno_bin", Nullable(tool), required=False),
              Field("total_minutes", Int(1, c.limits.DIAGNOSTIC_RUN_MINUTES_MAX)),
              Field("duration_seconds", Int(1, c.limits.DIAGNOSTIC_SECONDS_MAX)),
              Field("frequency_hz", Int(1, c.limits.DIAGNOSTIC_HZ_MAX)),
@@ -40,14 +45,88 @@ def register(c):
                  Field("control_sha", SHA), Field("authority_sha", SHA))
     submission = Obj(Field("kind", Str(enum=("manual", "main", "pr", "release", "calibration"))),
                      Field("key", Str(min_len=1, max_len=256)))
-    request = Obj(Field("schema", Const("af.perf-executor-request/1")), Field("request_id", ID),
+    # A profile's verified parent comparison: the completed local core original whose retained
+    # plan and verdict choose and bind the diagnosed cases (the exact parent identity).
+    parent = Obj(Field("request_id", ID), Field("request_digest", DIGEST),
+                 Field("result_sha256", DIGEST), Field("plan_sha256", DIGEST),
+                 Field("verdict_sha256", DIGEST))
+    request = Obj(Field("schema", Const("af.perf-executor-request/2")), Field("request_id", ID),
         Field("backend", backend), Field("journal_id", ID), Field("machine_id", ID),
         Field("configuration_digest", DIGEST), Field("sources", frozen),
         Field("submission", submission), Field("work", Str(enum=("core", "telemetry", "profile"))),
         Field("created_unix_ms", c.UNIX_MS), Field("environment_digest", DIGEST),
         Field("producer_digest", DIGEST), Field("plan_sha256", Nullable(DIGEST)),
         Field("cohort_digest", Nullable(DIGEST)), Field("member_id", Nullable(ID)),
-        Field("parameters_sha256", Nullable(DIGEST)))
+        Field("parameters_sha256", Nullable(DIGEST)), Field("parent", Nullable(parent)))
+    seconds = Int(0, 10 ** 9)
+    serial = Obj(Field("backend", Const("local_serial")), Field("shards", Int(1, 256)),
+        Field("build_seconds", seconds), Field("shard_sampling_seconds", seconds),
+        Field("finish_reserve_seconds", seconds), Field("needed_seconds", seconds),
+        Field("run_total_seconds", seconds), Field("run_seconds", seconds),
+        Field("available_seconds", seconds), Field("fitting_shards", Int(0, 10 ** 6)),
+        Field("feasible", Bool()))
+    preflight = Obj(Field("schema", Const("af.perf-executor-preflight/1")),
+        Field("work", Str(enum=("core", "telemetry", "profile"))),
+        Field("status", Str(enum=("ready", "refused"))), Field("detail", Str(max_len=4096)),
+        Field("request", Nullable(request)), Field("serial", Nullable(serial)),
+        Field("tools", Arr(Obj(Field("name", ID), Field("state", Str(enum=("available", "unavailable"))),
+                               Field("detail", Str(max_len=4096))), 0, 16)))
+
+    def validate_preflight(doc, where="executor preflight"):
+        preflight.validate(doc, where)
+        require((doc["status"] == "ready") == (doc["request"] is not None and not doc["detail"]),
+                "a ready preflight carries its request and no refusal")
+        if doc["request"] is not None:
+            validate_request(doc["request"], where + ".request")
+        require(doc["status"] != "ready" or doc["serial"] is None or doc["serial"]["feasible"],
+                "an infeasible serial schedule is never ready")
+        return doc
+
+    count = Int(0, 2 ** 31)
+    overview_member = Obj(Field("request_id", ID),
+        Field("work", Str(enum=("core", "telemetry", "profile"))), Field("submission", submission),
+        Field("plan_sha256", Nullable(DIGEST)), Field("parent", Nullable(ID)),
+        Field("state", Str(enum=("queued", "claimed", "complete", "failed", "interrupted",
+                                 "uncertain", "submitted", "expired"))),
+        Field("state_detail", Str(max_len=4096)),
+        Field("started_unix_ms", Nullable(c.UNIX_MS)), Field("ended_unix_ms", Nullable(c.UNIX_MS)),
+        Field("verification", Obj(Field("status", Str(enum=("verified", "refused", "not_terminal"))),
+                                  Field("detail", Str(max_len=4096)))),
+        Field("measurement_status", Nullable(Str(max_len=128))),
+        Field("coverage", Nullable(Obj(Field("required", count), Field("observed", count),
+                                       Field("failed", count), Field("missing", count)))),
+        Field("performance", Obj(Field("verdict", Nullable(Str(max_len=32))),
+                                 Field("regressions", Arr(ID, 0, 4096)))),
+        Field("links", Arr(c.REL_PATH, 0, 16)), Field("reasons", Arr(Str(max_len=4096), 0, 64)))
+    comparison = Obj(Field("schema", Const("af.perf-comparison-overview/1")),
+        Field("journal_id", ID), Field("machine_id", ID), Field("sources", frozen),
+        Field("status", Str(enum=("complete", "incomplete"))),
+        Field("reasons", Arr(Str(max_len=4096), 0, 1024)),
+        Field("members", Arr(overview_member, 1, 16)))
+
+    def validate_comparison(doc, where="comparison overview"):
+        comparison.validate(doc, where)
+        ids = [m["request_id"] for m in doc["members"]]
+        require(len(set(ids)) == len(ids), "an overview repeats an original")
+        for m in doc["members"]:
+            require((m["verification"]["status"] == "not_terminal") == (m["state"] != "complete"),
+                    "only a complete original is verified or refused")
+            require(m["verification"]["status"] == "verified" or (m["coverage"] is None
+                    and m["performance"]["verdict"] is None and m["measurement_status"] is None),
+                    "unverified evidence carries no coverage, verdict or measurement")
+            require(m["coverage"] is None or m["coverage"]["observed"] + m["coverage"]["missing"]
+                    == m["coverage"]["required"], "coverage must account for every required item")
+            require(not m["reasons"] or all(r in doc["reasons"] for r in m["reasons"]),
+                    "every member reason is a comparison reason")
+        works = set(m["work"] for m in doc["members"])
+        complete = (not doc["reasons"] and works == {"core", "telemetry", "profile"}
+                    and all(m["state"] == "complete" and m["verification"]["status"] == "verified"
+                            and not m["reasons"] for m in doc["members"]))
+        require((doc["status"] == "complete") == complete,
+                "a comparison is complete only when every required original is complete, "
+                "verified and fully covered")
+        return doc
+
     states = ("queued", "claimed", "complete", "failed", "interrupted", "uncertain", "submitted", "expired")
     state = Obj(Field("schema", Const("af.perf-executor-state/2")), Field("request_id", ID),
         Field("request_digest", DIGEST), Field("state", Str(enum=states)),
@@ -103,7 +182,15 @@ def register(c):
                 or doc["zigbuild_bin"] is not None, "local musl requires zigbuild_bin in the pinned image")
         for key in ("pairs", "scale", "corpus_runs"):
             doc["telemetry"].setdefault(key, None)
-        doc["diagnostic"].setdefault("telemetry", None)
+        for key in ("telemetry", "max_cases", "perf", "inferno_bin"):
+            doc["diagnostic"].setdefault(key, None)
+        for key in ("perf", "inferno_bin"):
+            value = doc["diagnostic"][key]
+            import posixpath
+            require(value is None or posixpath.normpath(value) == value,
+                    "diagnostic." + key + ": use a canonical absolute host path")
+        require(not (doc["diagnostic"]["cases"] and doc["diagnostic"]["max_cases"] is not None),
+                "diagnostic: max_cases bounds a parent-selected profile; named cases are explicit")
         require(doc["archive_bytes"] + doc["history_bytes"] < doc["max_bytes"],
                 "archive/history must leave capacity for original receipts and work")
         require(doc["max_queue"] <= doc["max_requests"], "queue exceeds journal bound")
@@ -169,6 +256,14 @@ def register(c):
                 c.validate_readiness_totals(doc, where, cohort, calibration)
         return doc
 
+    def validate_request(doc, where="executor request"):
+        request.validate(doc, where)
+        require(doc["parent"] is None or doc["work"] == "profile",
+                "only a profile names a parent comparison")
+        require(doc["parent"] is None or doc["plan_sha256"] == doc["parent"]["plan_sha256"],
+                "a parent-selected profile diagnoses its parent's exact plan")
+        return doc
+
     c.LOCAL_COHORT = local_cohort
     c.validate_executor = validate_config
     c.validate_local_readiness = validate_local_readiness
@@ -179,7 +274,9 @@ def register(c):
             Field("journal_id", ID), Field("repository", c.REPOSITORY),
             Field("originals", Arr(Obj(Field("request_id", ID), Field("request_digest", DIGEST)), 0, 4096))), None),
         "executor": (configuration, validate_config),
-        "executor-request": (request, None), "executor-state": (state, None),
+        "executor-request": (request, validate_request),
+        "executor-preflight": (preflight, validate_preflight),
+        "comparison-overview": (comparison, validate_comparison), "executor-state": (state, None),
         "executor-result": (outcome, validate_result), "local-cohort-declaration": (local_cohort, c.validate_cohort),
         "local-readiness-assessment": (readiness, validate_local_readiness),
     }

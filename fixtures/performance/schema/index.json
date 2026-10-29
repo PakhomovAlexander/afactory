@@ -2406,7 +2406,7 @@
       "path": "executor/invalid-version.json",
       "contract": "executor",
       "valid": false,
-      "error": "expected af.perf-executor/2",
+      "error": "expected af.perf-executor/3",
       "shape": true
     },
     {
@@ -2418,7 +2418,7 @@
       "path": "executor-request/invalid-version.json",
       "contract": "executor-request",
       "valid": false,
-      "error": "expected af.perf-executor-request/1",
+      "error": "expected af.perf-executor-request/2",
       "shape": true
     },
     {
@@ -2604,6 +2604,35 @@
       "valid": false,
       "error": "unknown field extra",
       "shape": true
+    },
+    {
+      "path": "executor-preflight/valid-ready.json",
+      "contract": "executor-preflight",
+      "valid": true
+    },
+    {
+      "path": "executor-preflight/valid-refused.json",
+      "contract": "executor-preflight",
+      "valid": true
+    },
+    {
+      "path": "executor-preflight/invalid-infeasible-ready.json",
+      "contract": "executor-preflight",
+      "valid": false,
+      "error": "a ready preflight carries its request and no refusal",
+      "shape": false
+    },
+    {
+      "path": "comparison-overview/valid-incomplete.json",
+      "contract": "comparison-overview",
+      "valid": true
+    },
+    {
+      "path": "comparison-overview/invalid-claimed-complete.json",
+      "contract": "comparison-overview",
+      "valid": false,
+      "error": "a comparison is complete only when",
+      "shape": false
     }
   ]
 }

@@ -78,3 +78,12 @@ Focused tests use real processes, locks, Git retention, journal transitions and 
 admission with synthetic measurement seams. They establish no Docker/Claw execution, rollout,
 calibration qualification, enforcement or speedup. The enclosing native gate and independent
 reviews remain required; the coordinator owns deployment and genuine VM proofs.
+
+**Amended 2026-10-29.** The local backend now plans its serial schedule before reservation: a
+core plan whose build, sequential sampling windows and finish reserve cannot fit its run
+deadline is refused before any original, claim or build, and `preflight` shows the same
+checks without reserving. Executor configuration v3 names the diagnostic perf and Inferno
+tools; request v2 binds a profile to a verified parent core original whose verdict selects
+its cases; `overview` combines retained originals into `af.perf-comparison-overview/1` with
+state, verification, coverage and verdict apart. A run that fits may still stop incomplete.
+The [operator guide](../performance-local-executor.md) gives the commands.
