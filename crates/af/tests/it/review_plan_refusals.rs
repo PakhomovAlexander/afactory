@@ -477,6 +477,94 @@ fn the_first_run_plan_fits_the_terminal_and_keeps_commands_whole() {
     assert_eq!(error["cause"], "review_binding_missing");
 }
 
+/// #425 item 3: a 25-file change at a terminal 80 columns wide still plans on one 80x24 screen,
+/// its changed paths summarized on one line that points at `--long`; `--long` lists every path
+/// and the JSON Subject keeps them all.
+#[test]
+fn a_large_change_plans_on_one_screen_and_json_keeps_every_path() {
+    let root = tempfile::tempdir().unwrap();
+    let repo = onboarded(&root.path().canonicalize().unwrap());
+    register(&repo, "codex-main", "codex");
+    let mut expected = vec!["notes.md".to_owned()];
+    for n in 1..=24 {
+        let path = format!("src/module_{n:02}.rs");
+        std::fs::create_dir_all(repo.join("src")).unwrap();
+        std::fs::write(repo.join(&path), format!("// module {n}\n")).unwrap();
+        expected.push(path);
+    }
+    expected.sort();
+    let bound = [
+        "--provider",
+        "architecture=codex-main",
+        "--provider",
+        "correctness=codex-main",
+    ];
+    let shown = |extra: &[&str]| {
+        let mut args: Vec<&str> = PLAN[..7].to_vec();
+        args.extend(bound);
+        args.extend(extra);
+        let shown = crate::common::af()
+            .args(&args)
+            .current_dir(&repo)
+            .env(
+                "AF_PROVIDERS_FILE",
+                repo.parent().unwrap().join("providers.toml"),
+            )
+            .env("PATH", "/usr/bin:/bin:/usr/sbin:/sbin")
+            .env("NO_COLOR", "1")
+            .env("COLUMNS", "80")
+            .output()
+            .unwrap();
+        assert!(shown.status.success(), "{}", err(&shown));
+        out(&shown)
+    };
+    let text = shown(&[]);
+    let rows: usize = text
+        .lines()
+        .map(|line| line.chars().count().div_ceil(80).max(1))
+        .sum();
+    assert!(rows <= 24, "{rows} rows:\n{text}");
+    for line in text.lines() {
+        assert!(line.chars().count() <= 80, "{line:?}\n{text}");
+    }
+    assert!(text.contains("subject  diff (25 paths, "), "{text}");
+    let changes: Vec<&str> = text
+        .lines()
+        .filter(|line| line.starts_with("  change  "))
+        .collect();
+    assert_eq!(changes.len(), 1, "{text}");
+    assert!(
+        changes[0].starts_with("  change  notes.md, src/module_01.rs"),
+        "{text}"
+    );
+    assert!(changes[0].ends_with(" more; --long lists each"), "{text}");
+    assert!(
+        text.lines()
+            .any(|line| line.starts_with("next:    af review run ")),
+        "{text}"
+    );
+
+    let long = shown(&["--long"]);
+    let listed: Vec<&str> = long
+        .lines()
+        .filter_map(|line| line.strip_prefix("  change  "))
+        .collect();
+    assert_eq!(listed, expected, "{long}");
+
+    let mut args: Vec<&str> = PLAN.to_vec();
+    args.extend(bound);
+    let planned = af(&repo, &args);
+    assert!(planned.status.success(), "{}", err(&planned));
+    let json: Value = serde_json::from_slice(&planned.stdout).unwrap();
+    let changed: Vec<&str> = json["subject"]["changed_paths"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|path| path.as_str().unwrap())
+        .collect();
+    assert_eq!(changed, expected, "{json}");
+}
+
 #[test]
 fn first_run_refusals_name_the_fix() {
     let root = tempfile::tempdir().unwrap();

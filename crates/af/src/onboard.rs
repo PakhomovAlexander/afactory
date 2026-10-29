@@ -228,7 +228,8 @@ fn running_af_pin() -> Result<(Option<AfPin>, Vec<String>), String> {
         return Ok((
             None,
             vec![format!(
-                "this af {version} has no install receipt{receipt} (a source build or a launcher copy), so the lock pins no af release; install a release with `af self install {version}` and rerun to pin it"
+                "{} has no install receipt{receipt} (a source build or a launcher copy), so the lock pins no af release; install a release with `af self install {version}` and rerun to pin it",
+                no_receipt_subject()
             )],
         ));
     };
@@ -467,22 +468,97 @@ fn execute(options: &Options) -> Result<Report, String> {
     }
 }
 
+/// The widest line of the text preview: the terminal's width, at most 80 columns, so the default
+/// preview reads on one 80x24 screen.
+fn preview_width() -> usize {
+    crate::human::width().min(80)
+}
+
+/// One line of the text preview, wrapped at its spaces to [`preview_width`], every line after
+/// the first indented by `indent`.
+fn print_wrapped(line: &str, indent: usize) {
+    println!("{}", crate::human::wrap(line, preview_width(), indent));
+}
+
+/// A `providers` line: whole when it fits, else what is registered and, on a line of its own,
+/// the arrow to what to run.
+fn print_provider_line(line: &str) {
+    let whole = format!("  {line}");
+    match line.split_once(PROVIDER_ARROW) {
+        Some((state, fix)) if whole.chars().count() > preview_width() => {
+            print_wrapped(&format!("  {state}"), 4);
+            print_wrapped(&format!("    ← {fix}"), 6);
+        }
+        _ => print_wrapped(&whole, 4),
+    }
+}
+
+/// A next step: whole when it fits; a step that ends in an `af` command between backticks
+/// (`Review this plan, then run `af onboard ... --apply`.`) as its prose and then the command,
+/// continued between its arguments, so a copied command still runs; any other step wrapped.
+fn print_next_step(number: usize, step: &str) {
+    let width = preview_width();
+    let line = format!("  {number}. {step}");
+    if line.chars().count() <= width {
+        println!("{line}");
+        return;
+    }
+    if let Some((prose, command)) = step
+        .strip_suffix("`.")
+        .and_then(|rest| rest.rsplit_once(" `"))
+        .filter(|(_, command)| command.starts_with("af ") && !command.contains('`'))
+    {
+        let prose = prose.trim_end_matches(':');
+        print_wrapped(&format!("  {number}. {prose}:"), 5);
+        println!(
+            "{}",
+            crate::human::fit_command(&format!("     {command}"), width)
+        );
+        return;
+    }
+    print_wrapped(&line, 5);
+}
+
+/// The subject of the warning of a build without an install receipt.
+fn no_receipt_subject() -> String {
+    format!("this af {}", env!("CARGO_PKG_VERSION"))
+}
+
+/// A warning as the default preview says it: a build without an install receipt in one line,
+/// its receipt path and fix left to `--long` and `--json`; any other warning whole.
+fn brief_warning(warning: &str) -> String {
+    if warning.starts_with(&format!("{} has no install receipt", no_receipt_subject())) {
+        return "no install receipt: the lock pins no af release; --long says more".into();
+    }
+    warning.to_owned()
+}
+
 fn print_human(report: &Report, long: bool) {
     println!("af onboard: {}", report.status);
     println!("repository  {}", report.repository);
     match &report.runner_note {
-        Some(note) => println!("profile     {} · {note}", report.profile),
+        Some(note) => print_wrapped(&format!("profile     {} · {note}", report.profile), 12),
         None => println!("profile     {}", report.profile),
     }
-    println!("pipeline    {}", report.pipeline);
+    // The default view counts the files `--long` lists after the topology.
+    match report.files.len() {
+        files if files > 0 && !long => println!(
+            "pipeline    {}; {files} files under .af/, --long lists each",
+            report.pipeline
+        ),
+        _ => println!("pipeline    {}", report.pipeline),
+    }
     if let Some(version) = &report.lock_af_version {
-        println!(
-            "lock        pinned by af {version}{}",
-            if report.lock_af_targets.is_empty() {
-                " (no archive digests)".to_string()
-            } else {
-                format!(" (digests: {})", report.lock_af_targets.join(", "))
-            }
+        print_wrapped(
+            &format!(
+                "lock        pinned by af {version}{}",
+                if report.lock_af_targets.is_empty() {
+                    " (no archive digests)".to_string()
+                } else {
+                    format!(" (digests: {})", report.lock_af_targets.join(", "))
+                }
+            ),
+            12,
         );
     }
     if long {
@@ -493,50 +569,70 @@ fn print_human(report: &Report, long: bool) {
     }
     println!("reviewers");
     for reviewer in &report.reviewers {
-        println!(
-            "  {}: {} / {} ({})",
-            reviewer.node, reviewer.package, reviewer.runner, reviewer.model
+        print_wrapped(
+            &format!(
+                "  {}: {} / {} ({})",
+                reviewer.node, reviewer.package, reviewer.runner, reviewer.model
+            ),
+            4,
         );
     }
     if !report.providers.is_empty() {
         println!("providers");
         for line in &report.providers {
-            println!("  {line}");
+            print_provider_line(line);
         }
     }
-    println!("gates");
-    for gate in &report.gates {
-        println!("  {}: {} [{}]", gate.name, gate.command_line(), gate.source);
-    }
-    match (report.attempt_tokens, report.run_tokens) {
-        (Some(attempt), Some(run)) => {
-            println!("budget      {attempt} tokens/Attempt; {run} tokens/Round")
-        }
-        _ => println!("budget      uncapped by pipeline authority"),
-    }
-    println!(
-        "convergence {} clean Round; {} Round maximum",
-        report.clean_rounds, report.max_rounds
-    );
-    for warning in &report.warnings {
-        println!("warning     {warning}");
-    }
-    if !report.files.is_empty() {
-        if long {
-            println!("files");
-            for path in &report.files {
-                println!("  {path}");
+    let gate_line =
+        |gate: &Gate| format!("{}: {} [{}]", gate.name, gate.command_line(), gate.source);
+    match report.gates.as_slice() {
+        [gate] => print_wrapped(&format!("gates       {}", gate_line(gate)), 14),
+        gates => {
+            println!("gates");
+            for gate in gates {
+                print_wrapped(&format!("  {}", gate_line(gate)), 4);
             }
+        }
+    }
+    let budget = match (report.attempt_tokens, report.run_tokens) {
+        (Some(attempt), Some(run)) => format!("{attempt} tokens/Attempt; {run} tokens/Round"),
+        _ => "uncapped by pipeline authority".to_string(),
+    };
+    if long {
+        println!("budget      {budget}");
+        println!(
+            "convergence {} clean Round; {} Round maximum",
+            report.clean_rounds, report.max_rounds
+        );
+    } else {
+        print_wrapped(
+            &format!("budget      {budget}; {} Rounds at most", report.max_rounds),
+            12,
+        );
+    }
+    for warning in &report.warnings {
+        let warning = if long {
+            warning.clone()
         } else {
-            println!(
-                "files       {} under .af/; --long lists each",
-                report.files.len()
-            );
+            brief_warning(warning)
+        };
+        print_wrapped(&format!("warning     {warning}"), 12);
+    }
+    if long && !report.files.is_empty() {
+        println!("files");
+        for path in &report.files {
+            println!("  {path}");
         }
     }
     println!("next");
-    for (index, step) in report.next_steps.iter().enumerate() {
-        println!("  {}. {step}", index + 1);
+    // The preview's providers block already names `af provider detect` where it says none, so
+    // its text leaves the step that points at the block to `--json`.
+    let steps = report
+        .next_steps
+        .iter()
+        .filter(|step| !(report.status == "preview" && *step == REGISTER_A_PROVIDER));
+    for (index, step) in steps.enumerate() {
+        print_next_step(index + 1, step);
     }
 }
 
@@ -763,9 +859,9 @@ fn build_bundle(
         providers: Vec::new(),
         next_steps: vec![
             format!("Review this plan, then run `{apply_command}`."),
-            "Separately preview the agent entry point with `af setup agents`; install only with `af setup agents --write`.".into(),
+            "Preview `af setup agents`, then install it with `af setup agents --write`.".into(),
             "Review and commit the generated `.af/` diff on the trusted base branch.".into(),
-            "Run `af onboard` again to validate authority and print the operating workflow.".into(),
+            "Run `af onboard` again to validate the authority and print the workflow.".into(),
         ],
     };
     Ok(Bundle {
@@ -1395,6 +1491,8 @@ fn created_next_steps() -> Vec<String> {
 
 /// What a providers line says when no Provider of the Worker's kind is registered.
 const NONE_REGISTERED: &str = "none registered";
+/// Between what a providers line found and what to run about it.
+const PROVIDER_ARROW: &str = "   ← ";
 const REGISTER_A_PROVIDER: &str =
     "Register a Provider if the providers block says none: af provider detect";
 
@@ -1410,27 +1508,12 @@ fn pick_runner(
     let claude = !registry.ids_of("claude").is_empty();
     let codex = !registry.ids_of("codex").is_empty();
     let (profile, why) = match (claude, codex) {
-        (true, false) => (
-            RunnerProfile::Claude,
-            "the only Provider kind registered on this machine",
-        ),
-        (false, true) => (
-            RunnerProfile::Codex,
-            "the only Provider kind registered on this machine",
-        ),
-        (true, true) => (
-            RunnerProfile::Mixed,
-            "claude and codex Providers are both registered on this machine",
-        ),
-        (false, false) => (
-            RunnerProfile::Mixed,
-            "no Provider is registered on this machine yet; see providers below",
-        ),
+        (true, false) => (RunnerProfile::Claude, "the only Provider kind registered"),
+        (false, true) => (RunnerProfile::Codex, "the only Provider kind registered"),
+        (true, true) => (RunnerProfile::Mixed, "both Provider kinds registered"),
+        (false, false) => (RunnerProfile::Mixed, "no Provider registered yet"),
     };
-    (
-        profile,
-        format!("runner {} ({why}; pass --runner to change)", profile.name()),
-    )
+    (profile, format!("runner {} ({why})", profile.name()))
 }
 
 /// The `--provider NODE=ID` bindings of a new bundle's first review, as the preview selects them:
@@ -1481,7 +1564,7 @@ fn providers_block(
     };
     let state = |id: &str| -> String {
         if !probe {
-            return "registered; --probe checks its login".to_string();
+            return "--probe checks its login".to_string();
         }
         probed
             .iter()
@@ -1491,7 +1574,7 @@ fn providers_block(
     let mut lines = Vec::new();
     if let Some(warning) = &registry.warning {
         lines.push(format!(
-            "the Provider registry cannot be read: {warning}   ← af provider status"
+            "the Provider registry cannot be read: {warning}{PROVIDER_ARROW}af provider status"
         ));
     }
     // The same names-only scan `af provider status` and `af doctor` list (ADR-0206).
@@ -1502,7 +1585,7 @@ fn providers_block(
             .map(|dir| crate::providers::detect::display_path(dir))
             .collect();
         lines.push(format!(
-            "found but not registered: {} (not probed)   ← af provider detect",
+            "found but not registered: {} (not probed){PROVIDER_ARROW}af provider detect",
             found.join(", ")
         ));
     }
@@ -1521,7 +1604,7 @@ fn providers_block(
             None => {
                 let id = crate::providers::available_provider_id(kind, &taken);
                 lines.push(format!(
-                    "{node} needs a {kind} Provider: {NONE_REGISTERED}   ← af provider detect, or af provider setup {id} --kind {kind} --login"
+                    "{node} needs a {kind} Provider: {NONE_REGISTERED}{PROVIDER_ARROW}af provider detect, or af provider setup {id} --kind {kind} --login"
                 ));
             }
             Some(first) => {
@@ -1531,7 +1614,7 @@ fn providers_block(
                     .collect::<Vec<_>>()
                     .join(", ");
                 lines.push(format!(
-                    "{node} needs a {kind} Provider: {listed}   ← bind with --provider {node}={first}"
+                    "{node} needs a {kind} Provider: {listed}{PROVIDER_ARROW}bind with --provider {node}={first}"
                 ));
             }
         }
