@@ -398,6 +398,23 @@ impl Config {
             })
             .unwrap_or_else(|| "?".into())
     }
+
+    /// Whether the value of the dotted `key` comes from where the user layer's own file cannot
+    /// change it: the environment, or a user `conf.d` file read after that file.
+    pub(crate) fn set_above_user_file(&self, key: &str) -> bool {
+        let user_file = self
+            .files
+            .iter()
+            .find(|file| file.layer == "user")
+            .map(|file| &file.path);
+        self.origins
+            .get(key)
+            .is_some_and(|origin| match origin.layer {
+                "environment" => true,
+                "user" => origin.path.as_ref() != user_file,
+                _ => false,
+            })
+    }
 }
 
 /// The environment variable that names the Rust toolchain mapping above every layer; it is
@@ -1079,29 +1096,53 @@ pub(crate) fn layer_path(layer: LayerArg, repo: Option<&Path>) -> Result<PathBuf
 /// Set `[table] key = "value"` in the user layer, the `user` file `af config paths` names,
 /// keeping every other key, table and comment as written. The file is created when absent, read
 /// as every layer is read (a link or an oversized file is refused) and replaced in one rename.
-/// Returns its path.
-pub(crate) fn set_user_string(table: &str, key: &str, value: &str) -> Result<PathBuf, String> {
+/// Returns its path, with what [`UserWrite::undo`] puts back.
+pub(crate) fn set_user_string(table: &str, key: &str, value: &str) -> Result<UserWrite, String> {
     let path = layer_path(LayerArg::User, None)?;
-    let text = match std::fs::symlink_metadata(&path) {
-        Ok(_) => {
-            read_authority(&path).map_err(|error| format!("reading {}: {error}", path.display()))?
-        }
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => String::new(),
+    let previous = match std::fs::symlink_metadata(&path) {
+        Ok(_) => Some(
+            read_authority(&path)
+                .map_err(|error| format!("reading {}: {error}", path.display()))?,
+        ),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => None,
         Err(error) => return Err(format!("inspecting {}: {error}", path.display())),
     };
-    let updated = with_string(&text, table, key, value)
+    let updated = with_string(previous.as_deref().unwrap_or(""), table, key, value)
         .map_err(|error| format!("{}: {error}", path.display()))?;
     if let Some(parent) = path.parent() {
         std::fs::create_dir_all(parent)
             .map_err(|error| format!("creating {}: {error}", parent.display()))?;
     }
+    replace_file(&path, &updated)?;
+    Ok(UserWrite { path, previous })
+}
+
+/// What [`set_user_string`] wrote: the user layer's path, and its text before, `None` when it
+/// created the file.
+pub(crate) struct UserWrite {
+    pub(crate) path: PathBuf,
+    previous: Option<String>,
+}
+
+impl UserWrite {
+    /// Put the user layer back as it was before the write: its earlier text, or no file.
+    pub(crate) fn undo(&self) -> Result<(), String> {
+        match &self.previous {
+            Some(text) => replace_file(&self.path, text),
+            None => std::fs::remove_file(&self.path)
+                .map_err(|error| format!("removing {}: {error}", self.path.display())),
+        }
+    }
+}
+
+/// Replace `path` with `text` in one rename.
+fn replace_file(path: &Path, text: &str) -> Result<(), String> {
     let tmp = path.with_extension(format!("toml.tmp.{}", std::process::id()));
-    std::fs::write(&tmp, updated).map_err(|error| format!("writing {}: {error}", tmp.display()))?;
-    std::fs::rename(&tmp, &path).map_err(|error| {
+    std::fs::write(&tmp, text).map_err(|error| format!("writing {}: {error}", tmp.display()))?;
+    std::fs::rename(&tmp, path).map_err(|error| {
         let _ = std::fs::remove_file(&tmp);
         format!("renaming into {}: {error}", path.display())
-    })?;
-    Ok(path)
+    })
 }
 
 /// `text` with `[table] key = "value"` set and everything else as written: the other keys and
@@ -1257,6 +1298,39 @@ mod tests {
         for channel in [Channel::Stable, Channel::Rc, Channel::Nightly] {
             assert_eq!(Channel::parse(channel.name()), Some(channel));
         }
+    }
+
+    /// `af self channel` refuses before anything is fetched or written when the user file
+    /// cannot set the channel: the environment or a user `conf.d` file sets it after that file.
+    #[test]
+    fn a_key_set_by_the_environment_or_a_later_user_file_is_above_the_user_file() {
+        let temp = tempfile::tempdir().unwrap();
+        let root = std::fs::canonicalize(temp.path()).unwrap();
+        let user = root.join("user");
+        std::fs::create_dir_all(user.join("conf.d")).unwrap();
+        std::fs::write(user.join("config.toml"), "[self]\nchannel = \"rc\"\n").unwrap();
+        let roots = |environment: Vec<(String, String)>| MachineRoots {
+            system: root.join("etc"),
+            user: user.clone(),
+            environment,
+        };
+        let above = |environment| {
+            load_rooted(Some(&root), true, &roots(environment))
+                .unwrap()
+                .set_above_user_file("self.channel")
+        };
+        assert!(!above(Vec::new()), "the user file itself");
+        let environment = vec![("AF_SELF__CHANNEL".to_string(), "stable".to_string())];
+        assert!(above(environment));
+        std::fs::write(
+            user.join("conf.d/10-channel.toml"),
+            "[self]\nchannel = \"stable\"\n",
+        )
+        .unwrap();
+        assert!(above(Vec::new()), "a conf.d file read after it");
+        std::fs::remove_file(user.join("conf.d/10-channel.toml")).unwrap();
+        std::fs::remove_file(user.join("config.toml")).unwrap();
+        assert!(!above(Vec::new()), "the built-in default");
     }
 
     #[test]

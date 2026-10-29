@@ -74,23 +74,34 @@ records and what `af self status` prints from it.
   A nightly reports the version `<core>-nightly.<YYYYMMDD>` (`0.14.0-nightly.20261029` while main
   is `0.14.0-rc.3`), sorts as a pre-release of its core, and installs beside releases under
   `$XDG_DATA_HOME/af/versions/<version>/`. Its receipt records its `tag`, `channel = "nightly"`
-  and the `commit` its binary reported. Nightlies are built for Linux only until macOS nightlies
-  exist.
+  and the `commit` its binary reported. `af self install <core>-nightly.<YYYYMMDD>` installs the
+  nightly of that date only when its binary is that version: an installed nightly of the same
+  date that is another version is refused, never reused under the name asked for. Nightlies are
+  built for Linux only until macOS nightlies exist.
 
 ```sh
 af self channel                    # the configured channel and the layer it comes from
-af self channel nightly            # write it, install the newest nightly, make it the default
+af self channel nightly            # install the newest nightly, write it, make it the default
 af self channel stable             # back to the newest release, even an older one
 af self channel rc --no-update     # write it only; af self update follows it from then on
 ```
 
-`af self channel <name>` writes `[self] channel = "<name>"` into the user layer, the `user` file
-`af config paths` names, keeping the file's other keys and comments and creating it when absent.
-Unless `--no-update`, it then installs the channel's newest and makes it the default. A switch is
-an explicit choice, so it may make an older version the default, nightly to stable for one, and
-it says so (`moved back from af … to af …`); `af self update` never moves the default backwards.
-What the switch needs, the nightly key for `nightly`, an af installed by `af self` and the
-network unless `--no-update`, is checked before the file is written.
+`af self channel <name>` installs the channel's newest, then writes `[self] channel = "<name>"`
+into the user layer, the `user` file `af config paths` names, keeping the file's other keys and
+comments and creating it when absent, and makes that newest the default. A switch is an explicit
+choice, so it may make an older version the default, nightly to stable for one, and it says so
+(`moved back from af … to af …`); `af self update` never moves the default backwards.
+`--no-update` only writes the file and installs nothing.
+
+Before anything is fetched the switch checks the nightly key for `nightly`, that no layer above
+the user file (an `AF_SELF__CHANNEL` variable or a user `conf.d` file) sets another channel, and,
+unless `--no-update`, that this af was installed by `af self` and that `AF_SELF_OFFLINE` is not
+set. It then lists the channel at the release source, downloads its newest, verifies the
+signature of its `SHA256SUMS` and, for a nightly, the version its binary reports, and installs it
+beside the other versions. Only then does it write the file and move the default. A switch that
+fails at any of these steps leaves `[self] channel` and the default as they were (a version it
+installed stays installed) and names `af self channel <name>` to try again; `af self update`
+cannot finish a switch that moves backwards.
 
 On the nightly channel `af self update --check` exits 10 when a nightly with a later date than
 the running one exists and 0 otherwise, naming the nightly's tag; an af that runs no nightly is
@@ -103,8 +114,9 @@ newest nightly the last check found.
 
 A project whose `.af/af.lock` pins a release keeps running that pin whatever the channel
 ([ADR-0044](adr/0044-af-manages-itself-and-dispatches-to-the-pinned-release.md)). A nightly is
-never pinned: `af onboard` writes no pin from a nightly, and an install a lock asks for is never a
-nightly. `af self rollback`, `remove`, `prune` and `keep_versions` treat an installed nightly like
+never pinned: `af onboard` writes no pin from a nightly, an install a lock asks for is never a
+nightly, and a lock that pins a nightly pins nothing: dispatch says so in one line and runs the af
+it was started as, even when that nightly is installed. `af self rollback`, `remove`, `prune` and `keep_versions` treat an installed nightly like
 any installed version ([ADR-0267](adr/0267-offer-a-nightly-channel-in-af-self.md)).
 
 ## The release check

@@ -32,8 +32,9 @@ version: the version is known only once its binary says it. Nightlies are built 
   stable or rc channel's. The archive of every tag is `af-<tag>-<target>.tar.gz`.
 - A nightly's installed version is what its downloaded binary answers to `af --version --json`,
   asked before it is installed; it must be `<core>-nightly.<YYYYMMDD>` with the tag's date, or
-  the install is refused. Its receipt adds `tag`, `channel = "nightly"` and the `commit` the
-  binary reported; a release's receipt is unchanged.
+  the install is refused. An installed nightly is reused for its tag only when it is the version
+  asked for, if one is; another version of the same date is refused. Its receipt adds `tag`,
+  `channel = "nightly"` and the `commit` the binary reported; a release's receipt is unchanged.
 - A nightly's `SHA256SUMS.minisig` is verified against the nightly key alone, embedded at build
   time from `crates/af/keys/nightly.pub` as `AF_NIGHTLY_KEY` (empty without the file), with an
   `AF_NIGHTLY_KEY` environment override like `AF_RELEASE_KEY`'s. A release's sums are never
@@ -41,11 +42,16 @@ version: the version is known only once its binary says it. Nightlies are built 
   nightly key refuses the nightly channel and every nightly install in one sentence: `this af
   carries no nightly key`. No nightly installs unsigned.
 - `af self channel` prints the configured channel and its layer. `af self channel
-  stable|rc|nightly` writes `[self] channel` into the user layer with `toml_edit`, keeping the
-  file's other keys and comments, then installs the channel's newest and makes it the default.
-  The switch is the one place `af self` may move the default to an older version, and it says
-  so. `--no-update` only records. What the switch needs (the nightly key, a receipted af, the
-  network) is checked before the file is written.
+  stable|rc|nightly` installs the channel's newest, then writes `[self] channel` into the user
+  layer with `toml_edit`, keeping the file's other keys and comments, and makes that newest the
+  default. The switch is the one place `af self` may move the default to an older version, and
+  it says so. `--no-update` only records. Before anything is fetched the switch checks the
+  nightly key, that no layer above the user file sets another channel, and, unless
+  `--no-update`, a receipted af and an unset `AF_SELF_OFFLINE`; it then lists the channel,
+  downloads and verifies its newest (signature, and a nightly's version) and installs it. A
+  switch that fails at any step leaves the channel and the default as they were, the user file
+  put back when the default cannot be moved after the write, and names `af self channel <name>`
+  to try again.
 - `af self update` follows the channel. On nightly, `--check` exits 10 when a nightly with a
   later date than the running nightly exists, and an af that runs no nightly is always told of
   the newest nightly, with `af self channel nightly` as the command, since its version is
@@ -60,8 +66,10 @@ version: the version is known only once its binary says it. Nightlies are built 
   fields every receipt has (a nightly's tag follows from its version; its commit is `commit`).
   The text status adds a `nightly:` line on that channel.
 - A nightly is never pinned. `af onboard` writes no pin from a nightly, a lock's install never
-  installs one, and `.af/af.lock` and `scripts/pin-release.sh` are unchanged. A pinned project
-  keeps running its pin whatever the channel (ADR-0044). Rollback, remove, prune,
+  installs one, and dispatch refuses a lock that pins a nightly in one sentence, whether that
+  nightly is installed, running or neither, and runs the af it was started as. `.af/af.lock`
+  and `scripts/pin-release.sh` are unchanged. A pinned project keeps running its pin whatever
+  the channel (ADR-0044). Rollback, remove, prune,
   `keep_versions` and dispatch (ADR-0044, ADR-0105) treat an installed nightly like any
   installed version.
 - `install.sh` takes `AF_INSTALL_CHANNEL=nightly` and `--nightly`, ranks nightly tags by date,
@@ -80,4 +88,6 @@ version: the version is known only once its binary says it. Nightlies are built 
   release to stay among them.
 - A debug build reads `AF_TEST_EMBEDDED_NIGHTLY_KEY` in place of the embedded nightly key, so a
   fixture proves the refusal of a build without one whatever the checkout holds; a release
-  binary never reads it.
+  binary never reads it. A debug build likewise reads `AF_TEST_RUNNING_VERSION` as the version
+  `af self update` on the nightly channel and `af self status` take the running af for, so a
+  fixture runs the nightly it activated as that nightly runs.

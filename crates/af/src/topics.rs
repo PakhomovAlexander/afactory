@@ -1179,12 +1179,14 @@ Channels
   stable installs the newest release, rc the newest release or pre-release, nightly the newest
   nightly build of main by its date (`nightly-YYYY.MM.DD`, version <core>-nightly.<YYYYMMDD>;
   Linux only). `af self channel` prints the configured channel and its layer; `af self channel
-  stable|rc|nightly` writes it into the user layer, keeping the file's other keys and comments,
-  then installs the channel's newest as the default, even an older one, and says so; with
-  --no-update it only records. `af self update` and the check follow the channel; on nightly a
-  newer nightly is told by its date. A nightly's SHA256SUMS is verified against the nightly key
-  alone (crates/af/keys/nightly.pub, embedded at build time, or AF_NIGHTLY_KEY), never the
-  release key, and a release's never against it: an af without one refuses the nightly channel.
+  stable|rc|nightly` installs and verifies the channel's newest, then writes the channel into
+  the user layer, keeping the file's other keys and comments, and makes that newest the
+  default, even an older one, and says so; a switch that fails changes neither the channel nor
+  the default. With --no-update it only records. `af self update` and the check follow the
+  channel; on nightly a newer nightly is told by its date. A nightly's SHA256SUMS is verified
+  against the nightly key alone (crates/af/keys/nightly.pub, embedded at build time, or
+  AF_NIGHTLY_KEY), never the release key, and a release's never against it: an af without one
+  refuses the nightly channel.
   A pinned project runs its pin whatever the channel, and a nightly is never pinned.
 
 Commands

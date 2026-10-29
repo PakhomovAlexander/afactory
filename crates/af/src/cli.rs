@@ -3504,12 +3504,15 @@ af self update   # needs: the network and an af installed by af self\n  \
     #[command(
         long_about = "Show or switch the release channel: stable, rc or nightly.\n\n\
 Without a channel, prints the configured one and the layer it comes from (`stable` from the \
-built-in default when no file sets it). With one, writes `[self] channel` into the user layer \
-(`af config paths` names it; its other keys and comments stay as written), then installs the \
-channel's newest and makes it the default: stable the newest release, rc the newest release or \
-pre-release, nightly the newest nightly build of main by its date. A switch may make an older \
-version the default, nightly to stable for one, and says so; `af self update` never does. \
-`--no-update` only records the channel, and `af self update` follows it from then on.\n\n\
+built-in default when no file sets it). With one, installs and verifies the channel's newest \
+first, then writes `[self] channel` into the user layer (`af config paths` names it; its other \
+keys and comments stay as written) and makes that newest the default: stable the newest \
+release, rc the newest release or pre-release, nightly the newest nightly build of main by its \
+date. A switch that fails, at the listing, the download, the signature or a nightly's version, \
+leaves the channel and the default as they were; `af self channel <channel>` tries again. A \
+switch may make an older version the default, nightly to stable for one, and says so; `af self \
+update` never does. `--no-update` only records the channel, and `af self update` follows it \
+from then on.\n\n\
 A nightly's SHA256SUMS is verified against the nightly key alone, never the release key: an af \
 built without crates/af/keys/nightly.pub refuses the nightly channel (AF_NIGHTLY_KEY names a key \
 file instead). Nightlies are built for Linux only. A project whose `.af/af.lock` pins a release \

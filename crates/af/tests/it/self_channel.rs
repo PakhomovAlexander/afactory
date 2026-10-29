@@ -1,9 +1,13 @@
 //! `af self channel` against a directory release source holding a release, a release candidate
-//! and a nightly (ADR-0267): the switch writes `[self] channel` into the user layer and keeps the
-//! file's other keys and comments, installs the channel's newest and makes it the default, moving
-//! back to an older release when the channel says so; `--no-update` only records. The nightly is
-//! verified against the nightly key alone: a build without one refuses the channel with one
-//! sentence, and a nightly signed with the release key is refused. Nothing reaches the network.
+//! and a nightly (ADR-0267): the switch installs the channel's newest, writes `[self] channel`
+//! into the user layer, keeping the file's other keys and comments, and makes that newest the
+//! default, moving back to an older release when the channel says so; `--no-update` only records.
+//! The nightly is verified against the nightly key alone: a build without one refuses the channel
+//! with one sentence, and a nightly signed with the release key is refused. A switch that fails
+//! leaves the user layer and the default as they were. Running the nightly it activated, the
+//! check tells a newer date and the status names the nightly; a lock that pins a nightly and a
+//! request for another version of an installed nightly's date are refused. Nothing reaches the
+//! network.
 
 use std::path::{Path, PathBuf};
 use std::process::Output;
@@ -181,7 +185,7 @@ fn installed(sandbox: &Sandbox) -> Vec<String> {
 }
 
 #[test]
-fn the_nightly_channel_is_refused_without_a_nightly_key_and_for_a_nightly_the_release_key_signed() {
+fn a_failed_switch_leaves_the_user_layer_and_the_default_as_they_were() {
     let keys = tempfile::tempdir().unwrap();
     let release = Signer::new(keys.path());
     let nightly = Signer::new(&keys.path().join("nightly"));
@@ -213,21 +217,184 @@ fn the_nightly_channel_is_refused_without_a_nightly_key_and_for_a_nightly_the_re
         assert!(!user_layer(&sandbox).exists());
     }
 
+    // A first switch, to stable: the layer and the default the failed switches below keep.
+    let key = Some(nightly.public_key_file.as_path());
+    let stable = af_self(&sandbox, &real, key, &["channel", "stable"]);
+    assert!(stable.status.success(), "{}", err(&stable));
+    let layer = std::fs::read_to_string(user_layer(&sandbox)).unwrap();
+    assert_eq!(layer, "[self]\nchannel = \"stable\"\n");
+    assert_eq!(sandbox.default_target().as_deref(), Some("0.13.0"));
+    let unchanged = |refused: &Output, cause: &str| {
+        assert_eq!(refused.status.code(), Some(1), "{}", out(refused));
+        assert!(
+            err(refused).contains(cause)
+                && err(refused).contains(
+                    "the switch to the nightly channel changed nothing: [self] channel and the default are as they were — fix: `af self channel nightly` tries again"
+                )
+                && !err(refused).contains("af self update"),
+            "{}",
+            err(refused)
+        );
+        assert!(
+            !out(refused).contains("channel: nightly"),
+            "{}",
+            out(refused)
+        );
+        assert_eq!(
+            std::fs::read_to_string(user_layer(&sandbox)).unwrap(),
+            layer
+        );
+        assert_eq!(sandbox.default_target().as_deref(), Some("0.13.0"));
+        assert!(!sandbox.versions().join(NIGHTLY).exists());
+    };
+
     // The nightly key verifies a nightly's sums, and the release key's signature is not it.
-    let refused = af_self(
-        &sandbox,
-        &real,
-        Some(&nightly.public_key_file),
-        &["channel", "nightly"],
+    let refused = af_self(&sandbox, &real, key, &["channel", "nightly"]);
+    unchanged(
+        &refused,
+        &format!("SHA256SUMS of {NIGHTLY_TAG} does not verify against the nightly key"),
     );
+
+    // A release source that is not there: the listing fails before anything is written.
+    let missing = sandbox.path("no-such-releases");
+    let refused = sandbox
+        .command(&real)
+        .args(["self", "channel", "nightly"])
+        .env("AF_NIGHTLY_KEY", &nightly.public_key_file)
+        .env("AF_RELEASE_SOURCE", &missing)
+        .output()
+        .unwrap();
+    unchanged(&refused, &format!("reading {}", missing.display()));
+}
+
+/// The fake nightly binary the switch installed, replaced by the binary under test: run with
+/// `AF_TEST_RUNNING_VERSION`, it is the activated nightly as `af self` sees one running, its
+/// receipt the install's.
+fn run_as_nightly(sandbox: &Sandbox, version: &str) -> PathBuf {
+    let binary = sandbox.versions().join(version).join("af");
+    std::fs::remove_file(&binary).unwrap();
+    common::install_private_af(&binary);
+    binary
+}
+
+#[test]
+fn a_running_nightly_is_told_a_newer_date_and_no_pin_or_other_version_reaches_a_nightly() {
+    let keys = tempfile::tempdir().unwrap();
+    let release = Signer::new(keys.path());
+    let nightly = Signer::new(&keys.path().join("nightly"));
+    let sandbox = Sandbox::new().with_key(&release);
+    sources(&sandbox, &release, &nightly);
+    let older = "nightly-2026.10.28";
+    sandbox.publish_nightly(older, "0.14.0-nightly.20261028");
+    sandbox.sign_tag(older, &nightly, None);
+    let real = sandbox.adopt_real_binary();
+    let key = Some(nightly.public_key_file.as_path());
+    let switched = af_self(&sandbox, &real, key, &["channel", "nightly"]);
+    assert!(switched.status.success(), "{}", err(&switched));
+    assert_eq!(sandbox.default_target().as_deref(), Some(NIGHTLY));
+
+    // A lock that pins the installed nightly pins nothing: one sentence, and this af runs. A
+    // lock that pins a release still dispatches to it.
+    let digest = common::sha256_hex(
+        &std::fs::read(sandbox.path(&format!(
+            "releases/{NIGHTLY_TAG}/af-{NIGHTLY_TAG}-{}.tar.gz",
+            common::TARGET
+        )))
+        .unwrap(),
+    );
+    let repo = sandbox.pinned_repo("nightly-pin", &Sandbox::lock(NIGHTLY, Some(&digest)));
+    let run = sandbox
+        .command(&real)
+        .args(["review", "campaigns"])
+        .current_dir(&repo)
+        .output()
+        .unwrap();
+    assert!(run.status.success(), "{}", err(&run));
+    let lock = std::fs::canonicalize(repo.join(".af/af.lock")).unwrap();
+    let refusal = format!(
+        "af: {} pins af {NIGHTLY}, a nightly, and a nightly is never pinned, so it pins nothing — fix: af onboard --refresh-lock --af <version>",
+        lock.display()
+    );
+    assert_eq!(
+        err(&run).lines().filter(|line| *line == refusal).count(),
+        1,
+        "{}",
+        err(&run)
+    );
+    assert!(!out(&run).contains("fake af"), "{}", out(&run));
+    let release_digest = common::sha256_hex(
+        &std::fs::read(sandbox.release_dir("0.13.0").join(Sandbox::asset("0.13.0"))).unwrap(),
+    );
+    let repo = sandbox.pinned_repo(
+        "release-pin",
+        &Sandbox::lock("0.13.0", Some(&release_digest)),
+    );
+    let run = sandbox
+        .command(&real)
+        .args(["review", "campaigns"])
+        .current_dir(&repo)
+        .env("AF_SELF__INSTALL_PINS", "\"always\"")
+        .output()
+        .unwrap();
+    assert!(
+        out(&run).contains("fake af 0.13.0 review campaigns"),
+        "{}\n{}",
+        out(&run),
+        err(&run)
+    );
+
+    // Another core version of the installed nightly's date is never the installed binary.
+    let other = "0.15.0-nightly.20261029";
+    let refused = af_self(&sandbox, &real, key, &["install", other]);
     assert_eq!(refused.status.code(), Some(1), "{}", out(&refused));
     assert!(
         err(&refused).contains(&format!(
-            "SHA256SUMS of {NIGHTLY_TAG} does not verify against the nightly key"
-        )),
-        "{}",
+            "the nightly {NIGHTLY_TAG} is af {NIGHTLY}, not the af {other} asked for"
+        )) && !out(&refused).contains("installed at"),
+        "{}\n{}",
+        out(&refused),
         err(&refused)
     );
-    assert!(!sandbox.versions().join(NIGHTLY).exists());
-    assert_eq!(sandbox.default_target(), None);
+    assert!(!sandbox.versions().join(other).exists());
+    assert_eq!(sandbox.default_target().as_deref(), Some(NIGHTLY));
+
+    // Running the activated nightly: the newest nightly is its own date, so it is up to date.
+    let running = run_as_nightly(&sandbox, NIGHTLY);
+    let as_nightly = |args: &[&str]| {
+        sandbox
+            .command(&running)
+            .arg("self")
+            .args(args)
+            .env("AF_TEST_RUNNING_VERSION", NIGHTLY)
+            .output()
+            .unwrap()
+    };
+    let check = as_nightly(&["update", "--check"]);
+    assert_eq!(check.status.code(), Some(0), "{}", err(&check));
+    assert_eq!(
+        out(&check).trim(),
+        format!("af {NIGHTLY} is up to date (the newest nightly is {NIGHTLY_TAG})")
+    );
+
+    // A nightly of a later date: news, exit 10, and the status names the running nightly's tag
+    // and commit and the newest the check found.
+    let newer = "nightly-2026.10.30";
+    sandbox.publish_nightly(newer, "0.14.0-nightly.20261030");
+    sandbox.sign_tag(newer, &nightly, None);
+    let check = as_nightly(&["update", "--check"]);
+    assert_eq!(check.status.code(), Some(10), "{}", err(&check));
+    assert_eq!(
+        out(&check).trim(),
+        format!("af {newer} is available (running {NIGHTLY}) — af self update")
+    );
+    let status = as_nightly(&["status"]);
+    assert!(status.status.success(), "{}", err(&status));
+    assert!(
+        out(&status).starts_with(&format!("af {NIGHTLY} ("))
+            && out(&status).contains(&format!(
+                "nightly:    running {NIGHTLY_TAG} (commit {NIGHTLY_COMMIT}) · newest {newer} (af self update)"
+            )),
+        "{}",
+        out(&status)
+    );
 }
