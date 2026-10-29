@@ -1461,4 +1461,158 @@ mod advisory_reviewer_tests {
                 .is_empty()
         );
     }
+
+    /// The light default pipeline (`default-light/review`, ADR-0262): its review graph binds only
+    /// `correctness`. The repository's catalog marks `bugs` advisory, so the planner may leave it
+    /// unbound (`unbound_allowed`) and the captured domain admits the graph; under a policy that
+    /// marks `bugs` required the planner must bind it and the captured domain refuses the same
+    /// graph.
+    #[test]
+    fn an_advisory_bugs_reviewer_admits_a_correctness_only_review_graph() {
+        use review_graph::task::{Address, COMPILED_TASK_SCHEMA_V1, CompiledNode};
+        let directory = tempfile::tempdir().unwrap();
+        let cas = Cas::open(directory.path().join("cas")).unwrap();
+        let code: super::super::code::CodeTaskPolicy = serde_json::from_value(serde_json::json!({
+            "schema": "af.code-task-policy/1",
+            "checks": {"kernel": {"name": "kernel", "required": true,
+                "command": {"program": "true", "args": []}}},
+            "check_wall_ms": 60_000,
+            "require_container": false
+        }))
+        .unwrap();
+        let code_id = cas.put_json(&serde_json::to_value(&code).unwrap()).unwrap();
+        let code_installed = super::super::code::code_signatures(&code_id, &code).unwrap();
+        let policy = |bugs| {
+            let mut policy = policy_with(&[
+                ("bugs", bugs),
+                ("correctness", DemandRequirement::Required),
+                ("uix", DemandRequirement::Advisory),
+            ]);
+            policy.check_policy_id = code_id.clone();
+            let id = cas
+                .put_json(&serde_json::to_value(&policy).unwrap())
+                .unwrap();
+            (id, policy)
+        };
+        let (light_id, light) = policy(DemandRequirement::Advisory);
+        let (strict_id, strict) = policy(DemandRequirement::Required);
+        let installed = review_signatures(&light_id, &light).unwrap();
+        assert_eq!(
+            installed["operator/review-reduce"].unbound_allowed,
+            BTreeSet::from(["bugs".to_string(), "uix".to_string()])
+        );
+        let strict_installed = review_signatures(&strict_id, &strict).unwrap();
+        assert_eq!(
+            strict_installed["operator/review-reduce"].unbound_allowed,
+            BTreeSet::from(["uix".to_string()])
+        );
+
+        let at = |node: &str, port: &str| Address {
+            node: node.into(),
+            port: port.into(),
+        };
+        let primitive = |operator, signature: &str, contract, inputs| CompiledNode {
+            operator: CompiledOperator::Primitive {
+                operator,
+                signature: signature.into(),
+            },
+            contract,
+            inputs,
+            conditions: Vec::new(),
+        };
+        let shared = BTreeMap::from([
+            ("source".to_string(), at("root", "source")),
+            ("history".to_string(), at("root", "history")),
+            ("subject".to_string(), at("bind", "subject")),
+            ("checks".to_string(), at("checks", "result")),
+        ]);
+        let mut reviewer_inputs = shared.clone();
+        reviewer_inputs.insert("assignment".into(), at("bind", "correctness"));
+        let mut reduce_inputs = shared;
+        reduce_inputs.insert("correctness".into(), at("correctness", "result"));
+        let reviewer_contract = PipelineContractV1 {
+            inputs: BTreeMap::from([(
+                "assignment".to_string(),
+                port(TASK_REVIEW_ASSIGNMENT_V1, same(), false),
+            )]),
+            outputs: BTreeMap::from([("result".to_string(), port(RESULT_TYPE, same(), false))]),
+        };
+        let graph = CompiledTask {
+            schema: COMPILED_TASK_SCHEMA_V1.into(),
+            nodes: BTreeMap::from([
+                (
+                    "bind".to_string(),
+                    primitive(
+                        TaskOperatorV1::ReviewBind {},
+                        "operator/review-bind",
+                        installed["operator/review-bind"].contract.clone(),
+                        BTreeMap::from([
+                            ("source".to_string(), at("root", "source")),
+                            ("history".to_string(), at("root", "history")),
+                        ]),
+                    ),
+                ),
+                (
+                    "checks".to_string(),
+                    primitive(
+                        TaskOperatorV1::Check {
+                            checks: BTreeSet::from(["kernel".to_string()]),
+                            remote_checks: BTreeSet::new(),
+                        },
+                        "operator/check",
+                        code_installed["operator/check"].contract.clone(),
+                        BTreeMap::from([("source".to_string(), at("root", "source"))]),
+                    ),
+                ),
+                (
+                    "correctness".to_string(),
+                    primitive(
+                        TaskOperatorV1::Verify {
+                            slot: "correctness".into(),
+                        },
+                        "worker/default-light/correctness",
+                        reviewer_contract,
+                        reviewer_inputs,
+                    ),
+                ),
+                (
+                    "reduce".to_string(),
+                    primitive(
+                        TaskOperatorV1::ReviewReduce {},
+                        "operator/review-reduce",
+                        installed["operator/review-reduce"].contract.clone(),
+                        reduce_inputs,
+                    ),
+                ),
+            ]),
+            order: ["bind", "checks", "correctness", "reduce"]
+                .map(String::from)
+                .to_vec(),
+            inputs: BTreeMap::new(),
+            outputs: BTreeMap::from([("review".to_string(), at("reduce", "result"))]),
+            coverage: BTreeMap::from([("reviewed".to_string(), at("reduce", "result"))]),
+            calls: BTreeMap::new(),
+            slots: BTreeMap::new(),
+            replaced_workers: BTreeMap::new(),
+            max_parallel: 3,
+            allowances: BTreeMap::new(),
+            owned_children: BTreeMap::new(),
+            experimental_slots: BTreeMap::new(),
+            review_integration: None,
+            token_scopes: BTreeMap::new(),
+        };
+        assert_eq!(
+            installed["operator/review-reduce"].contract,
+            strict_installed["operator/review-reduce"].contract,
+            "both policies install the same reduce contract, so only the requirement differs"
+        );
+
+        assert!(ReviewTaskDomain::captured(&cas, &light_id, graph.clone()).is_ok());
+        assert_eq!(
+            ReviewTaskDomain::captured(&cas, &strict_id, graph)
+                .err()
+                .as_deref(),
+            Some("Review reducer omitted a required reviewer binding")
+        );
+    }
 }

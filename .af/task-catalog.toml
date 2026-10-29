@@ -15,7 +15,10 @@ max_rounds = 2
 allow_targeted_repairs = false
 
 [review.reviewers]
-bugs = "required"
+# `bugs` is advisory so that a pipeline may leave it unbound (default-light/*); a pipeline
+# that binds it counts its findings and its missing result exactly as before, but a benchmark
+# Demand it files is advisory and no longer blocks convergence (ADR-0262).
+bugs = "advisory"
 correctness = "required"
 uix = "advisory"
 
@@ -192,7 +195,7 @@ digest = "sha256:579f0f912f7bb51f86f0bd7115afb1593774e95aad48e65eec8670a1a537ff2
 path = ".af/task-packages/kernel/review-code-remote"
 
 # The repository's default Task pipeline (owner's decision, 27 October 2026): one implementing
-# iteration by Opus 5.5, two required reviewers (bugs: gpt-5.6-terra, correctness: gpt-6-sol), one
+# iteration by Opus 5.5, two bound reviewers (bugs: gpt-5.6-terra, correctness: gpt-6-sol), one
 # advisory reviewer for gate time and quality in the `uix` slot (gpt-6-astra medium) and an
 # evaluator (gpt-6-astra high); `default/verification` judges an existing candidate the same way.
 
@@ -231,6 +234,41 @@ version = "1.0.0"
 digest = "sha256:595fd743b703967b3b4b0c28cf15046d9f4d15b0fa2d0b3a376ad1fdd229fe1f"
 path = ".af/task-packages/default/verification"
 
+# The light default pipeline (owner's decision, 29 October 2026) for small, local issues: one
+# implementing iteration by Opus 5.5 at medium effort, the correctness reviewer and the
+# evaluator of the default pipeline with smaller Attempt allowances, no bugs or advisory reviewer.
+# The correctness prompt also owns the concrete functional defects no bugs reviewer looks for.
+
+[packages."default-light/implementer"]
+version = "1.0.2"
+digest = "sha256:c5750c42151cfe5d1f832a6ba2c8aa3e53d9ca752fe6e40a352026f7d904980c"
+path = ".af/task-packages/default-light/implementer"
+
+[packages."default-light/correctness"]
+version = "1.0.1"
+digest = "sha256:66a423d4130474cc7c210827e4c17d30dc81b296e81fcced4f004a664fe07b55"
+path = ".af/task-packages/default-light/correctness"
+
+[packages."default-light/evaluator"]
+version = "1.0.1"
+digest = "sha256:674918b87e63d4a22f922f21971119e38fcc8a022b5fbec50009cea1a01698d3"
+path = ".af/task-packages/default-light/evaluator"
+
+[packages."default-light/review"]
+version = "1.0.0"
+digest = "sha256:95d652e15fcf06d703d3ada577d251d51e47f75c2f046bbaadfbbef5eecc9b12"
+path = ".af/task-packages/default-light/review"
+
+[packages."default-light/implementation"]
+version = "1.0.0"
+digest = "sha256:0ea9415118a24b6f987c2ec5a259bf07e8529ed4774f5b6db7114da65cae980e"
+path = ".af/task-packages/default-light/implementation"
+
+[packages."default-light/verification"]
+version = "1.0.0"
+digest = "sha256:570f34947f12d22a32c64a1d4ec53218747cc33f99be924fddcad0506e07a10f"
+path = ".af/task-packages/default-light/verification"
+
 [independence]
 command_workers_by_package = true
 distinct_principals = false
@@ -255,6 +293,9 @@ distinct_models = true
 "default/correctness" = "codex-main"
 "default/advisor" = "codex-main"
 "default/evaluator" = "codex-main"
+"default-light/implementer" = "claude-main"
+"default-light/correctness" = "codex-main"
+"default-light/evaluator" = "codex-main"
 
 [provider_admission]
 tokens = 32768

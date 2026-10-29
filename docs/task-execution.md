@@ -13,9 +13,16 @@ expanded tree, Claude/Codex workflow and the automation boundary.
 
 Beside the `kernel/*` and `warm/*` Pipelines, this repository's catalog pins its default Task
 pipeline, `default/implementation` and, for a `verification` Task, `default/verification`:
-one implementing iteration, two required reviewers, one advisory reviewer for gate time and
-quality, and an independent evaluator ([the default pipeline](tasks.md#the-default-pipeline),
-[ADR-0253](adr/0253-the-default-task-pipeline-lives-in-the-catalog.md)).
+one implementing iteration, two bound reviewers whose findings count (bugs, which the catalog's
+policy marks advisory, and correctness), one advisory reviewer for gate time and quality, and an
+independent evaluator ([the default pipeline](tasks.md#the-default-pipeline),
+[ADR-0253](adr/0253-the-default-task-pipeline-lives-in-the-catalog.md)). For small, local
+changes it also pins the light default pipeline, `default-light/implementation` and
+`default-light/verification`: one implementing iteration at medium effort, the correctness
+reviewer, which also owns concrete functional defects, and the independent evaluator, with no
+bug-bounty or gate-time reviewer
+([the light default pipeline](tasks.md#the-light-default-pipeline),
+[ADR-0262](adr/0262-offer-a-light-default-pipeline-for-small-changes.md)).
 
 The trusted `.af/code-policy.toml` sets `check_wall_ms`, the whole check Attempt's wall.
 Without `check_process_wall_ms`, positive values through `5400000` (90 minutes) are admitted.
