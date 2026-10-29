@@ -518,7 +518,18 @@ impl App {
         let Opened::Item(tab, id) = &self.opened else {
             return;
         };
-        let (tab, id) = (*tab, id.clone());
+        let (tab, mut id) = (*tab, id.clone());
+        // A read may have renamed the opened entry (a Task whose Store took a group when
+        // another checkout appeared): the pane says what it is called now, and the bar and
+        // the breadcrumb follow it instead of losing it.
+        if let Some(now) = self.panes.get(Some(tab)).opened_id()
+            && now != id
+            && listed(&self.panes.get(Some(tab)).items(), &now)
+        {
+            self.tree.select(NodeKind::Item(tab), &now);
+            self.opened = Opened::Item(tab, now.clone());
+            id = now;
+        }
         if listed(&self.panes.get(Some(tab)).items(), &id) {
             return;
         }

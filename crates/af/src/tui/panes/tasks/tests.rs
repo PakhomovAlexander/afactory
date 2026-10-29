@@ -2828,6 +2828,195 @@ fn f_lists_the_running_tasks_of_every_store_latest_first() {
     assert!(rows.iter().any(|row| row.contains("verified")), "{rows:#?}");
 }
 
+/// A shallow clone has no Project (ADR-0158): its Tasks pane lists this checkout's Store alone,
+/// and neither the Project Store nor `git worktree list` is read for it, so a worktree linked
+/// to it with a Store of its own is not listed.
+#[test]
+fn a_shallow_checkout_lists_no_other_checkout() {
+    let temp = tempfile::tempdir().unwrap();
+    let root = std::fs::canonicalize(temp.path()).unwrap();
+    let repo = crate::tui::tests::hub_repo(&root);
+    let xdg = root.join("state");
+    let shallow = root.join("shallow");
+    let origin = format!("file://{}", repo.display());
+    git(
+        &repo,
+        // The test helper forbids every transport; a clone is one, so the file transport is
+        // allowed again behind it, and `file://` because a local-path clone is never shallow.
+        &[
+            "-c",
+            "protocol.file.allow=always",
+            "clone",
+            "-q",
+            "--depth",
+            "1",
+            &origin,
+            shallow.to_str().unwrap(),
+        ],
+    )
+    .unwrap();
+    assert_eq!(
+        crate::projects::locate(&shallow).unwrap(),
+        crate::projects::Located::Shallow
+    );
+    let linked = root.join("shallow-wt");
+    git(
+        &shallow,
+        &[
+            "worktree",
+            "add",
+            "-q",
+            "-b",
+            "wt",
+            linked.to_str().unwrap(),
+        ],
+    )
+    .unwrap();
+    let linked_state = task_execution::default_task_state(&xdg, &linked).unwrap();
+    std::fs::create_dir_all(&linked_state).unwrap();
+    let own = task_execution::default_task_state(&xdg, &shallow).unwrap();
+
+    let scope = crate::tui::tests::hub_scope(&root, &shallow);
+    let mut pane = TasksPane::default();
+    pane.load(&scope).unwrap();
+    pane.settle();
+    let described: Vec<(&Path, Option<&str>, Origin, Option<&str>)> = pane
+        .targets
+        .iter()
+        .map(|t| {
+            (
+                t.dir.as_path(),
+                t.repo.as_deref(),
+                t.origin,
+                t.note.as_deref(),
+            )
+        })
+        .collect();
+    assert_eq!(
+        described,
+        [(own.as_path(), None, Origin::Scope, Some("this checkout"))]
+    );
+    assert!(pane.error.is_none() && pane.discovered.is_none());
+}
+
+/// A Workspace's Tasks are its checkout's default Store's, listed under its label whether or
+/// not the Workspace also names a `--state` Store: a registered clone no `git worktree list`
+/// names is found by its default Store this way alone, and a `--state` Store two Workspaces
+/// name, kept under the local state root like a default Store, is the registry's, listed once
+/// with both Workspaces noted and reached with `--state`.
+#[test]
+fn a_workspaces_default_store_is_listed_beside_the_state_store_it_names() {
+    let temp = tempfile::tempdir().unwrap();
+    let root = std::fs::canonicalize(temp.path()).unwrap();
+    let repo = crate::tui::tests::hub_repo(&root);
+    let xdg = root.join("state");
+    let state = task_execution::default_task_state(&xdg, &repo).unwrap();
+    // A clone of the Project, registered as the Workspace `clone` with a `--state` Store, with
+    // a default Store of its own; the worktree `hub-wt-x` is the Workspace `x` on the same
+    // `--state` Store and has no default Store.
+    let clone = root.join("clone");
+    git(
+        &repo,
+        &[
+            "-c",
+            "protocol.file.allow=always",
+            "clone",
+            "-q",
+            repo.to_str().unwrap(),
+            clone.to_str().unwrap(),
+        ],
+    )
+    .unwrap();
+    let clone_default = task_execution::default_task_state(&xdg, &clone).unwrap();
+    std::fs::create_dir_all(&clone_default).unwrap();
+    let shared = task_execution::local_task_states(&xdg).join("shared-by-two");
+    std::fs::create_dir_all(&shared).unwrap();
+    let registry = crate::storage::registry::location(&xdg);
+    std::fs::create_dir_all(registry.parent().unwrap()).unwrap();
+    std::fs::write(
+        &registry,
+        format!(
+            "version = 2\n\n[[store]]\npath = {:?}\nkind = \"task\"\nfirst_use_unix_ms = 1\n\
+             last_use_unix_ms = 1\n",
+            shared.display().to_string()
+        ),
+    )
+    .unwrap();
+    let worktree = root.join("hub-wt-x");
+    git(
+        &repo,
+        &[
+            "worktree",
+            "add",
+            "-q",
+            "-b",
+            "x",
+            worktree.to_str().unwrap(),
+        ],
+    )
+    .unwrap();
+    register_workspace(&xdg, &repo, "hub", &repo, &state);
+    register_workspace(&xdg, &repo, "clone", &clone, &shared);
+    register_workspace(&xdg, &repo, "x", &worktree, &shared);
+
+    let scope = crate::tui::tests::hub_scope(&root, &repo);
+    let mut pane = TasksPane::default();
+    pane.load(&scope).unwrap();
+    pane.settle();
+    assert!(pane.error.is_none() && pane.discovered.is_none());
+    let described: Vec<(&Path, Option<&str>, Origin, Option<&str>)> = pane
+        .targets
+        .iter()
+        .map(|t| {
+            (
+                t.dir.as_path(),
+                t.repo.as_deref(),
+                t.origin,
+                t.note.as_deref(),
+            )
+        })
+        .collect();
+    let shown = scope.abbreviate(&shared);
+    assert_eq!(
+        described,
+        [
+            (
+                state.as_path(),
+                Some("hub"),
+                Origin::Scope,
+                Some("this checkout (Workspace hub)")
+            ),
+            (
+                clone_default.as_path(),
+                Some("clone"),
+                Origin::Checkout,
+                Some("Workspace clone")
+            ),
+            (
+                shared.as_path(),
+                Some(shown.as_str()),
+                Origin::Registered,
+                Some("Workspaces clone, x")
+            ),
+        ]
+    );
+    pane.open(None);
+    let rows: Vec<String> = pane.rows().iter().map(Row::text).collect();
+    let heading = format!("{shown}  (--state, in stores.toml; Workspaces clone, x)");
+    assert!(
+        rows.iter().any(|row| row.starts_with(&heading)),
+        "{heading} not in {rows:#?}"
+    );
+    assert!(
+        rows.iter().any(|row| row.starts_with("Workspace clone  ")),
+        "{rows:#?}"
+    );
+    assert!(
+        !rows.iter().any(|row| row.contains("hub-wt-x")),
+        "a Workspace without a default Store is not listed as a checkout: {rows:#?}"
+    );
+}
+
 /// A Project Store that cannot be read is a warning above the Stores, not a shorter list: this
 /// checkout's Store is listed all the same, and the folder says why the registered Workspaces
 /// are not.

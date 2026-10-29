@@ -248,7 +248,7 @@ spinner in the bar row, polled from the event loop without blocking key handling
 The bar lists Worker packages found in the declared directories, in this order and with the
 source folded in as a second-level group when more than one exists:
 `.af/workers/` (reviewer Workers), `.af/task-packages/`, `.af/packages/`, `.af/vendor/`.
-User scope lists nothing here except catalogs synced under `~/.local/share/af` when present.
+The user scope lists no Worker, and synced catalogs are not read.
 A project scope's folder lists its Workers from the start: the load records the read and the
 first poll after the first frame starts it, opened or not, as the other folders load
 (ADR-0261); the user scope lists none. Every read (`HEAD`'s declarations through git, and every
@@ -364,6 +364,10 @@ that has one: the registered Workspaces, from the Project Store read under its s
 label, then the worktrees `git worktree list` names that no Workspace covers, by directory
 name. Each is a bar level named by that label (`hub-wt-branch/ (3)`), and its heading is
 `Workspace LABEL  PATH` or `worktree NAME (not a Workspace)  PATH`, the opaque Store path last.
+A Workspace's Tasks are its checkout's default Store's, listed under its label whether or not
+the Workspace also names a `--state` Store (a clone no `git worktree list` names is found this
+way alone); a Store it names under another path, wherever it is kept, is the registry's, listed
+below with the Workspaces noted beside it.
 With no other checkout the own Store stands ungrouped as before. The read discovers them, never
 the load (ADR-0240), on every read, so a worktree added or a Task run meanwhile shows at the
 next `R`; a Project Store that cannot be read is a warning above the Stores, and the worktrees

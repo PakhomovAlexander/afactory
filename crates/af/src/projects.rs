@@ -157,7 +157,7 @@ pub(crate) fn require_checkout(directory: &Path) -> Result<Checkout, String> {
 }
 
 /// The `[project] name` and `min_af` of the checkout's `.af/af.toml`, when that file parses.
-fn declared(checkout: &Path) -> (Option<String>, Option<String>) {
+pub(crate) fn declared(checkout: &Path) -> (Option<String>, Option<String>) {
     #[derive(Deserialize)]
     struct Declared {
         project: DeclaredProject,

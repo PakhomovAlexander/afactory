@@ -1961,6 +1961,82 @@ mod tests {
         );
     }
 
+    /// A package the preview refuses is drawn from its declaration all the same: the tree with
+    /// its Workers, the contract under it, and the refusal last, so the refusal never hides
+    /// what the file declares, and nothing is compiled for it.
+    #[test]
+    fn a_refused_package_is_drawn_as_its_tree_then_its_contract_then_the_refusal() {
+        let temp = tempfile::tempdir().unwrap();
+        let root = temp.path();
+        let pinned = root.join(".af/task-packages/fixture/implementation");
+        std::fs::create_dir_all(&pinned).unwrap();
+        std::fs::write(pinned.join("pipeline.toml"), IMPLEMENTATION).unwrap();
+        // The same declaration committed at a second path the catalog does not pin: a shadow
+        // the preview refuses.
+        let shadow = root.join(".af/task-packages/fixture/shadow");
+        std::fs::create_dir_all(&shadow).unwrap();
+        std::fs::write(shadow.join("pipeline.toml"), IMPLEMENTATION).unwrap();
+        catalog(
+            root,
+            &[("fixture/implementation", "fixture/implementation")],
+        );
+        commit_all(root, "packages");
+        let mut pane = PipelinesPane::default();
+        pane.load(&scope(root)).unwrap();
+        pane.open(Some(".af/task-packages/fixture/shadow/pipeline.toml"));
+        let rows: Vec<String> = pane.rows().iter().map(Row::text).collect();
+        let at = |needle: &str| {
+            rows.iter()
+                .position(|row| row.contains(needle))
+                .unwrap_or_else(|| panic!("{needle}: {rows:#?}"))
+        };
+        let title = at(
+            "PIPE  fixture/implementation@1.0.0 (.af/task-packages/fixture/shadow/pipeline.toml)  [declared]",
+        );
+        let implement =
+            at("+-- implement  worker implementer -> fixture/implementer  attempts 1..1");
+        let evaluate = at(
+            "+-- evaluate  verify evaluator -> fixture/evaluator  attempts 1..1  when check=passed",
+        );
+        let accept = at("'-- accept");
+        let contract = at("CONTRACT  declared by the package");
+        let refused = at(
+            "not previewed: the committed catalog pins `fixture/implementation` at \
+             .af/task-packages/fixture/implementation, not at this file",
+        );
+        assert!(
+            title < implement && implement < evaluate && evaluate < accept,
+            "{rows:#?}"
+        );
+        assert!(accept < contract && contract < refused, "{rows:#?}");
+        assert!(
+            rows[refused].trim_start().starts_with("refused  "),
+            "{rows:#?}"
+        );
+        assert!(
+            rows[refused + 1..].iter().all(String::is_empty),
+            "the refusal is last: {rows:#?}"
+        );
+        assert_eq!(
+            pane.status(implement).as_deref(),
+            Some("implementer: fixture/implementer (implement)  attempts 1..1")
+        );
+        assert!(
+            rows.iter().all(|row| !row.starts_with("[[nodes]]")),
+            "{rows:#?}"
+        );
+        assert!(
+            !rows
+                .iter()
+                .any(|row| row.contains("compiling a token-free plan")),
+            "{rows:#?}"
+        );
+        assert!(
+            pane.busy().is_none(),
+            "nothing is compiled for a refused package"
+        );
+    }
+
     /// A package the kernel has not planned is drawn from its declaration: every node with its
     /// slot's Worker and bounds, a `call` expanded into the pinned callee with the call's slot
     /// bindings applied, and the contract under the tree.

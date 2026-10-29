@@ -34,8 +34,9 @@ pub(super) struct Project {
 }
 
 /// The Project of the checkout at `toplevel`, read from the Project Store below `state` and
-/// from git. An error is git's: a checkout that is no repository, has no commit, or is a
-/// shallow clone has no Project to list and answers with nothing.
+/// from git. An error is git's. A checkout that is no repository, has no commit, or is a
+/// shallow clone has no Project (ADR-0158) and answers with nothing: neither the Project Store
+/// nor `git worktree list` is read for it.
 pub(super) fn discover(state: &Path, toplevel: &Path) -> Result<Project, String> {
     let toplevel = std::fs::canonicalize(toplevel)
         .map_err(|error| format!("{}: {error}", toplevel.display()))?;
@@ -46,52 +47,63 @@ pub(super) fn discover(state: &Path, toplevel: &Path) -> Result<Project, String>
         label: None,
         warning: None,
     };
-    let located = projects::locate(&toplevel)?;
-    if located == Located::NotGit {
+    let Located::Checkout(checkout) = projects::locate(&toplevel)? else {
         return Ok(project);
-    }
+    };
     let mut listed = vec![own.clone()];
-    if let Located::Checkout(checkout) = &located {
-        match workspaces(state, &checkout.project_id) {
-            Ok(Some((log, paths))) => {
-                let mut registered: Vec<_> = log
-                    .workspaces
-                    .values()
-                    .filter_map(|workspace| {
-                        let paths = paths.iter().find(|p| p.id == workspace.workspace_id)?;
-                        Some((workspace.label.clone(), paths.state.clone()))
-                    })
-                    .collect();
-                registered.sort();
-                let local = task_execution::local_task_states(state);
-                for (label, store) in registered {
-                    if super::same_store(&store, &own) {
-                        project.label = Some(label);
-                    } else if !store.starts_with(&local) {
-                        // A `--state` Store: the registry lists it; the Workspace is noted.
-                        match project
-                            .named
-                            .iter_mut()
-                            .find(|(dir, _)| super::same_store(dir, &store))
-                        {
-                            Some((_, labels)) => labels.push(label),
-                            None => project.named.push((store, vec![label])),
-                        }
-                    } else if exists(&store)
-                        && !listed.iter().any(|dir| super::same_store(dir, &store))
+    match workspaces(state, &checkout.project_id) {
+        Ok(Some((log, paths))) => {
+            let mut registered: Vec<_> = log
+                .workspaces
+                .values()
+                .filter_map(|workspace| {
+                    let paths = paths.iter().find(|p| p.id == workspace.workspace_id)?;
+                    Some((
+                        workspace.label.clone(),
+                        paths.path.clone(),
+                        paths.state.clone(),
+                    ))
+                })
+                .collect();
+            registered.sort();
+            for (label, path, store) in registered {
+                // The Workspace's default Store is where its checkout's Tasks go; a Store
+                // registered under another path is a `--state` one, wherever it is kept, the
+                // registry lists it and the Workspace is noted beside it.
+                let default = task_execution::default_task_state(state, &path).ok();
+                let is_default = default
+                    .as_ref()
+                    .is_some_and(|default| super::same_store(default, &store));
+                if super::same_store(&store, &own) {
+                    project.label = Some(label.clone());
+                } else if !is_default {
+                    match project
+                        .named
+                        .iter_mut()
+                        .find(|(dir, _)| super::same_store(dir, &store))
                     {
-                        listed.push(store.clone());
-                        project.checkouts.push(Checkout {
-                            dir: store,
-                            name: label,
-                            registered: true,
-                        });
+                        Some((_, labels)) => labels.push(label.clone()),
+                        None => project.named.push((store.clone(), vec![label.clone()])),
                     }
                 }
+                // The checkout's default Store, under the Workspace's label, when it holds
+                // anything: a clone no `git worktree list` names is found here alone.
+                if let Some(default) = default
+                    && !super::same_store(&default, &own)
+                    && exists(&default)
+                    && !listed.iter().any(|dir| super::same_store(dir, &default))
+                {
+                    listed.push(default.clone());
+                    project.checkouts.push(Checkout {
+                        dir: default,
+                        name: label,
+                        registered: true,
+                    });
+                }
             }
-            Ok(None) => {}
-            Err(warning) => project.warning = Some(warning),
         }
+        Ok(None) => {}
+        Err(warning) => project.warning = Some(warning),
     }
     let git = projects::Git::open(&toplevel)?;
     let output = git.run(["worktree", "list", "--porcelain"], None)?;

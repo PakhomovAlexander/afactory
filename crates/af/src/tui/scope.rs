@@ -105,20 +105,17 @@ impl Scope {
         }
     }
 
-    /// The `[project] name` of the project scope's effective configuration, its first line,
-    /// when there is one.
+    /// The `[project] name` the repository declares in its committed `.af/af.toml`, its first
+    /// line, when there is one. The project file alone, never the effective configuration: a
+    /// `.af/af.local.toml` or an `AF_PROJECT__NAME` of one checkout must not name the Project
+    /// differently from its other checkouts (ADR-0158, ADR-0261).
     fn declared_name(&self) -> Option<String> {
         if self.kind != ScopeKind::Project {
             return None;
         }
-        let name = self
-            .config
-            .effective
-            .get("project")?
-            .get("name")?
-            .as_str()?;
-        let line = name.lines().next()?.trim();
-        (!line.is_empty()).then(|| line.to_owned())
+        let (name, _) = crate::projects::declared(&self.root);
+        let line = name?.lines().next()?.trim().to_owned();
+        (!line.is_empty()).then_some(line)
     }
 
     pub(crate) fn word(&self) -> &'static str {

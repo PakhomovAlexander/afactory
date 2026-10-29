@@ -1861,7 +1861,26 @@ impl TasksPane {
             // The targets as this read answers them: the Stores retained from the last read
             // follow their order at once, before the read answers for any of them.
             Read::Targets(Ok((targets, warning))) => {
+                // A retained Store takes its target's group and heading at once, so the bar
+                // lists it as the read will: this checkout's Store takes a group when another
+                // checkout appears and loses it when the last one goes. The opened Task
+                // follows its Store under its new id, and stays opened (ADR-0240).
+                let opened = self.opened_task();
                 self.targets = targets;
+                let targets = &self.targets;
+                for store in &mut self.stores {
+                    if let Some(target) = targets.iter().find(|target| target.dir == store.dir) {
+                        store.repo.clone_from(&target.repo);
+                        store.shown.clone_from(&target.shown);
+                        store.origin = target.origin;
+                        store.note.clone_from(&target.note);
+                    }
+                }
+                if let Some((dir, task_id)) = opened
+                    && let Some(store) = self.stores.iter().find(|store| store.dir == dir)
+                {
+                    self.selected = Some(TasksPane::id(store, &task_id));
+                }
                 self.order();
                 self.error = None;
                 self.discovered = warning;
@@ -2602,6 +2621,10 @@ impl Pane for TasksPane {
     /// In the `f` view, the Store a running Task is in, as the folder heads it.
     fn status(&self, row: usize) -> Option<String> {
         self.places.get(&row).cloned()
+    }
+
+    fn opened_id(&self) -> Option<String> {
+        self.selected.clone()
     }
 
     fn refresh(&mut self, scope: &Scope) -> Result<(), String> {

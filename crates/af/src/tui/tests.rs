@@ -754,7 +754,7 @@ fn masking_folds_durations_and_hides_ids_and_times() {
 fn the_tasks_pane_golden_at_100x30_and_its_verbs() {
     let (_temp, root) = temp_root();
     let (repo, state) = hub_with_tasks(&root);
-    let mut app = app_at(&root, repo);
+    let mut app = app_at(&root, repo.clone());
     let mut host = Recorder::default();
     press(&mut app, &mut host, b"]]]]]]]]\r");
     assert_eq!(app.breadcrumb(), "tasks/");
@@ -834,6 +834,10 @@ fn the_tasks_pane_golden_at_100x30_and_its_verbs() {
     let status = status_line(&mut app);
     assert!(status.contains("pipeline elsewhere/pipeline is not listed under pipelines/"));
     assert_eq!(app.opened, Opened::Item(Tab::Pipelines, package.to_owned()));
+    // On the same recorded Tasks: the running filter's keys, then a Task opened across a
+    // regrouping of its Store.
+    f_filters_the_bar_and_the_folder_to_the_running_tasks(&mut app, &mut host);
+    an_opened_task_follows_its_store_into_a_group(&mut app, &mut host, &root, &repo, &state);
 }
 
 /// The first screen row holding `needle`, and the column it starts at.
@@ -986,17 +990,16 @@ fn a_store_this_binary_cannot_read_is_an_error_row_naming_it() {
     assert!(rows.iter().any(|row| row.starts_with(cause)), "{rows:#?}");
 }
 
-#[test]
-fn f_filters_the_bar_and_the_folder_to_the_running_tasks() {
-    let (_temp, root) = temp_root();
-    let (repo, _state) = hub_with_tasks(&root);
-    let mut app = app_at(&root, repo);
-    let mut host = Recorder::default();
-    press(&mut app, &mut host, b"]]]]]]]]\r");
+/// `f` filters the bar and the folder to the running Tasks, from the bar and from the main
+/// pane, and `Enter` on a Task row of the folder opens it, as the bar does. Run on the hub
+/// with its two recorded Tasks by the Tasks golden test, so the Tasks are recorded once.
+fn f_filters_the_bar_and_the_folder_to_the_running_tasks(app: &mut App, host: &mut Recorder) {
+    to_the_root(app, host);
+    press(app, host, b"]]]]]]]]\r");
     assert_eq!(app.breadcrumb(), "tasks/");
     // `f` on the bar: no Task of the fixture runs, so the folder says so and the bar lists
     // none.
-    press(&mut app, &mut host, b"f");
+    press(app, host, b"f");
     let rows: Vec<String> = app.main_rows().iter().map(Row::text).collect();
     assert!(
         rows[0].ends_with("running Tasks only, latest first"),
@@ -1008,25 +1011,116 @@ fn f_filters_the_bar_and_the_folder_to_the_running_tasks() {
     );
     let frame = app.frame(100, 30).text();
     assert!(!frame.contains("done/ (1)"), "{frame}");
-    press(&mut app, &mut host, b"\t");
-    let status = status_line(&mut app);
+    press(app, host, b"\t");
+    let status = status_line(app);
     assert!(status.contains("f all Tasks"), "{status}");
     // `f` again, from the main pane: every Task, grouped as before.
-    press(&mut app, &mut host, b"f");
+    press(app, host, b"f");
     let frame = app.frame(100, 30).text();
     assert!(
         frame.contains("done/ (1)") && frame.contains("failed/ (1)"),
         "{frame}"
     );
-    let status = status_line(&mut app);
+    let status = status_line(app);
     assert!(status.contains("f running"), "{status}");
     // Enter on a Task row of the folder opens it, as the bar does: the first match of the
     // search is the attention view's row for the Task.
-    press(&mut app, &mut host, b"/pagination-cli\r");
+    press(app, host, b"/pagination-cli\r");
     let row = app.main_rows()[app.main.cursor].text();
     assert!(row.starts_with("    pagination-cli  finished/"), "{row}");
-    press(&mut app, &mut host, b"\r");
+    press(app, host, b"\r");
     assert_eq!(app.breadcrumb(), "tasks/pagination-cli");
+}
+
+/// An opened Task stays opened when its Store takes a group: another checkout of the Project
+/// with a Store appears, `R` discovers it, and this checkout's Store is grouped under its name,
+/// so the Task's bar id changes; the bar, the breadcrumb and the main pane follow it, and
+/// nothing says it is no longer listed (ADR-0240, ADR-0261). Run on the hub by the Tasks golden
+/// test, after the filter keys.
+fn an_opened_task_follows_its_store_into_a_group(
+    app: &mut App,
+    host: &mut Recorder,
+    root: &Path,
+    repo: &Path,
+    state: &Path,
+) {
+    to_the_root(app, host);
+    press(app, host, b"]]]]]]]]jj\r");
+    assert_eq!(app.breadcrumb(), "tasks/pagination-cli");
+    assert_eq!(
+        app.opened,
+        Opened::Item(Tab::Tasks, "pagination-cli".to_owned())
+    );
+    let other = root.join("hub-wt-other");
+    git(
+        repo,
+        &[
+            "worktree",
+            "add",
+            "-q",
+            "-b",
+            "other",
+            other.to_str().unwrap(),
+        ],
+    );
+    let other_state =
+        crate::task_execution::default_task_state(&root.join("state"), &other).unwrap();
+    copy_store(state, &other_state);
+    host.events.clear();
+    press(app, host, b"R");
+    assert_eq!(
+        app.opened,
+        Opened::Item(Tab::Tasks, "hub/pagination-cli".to_owned())
+    );
+    assert_eq!(app.breadcrumb(), "tasks/hub/pagination-cli");
+    assert!(
+        app.main_rows()[0]
+            .text()
+            .starts_with("TASK  pagination-cli"),
+        "{:#?}",
+        app.main_rows()
+    );
+    assert!(
+        !app.message
+            .as_ref()
+            .is_some_and(|(text, _)| text.contains("no longer listed")),
+        "{:?}",
+        app.message
+    );
+    let frame = app.frame(100, 30).text();
+    assert!(
+        frame.contains("hub/") && frame.contains("hub-wt-other/"),
+        "{frame}"
+    );
+    // The worktree goes: the group goes with it at the next `R`, and the Task is still open.
+    git(
+        repo,
+        &["worktree", "remove", "--force", other.to_str().unwrap()],
+    );
+    std::fs::remove_dir_all(&other_state).unwrap();
+    press(app, host, b"R");
+    assert_eq!(
+        app.opened,
+        Opened::Item(Tab::Tasks, "pagination-cli".to_owned())
+    );
+    assert_eq!(app.breadcrumb(), "tasks/pagination-cli");
+    assert!(
+        app.main_rows()[0]
+            .text()
+            .starts_with("TASK  pagination-cli"),
+        "{:#?}",
+        app.main_rows()
+    );
+}
+
+/// The bar focused on the scope's root, whatever was opened or typed before.
+fn to_the_root(app: &mut App, host: &mut Recorder) {
+    press(app, host, b"\x1b");
+    if app.focus == Focus::Main {
+        press(app, host, b"\t");
+    }
+    press(app, host, b"gg");
+    assert_eq!(app.focus, Focus::Bar);
 }
 
 #[test]
@@ -1922,8 +2016,10 @@ fn completion_comes_from_the_clap_definition() {
 
 /// The project scope is named by the `[project] name` the repository declares, before its
 /// directory's name, so every checkout of the Project is named alike: the bar's root, the
-/// panes' titles and the status line say `hub` for a checkout in `checkout-7`. A declared
-/// name's first line alone is used, and without one the directory's name stands.
+/// panes' titles and the status line say `hub` for a checkout in `checkout-7`. The committed
+/// `.af/af.toml` is what declares it: a `.af/af.local.toml` or an `AF_PROJECT__NAME` of this
+/// checkout changes the effective configuration, never the Project's name. A declared name's
+/// first line alone is used, and without one the directory's name stands.
 #[test]
 fn the_project_scope_is_named_by_the_declared_project_name_before_its_directory() {
     let (_temp, root) = temp_root();
@@ -1938,6 +2034,35 @@ fn the_project_scope_is_named_by_the_declared_project_name_before_its_directory(
     assert!(screen.contains("hub  (project)"), "{screen}");
     assert!(screen.contains("SETTINGS  project: hub"), "{screen}");
     assert!(!screen.contains("checkout-7  (project)"), "{screen}");
+
+    // One checkout's overrides reach the effective configuration and nothing else.
+    std::fs::write(
+        repo.join(".af/af.local.toml"),
+        "[project]\nname = \"local-only\"\n",
+    )
+    .unwrap();
+    let overridden = {
+        let roots = MachineRoots {
+            system: root.join("etc/af"),
+            user: root.join("config/af"),
+            environment: vec![("AF_PROJECT__NAME".to_owned(), "\"env-only\"".to_owned())],
+        };
+        let config = config::load_rooted(Some(&repo), false, &roots).unwrap();
+        assert_eq!(
+            config.effective["project"]["name"].as_str(),
+            Some("env-only"),
+            "{:#?}",
+            config.effective
+        );
+        Scope {
+            root: config.toplevel.clone().unwrap(),
+            config,
+            ..hub_scope(&root, &repo)
+        }
+    };
+    assert_eq!(overridden.name(), "hub");
+    assert_eq!(hub_scope(&root, &repo).name(), "hub");
+    std::fs::remove_file(repo.join(".af/af.local.toml")).unwrap();
 
     let declared = repo.join(".af/af.toml");
     let layer = std::fs::read_to_string(&declared).unwrap();
@@ -1964,6 +2089,7 @@ fn design_tui_workers_loading_rule_matches_adr_0261() {
         "reads nothing until it is first opened",
         "Workers once opened",
         "runs only when the Workers pane is opened",
+        "except catalogs synced",
     ] {
         assert!(
             !flat.contains(stale),

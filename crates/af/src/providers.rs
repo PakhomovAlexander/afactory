@@ -350,8 +350,11 @@ fn login_identity(status: &ProviderStatus, answer: &str) -> Option<String> {
     }
     let parsed: serde_json::Value = serde_json::from_str(answer).ok()?;
     let field = |name: &str| parsed.get(name).and_then(serde_json::Value::as_str);
+    // Both or nothing: an answer without the organization names no login the drop may act
+    // on, since the account alone is not one (ADR-0260).
     let account = field("email")?;
-    Some(format!("{account}\n{}", field("orgId").unwrap_or_default()))
+    let organization = field("orgId")?;
+    Some(format!("{account}\n{organization}"))
 }
 
 /// Point each logged-out context at the same-kind contexts on this machine that are logged in.
@@ -8091,12 +8094,10 @@ auth_dir = "{}"
             login_identity(&status, answer).as_deref(),
             Some("me@example.test\norg-1")
         );
-        // Without an organization the account alone is the login.
+        // Without an organization the answer names no login: the account alone is not one,
+        // so a default context with such an answer is never dropped for it.
         let bare = r#"{"loggedIn":true,"authMethod":"claude.ai","email":"me@example.test"}"#;
-        assert_eq!(
-            login_identity(&status, bare).as_deref(),
-            Some("me@example.test\n")
-        );
+        assert_eq!(login_identity(&status, bare), None);
         // No account, no answer, a logged-out row or a Codex row name nothing.
         assert_eq!(login_identity(&status, r#"{"loggedIn":true}"#), None);
         assert_eq!(login_identity(&status, ""), None);

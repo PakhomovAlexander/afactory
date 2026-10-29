@@ -122,6 +122,13 @@ pub(crate) trait Pane {
     /// The main pane shows another pane now; background reads for this one stop.
     fn close(&mut self) {}
 
+    /// The bar id of the opened entry as the pane names it now, when a read may have renamed
+    /// it (a Task whose Store took a group once another checkout appeared): the App follows
+    /// it. `None` from a pane whose ids never change, or with nothing opened.
+    fn opened_id(&self) -> Option<String> {
+        None
+    }
+
     /// Whether a pane-local view, like an artifact opened from a row, covers the pane.
     fn nested(&self) -> bool {
         false
