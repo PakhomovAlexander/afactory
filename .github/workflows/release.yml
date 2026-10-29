@@ -151,9 +151,20 @@ jobs:
             git -C "$smoke" add -A
             git -C "$smoke" -c user.name=release -c user.email=release@example.invalid \
               commit -q -m "onboarded by the built binary"
+            # With no Provider registered the plan is refused for its missing bindings (exit 1,
+            # cause review_binding_missing) and carried whole in the refusal's details.plan
+            # (#363, #434); any other failure stops the release.
+            status=0
             "$run" review plan --repo "$smoke" \
-              --policy-rev HEAD --base HEAD --candidate HEAD --json > "$RUNNER_TEMP/plan.json"
-            grep -q '"schema": *"af/review-plan@1"' "$RUNNER_TEMP/plan.json" || {
+              --policy-rev HEAD --base HEAD --candidate HEAD --json > "$RUNNER_TEMP/plan.json" || status=$?
+            if [[ "$status" -eq 0 ]]; then
+              filter='.schema'
+            elif [[ "$status" -eq 1 ]]; then
+              filter='select(.cause == "review_binding_missing") | .details.plan.schema'
+            else
+              filter='empty'
+            fi
+            jq -e "$filter == \"af/review-plan@1\"" "$RUNNER_TEMP/plan.json" >/dev/null || {
               echo "the built binary planned no af/review-plan@1 document"
               cat "$RUNNER_TEMP/plan.json"
               exit 1

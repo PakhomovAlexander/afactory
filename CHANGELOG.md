@@ -29,6 +29,7 @@ Committed .af/ policy valid under 0.13.0 needs no hand edit. Run af onboard --re
 
 - release: v0.14.0-rc.1 (#455)
 - af self optimize: repository-relative source paths; name an unavailable source (#456)
+- release workflow: the packaged-binary smoke accepts `af review plan`'s binding refusal that carries the plan in `details.plan` (#363, #434); v0.14.0-rc.1 was tagged but never published because of it
 
 - `af self optimize` resolves a relative `[[sources]].path` in `.af/optimization-sources.toml`
   from the repository root, like every other `.af/` path, instead of from `.af/`: a source
