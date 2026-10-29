@@ -5,7 +5,10 @@
 //! A package's main pane is, verbatim, the text `af task explain --tree` prints for a plan of
 //! it that `af task plan` would capture: the same token-free compilation of the committed
 //! authority, into a scratch Store that is discarded, on a thread the event loop polls. No
-//! Store is written, nothing is admitted and no Worker runs.
+//! Store is written, nothing is admitted and no Worker runs. Until that plan lands, and when
+//! the kernel refuses it, the committed declaration is drawn as the same kind of tree; a
+//! review Pipeline, which no plan compiles without a diff, is always drawn that way. No pane
+//! prints a declaration's TOML; `gf` opens the file.
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::io::Write;
@@ -13,13 +16,20 @@ use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::sync::mpsc::{self, Receiver, TryRecvError};
 
+use review_config::{CommandSpec, Definition as ReviewDefinition, NodeKindSpec, SeveritySpec};
+use review_core::DemandRequirement;
+use review_core::task::pipeline::{
+    PipelineDefinitionV1, ReceiptOutcomeV1, TaskOperatorV1, WorkerSlotV1,
+};
 use toml::Value;
 
-use super::{Pane, Row, SPINNER};
+use super::{Effect, Pane, Row, SPINNER};
 use crate::task_execution::{self, TreePreview};
+use crate::tui::keymap::Key;
 use crate::tui::paint::Paint;
 use crate::tui::scope::Scope;
 use crate::tui::tree::Item;
+use crate::tui::tree::Tab;
 
 /// The committed catalog that pins Pipeline and Worker packages by name.
 pub(crate) const CATALOG: &str = ".af/task-catalog.toml";
@@ -112,7 +122,14 @@ pub(crate) struct PipelinesPane {
     /// The entry being compiled, and the commit it was compiled at.
     job: Option<(String, String, Receiver<Compiled>)>,
     rows: Vec<Row>,
+    /// The entry each row of the folder's listing names; empty while an entry is opened.
+    named: BTreeMap<usize, String>,
+    /// What the status line says on a declared tree's rows that name a Worker, by row.
+    marks: BTreeMap<usize, String>,
     spinner: usize,
+    /// The folder's title: the pane and the scope it was loaded for, as every pane's title
+    /// names them (ADR-0261).
+    title: String,
 }
 
 impl PipelinesPane {
@@ -270,56 +287,223 @@ impl PipelinesPane {
     }
 
     fn rebuild(&mut self) {
-        self.rows = match self.selected_entry() {
-            Some(entry) => self.entry_rows(entry),
-            None => self.folder_rows(),
+        let selected = self.selected_entry().cloned();
+        (self.rows, self.named, self.marks) = match selected {
+            Some(entry) => {
+                let (rows, marks) = self.entry_rows(&entry);
+                (rows, BTreeMap::new(), marks)
+            }
+            None => {
+                let (rows, named) = self.folder_rows();
+                (rows, named, BTreeMap::new())
+            }
         };
     }
 
-    fn entry_rows(&self, entry: &Entry) -> Vec<Row> {
-        let heading = format!("PIPE  {} ({})", entry.label, entry.id);
+    /// An opened entry's rows, and what the status line says on the rows of a declared tree
+    /// that name a Worker, by row.
+    fn entry_rows(&self, entry: &Entry) -> (Vec<Row>, BTreeMap<usize, String>) {
         let mut rows = self.notice_rows(entry);
+        let mut marks = BTreeMap::new();
         match (&entry.source, self.previews.get(&entry.id)) {
             (Source::Review, _) => {
-                let title = format!("{heading}  [review pipeline]");
-                rows.push(Row::painted(title, Paint::Title));
-                rows.push(Row::blank());
-                let why = "A review Pipeline is planned against a diff selector the browser \
-                           does not hold; its declaration, as committed:";
-                rows.push(Row::painted(why, Paint::Muted));
-                rows.push(Row::painted(
-                    format!("  af review plan --pipeline {}", entry.id),
-                    Paint::Muted,
-                ));
-                rows.push(Row::blank());
-                rows.extend(entry.declaration.lines().map(Row::plain));
+                let drawn = review_rows(entry, rows.len());
+                rows.extend(drawn.rows);
+                marks = drawn.marks;
             }
             (Source::Package { .. }, Some(Ok(preview))) => {
                 rows.extend(preview.text.lines().map(Row::plain));
             }
             (Source::Package { .. }, Some(Err(error))) => {
-                // The compiler refused the preview Task: a package with required facts or
-                // public inputs cannot be planned from an invented Task. Its public contract is
-                // what the browser can show without inventing business inputs.
-                rows.push(Row::painted(heading, Paint::Title));
+                // The compiler refused the preview Task: a package with required facts, public
+                // inputs or a Provider the preview cannot supply is not planned from an
+                // invented Task. Its committed declaration is drawn instead, its contract
+                // under it, and the refusal last.
+                let drawn = self.package_rows(entry, rows.len());
+                rows.extend(drawn.rows);
+                marks = drawn.marks;
                 rows.push(Row::blank());
                 rows.extend(Row::errors("refused", error.lines()));
-                rows.push(Row::blank());
-                rows.extend(contract_rows(&declared(&entry.declaration)));
             }
             (Source::Package { .. }, None) => {
+                // The declaration is drawn at once; the kernel's plan, with its bindings,
+                // takes its place when the compilation lands.
+                let drawn = self.package_rows(entry, rows.len());
+                rows.extend(drawn.rows);
+                marks = drawn.marks;
                 let spinner = SPINNER[self.spinner % SPINNER.len()];
                 let what = "compiling a token-free plan, as af task plan does";
-                rows.push(Row::painted(heading, Paint::Title));
                 rows.push(Row::blank());
                 rows.push(Row::painted(format!("{spinner} {what}"), Paint::Muted));
             }
         }
-        rows
+        (rows, marks)
     }
 
-    fn folder_rows(&self) -> Vec<Row> {
-        let mut rows = vec![Row::painted("PIPELINES", Paint::Title), Row::blank()];
+    /// A pipeline package, drawn from its committed declaration the way the kernel's tree
+    /// draws its plan: one row per node in declared order, a Worker node with its slot's
+    /// package and Attempt bounds, a `call` expanded into the package the catalog pins by that
+    /// name (as committed) with the call's slot bindings applied, then the contract.
+    fn package_rows(&self, entry: &Entry, at: usize) -> Declared {
+        let mut rows = Vec::new();
+        let mut marks = BTreeMap::new();
+        let definition: PipelineDefinitionV1 = match toml::from_str(&entry.declaration) {
+            Ok(definition) => definition,
+            Err(error) => {
+                let heading = format!("PIPE  {} ({})", entry.label, entry.id);
+                rows.push(Row::painted(heading, Paint::Title));
+                rows.push(Row::blank());
+                let why = format!(
+                    "the committed declaration is not a pipeline package af reads: {error}"
+                );
+                rows.extend(Row::errors("error", why.lines()));
+                rows.push(Row::blank());
+                rows.extend(contract_rows(&declared(&entry.declaration)));
+                return Declared { rows, marks };
+            }
+        };
+        let heading = format!(
+            "PIPE  {}@{} ({})  [declared]",
+            definition.name, definition.version, entry.id
+        );
+        rows.push(Row::painted(heading, Paint::Title));
+        rows.push(Row::plain(format!(
+            "attempts  {} at most, {} in parallel",
+            definition.max_attempts, definition.max_parallel
+        )));
+        rows.push(Row::blank());
+        let mut stack = vec![definition.name.clone()];
+        let bound = BTreeMap::new();
+        self.node_rows(
+            &definition,
+            &bound,
+            "",
+            &mut stack,
+            at,
+            &mut rows,
+            &mut marks,
+        );
+        rows.push(Row::blank());
+        rows.extend(contract_rows(&declared(&entry.declaration)));
+        Declared { rows, marks }
+    }
+
+    /// One row per node of a declared package under `prefix`. A slot a call bound is the
+    /// caller's, as the kernel resolves it: its Worker, role and Attempt bounds. A `call`
+    /// names its callee and, when the catalog pins that name at a committed package the stack
+    /// does not already hold, draws the callee's nodes under it.
+    #[allow(clippy::too_many_arguments)]
+    fn node_rows(
+        &self,
+        definition: &PipelineDefinitionV1,
+        bound: &BTreeMap<String, WorkerSlotV1>,
+        prefix: &str,
+        stack: &mut Vec<String>,
+        at: usize,
+        rows: &mut Vec<Row>,
+        marks: &mut BTreeMap<usize, String>,
+    ) {
+        let count = definition.nodes.len();
+        for (index, node) in definition.nodes.iter().enumerate() {
+            let last = index + 1 == count;
+            let branch = if last { "'-- " } else { "+-- " };
+            let when = node.when.as_ref().map_or(String::new(), |when| {
+                format!("  when {}={}", when.node, outcome_word(when.outcome))
+            });
+            let detail = match &node.operator {
+                TaskOperatorV1::Worker { slot }
+                | TaskOperatorV1::Verify { slot }
+                | TaskOperatorV1::FixVerify { slot } => {
+                    let op = op_word(&node.operator);
+                    match bound.get(slot).or_else(|| definition.slots.get(slot)) {
+                        Some(declared) => {
+                            let mark = format!(
+                                "{slot}: {} ({})  attempts {}..{}",
+                                declared.worker,
+                                declared.role,
+                                declared.min_attempts,
+                                declared.max_attempts
+                            );
+                            marks.insert(at + rows.len(), mark);
+                            format!(
+                                "{op} {slot} -> {}  attempts {}..{}",
+                                declared.worker, declared.min_attempts, declared.max_attempts
+                            )
+                        }
+                        None => format!("{op} {slot} -> undeclared slot"),
+                    }
+                }
+                TaskOperatorV1::Call { pipeline, bindings } => {
+                    let line = format!("{prefix}{branch}{}  call {pipeline}{when}", node.id);
+                    rows.push(Row::plain(line));
+                    let callee = self.entries.iter().find(|entry| {
+                        entry.label == *pipeline
+                            && matches!(&entry.source, Source::Package { pin: Pin::Here, .. })
+                    });
+                    if let Some(callee) = callee
+                        && !stack.contains(pipeline)
+                        && let Ok(inner) =
+                            toml::from_str::<PipelineDefinitionV1>(&callee.declaration)
+                    {
+                        // `child = "parent"` binds the callee's slot to the caller's.
+                        let inner_bound: BTreeMap<String, WorkerSlotV1> = bindings
+                            .iter()
+                            .filter_map(|(child, parent)| {
+                                let slot =
+                                    bound.get(parent).or_else(|| definition.slots.get(parent))?;
+                                Some((child.clone(), slot.clone()))
+                            })
+                            .collect();
+                        stack.push(pipeline.clone());
+                        let inner_prefix =
+                            format!("{prefix}{}", if last { "    " } else { "|   " });
+                        self.node_rows(&inner, &inner_bound, &inner_prefix, stack, at, rows, marks);
+                        stack.pop();
+                    }
+                    continue;
+                }
+                TaskOperatorV1::Check {
+                    checks,
+                    remote_checks,
+                } => {
+                    let list = |names: &BTreeSet<String>| {
+                        names.iter().cloned().collect::<Vec<_>>().join(", ")
+                    };
+                    match (checks.is_empty(), remote_checks.is_empty()) {
+                        (_, true) => format!("checks: {}", list(checks)),
+                        (true, false) => format!("remote checks: {}", list(remote_checks)),
+                        (false, false) => format!(
+                            "checks: {}; remote checks: {}",
+                            list(checks),
+                            list(remote_checks)
+                        ),
+                    }
+                }
+                TaskOperatorV1::Measure { measures } => format!(
+                    "measure: {}",
+                    measures.iter().cloned().collect::<Vec<_>>().join(", ")
+                ),
+                TaskOperatorV1::Compare { objective } => format!("compare: {objective}"),
+                TaskOperatorV1::OptimizationExperiment {
+                    baseline_slot,
+                    candidate_slot,
+                } => format!("experiment {baseline_slot} vs {candidate_slot}"),
+                operator => op_word(operator),
+            };
+            // A node named after its operation says it once.
+            let label = if detail == node.id {
+                node.id.clone()
+            } else {
+                format!("{}  {detail}", node.id)
+            };
+            rows.push(Row::plain(format!("{prefix}{branch}{label}{when}")));
+        }
+    }
+
+    /// The folder's listing, and the entry each of its rows names.
+    fn folder_rows(&self) -> (Vec<Row>, BTreeMap<usize, String>) {
+        let mut named = BTreeMap::new();
+        let mut rows = vec![Row::painted(self.title.clone(), Paint::Title), Row::blank()];
         if let Some(error) = &self.error {
             let stale = if self.entries.is_empty() {
                 "nothing is listed"
@@ -343,14 +527,16 @@ impl PipelinesPane {
         for entry in &self.entries {
             let (label, id) = (&entry.label, &entry.id);
             let mark = if entry.modified { " *" } else { "" };
+            named.insert(rows.len(), id.clone());
             rows.push(Row::plain(format!("{label:<28} {id}{mark}")));
         }
-        rows
+        (rows, named)
     }
 }
 
 impl Pane for PipelinesPane {
     fn load(&mut self, scope: &Scope) -> Result<(), String> {
+        self.title = format!("PIPELINES  {}: {}", scope.word(), scope.name());
         let root = scope.toplevel().map(Path::to_path_buf);
         if root != self.root {
             self.forget();
@@ -393,12 +579,33 @@ impl Pane for PipelinesPane {
         &self.rows
     }
 
-    fn legend(&self) -> &'static str {
-        "j/k slot  R recompile  gf open TOML  y yank name  Tab bar  :cmd  q quit"
+    /// `Enter` on a Pipeline the folder lists opens it, as the bar does.
+    fn key(&mut self, key: Key, row: usize) -> Result<Option<Effect>, String> {
+        if key != Key::Enter {
+            return Ok(None);
+        }
+        let id = self.named.get(&row).cloned();
+        Ok(id.map(|id| Effect::OpenItem(Tab::Pipelines, id)))
     }
 
-    /// The Worker binding of the slot a highlighted plan row names.
+    fn rename(&mut self, scope: &Scope) {
+        self.title = format!("PIPELINES  {}: {}", scope.word(), scope.name());
+        self.rebuild();
+    }
+
+    fn legend(&self) -> &'static str {
+        match self.selected {
+            Some(_) => "j/k slot  R recompile  gf open TOML  y yank name  Tab bar  :cmd  q quit",
+            None => "j/k move  Enter open  R re-read  Tab bar  :cmd  q quit",
+        }
+    }
+
+    /// The Worker binding of the slot a highlighted plan row names, or the slot's declaration
+    /// on a declared tree's row.
     fn status(&self, row: usize) -> Option<String> {
+        if let Some(mark) = self.marks.get(&row) {
+            return Some(mark.clone());
+        }
         let entry = self.selected_entry()?;
         let preview = self.previews.get(&entry.id)?.as_ref().ok()?;
         // The preview's slot rows count from its first line; the notices sit above it.
@@ -599,6 +806,185 @@ pub(crate) fn pinned_paths(catalog: &Value) -> BTreeMap<String, String> {
         }
     }
     pinned
+}
+
+/// A declaration drawn as rows, and what the status line says on the rows that name a Worker,
+/// by the row's index in the pane.
+struct Declared {
+    rows: Vec<Row>,
+    marks: BTreeMap<usize, String>,
+}
+
+/// A review Pipeline, drawn from its committed declaration: the Subject, the convergence
+/// policy, the budgets and the checks, then one row per node in declared order with its Worker
+/// package or runner, its gate and its Demand classification, the way `af task explain --tree`
+/// draws a plan. No diff is planned, so no Round, binding or Provider appears; the command that
+/// plans one is named last.
+fn review_rows(entry: &Entry, at: usize) -> Declared {
+    let heading = format!("PIPE  {} ({})  [review pipeline]", entry.label, entry.id);
+    let mut rows = vec![Row::painted(heading, Paint::Title), Row::blank()];
+    let mut marks = BTreeMap::new();
+    let definition: ReviewDefinition = match toml::from_str(&entry.declaration) {
+        Ok(definition) => definition,
+        Err(error) => {
+            let why =
+                format!("the committed declaration is not a review pipeline af reads: {error}");
+            rows.extend(Row::errors("error", why.lines()));
+            rows.push(Row::painted("gf opens the file", Paint::Muted));
+            return Declared { rows, marks };
+        }
+    };
+    let subject = definition.subject.map_or_else(
+        || "not declared".to_owned(),
+        |subject| subject.kind.to_string(),
+    );
+    rows.push(Row::plain(format!("subject   {subject}")));
+    let convergence = definition.convergence;
+    rows.push(Row::plain(format!(
+        "rounds    {} clean, {} at most, gate {}",
+        convergence.clean_rounds,
+        convergence.max_rounds,
+        severity_word(convergence.gate)
+    )));
+    if let Some(budget) = definition.budgets {
+        let fan_out = budget
+            .fan_out
+            .map_or(String::new(), |cap| format!(", {cap} per scatter"));
+        rows.push(Row::plain(format!(
+            "budget    {} tokens per attempt, {} per run{fan_out}",
+            budget.attempt, budget.run
+        )));
+    }
+    if definition.checks.is_empty() {
+        rows.push(Row::plain("checks    none"));
+    }
+    for (index, check) in definition.checks.iter().enumerate() {
+        let lead = if index == 0 {
+            "checks    "
+        } else {
+            "          "
+        };
+        let optional = if check.required { "" } else { "  (optional)" };
+        rows.push(Row::plain(format!(
+            "{lead}{}  {}{optional}",
+            check.name,
+            command_text(&check.command)
+        )));
+    }
+    rows.push(Row::blank());
+    // What feeds each node, from the edges: in declared order, each once.
+    let mut fed: BTreeMap<&str, Vec<&str>> = BTreeMap::new();
+    for edge in &definition.edges {
+        let from = fed.entry(edge.to.node.as_str()).or_default();
+        if !from.contains(&edge.from.node.as_str()) {
+            from.push(edge.from.node.as_str());
+        }
+    }
+    let checks: Vec<&str> = definition
+        .checks
+        .iter()
+        .map(|check| check.name.as_str())
+        .collect();
+    let count = definition.nodes.len();
+    for (index, node) in definition.nodes.iter().enumerate() {
+        let branch = if index + 1 == count { "'-- " } else { "+-- " };
+        let kind = kind_word(node.kind);
+        let mut parts: Vec<String> = Vec::new();
+        // A node named after its kind says it once; a reviewer's kind leads its binding.
+        if node.id != kind && !matches!(node.kind, NodeKindSpec::Reviewer | NodeKindSpec::Scatter) {
+            parts.push(kind.to_owned());
+        }
+        match node.kind {
+            NodeKindSpec::Gate => parts.push(if checks.is_empty() {
+                "no checks".to_owned()
+            } else {
+                format!("checks {}", checks.join(", "))
+            }),
+            NodeKindSpec::Reviewer | NodeKindSpec::Scatter => {
+                let (bound, mark) = match (&node.package, &node.runner) {
+                    (Some(package), _) => (format!("-> {package}"), format!("package {package}")),
+                    (None, Some(runner)) => (
+                        format!("-> runner {}", runner.program),
+                        format!("runner {}", command_text(runner)),
+                    ),
+                    (None, None) => ("-> unbound".to_owned(), "no package or runner".to_owned()),
+                };
+                marks.insert(at + rows.len(), format!("{}: {mark}", node.id));
+                parts.push(format!("{kind} {bound}"));
+                if let Some(gate) = &node.gated_by {
+                    parts.push(format!("after {gate}"));
+                }
+                let demands = match node.demands {
+                    Some(DemandRequirement::Advisory) => "advisory",
+                    _ => "required",
+                };
+                parts.push(format!("demands {demands}"));
+            }
+            _ => {
+                if let Some(from) = fed.get(node.id.as_str()) {
+                    parts.push(format!("<- {}", from.join(", ")));
+                }
+            }
+        }
+        let mut line = format!("{branch}{}", node.id);
+        for part in parts {
+            line.push_str("  ");
+            line.push_str(&part);
+        }
+        rows.push(Row::plain(line));
+    }
+    rows.push(Row::blank());
+    let why = "planned against a diff the browser does not hold; token-free:";
+    rows.push(Row::painted(why, Paint::Muted));
+    rows.push(Row::painted(
+        format!("  af review plan --pipeline {}", entry.id),
+        Paint::Muted,
+    ));
+    Declared { rows, marks }
+}
+
+/// A check's or runner's command line, program first.
+fn command_text(command: &CommandSpec) -> String {
+    std::iter::once(command.program.as_str())
+        .chain(command.args.iter().map(|arg| arg.value.as_str()))
+        .collect::<Vec<_>>()
+        .join(" ")
+}
+
+fn severity_word(severity: SeveritySpec) -> &'static str {
+    match severity {
+        SeveritySpec::Blocker => "blocker",
+        SeveritySpec::Major => "major",
+        SeveritySpec::Minor => "minor",
+    }
+}
+
+fn kind_word(kind: NodeKindSpec) -> &'static str {
+    match kind {
+        NodeKindSpec::Generation => "generation",
+        NodeKindSpec::Gate => "gate",
+        NodeKindSpec::Reviewer => "reviewer",
+        NodeKindSpec::Slicer => "slicer",
+        NodeKindSpec::Scatter => "scatter",
+        NodeKindSpec::Gather => "gather",
+        NodeKindSpec::Ledger => "ledger",
+    }
+}
+
+fn outcome_word(outcome: ReceiptOutcomeV1) -> &'static str {
+    match outcome {
+        ReceiptOutcomeV1::Passed => "passed",
+        ReceiptOutcomeV1::Failed => "failed",
+        ReceiptOutcomeV1::Inconclusive => "inconclusive",
+    }
+}
+
+/// The operator's `op` word, as a declaration writes it.
+fn op_word(operator: &TaskOperatorV1) -> String {
+    serde_json::to_value(operator)
+        .ok()
+        .and_then(|value| value.get("op")?.as_str().map(str::to_owned))
+        .unwrap_or_else(|| "operation".to_owned())
 }
 
 /// The public contract a pipeline package declares: what it accepts, takes and produces.
@@ -1049,6 +1435,32 @@ mod tests {
         Scope::project(root.to_path_buf(), config::load(Some(root)).unwrap())
     }
 
+    /// `Enter` on a listed Pipeline's row is the effect that opens it; a title row and an
+    /// opened entry's rows name none.
+    #[test]
+    fn enter_on_a_listed_pipeline_row_opens_it() {
+        let temp = tempfile::tempdir().unwrap();
+        let root = temp.path();
+        package(root, "p", "p-pipeline");
+        catalog(root, &[("p-pipeline", "p")]);
+        commit_all(root, "p");
+        let mut pane = PipelinesPane::default();
+        pane.load(&scope(root)).unwrap();
+        let id = pane.items()[0].id.clone();
+        let row = pane
+            .rows()
+            .iter()
+            .position(|row| row.text().starts_with("p-pipeline "))
+            .unwrap_or_else(|| panic!("{:#?}", pane.rows()));
+        assert_eq!(
+            pane.key(Key::Enter, row),
+            Ok(Some(Effect::OpenItem(Tab::Pipelines, id.clone())))
+        );
+        assert_eq!(pane.key(Key::Enter, 0), Ok(None));
+        pane.open(Some(&id));
+        assert_eq!(pane.key(Key::Enter, row), Ok(None));
+    }
+
     /// Every open reads again, so the read must cost the same for 2 pipelines as for 30.
     #[test]
     fn a_read_spawns_as_many_git_processes_for_thirty_pipelines_as_for_two() {
@@ -1425,7 +1837,8 @@ mod tests {
         pane.open(Some(".af/task-packages/other/pipeline.toml"));
         let rows: Vec<String> = pane.rows().iter().map(Row::text).collect();
         assert!(
-            rows[2].contains("pins `fixture/p` at .af/task-packages/pinned"),
+            rows.iter()
+                .any(|row| row.contains("pins `fixture/p` at .af/task-packages/pinned")),
             "{rows:#?}"
         );
         assert!(
@@ -1505,6 +1918,210 @@ mod tests {
         assert_eq!(
             rows[4],
             "OUT       snapshot: af/SourceTree@1 (one)  optional"
+        );
+    }
+
+    const REVIEW: &str =
+        include_str!("../../../../../fixtures/consumers/hub/.af/pipelines/review.toml");
+    const IMPLEMENTATION: &str = include_str!(
+        "../../../../../fixtures/task-runtime/pagination/.af/task-packages/fixture/implementation/pipeline.toml"
+    );
+
+    /// A review Pipeline is drawn from its declaration, never printed as TOML: the policy,
+    /// the checks, one row per node with its package, gate and Demands, and the command
+    /// that plans it against a diff.
+    #[test]
+    fn a_review_pipeline_is_drawn_as_a_tree_not_as_toml() {
+        let temp = tempfile::tempdir().unwrap();
+        let root = temp.path();
+        std::fs::create_dir_all(root.join(".af/pipelines")).unwrap();
+        std::fs::write(root.join(".af/pipelines/review.toml"), REVIEW).unwrap();
+        commit_all(root, "review");
+        let mut pane = PipelinesPane::default();
+        pane.load(&scope(root)).unwrap();
+        pane.open(Some(".af/pipelines/review.toml"));
+        let rows: Vec<String> = pane.rows().iter().map(Row::text).collect();
+        let head = [
+            "PIPE  review (.af/pipelines/review.toml)  [review pipeline]",
+            "",
+            "subject   diff",
+            "rounds    1 clean, 1 at most, gate major",
+            "budget    400000 tokens per attempt, 400000 per run",
+            "checks    none",
+            "",
+            "+-- gate  no checks",
+            "+-- generation",
+            "+-- correctness  reviewer -> correctness  after gate  demands required",
+            "+-- gather  <- correctness",
+            "'-- ledger  <- gather",
+            "",
+            "planned against a diff the browser does not hold; token-free:",
+            "  af review plan --pipeline .af/pipelines/review.toml",
+        ];
+        assert_eq!(rows, head, "{rows:#?}");
+        assert_eq!(
+            pane.status(9).as_deref(),
+            Some("correctness: package correctness")
+        );
+        assert_eq!(pane.status(8), None);
+        assert!(
+            pane.busy().is_none(),
+            "nothing is compiled for a review pipeline"
+        );
+    }
+
+    /// A package the preview refuses is drawn from its declaration all the same: the tree with
+    /// its Workers, the contract under it, and the refusal last, so the refusal never hides
+    /// what the file declares, and nothing is compiled for it.
+    #[test]
+    fn a_refused_package_is_drawn_as_its_tree_then_its_contract_then_the_refusal() {
+        let temp = tempfile::tempdir().unwrap();
+        let root = temp.path();
+        let pinned = root.join(".af/task-packages/fixture/implementation");
+        std::fs::create_dir_all(&pinned).unwrap();
+        std::fs::write(pinned.join("pipeline.toml"), IMPLEMENTATION).unwrap();
+        // The same declaration committed at a second path the catalog does not pin: a shadow
+        // the preview refuses.
+        let shadow = root.join(".af/task-packages/fixture/shadow");
+        std::fs::create_dir_all(&shadow).unwrap();
+        std::fs::write(shadow.join("pipeline.toml"), IMPLEMENTATION).unwrap();
+        catalog(
+            root,
+            &[("fixture/implementation", "fixture/implementation")],
+        );
+        commit_all(root, "packages");
+        let mut pane = PipelinesPane::default();
+        pane.load(&scope(root)).unwrap();
+        pane.open(Some(".af/task-packages/fixture/shadow/pipeline.toml"));
+        let rows: Vec<String> = pane.rows().iter().map(Row::text).collect();
+        let at = |needle: &str| {
+            rows.iter()
+                .position(|row| row.contains(needle))
+                .unwrap_or_else(|| panic!("{needle}: {rows:#?}"))
+        };
+        let title = at(
+            "PIPE  fixture/implementation@1.0.0 (.af/task-packages/fixture/shadow/pipeline.toml)  [declared]",
+        );
+        let implement =
+            at("+-- implement  worker implementer -> fixture/implementer  attempts 1..1");
+        let evaluate = at(
+            "+-- evaluate  verify evaluator -> fixture/evaluator  attempts 1..1  when check=passed",
+        );
+        let accept = at("'-- accept");
+        let contract = at("CONTRACT  declared by the package");
+        let refused = at(
+            "not previewed: the committed catalog pins `fixture/implementation` at \
+             .af/task-packages/fixture/implementation, not at this file",
+        );
+        assert!(
+            title < implement && implement < evaluate && evaluate < accept,
+            "{rows:#?}"
+        );
+        assert!(accept < contract && contract < refused, "{rows:#?}");
+        assert!(
+            rows[refused].trim_start().starts_with("refused  "),
+            "{rows:#?}"
+        );
+        assert!(
+            rows[refused + 1..].iter().all(String::is_empty),
+            "the refusal is last: {rows:#?}"
+        );
+        assert_eq!(
+            pane.status(implement).as_deref(),
+            Some("implementer: fixture/implementer (implement)  attempts 1..1")
+        );
+        assert!(
+            rows.iter().all(|row| !row.starts_with("[[nodes]]")),
+            "{rows:#?}"
+        );
+        assert!(
+            !rows
+                .iter()
+                .any(|row| row.contains("compiling a token-free plan")),
+            "{rows:#?}"
+        );
+        assert!(
+            pane.busy().is_none(),
+            "nothing is compiled for a refused package"
+        );
+    }
+
+    /// A package the kernel has not planned is drawn from its declaration: every node with its
+    /// slot's Worker and bounds, a `call` expanded into the pinned callee with the call's slot
+    /// bindings applied, and the contract under the tree.
+    #[test]
+    fn a_package_is_drawn_from_its_declaration_until_the_kernel_plans_it() {
+        let temp = tempfile::tempdir().unwrap();
+        let root = temp.path();
+        let inner = root.join(".af/task-packages/fixture/implementation");
+        std::fs::create_dir_all(&inner).unwrap();
+        std::fs::write(inner.join("pipeline.toml"), IMPLEMENTATION).unwrap();
+        // The outer package calls the inner one, its own `implementer` slot (another Worker)
+        // bound to the callee's.
+        let outer = root.join(".af/task-packages/fixture/outer");
+        std::fs::create_dir_all(&outer).unwrap();
+        let call = "op = \"call\"\npipeline = \"fixture/implementation\"\n\n\
+                    [nodes.operator.bindings]\nimplementer = \"implementer\"\n\
+                    evaluator = \"evaluator\"\n";
+        let caller = IMPLEMENTATION
+            .replace(
+                "name = \"fixture/implementation\"",
+                "name = \"fixture/outer\"",
+            )
+            .replace(
+                "worker = \"fixture/implementer\"",
+                "worker = \"fixture/coder\"",
+            )
+            .replace("op = \"worker\"\nslot = \"implementer\"\n", call);
+        assert_ne!(caller, IMPLEMENTATION);
+        std::fs::write(outer.join("pipeline.toml"), caller).unwrap();
+        catalog(
+            root,
+            &[
+                ("fixture/implementation", "fixture/implementation"),
+                ("fixture/outer", "fixture/outer"),
+            ],
+        );
+        commit_all(root, "packages");
+        let mut pane = PipelinesPane::default();
+        pane.load(&scope(root)).unwrap();
+        pane.open(Some(".af/task-packages/fixture/outer/pipeline.toml"));
+        let rows: Vec<String> = pane.rows().iter().map(Row::text).collect();
+        let tree = [
+            "PIPE  fixture/outer@1.0.0 (.af/task-packages/fixture/outer/pipeline.toml)  [declared]",
+            "attempts  3 at most, 2 in parallel",
+            "",
+            "+-- implement  call fixture/implementation",
+            "|   +-- implement  worker implementer -> fixture/coder  attempts 1..1",
+            "|   +-- seal",
+            "|   +-- check  checks: pagination",
+            "|   +-- evaluate  verify evaluator -> fixture/evaluator  attempts 1..1  when check=passed",
+            "|   '-- accept",
+            "+-- seal",
+            "+-- check  checks: pagination",
+            "+-- evaluate  verify evaluator -> fixture/evaluator  attempts 1..1  when check=passed",
+            "'-- accept",
+            "",
+            "CONTRACT  declared by the package",
+        ];
+        assert_eq!(&rows[..tree.len()], &tree, "{rows:#?}");
+        assert_eq!(
+            pane.status(4).as_deref(),
+            Some("implementer: fixture/coder (implement)  attempts 1..1")
+        );
+        assert_eq!(
+            pane.status(7).as_deref(),
+            Some("evaluator: fixture/evaluator (evaluate)  attempts 1..1")
+        );
+        assert_eq!(pane.status(3), None);
+        assert!(
+            rows.iter()
+                .any(|row| row.contains("compiling a token-free plan")),
+            "{rows:#?}"
+        );
+        assert!(
+            rows.iter().all(|row| !row.starts_with("[[nodes]]")),
+            "{rows:#?}"
         );
     }
 }

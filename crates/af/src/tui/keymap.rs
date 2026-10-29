@@ -181,35 +181,68 @@ pub(crate) enum Action {
 
 /// The NORMAL-mode parser: single keys map directly, and `g`, `z`, `]`, `[`, `Z` and `<C-w>`
 /// wait for the key that completes them. An unknown continuation abandons the sequence, as vim
-/// does, so the key after it starts afresh.
+/// does, so the key after it starts afresh. An upper-case letter with no binding of its own is
+/// its lower-case key, so Caps Lock changes nothing: `Q` quits and `J` moves down.
 #[derive(Debug, Default)]
 pub(crate) struct KeyMap {
     /// The first key of an unfinished sequence; `w` stands for `<C-w>`.
     pending: Option<char>,
 }
 
+/// The upper-case letters with a binding of their own: the keymap's `G` `N` `R` `Z` and the
+/// Tasks pane's `D`. Every other upper-case letter is read as its lower-case key, as the first
+/// key of a sequence and as the one completing it (`zO` is `zo`, `gF` is `gf`). `D` is handed
+/// on as it is, since the table does not know which pane it reaches; `App::fold_task_only`
+/// reads it as `d` for every pane but Tasks.
+const UPPER_CASE_OWN: [char; 5] = ['D', 'G', 'N', 'R', 'Z'];
+
+/// `key`, an upper-case letter with no binding of its own read as its lower-case key.
+fn folded(key: Key) -> Key {
+    match key {
+        Key::Char(letter) if letter.is_ascii_uppercase() && !UPPER_CASE_OWN.contains(&letter) => {
+            Key::Char(letter.to_ascii_lowercase())
+        }
+        other => other,
+    }
+}
+
+/// The action `key` completes after `prefix`, or `None` for a continuation no sequence knows.
+fn sequence(prefix: char, key: Key) -> Option<Action> {
+    match (prefix, key) {
+        ('g', Key::Char('g')) => Some(Action::Top),
+        ('g', Key::Char('f')) => Some(Action::EditFile),
+        ('z', Key::Char('o')) => Some(Action::FoldOpen),
+        ('z', Key::Char('c')) => Some(Action::FoldClose),
+        ('z', Key::Char('a')) => Some(Action::FoldToggle),
+        ('z', Key::Char('R')) => Some(Action::FoldOpenAll),
+        ('z', Key::Char('M')) => Some(Action::FoldCloseAll),
+        (']', Key::Char(']')) => Some(Action::NextFolder),
+        ('[', Key::Char('[')) => Some(Action::PreviousFolder),
+        ('Z', Key::Char('Z')) => Some(Action::Quit),
+        ('w', Key::Char('l') | Key::Ctrl('l') | Key::Right) => Some(Action::FocusMain),
+        // `<C-h>` arrives as the backspace byte on most terminals.
+        ('w', Key::Char('h') | Key::Backspace | Key::Left) => Some(Action::FocusBar),
+        ('w', Key::Char('w') | Key::Ctrl('w')) => Some(Action::FocusNext),
+        _ => None,
+    }
+}
+
 impl KeyMap {
     pub(crate) fn feed(&mut self, key: Key) -> Option<Action> {
         if let Some(prefix) = self.pending.take() {
-            return match (prefix, key) {
-                ('g', Key::Char('g')) => Some(Action::Top),
-                ('g', Key::Char('f')) => Some(Action::EditFile),
-                ('z', Key::Char('o')) => Some(Action::FoldOpen),
-                ('z', Key::Char('c')) => Some(Action::FoldClose),
-                ('z', Key::Char('a')) => Some(Action::FoldToggle),
-                ('z', Key::Char('R')) => Some(Action::FoldOpenAll),
-                ('z', Key::Char('M')) => Some(Action::FoldCloseAll),
-                (']', Key::Char(']')) => Some(Action::NextFolder),
-                ('[', Key::Char('[')) => Some(Action::PreviousFolder),
-                ('Z', Key::Char('Z')) => Some(Action::Quit),
-                ('w', Key::Char('l') | Key::Ctrl('l') | Key::Right) => Some(Action::FocusMain),
-                // `<C-h>` arrives as the backspace byte on most terminals.
-                ('w', Key::Char('h') | Key::Backspace | Key::Left) => Some(Action::FocusBar),
-                ('w', Key::Char('w') | Key::Ctrl('w')) => Some(Action::FocusNext),
-                _ => None,
-            };
+            // The key as pressed first, so `zR`, `zM` and `ZZ` keep their case; then, as a
+            // first key is read, its lower-case key: `zO` opens a fold and `gF` opens the file
+            // with Caps Lock on, since no sequence ends in an `O` or an `F` of its own.
+            return sequence(prefix, key).or_else(|| {
+                let lower = folded(key);
+                if lower == key {
+                    None
+                } else {
+                    sequence(prefix, lower)
+                }
+            });
         }
-        let action = match key {
+        let action = match folded(key) {
             Key::Char(prefix @ ('g' | 'z' | ']' | '[' | 'Z')) => {
                 self.pending = Some(prefix);
                 return None;
@@ -365,6 +398,57 @@ mod tests {
         for (key, action) in bound {
             assert_eq!(actions(&[key]), vec![Some(action)], "{key:?}");
         }
+    }
+
+    /// Caps Lock: an upper-case letter with no binding of its own is its lower-case key; the
+    /// ones with their own keep it.
+    #[test]
+    fn an_upper_case_letter_without_its_own_binding_is_its_lower_case_key() {
+        let folded = [
+            (Key::Char('Q'), Action::Quit),
+            (Key::Char('J'), Action::Down),
+            (Key::Char('K'), Action::Up),
+            (Key::Char('H'), Action::Left),
+            (Key::Char('L'), Action::Right),
+            (Key::Char('O'), Action::Open),
+            (Key::Char('Y'), Action::Yank),
+            (Key::Char('M'), Action::Pane(Key::Char('m'))),
+            (Key::Char('E'), Action::Pane(Key::Char('e'))),
+        ];
+        for (key, action) in folded {
+            assert_eq!(actions(&[key]), vec![Some(action)], "{key:?}");
+        }
+        let own = [
+            (Key::Char('G'), Action::Bottom),
+            (Key::Char('N'), Action::SearchPrevious),
+            (Key::Char('R'), Action::Refresh),
+            (Key::Char('D'), Action::Pane(Key::Char('D'))),
+        ];
+        for (key, action) in own {
+            assert_eq!(actions(&[key]), vec![Some(action)], "{key:?}");
+        }
+        // `ZZ` still quits, and the continuations `zR` `zM` keep their case.
+        assert_eq!(actions(&chars("ZZ")), vec![None, Some(Action::Quit)]);
+        assert_eq!(actions(&chars("zR")), vec![None, Some(Action::FoldOpenAll)]);
+        assert_eq!(
+            actions(&chars("zM")),
+            vec![None, Some(Action::FoldCloseAll)]
+        );
+        // The key completing a sequence folds as a first key does: `zO` opens a fold, `gF`
+        // opens the file, `<C-w>L` and `<C-w>H` move the focus.
+        assert_eq!(actions(&chars("zO")), vec![None, Some(Action::FoldOpen)]);
+        assert_eq!(actions(&chars("zC")), vec![None, Some(Action::FoldClose)]);
+        assert_eq!(actions(&chars("gF")), vec![None, Some(Action::EditFile)]);
+        assert_eq!(
+            actions(&[Key::Ctrl('w'), Key::Char('L')]),
+            vec![None, Some(Action::FocusMain)]
+        );
+        assert_eq!(
+            actions(&[Key::Ctrl('w'), Key::Char('H')]),
+            vec![None, Some(Action::FocusBar)]
+        );
+        // An unknown continuation still abandons the sequence, upper-case or not.
+        assert_eq!(actions(&chars("zX")), vec![None, None]);
     }
 
     #[test]

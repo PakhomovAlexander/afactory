@@ -4,13 +4,13 @@ v hub  (project)            |layer      file                                 sta
       claude-main           |system     ~/etc/af/config.toml                 absent
       codex-ambient         |user       ~/config/af/config.toml              absent
   v workers/                |directory  ~/.af/af.toml                        absent
-  v pipelines/              |project    .af/af.toml                          present  <- edit with e
-      review                |local      .af/af.local.toml                    absent
-      fixture/implementation|
-  v tasks/                  |version = 1                               project .af/af.toml:1
-  v campaigns/              |[defaults]
-                            |pipeline = "review"                       project .af/af.toml:8
-                            |[project]
+      fixture/evaluator     |project    .af/af.toml                          present  <- edit with e
+      fixture/implementer   |local      .af/af.local.toml                    absent
+  v pipelines/              |
+      review                |version = 1                               project .af/af.toml:1
+      fixture/implementation|[defaults]
+  v tasks/                  |pipeline = "review"                       project .af/af.toml:8
+  v campaigns/              |[project]
                             |min_af = "0.9"                            project .af/af.toml:5
                             |name = "hub"                              project .af/af.toml:4
                             |[self]

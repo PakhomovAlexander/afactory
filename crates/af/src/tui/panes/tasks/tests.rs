@@ -2,6 +2,7 @@
 
 use serde_json::json;
 
+use super::super::pipelines::git;
 use super::*;
 
 #[test]
@@ -156,6 +157,12 @@ fn a_bar_row_fits_its_width_cutting_the_outcome_first() {
     assert_eq!(duration(1_250), "1.2s");
     assert_eq!(duration(123_000), "2m 03s");
     assert_eq!(duration(7_380_000), "2h 03m");
+    assert_eq!(duration(525_600_000), "6d 02h");
+    assert_eq!(
+        tail("~/.local/state/af/workstreams/default/state", 3),
+        "workstreams/default/state"
+    );
+    assert_eq!(tail("~/two", 3), "~/two");
     assert_eq!(clock(1_790_263_060_692), "15:17:40Z");
     assert_eq!(short(Some("sha256:0123456789abcdef")), "01234567");
     assert_eq!(short(None), "-");
@@ -895,6 +902,7 @@ fn opening_a_task_rebuilds_its_bar_row_from_the_same_read() {
             shown: "state".into(),
             repo: None,
             origin: Origin::Scope,
+            note: None,
         }],
         ..TasksPane::default()
     };
@@ -1177,6 +1185,7 @@ fn stores_an_earlier_release_wrote_are_listed_once_and_other_refusals_each() {
         shown: format!("~/.local/state/af/task/local/{name}"),
         repo: Some(name.to_owned()),
         origin: Origin::Repository,
+        note: None,
         release:
             matches!(&tasks, Err(error) if error.contains(review_core::event::ANOTHER_RELEASE))
                 .then(|| {
@@ -1248,6 +1257,7 @@ fn a_long_state_path_keeps_every_row_within_the_pane() {
         shown: format!("{root}/{name}"),
         repo: Some(name.to_owned()),
         origin: Origin::Repository,
+        note: None,
         release:
             matches!(&tasks, Err(error) if error.contains(review_core::event::ANOTHER_RELEASE))
                 .then(|| {
@@ -1448,6 +1458,7 @@ fn attention_store(dir: &str, repo: Option<&str>, origin: Origin, states: &[Valu
         shown: dir.to_owned(),
         repo: repo.map(str::to_owned),
         origin,
+        note: None,
         tasks: Ok(tasks),
         release: None,
     }
@@ -1498,8 +1509,9 @@ fn the_folder_opens_on_what_needs_you_with_each_next_command() {
         stores: vec![attention_store("/scope", None, Origin::Scope, &states)],
         ..TasksPane::default()
     };
-    let text =
-        |pane: &TasksPane| -> Vec<String> { pane.attention_rows().iter().map(Row::text).collect() };
+    let text = |pane: &TasksPane| -> Vec<String> {
+        pane.attention_rows().0.iter().map(Row::text).collect()
+    };
     assert_eq!(
         text(&pane),
         [
@@ -1569,7 +1581,7 @@ fn the_folder_opens_on_what_needs_you_with_each_next_command() {
     );
     // No readable Store lists a Task: no view, only the folder below it.
     pane.stores = vec![attention_store("/scope", None, Origin::Scope, &[])];
-    assert!(pane.attention_rows().is_empty());
+    assert!(pane.attention_rows().0.is_empty());
 }
 
 /// A load starts the read of every Store on a thread and lists nothing until the event loop
@@ -1620,6 +1632,7 @@ fn stores_are_listed_one_by_one_as_each_is_read() {
         shown: repo.to_owned(),
         repo: Some(repo.to_owned()),
         origin: Origin::Registered,
+        note: None,
     };
     let mut pane = TasksPane {
         targets: vec![target("one"), target("two")],
@@ -1696,6 +1709,7 @@ fn the_opened_tasks_detail_comes_with_its_stores_message() {
         shown: "state".to_owned(),
         repo: None,
         origin: Origin::Scope,
+        note: None,
     };
     let mut pane = TasksPane {
         loaded: vec![target.clone()],
@@ -1749,6 +1763,7 @@ fn a_refused_store_is_listed_before_the_stores_after_it() {
         shown: shown.to_owned(),
         repo: Some(shown.to_owned()),
         origin: Origin::Registered,
+        note: None,
     };
     let mut pane = TasksPane {
         targets: vec![target(&broken, "broken"), target(&state, "good")],
@@ -1813,6 +1828,7 @@ fn a_refusal_taken_on_open_restarts_a_read_in_flight() {
         shown: "state".to_owned(),
         repo: None,
         origin: Origin::Scope,
+        note: None,
     };
     let mut pane = TasksPane {
         loaded: vec![target.clone()],
@@ -2013,6 +2029,7 @@ fn a_task_opened_during_a_read_has_its_detail_read_again_when_its_store_answers(
         shown: "state".to_owned(),
         repo: None,
         origin: Origin::Scope,
+        note: None,
     };
     let mut pane = TasksPane {
         loaded: vec![target.clone()],
@@ -2100,6 +2117,7 @@ fn a_reads_detail_from_an_earlier_opening_never_stands_over_a_newer_inspection()
         shown: "state".to_owned(),
         repo: None,
         origin: Origin::Scope,
+        note: None,
     };
     let mut pane = TasksPane {
         loaded: vec![target.clone()],
@@ -2169,12 +2187,14 @@ fn a_targets_message_reorders_the_retained_stores_before_any_store_answers() {
         shown: "repository".to_owned(),
         repo: Some("repository".to_owned()),
         origin: Origin::Repository,
+        note: None,
     };
     let explicit = Target {
         dir: registered.clone(),
         shown: "~/elsewhere/registered".to_owned(),
         repo: Some("~/elsewhere/registered".to_owned()),
         origin: Origin::Registered,
+        note: None,
     };
     let mut pane = TasksPane {
         loaded: vec![explicit.clone()],
@@ -2204,10 +2224,10 @@ fn a_targets_message_reorders_the_retained_stores_before_any_store_answers() {
     assert_eq!(dirs(&pane), [registered.clone(), state.clone()]);
     let sender = pane.fed();
     sender
-        .send(Read::Targets(Ok(vec![
-            discovered.clone(),
-            explicit.clone(),
-        ])))
+        .send(Read::Targets(Ok((
+            vec![discovered.clone(), explicit.clone()],
+            None,
+        ))))
         .unwrap();
     assert!(pane.poll());
     assert!(pane.busy().is_some(), "no Store answered yet");
@@ -2243,12 +2263,14 @@ fn a_changed_target_list_keeps_a_store_listed_until_its_read_answers() {
         shown: "state".to_owned(),
         repo: None,
         origin: Origin::Scope,
+        note: None,
     };
     let other = Target {
         dir: root.join("elsewhere"),
         shown: "elsewhere".to_owned(),
         repo: Some("elsewhere".to_owned()),
         origin: Origin::Registered,
+        note: None,
     };
     let mut pane = TasksPane {
         targets: vec![own.clone()],
@@ -2330,6 +2352,7 @@ fn a_refusal_taken_on_a_history_row_restarts_a_read_in_flight() {
         shown: "state".to_owned(),
         repo: None,
         origin: Origin::Scope,
+        note: None,
     };
     let mut pane = TasksPane {
         loaded: vec![target.clone()],
@@ -2400,5 +2423,687 @@ fn a_refusal_taken_on_a_history_row_restarts_a_read_in_flight() {
         pane.stores[0].tasks.is_err(),
         "read after the refusal, the Store refuses again: {:?}",
         pane.stores[0].tasks.as_ref().err()
+    );
+}
+
+/// Register `label` as a Workspace of the hub at `repo`, with `path` as its checkout and
+/// `state` as its Store, in the Project Store under `xdg`.
+fn register_workspace(xdg: &Path, repo: &Path, label: &str, path: &Path, state: &Path) {
+    use crate::projects::{self, Located, ProjectStore, WorkspacePaths};
+    let Located::Checkout(checkout) = projects::locate(repo).unwrap() else {
+        panic!("{} is not a checkout", repo.display());
+    };
+    let pin = |home: Option<PathBuf>| {
+        crate::config::STATE_HOME_FOR_TESTS.with(|pinned| *pinned.borrow_mut() = home);
+    };
+    pin(Some(xdg.to_path_buf()));
+    let mut store = ProjectStore::open(xdg, &checkout.project_id).unwrap();
+    let paths = WorkspacePaths {
+        id: projects::workspace_id(&checkout.project_id, path),
+        label: label.to_owned(),
+        path: path.to_path_buf(),
+        state: state.to_path_buf(),
+        bindings: None,
+        tasks: None,
+    };
+    let origin = review_core::project::WorkspaceOriginV1::Adopted;
+    projects::register_in(&mut store, &checkout, origin, label, true, paths).unwrap();
+    drop(store);
+    pin(None);
+}
+
+/// The project scope lists the Project's Tasks, not this directory's alone: the default Store
+/// of every other checkout of the Project, a worktree's named by its directory and a
+/// registered Workspace's by its label, each a bar group beside this checkout's own, and a
+/// `--state` Store a Workspace names as the registry lists it, with the Workspace beside it.
+/// A checkout whose Store was never made is not listed. All of it is the read's discovery,
+/// never the load's (ADR-0240).
+#[test]
+fn the_project_scope_lists_the_default_stores_of_every_checkout_of_the_project() {
+    let temp = tempfile::tempdir().unwrap();
+    let root = std::fs::canonicalize(temp.path()).unwrap();
+    let (repo, state) = crate::tui::tests::hub_with_tasks(&root);
+    let xdg = root.join("state");
+    // A worktree with a Task in its own default Store, and one that never ran a Task.
+    let worktree = root.join("hub-wt-branch");
+    let add = |path: &Path, branch: &str| {
+        let args = [
+            "worktree",
+            "add",
+            "-q",
+            "-b",
+            branch,
+            path.to_str().unwrap(),
+        ];
+        git(&repo, &args).unwrap();
+    };
+    add(&worktree, "branch");
+    let branch_state = task_execution::default_task_state(&xdg, &worktree).unwrap();
+    crate::tui::tests::record_task(&root, &worktree, &branch_state, "pagination-branch");
+    let idle = root.join("hub-wt-idle");
+    add(&idle, "idle");
+    // Two more worktrees, each a registered Workspace with a default Store of its own (this
+    // checkout's, copied): listed by label, not by directory name, before the worktree no
+    // Workspace names.
+    let zeta = root.join("hub-wt-a");
+    add(&zeta, "zeta");
+    let zeta_state = task_execution::default_task_state(&xdg, &zeta).unwrap();
+    crate::tui::tests::copy_store(&state, &zeta_state);
+    let alpha = root.join("hub-wt-b");
+    add(&alpha, "alpha");
+    let alpha_state = task_execution::default_task_state(&xdg, &alpha).unwrap();
+    crate::tui::tests::copy_store(&state, &alpha_state);
+    // This checkout is the Workspace `hub` with its default Store; the idle worktree is the
+    // Workspace `labelled`, whose Store is a `--state` one the registry lists.
+    let registered = root.join("elsewhere/registered");
+    crate::tui::tests::copy_store(&state, &registered);
+    let registry = crate::storage::registry::location(&xdg);
+    std::fs::create_dir_all(registry.parent().unwrap()).unwrap();
+    std::fs::write(
+        &registry,
+        format!(
+            "version = 2\n\n[[store]]\npath = {:?}\nkind = \"task\"\nfirst_use_unix_ms = 1\n\
+             last_use_unix_ms = 1\n",
+            registered.display().to_string()
+        ),
+    )
+    .unwrap();
+    register_workspace(&xdg, &repo, "hub", &repo, &state);
+    register_workspace(&xdg, &repo, "labelled", &idle, &registered);
+    register_workspace(&xdg, &repo, "zeta", &zeta, &zeta_state);
+    register_workspace(&xdg, &repo, "alpha", &alpha, &alpha_state);
+
+    let scope = crate::tui::tests::hub_scope(&root, &repo);
+    let mut pane = TasksPane::default();
+    pane.load(&scope).unwrap();
+    let dirs =
+        |pane: &TasksPane| -> Vec<PathBuf> { pane.targets.iter().map(|t| t.dir.clone()).collect() };
+    // The load resolves this checkout's Store and the registry's; the read finds the rest.
+    assert_eq!(dirs(&pane), [state.clone(), registered.clone()]);
+    assert!(
+        pane.busy().is_some(),
+        "the read discovers the Project's checkouts"
+    );
+    pane.settle();
+    assert_eq!(
+        dirs(&pane),
+        [
+            state.clone(),
+            alpha_state.clone(),
+            zeta_state.clone(),
+            branch_state.clone(),
+            registered.clone()
+        ]
+    );
+    let described: Vec<(Option<&str>, Origin, Option<&str>)> = pane
+        .targets
+        .iter()
+        .map(|t| (t.repo.as_deref(), t.origin, t.note.as_deref()))
+        .collect();
+    assert_eq!(
+        described,
+        [
+            (
+                Some("hub"),
+                Origin::Scope,
+                Some("this checkout (Workspace hub)")
+            ),
+            (Some("alpha"), Origin::Checkout, Some("Workspace alpha")),
+            (Some("zeta"), Origin::Checkout, Some("Workspace zeta")),
+            (
+                Some("hub-wt-branch"),
+                Origin::Checkout,
+                Some("worktree hub-wt-branch (not a Workspace)")
+            ),
+            (
+                Some("~/elsewhere/registered"),
+                Origin::Registered,
+                Some("Workspace labelled")
+            ),
+        ]
+    );
+    assert!(pane.error.is_none() && pane.discovered.is_none());
+    // Every Store is read and grouped in the bar by its checkout; a command on another
+    // checkout's Task names its Store.
+    let listed: Vec<(String, usize)> = pane
+        .stores
+        .iter()
+        .map(|store| {
+            let count = store.tasks.as_ref().map_or(0, Vec::len);
+            (store.repo.clone().unwrap_or_default(), count)
+        })
+        .collect();
+    assert_eq!(
+        listed,
+        [
+            ("hub".to_owned(), 2),
+            ("alpha".to_owned(), 2),
+            ("zeta".to_owned(), 2),
+            ("hub-wt-branch".to_owned(), 1),
+            ("~/elsewhere/registered".to_owned(), 2)
+        ]
+    );
+    let groups: Vec<String> = pane.items().iter().map(|item| item.label.clone()).collect();
+    assert_eq!(
+        groups,
+        [
+            "hub/ (2)",
+            "alpha/ (2)",
+            "zeta/ (2)",
+            "hub-wt-branch/ (1)",
+            "..here/registered/ (2)"
+        ]
+    );
+    assert!(Origin::Checkout.explicit());
+    pane.open(None);
+    let rows: Vec<String> = pane.rows().iter().map(Row::text).collect();
+    let headings = [
+        format!(
+            "this checkout (Workspace hub)  {}",
+            scope.abbreviate(&state)
+        ),
+        format!("Workspace alpha  {}", scope.abbreviate(&alpha_state)),
+        format!("Workspace zeta  {}", scope.abbreviate(&zeta_state)),
+        format!(
+            "worktree hub-wt-branch (not a Workspace)  {}",
+            scope.abbreviate(&branch_state)
+        ),
+        "~/elsewhere/registered  (--state, in stores.toml; Workspace labelled)".to_owned(),
+    ];
+    for heading in &headings {
+        assert!(rows.contains(heading), "{heading} not in {rows:#?}");
+    }
+    assert!(
+        !rows.iter().any(|row| row.contains("hub-wt-idle")),
+        "a checkout without a Store is not listed: {rows:#?}"
+    );
+}
+
+/// `f`: the running Tasks of every Store in one list, the one started last first, each with its
+/// progress, how long it has run, its charge so far and where it runs, then the Stores that
+/// cannot be read; `f` again lists every Task grouped. The Stores are handed over as read, so no
+/// fixture Task runs, and the rows are built for one fixed `now`.
+#[test]
+fn f_lists_the_running_tasks_of_every_store_latest_first() {
+    let dir = |repo: &str| PathBuf::from(format!("/stores/{repo}"));
+    let target = |repo: &str| Target {
+        dir: dir(repo),
+        shown: format!("~/{repo}"),
+        repo: Some(repo.to_owned()),
+        origin: Origin::Registered,
+        note: None,
+    };
+    let mut pane = TasksPane {
+        targets: vec![target("one"), target("two"), target("bad")],
+        ..TasksPane::default()
+    };
+    let now: u64 = 1_700_000_000_000;
+    // A Task as read: running since `ago` milliseconds with `settled` of four stages behind it
+    // and `tokens` charged, or finished and verified.
+    let running = |ago: u64, settled: usize, tokens: &str| Summary {
+        phase: json!({"kind": "running"}),
+        outcome: None,
+        chargeable: Some(tokens.to_owned()),
+        unknown: 0,
+        acceptance: None,
+        plan_id: None,
+        started: Some(now - ago),
+        progress: Progress { settled, stages: 4 },
+    };
+    let verified = || Summary {
+        phase: json!({"kind": "finished"}),
+        outcome: Some("verified".to_owned()),
+        chargeable: Some("9".to_owned()),
+        unknown: 0,
+        acceptance: Some("satisfied".to_owned()),
+        plan_id: None,
+        started: Some(now - 600_000),
+        progress: Progress {
+            settled: 4,
+            stages: 4,
+        },
+    };
+    let listed = |task_id: &str, summary: Summary| Listed {
+        task_id: task_id.to_owned(),
+        entry: json!({"task_id": task_id, "chargeable_tokens": "0"}),
+        summary: Ok(summary),
+    };
+    let store = |repo: &str, tasks: Result<Vec<Listed>, String>| Store {
+        dir: dir(repo),
+        shown: format!("~/{repo}"),
+        repo: Some(repo.to_owned()),
+        origin: Origin::Registered,
+        note: None,
+        tasks,
+        release: None,
+    };
+    let stores = [
+        store(
+            "one",
+            Ok(vec![
+                listed("pagination-cli", running(315_000, 1, "1,234")),
+                listed("pagination-done", verified()),
+            ]),
+        ),
+        store(
+            "two",
+            Ok(vec![
+                listed("pagination-unfinished", running(90_000, 3, "56")),
+                listed("pagination-verified", verified()),
+            ]),
+        ),
+        // A directory with entries but no event log: a Store this release refuses.
+        store("bad", Err("no events.sqlite in it".to_owned())),
+    ];
+    let sender = pane.fed();
+    for store in stores {
+        sender
+            .send(Read::Store {
+                store: Box::new(store),
+                detail: None,
+            })
+            .unwrap();
+    }
+    sender.send(Read::Done(Cache::default())).unwrap();
+    pane.settle();
+    let labels = |pane: &TasksPane| -> Vec<String> {
+        pane.items().into_iter().map(|item| item.label).collect()
+    };
+    assert_eq!(labels(&pane), ["one/ (2)", "two/ (2)", "bad/ (0)"]);
+    assert!(pane.legend().contains("f running"), "{}", pane.legend());
+
+    // `f`: one flat list, the Task started last first, then the Store that cannot be read.
+    assert_eq!(pane.key(Key::Char('f'), 0), Ok(None));
+    let items = pane.items();
+    let ids: Vec<&str> = items.iter().map(|item| item.id.as_str()).collect();
+    assert_eq!(
+        ids,
+        [
+            "two/pagination-unfinished",
+            "one/pagination-cli",
+            UNREADABLE
+        ]
+    );
+    assert!(items.iter().all(|item| item.children.is_none()));
+    assert_eq!(items[0].tone, Some(Tone::Active));
+    assert_eq!(items[2].label, "! 1 Store unreadable");
+    let rows: Vec<String> = pane.rows().iter().map(Row::text).collect();
+    assert!(
+        rows[0].ends_with("running Tasks only, latest first"),
+        "{rows:#?}"
+    );
+    // The same rows for the fixed `now`, so each duration is exact whatever the clock did.
+    let folder: Vec<String> = pane.folder_rows(now).rows.iter().map(Row::text).collect();
+    assert_eq!(folder.len(), rows.len());
+    let at = |needle: &str| {
+        folder
+            .iter()
+            .position(|row| row.contains(needle))
+            .unwrap_or_else(|| panic!("{needle}: {folder:#?}"))
+    };
+    let (later, earlier) = (at("pagination-unfinished"), at("pagination-cli"));
+    assert!(later < earlier, "{folder:#?}");
+    // Each row: the id, its progress, how long it has run, its charge so far and where it
+    // runs; no outcome, since a running Task has none.
+    let words = |row: &str| {
+        row.split_whitespace()
+            .map(str::to_owned)
+            .collect::<Vec<_>>()
+    };
+    assert_eq!(
+        words(&folder[later]),
+        [
+            "pagination-unfinished",
+            "75%",
+            "1m",
+            "30s",
+            "56",
+            "tok",
+            "two"
+        ]
+    );
+    assert_eq!(
+        words(&folder[earlier]),
+        ["pagination-cli", "25%", "5m", "15s", "1,234", "tok", "one"]
+    );
+    assert!(
+        !folder
+            .iter()
+            .any(|row| row.contains("verified") || row.contains("changes_requested")),
+        "{folder:#?}"
+    );
+    let bad = at("~/bad  (--state, in stores.toml):");
+    assert!(bad > earlier, "{folder:#?}");
+    assert!(
+        folder[bad + 1].contains("this Store cannot be read: no events.sqlite in it"),
+        "{folder:#?}"
+    );
+    // The status line names the Store of a running row; Enter opens its Task, and a row that
+    // is no Task refuses.
+    assert_eq!(
+        pane.status(later).as_deref(),
+        Some("~/two  (--state, in stores.toml)")
+    );
+    let opened = Effect::OpenItem(Tab::Tasks, "two/pagination-unfinished".to_owned());
+    assert_eq!(pane.key(Key::Enter, later), Ok(Some(opened)));
+    assert!(pane.key(Key::Enter, 0).is_err());
+    assert!(pane.legend().contains("f all Tasks"), "{}", pane.legend());
+
+    // `f` again: the groups as before.
+    assert_eq!(pane.key(Key::Char('f'), 0), Ok(None));
+    assert_eq!(labels(&pane), ["one/ (2)", "two/ (2)", "bad/ (0)"]);
+    assert!(pane.status(later).is_none());
+    let rows: Vec<String> = pane.rows().iter().map(Row::text).collect();
+    assert!(rows.iter().any(|row| row.contains("verified")), "{rows:#?}");
+}
+
+/// A shallow clone has no Project (ADR-0158): its Tasks pane lists this checkout's Store alone,
+/// and neither the Project Store nor `git worktree list` is read for it, so a worktree linked
+/// to it with a Store of its own is not listed.
+#[test]
+fn a_shallow_checkout_lists_no_other_checkout() {
+    let temp = tempfile::tempdir().unwrap();
+    let root = std::fs::canonicalize(temp.path()).unwrap();
+    let repo = crate::tui::tests::hub_repo(&root);
+    let xdg = root.join("state");
+    let shallow = root.join("shallow");
+    let origin = format!("file://{}", repo.display());
+    git(
+        &repo,
+        // The test helper forbids every transport; a clone is one, so the file transport is
+        // allowed again behind it, and `file://` because a local-path clone is never shallow.
+        &[
+            "-c",
+            "protocol.file.allow=always",
+            "clone",
+            "-q",
+            "--depth",
+            "1",
+            &origin,
+            shallow.to_str().unwrap(),
+        ],
+    )
+    .unwrap();
+    assert_eq!(
+        crate::projects::locate(&shallow).unwrap(),
+        crate::projects::Located::Shallow
+    );
+    let linked = root.join("shallow-wt");
+    git(
+        &shallow,
+        &[
+            "worktree",
+            "add",
+            "-q",
+            "-b",
+            "wt",
+            linked.to_str().unwrap(),
+        ],
+    )
+    .unwrap();
+    // A Store discovery would list, with its refusal, were it run: `events.sqlite` is there
+    // but is not a file, so `store_present` says so rather than "no Store".
+    let linked_state = task_execution::default_task_state(&xdg, &linked).unwrap();
+    std::fs::create_dir_all(linked_state.join("events.sqlite")).unwrap();
+    assert!(task_execution::store_present(&linked_state).is_err());
+    let own = task_execution::default_task_state(&xdg, &shallow).unwrap();
+
+    let scope = crate::tui::tests::hub_scope(&root, &shallow);
+    let mut pane = TasksPane::default();
+    pane.load(&scope).unwrap();
+    pane.settle();
+    let described: Vec<(&Path, Option<&str>, Origin, Option<&str>)> = pane
+        .targets
+        .iter()
+        .map(|t| {
+            (
+                t.dir.as_path(),
+                t.repo.as_deref(),
+                t.origin,
+                t.note.as_deref(),
+            )
+        })
+        .collect();
+    assert_eq!(
+        described,
+        [(own.as_path(), None, Origin::Scope, Some("this checkout"))]
+    );
+    assert!(pane.error.is_none() && pane.discovered.is_none());
+}
+
+/// This checkout's Workspace is the one registered at its path (ADR-0158), whatever Store it
+/// names: registered with a `--state` Store, the checkout still carries its label and that
+/// Store is the registry's, noted with the label. A Workspace at another path naming this
+/// checkout's default Store does not relabel it; it is noted on the Store, as on a registry
+/// Store, and the Store stays this checkout's.
+#[test]
+fn this_checkouts_label_is_its_registered_paths_whatever_store_either_workspace_names() {
+    let temp = tempfile::tempdir().unwrap();
+    let root = std::fs::canonicalize(temp.path()).unwrap();
+    let repo = crate::tui::tests::hub_repo(&root);
+    let xdg = root.join("state");
+    let own = task_execution::default_task_state(&xdg, &repo).unwrap();
+    let explicit = task_execution::local_task_states(&xdg).join("hub-explicit");
+    std::fs::create_dir_all(&explicit).unwrap();
+    let registry = crate::storage::registry::location(&xdg);
+    std::fs::create_dir_all(registry.parent().unwrap()).unwrap();
+    std::fs::write(
+        &registry,
+        format!(
+            "version = 2\n\n[[store]]\npath = {:?}\nkind = \"task\"\nfirst_use_unix_ms = 1\n\
+             last_use_unix_ms = 1\n",
+            explicit.display().to_string()
+        ),
+    )
+    .unwrap();
+    let worktree = root.join("hub-wt-x");
+    git(
+        &repo,
+        &[
+            "worktree",
+            "add",
+            "-q",
+            "-b",
+            "x",
+            worktree.to_str().unwrap(),
+        ],
+    )
+    .unwrap();
+    register_workspace(&xdg, &repo, "hub", &repo, &explicit);
+    register_workspace(&xdg, &repo, "x", &worktree, &own);
+
+    let scope = crate::tui::tests::hub_scope(&root, &repo);
+    let mut pane = TasksPane::default();
+    pane.load(&scope).unwrap();
+    pane.settle();
+    assert!(pane.error.is_none() && pane.discovered.is_none());
+    let shown = scope.abbreviate(&explicit);
+    assert_eq!(
+        pane.described_targets(),
+        [
+            (
+                own.clone(),
+                None,
+                Origin::Scope,
+                Some("this checkout (Workspace hub; the Store of Workspace x)".to_owned()),
+            ),
+            (
+                explicit.clone(),
+                Some(shown.clone()),
+                Origin::Registered,
+                Some("Workspace hub".to_owned()),
+            ),
+        ]
+    );
+    pane.open(None);
+    let rows: Vec<String> = pane.rows().iter().map(Row::text).collect();
+    assert!(
+        rows.iter()
+            .any(|row| row.starts_with("this checkout (Workspace hub; the Store of Workspace x)  ")),
+        "{rows:#?}"
+    );
+    assert!(
+        rows.iter().any(|row| row.starts_with(&format!(
+            "{shown}  (--state, in stores.toml; Workspace hub)"
+        ))),
+        "{rows:#?}"
+    );
+}
+
+/// A Workspace's Tasks are its checkout's default Store's, listed under its label whether or
+/// not the Workspace also names a `--state` Store: a registered clone no `git worktree list`
+/// names is found by its default Store this way alone, and a `--state` Store two Workspaces
+/// name, kept under the local state root like a default Store, is the registry's, listed once
+/// with both Workspaces noted and reached with `--state`.
+#[test]
+fn a_workspaces_default_store_is_listed_beside_the_state_store_it_names() {
+    let temp = tempfile::tempdir().unwrap();
+    let root = std::fs::canonicalize(temp.path()).unwrap();
+    let repo = crate::tui::tests::hub_repo(&root);
+    let xdg = root.join("state");
+    let state = task_execution::default_task_state(&xdg, &repo).unwrap();
+    // A clone of the Project, registered as the Workspace `clone` with a `--state` Store, with
+    // a default Store of its own; the worktree `hub-wt-x` is the Workspace `x` on the same
+    // `--state` Store and has no default Store.
+    let clone = root.join("clone");
+    git(
+        &repo,
+        &[
+            "-c",
+            "protocol.file.allow=always",
+            "clone",
+            "-q",
+            repo.to_str().unwrap(),
+            clone.to_str().unwrap(),
+        ],
+    )
+    .unwrap();
+    let clone_default = task_execution::default_task_state(&xdg, &clone).unwrap();
+    // The clone's default Store directory, with no Store written in it yet.
+    std::fs::create_dir_all(&clone_default).unwrap();
+    let shared = task_execution::local_task_states(&xdg).join("shared-by-two");
+    std::fs::create_dir_all(&shared).unwrap();
+    let registry = crate::storage::registry::location(&xdg);
+    std::fs::create_dir_all(registry.parent().unwrap()).unwrap();
+    std::fs::write(
+        &registry,
+        format!(
+            "version = 2\n\n[[store]]\npath = {:?}\nkind = \"task\"\nfirst_use_unix_ms = 1\n\
+             last_use_unix_ms = 1\n",
+            shared.display().to_string()
+        ),
+    )
+    .unwrap();
+    let worktree = root.join("hub-wt-x");
+    git(
+        &repo,
+        &[
+            "worktree",
+            "add",
+            "-q",
+            "-b",
+            "x",
+            worktree.to_str().unwrap(),
+        ],
+    )
+    .unwrap();
+    register_workspace(&xdg, &repo, "hub", &repo, &state);
+    register_workspace(&xdg, &repo, "clone", &clone, &shared);
+    register_workspace(&xdg, &repo, "x", &worktree, &shared);
+
+    let scope = crate::tui::tests::hub_scope(&root, &repo);
+    let mut pane = TasksPane::default();
+    pane.load(&scope).unwrap();
+    pane.settle();
+    assert!(pane.error.is_none() && pane.discovered.is_none());
+    let shown = scope.abbreviate(&shared);
+    let entry = |dir: &Path, repo: &str, origin: Origin, note: &str| {
+        (
+            dir.to_path_buf(),
+            Some(repo.to_owned()),
+            origin,
+            Some(note.to_owned()),
+        )
+    };
+    let registered = entry(&shared, &shown, Origin::Registered, "Workspaces clone, x");
+    // A default Store directory af never wrote holds no Task and is not listed, so this
+    // checkout's Store stands ungrouped, as with no other checkout.
+    let alone = (
+        state.clone(),
+        None,
+        Origin::Scope,
+        Some("this checkout (Workspace hub)".to_owned()),
+    );
+    assert_eq!(pane.described_targets(), [alone, registered.clone()]);
+    let own = entry(
+        &state,
+        "hub",
+        Origin::Scope,
+        "this checkout (Workspace hub)",
+    );
+    // A Task recorded in the clone: its Store is listed under the Workspace's label at the
+    // next read, between this checkout's and the registry's.
+    crate::tui::tests::record_task(&root, &clone, &clone_default, "pagination-cli");
+    pane.refresh(&scope).unwrap();
+    pane.settle();
+    let listed = entry(&clone_default, "clone", Origin::Checkout, "Workspace clone");
+    assert_eq!(pane.described_targets(), [own, listed, registered]);
+    pane.open(None);
+    let rows: Vec<String> = pane.rows().iter().map(Row::text).collect();
+    let heading = format!("{shown}  (--state, in stores.toml; Workspaces clone, x)");
+    assert!(
+        rows.iter().any(|row| row.starts_with(&heading)),
+        "{heading} not in {rows:#?}"
+    );
+    assert!(
+        rows.iter().any(|row| row.starts_with("Workspace clone  ")),
+        "{rows:#?}"
+    );
+    assert!(
+        !rows.iter().any(|row| row.contains("hub-wt-x")),
+        "a Workspace without a default Store is not listed as a checkout: {rows:#?}"
+    );
+}
+
+/// A Project Store that cannot be read is a warning above the Stores, not a shorter list: this
+/// checkout's Store is listed all the same, and the folder says why the registered Workspaces
+/// are not.
+#[test]
+fn a_project_store_that_cannot_be_read_is_a_warning_above_the_stores() {
+    use crate::projects::{self, Located};
+    let temp = tempfile::tempdir().unwrap();
+    let root = std::fs::canonicalize(temp.path()).unwrap();
+    let repo = crate::tui::tests::hub_repo(&root);
+    let xdg = root.join("state");
+    let state = task_execution::default_task_state(&xdg, &repo).unwrap();
+    register_workspace(&xdg, &repo, "hub", &repo, &state);
+    let Located::Checkout(checkout) = projects::locate(&repo).unwrap() else {
+        panic!("{} is not a checkout", repo.display());
+    };
+    let directory = projects::store_directory(&xdg, &checkout.project_id);
+    std::fs::write(directory.join("events.sqlite"), b"not a database").unwrap();
+
+    let scope = crate::tui::tests::hub_scope(&root, &repo);
+    let mut pane = TasksPane::default();
+    pane.load(&scope).unwrap();
+    pane.settle();
+    let warning = pane.discovered.clone().expect("the discovery warns");
+    assert!(
+        warning.starts_with("the Project's Workspaces are not listed: the Project Store "),
+        "{warning}"
+    );
+    let dirs: Vec<&Path> = pane.targets.iter().map(|t| t.dir.as_path()).collect();
+    assert_eq!(dirs, [state.as_path()]);
+    assert!(pane.error.is_none());
+    pane.open(None);
+    let text: Vec<String> = pane.rows().iter().map(Row::text).collect();
+    let flat = text
+        .join(" ")
+        .split_whitespace()
+        .collect::<Vec<_>>()
+        .join(" ");
+    assert!(
+        flat.contains("warning the Project's Workspaces are not listed: the Project Store"),
+        "{text:#?}"
     );
 }

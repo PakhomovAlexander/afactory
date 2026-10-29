@@ -718,6 +718,10 @@ fn the_tasks_pane_shows_the_numbers_af_task_show_json_records() {
     // characters whenever it takes more than four. 120 columns show every form whole.
     let mut browser = Browser::launch_sized(&repo, &home, ROWS, 120);
     browser.wait_for("the bar", |screen| shows(screen, "  v tasks/"));
+    // The Store is read on its thread after the bar shows (ADR-0240): the Task's row must be
+    // listed before the keys descend into tasks/, or `j` lands on the next folder.
+    let listed = |screen: &Screen| screen.text().contains("pagination-c~");
+    browser.wait_for("the Task listed", listed);
     // ]] four times reaches tasks/; its first group is done/, and in it the Task.
     browser.keys(b"]]]]]]]]");
     browser.keys(b"jj");
@@ -902,7 +906,11 @@ fn the_tasks_pane_at_80x24_on_a_pseudo_terminal() {
     let ready = |screen: &Screen| screen.text().contains("SETTINGS  project: hub");
     browser.wait_for("the project settings at 80x24", ready);
     // The bar starts hidden at 80 columns; <C-b> shows it, and ]] four times reaches tasks/.
+    // The Store is read on its thread after the bar shows (ADR-0240): the Task's row must be
+    // listed before the keys descend into tasks/, or `j` lands on the next folder.
     browser.keys(b"\x02");
+    let listed = |screen: &Screen| screen.text().contains("pagination-c~");
+    browser.wait_for("the Task listed", listed);
     browser.keys(b"]]]]]]]]");
     browser.keys(b"jj");
     browser.keys(b"\r");

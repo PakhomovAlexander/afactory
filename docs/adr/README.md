@@ -490,3 +490,7 @@ future readers need.
   report](0258-task-gate-evidence-comes-from-the-check-report.md)
 - [0259 — Point agents at the loop in four rules and own skills by their
   bytes](0259-point-agents-at-the-loop-in-four-rules-and-own-skills-by-their-bytes.md)
+- [0260 — Leave out a default context that holds a registered
+  login](0260-leave-out-a-default-context-that-holds-a-registered-login.md)
+- [0261 — Shape the browser around what a person looks
+  for](0261-shape-the-browser-around-what-a-person-looks-for.md)

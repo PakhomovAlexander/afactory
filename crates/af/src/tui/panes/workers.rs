@@ -11,8 +11,9 @@
 //! kernel sends: `reviewer.md` for a reviewer Worker, `instructions.md` for a Task Worker
 //! package.
 //!
-//! The pane reads nothing until its folder or one of its entries is first opened: STATE scans
-//! every Task's records (section 8), so the browser does not pay for it on start.
+//! The folder reads at load in a project scope, on its thread, as the other folders do: a load
+//! records the read and the first poll after the frame starts it (ADR-0240), so the bar lists
+//! the Workers without an open. The user scope lists none and reads nothing.
 //!
 //! A runner's verdict is judged against the catalogs the Providers pane read (ADR-0148), and
 //! the pane follows them as they arrive: each poll compares the shared catalogs' generation with
@@ -28,11 +29,13 @@ use toml::Value;
 
 use super::pipelines::{CATALOG, blobs, declared, differing, head, listed, pinned_paths};
 use super::tasks::{self, Cache, Invoked, Target};
-use super::{Pane, Row};
+use super::{Effect, Pane, Row};
 use crate::task_execution;
+use crate::tui::keymap::Key;
 use crate::tui::paint::{Paint, Span, Tone};
 use crate::tui::scope::Scope;
 use crate::tui::tree::Item;
+use crate::tui::tree::Tab;
 
 /// The columns of a section rule: the main pane beside the bar at 100 columns.
 const RULE: usize = 100 - crate::tui::BAR_WIDTH;
@@ -613,6 +616,9 @@ struct Loaded {
     /// On a failed read of `HEAD`: for each kept entry, in order, its drifted files.
     drifts: Vec<Vec<String>>,
     stores: Vec<Store>,
+    /// Why the Stores are not every one of the Project's: its checkouts could not all be
+    /// discovered, so the Attempts counted are this checkout's own Store's.
+    warning: Option<String>,
 }
 
 struct Job {
@@ -623,8 +629,13 @@ struct Job {
 pub(crate) struct WorkersPane {
     title: String,
     root: Option<PathBuf>,
-    /// The pane was opened in this scope: from then on every load reads.
+    /// The scope has Workers to read: every load reads.
     wanted: bool,
+    /// A read the load recorded, started by the first poll after the frame painted.
+    pending: bool,
+    /// How many reads were started on a thread: a load records one and starts none.
+    #[cfg(test)]
+    started: usize,
     /// The read in flight, on its thread.
     job: Option<Job>,
     /// The spinner frame the bar shows while a read runs.
@@ -632,12 +643,20 @@ pub(crate) struct WorkersPane {
     /// The commit the entries were read from.
     commit: String,
     entries: Vec<Entry>,
+    /// The entry each row of the folder's listing names; empty while an entry is opened.
+    named: BTreeMap<usize, String>,
     /// Why the last read of `HEAD` failed; the entries shown are the previous read's.
     error: Option<String>,
-    /// The Task state directories the Tasks pane reads for this scope.
+    /// The Task state directories the Tasks pane resolves for this scope at load: this
+    /// checkout's own Store.
     targets: Vec<Target>,
+    /// What the read discovers on its thread: the Project's other checkouts' Stores, which
+    /// count beside the own one (docs/design/tui.md section 5.3).
+    discover: Option<tasks::Discovery>,
     /// Why the scope names no Task state.
     no_state: Option<String>,
+    /// Why the last read counted this checkout's Store alone.
+    warning: Option<String>,
     stores: Vec<Store>,
     selected: Option<String>,
     rows: Vec<Row>,
@@ -697,6 +716,7 @@ impl WorkersPane {
     /// A read in flight is dropped, its thread ends at its send. Reading `HEAD` runs git and
     /// reading a Store replays its log, so neither runs on the key loop (ADR-0240).
     fn read(&mut self) {
+        self.pending = false;
         let Some(root) = self.root.clone() else {
             // The user scope lists no Worker: Workers belong to a project.
             self.job = None;
@@ -707,6 +727,7 @@ impl WorkersPane {
             return;
         };
         let targets = self.targets.clone();
+        let project = self.discover.clone();
         let commit = self.commit.clone();
         // The kept entries still show the working tree's drift from their commit.
         let kept: Vec<(String, String, bool)> = self
@@ -733,14 +754,32 @@ impl WorkersPane {
                     drift(&root, &commit, &shown)
                 }
             };
+            // The Project's checkouts, discovered here as the Tasks pane discovers them; a
+            // discovery that fails leaves the own Store counted and says so.
+            let (targets, warning) = match project.as_ref().map(tasks::Discovery::targets) {
+                Some(Ok(found)) => (found.targets, found.warning),
+                Some(Err(error)) => (targets, Some(error)),
+                None => (targets, None),
+            };
             let stores = targets.iter().map(read_store).collect();
             let _ = sender.send(Loaded {
                 discovered,
                 drifts,
                 stores,
+                warning,
             });
         });
         self.job = Some(Job { receiver });
+        #[cfg(test)]
+        {
+            self.started += 1;
+        }
+    }
+
+    /// How many reads were started on a thread.
+    #[cfg(test)]
+    pub(crate) fn started(&self) -> usize {
+        self.started
     }
 
     /// What a read found, listed.
@@ -759,6 +798,7 @@ impl WorkersPane {
             }
         }
         self.stores = loaded.stores;
+        self.warning = loaded.warning;
         self.job = None;
         // An opened Worker the read no longer finds: the folder shows, and the browser follows
         // (`App::poll` falls back to the folder when the opened entry is gone).
@@ -775,6 +815,9 @@ impl WorkersPane {
     /// Wait for the read in flight, if any, and list what it found: a test's event loop.
     #[cfg(test)]
     pub(crate) fn settle(&mut self) {
+        if self.pending {
+            self.read();
+        }
         let received = match &self.job {
             Some(job) => job.receiver.recv(),
             None => return,
@@ -787,15 +830,24 @@ impl WorkersPane {
 
     fn rebuild(&mut self) {
         self.generation = self.catalogs.generation();
-        let (rows, prompt_row) = match self.selected_entry() {
-            Some(entry) => self.entry_rows(entry),
-            None => (self.folder_rows(), usize::MAX),
+        let (rows, prompt_row, named) = match self.selected_entry() {
+            Some(entry) => {
+                let (rows, prompt_row) = self.entry_rows(entry);
+                (rows, prompt_row, BTreeMap::new())
+            }
+            None => {
+                let (rows, named) = self.folder_rows();
+                (rows, usize::MAX, named)
+            }
         };
         self.rows = rows;
         self.prompt_row = prompt_row;
+        self.named = named;
     }
 
-    fn folder_rows(&self) -> Vec<Row> {
+    /// The folder's listing, and the entry each of its rows names.
+    fn folder_rows(&self) -> (Vec<Row>, BTreeMap<usize, String>) {
+        let mut named = BTreeMap::new();
         let mut rows = vec![Row::painted(&self.title, Paint::Title), Row::blank()];
         if let Some(error) = &self.error {
             let stale = if self.entries.is_empty() {
@@ -810,7 +862,7 @@ impl WorkersPane {
         if self.root.is_none() {
             let project = "Workers belong to a project; :cd into a repository.";
             rows.push(Row::plain(project));
-            return rows;
+            return (rows, named);
         }
         if self.entries.is_empty() && self.error.is_none() {
             let none = "No Worker committed under .af/workers/, .af/task-packages/, \
@@ -826,11 +878,12 @@ impl WorkersPane {
             for entry in listed {
                 let mark = if entry.drifted.is_empty() { "" } else { " *" };
                 let (label, directory) = (&entry.label, &entry.directory);
+                named.insert(rows.len(), entry.id.clone());
                 rows.push(Row::plain(format!("  {label:<26} {directory}{mark}")));
             }
         }
         rows.extend(self.store_refusals());
-        rows
+        (rows, named)
     }
 
     /// Why the scope's Task state, or one of its Stores, cannot be read.
@@ -838,6 +891,10 @@ impl WorkersPane {
         let mut rows = Vec::new();
         if let Some(error) = &self.no_state {
             rows.push(Row::error("error", error));
+        }
+        if let Some(warning) = &self.warning {
+            let warning = format!("the Project's other checkouts are not counted: {warning}");
+            rows.push(Row::error("warning", warning));
         }
         for store in &self.stores {
             if let Err(error) = &store.tallies {
@@ -1152,9 +1209,11 @@ impl Pane for WorkersPane {
             Ok(targets) => (targets, None),
             Err(error) => (Vec::new(), Some(error)),
         };
-        if self.wanted {
-            self.read();
-        }
+        self.discover = tasks::Discovery::of(scope, self.targets.first().cloned());
+        // A project scope's folder lists its Workers from the start: the read is recorded here
+        // and starts at the first poll after the frame, never before the browser's first frame.
+        self.wanted = self.root.is_some();
+        self.pending = self.wanted;
         self.rebuild();
         Ok(())
     }
@@ -1219,28 +1278,40 @@ impl Pane for WorkersPane {
         &self.rows
     }
 
+    /// `Enter` on a Worker the folder lists opens it, as the bar does.
+    fn key(&mut self, key: Key, row: usize) -> Result<Option<Effect>, String> {
+        if key != Key::Enter {
+            return Ok(None);
+        }
+        let id = self.named.get(&row).cloned();
+        Ok(id.map(|id| Effect::OpenItem(Tab::Workers, id)))
+    }
+
+    fn rename(&mut self, scope: &Scope) {
+        self.title = format!("WORKERS  {}: {}", scope.word(), scope.name());
+        self.rebuild();
+    }
+
     fn legend(&self) -> &'static str {
         match self.selected {
             Some(_) => "j/k scroll  gf open file  y yank name  R re-read  Tab bar",
-            None => "j/k move  R re-read  Tab bar  :cmd  q quit",
+            None => "j/k move  Enter open  R re-read  Tab bar  :cmd  q quit",
         }
     }
 
-    /// `R` reads, opened before or not; a load for another scope first forgets the old one.
+    /// `R` reads again; a load for another scope first forgets the old one.
     fn refresh(&mut self, scope: &Scope) -> Result<(), String> {
-        self.load(scope)?;
-        if !self.wanted {
-            self.wanted = true;
-            self.read();
-            self.rebuild();
-        }
-        Ok(())
+        self.load(scope)
     }
 
     /// The Providers pane's discovery hands its catalogs over on its own thread: when the shared
     /// generation moved since the rows were built, they are built again for the same selection,
     /// so an open Worker's verdict follows the catalogs as they arrive or go away.
     fn poll(&mut self) -> bool {
+        // The read a load or `R` recorded starts here, after the frame painted last.
+        if self.pending {
+            self.read();
+        }
         let mut changed = false;
         if let Some(job) = &self.job {
             match job.receiver.try_recv() {
@@ -1261,7 +1332,7 @@ impl Pane for WorkersPane {
 
     fn busy(&self) -> Option<char> {
         let spinner = super::SPINNER[self.spinner % super::SPINNER.len()];
-        self.job.as_ref().map(|_| spinner)
+        (self.pending || self.job.is_some()).then_some(spinner)
     }
 
     /// The prompt's working-tree file at and below the PROMPT rule, committed or not: that is

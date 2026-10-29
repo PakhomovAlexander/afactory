@@ -93,15 +93,19 @@ Tab <C-w>l <C-w>h  move focus between the bar and the main pane
 Enter o            open the selected node in the main pane
 y                  copy the selected id to the clipboard (OSC 52)
 gf                 open the file behind the node in $EDITOR
-R                  read the pane again; providers: probe quota windows
+R                  read the pane again
 q ZZ :q            quit; <C-c> first cancels a prompt or a running probe
+Caps Lock          a capital letter with no key of its own is its small one
 
 providers: d fills the : line with `provider remove ID` for a registered
            Provider; Enter on the line runs it
-workers: gf opens the prompt (or the declaration), y copies the name;
-         the folder lists its Workers once it is first opened
-tasks: Enter on a HISTORY row shows its artifact (q or Esc returns),
-       p opens the Task's pipeline, y copies the Task id,
+workers: Enter on a listed Worker opens it; gf opens the prompt (or the
+         declaration), y copies the name
+pipelines: Enter on a listed Pipeline opens it
+tasks: f lists the running Tasks only, latest first, in the bar and the
+       folder; f again lists every Task. Enter on a Task row of the
+       folder opens it; Enter on a HISTORY row shows its artifact (q or
+       Esc returns), p opens the Task's pipeline, y copies the Task id,
        r fills the : line with `task run ID --confirm-plan PLAN`,
        D on a verified Task with `task deliver ID ... --confirm `
        (type the Task id to confirm); Enter on the line runs it
@@ -419,7 +423,24 @@ pub(crate) struct App {
     /// legend takes turns with [`IDLE_HINT`]. `None` outside the event loop, so a frame a test
     /// paints never depends on the clock.
     idle_since: Option<std::time::Instant>,
+    /// The read of the committed `[project] name` in flight (`scope::committed_name`, on a
+    /// thread), with the root it was started for; `None` while none runs.
+    name_read: Option<(PathBuf, std::sync::mpsc::Receiver<Option<String>>)>,
+    /// A name read the load recorded: the first poll after the first frame starts it
+    /// (ADR-0240), as the folders' reads start.
+    name_pending: bool,
+    /// Name reads started, for tests.
+    #[cfg(test)]
+    name_reads: usize,
+    /// A test's hold on the name reads: their thread waits for its release before reading, a
+    /// git that does not answer, so the test sees the browser answer keys meanwhile.
+    #[cfg(test)]
+    name_hold: Option<NameHold>,
 }
+
+/// What `App::hold_name_reads` hands a test: released by `App::release_name_reads`.
+#[cfg(test)]
+pub(crate) type NameHold = std::sync::Arc<(std::sync::Mutex<bool>, std::sync::Condvar)>;
 
 impl App {
     pub(crate) fn new(scope: Scope, start: Option<PathBuf>, panes: Panes) -> App {
@@ -448,6 +469,12 @@ impl App {
             handed: false,
             exe: std::env::current_exe().map_err(|error| format!("the af executable: {error}")),
             idle_since: None,
+            name_read: None,
+            name_pending: false,
+            #[cfg(test)]
+            name_reads: 0,
+            #[cfg(test)]
+            name_hold: None,
         };
         app.load();
         // A first run: nothing registered yet, so the browser opens where that is fixed.
@@ -464,6 +491,9 @@ impl App {
     /// Stores starts that read on a thread here and lists them as `poll` collects them: the
     /// event loop paints before it polls, so the first frame never waits on a Store.
     fn load(&mut self) {
+        // The committed name is read with the folders: recorded here, started by the first
+        // poll after the first frame, never on the key loop (ADR-0240).
+        self.name_pending = self.scope.kind == ScopeKind::Project;
         for tab in PANES {
             let loaded = self.panes.get_mut(tab).load(&self.scope);
             if let Err(error) = loaded {
@@ -479,6 +509,13 @@ impl App {
     /// real one would collect the Stores a few frames later.
     #[cfg(test)]
     pub(crate) fn settle(&mut self) {
+        if self.name_pending {
+            self.start_name_read();
+        }
+        if let Some((root, receiver)) = self.name_read.take() {
+            let answer = receiver.recv().ok();
+            self.apply_name(&root, answer);
+        }
         self.panes.tasks.settle();
         self.panes.campaigns.settle();
         self.panes.workers.settle();
@@ -497,7 +534,10 @@ impl App {
     /// longer lists (a Worker whose declaration went, a Task whose Store refused) falls back
     /// to its folder with the message `show` gives, as it does when opening finds it gone.
     pub(crate) fn poll(&mut self) {
-        let mut changed = false;
+        if self.name_pending {
+            self.start_name_read();
+        }
+        let mut changed = self.take_name();
         for tab in PANES {
             changed |= self.panes.get_mut(tab).poll();
         }
@@ -508,13 +548,124 @@ impl App {
         self.follow_listing();
     }
 
+    /// Read the committed `[project] name` on a thread (ADR-0240): the bar's root and every
+    /// pane's title take it when `poll` collects it. Until then the name shown stands, the
+    /// toplevel's basename at first. A read for another root, or one an `R` superseded, is
+    /// dropped when it answers.
+    fn start_name_read(&mut self) {
+        self.name_pending = false;
+        if self.scope.kind != ScopeKind::Project {
+            self.name_read = None;
+            return;
+        }
+        let root = self.scope.root.clone();
+        let at = root.clone();
+        let (sender, receiver) = std::sync::mpsc::channel();
+        #[cfg(test)]
+        let hold = self.name_hold.clone();
+        #[cfg(test)]
+        {
+            self.name_reads += 1;
+        }
+        std::thread::spawn(move || {
+            #[cfg(test)]
+            if let Some(hold) = hold {
+                let (released, signal) = &*hold;
+                let guard = released
+                    .lock()
+                    .unwrap_or_else(|poisoned| poisoned.into_inner());
+                let _released = signal
+                    .wait_while(guard, |released| !*released)
+                    .unwrap_or_else(|poisoned| poisoned.into_inner());
+            }
+            let _ = sender.send(scope::committed_name(&at));
+        });
+        self.name_read = Some((root, receiver));
+    }
+
+    /// Collect the name read when it answered; `true` when the answer renamed anything.
+    fn take_name(&mut self) -> bool {
+        let answered = match &self.name_read {
+            Some((_, receiver)) => match receiver.try_recv() {
+                Ok(name) => Some(Some(name)),
+                Err(std::sync::mpsc::TryRecvError::Empty) => None,
+                Err(std::sync::mpsc::TryRecvError::Disconnected) => Some(None),
+            },
+            None => None,
+        };
+        let Some(answer) = answered else {
+            return false;
+        };
+        let Some((root, _)) = self.name_read.take() else {
+            return false;
+        };
+        self.apply_name(&root, answer)
+    }
+
+    /// A name read's answer for `root`: a name other than the scope's renames the bar's root
+    /// and every pane's title, nothing read again. `true` when it did; an answer for another
+    /// root, or none (the thread died), changes nothing.
+    fn apply_name(&mut self, root: &Path, answer: Option<Option<String>>) -> bool {
+        let Some(name) = answer else {
+            return false;
+        };
+        if root != self.scope.root
+            || self.scope.kind != ScopeKind::Project
+            || self.scope.declared == name
+        {
+            return false;
+        }
+        self.scope.declared = name;
+        self.tree.set_root(&root_label(&self.scope));
+        for tab in PANES {
+            self.panes.get_mut(tab).rename(&self.scope);
+        }
+        true
+    }
+
+    /// Name reads started so far, for tests.
+    #[cfg(test)]
+    pub(crate) fn name_reads(&self) -> usize {
+        self.name_reads
+    }
+
+    /// Hold every name read started from now on until `release_name_reads`: a git that does
+    /// not answer, for a test to see the browser answer keys meanwhile.
+    #[cfg(test)]
+    pub(crate) fn hold_name_reads(&mut self) -> NameHold {
+        let hold = NameHold::default();
+        self.name_hold = Some(hold.clone());
+        hold
+    }
+
+    /// Let the held name reads go on.
+    #[cfg(test)]
+    pub(crate) fn release_name_reads(hold: &NameHold) {
+        let (released, signal) = &**hold;
+        *released
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner()) = true;
+        signal.notify_all();
+    }
+
     /// The opened entry, if a read no longer lists it, falls back to its folder with the
     /// message `show` gives when opening finds it gone.
     fn follow_listing(&mut self) {
         let Opened::Item(tab, id) = &self.opened else {
             return;
         };
-        let (tab, id) = (*tab, id.clone());
+        let (tab, mut id) = (*tab, id.clone());
+        // A read may have renamed the opened entry (a Task whose Store took a group when
+        // another checkout appeared): the pane says what it is called now, and the bar and
+        // the breadcrumb follow it instead of losing it.
+        if let Some(now) = self.panes.get(Some(tab)).opened_id()
+            && now != id
+            && listed(&self.panes.get(Some(tab)).items(), &now)
+        {
+            self.tree.select(NodeKind::Item(tab), &now);
+            self.opened = Opened::Item(tab, now.clone());
+            id = now;
+        }
         if listed(&self.panes.get(Some(tab)).items(), &id) {
             return;
         }
@@ -734,10 +885,31 @@ impl App {
             Action::Quit => return Some(Effect::Quit),
             Action::Command => self.begin(Mode::Command),
             Action::Cancel => self.cancel(),
-            Action::Pane(key) if self.focus == Focus::Bar => return self.bar_key(key),
-            Action::Pane(key) => return self.pane_key(key),
+            Action::Pane(key) => {
+                let key = self.fold_task_only(key);
+                return match self.focus {
+                    Focus::Bar => self.bar_key(key),
+                    Focus::Main => self.pane_key(key),
+                };
+            }
         }
         None
+    }
+
+    /// `D` is the Tasks pane's own key (`task deliver`); to every other pane it is `d`, as an
+    /// upper-case letter with no binding of its own is its lower-case key, so Caps Lock
+    /// changes nothing on a Provider: `D` removes it as `d` does. The pane the key reaches
+    /// decides: the bar's selected node's while the bar has focus, the opened one otherwise;
+    /// the root addresses no pane, so `D` stays `D` there and says what it acts on.
+    fn fold_task_only(&self, key: Key) -> Key {
+        let tab = match self.focus {
+            Focus::Bar => self.selected_tab(),
+            Focus::Main => self.opened_tab(),
+        };
+        match key {
+            Key::Char('D') if tab.is_some_and(|tab| tab != Tab::Tasks) => Key::Char('d'),
+            other => other,
+        }
     }
 
     fn step(&mut self, delta: isize) {
@@ -890,9 +1062,26 @@ impl App {
 
     /// A pane-local key while the bar has focus: `r` and `D` act on the bar's selected Task,
     /// and `d` on its selected Provider, and on nothing else, never on what the main pane has
-    /// opened; any other key is the opened pane's, as it always was.
+    /// opened; `f` under `tasks/` filters the Tasks whatever the main pane shows; any other
+    /// key is the opened pane's, as it always was.
     fn bar_key(&mut self, key: Key) -> Option<Effect> {
         let row = self.tree.selected();
+        let tasks = matches!(
+            row.kind,
+            NodeKind::Folder(Tab::Tasks) | NodeKind::Group(Tab::Tasks) | NodeKind::Item(Tab::Tasks)
+        );
+        if key == Key::Char('f') && tasks {
+            let outcome = self.panes.tasks.key(key, 0);
+            self.sync();
+            self.follow_listing();
+            return match outcome {
+                Ok(effect) => effect,
+                Err(error) => {
+                    self.say_error(error);
+                    None
+                }
+            };
+        }
         let (verb, nothing) = match key {
             Key::Char('r' | 'D') => (
                 (row.kind == NodeKind::Item(Tab::Tasks))
@@ -1238,12 +1427,24 @@ impl App {
             }
             Effect::RunCommand(words) => self.run_command(&words, host),
             Effect::OpenPipeline(name) => self.open_pipeline(&name),
+            Effect::OpenItem(tab, id) => self.open_item(tab, &id),
             Effect::Prefill(line) => {
                 // Never submitted: the user reads the line and presses Enter, or `Esc`.
                 self.begin(Mode::Command);
                 self.prompt.set(&line);
             }
         }
+    }
+
+    /// Open an entry a folder's listing names, as selecting it in the bar would; the bar's
+    /// cursor follows it. An entry a read no longer lists says so.
+    fn open_item(&mut self, tab: Tab, id: &str) {
+        self.sync();
+        if !self.tree.select(NodeKind::Item(tab), id) {
+            self.say_error(format!("{id} is no longer listed"));
+            return;
+        }
+        self.show(Opened::Item(tab, id.to_owned()));
     }
 
     /// Open a Pipeline the Pipelines pane lists by name, as selecting it in the bar would.
@@ -1480,7 +1681,11 @@ impl App {
             self.enter_scope(scope);
             return Ok(());
         }
+        // The name read last stands; the committed one is read again on a thread, never on
+        // the key loop (ADR-0240), and a change renames the root and every title when it
+        // answers.
         self.scope = scope;
+        self.start_name_read();
         self.panes.settings.load(&self.scope)
     }
 
