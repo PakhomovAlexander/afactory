@@ -505,6 +505,8 @@ const ENVIRONMENT: &str =
   AF_SELF_OFFLINE=1       never contact a release source: no pin installs, no update checks
   AF_RELEASE_SOURCE       a local directory of releases (<tag>/<asset>) instead of GitHub
   AF_RELEASE_KEY          a minisign .pub file to verify SHA256SUMS with, not the embedded key
+  AF_NIGHTLY_KEY          a minisign .pub file to verify a nightly's SHA256SUMS with, not the
+                          embedded nightly key
   AF_PROVIDERS_FILE       absolute path of the provider registry
                           (default: ~/.config/af/providers.toml)
   AF_CACHE_POLICY_FILE    absolute path of machine-local cache policy
@@ -1143,7 +1145,7 @@ Updates — `[self]` in ~/.config/af/config.toml
   update_check = true      look for a newer release, at most once per check_every
   check_every = \"24h\"
   auto_update = \"notify\"   notify | always | never
-  channel = \"stable\"       stable | rc
+  channel = \"stable\"       stable | rc | nightly   (af self channel switches)
   install_pins = \"ask\"     ask | always | never
   keep_versions = 3
 
@@ -1156,7 +1158,7 @@ Updates — `[self]` in ~/.config/af/config.toml
   timer, daemon or service runs between them. Releases come anonymously over HTTPS (curl) from
   a public repository, through gh only when that is refused; every call is bounded (curl: 5 s to
   connect, 30 s to list releases; gh: 30 s), and a failure's reason (the HTTP status or curl's
-  error) is said before any `gh auth login` hint. The cache (af/self-check@3) records the last
+  error) is said before any `gh auth login` hint. The cache (af/self-check@4) records the last
   answer, the last attempt and why it failed, which `af self status` prints:
   `last check: <time> · latest X · last attempt <time> failed: <reason>`. A check that has held
   latest.lock for over an hour counts as no check, and status names it with `rm <lock>`. A
@@ -1173,8 +1175,21 @@ Updates — `[self]` in ~/.config/af/config.toml
   stale, even an update back to the same version, is dropped. `af self update` without
   --version never moves the default to a release older than the running one.
 
+Channels
+  stable installs the newest release, rc the newest release or pre-release, nightly the newest
+  nightly build of main by its date (`nightly-YYYY.MM.DD`, version <core>-nightly.<YYYYMMDD>;
+  Linux only). `af self channel` prints the configured channel and its layer; `af self channel
+  stable|rc|nightly` writes it into the user layer, keeping the file's other keys and comments,
+  then installs the channel's newest as the default, even an older one, and says so; with
+  --no-update it only records. `af self update` and the check follow the channel; on nightly a
+  newer nightly is told by its date. A nightly's SHA256SUMS is verified against the nightly key
+  alone (crates/af/keys/nightly.pub, embedded at build time, or AF_NIGHTLY_KEY), never the
+  release key, and a release's never against it: an af without one refuses the nightly channel.
+  A pinned project runs its pin whatever the channel, and a nightly is never pinned.
+
 Commands
-  af self status [--refresh] | update [--check] | rollback | install V | remove V | prune
+  af self status [--refresh] | update [--check] | channel [CHANNEL] [--no-update]
+  af self rollback | install V | remove V | prune
   af self setup-shell [--write | --remove] | uninstall [--purge]
   Update, rollback, remove, prune, and uninstall refuse to touch a binary af did not install.
   uninstall refuses while a background check runs, since it may be installing a release: run

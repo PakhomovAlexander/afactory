@@ -115,10 +115,30 @@ impl InstallPins {
     }
 }
 
+/// What `af self` installs and updates to: stable releases, pre-releases too, or the nightly
+/// builds of main (ADR-0267).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum Channel {
     Stable,
     Rc,
+    Nightly,
+}
+
+impl Channel {
+    /// The channel as `[self] channel` spells it.
+    pub(crate) const fn name(self) -> &'static str {
+        match self {
+            Channel::Stable => "stable",
+            Channel::Rc => "rc",
+            Channel::Nightly => "nightly",
+        }
+    }
+
+    pub(crate) fn parse(text: &str) -> Option<Channel> {
+        [Channel::Stable, Channel::Rc, Channel::Nightly]
+            .into_iter()
+            .find(|channel| channel.name() == text)
+    }
 }
 
 /// The `[self]` table, typed. Every field has a built-in default.
@@ -169,11 +189,10 @@ impl Config {
                 ));
             }
         };
-        let channel = match str_of("channel")?.as_str() {
-            "stable" => Channel::Stable,
-            "rc" => Channel::Rc,
-            other => return Err(format!("[self] channel = \"{other}\" is not stable or rc")),
-        };
+        let channel = str_of("channel")?;
+        let channel = Channel::parse(&channel).ok_or_else(|| {
+            format!("[self] channel = \"{channel}\" is not one of stable, rc, nightly")
+        })?;
         let install_pins = match get("install_pins")? {
             Value::Boolean(true) => InstallPins::Always,
             Value::Boolean(false) => InstallPins::Never,
@@ -1057,6 +1076,57 @@ pub(crate) fn layer_path(layer: LayerArg, repo: Option<&Path>) -> Result<PathBuf
     })
 }
 
+/// Set `[table] key = "value"` in the user layer, the `user` file `af config paths` names,
+/// keeping every other key, table and comment as written. The file is created when absent, read
+/// as every layer is read (a link or an oversized file is refused) and replaced in one rename.
+/// Returns its path.
+pub(crate) fn set_user_string(table: &str, key: &str, value: &str) -> Result<PathBuf, String> {
+    let path = layer_path(LayerArg::User, None)?;
+    let text = match std::fs::symlink_metadata(&path) {
+        Ok(_) => {
+            read_authority(&path).map_err(|error| format!("reading {}: {error}", path.display()))?
+        }
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => String::new(),
+        Err(error) => return Err(format!("inspecting {}: {error}", path.display())),
+    };
+    let updated = with_string(&text, table, key, value)
+        .map_err(|error| format!("{}: {error}", path.display()))?;
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent)
+            .map_err(|error| format!("creating {}: {error}", parent.display()))?;
+    }
+    let tmp = path.with_extension(format!("toml.tmp.{}", std::process::id()));
+    std::fs::write(&tmp, updated).map_err(|error| format!("writing {}: {error}", tmp.display()))?;
+    std::fs::rename(&tmp, &path).map_err(|error| {
+        let _ = std::fs::remove_file(&tmp);
+        format!("renaming into {}: {error}", path.display())
+    })?;
+    Ok(path)
+}
+
+/// `text` with `[table] key = "value"` set and everything else as written: the other keys and
+/// tables, their order and comments, and the comment beside a value it replaces.
+fn with_string(text: &str, table: &str, key: &str, value: &str) -> Result<String, String> {
+    let mut document = text
+        .parse::<toml_edit::DocumentMut>()
+        .map_err(|error| error.to_string())?;
+    let entry = document.entry(table).or_insert(toml_edit::table());
+    let Some(entries) = entry.as_table_like_mut() else {
+        return Err(format!("`{table}` is not a table"));
+    };
+    match entries.get_mut(key) {
+        Some(toml_edit::Item::Value(existing)) => {
+            let decor = existing.decor().clone();
+            *existing = toml_edit::Value::from(value);
+            *existing.decor_mut() = decor;
+        }
+        _ => {
+            entries.insert(key, toml_edit::value(value));
+        }
+    }
+    Ok(document.to_string())
+}
+
 /// The program and arguments `$EDITOR` (the value `editor`) runs to edit `path`. `af config
 /// edit` and the browser's `gf` and `:e` share it.
 pub(crate) fn editor_words(
@@ -1159,6 +1229,70 @@ mod tests {
             let error = policy(refused).unwrap_err();
             assert!(error.contains("[self] install_pins"), "{error}");
         }
+    }
+
+    #[test]
+    fn channel_takes_stable_rc_and_nightly_and_names_all_three_otherwise() {
+        let policy = |value: &str| {
+            let mut effective: Value = toml::from_str(BUILT_IN).unwrap();
+            effective["self"]["channel"] = Value::String(value.to_string());
+            Config {
+                machine_scope: true,
+                ignored: Vec::new(),
+                files: Vec::new(),
+                toplevel: None,
+                effective,
+                origins: BTreeMap::new(),
+            }
+            .self_policy()
+            .map(|policy| policy.channel)
+        };
+        assert_eq!(policy("stable"), Ok(Channel::Stable));
+        assert_eq!(policy("rc"), Ok(Channel::Rc));
+        assert_eq!(policy("nightly"), Ok(Channel::Nightly));
+        assert_eq!(
+            policy("beta"),
+            Err("[self] channel = \"beta\" is not one of stable, rc, nightly".to_string())
+        );
+        for channel in [Channel::Stable, Channel::Rc, Channel::Nightly] {
+            assert_eq!(Channel::parse(channel.name()), Some(channel));
+        }
+    }
+
+    #[test]
+    fn writing_one_user_key_keeps_every_other_key_and_comment() {
+        let before = "# my machine\nversion = 1\n\n[self]\n# how often\ncheck_every = \"12h\"   # twice a day\nchannel = \"rc\"   # for now\n\n[storage]\nmax_bytes = \"30GiB\"\n";
+        let after = with_string(before, "self", "channel", "nightly").unwrap();
+        assert_eq!(
+            after,
+            before.replace("channel = \"rc\"", "channel = \"nightly\"")
+        );
+        // A table without the key gains it; a file without the table gains the table.
+        let added = with_string(
+            "[self]\nauto_update = \"never\" # quiet\n",
+            "self",
+            "channel",
+            "rc",
+        )
+        .unwrap();
+        assert_eq!(
+            added,
+            "[self]\nauto_update = \"never\" # quiet\nchannel = \"rc\"\n"
+        );
+        let created = with_string("# only a comment\n", "self", "channel", "stable").unwrap();
+        assert_eq!(created, "[self]\nchannel = \"stable\"\n# only a comment\n");
+        assert_eq!(
+            toml::from_str::<Value>(&with_string("", "self", "channel", "nightly").unwrap())
+                .unwrap()["self"]["channel"]
+                .as_str(),
+            Some("nightly")
+        );
+        // A file that is not TOML, or whose `self` is not a table, is refused, not rewritten.
+        assert!(with_string("[self\n", "self", "channel", "rc").is_err());
+        assert_eq!(
+            with_string("self = 1\n", "self", "channel", "rc"),
+            Err("`self` is not a table".to_string())
+        );
     }
 
     #[test]

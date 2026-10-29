@@ -498,3 +498,5 @@ future readers need.
   changes](0262-offer-a-light-default-pipeline-for-small-changes.md)
 - [0263 — Bound bare af's first browser
   frame](0263-bound-bare-afs-first-browser-frame.md)
+- [0267 — Offer a nightly channel in af
+  self](0267-offer-a-nightly-channel-in-af-self.md)

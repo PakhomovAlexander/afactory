@@ -12,7 +12,9 @@
 //! at build time, and under a project lock also the digest the lock records for this target: an
 //! install from a lock needs both. A pin without a digest for this target is never installed on
 //! demand, and one that is not installed is installed on demand only as `[self] install_pins`
-//! says: after a terminal confirmation (`ask`, the default), always, or never.
+//! says: after a terminal confirmation (`ask`, the default), always, or never. A nightly
+//! (`[self] channel = "nightly"`, ADR-0267) is bound by its `SHA256SUMS` signed with the separate
+//! nightly key alone, and is never pinned.
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::ffi::OsStr;
@@ -38,6 +40,10 @@ pub(crate) const COMMIT: &str = env!("AF_GIT_COMMIT");
 /// The minisign public key the release job signs `SHA256SUMS` with, embedded at build time from
 /// `crates/af/keys/release.pub`. Empty in a build without the file (a source build).
 const RELEASE_KEY: &str = env!("AF_RELEASE_KEY");
+/// The minisign public key the nightly build signs a nightly's `SHA256SUMS` with, embedded at
+/// build time from `crates/af/keys/nightly.pub`: a key of its own, never the release key
+/// (ADR-0267). Empty in a build without the file, which refuses the nightly channel.
+const NIGHTLY_KEY: &str = env!("AF_NIGHTLY_KEY");
 /// The oldest release `af self` activates, installs or dispatches to: the first whose
 /// `SHA256SUMS` is signed. Anything older is never made the default and never dispatched to.
 const OLDEST_SUPPORTED: &str = "0.8.0";
@@ -46,6 +52,7 @@ const DISPATCHED_ENV: &str = "AF_DISPATCHED_FROM";
 const VERSION_ENV: &str = "AF_VERSION";
 const SOURCE_ENV: &str = "AF_RELEASE_SOURCE";
 const KEY_ENV: &str = "AF_RELEASE_KEY";
+const NIGHTLY_KEY_ENV: &str = "AF_NIGHTLY_KEY";
 /// Pinned projects remembered for `remove` and `prune`; the oldest entries age out.
 const MAX_SEEN_PINS: usize = 64;
 
@@ -65,6 +72,27 @@ pub(crate) struct Receipt {
     /// such a build installs from a lock).
     pub(crate) verified_by: String,
     pub(crate) installed_at: String,
+    /// A nightly's tag (`nightly-YYYY.MM.DD`), its channel (`nightly`) and the commit its binary
+    /// reported; a release's receipt has none of the three (ADR-0267).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) tag: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) channel: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) commit: Option<String>,
+}
+
+impl Receipt {
+    /// The receipt as `af/self-status@2` shows it: the fields every receipt has. A nightly's tag
+    /// follows from its version, and its commit is the status's own `commit`.
+    fn status_view(self) -> Receipt {
+        Receipt {
+            tag: None,
+            channel: None,
+            commit: None,
+            ..self
+        }
+    }
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
@@ -92,10 +120,11 @@ struct SeenPin {
     seen: String,
 }
 
-/// The cached release check's shape (`schemas/self-check-v3.json`). Version 3 adds the last
-/// attempt, its failure and the newest pre-release; a cache an earlier release wrote, of any
-/// version, is not read: a machine with one is due a check, which writes this one (ADR-0145).
-const CHECK_CACHE_SCHEMA: &str = "af/self-check@3";
+/// The cached release check's shape (`schemas/self-check-v4.json`). Version 4 adds the nightly
+/// channel, whose `latest` is a nightly's tag (ADR-0267); a cache an earlier release wrote, of
+/// any version, is not read: a machine with one is due a check, which writes this one
+/// (ADR-0145).
+const CHECK_CACHE_SCHEMA: &str = "af/self-check@4";
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -111,11 +140,13 @@ struct CheckCache {
     /// Why the last attempt failed; none once one succeeds.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     last_error: Option<String>,
-    /// The newest release on the configured channel.
+    /// The newest release on the configured channel: its version, or on the nightly channel the
+    /// newest nightly's tag, whose version only its binary says.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     latest: Option<String>,
     /// The newest pre-release, asked for whatever the channel while the running af is a
-    /// pre-release or the channel is `rc`: a pre-release user hears of the next one.
+    /// pre-release or the channel is `rc`: a pre-release user hears of the next one. Never a
+    /// nightly, and never recorded on the nightly channel.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     latest_prerelease: Option<String>,
     #[serde(default)]
@@ -555,7 +586,9 @@ fn iso(secs: u64) -> String {
 
 trait ReleaseSource {
     fn describe(&self) -> String;
-    /// Every release tag, newest first is not guaranteed; the caller sorts by semver.
+    /// Every release tag, newest first is not guaranteed; the caller sorts by semver, or a
+    /// nightly's `nightly-YYYY.MM.DD` by its date. Pre-releases, release candidates and
+    /// nightlies alike, only when `include_rc` asks: the rc and nightly channels ask.
     fn tags(&self, include_rc: bool) -> Result<Vec<String>, String>;
     fn fetch(&self, tag: &str, asset: &str, dir: &Path) -> Result<PathBuf, String>;
 }
@@ -972,19 +1005,129 @@ fn offline() -> bool {
     std::env::var_os(OFFLINE_ENV).is_some_and(|value| !value.is_empty() && value != "0")
 }
 
-fn asset_name(version: &str) -> String {
-    format!("af-v{version}-{TARGET}.tar.gz")
+/// The archive of `tag` for this target, for every channel: `af-v<version>-<target>.tar.gz` for
+/// a release, `af-nightly-YYYY.MM.DD-<target>.tar.gz` for a nightly.
+fn asset_name(tag: &str) -> String {
+    format!("af-{tag}-{TARGET}.tar.gz")
 }
 
+/// The tag `version` is published under: `nightly-YYYY.MM.DD` for a nightly's
+/// `<core>-nightly.<YYYYMMDD>`, `v<version>` for anything else.
+fn release_tag(version: &str) -> String {
+    Version::parse(version)
+        .ok()
+        .and_then(|version| nightly_version_date(&version))
+        .map_or_else(|| format!("v{version}"), nightly_tag)
+}
+
+/// A release tag's version: `v` and a semantic version that is no nightly's.
 fn parse_tag(tag: &str) -> Option<Version> {
-    Version::parse(tag.strip_prefix('v').unwrap_or(tag)).ok()
+    Version::parse(tag.strip_prefix('v').unwrap_or(tag))
+        .ok()
+        .filter(|version| !is_nightly(version))
 }
 
+/// The newest release on the stable or rc channel, by semantic version; a nightly is never one,
+/// and the nightly channel has none: its newest is [`newest_nightly`]'s tag.
 fn newest(tags: &[String], channel: Channel) -> Option<Version> {
+    if channel == Channel::Nightly {
+        return None;
+    }
     tags.iter()
         .filter_map(|tag| parse_tag(tag))
         .filter(|version| channel == Channel::Rc || version.pre.is_empty())
         .max()
+}
+
+/// The newest `nightly-YYYY.MM.DD` tag, by its date.
+fn newest_nightly(tags: &[String]) -> Option<String> {
+    tags.iter()
+        .filter_map(|tag| nightly_tag_date(tag).map(|date| (date, tag)))
+        .max()
+        .map(|(_, tag)| tag.clone())
+}
+
+/// What a check records as the newest on `channel`: a release's version, or a nightly's tag.
+fn channel_latest(tags: &[String], channel: Channel) -> Option<String> {
+    match channel {
+        Channel::Nightly => newest_nightly(tags),
+        _ => newest(tags, channel).map(|version| version.to_string()),
+    }
+}
+
+/// The date of a `nightly-YYYY.MM.DD` tag as `YYYYMMDD`; `None` for any other tag.
+fn nightly_tag_date(tag: &str) -> Option<u32> {
+    let date = tag.strip_prefix("nightly-")?;
+    let parts: Vec<&str> = date.split('.').collect();
+    let [year, month, day] = parts.as_slice() else {
+        return None;
+    };
+    let digits = |text: &str, len: usize| {
+        (text.len() == len && text.bytes().all(|byte| byte.is_ascii_digit()))
+            .then(|| text.parse::<u32>().ok())
+            .flatten()
+    };
+    let (year, month, day) = (digits(year, 4)?, digits(month, 2)?, digits(day, 2)?);
+    ((1..=12).contains(&month) && (1..=31).contains(&day))
+        .then_some(year * 10_000 + month * 100 + day)
+}
+
+/// The tag of the nightly built on `date` (`YYYYMMDD`).
+fn nightly_tag(date: u32) -> String {
+    format!(
+        "nightly-{:04}.{:02}.{:02}",
+        date / 10_000,
+        date / 100 % 100,
+        date % 100
+    )
+}
+
+/// The build date of a nightly's version, `<core>-nightly.<YYYYMMDD>`; `None` for a release.
+fn nightly_version_date(version: &Version) -> Option<u32> {
+    let date = version.pre.as_str().strip_prefix("nightly.")?;
+    nightly_tag_date(&nightly_tag(date.parse().ok()?))
+        .filter(|_| date.len() == 8 && version.build.is_empty())
+}
+
+fn is_nightly(version: &Version) -> bool {
+    version.pre.as_str().starts_with("nightly")
+}
+
+/// Whether `version` is a nightly's: never pinned, so `af onboard` writes no pin from one.
+pub(crate) fn is_nightly_version(version: &str) -> bool {
+    Version::parse(version).is_ok_and(|version| is_nightly(&version))
+}
+
+/// Whether the nightly `tag` is newer than the running af: by date when it runs a nightly. An af
+/// that runs no nightly cannot tell before the nightly's binary says its version, so for it the
+/// channel's newest nightly is always news; `af self channel nightly` switches to it.
+fn nightly_newer(tag: &str, running: &Version) -> bool {
+    match (nightly_tag_date(tag), nightly_version_date(running)) {
+        (Some(newest), Some(ran)) => newest > ran,
+        (Some(_), None) => true,
+        (None, _) => false,
+    }
+}
+
+/// Whether the newest a check recorded, `latest`, is newer than the running af: a release by
+/// semantic version, a nightly's tag by [`nightly_newer`]. For `af doctor`.
+pub(crate) fn latest_is_newer(latest: &str) -> bool {
+    let Ok(running) = Version::parse(VERSION) else {
+        return false;
+    };
+    if nightly_tag_date(latest).is_some() {
+        return nightly_newer(latest, &running);
+    }
+    Version::parse(latest).is_ok_and(|latest| latest > running)
+}
+
+/// The command that installs `latest`, a check's newest, for `af doctor`: `af self update`, or
+/// for a nightly while the running af is no nightly, `af self channel nightly`.
+pub(crate) fn latest_update_command(latest: &str) -> &'static str {
+    match Version::parse(VERSION) {
+        Ok(running) if nightly_tag_date(latest).is_some() => nightly_update_command(&running),
+        _ => "af self update",
+    }
 }
 
 fn parse_version(version: &str) -> Result<Version, String> {
@@ -1009,20 +1152,74 @@ fn require_self_managed(version: &str) -> Result<(), String> {
 /// Where this binary's release key comes from: `AF_RELEASE_KEY` (a minisign `.pub` file; a
 /// developer knob, like `AF_RELEASE_SOURCE`), the key embedded at build time, or nothing.
 fn release_key() -> Result<Option<(minisign_verify::PublicKey, &'static str)>, String> {
-    if let Some(path) = std::env::var_os(KEY_ENV).filter(|value| !value.is_empty()) {
+    key_from(KEY_ENV, RELEASE_KEY, "release")
+}
+
+/// Where this binary's nightly key comes from: `AF_NIGHTLY_KEY` (a minisign `.pub` file), the
+/// key embedded at build time, or nothing (ADR-0267).
+fn nightly_key() -> Result<Option<(minisign_verify::PublicKey, &'static str)>, String> {
+    key_from(NIGHTLY_KEY_ENV, &embedded_nightly_key(), "nightly")
+}
+
+/// The nightly key this binary embeds. A debug build reads `AF_TEST_EMBEDDED_NIGHTLY_KEY` in
+/// its place, so a fixture can prove what a build without one does whatever the checkout holds;
+/// production release binaries never read this setting.
+fn embedded_nightly_key() -> String {
+    #[cfg(debug_assertions)]
+    {
+        if let Some(key) = std::env::var_os("AF_TEST_EMBEDDED_NIGHTLY_KEY") {
+            return key.to_string_lossy().into_owned();
+        }
+    }
+    NIGHTLY_KEY.to_string()
+}
+
+/// A key from the `.pub` file the variable `env` names, else the `embedded` one, else none.
+fn key_from(
+    env: &str,
+    embedded: &str,
+    what: &str,
+) -> Result<Option<(minisign_verify::PublicKey, &'static str)>, String> {
+    if let Some(path) = std::env::var_os(env).filter(|value| !value.is_empty()) {
         let path = PathBuf::from(path);
         let text = std::fs::read_to_string(&path)
-            .map_err(|error| format!("reading {KEY_ENV} {}: {error}", path.display()))?;
+            .map_err(|error| format!("reading {env} {}: {error}", path.display()))?;
         let key = minisign_verify::PublicKey::decode(&text)
-            .map_err(|error| format!("{KEY_ENV} {}: {error}", path.display()))?;
+            .map_err(|error| format!("{env} {}: {error}", path.display()))?;
         return Ok(Some((key, "environment")));
     }
-    if RELEASE_KEY.trim().is_empty() {
+    if embedded.trim().is_empty() {
         return Ok(None);
     }
-    let key = minisign_verify::PublicKey::from_base64(RELEASE_KEY.trim())
-        .map_err(|error| format!("the embedded release key is malformed: {error}"))?;
+    let key = minisign_verify::PublicKey::from_base64(embedded.trim())
+        .map_err(|error| format!("the embedded {what} key is malformed: {error}"))?;
     Ok(Some((key, "embedded")))
+}
+
+/// The one sentence a build without a nightly key answers every nightly install with.
+const NO_NIGHTLY_KEY: &str = "this af carries no nightly key, so it cannot verify a nightly build — fix: update to an af built with crates/af/keys/nightly.pub, or point AF_NIGHTLY_KEY at the nightly public key file";
+
+/// The nightly key, or the refusal of a build without one.
+fn require_nightly_key() -> Result<minisign_verify::PublicKey, String> {
+    nightly_key()?
+        .map(|(key, _)| key)
+        .ok_or_else(|| NO_NIGHTLY_KEY.to_string())
+}
+
+/// The key that may sign a tag's `SHA256SUMS`: the nightly key a nightly's, the release key
+/// every other tag's. Neither stands in for the other.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum SumsKey {
+    Release,
+    Nightly,
+}
+
+fn sums_key(tag: &str) -> SumsKey {
+    if tag.starts_with("nightly") {
+        SumsKey::Nightly
+    } else {
+        SumsKey::Release
+    }
 }
 
 fn release_key_source() -> &'static str {
@@ -1035,18 +1232,33 @@ fn release_key_source() -> &'static str {
 
 /// The release's `SHA256SUMS`, verified as far as this build allows: its signature when a key is
 /// available (a missing or bad signature is a refusal), the bare file in a build without one.
-/// Returns the text and how it was verified.
+/// A nightly's is verified against the nightly key alone, and a build without that key refuses
+/// it. Returns the text and how it was verified.
 fn verified_sums(
     src: &dyn ReleaseSource,
     tag: &str,
     dir: &Path,
 ) -> Result<(String, &'static str), String> {
+    let which = sums_key(tag);
+    // Refused before anything is fetched: no nightly is read without the key that verifies it.
+    let nightly = match which {
+        SumsKey::Nightly => Some(require_nightly_key()?),
+        SumsKey::Release => None,
+    };
     let sums_path = src
         .fetch(tag, "SHA256SUMS", dir)
         .map_err(|error| format!("could not fetch SHA256SUMS of {tag} ({error})"))?;
     let sums = std::fs::read_to_string(&sums_path).map_err(|error| error.to_string())?;
-    let Some((key, _)) = release_key()? else {
-        return Ok((sums, "sha256sums"));
+    let key = match nightly {
+        Some(key) => key,
+        None => match release_key()? {
+            Some((key, _)) => key,
+            None => return Ok((sums, "sha256sums")),
+        },
+    };
+    let key_name = match which {
+        SumsKey::Release => "the release key",
+        SumsKey::Nightly => "the nightly key",
     };
     let signature_path = src.fetch(tag, "SHA256SUMS.minisig", dir).map_err(|error| {
         format!(
@@ -1058,7 +1270,7 @@ fn verified_sums(
         .map_err(|error| format!("SHA256SUMS.minisig of {tag}: {error}"))?;
     key.verify(sums.as_bytes(), &signature, false)
         .map_err(|error| {
-            format!("SHA256SUMS of {tag} does not verify against the release key: {error}")
+            format!("SHA256SUMS of {tag} does not verify against {key_name}: {error}")
         })?;
     Ok((sums, "minisign"))
 }
@@ -1095,6 +1307,11 @@ pub(crate) fn release_digests(
     if offline() {
         return Err(format!(
             "could not fetch SHA256SUMS of v{version} ({OFFLINE_ENV} is set)"
+        ));
+    }
+    if parse_version(version).is_ok_and(|version| is_nightly(&version)) {
+        return Err(format!(
+            "af {version} is a nightly, and a nightly is never pinned — fix: pin a release (`af self channel stable` installs the newest)"
         ));
     }
     parse_version(version)?;
@@ -1163,7 +1380,9 @@ fn already_installed(
 /// Download, verify, extract, prove the version, and record a receipt. Never touches the default
 /// symlink. The bytes must match the release's `SHA256SUMS`, signed whenever this build carries
 /// a key; `lock_digest`, the digest a project lock records for this target, must match as well
-/// when present: a lock picks bytes the release itself signed, never bytes it did not.
+/// when present: a lock picks bytes the release itself signed, never bytes it did not. A
+/// nightly's version names its tag, and it is installed as [`install_nightly`] installs one,
+/// never from a lock: a nightly is never pinned.
 ///
 /// The versions lock is held only to look for an installed copy and to publish the verified one,
 /// never across the release source: a command that records a seen pin, activates or sweeps waits
@@ -1180,6 +1399,19 @@ fn install(
         )));
     }
     require_self_managed(version)?;
+    let parsed = parse_version(version)?;
+    if is_nightly(&parsed) {
+        if lock_digest.is_some() {
+            return Err(InstallError::Other(format!(
+                "af {version} is a nightly, and a nightly is never pinned: a project lock cannot install it"
+            )));
+        }
+        let date = nightly_version_date(&parsed).ok_or_else(|| {
+            format!("af {version} is no nightly's version: one reads <core>-nightly.YYYYMMDD")
+        })?;
+        return install_nightly(paths, policy, &nightly_tag(date), Some(version))
+            .map(|(_, binary)| binary);
+    }
     let anchor = {
         let _guard = install_lock(paths)?;
         if let Some(binary) = already_installed(paths, version, lock_digest)? {
@@ -1189,14 +1421,167 @@ fn install(
             .map_err(|error| format!("opening {}: {error}", paths.versions.display()))?
     };
     let src = source(policy);
-    let tag = format!("v{version}");
-    let asset = asset_name(version);
+    let tag = release_tag(version);
     let tmp = tempfile::tempdir().map_err(|error| format!("temporary directory: {error}"))?;
     eprintln!(
         "af self: installing af {version} for {TARGET} from {}",
         src.describe()
     );
-    let archive = src.fetch(&tag, &asset, tmp.path())?;
+    let fetched = fetch_verified(src.as_ref(), &tag, lock_digest, tmp.path())?;
+    let reported = review_process::reap::output(
+        Command::new(&fetched.binary)
+            .arg("--version")
+            .env(OFFLINE_ENV, "1"),
+    )
+    .map_err(|error| format!("running the downloaded af: {error}"))?;
+    let reported = String::from_utf8_lossy(&reported.stdout).trim().to_string();
+    if reported != format!("af {version}") {
+        return Err(InstallError::Other(format!(
+            "release binary reported `{reported}`, expected `af {version}`"
+        )));
+    }
+    let receipt = Receipt {
+        version: version.to_string(),
+        target: TARGET.to_string(),
+        source: src.describe(),
+        asset: fetched.asset,
+        sha256: fetched.sha256,
+        verified_by: fetched.verified_by.to_string(),
+        installed_at: iso_now(),
+        tag: None,
+        channel: None,
+        commit: None,
+    };
+    stage_and_publish(
+        paths,
+        version,
+        lock_digest,
+        &fetched.binary,
+        &receipt,
+        &anchor,
+    )
+}
+
+/// Install the nightly `tag` and return the version its binary reports, with that binary: the
+/// installed copy when a nightly of that date is installed already. The nightly key verifies
+/// its `SHA256SUMS`, and a build without one refuses before anything is fetched. Its version is
+/// what its `af --version --json` says, asked before it is installed: `<core>-nightly.<YYYYMMDD>`
+/// of the tag's date, and `expected` when the caller names one, or the install is refused. Its
+/// receipt records the tag, the channel and the commit the binary reported.
+fn install_nightly(
+    paths: &Paths,
+    policy: &SelfPolicy,
+    tag: &str,
+    expected: Option<&str>,
+) -> Result<(String, PathBuf), InstallError> {
+    if offline() {
+        return Err(InstallError::Other(format!(
+            "the nightly {tag} is not installed and {OFFLINE_ENV} is set — fix: unset it and retry"
+        )));
+    }
+    require_nightly_key()?;
+    let date = nightly_tag_date(tag).ok_or_else(|| format!("{tag} is no nightly's tag"))?;
+    let anchor = {
+        let _guard = install_lock(paths)?;
+        if let Some(version) = installed_versions(paths)
+            .into_iter()
+            .rev()
+            .find(|version| nightly_version_date(version) == Some(date))
+        {
+            let version = version.to_string();
+            let binary = version_binary(paths, &version);
+            return Ok((version, binary));
+        }
+        std::fs::File::open(&paths.versions)
+            .map_err(|error| format!("opening {}: {error}", paths.versions.display()))?
+    };
+    let src = source(policy);
+    let tmp = tempfile::tempdir().map_err(|error| format!("temporary directory: {error}"))?;
+    eprintln!(
+        "af self: installing the nightly {tag} for {TARGET} from {}",
+        src.describe()
+    );
+    let fetched = fetch_verified(src.as_ref(), tag, None, tmp.path())?;
+    let reported = review_process::reap::output(
+        Command::new(&fetched.binary)
+            .args(["--version", "--json"])
+            .env(OFFLINE_ENV, "1"),
+    )
+    .map_err(|error| format!("running the downloaded af: {error}"))?;
+    let (version, commit) = nightly_identity(tag, &reported.stdout)?;
+    if let Some(expected) = expected
+        && expected != version
+    {
+        return Err(InstallError::Other(format!(
+            "the nightly {tag} is af {version}, not the af {expected} asked for"
+        )));
+    }
+    require_self_managed(&version)?;
+    let receipt = Receipt {
+        version: version.clone(),
+        target: TARGET.to_string(),
+        source: src.describe(),
+        asset: fetched.asset,
+        sha256: fetched.sha256,
+        verified_by: fetched.verified_by.to_string(),
+        installed_at: iso_now(),
+        tag: Some(tag.to_string()),
+        channel: Some(Channel::Nightly.name().to_string()),
+        commit: Some(commit),
+    };
+    let binary = stage_and_publish(paths, &version, None, &fetched.binary, &receipt, &anchor)?;
+    Ok((version, binary))
+}
+
+/// A nightly's version and commit from what its binary answered to `af --version --json`. The
+/// version must be `<core>-nightly.<YYYYMMDD>` with the date of `tag`.
+fn nightly_identity(tag: &str, answer: &[u8]) -> Result<(String, String), String> {
+    #[derive(Deserialize)]
+    struct Reported {
+        version: String,
+        #[serde(default)]
+        commit: Option<String>,
+    }
+    let date = nightly_tag_date(tag).ok_or_else(|| format!("{tag} is no nightly's tag"))?;
+    let reported: Reported = serde_json::from_slice(answer).map_err(|_| {
+        format!(
+            "the binary of the nightly {tag} did not answer `af --version --json` with its version: `{}`; it is not installed",
+            check_error(&String::from_utf8_lossy(answer))
+        )
+    })?;
+    match Version::parse(&reported.version) {
+        Ok(version) if nightly_version_date(&version) == Some(date) => Ok((
+            version.to_string(),
+            reported
+                .commit
+                .filter(|commit| !commit.is_empty())
+                .unwrap_or_else(|| "unknown".to_string()),
+        )),
+        _ => Err(format!(
+            "the binary of the nightly {tag} reports version `{}`, expected <core>-nightly.{date:08}; it is not installed",
+            check_error(&reported.version)
+        )),
+    }
+}
+
+/// An archive fetched from a release source, its bytes checked against the lock's digest when
+/// one is given and against the tag's verified `SHA256SUMS`, then unpacked.
+struct Fetched {
+    asset: String,
+    sha256: String,
+    verified_by: &'static str,
+    /// The `af` the archive holds, below the caller's temporary directory.
+    binary: PathBuf,
+}
+
+fn fetch_verified(
+    src: &dyn ReleaseSource,
+    tag: &str,
+    lock_digest: Option<&str>,
+    tmp: &Path,
+) -> Result<Fetched, InstallError> {
+    let asset = asset_name(tag);
+    let archive = src.fetch(tag, &asset, tmp)?;
     let actual = sha256_file(&archive)?;
     if let Some(digest) = lock_digest
         && actual != strip_sha256(digest)
@@ -1206,7 +1591,7 @@ fn install(
             strip_sha256(digest)
         )));
     }
-    let (sums, sums_verified_by) = verified_sums(src.as_ref(), &tag, tmp.path())?;
+    let (sums, sums_verified_by) = verified_sums(src, tag, tmp)?;
     let listed = find_sum(&sums, &asset)
         .ok_or_else(|| format!("SHA256SUMS of {tag} does not list {asset}"))?;
     if actual != listed {
@@ -1224,7 +1609,7 @@ fn install(
         (Some(_), "minisign") => "lock+signature",
         (Some(_), _) => "lock+sha256sums",
     };
-    let unpack = tmp.path().join("unpack");
+    let unpack = tmp.join("unpack");
     std::fs::create_dir_all(&unpack).map_err(|error| error.to_string())?;
     let status = review_process::reap::status(
         Command::new("tar")
@@ -1250,34 +1635,30 @@ fn install(
         std::fs::set_permissions(&extracted, std::fs::Permissions::from_mode(0o755))
             .map_err(|error| error.to_string())?;
     }
-    let reported = review_process::reap::output(
-        Command::new(&extracted)
-            .arg("--version")
-            .env(OFFLINE_ENV, "1"),
-    )
-    .map_err(|error| format!("running the downloaded af: {error}"))?;
-    let reported = String::from_utf8_lossy(&reported.stdout).trim().to_string();
-    if reported != format!("af {version}") {
-        return Err(InstallError::Other(format!(
-            "release binary reported `{reported}`, expected `af {version}`"
-        )));
-    }
-    let receipt = Receipt {
-        version: version.to_string(),
-        target: TARGET.to_string(),
-        source: src.describe(),
+    Ok(Fetched {
         asset,
         sha256: actual,
-        verified_by: verified_by.to_string(),
-        installed_at: iso_now(),
-    };
-    // Staged beside the versions, one directory per process, so publishing is one rename; a
-    // staging directory that did not become the version is removed whatever happened, and one
-    // a killed installer left is recovered by the next installer or the Storage Budget.
-    let (staging, _held) = begin_staging(paths, version, &anchor)?;
-    let published = stage(&staging, &extracted, &receipt)
+        verified_by,
+        binary: extracted,
+    })
+}
+
+/// Stage the verified `binary` and its receipt beside the versions, one directory per process,
+/// so publishing is one rename; a staging directory that did not become the version is removed
+/// whatever happened, and one a killed installer left is recovered by the next installer or the
+/// Storage Budget.
+fn stage_and_publish(
+    paths: &Paths,
+    version: &str,
+    lock_digest: Option<&str>,
+    binary: &Path,
+    receipt: &Receipt,
+    anchor: &std::fs::File,
+) -> Result<PathBuf, InstallError> {
+    let (staging, _held) = begin_staging(paths, version, anchor)?;
+    let published = stage(&staging, binary, receipt)
         .map_err(InstallError::Other)
-        .and_then(|()| publish(paths, version, lock_digest, &staging, &anchor));
+        .and_then(|()| publish(paths, version, lock_digest, &staging, anchor));
     let _ = std::fs::remove_dir_all(&staging);
     published
 }
@@ -2222,7 +2603,7 @@ fn take_notice(paths: &Paths, policy: &SelfPolicy) -> Option<String> {
     } else if policy.auto_update == AutoUpdate::Notify
         && let Ok(running) = Version::parse(VERSION)
     {
-        newer_release(&cache, &running).map(|(newer, command)| {
+        newer_release(&cache, &running, policy.channel).map(|(newer, command)| {
             format!("af {newer} is available (running {VERSION}) — {command}")
         })
     } else {
@@ -2231,8 +2612,37 @@ fn take_notice(paths: &Paths, policy: &SelfPolicy) -> Option<String> {
 }
 
 /// The release newer than `running` the cache names, with the command that installs it: the
-/// channel's newest, or for a pre-release user the newest pre-release, through `--rc`.
-fn newer_release(cache: &CheckCache, running: &Version) -> Option<(Version, &'static str)> {
+/// channel's newest, or for a pre-release user the newest pre-release, through `--rc`. On the
+/// nightly channel, the newest nightly's tag when [`nightly_newer`] says it is newer.
+fn newer_release(
+    cache: &CheckCache,
+    running: &Version,
+    channel: Channel,
+) -> Option<(String, &'static str)> {
+    if channel == Channel::Nightly {
+        return cache
+            .latest
+            .as_deref()
+            .filter(|tag| nightly_newer(tag, running))
+            .map(|tag| (tag.to_string(), nightly_update_command(running)));
+    }
+    newer_on_release_channel(cache, running).map(|(newer, command)| (newer.to_string(), command))
+}
+
+/// The command that moves an af running `running` to the newest nightly: an update from a
+/// nightly, the channel switch from anything else.
+fn nightly_update_command(running: &Version) -> &'static str {
+    if nightly_version_date(running).is_some() {
+        "af self update"
+    } else {
+        "af self channel nightly"
+    }
+}
+
+fn newer_on_release_channel(
+    cache: &CheckCache,
+    running: &Version,
+) -> Option<(Version, &'static str)> {
     let parse = |version: Option<&str>| version.and_then(|version| Version::parse(version).ok());
     let latest = parse(cache.latest.as_deref());
     let prerelease = parse(cache.latest_prerelease.as_deref());
@@ -2504,28 +2914,32 @@ fn attempt_check(
     checked.and(written)
 }
 
-/// Whether this check asks for pre-releases: on the `rc` channel, and whatever the channel
-/// while the running af is itself a pre-release (finding E7).
+/// Whether this check asks for pre-releases: on the `rc` and `nightly` channels (a nightly is a
+/// pre-release), and whatever the channel while the running af is itself a pre-release
+/// (finding E7).
 fn asks_prereleases(policy: &SelfPolicy) -> bool {
-    policy.channel == Channel::Rc
+    policy.channel != Channel::Stable
         || Version::parse(VERSION).is_ok_and(|running| !running.pre.is_empty())
+}
+
+/// The newest pre-release a check records beside the channel's newest: never a nightly, and
+/// none on the nightly channel, whose user hears of nightlies only.
+fn latest_prerelease_of(tags: &[String], channel: Channel) -> Option<Version> {
+    newest(tags, Channel::Rc).filter(|newest| channel != Channel::Nightly && !newest.pre.is_empty())
 }
 
 /// The query, and under `always` the install and the activation, of a check that is due,
 /// recording in `cache` what it found and what it activated. An error leaves in `cache` what
-/// was found before it: never an activation that did not happen.
+/// was found before it: never an activation that did not happen. On the nightly channel only an
+/// af that runs a nightly is moved to a newer one: moving onto the channel is `af self channel`'s.
 fn run_check(paths: &Paths, policy: &SelfPolicy, cache: &mut CheckCache) -> Result<(), String> {
     let tags = source(policy).tags(asks_prereleases(policy))?;
-    let latest = newest(&tags, policy.channel);
+    let latest = channel_latest(&tags, policy.channel);
     cache.checked_at_epoch = epoch_now();
-    cache.channel = match policy.channel {
-        Channel::Stable => "stable".into(),
-        Channel::Rc => "rc".into(),
-    };
-    cache.latest = latest.as_ref().map(ToString::to_string);
-    cache.latest_prerelease = newest(&tags, Channel::Rc)
-        .filter(|newest| !newest.pre.is_empty())
-        .map(|newest| newest.to_string());
+    cache.channel = policy.channel.name().into();
+    cache.latest = latest.clone();
+    cache.latest_prerelease =
+        latest_prerelease_of(&tags, policy.channel).map(|newest| newest.to_string());
     // The default this check may replace, marked in the same critical section, before an
     // install that may take long: an explicit change made meanwhile is never overwritten.
     let observed = {
@@ -2539,13 +2953,28 @@ fn run_check(paths: &Paths, policy: &SelfPolicy, cache: &mut CheckCache) -> Resu
     };
     if policy.auto_update == AutoUpdate::Always
         && let Some(latest) = &latest
-        && Version::parse(VERSION).is_ok_and(|running| *latest > running)
+        && let Ok(running) = Version::parse(VERSION)
         && running_receipt(paths).is_some()
     {
-        let latest = latest.to_string();
-        if installed(paths, &latest).is_none() {
-            install(paths, policy, &latest, None).map_err(|error| error.to_string())?;
-        }
+        let latest = if policy.channel == Channel::Nightly {
+            if nightly_version_date(&running).is_none() || !nightly_newer(latest, &running) {
+                return Ok(());
+            }
+            let (version, _) =
+                install_nightly(paths, policy, latest, None).map_err(|error| error.to_string())?;
+            if !Version::parse(&version).is_ok_and(|version| version > running) {
+                return Ok(());
+            }
+            version
+        } else {
+            if !Version::parse(latest).is_ok_and(|latest| latest > running) {
+                return Ok(());
+            }
+            if installed(paths, latest).is_none() {
+                install(paths, policy, latest, None).map_err(|error| error.to_string())?;
+            }
+            latest.clone()
+        };
         // Only an activation that happened is announced, bound to the default it left; a failed
         // one is retried when the next check is due, not by every command until then.
         if let Some(default) = set_default_unless_changed(paths, &latest, &observed)? {
@@ -2639,6 +3068,7 @@ pub(crate) fn status(json: bool, refresh: bool) -> Result<(), String> {
     let cache = read_cache(&paths);
     let default = default_version(&paths);
     let stalled = check_held_since(&paths).filter(|since| stalled_check(&paths, *since).is_some());
+    let receipt = running_receipt(&paths);
     let view = StatusView {
         schema: STATUS_SCHEMA,
         version: VERSION,
@@ -2646,7 +3076,7 @@ pub(crate) fn status(json: bool, refresh: bool) -> Result<(), String> {
         commit: COMMIT,
         release_key: release_key_source(),
         running: running.clone(),
-        receipt: running_receipt(&paths),
+        receipt: receipt.clone().map(Receipt::status_view),
         default_status: default_status(&paths, default.as_deref()),
         default,
         installed: installed_list,
@@ -2674,10 +3104,7 @@ pub(crate) fn status(json: bool, refresh: bool) -> Result<(), String> {
                 AutoUpdate::Always => "always",
                 AutoUpdate::Never => "never",
             },
-            channel: match policy.channel {
-                Channel::Stable => "stable",
-                Channel::Rc => "rc",
-            },
+            channel: policy.channel.name(),
             install_pins: policy.install_pins.name(),
             keep_versions: policy.keep_versions,
             source: policy.source.clone(),
@@ -2763,13 +3190,28 @@ pub(crate) fn status(json: bool, refresh: bool) -> Result<(), String> {
             view.pinned_projects.len()
         );
     }
+    if policy.channel == Channel::Nightly {
+        println!(
+            "nightly:    {}",
+            nightly_text(
+                Version::parse(VERSION).ok().as_ref(),
+                receipt.as_ref(),
+                view.latest.as_deref()
+            )
+        );
+    }
     let latest = Version::parse(VERSION)
-        .map(|running| {
-            latest_text(
+        .map(|running| match policy.channel {
+            Channel::Nightly => view
+                .latest
+                .as_deref()
+                .map(|tag| format!("newest {tag}"))
+                .unwrap_or_default(),
+            _ => latest_text(
                 &running,
                 view.latest.as_deref(),
                 view.latest_prerelease.as_deref(),
-            )
+            ),
         })
         .unwrap_or_default();
     println!(
@@ -2799,6 +3241,38 @@ pub(crate) fn status(json: bool, refresh: bool) -> Result<(), String> {
     );
     schedule_from_status(&paths, &policy);
     Ok(())
+}
+
+/// What `af self status` says on the nightly channel: the running nightly's tag and commit (or
+/// that the running af is no nightly), and the newest nightly the last check found, with the
+/// command that installs it when it is newer.
+fn nightly_text(
+    running: Option<&Version>,
+    receipt: Option<&Receipt>,
+    latest: Option<&str>,
+) -> String {
+    let date = running.and_then(nightly_version_date);
+    let mut text = match date {
+        Some(date) => format!(
+            "running {} (commit {COMMIT})",
+            receipt
+                .and_then(|receipt| receipt.tag.clone())
+                .unwrap_or_else(|| nightly_tag(date))
+        ),
+        None => format!("running af {VERSION}, no nightly"),
+    };
+    match (
+        latest.filter(|tag| nightly_tag_date(tag).is_some()),
+        running,
+    ) {
+        (Some(tag), Some(running)) if nightly_newer(tag, running) => text.push_str(&format!(
+            " · newest {tag} ({})",
+            nightly_update_command(running)
+        )),
+        (Some(tag), _) => text.push_str(&format!(" · newest {tag}")),
+        (None, _) => text.push_str(" · newest unknown until a check answers"),
+    }
+    text
 }
 
 /// `af self status` is exempt from dispatch, and so from the check every other command
@@ -2851,6 +3325,9 @@ pub(crate) fn update(check: bool, version: Option<String>, rc: bool) -> Result<(
         return Ok(());
     }
     let channel = if rc { Channel::Rc } else { policy.channel };
+    if channel == Channel::Nightly && version.is_none() {
+        return update_nightly(&paths, &policy, check);
+    }
     let src = source(&policy);
     let explicit = version.is_some();
     let running = Version::parse(VERSION).map_err(|error| error.to_string())?;
@@ -2887,13 +3364,10 @@ pub(crate) fn update(check: bool, version: Option<String>, rc: bool) -> Result<(
                 // `latest` is the configured channel's newest, whatever `--rc` asked this once:
                 // a pre-release `--rc` found is the newest pre-release only (finding: an RC
                 // check cached a pre-release as the stable channel's latest).
-                record_check(
-                    cache,
-                    newest(&tags, policy.channel).as_ref(),
-                    policy.channel,
-                );
+                record_check(cache, channel_latest(&tags, policy.channel), policy.channel);
                 if asked {
-                    cache.latest_prerelease = prerelease.as_ref().map(ToString::to_string);
+                    cache.latest_prerelease = latest_prerelease_of(&tags, policy.channel)
+                        .map(|newest| newest.to_string());
                 }
             });
             latest
@@ -2933,6 +3407,196 @@ pub(crate) fn update(check: bool, version: Option<String>, rc: bool) -> Result<(
     Ok(())
 }
 
+/// `af self channel [stable|rc|nightly] [--no-update]` (ADR-0267). Without a channel: the
+/// configured one and the layer it comes from. With one: `[self] channel` written into the user
+/// layer, then, unless `no_update`, the channel's newest installed and made the default, even
+/// one older than the default it replaces, which is said. Everything the switch needs (the
+/// nightly key, a receipted af, the network) is asked before the file is written, so a refused
+/// switch changes nothing. A pinned project keeps running its pin whatever the channel.
+pub(crate) fn channel(choice: Option<Channel>, no_update: bool) -> Result<(), String> {
+    let Some(channel) = choice else {
+        let config = config::load_machine()?;
+        let policy = config.self_policy()?;
+        println!(
+            "{} ({})",
+            policy.channel.name(),
+            config.origin_text("self.channel")
+        );
+        return Ok(());
+    };
+    let paths = paths()?;
+    if channel == Channel::Nightly {
+        require_nightly_key()?;
+    }
+    if !no_update {
+        require_receipt(&paths)?;
+        if offline() {
+            return Err(format!(
+                "{OFFLINE_ENV} is set, so the {} channel's newest cannot be installed; nothing was changed — fix: unset it, or add --no-update to record the channel only",
+                channel.name()
+            ));
+        }
+    }
+    let file = config::set_user_string("self", "channel", channel.name())?;
+    println!(
+        "channel: {} (written to {})",
+        channel.name(),
+        file.display()
+    );
+    let config = config::load_machine()?;
+    let policy = config.self_policy()?;
+    if policy.channel != channel {
+        return Err(format!(
+            "{} sets [self] channel = \"{}\" above the user layer, so that channel stays in effect and nothing was installed — fix: remove it there",
+            config.origin_text("self.channel"),
+            policy.channel.name()
+        ));
+    }
+    if no_update {
+        println!("nothing installed: `af self update` installs the channel's newest");
+        return Ok(());
+    }
+    switch_to_newest(&paths, &policy, channel).map_err(|error| {
+        format!(
+            "{error}\n[self] channel = \"{}\" is recorded in {}; `af self update` tries again",
+            channel.name(),
+            file.display()
+        )
+    })
+}
+
+/// Install `channel`'s newest and make it the default: the one place `af self` may move the
+/// default to an older version, and it says so.
+fn switch_to_newest(paths: &Paths, policy: &SelfPolicy, channel: Channel) -> Result<(), String> {
+    let src = source(policy);
+    let tags = match src.tags(channel != Channel::Stable) {
+        Ok(tags) => tags,
+        Err(error) => {
+            note_check(paths, |cache| {
+                cache.attempted_at_epoch = epoch_now();
+                cache.last_error = Some(check_error(&error));
+            });
+            return Err(error);
+        }
+    };
+    let latest = channel_latest(&tags, channel);
+    note_check(paths, |cache| {
+        record_check(cache, latest.clone(), channel);
+        if channel != Channel::Stable {
+            cache.latest_prerelease =
+                latest_prerelease_of(&tags, channel).map(|newest| newest.to_string());
+        }
+    });
+    let Some(latest) = latest else {
+        return Err(format!(
+            "no {} release found at {}; nothing was installed",
+            channel.name(),
+            src.describe()
+        ));
+    };
+    let (version, shown) = if channel == Channel::Nightly {
+        let (version, _) = install_nightly(paths, policy, &latest, None)
+            .map_err(|error| update_failed(&error.to_string(), &latest))?;
+        let shown = format!("af {version} ({latest})");
+        (version, shown)
+    } else {
+        if installed(paths, &latest).is_none() {
+            install(paths, policy, &latest, None)
+                .map_err(|error| update_failed(&error.to_string(), &latest))?;
+        }
+        (latest.clone(), format!("af {latest}"))
+    };
+    let before = default_version(paths);
+    set_default(paths, &version)?;
+    if before.as_deref() == Some(version.as_str()) {
+        println!("{shown} is the default already ({})", paths.bin.display());
+        return Ok(());
+    }
+    println!("{shown} is now the default ({})", paths.bin.display());
+    let from = before.unwrap_or_else(|| VERSION.to_string());
+    if let (Ok(from_version), Ok(to)) = (Version::parse(&from), Version::parse(&version))
+        && to < from_version
+    {
+        println!(
+            "moved back from af {from} to af {version}: the {} channel's newest is older",
+            channel.name()
+        );
+    }
+    Ok(())
+}
+
+/// `af self update` on the nightly channel: the newest nightly by date, installed and made the
+/// default when it is newer than the running af, by semantic version once its binary has said
+/// its version. `--check` asks only: exit 10 when [`nightly_newer`] says the newest nightly is
+/// newer, naming its tag. Moving onto the channel from a release, which may go backwards, is
+/// `af self channel nightly`'s.
+fn update_nightly(paths: &Paths, policy: &SelfPolicy, check: bool) -> Result<(), String> {
+    let running = Version::parse(VERSION).map_err(|error| error.to_string())?;
+    if !check {
+        require_nightly_key()?;
+        require_receipt(paths)?;
+    }
+    let src = source(policy);
+    let found = src.tags(true).and_then(|tags| {
+        newest_nightly(&tags).ok_or_else(|| format!("no nightly found at {}", src.describe()))
+    });
+    let tag = match found {
+        Ok(tag) => tag,
+        Err(error) => {
+            note_check(paths, |cache| {
+                cache.attempted_at_epoch = epoch_now();
+                cache.last_error = Some(check_error(&error));
+            });
+            return Err(error);
+        }
+    };
+    note_check(paths, |cache| {
+        record_check(cache, Some(tag.clone()), Channel::Nightly);
+        cache.latest_prerelease = None;
+    });
+    let (code, answer) = nightly_check_answer(&tag, &running);
+    if check || code == 0 {
+        println!("{answer}");
+        if code != 0 {
+            std::process::exit(code);
+        }
+        return Ok(());
+    }
+    let (version, _) = install_nightly(paths, policy, &tag, None)
+        .map_err(|error| update_failed(&error.to_string(), &tag))?;
+    if !Version::parse(&version).is_ok_and(|version| version > running) {
+        return Err(format!(
+            "the newest nightly {tag} is af {version}, older than the running af {VERSION}; `af self update` never moves the default backwards — fix: `af self channel nightly` switches to it"
+        ));
+    }
+    set_default(paths, &version)?;
+    println!(
+        "af {version} ({tag}) is now the default ({})",
+        paths.bin.display()
+    );
+    Ok(())
+}
+
+/// What `af self update --check` answers on the nightly channel, given the newest nightly's
+/// `tag`: exit 10 and the line that names it with its command when it is newer than `running`,
+/// else 0 and the up-to-date line.
+fn nightly_check_answer(tag: &str, running: &Version) -> (i32, String) {
+    if nightly_newer(tag, running) {
+        (
+            10,
+            format!(
+                "af {tag} is available (running {running}) — {}",
+                nightly_update_command(running)
+            ),
+        )
+    } else {
+        (
+            0,
+            format!("af {running} is up to date (the newest nightly is {tag})"),
+        )
+    }
+}
+
 /// Change the cache under the check lock, taken without waiting: a detached check holding it
 /// writes its own result, and a stalled one is said on stderr. Best effort.
 fn note_check(paths: &Paths, change: impl FnOnce(&mut CheckCache)) {
@@ -2952,22 +3616,14 @@ fn note_check(paths: &Paths, change: impl FnOnce(&mut CheckCache)) {
     }
 }
 
-/// Note a completed release check in the cache: when it ran, and the newest release it found on
-/// the configured `channel`, which the cache names with it.
-fn record_check(cache: &mut CheckCache, latest: Option<&Version>, channel: Channel) {
+/// Note a completed release check in the cache: when it ran, and the newest it found on the
+/// configured `channel` (a version, or a nightly's tag), which the cache names with it.
+fn record_check(cache: &mut CheckCache, latest: Option<String>, channel: Channel) {
     cache.checked_at_epoch = epoch_now();
     cache.attempted_at_epoch = cache.checked_at_epoch;
     cache.last_error = None;
-    cache.latest = latest.map(ToString::to_string);
-    cache.channel = channel_name(channel).into();
-}
-
-/// A channel as the cache and `af self status` name it.
-const fn channel_name(channel: Channel) -> &'static str {
-    match channel {
-        Channel::Stable => "stable",
-        Channel::Rc => "rc",
-    }
+    cache.latest = latest;
+    cache.channel = channel.name().into();
 }
 
 /// A failed install leaves the default untouched; say so, because the progress line that
@@ -3829,31 +4485,45 @@ mod tests {
         };
         let rc3 = version("0.12.0-rc.3");
         assert_eq!(
-            newer_release(&cache(Some("0.11.0"), Some("0.12.0-rc.5")), &rc3),
-            Some((version("0.12.0-rc.5"), "af self update --rc"))
+            newer_release(
+                &cache(Some("0.11.0"), Some("0.12.0-rc.5")),
+                &rc3,
+                Channel::Stable
+            ),
+            Some(("0.12.0-rc.5".to_string(), "af self update --rc"))
         );
         assert_eq!(
-            newer_release(&cache(Some("0.12.0"), Some("0.12.0-rc.5")), &rc3),
-            Some((version("0.12.0"), "af self update"))
+            newer_release(
+                &cache(Some("0.12.0"), Some("0.12.0-rc.5")),
+                &rc3,
+                Channel::Stable
+            ),
+            Some(("0.12.0".to_string(), "af self update"))
         );
         assert_eq!(
-            newer_release(&cache(Some("0.11.0"), Some("0.12.0-rc.3")), &rc3),
+            newer_release(
+                &cache(Some("0.11.0"), Some("0.12.0-rc.3")),
+                &rc3,
+                Channel::Stable
+            ),
             None
         );
         // A stable af hears of stable releases only.
         assert_eq!(
             newer_release(
                 &cache(Some("0.11.0"), Some("0.12.0-rc.5")),
-                &version("0.11.0")
+                &version("0.11.0"),
+                Channel::Stable
             ),
             None
         );
     }
 
-    /// The cache this release writes is `af/self-check@3`, its schema's shape, and a cache of
-    /// version 2 is due a check, never read (ADR-0145).
+    /// The cache this release writes is `af/self-check@4`, its schema's shape, a nightly's tag
+    /// as the nightly channel's `latest` included, and a cache of version 3 is due a check, never
+    /// read (ADR-0145).
     #[test]
-    fn the_check_cache_is_version_3_and_matches_its_schema() {
+    fn the_check_cache_is_version_4_and_matches_its_schema() {
         let mut cache = CheckCache {
             checked_at_epoch: 1_700_000_000,
             attempted_at_epoch: 1_700_000_100,
@@ -3876,20 +4546,28 @@ mod tests {
         });
         let text = toml::to_string_pretty(&cache).unwrap();
         let value: toml::Value = toml::from_str(&text).unwrap();
-        let schema = include_str!("../../../schemas/self-check-v3.json");
+        let schema = include_str!("../../../schemas/self-check-v4.json");
         valid(schema, &serde_json::to_value(&value).unwrap());
         valid(
             schema,
             &serde_json::to_value(CheckCache::default()).unwrap(),
         );
+        let nightly = CheckCache {
+            latest: Some("nightly-2026.10.29".into()),
+            channel: "nightly".into(),
+            ..CheckCache::default()
+        };
+        let nightly: toml::Value =
+            toml::from_str(&toml::to_string_pretty(&nightly).unwrap()).unwrap();
+        valid(schema, &serde_json::to_value(&nightly).unwrap());
         assert_eq!(
             cache.last_error.as_deref(),
             Some("curl https://api.github.com/x: curl did not answer within 70 s")
         );
         let back: CheckCache = toml::from_str(&text).unwrap();
-        assert_eq!(back.schema, "af/self-check@3");
+        assert_eq!(back.schema, "af/self-check@4");
         assert_eq!(back.latest_prerelease.as_deref(), Some("0.12.0-rc.5"));
-        // Version 2 fails closed: its cache is read as none.
+        // Version 3 fails closed: its cache is read as none.
         let dir = tempfile::tempdir().unwrap();
         let paths = Paths {
             versions: dir.path().join("versions"),
@@ -3899,7 +4577,7 @@ mod tests {
         };
         std::fs::write(
             &paths.cache_file,
-            "schema = \"af/self-check@2\"\nchecked_at_epoch = 5\nlatest = \"0.11.0\"\n",
+            "schema = \"af/self-check@3\"\nchecked_at_epoch = 5\nlatest = \"0.11.0\"\n",
         )
         .unwrap();
         assert_eq!(read_cache(&paths).checked_at_epoch, 0);
@@ -3952,10 +4630,13 @@ mod tests {
                 version: "0.11.0".into(),
                 target: TARGET.into(),
                 source: "github:owner/repo".into(),
-                asset: asset_name("0.11.0"),
+                asset: asset_name("v0.11.0"),
                 sha256: "0".repeat(64),
                 verified_by: "minisign".into(),
                 installed_at: "2026-10-01T00:00:00Z".into(),
+                tag: None,
+                channel: None,
+                commit: None,
             }),
             default: Some("0.11.0".into()),
             default_status: "managed",
@@ -4012,6 +4693,33 @@ mod tests {
             ..view
         };
         valid(schema, &serde_json::to_value(&bare).unwrap());
+        // On the nightly channel the document keeps its shape: the policy names the channel,
+        // `latest` the newest nightly's tag, and a nightly's receipt shows the fields every
+        // receipt has.
+        let nightly = StatusView {
+            receipt: Some(
+                Receipt {
+                    version: "0.14.0-nightly.20261029".into(),
+                    target: TARGET.into(),
+                    source: "github:owner/repo".into(),
+                    asset: asset_name("nightly-2026.10.29"),
+                    sha256: "0".repeat(64),
+                    verified_by: "minisign".into(),
+                    installed_at: "2026-10-29T00:00:00Z".into(),
+                    tag: Some("nightly-2026.10.29".into()),
+                    channel: Some("nightly".into()),
+                    commit: Some("0123456789ab".into()),
+                }
+                .status_view(),
+            ),
+            latest: Some("nightly-2026.10.30".into()),
+            policy: PolicyView {
+                channel: Channel::Nightly.name(),
+                ..bare.policy
+            },
+            ..bare
+        };
+        valid(schema, &serde_json::to_value(&nightly).unwrap());
     }
 
     /// Finding S2: the holder of the check lock stamps when it took it, and a lock held for over
@@ -4058,14 +4766,17 @@ mod tests {
     #[test]
     fn record_check_stores_the_discovered_release() {
         let mut cache = CheckCache::default();
-        record_check(
-            &mut cache,
-            Some(&Version::parse("0.9.0-rc.8").unwrap()),
-            Channel::Rc,
-        );
+        record_check(&mut cache, Some("0.9.0-rc.8".to_string()), Channel::Rc);
         assert_eq!(cache.latest.as_deref(), Some("0.9.0-rc.8"));
         assert_eq!(cache.channel, "rc");
         assert!(cache.checked_at_epoch > 0);
+        record_check(
+            &mut cache,
+            Some("nightly-2026.10.29".to_string()),
+            Channel::Nightly,
+        );
+        assert_eq!(cache.latest.as_deref(), Some("nightly-2026.10.29"));
+        assert_eq!(cache.channel, "nightly");
     }
 
     #[test]
@@ -4113,10 +4824,13 @@ mod tests {
             version: version.to_string(),
             target: TARGET.to_string(),
             source: "test".to_string(),
-            asset: asset_name(version),
+            asset: asset_name(&release_tag(version)),
             sha256: sha256.to_string(),
             verified_by: "test".to_string(),
             installed_at: iso_now(),
+            tag: None,
+            channel: None,
+            commit: None,
         };
         let binary = staging.with_extension("bin");
         std::fs::write(&binary, "#!/bin/sh\n").unwrap();
@@ -5085,6 +5799,174 @@ mod tests {
             newest(&tags, Channel::Rc).unwrap().to_string(),
             "0.8.0-rc.1"
         );
+    }
+
+    /// Each channel picks its own: stable the newest release, rc the newest release or
+    /// pre-release, nightly the newest `nightly-YYYY.MM.DD` by date. A nightly is never stable's
+    /// or rc's, and a release never the nightly channel's, whatever sorts higher.
+    #[test]
+    fn newest_respects_the_three_channels() {
+        let tags: Vec<String> = [
+            "v0.13.0",
+            "v0.14.0-rc.3",
+            "nightly-2026.10.29",
+            "nightly-2026.09.30",
+            "nightly-2026.10.03",
+            "nightly-2026.13.01",
+            "nightly-latest",
+            "v0.15.0-nightly.20261101",
+        ]
+        .into_iter()
+        .map(String::from)
+        .collect();
+        assert_eq!(
+            channel_latest(&tags, Channel::Stable).as_deref(),
+            Some("0.13.0")
+        );
+        assert_eq!(
+            channel_latest(&tags, Channel::Rc).as_deref(),
+            Some("0.14.0-rc.3")
+        );
+        assert_eq!(
+            channel_latest(&tags, Channel::Nightly).as_deref(),
+            Some("nightly-2026.10.29")
+        );
+        assert_eq!(newest(&tags, Channel::Nightly), None);
+        let releases: Vec<String> = vec!["v0.13.0".into(), "v0.14.0-rc.3".into()];
+        assert_eq!(channel_latest(&releases, Channel::Nightly), None);
+        let nightlies: Vec<String> = vec!["nightly-2026.10.29".into()];
+        assert_eq!(channel_latest(&nightlies, Channel::Stable), None);
+        assert_eq!(channel_latest(&nightlies, Channel::Rc), None);
+    }
+
+    #[test]
+    fn a_nightly_tag_and_its_version_name_the_same_date() {
+        assert_eq!(nightly_tag_date("nightly-2026.10.29"), Some(20_261_029));
+        for refused in [
+            "nightly-2026.1.29",
+            "nightly-2026.00.29",
+            "nightly-2026.10.32",
+            "nightly-2026.10",
+            "v0.14.0",
+            "nightly-26.10.29",
+        ] {
+            assert_eq!(nightly_tag_date(refused), None, "{refused}");
+        }
+        assert_eq!(nightly_tag(20_261_029), "nightly-2026.10.29");
+        assert_eq!(
+            nightly_version_date(&Version::parse("0.14.0-nightly.20261029").unwrap()),
+            Some(20_261_029)
+        );
+        assert_eq!(
+            nightly_version_date(&Version::parse("0.14.0-rc.3").unwrap()),
+            None
+        );
+        assert_eq!(release_tag("0.14.0-nightly.20261029"), "nightly-2026.10.29");
+        assert_eq!(release_tag("0.13.0"), "v0.13.0");
+        assert_eq!(
+            asset_name("nightly-2026.10.29"),
+            format!("af-nightly-2026.10.29-{TARGET}.tar.gz")
+        );
+        assert_eq!(asset_name("v0.13.0"), format!("af-v0.13.0-{TARGET}.tar.gz"));
+        // A nightly sorts as a pre-release of its core.
+        assert!(
+            Version::parse("0.14.0-nightly.20261029").unwrap() < Version::parse("0.14.0").unwrap()
+        );
+    }
+
+    /// A newer nightly is told by date to an af that runs one; to an af that runs a release the
+    /// channel's newest nightly is always news, and the channel switch is the command.
+    #[test]
+    fn a_newer_nightly_is_told_by_its_date() {
+        let ran = version("0.14.0-nightly.20261029");
+        assert!(nightly_newer("nightly-2026.10.30", &ran));
+        assert!(!nightly_newer("nightly-2026.10.29", &ran));
+        assert!(!nightly_newer("nightly-2026.10.28", &ran));
+        assert!(!nightly_newer("v0.15.0", &ran));
+        assert!(nightly_newer("nightly-2026.10.01", &version("0.13.0")));
+        // `af self update --check` on the nightly channel: 10 for a newer date, 0 otherwise.
+        assert_eq!(
+            nightly_check_answer("nightly-2026.10.30", &ran),
+            (
+                10,
+                "af nightly-2026.10.30 is available (running 0.14.0-nightly.20261029) — af self update"
+                    .to_string()
+            )
+        );
+        for same_or_older in ["nightly-2026.10.29", "nightly-2026.10.28"] {
+            assert_eq!(
+                nightly_check_answer(same_or_older, &ran),
+                (
+                    0,
+                    format!(
+                        "af 0.14.0-nightly.20261029 is up to date (the newest nightly is {same_or_older})"
+                    )
+                )
+            );
+        }
+        let cache = CheckCache {
+            latest: Some("nightly-2026.10.30".into()),
+            channel: "nightly".into(),
+            ..CheckCache::default()
+        };
+        assert_eq!(
+            newer_release(&cache, &ran, Channel::Nightly),
+            Some(("nightly-2026.10.30".to_string(), "af self update"))
+        );
+        assert_eq!(
+            newer_release(&cache, &version("0.14.0-rc.3"), Channel::Nightly),
+            Some(("nightly-2026.10.30".to_string(), "af self channel nightly"))
+        );
+        // A cache of another channel tells the nightly channel nothing, and the other way round.
+        assert_eq!(newer_release(&cache, &ran, Channel::Stable), None);
+        let stable = CheckCache {
+            latest: Some("0.15.0".into()),
+            channel: "stable".into(),
+            ..CheckCache::default()
+        };
+        assert_eq!(newer_release(&stable, &ran, Channel::Nightly), None);
+    }
+
+    /// A nightly's installed version is what its binary reports, and only a version of the
+    /// tag's date is accepted.
+    #[test]
+    fn a_nightly_is_installed_only_as_the_version_of_its_tags_date() {
+        let answer =
+            br#"{"version": "0.14.0-nightly.20261029", "commit": "0123456789ab", "target": "x"}"#;
+        assert_eq!(
+            nightly_identity("nightly-2026.10.29", answer),
+            Ok((
+                "0.14.0-nightly.20261029".to_string(),
+                "0123456789ab".to_string()
+            ))
+        );
+        for (answer, says) in [
+            (
+                &br#"{"version": "0.14.0-nightly.20261028", "commit": "a"}"#[..],
+                "expected <core>-nightly.20261029",
+            ),
+            (
+                &br#"{"version": "0.14.0-rc.3", "commit": "a"}"#[..],
+                "expected <core>-nightly.20261029",
+            ),
+            (&b"af 0.14.0-nightly.20261029"[..], "did not answer"),
+        ] {
+            let refused = nightly_identity("nightly-2026.10.29", answer).unwrap_err();
+            assert!(
+                refused.contains(says) && refused.contains("it is not installed"),
+                "{refused}"
+            );
+        }
+    }
+
+    /// A nightly's sums are the nightly key's alone and every other tag's the release key's;
+    /// neither key stands in for the other.
+    #[test]
+    fn each_tag_is_verified_by_its_own_key() {
+        assert_eq!(sums_key("nightly-2026.10.29"), SumsKey::Nightly);
+        assert_eq!(sums_key("v0.13.0"), SumsKey::Release);
+        assert_eq!(sums_key("v0.14.0-rc.3"), SumsKey::Release);
+        assert!(NO_NIGHTLY_KEY.starts_with("this af carries no nightly key"));
     }
 
     #[test]

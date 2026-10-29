@@ -1,14 +1,15 @@
 //! `install.sh` against a fake `curl` serving a directory release source: every request pinned
 //! to HTTPS, a refusal without `minisign` unless `AF_INSTALL_ALLOW_UNSIGNED=1` accepts the
 //! checksum alone (said on stderr) that names the install line for the package manager, a re-run
-//! that verifies the installed binary again rather than trusting its receipt, the rc channel, and
-//! the next steps and PATH line an install ends with. Nothing here reaches the network.
+//! that verifies the installed binary again rather than trusting its receipt, the rc channel, the
+//! nightly channel and its own key, and the next steps and PATH line an install ends with.
+//! Nothing here reaches the network.
 
 use std::path::PathBuf;
 use std::process::Output;
 
 use crate::common;
-use common::{FAKE_CURL, Sandbox, err, executable, out, tool_dir, write};
+use common::{FAKE_CURL, NIGHTLY_COMMIT, Sandbox, err, executable, out, tool_dir, write};
 
 /// The host name `install.sh` gives this machine, `None` where it builds no release.
 fn install_host() -> Option<&'static str> {
@@ -88,9 +89,19 @@ impl Installer {
     }
 
     fn run_with_args(&self, path: &std::ffi::OsStr, args: &[&str], env: &[(&str, &str)]) -> Output {
+        self.run_script(&install_script(), path, args, env)
+    }
+
+    fn run_script(
+        &self,
+        script: &std::path::Path,
+        path: &std::ffi::OsStr,
+        args: &[&str],
+        env: &[(&str, &str)],
+    ) -> Output {
         let mut command = std::process::Command::new(self.tools.join("sh"));
         command
-            .arg(install_script())
+            .arg(script)
             .args(args)
             .env_clear()
             .env("PATH", path)
@@ -350,9 +361,11 @@ fn install_sh_installs_the_newest_pre_release_on_the_rc_channel() {
             "signature\n",
         );
     }
+    // A nightly beside them is neither channel's.
+    sandbox.publish_nightly_for("nightly-2026.10.29", "0.10.0-nightly.20261029", host);
     let path = &installer.with_minisign;
 
-    // Stable by default: a pre-release is never chosen.
+    // Stable by default: a pre-release or a nightly is never chosen.
     let stable = installer.run(path, &[]);
     assert!(stable.status.success(), "{}", err(&stable));
     assert!(
@@ -361,7 +374,8 @@ fn install_sh_installs_the_newest_pre_release_on_the_rc_channel() {
         out(&stable)
     );
 
-    // AF_INSTALL_CHANNEL=rc and --rc choose the newest pre-release, rc.10 over rc.2.
+    // AF_INSTALL_CHANNEL=rc and --rc choose the newest pre-release, rc.10 over rc.2, never a
+    // nightly.
     let rc = installer.run(path, &[("AF_INSTALL_CHANNEL", "rc")]);
     assert!(rc.status.success(), "{}", err(&rc));
     assert!(
@@ -402,13 +416,131 @@ fn install_sh_installs_the_newest_pre_release_on_the_rc_channel() {
     let unknown = installer.run(path, &[("AF_INSTALL_CHANNEL", "beta")]);
     assert_eq!(unknown.status.code(), Some(2), "{}", out(&unknown));
     assert!(
-        err(&unknown).contains("AF_INSTALL_CHANNEL=rc"),
+        err(&unknown).contains("it is stable, rc or nightly")
+            && err(&unknown).contains("AF_INSTALL_CHANNEL=rc"),
         "{}",
         err(&unknown)
+    );
+    assert!(
+        !sandbox
+            .path("data/af/versions/0.10.0-nightly.20261029")
+            .exists()
     );
     let flag = installer.run_with_args(path, &["--beta"], &[]);
     assert_eq!(flag.status.code(), Some(2), "{}", out(&flag));
     assert!(err(&flag).contains("sh -s -- --rc"), "{}", err(&flag));
+}
+
+/// `install.sh` with its embedded nightly key emptied, as it ships until
+/// `crates/af/keys/nightly.pub` exists: the refusal is proven whatever key the script embeds.
+fn without_a_nightly_key(installer: &Installer) -> PathBuf {
+    let script = std::fs::read_to_string(install_script()).unwrap();
+    let start = script
+        .find("NIGHTLY_PUB='")
+        .expect("install.sh embeds a nightly key slot")
+        + "NIGHTLY_PUB='".len();
+    let end = start + script[start..].find('\'').unwrap();
+    let copy = installer.sandbox.path("install-without-nightly-key.sh");
+    write(&copy, &format!("{}{}", &script[..start], &script[end..]));
+    copy
+}
+
+#[test]
+fn install_sh_installs_the_newest_nightly_by_date_with_the_nightly_key() {
+    let Some(host) = install_host() else {
+        return;
+    };
+    let installer = Installer::new();
+    let sandbox = &installer.sandbox;
+    sandbox.publish_for("0.9.0", host);
+    for (tag, version) in [
+        ("nightly-2026.09.30", "0.10.0-nightly.20260930"),
+        ("nightly-2026.10.29", "0.10.0-nightly.20261029"),
+        ("nightly-2026.10.03", "0.10.0-nightly.20261003"),
+    ] {
+        sandbox.publish_nightly_for(tag, version, host);
+        write(
+            &sandbox
+                .path(&format!("releases/{tag}"))
+                .join("SHA256SUMS.minisig"),
+            "signature\n",
+        );
+    }
+    let path = &installer.with_minisign;
+
+    // An installer without a nightly key refuses the channel, naming the key, and fetches nothing.
+    let bare = without_a_nightly_key(&installer);
+    for (args, env) in [
+        (&["--nightly"][..], &[][..]),
+        (&[][..], &[("AF_INSTALL_CHANNEL", "nightly")][..]),
+    ] {
+        let refused = installer.run_script(&bare, path, args, env);
+        assert_eq!(refused.status.code(), Some(1), "{}", out(&refused));
+        assert!(
+            err(&refused)
+                .contains("this installer carries no nightly key (crates/af/keys/nightly.pub)"),
+            "{}",
+            err(&refused)
+        );
+    }
+    assert!(!sandbox.path("curl.log").exists());
+
+    // With the nightly key: the newest by date, verified against that key, recorded as a nightly.
+    let key = sandbox.path("nightly.pub");
+    write(&key, "untrusted comment: test nightly key\nRWQ=\n");
+    let key = key.display().to_string();
+    let nightly = installer.run_script(
+        &bare,
+        path,
+        &["--nightly"],
+        &[("AF_INSTALL_NIGHTLY_KEY", key.as_str())],
+    );
+    assert!(nightly.status.success(), "{}", err(&nightly));
+    assert!(
+        out(&nightly).contains("af 0.10.0-nightly.20261029 installed at")
+            && out(&nightly).contains("minisign verified"),
+        "{}",
+        out(&nightly)
+    );
+    let receipt: toml::Value = toml::from_str(
+        &std::fs::read_to_string(
+            installer
+                .installed("0.10.0-nightly.20261029")
+                .with_file_name("receipt.toml"),
+        )
+        .unwrap(),
+    )
+    .unwrap();
+    assert_eq!(receipt["tag"].as_str(), Some("nightly-2026.10.29"));
+    assert_eq!(receipt["channel"].as_str(), Some("nightly"));
+    assert_eq!(receipt["commit"].as_str(), Some(NIGHTLY_COMMIT));
+    assert_eq!(
+        receipt["asset"].as_str(),
+        Some(format!("af-nightly-2026.10.29-{host}.tar.gz").as_str())
+    );
+    let verified = std::fs::read_to_string(sandbox.path("minisign.log")).unwrap();
+    assert!(verified.contains(&format!("-p {key}")), "{verified}");
+
+    // A nightly whose binary reports another date is refused.
+    sandbox.publish_nightly_for("nightly-2026.11.01", "0.10.0-nightly.20261031", host);
+    write(
+        &sandbox.path("releases/nightly-2026.11.01/SHA256SUMS.minisig"),
+        "signature\n",
+    );
+    let wrong = installer.run(
+        path,
+        &[
+            ("AF_INSTALL_CHANNEL", "nightly"),
+            ("AF_INSTALL_NIGHTLY_KEY", key.as_str()),
+        ],
+    );
+    assert_eq!(wrong.status.code(), Some(1), "{}", out(&wrong));
+    assert!(
+        err(&wrong).contains("expected <core>-nightly.20261101"),
+        "{}",
+        err(&wrong)
+    );
+    assert!(!installer.installed("0.10.0-nightly.20261031").exists());
 }
 
 #[test]

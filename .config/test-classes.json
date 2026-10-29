@@ -122,6 +122,7 @@
       "review_plan_refusals": "e2e",
       "routing": "e2e",
       "schemas": "e2e",
+      "self_channel": "e2e",
       "self_managed": "e2e",
       "self_optimizer": "perf",
       "self_update_check": "e2e",
