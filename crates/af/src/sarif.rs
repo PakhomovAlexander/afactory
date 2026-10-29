@@ -462,6 +462,54 @@ mod tests {
         );
     }
 
+    /// A finding with maximum-length evidence and a long title still carries its requested
+    /// change, verification and location in `result.message.text`, within the prompt bound.
+    /// Catches the base tree, whose message ended inside the evidence.
+    #[test]
+    fn a_long_finding_message_keeps_the_requested_change_and_verification() {
+        let snapshot = id('a');
+        let evidence = "e".repeat(handoff::MAX_PROMPT_TEXT);
+        let title = "t".repeat(4096);
+        let long = handoff::prompt(
+            &PromptSource {
+                reviewer: "bugs",
+                severity: Severity::Major,
+                title: &title,
+                file: Some("src/a.rs"),
+                line: Some(7),
+                snapshot_id: &snapshot,
+                evidence: &evidence,
+                fix: Some("Raise ValueError."),
+            },
+            VerifiedBy::Task,
+        );
+        let log = document(&SarifRun {
+            owner: ("task_id", "t"),
+            round: Some(1),
+            snapshot_id: Some(&snapshot),
+            coverage: None,
+            verified_fixed: &[],
+            findings: vec![SarifFinding {
+                reviewer: "bugs",
+                severity: Severity::Major,
+                title: &title,
+                finding_id: None,
+                status: None,
+                prompt: &long,
+                declined: false,
+            }],
+        });
+        check(&log).unwrap();
+        let text = log["runs"][0]["results"][0]["message"]["text"]
+            .as_str()
+            .unwrap();
+        assert!(text.chars().count() <= handoff::MAX_PROMPT_TEXT);
+        assert!(text.contains("Location: src/a.rs:7 on Snapshot sha256:aaaa"));
+        assert!(text.contains("\nRequested change: Raise ValueError.\n"));
+        assert!(text.ends_with(&format!("\nVerification: {}", handoff::TASK_VERIFICATION)));
+        assert!(text.contains(&format!("e{}\n", handoff::TRUNCATED)));
+    }
+
     /// The structural check refuses each required part missing or wrong, so it cannot pass a
     /// log that is not SARIF 2.1.0.
     #[test]
