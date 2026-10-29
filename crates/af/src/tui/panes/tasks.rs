@@ -1686,6 +1686,17 @@ impl TasksPane {
         self.reads
     }
 
+    /// The targets the load resolved, each as its Store, group, origin and note.
+    #[cfg(test)]
+    pub(crate) fn described_targets(
+        &self,
+    ) -> Vec<(PathBuf, Option<String>, Origin, Option<String>)> {
+        self.targets
+            .iter()
+            .map(|t| (t.dir.clone(), t.repo.clone(), t.origin, t.note.clone()))
+            .collect()
+    }
+
     /// The opened Task's state, as a test drives a running one.
     #[cfg(test)]
     pub(crate) fn detail_document(&mut self) -> Option<&mut Value> {

@@ -15,7 +15,8 @@
 - With Caps Lock on the browser still answers: an upper-case letter with no binding of its own
   (`Q`, `J`, `K`, ...) is read as its lower-case key; `G`, `N`, `R` and `Z` keep their own, and so
   does `D` in the Tasks pane, where it prefills `task deliver`; to every other pane `D` is `d`, so
-  `D` on a Provider removes it as `d` does
+  `D` on a Provider removes it as `d` does. The key completing a sequence folds the same way:
+  `zO` opens a fold and `gF` opens the file
   ([ADR-0261](docs/adr/0261-shape-the-browser-around-what-a-person-looks-for.md)).
 - `af provider status` and the Providers pane leave out a CLI default context whose login a
   registered Provider of its kind already holds (the Claude CLI's `~/.claude` reading the same
@@ -37,8 +38,9 @@
   status line names the highlighted row's Worker
   ([ADR-0261](docs/adr/0261-shape-the-browser-around-what-a-person-looks-for.md)).
 - The project scope is the Project's view, not the directory's: the bar's root and the panes'
-  titles carry the `[project] name` the repository declares, and `tasks/` lists, after this
-  checkout's own Store, the default Store of every other worktree of the Project that holds
+  titles carry the `[project] name` the repository's committed `.af/af.toml` declares (read
+  again on `R` at the root), and `tasks/` lists, after this checkout's own Store, the default
+  Store of every other worktree of the Project that holds
   Tasks (its registered Workspaces by label, then the worktrees git lists by name), each a bar
   group of its own; a registry Store a Workspace uses is listed once, with the Workspaces beside
   it. A Worker's STATE counts the Attempts of every checkout's Store. The checkouts are

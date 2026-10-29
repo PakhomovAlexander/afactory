@@ -168,9 +168,11 @@ pub(crate) fn hub_scope(root: &Path, repo: &Path) -> Scope {
         environment: Vec::new(),
     };
     let config = config::load_rooted(Some(repo), false, &roots).unwrap();
+    let toplevel = config.toplevel.clone().unwrap();
     Scope {
         kind: ScopeKind::Project,
-        root: config.toplevel.clone().unwrap(),
+        declared: super::scope::committed_name(&toplevel),
+        root: toplevel,
         config,
         home: Some(root.to_path_buf()),
         registry: Some(root.join("config/af/providers.toml")),
@@ -192,6 +194,7 @@ pub(crate) fn user_scope(root: &Path) -> Scope {
         kind: ScopeKind::User,
         root: root.to_path_buf(),
         config,
+        declared: None,
         home: Some(root.to_path_buf()),
         registry: Some(root.join("config/af/providers.toml")),
         state: Some(root.join("state")),
@@ -834,8 +837,9 @@ fn the_tasks_pane_golden_at_100x30_and_its_verbs() {
     let status = status_line(&mut app);
     assert!(status.contains("pipeline elsewhere/pipeline is not listed under pipelines/"));
     assert_eq!(app.opened, Opened::Item(Tab::Pipelines, package.to_owned()));
-    // On the same recorded Tasks: the running filter's keys, then a Task opened across a
-    // regrouping of its Store.
+    // On the same recorded Tasks: the one checkout's Store ungrouped, the running filter's
+    // keys, then a Task opened across a regrouping of its Store.
+    a_project_of_one_checkout_lists_its_store_ungrouped(&app, &state);
     f_filters_the_bar_and_the_folder_to_the_running_tasks(&mut app, &mut host);
     an_opened_task_follows_its_store_into_a_group(&mut app, &mut host, &root, &repo, &state);
 }
@@ -988,6 +992,30 @@ fn a_store_this_binary_cannot_read_is_an_error_row_naming_it() {
     assert_eq!(app.breadcrumb(), "tasks/! Store unreadable");
     let rows: Vec<String> = app.main_rows().iter().map(Row::text).collect();
     assert!(rows.iter().any(|row| row.starts_with(cause)), "{rows:#?}");
+}
+
+/// A Project with no other checkout lists this checkout's Store alone, ungrouped as before and
+/// named as this checkout. Run on the hub by the Tasks golden test, before another checkout
+/// appears.
+fn a_project_of_one_checkout_lists_its_store_ungrouped(app: &App, state: &Path) {
+    use super::panes::tasks::Origin;
+    assert_eq!(
+        app.panes.tasks.described_targets(),
+        [(
+            state.to_path_buf(),
+            None,
+            Origin::Scope,
+            Some("this checkout".to_owned())
+        )]
+    );
+    let ids: Vec<String> = app
+        .panes
+        .tasks
+        .items()
+        .iter()
+        .map(|item| item.id.clone())
+        .collect();
+    assert_eq!(ids, ["done/", "failed/"]);
 }
 
 /// `f` filters the bar and the folder to the running Tasks, from the bar and from the main
@@ -2014,12 +2042,40 @@ fn completion_comes_from_the_clap_definition() {
     assert!(host.events.is_empty());
 }
 
+/// With Caps Lock on, the key completing a sequence folds as a first key does: `<C-w>L` and
+/// `<C-w>H` move the focus as `<C-w>l` and `<C-w>h` do, and `zC` and `zO` close and open the
+/// folder under the cursor as `zc` and `zo` do.
+#[test]
+fn caps_lock_folds_the_key_completing_a_sequence_too() {
+    let (_temp, root) = temp_root();
+    let repo = hub_repo(&root);
+    let mut app = app_at(&root, repo);
+    let mut host = Recorder::default();
+    to_the_root(&mut app, &mut host);
+    press(&mut app, &mut host, b"\x17L");
+    assert_eq!(app.focus, Focus::Main);
+    press(&mut app, &mut host, b"\x17H");
+    assert_eq!(app.focus, Focus::Bar);
+    // `]]` puts the cursor on `providers/`, open with its two Providers under it.
+    press(&mut app, &mut host, b"]]");
+    let open = app.frame(100, 30).text();
+    assert!(open.contains("v providers/"), "{open}");
+    press(&mut app, &mut host, b"zC");
+    let closed = app.frame(100, 30).text();
+    assert!(closed.contains("> providers/"), "{closed}");
+    assert!(!closed.contains("claude-main"), "{closed}");
+    press(&mut app, &mut host, b"zO");
+    assert_eq!(app.frame(100, 30).text(), open);
+}
+
 /// The project scope is named by the `[project] name` the repository declares, before its
 /// directory's name, so every checkout of the Project is named alike: the bar's root, the
 /// panes' titles and the status line say `hub` for a checkout in `checkout-7`. The committed
-/// `.af/af.toml` is what declares it: a `.af/af.local.toml` or an `AF_PROJECT__NAME` of this
-/// checkout changes the effective configuration, never the Project's name. A declared name's
-/// first line alone is used, and without one the directory's name stands.
+/// `.af/af.toml` is what declares it: an edit of the working tree's copy, its removal, a
+/// `.af/af.local.toml` or an `AF_PROJECT__NAME` of this checkout change the effective
+/// configuration, never the Project's name, which a commit changes; `R` at the root reads it
+/// again and renames the root and every title. A declared name's first line alone is used, and
+/// without one the directory's name stands.
 #[test]
 fn the_project_scope_is_named_by_the_declared_project_name_before_its_directory() {
     let (_temp, root) = temp_root();
@@ -2027,6 +2083,7 @@ fn the_project_scope_is_named_by_the_declared_project_name_before_its_directory(
     let scope = hub_scope(&root, &repo);
     assert_eq!(scope.name(), "hub");
     let mut app = app_at(&root, repo.clone());
+    let mut host = Recorder::default();
     let screen = app.frame(100, 30).text();
     // The top row names the directory the browser was started in; the bar's root and the
     // panes' titles name the Project.
@@ -2034,6 +2091,21 @@ fn the_project_scope_is_named_by_the_declared_project_name_before_its_directory(
     assert!(screen.contains("hub  (project)"), "{screen}");
     assert!(screen.contains("SETTINGS  project: hub"), "{screen}");
     assert!(!screen.contains("checkout-7  (project)"), "{screen}");
+    assert_eq!(folder_titles(&mut app, &mut host), folder_titles_for("hub"));
+
+    // The working tree's copy, edited or gone, is not the Project's name yet.
+    let declared = repo.join(".af/af.toml");
+    let layer = std::fs::read_to_string(&declared).unwrap();
+    assert!(layer.contains("name = \"hub\"\n"), "{layer}");
+    let renamed = layer.replace(
+        "name = \"hub\"\n",
+        "name = \"\"\"Hub Project\nsecond line\"\"\"\n",
+    );
+    std::fs::write(&declared, &renamed).unwrap();
+    assert_eq!(hub_scope(&root, &repo).name(), "hub");
+    std::fs::remove_file(&declared).unwrap();
+    assert_eq!(hub_scope(&root, &repo).name(), "hub");
+    std::fs::write(&declared, &layer).unwrap();
 
     // One checkout's overrides reach the effective configuration and nothing else.
     std::fs::write(
@@ -2064,18 +2136,53 @@ fn the_project_scope_is_named_by_the_declared_project_name_before_its_directory(
     assert_eq!(hub_scope(&root, &repo).name(), "hub");
     std::fs::remove_file(repo.join(".af/af.local.toml")).unwrap();
 
-    let declared = repo.join(".af/af.toml");
-    let layer = std::fs::read_to_string(&declared).unwrap();
-    assert!(layer.contains("name = \"hub\"\n"), "{layer}");
-    let first_line = layer.replace(
-        "name = \"hub\"\n",
-        "name = \"\"\"Hub Project\nsecond line\"\"\"\n",
-    );
-    std::fs::write(&declared, first_line).unwrap();
+    // Committed, the name is the Project's, its first line; `R` at the root reads it again
+    // and renames the bar's root and every pane's title.
+    std::fs::write(&declared, &renamed).unwrap();
+    git(&repo, &["commit", "-qam", "rename the project"]);
     assert_eq!(hub_scope(&root, &repo).name(), "Hub Project");
+    to_the_root(&mut app, &mut host);
+    press(&mut app, &mut host, b"R");
+    let screen = app.frame(100, 30).text();
+    assert!(screen.contains("Hub Project  (project)"), "{screen}");
+    assert!(!screen.contains("hub  (project)"), "{screen}");
+    // Enter on the root row: the settings pane, titled for the renamed Project.
+    press(&mut app, &mut host, b"\r");
+    let screen = app.frame(100, 30).text();
+    assert!(
+        screen.contains("SETTINGS  project: Hub Project"),
+        "{screen}"
+    );
+    assert_eq!(
+        folder_titles(&mut app, &mut host),
+        folder_titles_for("Hub Project")
+    );
+    // Without a declared name the directory's stands.
     let undeclared = layer.replace("name = \"hub\"\n", "");
     std::fs::write(&declared, undeclared).unwrap();
+    git(&repo, &["commit", "-qam", "undeclare the name"]);
     assert_eq!(hub_scope(&root, &repo).name(), "checkout-7");
+}
+
+/// The titles of the Providers, Workers, Pipelines and Tasks folders, each opened from the bar.
+fn folder_titles(app: &mut App, host: &mut Recorder) -> Vec<String> {
+    to_the_root(app, host);
+    (0..4)
+        .map(|_| {
+            press(app, host, b"]]\r");
+            app.main_rows()[0].text()
+        })
+        .collect()
+}
+
+/// What `folder_titles` lists for a project named `name`.
+fn folder_titles_for(name: &str) -> Vec<String> {
+    vec![
+        format!("PROVIDERS  project: {name}  (af provider status)"),
+        format!("WORKERS  project: {name}"),
+        format!("PIPELINES  project: {name}"),
+        format!("TASKS  project: {name}"),
+    ]
 }
 
 /// `docs/design/tui.md` states the Workers folder's loading rule as ADR-0261 has it, in every

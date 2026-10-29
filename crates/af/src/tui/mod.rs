@@ -1545,7 +1545,15 @@ impl App {
             self.enter_scope(scope);
             return Ok(());
         }
+        let renamed = scope.name() != self.scope.name();
         self.scope = scope;
+        if renamed {
+            // The committed `[project] name` changed: the bar's root and every pane's title
+            // carry it, so every pane loads again for the renamed scope.
+            self.tree.set_root(&root_label(&self.scope));
+            self.load();
+            return Ok(());
+        }
         self.panes.settings.load(&self.scope)
     }
 

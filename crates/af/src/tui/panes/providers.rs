@@ -149,6 +149,9 @@ pub(crate) struct ProvidersPane {
     /// The variables pointing a Provider CLI at its directory (`CLAUDE_CONFIG_DIR`,
     /// `CODEX_HOME`) the browser's environment sets: an ambient row says it came through one.
     selectors: BTreeSet<&'static str>,
+    /// The folder's title: the pane and the scope it was loaded for, as every pane's title
+    /// names them (ADR-0261); an opened Provider's title names the Provider instead.
+    title: String,
 }
 
 impl ProvidersPane {
@@ -172,6 +175,7 @@ impl ProvidersPane {
                 .map(|kind| providers::ambient_selector(kind).0)
                 .filter(|name| std::env::var_os(name).is_some())
                 .collect(),
+            title: "PROVIDERS".to_owned(),
         }
     }
 
@@ -308,7 +312,7 @@ impl ProvidersPane {
     fn rebuild(&mut self) {
         let title = match &self.selected {
             Some(id) => format!("PROVIDERS  {id}"),
-            None => "PROVIDERS  (af provider status)".to_owned(),
+            None => format!("{}  (af provider status)", self.title),
         };
         let mut rows = vec![Row::painted(title, Paint::Title)];
         if self.none_registered() {
@@ -346,7 +350,12 @@ impl ProvidersPane {
 }
 
 impl Pane for ProvidersPane {
-    fn load(&mut self, _scope: &Scope) -> Result<(), String> {
+    fn load(&mut self, scope: &Scope) -> Result<(), String> {
+        let title = format!("PROVIDERS  {}: {}", scope.word(), scope.name());
+        if title != self.title {
+            self.title = title;
+            self.rebuild();
+        }
         if self.discover && self.inventory.is_none() && self.job.is_none() {
             self.unregistered = providers::read_registry_entries().registered.is_empty();
             self.start(UsageProbe::Skip);

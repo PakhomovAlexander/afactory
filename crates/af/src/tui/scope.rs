@@ -26,6 +26,10 @@ pub(crate) struct Scope {
     /// The XDG state root under which `af task` keeps every repository's default Task state;
     /// `None` when neither `XDG_STATE_HOME` nor `HOME` names one.
     pub(crate) state: Option<PathBuf>,
+    /// The `[project] name` the repository declares in the `.af/af.toml` its `HEAD` commits,
+    /// read with the scope (`committed_name`); `None` for the user scope and for a repository
+    /// declaring none.
+    pub(crate) declared: Option<String>,
 }
 
 impl Scope {
@@ -59,13 +63,16 @@ impl Scope {
             home: Some(home),
             registry: crate::providers::registry_location(),
             state: crate::xdg_state_root().ok(),
+            declared: None,
         })
     }
 
     pub(crate) fn project(toplevel: PathBuf, config: Config) -> Scope {
+        let declared = committed_name(&toplevel);
         Scope {
             kind: ScopeKind::Project,
             root: toplevel,
+            declared,
             config,
             home: config::home().ok(),
             registry: crate::providers::registry_location(),
@@ -95,27 +102,14 @@ impl Scope {
     /// declares, else the toplevel's basename; `~` for the user scope. The Project is one
     /// across its worktrees, so every checkout of it is named alike.
     pub(crate) fn name(&self) -> String {
-        if let Some(name) = self.declared_name() {
-            return name;
+        if let Some(name) = &self.declared {
+            return name.clone();
         }
         match (self.kind, self.root.file_name()) {
             (ScopeKind::Project, Some(name)) => name.to_string_lossy().into_owned(),
             (ScopeKind::Project, None) => self.root.display().to_string(),
             (ScopeKind::User, _) => "~".to_owned(),
         }
-    }
-
-    /// The `[project] name` the repository declares in its committed `.af/af.toml`, its first
-    /// line, when there is one. The project file alone, never the effective configuration: a
-    /// `.af/af.local.toml` or an `AF_PROJECT__NAME` of one checkout must not name the Project
-    /// differently from its other checkouts (ADR-0158, ADR-0261).
-    fn declared_name(&self) -> Option<String> {
-        if self.kind != ScopeKind::Project {
-            return None;
-        }
-        let (name, _) = crate::projects::declared(&self.root);
-        let line = name?.lines().next()?.trim().to_owned();
-        (!line.is_empty()).then_some(line)
     }
 
     pub(crate) fn word(&self) -> &'static str {
@@ -141,6 +135,23 @@ impl Scope {
     pub(crate) fn abbreviate(&self, path: &Path) -> String {
         abbreviate(self.home.as_deref(), path)
     }
+}
+
+/// The `[project] name` the repository declares in the `.af/af.toml` its `HEAD` commits, its
+/// first line, when there is one. The committed file alone: not the working tree's copy, whose
+/// edit is not the Project's name until it is committed, and never the effective configuration,
+/// which a `.af/af.local.toml` or an `AF_PROJECT__NAME` of one checkout changes, so every
+/// checkout of the Project is named alike (ADR-0158, ADR-0261). A file the kernel would refuse
+/// names nothing. One `git show` of a small blob, read with the scope: on the browser's load
+/// thread and on `R` at the root, as the Pipelines pane reads `HEAD` (ADR-0240).
+pub(crate) fn committed_name(toplevel: &Path) -> Option<String> {
+    let text = super::panes::pipelines::git(toplevel, &["show", "HEAD:.af/af.toml"]).ok()?;
+    let text = String::from_utf8(text).ok()?;
+    crate::project::ProjectFile::parse(&text).ok()?;
+    let value: toml::Value = toml::from_str(&text).ok()?;
+    let name = value.get("project")?.get("name")?.as_str()?;
+    let line = name.lines().next()?.trim().to_owned();
+    (!line.is_empty()).then_some(line)
 }
 
 /// `path` as the panes show it: `~` for `home` and what is under it, the path itself otherwise.

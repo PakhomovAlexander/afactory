@@ -87,10 +87,10 @@ pub(super) fn discover(state: &Path, toplevel: &Path) -> Result<Project, String>
                     }
                 }
                 // The checkout's default Store, under the Workspace's label, when it holds
-                // anything: a clone no `git worktree list` names is found here alone.
+                // Tasks: a clone no `git worktree list` names is found here alone.
                 if let Some(default) = default
                     && !super::same_store(&default, &own)
-                    && exists(&default)
+                    && holds_tasks(&default)
                     && !listed.iter().any(|dir| super::same_store(dir, &default))
                 {
                     listed.push(default.clone());
@@ -125,7 +125,7 @@ pub(super) fn discover(state: &Path, toplevel: &Path) -> Result<Project, String>
             continue;
         }
         let dir = task_execution::default_task_state(state, &path)?;
-        if !exists(&dir) || listed.iter().any(|known| super::same_store(known, &dir)) {
+        if !holds_tasks(&dir) || listed.iter().any(|known| super::same_store(known, &dir)) {
             continue;
         }
         listed.push(dir.clone());
@@ -159,8 +159,14 @@ fn workspaces(
     Ok(Some((log, paths)))
 }
 
-/// Whether anything is at `path`: a Store directory that was never made holds no Task and is
-/// not listed; a link to nothing is, so the pane shows its refusal.
 fn exists(path: &Path) -> bool {
     std::fs::symlink_metadata(path).is_ok()
+}
+
+/// Whether a checkout's default Store holds Tasks: af wrote a Store there, its `events.sqlite`.
+/// A directory nothing wrote, or none, holds no Task and is not listed (ADR-0261); a Store
+/// whose database cannot be told (a link to nothing, a directory in its place) is listed, so
+/// the pane shows its refusal rather than hiding a Store.
+fn holds_tasks(path: &Path) -> bool {
+    !matches!(task_execution::store_present(path), Ok(false))
 }

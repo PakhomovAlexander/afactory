@@ -2619,37 +2619,6 @@ fn the_project_scope_lists_the_default_stores_of_every_checkout_of_the_project()
     );
 }
 
-/// A Project with no other checkout lists this checkout's Store alone, ungrouped as before,
-/// named as this checkout.
-#[test]
-fn a_project_of_one_checkout_lists_its_store_ungrouped() {
-    let temp = tempfile::tempdir().unwrap();
-    let root = std::fs::canonicalize(temp.path()).unwrap();
-    let (repo, state) = crate::tui::tests::hub_with_tasks(&root);
-    let scope = crate::tui::tests::hub_scope(&root, &repo);
-    let mut pane = TasksPane::default();
-    pane.load(&scope).unwrap();
-    pane.settle();
-    let described: Vec<(&Path, Option<&str>, Origin, Option<&str>)> = pane
-        .targets
-        .iter()
-        .map(|t| {
-            (
-                t.dir.as_path(),
-                t.repo.as_deref(),
-                t.origin,
-                t.note.as_deref(),
-            )
-        })
-        .collect();
-    assert_eq!(
-        described,
-        [(state.as_path(), None, Origin::Scope, Some("this checkout"))]
-    );
-    let ids: Vec<String> = pane.items().iter().map(|item| item.id.clone()).collect();
-    assert_eq!(ids, ["done/", "failed/"]);
-}
-
 /// `f`: the running Tasks of every Store in one list, the one started last first, each with its
 /// progress, how long it has run, its charge so far and where it runs, then the Stores that
 /// cannot be read; `f` again lists every Task grouped. The Stores are handed over as read, so no
@@ -2928,6 +2897,7 @@ fn a_workspaces_default_store_is_listed_beside_the_state_store_it_names() {
     )
     .unwrap();
     let clone_default = task_execution::default_task_state(&xdg, &clone).unwrap();
+    // The clone's default Store directory, with no Store written in it yet.
     std::fs::create_dir_all(&clone_default).unwrap();
     let shared = task_execution::local_task_states(&xdg).join("shared-by-two");
     std::fs::create_dir_all(&shared).unwrap();
@@ -2964,42 +2934,38 @@ fn a_workspaces_default_store_is_listed_beside_the_state_store_it_names() {
     pane.load(&scope).unwrap();
     pane.settle();
     assert!(pane.error.is_none() && pane.discovered.is_none());
-    let described: Vec<(&Path, Option<&str>, Origin, Option<&str>)> = pane
-        .targets
-        .iter()
-        .map(|t| {
-            (
-                t.dir.as_path(),
-                t.repo.as_deref(),
-                t.origin,
-                t.note.as_deref(),
-            )
-        })
-        .collect();
     let shown = scope.abbreviate(&shared);
-    assert_eq!(
-        described,
-        [
-            (
-                state.as_path(),
-                Some("hub"),
-                Origin::Scope,
-                Some("this checkout (Workspace hub)")
-            ),
-            (
-                clone_default.as_path(),
-                Some("clone"),
-                Origin::Checkout,
-                Some("Workspace clone")
-            ),
-            (
-                shared.as_path(),
-                Some(shown.as_str()),
-                Origin::Registered,
-                Some("Workspaces clone, x")
-            ),
-        ]
+    let entry = |dir: &Path, repo: &str, origin: Origin, note: &str| {
+        (
+            dir.to_path_buf(),
+            Some(repo.to_owned()),
+            origin,
+            Some(note.to_owned()),
+        )
+    };
+    let registered = entry(&shared, &shown, Origin::Registered, "Workspaces clone, x");
+    // A default Store directory af never wrote holds no Task and is not listed, so this
+    // checkout's Store stands ungrouped, as with no other checkout.
+    let alone = (
+        state.clone(),
+        None,
+        Origin::Scope,
+        Some("this checkout (Workspace hub)".to_owned()),
     );
+    assert_eq!(pane.described_targets(), [alone, registered.clone()]);
+    let own = entry(
+        &state,
+        "hub",
+        Origin::Scope,
+        "this checkout (Workspace hub)",
+    );
+    // A Task recorded in the clone: its Store is listed under the Workspace's label at the
+    // next read, between this checkout's and the registry's.
+    crate::tui::tests::record_task(&root, &clone, &clone_default, "pagination-cli");
+    pane.refresh(&scope).unwrap();
+    pane.settle();
+    let listed = entry(&clone_default, "clone", Origin::Checkout, "Workspace clone");
+    assert_eq!(pane.described_targets(), [own, listed, registered]);
     pane.open(None);
     let rows: Vec<String> = pane.rows().iter().map(Row::text).collect();
     let heading = format!("{shown}  (--state, in stores.toml; Workspaces clone, x)");

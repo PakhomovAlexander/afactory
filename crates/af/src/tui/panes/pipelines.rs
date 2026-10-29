@@ -127,6 +127,9 @@ pub(crate) struct PipelinesPane {
     /// What the status line says on a declared tree's rows that name a Worker, by row.
     marks: BTreeMap<usize, String>,
     spinner: usize,
+    /// The folder's title: the pane and the scope it was loaded for, as every pane's title
+    /// names them (ADR-0261).
+    title: String,
 }
 
 impl PipelinesPane {
@@ -500,7 +503,7 @@ impl PipelinesPane {
     /// The folder's listing, and the entry each of its rows names.
     fn folder_rows(&self) -> (Vec<Row>, BTreeMap<usize, String>) {
         let mut named = BTreeMap::new();
-        let mut rows = vec![Row::painted("PIPELINES", Paint::Title), Row::blank()];
+        let mut rows = vec![Row::painted(self.title.clone(), Paint::Title), Row::blank()];
         if let Some(error) = &self.error {
             let stale = if self.entries.is_empty() {
                 "nothing is listed"
@@ -533,6 +536,7 @@ impl PipelinesPane {
 
 impl Pane for PipelinesPane {
     fn load(&mut self, scope: &Scope) -> Result<(), String> {
+        self.title = format!("PIPELINES  {}: {}", scope.word(), scope.name());
         let root = scope.toplevel().map(Path::to_path_buf);
         if root != self.root {
             self.forget();

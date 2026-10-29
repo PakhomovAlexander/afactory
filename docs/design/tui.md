@@ -23,6 +23,14 @@ mouse support.
 | `af --repo DIR` | project | as above, for `DIR` |
 | `af` with stdout not a tty | — | prints help, exit 2 (today's behaviour) |
 
+The project scope's name is the `[project] name` the `.af/af.toml` at `HEAD` declares, its first
+line, read through git with the scope (one `git show` of that blob, on the browser's load thread
+and again on `R` at the root, as the Pipelines pane reads `HEAD`; ADR-0240). The working tree's
+copy of the file, a `.af/af.local.toml` and an `AF_PROJECT__NAME` change the effective
+configuration, never the name, so every checkout of the Project is named alike and an edit names
+it once committed; without one the toplevel's basename stands. A name `R` at the root finds
+changed renames the bar's root and every pane's title (ADR-0261).
+
 Scope resolution reuses `config::load(repo)`: `toplevel == None` means user scope. A toplevel is
 an ancestor whose `.git` git itself would open (a directory holding `HEAD`, or a linked
 worktree's `gitdir:` file naming one), never a mere path called `.git`. A reload that finds the
@@ -131,7 +139,8 @@ few pane-local verbs, listed in its section and in the status line.
 An upper-case letter with no binding of its own is its lower-case key, so Caps Lock changes
 nothing: `Q` quits, `J` and `K` move. `G`, `N`, `R` and `Z` keep their own, and so does `D` in the
 Tasks pane, where it prefills `task deliver`; to every other pane `D` is `d`, so `D` on a Provider
-removes it as `d` does.
+removes it as `d` does. The key completing a sequence folds the same way: `zO` opens a fold and
+`gF` opens the file, while `ZZ`, `zR` and `zM` keep their case.
 
 **Command line (`:`)** — the browser's own verbs, and any `af` command line:
 
@@ -195,6 +204,8 @@ User scope shows only the machine-owned layers plus the provider registry path
 ### 5.2 Providers
 
 Mirrors `af provider status --usage`; the left bar lists every entry from `providers::discover`.
+The folder's title names the scope as every pane's does, `PROVIDERS  project: hub  (af provider
+status)`; an opened Provider's names the Provider, `PROVIDERS  claude-main`.
 The main pane shows the same columns as the CLI table for the selected provider (for every
 provider on the folder, a blank row between two of them), then one row per
 `ProviderLimit` as a bar of twenty cells with `used_percent` and when the window resets (or who
@@ -275,8 +286,9 @@ opens it, as the bar does, and the bar's cursor follows.
 
 ### 5.4 Pipelines
 
-The folder's listing in the main pane is one row per Pipeline; `Enter` on one opens it, as
-the bar does, and the bar's cursor follows.
+The folder's title names the scope as every pane's does (`PIPELINES  project: hub`), and its
+listing in the main pane is one row per Pipeline; `Enter` on one opens it, as the bar does, and
+the bar's cursor follows.
 
 For now the pane is the text `af task explain --tree` prints, produced by
 `task_execution::preview::render(…, tree = true)`, verbatim:
@@ -360,9 +372,10 @@ The project scope lists the Project's Tasks, not this directory's alone (ADR-015
 is one repository across its worktrees and clones, and every checkout af worked in is a
 Workspace of it). Beside this checkout's own Store, headed `this checkout (Workspace LABEL)`
 when it is registered, the pane lists the default Store of every other checkout of the Project
-that has one: the registered Workspaces, from the Project Store read under its shared lock, by
-label, then the worktrees `git worktree list` names that no Workspace covers, by directory
-name. Each is a bar level named by that label (`hub-wt-branch/ (3)`), and its heading is
+that holds Tasks (a Store af wrote, its `events.sqlite` there; a directory nothing wrote is not
+listed, and a Store whose database cannot be told is, with its refusal): the registered
+Workspaces, from the Project Store read under its shared lock, by label, then the worktrees
+`git worktree list` names that no Workspace covers, by directory name. Each is a bar level named by that label (`hub-wt-branch/ (3)`), and its heading is
 `Workspace LABEL  PATH` or `worktree NAME (not a Workspace)  PATH`, the opaque Store path last.
 A Workspace's Tasks are its checkout's default Store's, listed under its label whether or not
 the Workspace also names a `--state` Store (a clone no `git worktree list` names is found this
@@ -573,7 +586,8 @@ Tests: keymap sequences, tree folding and search, and one golden render per pane
    - The folder reads at load in a project scope, on its thread, as the other folders do: the
      load records the read and the first poll after the first frame starts it (ADR-0240), with
      a spinner on `workers/` meanwhile, so the bar lists the Workers without an open. STATE
-     scans every Task of the scope's Store (§8) on that thread.
+     counts the Attempts of every checkout's Store, this one's and each discovered one's (§8),
+     on that thread.
    - The user scope lists no Worker, and synced catalogs are not read. The pane says that
      Workers belong to a project.
    - The bar and every pane read what `HEAD` commits, like the Pipelines pane. A drifted

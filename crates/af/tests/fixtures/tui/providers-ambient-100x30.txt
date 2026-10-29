@@ -1,4 +1,4 @@
-~/hub                       |PROVIDERS  (af provider status)
+~/hub                       |PROVIDERS  project: hub  (af provider status)
 v hub  (project)            |
   v providers/              |ID                       KIND     STATUS              AUTH
       claude-main           |claude-main              claude   authenticated       oauth
