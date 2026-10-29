@@ -861,8 +861,20 @@ fn afactory_authority_plans_a_three_field_task_with_its_defaults() {
     let project: toml::Value =
         toml::from_str(&std::fs::read_to_string(repo.join(".af/af.toml")).unwrap()).unwrap();
     assert_eq!(
+        project["task"]["defaults"]["pipeline"].as_str(),
+        Some("default/implementation")
+    );
+    assert_eq!(
         project["task"]["defaults"]["limits"]["tokens"].as_integer(),
-        Some(6_000_000)
+        Some(8_000_000)
+    );
+    assert_eq!(
+        project["task"]["defaults"]["limits"]["max_attempts"].as_integer(),
+        Some(16)
+    );
+    assert_eq!(
+        project["task"]["defaults"]["limits"]["wall_ms"].as_integer(),
+        Some(43_200_000)
     );
     assert_eq!(
         project["task"]["defaults"]["limits"]["verification"]["tokens"].as_integer(),
@@ -870,11 +882,11 @@ fn afactory_authority_plans_a_three_field_task_with_its_defaults() {
     );
     assert_eq!(
         project["task"]["defaults"]["limits"]["verification"]["attempts"].as_integer(),
-        Some(8)
+        Some(9)
     );
     assert_eq!(
         project["task"]["defaults"]["limits"]["verification"]["wall_ms"].as_integer(),
-        Some(14_400_000)
+        Some(18_000_000)
     );
     commit(&repo);
     let ticket = root.path().join("short.json");
@@ -924,12 +936,32 @@ fn afactory_authority_plans_a_three_field_task_with_its_defaults() {
         stderr(&planned)
     );
     assert!(
-        stderr(&planned).contains("limits (tokens 6000000, max_attempts 16, wall_ms 28800000)")
+        stderr(&planned).contains("limits (tokens 8000000, max_attempts 16, wall_ms 43200000)")
     );
     assert!(
-        stdout(&planned).contains("kernel/implementation-reviewed"),
+        stdout(&planned).contains("default/implementation"),
         "{}",
         stdout(&planned)
+    );
+    // Every default-pipeline binding is checked against the recorded catalogs: the Codex
+    // fixture lists `gpt-5.6-terra`, which `default/bugs` binds.
+    for worker in [
+        "default/implementer",
+        "default/bugs",
+        "default/correctness",
+        "default/advisor",
+        "default/evaluator",
+    ] {
+        assert!(
+            stderr(&planned).contains(&format!("model {worker} ")),
+            "{worker}: {}",
+            stderr(&planned)
+        );
+    }
+    assert!(
+        !stderr(&planned).contains("unverified against the catalog"),
+        "{}",
+        stderr(&planned)
     );
 }
 

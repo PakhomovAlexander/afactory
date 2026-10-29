@@ -117,22 +117,24 @@ refused, naming both.
 
 ```toml
 [task.defaults]
-pipeline = "kernel/implementation-reviewed"
+pipeline = "default/implementation"
 fallback = "refuse"
 
 [task.defaults.limits]
-tokens = 6000000
+tokens = 8000000
 max_attempts = 16
-wall_ms = 28800000
+wall_ms = 43200000
 
 [task.defaults.limits.verification]
 tokens = 2000000
-attempts = 8
-wall_ms = 14400000
+attempts = 9
+wall_ms = 18000000
 ```
 
-The wall bounds leave room for the compiled reviewers, evaluator and repository checks of
-`kernel/implementation-reviewed`; plan another Pipeline against its own declared allowances.
+This is the table of this repository's `.af/af.toml`: its bounds are those of
+[the default pipeline](#the-default-pipeline) and leave room for the compiled reviewers,
+evaluator and repository checks of `default/implementation`; plan another Pipeline against its
+own declared allowances.
 
 A goal can stay short and point at what it needs. `context` names files of the Task's source
 tree, each with an optional `#section`; standing rules live in `.af/rules.md`. The Worker's
@@ -631,8 +633,9 @@ evidence.
 
 To run it, name it in the Task file; `default/verification` takes a Task of `"kind":
 "verification"` whose `inputs.source` binds the candidate it judges
-([agents](agents.md#6-run-another-round)). The repository's `.af/af.toml` declares no
-`[task.defaults]`, so the file carries its limits; these fit the pipeline's declared Attempt
+([agents](agents.md#6-run-another-round)). The repository's `.af/af.toml` names
+`default/implementation` and these limits in `[task.defaults]`, so a Task file of this
+repository may omit both; the example spells them out. They fit the pipeline's declared Attempt
 allowances, and `af task plan --fit` prints the smallest that do:
 
 ```json
@@ -645,7 +648,7 @@ allowances, and `af task plan --fit` prints the smallest that do:
     "tokens": 8000000,
     "max_attempts": 16,
     "wall_ms": 43200000,
-    "verification": { "tokens": 2000000, "attempts": 8, "wall_ms": 18000000 }
+    "verification": { "tokens": 2000000, "attempts": 9, "wall_ms": 18000000 }
   }
 }
 ```
