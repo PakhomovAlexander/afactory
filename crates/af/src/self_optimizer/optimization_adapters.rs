@@ -1703,7 +1703,7 @@ mod tests {
             state: Some(state.clone()),
             json: true,
         };
-        let history = capture(&options, &root, &state).unwrap();
+        let history = capture(&options, &root, &state, &mut Vec::new()).unwrap();
         assert_eq!(
             history.receipts[0].completeness,
             SourceCompletenessV1::Complete
@@ -2334,7 +2334,6 @@ mod tests {
             let (mut raw, mut normalized) = (1_000_000, 1_000_000);
             let (receipt, observations, gaps) = capture_source(
                 &config,
-                &root.join("sources.json"),
                 root,
                 &config.sources[0],
                 start,
