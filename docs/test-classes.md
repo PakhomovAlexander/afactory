@@ -154,10 +154,12 @@ never resolve.
 An identity flaky in at least 2 distinct Tasks whose `updated_unix_ms` falls within the 7 days
 ending at the end of today (UTC) is proposed as `quarantined`, `since` today, `expires` today
 plus 14 days, its `evidence` the sorted Task IDs (at most 10), without `issue`. An identity already
-in the file is left as it is. Proposals rank by evidence count, then identity; those past the
+in the file keeps its values; `--write` writes the whole file in the shipped format (two-space
+indent, sorted keys), so an entry already in that format keeps its bytes and a hand-reformatted one
+is normalized. Proposals rank by evidence count, then identity; those past the
 20-entry cap are not added and are named. Without `--write` the scan prints what it would add,
 the over-cap identities and the rejected names, and changes nothing; `--write` adds them through
-every guard above, or refuses and writes nothing; `--json` prints the same facts as one
+every guard above, or refuses and writes nothing, and runs those guards even with nothing to add; `--json` prints the same facts as one
 `af.test-quarantine-scan/1` document. Today is `--today YYYY-MM-DD`, else
 `AF_TEST_QUARANTINE_TODAY`, else the clock. The exit code is 0 with or without proposals, 1 on bad
 input or a guard refusal and 2 on a usage error. `scripts/test-test-quarantine.py` (run by `make check` and the base

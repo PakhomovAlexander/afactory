@@ -223,10 +223,12 @@ def main(argv=None):
     inventory = tc.read(args.inventory) if args.inventory else default_inventory()
     facts = scan(rows, inventory, current, today, cat)
     wrote = False
-    if args.write and facts['proposed']:
+    if args.write:
+        # Every guard runs, partition's inventory guard included, even with nothing to add.
         value = written(current, facts, inventory, today, cat)
-        tc.write(path, value)
-        wrote = True
+        if facts['proposed']:
+            tc.write(path, value)
+            wrote = True
     if args.json:
         print(json.dumps({**facts, 'written': wrote}, indent=2, sort_keys=True))
     else:

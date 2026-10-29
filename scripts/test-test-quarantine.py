@@ -230,6 +230,9 @@ class Scan(unittest.TestCase):
             # The result fails the partition-time guard: a held identity absent from the inventory.
             ({'af::it absent::test': held('af::it absent::test')},
              [row('T_A', NOON, [HEAVY]), row('T_B', NOON, [HEAVY])], 'not in the test inventory'),
+            # The same, with nothing proposed: --write still runs the inventory guard.
+            ({'af::it absent::test': held('af::it absent::test')}, [row('T_A', NOON, [HEAVY])],
+             'not in the test inventory'),
             # The current file already fails a guard.
             ({CAPTURE: held(CAPTURE, '2026-10-10', '2026-10-20')}, [row('T_A', NOON, [HEAVY])],
              'expired on 2026-10-20'),
