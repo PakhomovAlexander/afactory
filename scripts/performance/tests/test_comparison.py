@@ -12,7 +12,9 @@ from types import SimpleNamespace
 from unittest import mock
 
 from perflab import comparison, contracts, diagnostics, executor, hostobserver, overview, synthetic
-from perflab.values import ContractError
+from perflab import telemetrylab
+from perflab.values import ContractError, sha256_bytes
+from tests import telemetry_fixtures as fx
 from tests.support import ROOT, read
 from tests.test_executor import ExecutorFixture
 
@@ -97,6 +99,20 @@ class Comparison(ExecutorFixture):
     def stand_in(self, measurement):
         def execute(config, request, path, lease, installed):
             return {"status": "complete", "measurement_status": measurement, "evidence": [],
+                    "actions": None, "detail": "stand-in"}
+        return execute
+
+    def telemetry_stand_in(self):
+        """The telemetry original as a real native result bundle (`telemetrylab.run` over the
+        fixture executor): its page links its manifest, raw documents and logs."""
+        self.binaries = fx.binaries(self)
+
+        def execute(config, request, path, lease, installed):
+            telemetrylab.run(fx.settings(self, fx.StandIn(self.binaries),
+                                         os.path.join(path, "run"),
+                                         result_id="local_" + request["request_id"][4:]))
+            return {"status": "complete", "measurement_status": "pass",
+                    "evidence": executor.file_manifest(path, executor.EVIDENCE_PREFIXES),
                     "actions": None, "detail": "stand-in"}
         return execute
 
@@ -185,8 +201,8 @@ class Comparison(ExecutorFixture):
             self.assertEqual(calls, ["build", "shard_0", "shard_1"])
             second = j.request(doc["partitions"][1]["request_id"])
             executor.verify_original(j, second["request_id"])
-            self.assertEqual(j.cycle(lock_directory=self.locks, execute=self.stand_in("pass")),
-                             "complete")
+            self.assertEqual(j.cycle(lock_directory=self.locks,
+                                     execute=self.telemetry_stand_in()), "complete")
             advanced = comparison.advance(j, ident)
             agg, _ = comparison.read_aggregate(j, contracts.read_json(read(os.path.join(
                 comparison.directory(j, ident), "comparison.json")), "comparison"))
@@ -202,6 +218,17 @@ class Comparison(ExecutorFixture):
             self.assertEqual(agg["result"], "incomplete")
             self.assertTrue(agg["regressions"])
             self.assertTrue(all(p["included"] for p in agg["partitions"]))
+            # The later partition ran in its own sealed window on the first one's build; the
+            # family's run carries that authority, and the first partition carries none.
+            first, later = (os.path.join(j.path(p["request_id"]), "run", "partitions.json")
+                            for p in doc["partitions"])
+            self.assertFalse(os.path.lexists(first))
+            window = contracts.read_file(later, "partition-execution")
+            self.assertEqual([(p["index"], p["request_id"], p["shards"])
+                              for p in window["partitions"]],
+                             [(1, doc["partitions"][1]["request_id"], [1])])
+            self.assertEqual(read(os.path.join(comparison.directory(j, ident), "aggregate",
+                                               "run", "partitions.json")), read(later))
             # The aggregate's regressions select the two diagnostic lanes' cases.
             lanes = dict((lane["lane"], lane) for lane in advanced["lanes"])
             self.assertEqual((lanes["trace"]["state"], lanes["cpu_profile"]["state"]),
@@ -269,12 +296,43 @@ class Comparison(ExecutorFixture):
         moved = self.path("copied", "bundle")
         shutil.copytree(bundle, moved)
         shutil.rmtree(bundle)
+        # The profile stand-in wrote no native children; their admission is recorded here
+        # (exercised for real in test_report_diagnostics).
+        admitted = []
+        stand_in = mock.patch.object(comparison.report, "admit_children",
+                                     lambda sources, plan: admitted.append(sources))
+        stand_in.start()
+        self.addCleanup(stand_in.stop)
         checked, checked_report = comparison.verify_export(moved)
+        self.assertEqual(sorted(os.path.relpath(p[0], moved) for p in admitted),
+                         sorted("evidence/requests/%s/profile" % lane["request_id"]
+                                for lane in doc["diagnostics"]))
         # The operator command verifies the copied bundle with no journal or configuration.
         import cli
         with mock.patch("sys.stdout", new=io.StringIO()) as printed:
             self.assertEqual(cli.main(["executor", "comparison-verify", "--bundle", moved]), 0)
         self.assertIn('"status": "verified"', printed.getvalue())
+        listed = [f["path"] for f in checked["files"]]
+        # The nested native pages keep their links inside the copied bundle: the telemetry
+        # result's page links its raw documents and logs; each core report its
+        # evidence; the family aggregate its run.
+        telemetry = "evidence/requests/%s/run/" % doc["telemetry"]["request_id"]
+        page = telemetry + "report.html"
+        nested = [resolved for _, resolved in comparison._links(
+            read(os.path.join(moved, page)).decode(), page)]
+        for part in ("raw/", "logs/"):
+            self.assertTrue(any(path.startswith(telemetry + part) for path in nested), part)
+        # Its native manifest, which its offline verification reads, travels with it.
+        self.assertIn(telemetry + "manifest.json", listed)
+        for path in nested:
+            self.assertTrue(path in listed or any(f.startswith(path + "/") for f in listed), path)
+        for item in doc["partitions"]:
+            core = "evidence/requests/%s/" % item["request_id"]
+            for name in ("run/run.json", "run/builds.json", "report/verdict.json",
+                         "report/report.html"):
+                self.assertIn(core + name, listed)
+            self.assertTrue(any(f.startswith(core + "report/evidence/") for f in listed))
+        self.assertIn("evidence/comparisons/%s/aggregate/run/run.json" % ident, listed)
         self.assertEqual(checked_report, report)
         self.assertIn("evidence/comparisons/%s/aggregate/report/verdict.json" % ident,
                       [f["path"] for f in checked["files"]])
@@ -295,6 +353,48 @@ class Comparison(ExecutorFixture):
             f.write("not exported")
         with self.assertRaisesRegex(ContractError, "differ from its manifest"):
             comparison.verify_export(moved)
+        os.unlink(os.path.join(moved, "evidence", "extra.txt"))
+        comparison.verify_export(moved)
+        raw = sorted(path for path in nested if path.startswith(telemetry + "raw/")
+                     and path in listed)[0]
+
+        forged_copies = []
+
+        def forge(change):
+            """A forger's copy: `change(copy)` alters it, and its export manifest is rehashed so
+            every listed hash agrees with the bytes."""
+            forged = self.path("forged-%d" % len(forged_copies))
+            forged_copies.append(forged)
+            shutil.copytree(moved, forged)
+            change(forged)
+            manifest = contracts.read_json(read(os.path.join(forged, "manifest.json")),
+                                           "comparison-export")
+            files = []
+            for item in manifest["files"]:
+                target = os.path.join(forged, item["path"])
+                if os.path.lexists(target):
+                    data = read(target)
+                    files.append(dict(item, size=len(data), sha256=sha256_bytes(data)))
+            manifest["files"] = files
+            with open(os.path.join(forged, "manifest.json"), "wb") as f:
+                f.write(contracts.write_bytes(manifest, "comparison-export"))
+            return forged
+        # Nested native evidence the telemetry page links, missing from a self-consistent copy.
+        missing = forge(lambda root: os.unlink(os.path.join(root, raw)))
+        with self.assertRaisesRegex(ContractError, "which the bundle does not hold"):
+            comparison.verify_export(missing)
+
+        def tamper(root):
+            with open(os.path.join(root, raw), "ab") as f:
+                f.write(b" ")
+        # Nested native evidence changed and rehashed: the sealed result refuses it.
+        with self.assertRaisesRegex(ContractError, "not evidence its sealed result names"):
+            comparison.verify_export(forge(tamper))
+        # A core partition's run bundle removed whole: its sealed run is not bundled.
+        first = "evidence/requests/%s/run" % doc["partitions"][0]["request_id"]
+        with self.assertRaisesRegex(ContractError, "sealed run is not bundled"):
+            comparison.verify_export(forge(lambda root: shutil.rmtree(os.path.join(root,
+                                                                                   first))))
 
     def test_failed_partition_and_lost_controller_leave_the_family_incomplete(self):
         """A claimed partition whose controller was lost becomes uncertain and is never

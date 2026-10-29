@@ -394,6 +394,33 @@ def register(c):
                 "a missing partition never passes")
         return doc
 
+    # The execution authority of a later comparison partition (ADR-0265): its own bounded run
+    # window, the plan's frozen total minutes from its own execution start, on the first
+    # partition's unchanged build, whose run (`build_run`) stays its recorded provenance.
+    partition_window = Obj(Field("index", Int(1, 15)), Field("request_id", ID),
+        Field("shards", Arr(shard, 1, 16, unique=True)), Field("run", c.RUN_EXECUTION))
+    partition_execution = Obj(Field("schema", Const("af.perf-partition-execution/1")),
+        Field("comparison_id", ID), Field("plan_digest", DIGEST), Field("builds_sha256", DIGEST),
+        Field("build_from", ID), Field("build_run", c.RUN_EXECUTION),
+        Field("partitions", Arr(partition_window, 1, 15)))
+
+    def validate_partition_execution(doc, where="partition execution"):
+        partition_execution.validate(doc, where)
+        c.check_run_execution(doc["build_run"], where + ".build_run")
+        indices = [item["index"] for item in doc["partitions"]]
+        require(indices == sorted(set(indices)), where + ".partitions: each later partition "
+                "once, in order")
+        covered = [index for item in doc["partitions"] for index in item["shards"]]
+        require(len(covered) == len(set(covered)), where + ".partitions: no shard is "
+                "executed by two partitions")
+        for at, item in enumerate(doc["partitions"]):
+            c.check_run_execution(item["run"], "%s.partitions[%d].run" % (where, at))
+            require(item["run"]["total_minutes"] == doc["build_run"]["total_minutes"]
+                    and item["run"]["started_unix_ms"] >= doc["build_run"]["started_unix_ms"],
+                    "%s.partitions[%d].run: the plan's frozen total minutes, never widened, "
+                    "from an execution start after the build's" % (where, at))
+        return doc
+
     member_states = states_all
     verification = Str(enum=("verified", "refused", "not_checked", "not_terminal"))
     report_member = Obj(Field("request_id", ID), Field("lane", lane),
@@ -484,6 +511,7 @@ def register(c):
         "host-observer": (observer, validate_observer),
         "comparison": (declaration, validate_declaration),
         "comparison-aggregate": (aggregate, validate_aggregate),
+        "partition-execution": (partition_execution, validate_partition_execution),
         "comparison-report": (report_doc, validate_report),
         "comparison-export": (export, None),
         "comparison-preflight": (comparison_preflight, validate_comparison_preflight),

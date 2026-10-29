@@ -2710,6 +2710,18 @@
       "valid": false,
       "error": "a refusal carries its reason",
       "shape": false
+    },
+    {
+      "path": "partition-execution/valid-later-window.json",
+      "contract": "partition-execution",
+      "valid": true
+    },
+    {
+      "path": "partition-execution/invalid-widened-window.json",
+      "contract": "partition-execution",
+      "valid": false,
+      "error": "never widened",
+      "shape": false
     }
   ]
 }

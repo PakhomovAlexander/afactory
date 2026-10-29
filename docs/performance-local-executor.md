@@ -182,6 +182,22 @@ profile's diagnostic tools (`tools`, with the host observer's actual capability 
 `host_observer`, checked under the machine exclusion). A ready preflight is not a reservation:
 submit next.
 
+Preflight, submission and the claim admit storage with one calculation: the bytes the root
+holds now plus the original's native reserve (core and profile: worktree, sources, scratch,
+three build artifacts and four copies of every shard bundle; telemetry: 24 GiB of builds and
+the profile's `work_bytes`; each plus four `archive_bytes` and one `history_bytes`) must fit
+`max_bytes`. A refusal prints the bytes held, the reserve, their sum, `max_bytes` and what is
+available, so a ready preflight is never refused at the claim for a different figure. A
+telemetry or profile original is admitted in time the same way, before any claim or build:
+the executor's 30-second reserve, 600 seconds of source retention, each telemetry build's
+whole 4,800-second cap (or the parent plan's `build_minutes`), 240 seconds of scratch
+preparation and cleanup, and the telemetry profile's `timeout_minutes` (or the diagnostic
+`total_minutes`) must fit `run_seconds`; the refusal names every step. The `manual` telemetry
+profile (240 minutes) needs 24,870 seconds, so `run_seconds = 3600` is refused while 25,200
+fits within the 8-hour ceiling. Execution checks the same bounds again after its sources:
+too little time left ends the original `failed` with measurement `not_executed` before either
+build, nothing measured and no fence kept; an unexpected or unconfirmed cleanup still fences.
+
 Submit telemetry with `--work telemetry` and a new key, then `cycle`. Each side is compiled
 through `telemetrybuild`, each execution is contained, the exact configured overhead,
 invocation-cost and read-latency settings are used, and the actual installed matching verifier
@@ -221,7 +237,16 @@ waits for perf's acknowledgement, checks the frozen identity again (a recycled P
 and only then opens the gate. A command that exits in milliseconds is recorded from its first
 instruction, and no Docker client or waiting-shell time is attributed to AF. perf leaves when
 its target does; its end is confirmed before the container's removal is, and either one
-unconfirmed keeps the machine fence. Each recording keeps an `af.perf-host-observer/1` record
+unconfirmed keeps the machine fence. Each perf is admitted for its own bounded lifetime: the
+observed command's own bound (a CLI case's `sample_timeout_ms`, a probe's tool timeout) plus
+10 seconds for the acknowledgement and 30 for its settlement, never more than the
+supervisor's 120-second per-run cap and never past the diagnostic deadline; it is never lent
+the whole remaining diagnostic window, which the supervisor refuses. When the attachment fails
+after the contained command started (perf refused, the target missing or changed), the command
+is cancelled through its supervisor: a cancellation the supervisor confirms releases the
+command's scratch and the capture records the observer's own reason, and one it does not
+confirm is `cleanup_uncertain` with that reason first, the scratch kept and the fence held.
+Each recording keeps an `af.perf-host-observer/1` record
 (`observer-*.json`) beside its capture. perf is never bound into a candidate container: the
 host observer runs `perf script`, `perf buildid-list` and Inferno on the host too, reading the
 admitted AF binary at the same path the container saw. The capability is checked by doing it,
@@ -386,7 +411,16 @@ The partition makes the whole family feasible without relaxing anything: each co
 runs a sequence of the plan's shards, each in its unchanged sampling window with its own health
 sentinels, under its own unchanged run deadline. The first partition builds (the plan's
 `build_minutes`); every later one runs on that partition's verified, immutable build after a
-600-second reuse reserve, so every shard bundle binds one build. The preflight's `schedule`
+600-second reuse reserve, so every shard bundle binds one build. A later partition does not
+inherit the first one's run deadline: its run bundle seals its own execution authority
+(`partitions.json`, `af.perf-partition-execution/1`, [ADR-0265](adr/0265-bind-comparison-partition-execution-to-reused-build-artifacts.md)),
+the plan's frozen `run_total_minutes` from its own execution start, bound to the reused
+build's exact `builds.json` and its recorded run, which stays unchanged provenance. The runner
+reads its shard's window from it and refuses, before anything starts, an authority for another
+plan or build, a widened window, one starting before the build ended, or a shard it does not
+declare; the original's `run_seconds` still tightens every shard. The aggregate carries every
+later partition's authority, and its evaluation checks each shard against its own partition's
+window and that no partition's shards overlap a later one's. The preflight's `schedule`
 names the shards per original and each partition's worst case; for release, 2 shards per
 original (20 + 2 × 45 + 0.5 of 120 minutes, then 10 + 2 × 45 + 0.5). A plan whose single shard
 window cannot fit one original is refused, never split further.
@@ -418,12 +452,22 @@ prints the same document from durable state without verifying, so it is never `c
 
 `comparison-export` writes a new self-contained bundle: the report, with its links rewritten
 into the bundle, and below `evidence/` every native record it names at its journal path (the
-declaration, plan, aggregate and its report, each original's request, state, result and
-configuration, the telemetry report and every profile's evidence), with `manifest.json`
-(`af.perf-comparison-export/1`) hashing every file, bounded by `archive_bytes`. Copy the
-directory anywhere; `comparison-verify --bundle` needs no journal or configuration and refuses
-a changed, missing or extra file, a link outside the bundle or a result that is not the one
-the report names.
+declaration, plan, the whole aggregate with its run and report, each original's request,
+state, result and configuration, each core original's plan, run bundle and report with its
+evidence, the telemetry original's whole run with its manifest, raw documents and logs, and
+every profile's plan, evidence and frozen parent verdict), with `manifest.json`
+(`af.perf-comparison-export/1`) hashing every file, bounded by `archive_bytes`. An export
+whose pages, nested native reports included, link anything it does not hold is refused, never
+published. Copy the directory anywhere; `comparison-verify --bundle` needs no journal or
+configuration and refuses a changed, missing or extra file, a link of any bundled page that
+leaves the bundle or names nothing in it, or a result that is not the one the report names.
+It then verifies the native evidence itself: every bundled file of an original must be one
+its sealed terminal result names with that hash, each core run (and the aggregate's) is
+evaluated again offline and must reproduce its bundled verdict, the telemetry result is
+verified again under the installed measurement authority, and each profile's children are
+admitted again. That checks what the originals sealed; it is not a new performance
+acceptance. Run it from the trusted control installation that produced the bundle, or a
+checkout of the same measurement authority: the telemetry result is refused under any other.
 
 Repeat the comparison with new keys to see run-to-run spread. A same-source A/A comparison
 uses `--base "$HEAD" --head "$HEAD"` with a new key; an injected slowdown and the A/A
@@ -439,6 +483,15 @@ declaring `af/TaskCheckReceipt@1`, re-pinned to the digests the contract declare
 (`af/telemetry-overhead@2`, `af/telemetry-invocation-cost@2`) record the contract and every
 package pin. Their drain latency runs from the harness's last write to the command's observed
 exit on `CLOCK_MONOTONIC` (`harness_last_write_to_command_exit`), never from file timestamps.
+
+The CLI oracle declares each release's own contract from its version (`fixtures/performance/cli.toml`):
+`af review report --format json` is `af/review-report@4` through the 0.13 releases
+(`af_cli_v1`, `af_cli_v2`) and `af/review-report@5` from 0.14.0-rc.1 (`af_cli_v3`), and
+neither accepts the other. Every rule still checks all 100 Findings (identity, status,
+severity, location, distinct keys and the summary tally) over the whole document. A CLI
+sample keeps stdout within its unchanged `sample_log_bytes` total less a 16 KiB stderr reserve
+(245,760 of 262,144 bytes), which holds 0.14.0-rc.1's 234,442-byte report whole; an output
+past it is truncated and refused as truncated, never parsed as a prefix.
 
 The 10,000-event seeds (the native `state_projection` seed and the `task show` and Campaign CLI
 seeds) are written by each side's own probe through the same protected public writers, but in

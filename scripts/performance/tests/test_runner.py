@@ -45,6 +45,7 @@ import json, os, sys
 SUMMARY = {"open": 0, "pending_verification": 0, "fixed": 0, "rejected": 0, "wontfix": 0,
            "contested": 0}
 VERSION = %(version)r
+REPORT_SCHEMA = %(report_schema)r
 SIDE = %(side)r
 CONTROL = %(control)r
 args = sys.argv[1:]
@@ -110,7 +111,7 @@ elif args[:2] == ["review", "report"]:
     findings = [{"key": "sha256:%%064x" %% index, "title": "Fixture finding %%d" %% index,
                  "status": "open", "severity": "minor", "file": "src/fixture.txt",
                  "line": index} for index in range(1, 101)]
-    sys.stdout.write(json.dumps({"schema": "af/review-report@5", "campaign": "perf-campaign",
+    sys.stdout.write(json.dumps({"schema": REPORT_SCHEMA, "campaign": "perf-campaign",
                                  "runs_recorded": 1, "ledger_round": 1,
                                  "findings_summary": dict(SUMMARY, open=100),
                                  "findings": findings}) + "\n")
@@ -287,6 +288,13 @@ def run_started_now(plan, started_unix_ms=None):
             "deadline_unix_ms": run["deadline_unix_ms"], "ended_unix_ms": started}
 
 
+def report_schema(version):
+    """The `af review report --format json` schema the AF release `version` emits: `@4`
+    through the 0.13 releases, `@5` from 0.14.0-rc.1 (its CHANGELOG)."""
+    return ("af/review-report@5" if clicases._version_key(version)
+            >= clicases._version_key("0.14.0-rc.1") else "af/review-report@4")
+
+
 def make_build(root, plan, af_versions, slow_after=None, started_unix_ms=None):
     """A verified build directory of `plan` holding stand-in binaries under a manifest.
 
@@ -304,12 +312,16 @@ def make_build(root, plan, af_versions, slow_after=None, started_unix_ms=None):
             ("supervisor", "perf-supervisor", "import os, sys\nos.execv(%r, [%r])\n"
              % (fake, fake)),
             ("baseline", "af", FAKE_AF % {"version": af_versions["baseline"],
+                                          "report_schema": report_schema(
+                                              af_versions["baseline"]),
                                           "side": "baseline", "control": control}),
             ("baseline", "perf-probe", FAKE_PROBE % {
                 "entries": entries, "slow_after": slow_after, "side": "baseline",
                 "control": control,
                 "counter": os.path.join(control, "baseline-probe-calls")}),
             ("candidate", "af", FAKE_AF % {"version": af_versions["candidate"],
+                                           "report_schema": report_schema(
+                                               af_versions["candidate"]),
                                            "side": "candidate", "control": control}),
             ("candidate", "perf-probe", FAKE_PROBE % {
                 "entries": entries, "slow_after": None, "side": "candidate",
@@ -1201,6 +1213,137 @@ class RunDeadline(ShardHarness):
             doc["started_unix_ms"] + doc["execution"]["sampling_deadline_ms"]))
 
 
+class PartitionExecution(ShardHarness):
+    """A later comparison partition runs on the first partition's unchanged build in its own
+    bounded run window, sealed in its run bundle as `af.perf-partition-execution/1`
+    (ADR-0265): the build's recorded run stays its provenance, the window is the plan's frozen
+    total from the partition's own start, and a caller's deadline still tightens it."""
+
+    build_started = RunDeadline.build_started
+
+    def authority(self, plan, build, started, shards=(0,), change=None):
+        from perflab import executor
+        builds_bytes = read(os.path.join(build, builds.BUILDS_FILE))
+        data = executor.partition_authority(
+            plan, {"comparison_id": "cmp_" + "a" * 48, "index": 1, "shards": list(shards),
+                   "build_from": "exp_" + "b" * 48}, "exp_" + "c" * 48, builds_bytes,
+            contracts.read_json(builds_bytes, "builds"), started)
+        if change is not None:
+            doc = json.loads(data)
+            change(doc)
+            data = json.dumps(doc).encode()
+        return builds_bytes, data
+
+    def expired(self, run_id):
+        # The first partition's build started a whole run total ago: its run has expired.
+        return self.build_started(run_id, int(time.time() * 1000)
+                                  - plan_minutes() * 60000 - 1000)
+
+    def seal(self, plan, builds_bytes, data, run_dir):
+        runner.prepare_run_dir(run_dir, contracts.write_bytes(plan, "run"), builds_bytes, data)
+        return run_dir
+
+    def test_a_later_partition_runs_in_its_own_window_after_the_build_s_run_expired(self):
+        plan, plan_path, build = self.expired("later")
+        now = int(time.time() * 1000)
+        builds_bytes, data = self.authority(plan, build, now)
+        run_dir = self.seal(plan, builds_bytes, data, self.path("run"))
+        caller = now + 10 ** 9
+        doc = runner.run_shard(self.options(plan_path, build, deadline_unix_ms=caller))
+        self.assertEqual(doc["status"], "complete", doc["failure"])
+        window = json.loads(data)["partitions"][0]["run"]
+        execution = doc["execution"]
+        self.assertEqual(execution["run"], window)
+        self.assertEqual(execution["deadline_unix_ms"], min(
+            window["deadline_unix_ms"], caller,
+            doc["started_unix_ms"] + execution["sampling_deadline_ms"]))
+        # The build and its recorded run are unchanged provenance, never a refreshed receipt.
+        self.assertEqual(read(os.path.join(run_dir, "builds.json")), builds_bytes)
+        self.assertLess(json.loads(builds_bytes)["execution"]["run"]["deadline_unix_ms"], now)
+        codes = [r["code"] for r in compare.compare(run_dir)["aggregate"]["reasons"]]
+        for code in ("shard_identity", "run_deadline_exceeded", "partition_authority_invalid",
+                     "partition_overlap"):
+            self.assertNotIn(code, codes)
+        # The same shard in a bundle without that authority names another run than its build.
+        bare = self.path("bare")
+        runner.prepare_run_dir(bare, contracts.write_bytes(plan, "run"), builds_bytes)
+        shutil.copytree(os.path.join(run_dir, "shards", "0"), os.path.join(bare, "shards", "0"))
+        codes = [r["code"] for r in compare.compare(bare)["aggregate"]["reasons"]]
+        self.assertIn("shard_identity", codes)
+        # A caller's deadline that passed still refuses the later partition.
+        plan, plan_path, build = self.expired("later_caller")
+        builds_bytes, data = self.authority(plan, build, int(time.time() * 1000))
+        self.seal(plan, builds_bytes, data, self.path("run-caller"))
+        with self.assertRaises(runner.Unavailable) as caught:
+            runner.run_shard(self.options(plan_path, build, run_dir=self.path("run-caller"),
+                                          deadline_unix_ms=int(time.time() * 1000) - 1))
+        self.assertEqual(caught.exception.reason, "run_deadline")
+
+    def test_a_forged_widened_or_wrong_partition_authority_starts_nothing(self):
+        def widened(doc):
+            doc["partitions"][0]["run"]["deadline_unix_ms"] += 60000
+
+        def retotaled(doc):
+            run = doc["partitions"][0]["run"]
+            run["total_minutes"] += 60
+            run["deadline_unix_ms"] = run["started_unix_ms"] + run["total_minutes"] * 60000
+
+        def forged(doc):
+            doc["builds_sha256"] = "sha256:" + "0" * 64
+
+        def rebuilt(doc):
+            doc["build_run"]["started_unix_ms"] += 1000
+            doc["build_run"]["deadline_unix_ms"] += 1000
+
+        def early(doc):
+            run = doc["partitions"][0]["run"]
+            run["started_unix_ms"] = doc["build_run"]["started_unix_ms"]
+            run["deadline_unix_ms"] = run["started_unix_ms"] + run["total_minutes"] * 60000
+
+        cases = (("widened", widened, "frozen total minutes"),
+                 ("retotaled", retotaled, "never widened"),
+                 ("forged", forged, "another plan, build"),
+                 ("rebuilt", rebuilt, "another plan, build"),
+                 ("early", early, "before the build it reuses ended"))
+        for name, change, text in cases:
+            plan, plan_path, build = self.expired("forged_" + name)
+            if name == "early":
+                # A build that ended 5 s after its run started; the window starts before that.
+                path = os.path.join(build, builds.BUILDS_FILE)
+                doc = contracts.read_json(read(path), "builds")
+                doc["execution"]["ended_unix_ms"] += 5000
+                with open(path, "wb") as stream:
+                    stream.write(contracts.write_bytes(doc, "builds"))
+            builds_bytes, data = self.authority(plan, build, int(time.time() * 1000),
+                                                change=change)
+            self.seal(plan, builds_bytes, data, self.path("run-" + name))
+            with self.assertRaises(runner.Unavailable, msg=name) as caught:
+                runner.run_shard(self.options(plan_path, build, run_dir=self.path("run-" + name)))
+            self.assertEqual(caught.exception.reason, "partition_authority", name)
+            self.assertIn(text, str(caught.exception), name)
+            self.assertEqual(self.calls(build), 0, name)
+        # A shard its partition does not declare.
+        plan, plan_path, build = self.expired("wrong_partition")
+        builds_bytes, data = self.authority(plan, build, int(time.time() * 1000), shards=(1,))
+        self.seal(plan, builds_bytes, data, self.path("run-wrong"))
+        with self.assertRaises(runner.Unavailable) as caught:
+            runner.run_shard(self.options(plan_path, build, run_dir=self.path("run-wrong")))
+        self.assertEqual(caught.exception.reason, "partition_authority")
+        # An authority changed after its bundle was sealed.
+        plan, plan_path, build = self.expired("tampered")
+        builds_bytes, data = self.authority(plan, build, int(time.time() * 1000))
+        run_dir = self.seal(plan, builds_bytes, data, self.path("run-tampered"))
+        doc = json.loads(data)
+        doc["partitions"][0]["run"]["started_unix_ms"] -= 1
+        doc["partitions"][0]["run"]["deadline_unix_ms"] -= 1
+        with open(os.path.join(run_dir, runner.PARTITIONS_FILE), "w") as stream:
+            json.dump(doc, stream)
+        with self.assertRaises(runner.Unavailable) as caught:
+            runner.run_shard(self.options(plan_path, build, run_dir=run_dir))
+        self.assertIn("partitions.json", str(caught.exception))
+        self.assertEqual(self.calls(build), 0)
+
+
 class HostCancellation(SeedHarness):
     """A supervisor the host must cancel (ADR-0171): the run's deadline either refuses a
     launch it cannot cancel in time or cancels the sample through its supervisor; a supervisor
@@ -2003,8 +2146,8 @@ class CliOracle(TempDir):
         finding.update(changes)
         return finding
 
-    def report(self, findings, **summary):
-        document = {"schema": "af/review-report@5", "campaign": "perf-campaign",
+    def report(self, findings, schema="af/review-report@4", **summary):
+        document = {"schema": schema, "campaign": "perf-campaign",
                     "runs_recorded": 1, "ledger_round": 1, "final_verdict": "pass",
                     "rounds": [], "task_accounting": [], "demands": [],
                     "findings_summary": dict(self.SUMMARY, **summary), "findings": findings}
@@ -2049,6 +2192,46 @@ class CliOracle(TempDir):
                                                                              **summary))
                 self.assertFalse(passed)
                 self.assertIn(why, detail)
+
+    def test_each_release_declares_its_own_report_schema_and_whole_output(self):
+        # The release's own contract, from its version: 0.13 releases emit @4, 0.14.0-rc.1 on
+        # @5. Neither accepts the other's schema; no adapter accepts whichever one is emitted.
+        doc = clicases.load(os.path.join(ROOT, "fixtures/performance/cli.toml"))
+        findings = [self.finding(index) for index in range(1, 101)]
+        log = suite_module.load(SUITE).doc["limits"]["sample_log_bytes"]
+        for version, adapter_id, schema, other in (
+                ("0.13.0", "af_cli_v2", "af/review-report@4", "af/review-report@5"),
+                ("0.14.0-rc.1", "af_cli_v3", "af/review-report@5", "af/review-report@4"),
+                ("0.14.0-rc.3", "af_cli_v3", "af/review-report@5", "af/review-report@4")):
+            with self.subTest(version=version):
+                chosen, adapter = clicases.choose_adapter(doc, version)
+                self.assertEqual(chosen, adapter_id)
+                self.commands["review_report"] = clicases.command(
+                    adapter, "cli_state_read", {"command": "review_report",
+                                                "state": "cli_state_10000"})
+                # The release's whole 100-Finding report, padded to the 234,442 bytes
+                # 0.14.0-rc.1 writes, is retained whole within the sample's unchanged total.
+                padded = [dict(item, body="x" * 1900) for item in findings]
+                whole = self.report(padded, schema=schema, open=100)
+                whole = whole[:-1] + b" " * (234442 - len(whole)) + b"}"
+                self.assertEqual(len(whole), 234442)
+                cap = clicases.stdout_bytes(log)
+                self.assertGreaterEqual(cap, len(whole))
+                self.assertGreaterEqual(log - cap, clicases.STDERR_RESERVE_BYTES)
+                self.assertTrue(self.judge("review_report", whole)[0])
+                refused = (
+                    (self.report(findings, schema=other, open=100), 0, "schema"),
+                    (self.report(findings, schema=schema, open=100)[:-7], 0, "JSON"),
+                    (whole[:cap], len(whole) + 4096 - cap, "truncated"),
+                    (self.report(findings[:99], schema=schema, open=100), 0, "100"),
+                    (self.report(findings[:99] + [findings[0]], schema=schema, open=100), 0,
+                     "item 1 appears 2 times"),
+                    (b"", 0, "empty output never passes"))
+                for stdout, truncated, why in refused:
+                    passed, detail, _ = self.judge("review_report", stdout,
+                                                   truncated=truncated)
+                    self.assertFalse(passed, why)
+                    self.assertIn(why, detail)
 
     def ledger(self, rows):
         return "".join("%s\tminor\t%s\tin\tminor\tsrc/fixture.txt:%d\tFixture finding %d\n"

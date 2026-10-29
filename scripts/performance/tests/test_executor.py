@@ -642,6 +642,60 @@ class Journal(ExecutorFixture):
             self.submit(j, key="serial_2")
             self.assertEqual(len(j.names()), 1)
 
+    def test_preflight_submission_and_execution_share_time_and_storage_admission(self):
+        """One calculation of the native reserve and of a telemetry original's sequential
+        bounds (both builds' caps, scratch and its profile's timeout) for preflight, submission
+        and execution: what preflight calls ready the claim admits, and an infeasible budget is
+        refused before any original, claim or build, with its required and available values."""
+        self.c["run_seconds"] = 3600
+        with executor.Journal(self.c) as j:
+            refused = j.preflight("telemetry", self.base, self.head, "short")
+            contracts.write_bytes(refused, "executor-preflight")
+            self.assertEqual(refused["status"], "refused")
+            needed, parts = executor.time_bounds(self.c, "telemetry")
+            self.assertEqual(dict(parts)["telemetry profile manual"], 240 * 60)
+            self.assertEqual(dict(parts)["baseline build"], 4800)
+            self.assertEqual(dict(parts)["candidate build"], 4800)
+            self.assertIn("telemetry needs %d s" % needed, refused["detail"])
+            self.assertIn("run_seconds allows 3600 s", refused["detail"])
+            with self.assertRaisesRegex(ContractError, "refused before any claim or build"):
+                self.submit(j, "telemetry", "short")
+            self.assertEqual(j.names(), [], "a refusal reserves nothing")
+        # The operator's 25200 s covers 2 x 4800 s builds, the 14400 s profile and the rest.
+        self.c["run_seconds"] = 25200
+        self.assertLessEqual(needed, 25200)
+        self.c.update(archive_bytes=6 * 1024 ** 3, history_bytes=4 * 1024 ** 3)
+        reserve = executor.native_reserve(self.c, "telemetry")
+        # The 64 GiB bound the execution's reserve did not fit: refused at preflight now, with
+        # the same figures the claim uses; a bound that holds it is ready.
+        self.c["max_bytes"] = 64 * 1024 ** 3
+        self.assertGreater(reserve, self.c["max_bytes"])
+        with executor.Journal(self.c) as j:
+            refused = j.preflight("telemetry", self.base, self.head, "storage")
+            self.assertEqual(refused["status"], "refused")
+            self.assertIn("%d-byte native reserve" % reserve, refused["detail"])
+            self.assertIn("of max_bytes %d" % self.c["max_bytes"], refused["detail"])
+            self.assertEqual(j.names(), [])
+        self.c["max_bytes"] = 100 * 1024 ** 3
+        with executor.Journal(self.c) as j:
+            ready = j.preflight("telemetry", self.base, self.head, "storage")
+            self.assertEqual(ready["status"], "ready", ready["detail"])
+            request = self.submit(j, "telemetry", "storage")
+            # Execution with less time left than both builds and the profile need: a clean
+            # terminal refusal before either build, nothing measured and no fence kept.
+            with mock.patch.object(executor, "TELEMETRY_BUILD_SECONDS", 25200), \
+                    mock.patch.object(executor.telemetrybuild, "run",
+                                      side_effect=AssertionError("built before admission")):
+                self.assertEqual(j.cycle(lock_directory=self.locks), "failed")
+            state = j.state(request["request_id"])
+            self.assertIn("telemetry refused before any build, nothing measured", state["detail"])
+            self.assertIn("of run_seconds 25200", state["detail"])
+            result = contracts.read_json(read(os.path.join(j.path(request["request_id"]),
+                                                           "result.json")), "executor-result")
+            self.assertEqual(result["measurement_status"], "not_executed")
+            self.assertFalse(os.path.lexists(os.path.join(self.locks,
+                                                          "af-perf-machine.lock.fence")))
+
     def test_local_diagnostic_uses_native_child_planner_report_and_admission(self):
         control = self.repo.commit("diagnostic authority", {diagnostics.REGISTRY_PATH:
             read(os.path.join(ROOT, diagnostics.REGISTRY_PATH))})

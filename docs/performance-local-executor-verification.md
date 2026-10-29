@@ -722,3 +722,63 @@ focused checks ran on a macOS development host, with injected computation:
 
 Not established here: Docker, a real perf, Claw, the v0.13.0 against v0.14.0-rc.1 comparison or
 its export. The outer operator runs that from the installed candidate control.
+
+## Claw validation repairs: admission, CLI contracts, partitions, export, observer (2026-10-30)
+
+This change repairs the concrete defects the operator's Claw runs of the previous candidate
+found. Its focused checks ran on a macOS development host with injected computation; nothing
+here ran Docker, a real perf, Claw or GitHub Actions, and no figure below is a measurement.
+
+- **One storage and time admission** (`tests/test_executor.py`,
+  `test_preflight_submission_and_execution_share_time_and_storage_admission`). Preflight,
+  submission and the claim use `executor.native_reserve` and `executor.time_bounds`: with
+  `run_seconds = 3600` the `manual` telemetry profile is refused at preflight naming 24,870
+  seconds and each step, nothing reserved; a 64 GiB `max_bytes` below the native reserve is
+  refused with the bytes held, the reserve and the bound, and 100 GiB is ready. An executing
+  telemetry original with too little time left ends `failed`, `not_executed`, before either
+  build, with no fence kept.
+- **Per-release CLI contracts and whole output** (`tests/test_runner.py`, `CliOracle`
+  `test_each_release_declares_its_own_report_schema_and_whole_output`). 0.13.0 selects
+  `af_cli_v2` (`af/review-report@4`), 0.14.0-rc.1 and later `af_cli_v3` (`@5`); each refuses the
+  other's schema, malformed JSON, a truncated output, a missing Finding, a duplicated Finding
+  and empty output. A 234,442-byte 100-Finding report is retained whole within the unchanged
+  262,144-byte total (245,760 bytes of stdout, a 16 KiB stderr reserve).
+- **Partition execution authority** (`tests/test_runner.py`, `PartitionExecution`). Through the
+  real runner deadline path: a later partition whose reused build's run expired a run total
+  ago completes in its own sealed window, the caller's deadline still tightens it, its build
+  bytes stay unchanged, and its shard in a bundle without the authority is a `shard_identity`
+  failure. A widened or re-totalled window, a forged build digest, a changed build run, a
+  window before the build ended, an undeclared shard and an authority changed after sealing
+  each start nothing (`partition_authority`). `tests/test_comparison.py` shows the aggregate
+  carrying the second partition's authority.
+- **Portable export closure** (`tests/test_comparison.py`). The telemetry original is now a
+  real `telemetrylab.run` result: its page links `raw/` and `logs/`, and the export carries
+  them with its manifest; each core partition carries its run bundle and its report's
+  evidence; the aggregate carries its run. The copied bundle verifies (also through `cli.py
+  executor comparison-verify`), re-evaluating every core run to its bundled verdict and the
+  telemetry result under the installed authority. A self-consistently rehashed copy missing a
+  linked raw document, one with a changed raw document, and one without a partition's run
+  bundle are each refused.
+- **Host observer lifetime and callback failures** (`tests/test_hostobserver.py`). Through the
+  real `toolrun.start` request admission with 1,404 seconds of diagnostic window left, the
+  whole window is refused (`at most 120 s`) and the per-command lifetime (10 s + 40 s of
+  allowances) is admitted and records. `Profile.tool_run` with a failing observer callback: a
+  confirmed cancellation carries its settled Result and keeps nothing; an unconfirmed one and an
+  opaque supervisor failure are `cleanup_uncertain` with the observer's reason first and the
+  scratch kept; a cleanup failure after a failed repetition keeps the primary cause.
+- **Telemetry documentation.** `docs/telemetry.md` names the
+  `harness_last_write_to_command_exit` boundary for the invocation-cost drain, marks the
+  CAS-write drain figures historical and separates a negative physical duration (not judged)
+  from a negative signed difference (judged); the rendered telemetry page says the same.
+
+The whole laboratory suite (`python3 -I scripts/test-performance.py`, 1,162 tests) ran once on
+this host at load: the three executor tests (four cases) that need a Linux host for the
+contained mode failed with `host_mismatch` as before; the contract parity test failed until the
+new contract's golden examples were added; and two tests outside the changed paths
+(`test_telemetry_workflow` admission, whose subprocess read the rendered page this change was
+editing while the suite ran, and the `test_whole_source_repairs` 2.5-second deadline) failed
+under load and passed alone. `make perf-kernel-measure`, which this protected-harness change
+requires, is recorded in the Task's report with its result.
+
+Not established here: Docker, a real perf, Claw, the v0.13.0 against v0.14.0-rc.1 comparison or
+its export. The outer operator runs that from the installed candidate control.

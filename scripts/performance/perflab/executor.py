@@ -56,6 +56,69 @@ def serial_bounds(plan, run_seconds):
 REUSE_SECONDS = 600
 
 
+# Sequential bounds of the steps before and after an original's measurement, shared by
+# preflight, submission and execution (`time_bounds`): retaining the source authority (and a
+# telemetry side's worktree), each contained telemetry build's whole lifetime with its own
+# cleanup (`telemetrybuild.run`), and preparing and cleaning one scratch image.
+SOURCE_SECONDS = 600
+TELEMETRY_BUILD_SECONDS = 4800
+
+
+def time_bounds(c, work, plan=None, installed=ROOT):
+    """(needed seconds, [(step, seconds)]) of one telemetry or profile original's sequential
+    worst case: the executor's reserve, its sources, its builds, its scratch and its declared
+    measurement (the telemetry profile's `timeout_minutes`, the diagnostic `total_minutes`);
+    None for core work, whose bound is its serial schedule (`serial_bounds`)."""
+    if work == "core":
+        return None
+    parts = [("executor reserve", RESERVE), ("source retention", SOURCE_SECONDS)]
+    if work == "telemetry":
+        t = c["telemetry"]
+        cfg = telemetrylab.configuration(telemetrylab.load_registry(installed)[0], t["profile"],
+                                         t["experiments"], t["rounds"], t["pairs"], t["scale"],
+                                         t["corpus_runs"])
+        parts += [("baseline build", TELEMETRY_BUILD_SECONDS),
+                  ("candidate build", TELEMETRY_BUILD_SECONDS),
+                  ("scratch preparation and cleanup", 2 * hostprep.STEP_SECONDS),
+                  ("telemetry profile %s" % t["profile"], cfg["timeout_minutes"] * 60)]
+    else:
+        parts += [("parent build", plan["limits"]["build_minutes"] * 60),
+                  ("scratch preparation and cleanup", 2 * hostprep.STEP_SECONDS),
+                  ("diagnostic profile", c["diagnostic"]["total_minutes"] * 60)]
+    return sum(seconds for _, seconds in parts), parts
+
+
+def require_time(c, work, plan=None, installed=ROOT):
+    """Refuse a telemetry or profile original whose sequential worst case does not fit its
+    `run_seconds`, naming every bound; nothing is relaxed to fit. Returns the admitted bound
+    as text, or "" for core work."""
+    bounds = time_bounds(c, work, plan, installed)
+    if bounds is None:
+        return ""
+    needed, parts = bounds
+    text = "%s needs %d s (%s); run_seconds allows %d s" % (
+        work, needed, ", ".join("%s %d s" % part for part in parts), c["run_seconds"])
+    require(needed <= c["run_seconds"], text + ": refused before any claim or build, and no "
+            "build cap, profile timeout or deadline is relaxed to fit")
+    return text
+
+
+def native_reserve(c, work, plan=None, installed=ROOT):
+    """The bytes one original's native work may write beyond what the root holds now: its
+    sources, scratch, builds and shard bundles (core and profile) or its builds and telemetry
+    work (telemetry), and the bounded archive and history copies it may materialize. One
+    calculation for preflight, submission and the claim; original storage is never evicted."""
+    if work in ("core", "profile"):
+        reserve = (plan["limits"]["worktree_bytes"] + 3 * 1024 ** 3
+                   + plan["profile"]["environment"]["scratch_limit_bytes"]
+                   + plan["limits"]["build_artifact_bytes"] * 3
+                   + plan["limits"]["shard_bundle_bytes"] * len(plan["shards"]) * 4)
+    else:
+        registry = telemetrylab.load_registry(installed)[0]
+        reserve = 24 * 1024 ** 3 + registry["profiles"][c["telemetry"]["profile"]]["work_bytes"]
+    return reserve + 4 * c["archive_bytes"] + c["history_bytes"]
+
+
 def available_seconds(plan, run_seconds):
     return min(plan["limits"]["run_total_minutes"] * 60, run_seconds)
 
@@ -341,9 +404,17 @@ class Journal:
                 fd, self.fd = self.fd, None
                 os.close(fd)
 
-    def capacity(self, reserve=0):
-        require(tree_usage(self.root) + reserve <= self.config["max_bytes"],
-                "executor root capacity exhausted; retain originals and stop submission")
+    def capacity(self, reserve=0, what=None, max_bytes=None):
+        """Admit `reserve` more bytes below the root within `max_bytes` (the configuration's);
+        a refusal names the bytes held, the reserve, the bound and what is available. Returns
+        the admitted figures as text."""
+        bound = self.config["max_bytes"] if max_bytes is None else max_bytes
+        used = tree_usage(self.root)
+        text = "storage: %d bytes held + %d-byte %s = %d bytes of max_bytes %d (%d available)" % (
+            used, reserve, what or "reserve", used + reserve, bound, max(0, bound - used))
+        require(used + reserve <= bound, "executor root capacity exhausted; retain originals "
+                "and stop submission: " + text)
+        return text
 
     def names(self):
         names = sorted(os.listdir(self.requests))
@@ -589,6 +660,14 @@ class Journal:
             t = c["telemetry"]
             telemetrylab.configuration(registry, t["profile"], t["experiments"], t["rounds"],
                                        t["pairs"], t["scale"], t["corpus_runs"])
+        if c["backend"] == "local":
+            # The same time and storage admission execution applies, before anything is
+            # reserved, claimed or built (`time_bounds`, `native_reserve`).
+            admitted = [require_time(c, work, plan, installed),
+                        self.capacity(native_reserve(c, work, plan, installed),
+                                      "native reserve", c["max_bytes"])]
+            if checked is not None:
+                checked["admission"] = "; ".join(text for text in admitted if text)
         request = {"schema": "af.perf-executor-request/2", "request_id": ident,
             "backend": c["backend"], "journal_id": c["journal_id"], "machine_id": c["machine_id"],
             "configuration_digest": canonical_digest(c), "sources": sources, "submission": submission,
@@ -656,19 +735,13 @@ class Journal:
             # Reserve the native bounds before claiming/launching; original storage is
             # never evicted to make progress. Scratch images themselves enforce writes.
             if request["backend"] == "local":
+                p = None
                 if request["work"] in ("core", "profile"):
                     p = contracts.read_json(read(os.path.join(self.path(ident), "plan.json")), "run")
-                    reserve = (p["limits"]["worktree_bytes"] + 3 * 1024 ** 3
-                        + p["profile"]["environment"]["scratch_limit_bytes"]
-                        + p["limits"]["build_artifact_bytes"] * 3
-                        + p["limits"]["shard_bundle_bytes"] * len(p["shards"]) * 4)
-                else:
-                    registry = telemetrylab.load_registry(installed)[0]
-                    reserve = 24 * 1024 ** 3 + registry["profiles"][frozen_config["telemetry"]["profile"]]["work_bytes"]
-                # Native history may materialize retained evidence/report copies. Reserve
-                # those bounded archives too, before any original is spent.
-                reserve += 4 * frozen_config["archive_bytes"] + frozen_config["history_bytes"]
-                self.capacity(reserve)
+                # The same reserve the submission admitted (`native_reserve`), under the frozen
+                # configuration's own bound, before any original is spent.
+                self.capacity(native_reserve(frozen_config, request["work"], p, installed),
+                              "native reserve", frozen_config["max_bytes"])
             if calibration_expired(request, self.path(ident)):
                 self.transition(request, "expired", "not executed: frozen calibration member day expired")
                 return "expired"
@@ -885,7 +958,13 @@ def execute_local(config, request, path, lease, installed=ROOT):
             hostprep.prepare(scratch_image, scratch, plan["profile"]["environment"]["scratch_limit_bytes"],
                              host=preparation_host)
         if work == "core":
-            runner.prepare_run_dir(run, contracts.write_bytes(plan, "run"), contracts.write_bytes(built, "builds"))
+            authority = None
+            if partition is not None and partition["build_from"] is not None:
+                authority = partition_authority(plan, partition, request["request_id"],
+                                                builds_bytes, built, int(time.time() * 1000))
+            runner.prepare_run_dir(run, contracts.write_bytes(plan, "run"),
+                                   builds_bytes if authority is not None
+                                   else contracts.write_bytes(built, "builds"), authority)
             for shard in plan["shards"]:
                 if partition is not None and shard["index"] not in partition["shards"]:
                     continue
@@ -960,6 +1039,21 @@ def execute_local(config, request, path, lease, installed=ROOT):
             problems = hostprep.cleanup(scratch_image, scratch, host=preparation_host)
             require(not problems, "; ".join(problems))
     else:
+        # Before either build: the sequential bounds left must still cover both builds, the
+        # scratch and the profile; a known refusal is a clean terminal outcome, nothing built
+        # and nothing measured.
+        _, parts = time_bounds(config, "telemetry", None, installed)
+        rest = [part for part in parts if part[0] not in ("executor reserve", "source retention")]
+        left = timing.left()
+        if left < sum(seconds for _, seconds in rest):
+            return {"status": "failed", "measurement_status": "not_executed",
+                    "evidence": file_manifest(path, EVIDENCE_PREFIXES, terminal),
+                    "actions": None, "detail": (
+                        "telemetry refused before any build, nothing measured: %s need %d s, "
+                        "%d s are left of run_seconds %d" % (
+                            ", ".join("%s %d s" % part for part in rest),
+                            sum(seconds for _, seconds in rest), int(left),
+                            config["run_seconds"]))[:4096]}
         binaries, records = {}, {}
         for side in contracts.SIDES:
             sha = request["sources"][side + "_sha"]
@@ -967,7 +1061,8 @@ def execute_local(config, request, path, lease, installed=ROOT):
             run_git(sources, ["worktree", "add", "--detach", "--quiet", source, sha], timing)
             output = os.path.join(path, side + "-build")
             telemetrybuild.run(source, output, config["build_image"], os.path.join(path, side + "-scratch"),
-                               sha, seconds=min(4800, int(timing.seconds("contained telemetry build"))))
+                               sha, seconds=min(TELEMETRY_BUILD_SECONDS,
+                                                int(timing.seconds("contained telemetry build"))))
             binaries[side] = os.path.join(output, "af")
             record = {"schema": contracts.TELEMETRY_BUILD_SCHEMA, "side": side, "source_sha": sha,
                 "binary_sha256": telemetrylab._binary(binaries[side], side)[1], "image": config["build_image"],
@@ -1004,6 +1099,24 @@ def execute_local(config, request, path, lease, installed=ROOT):
         evidence = file_manifest(path, EVIDENCE_PREFIXES, terminal)
     return {"status": "complete", "measurement_status": measurement, "evidence": evidence,
             "actions": None, "detail": "Advisory local measurement; original evidence retained. No required-check claim."}
+
+
+def partition_authority(plan, partition, request_id, builds_bytes, built, started_unix_ms):
+    """The `af.perf-partition-execution/1` bytes of a later partition original (ADR-0265): its
+    own run window, the plan's frozen total minutes from this execution's start, bound to the
+    reused build's exact bytes and its recorded run, which stays unchanged provenance. The
+    caller's deadline (this original's `run_seconds`) still tightens every shard."""
+    total = plan["limits"]["run_total_minutes"]
+    doc = {"schema": "af.perf-partition-execution/1",
+           "comparison_id": partition["comparison_id"], "plan_digest": plan["plan_digest"],
+           "builds_sha256": sha256_bytes(builds_bytes), "build_from": partition["build_from"],
+           "build_run": built["execution"]["run"],
+           "partitions": [{"index": partition["index"], "request_id": request_id,
+                           "shards": partition["shards"],
+                           "run": {"started_unix_ms": started_unix_ms,
+                                   "deadline_unix_ms": started_unix_ms + total * 60000,
+                                   "total_minutes": total}}]}
+    return contracts.write_bytes(doc, "partition-execution")
 
 
 def partition_build(config, request, installed=ROOT):

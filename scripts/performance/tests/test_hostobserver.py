@@ -221,6 +221,54 @@ class HostObserver(TempDir):
             ["/bin/true"], 1, hostobserver.time.monotonic() - 1, None)
         self.assertIsInstance(late, toolrun.Result)
 
+    def control_dir(self, tag):
+        path = self.path("control-%s" % tag)
+        os.mkdir(path)
+        return path
+
+    def test_a_long_diagnostic_window_admits_perf_for_the_commands_own_bounded_lifetime(self):
+        # The real supervisor request admission (`toolrun.start`) with 1404 s of the diagnostic
+        # window left: perf is admitted for the command's bound plus its allowances, never the
+        # whole window, which the 120-s per-run hard cap refuses.
+        from unittest import mock
+        admitted = []
+        clock = hostobserver.time.monotonic
+
+        def running(supervisor, argv, doc, deadline, clock, file_bytes, watch, binds):
+            admitted.append(doc["timeout_ms"])
+            return hostobserver.Bounded(argv, self.env, self.tmp, doc["timeout_ms"] / 1000.0,
+                                        64 * 1024, clock)
+        supervisor = toolrun.Supervisor(self.path("no-supervisor"))
+        for seconds, expected in ((None, None), (hostobserver.lifetime(10), 50000)):
+            observer = hostobserver.Observer(
+                hostobserver.supervised_start(supervisor, self.env, self.tmp), self.perf,
+                "task-clock:u", 99, "frame_pointer", self.path("rep-%s.data" % expected),
+                self.control_dir(expected), self.path("gate-%s" % os.urandom(4).hex()), clock() + 1404, True,
+                container=lambda: (CONTAINER, self.init), proc=self.proc, seconds=seconds)
+            observer.make_gate()
+            process = self.target(observer)
+            with mock.patch.object(toolrun, "Running", running):
+                if expected is None:
+                    # Before the per-command lifetime: the whole window is refused.
+                    with self.assertRaises(CaptureError) as caught:
+                        observer.attach(lambda: process.poll() is None)
+                    self.assertEqual(caught.exception.reason, "observer_refused")
+                    self.assertIn("at most 120 s", caught.exception.detail)
+                    self.assertIn("at most 120 s", observer.document("sha256:" + "a" * 64,
+                                                                     "whole_command")["detail"])
+                    process.kill()
+                    process.wait()
+                    observer.stop(False)
+                    continue
+                observer.attach(lambda: process.poll() is None)
+            self.assertEqual(process.wait(10), 0)
+            self.assertIsNone(observer.stop(True).failure())
+        self.assertEqual(len(admitted), 1)
+        self.assertLessEqual(admitted[0], expected)
+        self.assertGreater(admitted[0], 49000)
+        # The hard cap holds whatever the command's bound.
+        self.assertEqual(hostobserver.lifetime(120), 120.0)
+
     def test_attach_argv_records_the_frozen_pid_disabled_until_enabled(self):
         control = perfcapture.PerfControl(self.tmp)
         try:
@@ -276,3 +324,94 @@ class HostObservedProfile(TempDir):
         self.assertIn("/af", bound)
         self.assertNotIn(toolrun.SHELL, bound, "the image's own shell is never replaced")
         self.assertNotIn("/opt/perf", bound, "perf is never bound into the candidate container")
+
+
+class ObserverCallbackFailure(TempDir):
+    """`Profile.tool_run` when the observer callback fails after the contained run started: the
+    run is cancelled through its supervisor and its settled Result decides what is kept."""
+
+    def profile(self):
+        from perflab import diagnostics
+        profile = object.__new__(diagnostics.Profile)
+        profile.tools = {"perf": ({"executable_sha256": "sha256:" + "a" * 64}, "/opt/perf")}
+        profile.execution = {"mode": diagnostics.TRUSTED_LOCAL}
+        profile.supervisor, profile.host = "contained", None
+        profile.budget = type("B", (), {"deadline": None})()
+        profile.clock = hostobserver.time.monotonic
+        profile.retained, profile.work, profile.stage = [], self.tmp, self.tmp
+        profile.output = self.tmp
+        return profile
+
+    def failed(self, profile, result, wait_error=None, refusal=None):
+        from unittest import mock
+        from perflab import diagnostics
+        cancelled = []
+
+        class Running(object):
+            def done(self):
+                return False
+
+            def cancel(self):
+                cancelled.append(True)
+
+            def wait(self, timeout=None):
+                if wait_error is not None:
+                    raise wait_error
+                return result
+
+        def observe(running):
+            raise refusal or CaptureError("observer_refused", "host perf did not start: a "
+                                          "supervised run is bounded by at most 120 s")
+        with mock.patch.object(diagnostics.toolrun, "start", lambda *a, **k: Running()):
+            try:
+                profile.tool_run(["/af", "--help"], 1, 64, self.tmp, observe=observe)
+            except BaseException as error:
+                self.assertEqual(cancelled, [True], "the contained run is cancelled")
+                return error
+        self.fail("the observer failure is raised")
+
+    def test_a_refused_observer_with_confirmed_cancellation_keeps_its_cause_and_result(self):
+        profile = self.profile()
+        settled = toolrun.Result(["/af"], code=-15)
+        error = self.failed(profile, settled)
+        self.assertEqual(error.reason, "observer_refused")
+        self.assertIs(error.settled, settled, "the confirmed Result reaches the caller")
+        self.assertEqual(profile.retained, [], "a confirmed end keeps nothing for recovery")
+
+    def test_an_unconfirmed_cancellation_fences_and_keeps_the_primary_cause_first(self):
+        profile = self.profile()
+        error = self.failed(profile, toolrun.Result(["/af"], code=-9, uncertain=True))
+        self.assertEqual(error.reason, "cleanup_uncertain")
+        self.assertTrue(error.detail.startswith("observer_refused: host perf did not start"),
+                        error.detail)
+        self.assertIn("tool cleanup unconfirmed", error.detail)
+        self.assertEqual(profile.retained, [os.path.abspath(self.tmp)])
+
+    def test_an_opaque_failure_is_never_proof_of_cleanup(self):
+        profile = self.profile()
+        error = self.failed(profile, None, wait_error=RuntimeError("supervisor reply lost"))
+        self.assertEqual(error.reason, "cleanup_uncertain")
+        # The callback's cause stands first; the end the supervisor never confirmed fences.
+        self.assertTrue(error.detail.startswith("observer_refused: "), error.detail)
+        self.assertIn("tool cleanup unconfirmed", error.detail)
+        self.assertEqual(profile.retained, [os.path.abspath(self.tmp)])
+
+    def test_a_cleanup_after_a_failed_repetition_keeps_the_primary_cause(self):
+        from unittest import mock
+        profile = self.profile()
+        primary = CaptureError("observer_refused", "host perf did not start")
+        uncertain = CaptureError("cleanup_uncertain", "scratch kept for recovery")
+        with mock.patch.object(type(profile), "collect", side_effect=uncertain):
+            with self.assertRaises(CaptureError) as caught:
+                profile.settle_repetition(None, "captures/x", primary)
+        self.assertEqual(caught.exception.reason, "cleanup_uncertain")
+        self.assertEqual(caught.exception.detail, "observer_refused: host perf did not start; "
+                         "cleanup after it: scratch kept for recovery")
+        refused = CaptureError("capture_unadmitted", "late")
+        with mock.patch.object(type(profile), "collect", side_effect=refused):
+            # A secondary refusal that is not an unconfirmed cleanup leaves the primary standing.
+            profile.settle_repetition(None, "captures/x", primary)
+        with mock.patch.object(type(profile), "collect", side_effect=uncertain):
+            with self.assertRaises(CaptureError) as caught:
+                profile.settle_repetition(None, "captures/x", None)
+        self.assertIs(caught.exception, uncertain)

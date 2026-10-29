@@ -58,6 +58,9 @@ SAMPLES = "samples.jsonl"
 SHARD_FILE = "shard.json"
 LOGS = "logs"
 RUN_FILES = ("run.json", "builds.json")
+# A later comparison partition's execution authority (`af.perf-partition-execution/1`,
+# ADR-0265), the one optional member of a run bundle.
+PARTITIONS_FILE = "partitions.json"
 TRUSTED_LOCAL = "trusted_local"
 LINUX_CONTAINER = "linux_container"
 GRACE_MS = 5000
@@ -163,22 +166,27 @@ def _read(path, limit=limits.MAX_JSON_BYTES):
     return data
 
 
-def prepare_run_dir(run_dir, plan_bytes, builds_bytes):
-    """Create the run bundle (`run.json`, `builds.json`, `manifest.json`) or verify that an
-    existing one holds exactly these bytes; return the shard root."""
+def prepare_run_dir(run_dir, plan_bytes, builds_bytes, partitions_bytes=None):
+    """Create the run bundle (`run.json`, `builds.json`, a later partition's
+    `partitions.json`, `manifest.json`) or verify that an existing one holds exactly these
+    bytes; return the shard root. `partitions_bytes` None verifies whatever authority an
+    existing bundle holds; a new bundle without it has none."""
     if not os.path.lexists(run_dir):
         os.makedirs(run_dir)
-        for name, data in (("run.json", plan_bytes), ("builds.json", builds_bytes)):
+        members = [("run.json", plan_bytes), ("builds.json", builds_bytes)]
+        if partitions_bytes is not None:
+            members.append((PARTITIONS_FILE, partitions_bytes))
+        for name, data in members:
             with open(os.path.join(run_dir, name), "wb") as stream:
                 stream.write(data)
         bundle.write_manifest(run_dir, limits.MAX_JSON_BYTES * 2, skip=(SHARD_DIR,))
         os.mkdir(os.path.join(run_dir, SHARD_DIR))
     else:
-        _, hashes = bundle.verify(run_dir, limits.MAX_JSON_BYTES * 2,
-                                  allowed=lambda path: path in RUN_FILES, skip=(SHARD_DIR,),
-                                  label="run")
+        hashes = _run_hashes(run_dir)
         require(hashes.get("run.json") == sha256_bytes(plan_bytes)
-                and hashes.get("builds.json") == sha256_bytes(builds_bytes),
+                and hashes.get("builds.json") == sha256_bytes(builds_bytes)
+                and (partitions_bytes is None
+                     or hashes.get(PARTITIONS_FILE) == sha256_bytes(partitions_bytes)),
                 "%s holds another plan or build; a run directory belongs to one run" % run_dir)
         shards = os.path.join(run_dir, SHARD_DIR)
         if not os.path.lexists(shards):
@@ -186,6 +194,41 @@ def prepare_run_dir(run_dir, plan_bytes, builds_bytes):
         require(os.path.isdir(shards) and not os.path.islink(shards),
                 "%s/shards is not a directory" % run_dir)
     return os.path.join(run_dir, SHARD_DIR)
+
+
+def _run_hashes(run_dir):
+    _, hashes = bundle.verify(run_dir, limits.MAX_JSON_BYTES * 2,
+                              allowed=lambda path: path in RUN_FILES + (PARTITIONS_FILE,),
+                              skip=(SHARD_DIR,), label="run")
+    return hashes
+
+
+def partition_window(run_dir, plan, builds_doc, builds_bytes, index):
+    """The run window shard `index` executes in when `run_dir` is a later comparison
+    partition's run bundle (ADR-0265), or None when it holds no partition authority. The
+    authority is read from the verified bundle and bound to this plan, this exact build and its
+    recorded run, unchanged; a shard it does not declare, or a window that is not the plan's
+    frozen total from an execution start after the build ended, is refused."""
+    if run_dir is None or not os.path.lexists(os.path.join(run_dir, PARTITIONS_FILE)):
+        return None
+    hashes = _run_hashes(run_dir)
+    require(PARTITIONS_FILE in hashes, "the run bundle does not seal its partition authority")
+    data = bundle.read_member(run_dir, PARTITIONS_FILE, hashes, limits.MAX_JSON_BYTES, "run")
+    doc = contracts.read_json(data, "partition-execution", PARTITIONS_FILE)
+    execution = builds_doc["execution"]
+    require(doc["plan_digest"] == plan["plan_digest"]
+            and doc["builds_sha256"] == sha256_bytes(builds_bytes)
+            and doc["build_run"] == execution["run"],
+            "the partition authority names another plan, build or build run than this shard's")
+    owners = [item for item in doc["partitions"] if index in item["shards"]]
+    if not owners:
+        raise Unavailable("partition_authority", "shard %d is not declared by the partition "
+                          "authority of this run (shards %s); nothing was started" % (
+                              index, [i for item in doc["partitions"] for i in item["shards"]]))
+    window = owners[0]["run"]
+    require(window["started_unix_ms"] >= execution["ended_unix_ms"],
+            "the partition's run window starts before the build it reuses ended")
+    return window
 
 
 # Authority inputs ------------------------------------------------------------------------------
@@ -513,9 +556,20 @@ class Shard(object):
             record["unavailable_metrics"][calibration.INJECTED_METRIC] = why[:256]
 
     def check_run_deadline(self):
-        """The run's execution start and total deadline from its verified build (ADR-0170): a
-        shard never resets them, and none starts its preflight once the deadline has passed."""
-        run = self.manifest[0]["execution"]["run"]
+        """The run's execution start and total deadline from its verified build (ADR-0170), or,
+        for a later comparison partition, from the partition authority sealed in its run bundle
+        and bound to that unchanged build (ADR-0265): a shard never resets them, and none starts
+        its preflight once the deadline has passed."""
+        try:
+            window = partition_window(self.options.run_dir, self.plan, self.manifest[0],
+                                      self.manifest[1], self.index)
+        except Unavailable:
+            raise
+        except ContractError as error:
+            # Refused before anything started: no fence is left for it.
+            raise Unavailable("partition_authority", "the run's partition authority is "
+                              "refused; nothing was started: %s" % error)
+        run = window or self.manifest[0]["execution"]["run"]
         require(run["total_minutes"] == self.plan["limits"]["run_total_minutes"],
                 "the build's run deadline is not the plan's frozen %d minutes"
                 % self.plan["limits"]["run_total_minutes"])
@@ -1144,7 +1198,7 @@ class Shard(object):
             log_cap = self.plan["limits"]["sample_log_bytes"]
             order = supervise.request(
                 argv, environment, cwd, "", case["sample_timeout_ms"],
-                max(1, log_cap - log_cap // 4), log_cap, containment=containment,
+                clicases.stdout_bytes(log_cap), log_cap, containment=containment,
                 scratch=None if self.mode == TRUSTED_LOCAL else supervise.SCRATCH,
                 grace_ms=GRACE_MS, setup=setup, patterns=clicases.patterns(entry),
                 selectors=clicases.selectors(entry))

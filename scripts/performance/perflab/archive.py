@@ -91,7 +91,9 @@ def _class(path):
         return "verdict"
     if path == SUMMARY_PATH:
         return "summary"
-    return {"run.json": "plan", "builds.json": "build_manifest", "manifest.json": "manifest",
+    # A later partition's execution authority is frozen run authority, kept as the plan.
+    return {"run.json": "plan", "partitions.json": "plan",
+            "builds.json": "build_manifest", "manifest.json": "manifest",
             "shard.json": "shard", "samples.jsonl": "samples"}[path.rsplit("/", 1)[-1]]
 
 

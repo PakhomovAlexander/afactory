@@ -30,11 +30,14 @@ existing original and never replays it.
 import copy
 import html
 import os
+import posixpath
+import re
 import shutil
 import time
+import urllib.parse
 
 from . import (admission, archive, budget, compare, contracts, diagnostics, executor, overview,
-               planning, report, runner)
+               planning, report, runner, telemetrylab)
 from .values import ContractError, canonical_digest, require, sha256_bytes
 
 DIRECTORY = "comparisons"
@@ -46,6 +49,16 @@ REPORT_FILES = ("report.json", "report.md", "report.html")
 MANIFEST = "manifest.json"
 EVIDENCE = "evidence"
 EXPORT_ENTRIES_MAX = 16384
+# The native evidence of each original an export carries whole: everything its own pages link
+# and everything its offline verification reads (its plan, run bundle, report and evidence).
+NATIVE = {"core": ("plan.json", "run", "report"), "telemetry": ("run",),
+          "profile": ("plan.json", "profile", executor.PARENT_VERDICT)}
+# The journal records of an original, outside its sealed evidence.
+RECORDS = ("request.json", "state.json", "result.json", "configuration.json")
+PAGES = (".html", ".md")
+HTML_LINK = re.compile(r"""(?:href|src)\s*=\s*(?:"([^"]*)"|'([^']*)')""", re.I)
+MD_LINK = re.compile(r"\]\(<?([^)\s>]+)>?\)")
+SCHEME = re.compile(r"^[A-Za-z][A-Za-z0-9+.-]*:")
 KEY_MAX = 200
 NOT_CALIBRATION = ("a release comparison is not a calibration member: calibration eligibility "
                    "is decided only by a declared local cohort's readiness")
@@ -229,10 +242,11 @@ def _checks(journal, doc, plan, registry, git, installed):
                     and original["partition"] == partition,
                     "original %s is not this comparison's member" % ident)
             return "already submitted: " + journal.state(ident)["state"]
+        checked = {"serial": None, "tools": []}
         journal._submit(work, base, head, key, kind, git=git, installed=installed,
-                        checked={"serial": None, "tools": []}, frozen_plan=frozen_plan,
-                        partition=partition)
-        return ""
+                        checked=checked, frozen_plan=frozen_plan, partition=partition)
+        # The same time and storage admission its execution applies, with its figures.
+        return checked.get("admission", "")
 
     steps = [("paths", lambda: [executor.reachable(c[k], k) for k in ("root", "repository_path")]
               and None), ("capacity", capacity)]
@@ -241,9 +255,10 @@ def _checks(journal, doc, plan, registry, git, installed):
                      "comparison_digest": canonical_digest(doc), "index": item["index"],
                      "shards": item["shards"], "build_from": item["build_from"]}
         steps.append(("core_%d" % item["index"], lambda partition=partition, item=item: (
-            member(item["request_id"], "core", item["key"], partition, plan) or
-            "shards %s within %d of %d s" % (item["shards"], item["needed_seconds"],
-                                             doc["schedule"]["available_seconds"]))))
+            "; ".join(text for text in (
+                member(item["request_id"], "core", item["key"], partition, plan),
+                "shards %s within %d of %d s" % (item["shards"], item["needed_seconds"],
+                                                 doc["schedule"]["available_seconds"])) if text))))
     steps.append(("telemetry", lambda: member(doc["telemetry"]["request_id"], "telemetry",
                                               doc["telemetry"]["key"])))
     for lane in doc["diagnostics"]:
@@ -381,7 +396,7 @@ def aggregate(journal, doc, plan, raw_plan, installed=executor.ROOT):
     agg, _ = read_aggregate(journal, doc)
     if agg is not None:
         return agg
-    entries = []
+    entries, windows = [], []
     for item in doc["partitions"]:
         state = _state(journal, item["request_id"])
         if state is None or state["state"] not in executor.TERMINAL:
@@ -393,6 +408,7 @@ def aggregate(journal, doc, plan, raw_plan, installed=executor.ROOT):
         if state["state"] == "complete":
             try:
                 executor.verify_original(journal, item["request_id"], installed)
+                windows.append(_window(journal, doc, item))
                 entry.update(verification="verified", included=True, detail="")
             except (ContractError, OSError) as error:
                 entry.update(verification="refused", detail=str(error)[:4096])
@@ -414,7 +430,15 @@ def aggregate(journal, doc, plan, raw_plan, installed=executor.ROOT):
         first_builds = executor.read(os.path.join(journal.path(first["request_id"]), "run",
                                                   "builds.json"))
         run = os.path.join(work, "run")
-        runner.prepare_run_dir(run, raw_plan, first_builds)
+        # Every included later partition's verified execution authority, in one document, so
+        # the family's evaluation checks each shard against its own partition's window.
+        later = [window for window in windows if window is not None]
+        authority = None
+        if later:
+            authority = dict(later[0], partitions=[item for window in later
+                                                   for item in window["partitions"]])
+            authority = contracts.write_bytes(authority, "partition-execution")
+        runner.prepare_run_dir(run, raw_plan, first_builds, authority)
         for entry in entries:
             if not entry["included"]:
                 continue
@@ -444,6 +468,31 @@ def aggregate(journal, doc, plan, raw_plan, installed=executor.ROOT):
                 store.import_run(os.path.join(path, "run"))
             store.retain()
     return result
+
+
+def _window(journal, doc, item):
+    """The execution authority a verified later partition original sealed in its run bundle,
+    exactly this comparison's declared partition on its first partition's build; None for the
+    first partition, which runs on its own build's run. Refused when it is missing or names
+    another comparison, original, index or shard set."""
+    path = os.path.join(journal.path(item["request_id"]), "run", runner.PARTITIONS_FILE)
+    if item["build_from"] is None:
+        require(not os.path.lexists(path), "the first partition runs on its own build's run "
+                "and carries no partition authority")
+        return None
+    window = contracts.read_json(executor.read(path), "partition-execution", path)
+    first = executor.read(os.path.join(journal.path(item["build_from"]), "run", "builds.json"))
+    require(window["comparison_id"] == doc["comparison_id"]
+            and window["build_from"] == item["build_from"]
+            and window["builds_sha256"] == sha256_bytes(first)
+            and window["plan_digest"] == contracts.read_json(executor.read(os.path.join(
+                journal.path(item["build_from"]), "plan.json")), "run")["plan_digest"]
+            and window["build_run"] == contracts.read_json(first, "builds")["execution"]["run"]
+            and [(p["index"], p["request_id"], p["shards"]) for p in window["partitions"]]
+            == [(item["index"], item["request_id"], item["shards"])],
+            "partition %d's execution authority is not its declared partition of %s"
+            % (item["index"], doc["comparison_id"]))
+    return window
 
 
 def _parent(doc, agg_raw, raw_plan, verdict_bytes):
@@ -798,21 +847,50 @@ def _evidence_paths(journal, doc, report_doc):
     paths = [os.path.join(base, "comparison.json"), os.path.join(base, "plan.json")]
     agg = os.path.join(base, "aggregate")
     if os.path.isdir(os.path.join(journal.root, agg)):
-        paths += [os.path.join(agg, "aggregate.json"), os.path.join(agg, "report")]
+        # The family's assembled run, its verdict and report with their evidence, whole.
+        paths.append(agg)
     for m in report_doc["members"]:
         if m["state"] == "not_submitted":
             continue
         rel = os.path.relpath(journal.path(m["request_id"]), journal.root)
-        paths += [os.path.join(rel, name) for name in ("request.json", "state.json",
-                                                         "result.json", "configuration.json")]
-        if m["work"] == "core":
-            paths += [os.path.join(rel, "report", report.VERDICT_JSON),
-                      os.path.join(rel, "report", "report.html")]
-        elif m["work"] == "telemetry":
-            paths += [os.path.join(rel, "run", "report.html"), os.path.join(rel, "run", "result.json")]
-        else:
-            paths += [os.path.join(rel, "profile"), os.path.join(rel, executor.PARENT_VERDICT)]
+        paths += [os.path.join(rel, name) for name in RECORDS + NATIVE[m["work"]]]
     return [p for p in paths if os.path.lexists(os.path.join(journal.root, p))]
+
+
+def _links(text, page):
+    """The relative link targets of one rendered page (`.html` or `.md`), as bundle paths
+    resolved from the page's own directory; external and fragment-only links are skipped."""
+    if page.endswith(".html"):
+        found = [a or b for a, b in HTML_LINK.findall(text)]
+    else:
+        found = MD_LINK.findall(text)
+    for target in found:
+        target = html.unescape(target).split("#", 1)[0].split("?", 1)[0]
+        if not target or SCHEME.match(target) or target.startswith("//"):
+            continue
+        resolved = posixpath.normpath(posixpath.join(posixpath.dirname(page),
+                                                     urllib.parse.unquote(target)))
+        yield target, resolved
+
+
+def check_links(bundle, paths):
+    """Every relative link of every page among `paths` (bundle-relative files) resolves to a
+    file, or a directory holding one, inside the bundle: a copied bundle stays usable offline.
+    Raises naming the first page and link that leaves it or names nothing."""
+    files = set(paths)
+    directories = set()
+    for path in files:
+        parent = posixpath.dirname(path)
+        while parent:
+            directories.add(parent)
+            parent = posixpath.dirname(parent)
+    for page in sorted(path for path in files if path.endswith(PAGES)):
+        text = executor.read(os.path.join(bundle, page)).decode("utf-8", "replace")
+        for target, resolved in _links(text, page):
+            require(not target.startswith("/") and resolved != ".."
+                    and not resolved.startswith("../") and (resolved in files
+                                                            or resolved in directories),
+                    "%s links %s, which the bundle does not hold" % (page, target))
 
 
 def export(journal, ident, output, installed=executor.ROOT, verify=None):
@@ -862,6 +940,8 @@ def export(journal, ident, output, installed=executor.ROOT, verify=None):
             data = executor.read(os.path.join(pending, "report", name))
             files.append({"path": "report/" + name, "size": len(data),
                           "sha256": sha256_bytes(data)})
+        # A bundle whose pages link anything it does not hold is refused, never published.
+        check_links(pending, [item["path"] for item in files])
         raw = executor.read(os.path.join(pending, "report", "report.json"))
         manifest = {"schema": "af.perf-comparison-export/1", "comparison_id": ident,
                     "comparison_digest": report_doc["comparison_digest"],
@@ -876,10 +956,13 @@ def export(journal, ident, output, installed=executor.ROOT, verify=None):
     return manifest, report_doc
 
 
-def verify_export(bundle):
+def verify_export(bundle, installed=executor.ROOT):
     """Check a copied bundle offline: exactly the manifest's files with their hashes, a valid
-    report whose every link and member result is inside the bundle, and the declaration and
-    aggregate it names. Returns (manifest, report). Needs no journal or configuration."""
+    report whose every link and member result is inside the bundle, every relative link of
+    every bundled page (nested native reports included) resolving inside it, and the
+    declaration and aggregate it names; then the native evidence itself (`verify_native`).
+    Returns (manifest, report). Needs no journal or configuration; `installed` is the trusted
+    measurement authority the native telemetry result is verified under."""
     raw = executor.read(os.path.join(bundle, MANIFEST))
     manifest = contracts.read_json(raw, "comparison-export")
     listed = dict((item["path"], item) for item in manifest["files"])
@@ -904,6 +987,7 @@ def verify_export(bundle):
             "the manifest describes another report")
     for link in report_doc["links"]:
         require(EVIDENCE + "/" + link in listed, "the report links %s outside the bundle" % link)
+    check_links(bundle, listed)
     base = "%s/%s/%s/" % (EVIDENCE, DIRECTORY, manifest["comparison_id"])
     declaration = contracts.read_json(executor.read(os.path.join(bundle, base, "comparison.json")),
                                       "comparison")
@@ -922,7 +1006,59 @@ def verify_export(bundle):
         if agg["verdict_sha256"] is not None:
             require(listed.get(base + "aggregate/report/verdict.json", {}).get("sha256")
                     == agg["verdict_sha256"], "the bundled aggregate verdict changed")
+            _same_verdict(os.path.join(bundle, base, "aggregate"), "the family aggregate")
+    verify_native(bundle, report_doc, listed, installed)
     return manifest, report_doc
+
+
+def _same_verdict(root, what):
+    """The native core run bundled at `root/run`, evaluated again offline, reproduces exactly
+    the verdict bundled at `root/report/verdict.json`: its coverage and results are verified,
+    not taken from the export's own hashes."""
+    evaluation = compare.evaluate(os.path.join(root, "run"))
+    bundled = contracts.read_json(executor.read(os.path.join(root, "report",
+                                                             report.VERDICT_JSON)), "verdict")
+    require(evaluation.verdict == bundled, "%s: its bundled run does not reproduce its bundled "
+            "verdict" % what)
+
+
+def verify_native(bundle, report_doc, listed, installed=executor.ROOT):
+    """Verify each bundled original's native evidence offline: every bundled file of it is a
+    file its sealed terminal result names, with that hash, and everything its verification
+    reads is present (a core run evaluated again to its verdict, a telemetry result verified
+    again under the installed authority, a profile's children admitted again). This checks the
+    evidence an original sealed; it is never a fresh performance acceptance."""
+    for m in report_doc["members"]:
+        if m["result_sha256"] is None:
+            continue
+        rel = "%s/requests/%s" % (EVIDENCE, m["request_id"])
+        root = os.path.join(bundle, rel)
+        result = contracts.read_json(executor.read(os.path.join(root, "result.json")),
+                                     "executor-result")
+        sealed = dict((entry["path"], entry["sha256"]) for entry in result["evidence"])
+        for path, item in listed.items():
+            if not path.startswith(rel + "/") or path[len(rel) + 1:] in RECORDS:
+                continue
+            require(sealed.get(path[len(rel) + 1:]) == item["sha256"], "member %s's bundled "
+                    "%s is not evidence its sealed result names" % (m["request_id"], path))
+        if m["state"] != "complete":
+            continue
+        needed = [prefix for prefix in NATIVE[m["work"]]
+                  if any(entry == prefix or entry.startswith(prefix + "/") for entry in sealed)]
+        for prefix in needed:
+            require(any(path == rel + "/" + prefix or path.startswith(rel + "/" + prefix + "/")
+                        for path in listed), "member %s's sealed %s is not bundled"
+                    % (m["request_id"], prefix))
+        what = "member %s" % m["request_id"]
+        if m["work"] == "core" and "run" in needed:
+            _same_verdict(root, what)
+        elif m["work"] == "telemetry" and "run" in needed:
+            measured, _, _ = telemetrylab.verify(os.path.join(root, "run"), installed)
+            require(measured["result_id"] == "local_" + m["request_id"][4:],
+                    "%s: the bundled telemetry result is another original's" % what)
+        elif m["work"] == "profile" and "profile" in needed:
+            plan = contracts.read_json(executor.read(os.path.join(root, "plan.json")), "run")
+            report.admit_children([os.path.join(root, "profile")], plan)
 
 
 def run(journal_factory, ident, cycle, installed=executor.ROOT, rounds=None):

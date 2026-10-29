@@ -1899,7 +1899,12 @@ def page(result):
     sections.append(render.section("Within each binary", render.paragraph(
         "Each side's own figures by level: the overhead of spans over off, the drain latency, "
         "json against stream-json at each level, and the read figures, as each script reports "
-        "them (percentages are percent)."), render.table(
+        "them (percentages are percent). The drain latency runs from the harness's last write "
+        "to the command's observed exit, both read on CLOCK_MONOTONIC "
+        "(harness_last_write_to_command_exit): each run's drain_ms is a physical duration, "
+        "never negative when admitted, and drain_median_ms is the signed median of spans "
+        "minus off, which may be negative. Drain figures measured at the drained result's "
+        "CAS write, the earlier boundary, are not comparable with these."), render.table(
         ("experiment", "round", "side", "subject", "level", "figure", "value"),
         [(item["experiment"], item["round"], item["side"], item["subject"], item["level"] or "",
           item["figure"], "%.3f" % float(Fraction(item["value"])))

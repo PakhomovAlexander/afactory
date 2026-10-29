@@ -32,12 +32,40 @@
   manifest (`af.perf-comparison-export/1`) that `comparison-verify` checks after copying.
 - The telemetry overhead and invocation-cost drain latency now runs from the harness's last
   write to the command's observed exit, both read on `CLOCK_MONOTONIC`
-  (`harness_last_write_to_command_exit`), never from file timestamps; a negative drain is kept as
-  measured and leaves the gate `not_judged`. Each side is measured on the fixture contract its
-  `af --version` selects: v0.13.0 runs the same packages declaring `af/TaskCheckReceipt@1`,
-  re-pinned to declared digests its own `af catalog digest` must print. The documents are now
-  `af/telemetry-overhead@2` and `af/telemetry-invocation-cost@2`; `@1` is refused.
+  (`harness_last_write_to_command_exit`), never from file timestamps; a run whose physical drain
+  duration reads negative is kept as measured and leaves the gate `not_judged`, while a negative
+  `spans` minus `off` difference is a judged signed comparison. Drain figures recorded at the
+  drained result's CAS write are historical and not directly comparable. Each side is measured
+  on the fixture contract its `af --version` selects: v0.13.0 runs the same packages declaring
+  `af/TaskCheckReceipt@1`, re-pinned to declared digests its own `af catalog digest` must print.
+  The documents are now `af/telemetry-overhead@2` and `af/telemetry-invocation-cost@2`; `@1` is
+  refused.
 - A 10,000-event seed writer (the native `state_projection` seed and the `task show` and
   Campaign CLI seeds) prepares its Store in a bounded 512 MiB tmpfs at `/perf/prep` through the
   same protected public writers, then publishes it, every file flushed, to the seed, where a
   fresh Store and the seed's oracle read it.
+- A later comparison partition runs in its own bounded run window, sealed in its run bundle as
+  `af.perf-partition-execution/1` and bound to the first partition's unchanged build and its
+  recorded run, instead of inheriting the first partition's expired deadline; a forged, widened
+  or wrong-partition authority starts nothing, and the aggregate checks each shard against its
+  own partition's window
+  ([ADR-0265](../docs/adr/0265-bind-comparison-partition-execution-to-reused-build-artifacts.md)).
+- Preflight, submission and the claim share one storage and one time admission: the native
+  reserve against `max_bytes`, and a telemetry or profile original's sequential bounds (both
+  telemetry builds' caps, scratch, the profile's timeout) against `run_seconds`, each refusal
+  naming the required and available figures before any claim or build. A telemetry original
+  left too little time after its sources ends `failed`, `not_executed`, before either build.
+- The CLI oracle declares each release's `af review report --format json` schema from its
+  version (`@4` through 0.13, `@5` from 0.14.0-rc.1, `af_cli_v3`), and a CLI sample keeps its
+  stdout within the unchanged `sample_log_bytes` total less a 16 KiB stderr reserve, so the
+  whole 100-Finding report is retained and judged; a truncated output is refused as truncated.
+- `comparison-export` carries every original's whole native evidence (core run bundles and
+  reports with their evidence, the telemetry run with its manifest, raw documents and logs,
+  the aggregate's run) and refuses a bundle whose pages link anything it does not hold;
+  `comparison-verify` checks every bundled page's links and verifies the native evidence again
+  offline against each original's sealed result.
+- The host CPU observer admits each perf for the observed command's own bound plus its
+  attachment and settlement allowances, within the 120-second per-run cap, instead of the whole
+  remaining diagnostic window the supervisor refused; a failed attachment after the command
+  started releases its scratch only on the supervisor's confirmed cancellation and keeps the
+  observer's own reason ahead of any cleanup uncertainty.

@@ -701,7 +701,9 @@ def _kind(path):
     name = path.rsplit("/", 1)[-1]
     if "/logs/" in path:
         return "log"
-    return {"run.json": "plan", "builds.json": "build_manifest", "manifest.json": "manifest",
+    # A later partition's execution authority is frozen run authority, kept as the plan.
+    return {"run.json": "plan", "partitions.json": "plan",
+            "builds.json": "build_manifest", "manifest.json": "manifest",
             "shard.json": "shard", "samples.jsonl": "samples"}[name]
 
 

@@ -54,6 +54,16 @@ ACK_SECONDS = 10.0
 STOP_SECONDS = 30.0
 
 
+def lifetime(command_seconds):
+    """The bounded lifetime of one host perf: the observed command's own bound plus the
+    acknowledgement and settlement allowances, never over the supervisor's per-run hard cap
+    (`limits.SAMPLE_TIMEOUT_SECONDS_MAX`). The diagnostic deadline bounds it as well; it never
+    lends a recording the whole remaining diagnostic window, which the supervisor refuses."""
+    require(command_seconds > 0, "an observed command has a positive bound")
+    return min(float(toolrun.TIMEOUT_MS_MAX // 1000),
+               float(command_seconds) + ACK_SECONDS + STOP_SECONDS)
+
+
 def gated(argv, gate):
     """The contained command behind the gate FIFO `gate`."""
     return [SHELL, "-c", GATE, gate] + list(argv)
@@ -288,11 +298,13 @@ class Observer(object):
     (`supervised_start`) and returns a `toolrun.Running` or a launch-refused `toolrun.Result`.
     `container()` names the owned container's (ID, init PID) once it runs, or None; it is
     None for a host process (the capability probe), whose boundary is its gate and account.
+    `seconds`, when given, is perf's own bounded lifetime (`lifetime`) within `deadline`, the
+    overall diagnostic deadline.
     """
 
     def __init__(self, start, perf, event, frequency, unwind, output, control_dir, gate,
                  deadline, whole, container=None, file_bytes=None, proc=PROC,
-                 clock=time.monotonic):
+                 clock=time.monotonic, seconds=None):
         self.start = start
         self.perf = perf
         self.event = event
@@ -302,6 +314,7 @@ class Observer(object):
         self.control_dir = control_dir
         self.gate = gate
         self.deadline = deadline
+        self.seconds = seconds
         self.whole = whole
         self.container = container
         self.file_bytes = file_bytes
@@ -349,10 +362,12 @@ class Observer(object):
         argv = attach_argv(self.perf, self.event, self.frequency, self.unwind, self.output,
                            self.control, self.target.pid, self.file_bytes)
         seconds = max(0.0, self.deadline - self.clock())
+        if self.seconds is not None:
+            seconds = min(seconds, self.seconds)
         running = self.start(argv, seconds, self.deadline, self.file_bytes)
         if isinstance(running, toolrun.Result):
-            raise CaptureError("observer_refused", "host perf did not start: %s"
-                               % running.failure())
+            self.detail = "host perf did not start: %s" % running.failure()
+            raise CaptureError("observer_refused", self.detail)
         self.running = running
         ack = min(self.deadline, self.clock() + ACK_SECONDS)
         if self.whole:

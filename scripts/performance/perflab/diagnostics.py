@@ -396,6 +396,13 @@ LAUNCHING = object()
 
 
 
+def _cause(error):
+    """`reason: detail` of a capture failure, or the type and text of any other error."""
+    if isinstance(error, perfcapture.CaptureError):
+        return "%s: %s" % (error.reason, error.detail)
+    return "%s: %s" % (type(error).__name__, error)
+
+
 def _uncertain(result):
     """Whether a namespace a run used may still be reached by a process it started: nothing
     was launched (None), a launch did not return, or its supervisor did not confirm the end."""
@@ -497,10 +504,12 @@ class Profile(object):
             argv[0] == toolrun.SHELL and len(argv) > 3 and argv[3] in trusted
             and not hostobserver.is_gated(argv)))
 
-    def observer(self, staged, unwind, room, gate_root, whole):
+    def observer(self, staged, unwind, room, gate_root, whole, command_seconds):
         """A host observer of the next contained run: its gate FIFO below `gate_root` (bound
         writable into the container), its control FIFOs in the host-private work, its
-        recording at `staged`."""
+        recording at `staged`. Its perf lives at most `hostobserver.lifetime(command_seconds)`,
+        the contained run's own bound with its attachment and settlement allowances, within the
+        diagnostic deadline; never the whole remaining diagnostic window."""
         self.observers += 1
         tag = "%04d-%s" % (self.observers, os.urandom(4).hex())
         control = os.path.join(self.host_work, "observer", tag)
@@ -516,7 +525,7 @@ class Profile(object):
             hostobserver.supervised_start(self.host, TOOL_ENV, control, self.clock),
             self.tool("perf"), self.event, self.frequency, unwind, staged, control, gate,
             self.budget.deadline, whole, container=container, file_bytes=room,
-            clock=self.clock)
+            clock=self.clock, seconds=hostobserver.lifetime(command_seconds))
         observer.make_gate()
         return observer
 
@@ -539,6 +548,25 @@ class Profile(object):
         if observer.failure() is not None and not failing:
             raise perfcapture.CaptureError("observer_failed", "host perf: "
                                            + observer.failure())
+
+    def settle_repetition(self, observer, relative, primary, region="whole_command",
+                          collect=True):
+        """After one observed repetition: settle its observer and collect what it staged. When
+        the repetition already failed (`primary`), that cause stands: a cleanup this settlement
+        cannot confirm is still `cleanup_uncertain` (the fence stays), and its detail keeps the
+        primary cause first, never only that scratch was kept."""
+        try:
+            if observer is not None:
+                self.settle_observer(observer, relative, region, failing=primary is not None)
+            if collect:
+                self.collect(relative)
+        except perfcapture.CaptureError as cleanup:
+            if primary is None:
+                raise
+            if cleanup.reason == "cleanup_uncertain":
+                raise perfcapture.CaptureError("cleanup_uncertain", ("%s; cleanup after it: %s" % (
+                    _cause(primary), cleanup.detail))[:4096]) from primary
+            # The primary cause stands; the later refusal is secondary context only.
 
     # Bookkeeping -------------------------------------------------------------------------
 
@@ -710,9 +738,15 @@ class Profile(object):
                 self.retained.append(retained)
             detail = "tool cleanup unconfirmed; retained recovery paths: " + ", ".join(paths)
             if error is not None:
-                detail += "; %s: %s" % (type(error).__name__, error)
+                # The primary cause first, then the cleanup it left unconfirmed.
+                detail = _cause(error) + "; " + detail
             raise perfcapture.CaptureError("cleanup_uncertain", detail[:4096]) from error
         if error is not None:
+            # The run's end was confirmed by its supervisor although the observer callback
+            # failed: the settled Result travels with the primary error, so the caller releases
+            # what the run used on that confirmation and keeps the actionable cause.
+            if isinstance(error, Exception):
+                error.settled = result
             raise error
         return result
 
@@ -1035,7 +1069,9 @@ class Profile(object):
                 if self.host is not None:
                     # The host observer attaches to the gated probe; its region switches the
                     # host recording through the same acknowledged control.
-                    holder["observer"] = self.observer(staged, unwind, room, fifo, False)
+                    holder["observer"] = self.observer(
+                        staged, unwind, room, fifo, False,
+                        min(self.budget.tool_seconds, toolrun.TIMEOUT_MS_MAX / 1000.0))
                     holder["control"] = holder["observer"]
                     return hostobserver.gated([self.probes[side][0]], holder["observer"].gate)
                 holder["control"] = perfcapture.PerfControl(fifo)
@@ -1047,6 +1083,7 @@ class Profile(object):
                 if "observer" in holder:
                     holder["observer"].attach(lambda: not running.done())
 
+            primary = None
             try:
                 run, _ = self.bracketed(
                     side, case, argv_for,
@@ -1055,10 +1092,13 @@ class Profile(object):
                     self.duration_ms / 1000.0, messages=relative + "/messages.jsonl",
                     file_bytes=room, writes=(os.path.dirname(staged),),
                     after_start=after_start)
+            except BaseException as error:
+                primary = error
+                raise
             finally:
                 if "observer" in holder:
-                    self.settle_observer(holder["observer"], relative, "acknowledged_region",
-                                         failing=sys.exc_info()[0] is not None)
+                    self.settle_repetition(holder["observer"], relative, primary,
+                                           "acknowledged_region", collect=False)
                 elif "control" in holder:
                     holder["control"].close()
             region = run.region_ms
@@ -1180,7 +1220,8 @@ class Profile(object):
                     # evidence: a FIFO is not evidence.
                     gates = os.path.join(self.work, "gates")
                     os.makedirs(gates, 0o700, exist_ok=True)
-                    observer = self.observer(staged, unwind, room, gates, True)
+                    observer = self.observer(staged, unwind, room, gates, True,
+                                             case["sample_timeout_ms"] / 1000.0)
                     writes = (gates,)
 
                     def wrap(argv, gate=observer.gate):
@@ -1190,17 +1231,18 @@ class Profile(object):
                         observer.attach(lambda: not running.done())
 
                 started = self.clock()
+                primary = None
                 try:
                     result, value, _ = self.cli_run(
                         side, case, self.afs[side][0], wrap=wrap, file_bytes=room,
                         writes=writes, observe=observe,
                         what="repetition %d of the recorded command" % (len(names) + 1))
+                except BaseException as error:
+                    primary = error
+                    raise
                 finally:
                     wall += self.clock() - started
-                    if observer is not None:
-                        self.settle_observer(observer, relative, "whole_command",
-                                             failing=sys.exc_info()[0] is not None)
-                    self.collect(relative)
+                    self.settle_repetition(observer, relative, primary)
                 self.settle("repetition %d of %s %s" % (len(names) + 1, case["instance_id"],
                                                         side))
                 names.append(name)
@@ -1554,7 +1596,7 @@ class Profile(object):
         namespace before it is removed."""
         entry = self.cli_entry(side, case)
         namespace = self.namespace()
-        result = staged = room = unconfirmed = None
+        result = staged = room = unconfirmed = primary = None
         try:
             scratch = namespace.path
             probe = self.probes[side][0] if side in self.probes else None
@@ -1587,12 +1629,21 @@ class Profile(object):
                 argv = wrap(argv)
             log = self.plan["limits"]["sample_log_bytes"]
             result = LAUNCHING
-            result = self.tool_run(
-                argv, case["sample_timeout_ms"] / 1000.0, log - log // 4,
-                clicases.expand(entry["cwd"], values), env=environment, setup=setup,
-                patterns=clicases.patterns(entry), selectors=clicases.selectors(entry),
-                file_bytes=file_bytes, reads=(binary, probe, self.cli.fixtures),
-                writes=(namespace.path,) + tuple(writes), observe=observe)
+            try:
+                result = self.tool_run(
+                    argv, case["sample_timeout_ms"] / 1000.0, clicases.stdout_bytes(log),
+                    clicases.expand(entry["cwd"], values), env=environment, setup=setup,
+                    patterns=clicases.patterns(entry), selectors=clicases.selectors(entry),
+                    file_bytes=file_bytes, reads=(binary, probe, self.cli.fixtures),
+                    writes=(namespace.path,) + tuple(writes), observe=observe)
+            except Exception as error:
+                # Only a Result the supervisor settled proves the run ended; an opaque failure
+                # leaves it launching, so its namespace is kept.
+                settled = getattr(error, "settled", None)
+                if isinstance(settled, toolrun.Result):
+                    result = settled
+                primary = error
+                raise
             if trace and not _uncertain(result):
                 # A trace whose bytes left the evidence over its room is that reason whether the
                 # watch cancelled the command while it was live or it finished first: settled
@@ -1644,7 +1695,8 @@ class Profile(object):
                 self.discard_trace(staged, LAUNCHING if getattr(
                     namespace, "reader_uncertain", False) else result)
             finally:
-                self.release(namespace, _uncertain(result), unconfirmed)
+                self.release(namespace, _uncertain(result), unconfirmed or (
+                    None if primary is None else _cause(primary)))
 
     def trace_stage(self, namespace):
         """(path, room) of the raw trace one traced execution exports: a new file below the
