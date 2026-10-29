@@ -12,7 +12,7 @@
 # Every pair count and tolerance below is an initial policy choice, not a demonstrated
 # sufficient value; the readiness cohort decides whether it is.
 
-schema = "af.perf-suite/3"
+schema = "af.perf-suite/4"
 suite_id = "af_performance_synthetic"
 description = "Synthetic registry: small cases for deterministic comparison fixtures."
 

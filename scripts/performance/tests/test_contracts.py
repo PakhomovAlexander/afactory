@@ -247,18 +247,19 @@ class Parity(unittest.TestCase):
         # distribution, and activation-verification/3 a fetched bridge run's producer
         # (ADR-0185); readiness/6 binds each case to its observed shard CPU group
         # (ADR-0194); nothing reads an earlier version.
-        changed = ("run", "builds", "verdict", "sample", "shard", "supervisor-request",
+        changed = ("run", "capabilities", "tui-open", "builds", "verdict", "sample",
+                   "shard", "supervisor-request",
                    "supervisor-result", "probe-request", "golden", "cohort",
                    "calibration-parameters", "readiness", "activation-verification", "cost",
                    "shipping", "profiles", "executor", "executor-state", "executor-result")
         self.assertEqual([contracts.schema_version(name) for name in changed],
-                         [6, 6, 2, 2, 4, 4, 5, 2, 2, 4, 2, 6, 3, 3, 3, 6, 2, 2, 2])
+                         [7, 3, 1, 6, 2, 2, 4, 4, 5, 2, 2, 4, 2, 6, 3, 3, 3, 6, 2, 2, 2])
         self.assertEqual(contracts.schema_version("activation"), 3)
         # profiles/6 binds retained archives (ADR-0224); report/3 keeps telemetry (ADR-0214).
         self.assertEqual((contracts.schema_version("profiles"), contracts.schema_version("report")),
                          (6, 3))
         self.assertEqual((contracts.schema_version("cli"), contracts.schema_version("suite")),
-                         (5, 3))
+                         (6, 4))
         valid = dict((entry["contract"], entry) for entry in self.index if entry["valid"]
                      and entry["contract"] in changed)
         for contract, entry in sorted(valid.items()):

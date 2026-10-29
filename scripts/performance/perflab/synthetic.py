@@ -228,7 +228,7 @@ def record(run_plan, shard, slot, value, failure=None, containment="process_grou
         metrics[primary] = {"value": format_decimal(value), "unit": "ms"}
         sentinel = slot["instance_id"] == workload
         boundary = "library_region" if sentinel else case["timing"]["boundary"]
-        scopes[primary] = boundary
+        scopes[primary] = "probe_reported" if boundary == "reported_interval" else boundary
     oracle_kind = (run_plan["health"]["oracle"]["kind"] if slot["instance_id"] == workload
                    else case["oracle"]["kind"])
     return {

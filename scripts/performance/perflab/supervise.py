@@ -1,8 +1,8 @@
 """Launch the authority supervisor for one sample and read its framed reply (ADR-0166).
 
 The same hashed `perf-supervisor` bytes measure both sides. It is launched either directly, in
-explicitly trusted local mode (`process_group` containment, discovery and nonspawning library
-cases on macOS), or as the native PID 1 of a pinned Linux sample container
+explicitly trusted local mode (`process_group` containment, cases declared without Linux
+containment on macOS), or as the native PID 1 of a pinned Linux sample container
 (`pid_namespace` containment) built by `container_argv`, in which only the per-sample directory
 of the verified scratch filesystem is writable (ADR-0168). Its reply is one
 `af.perf-supervisor-result/5` line followed by exactly the retained bytes of the child's stdout

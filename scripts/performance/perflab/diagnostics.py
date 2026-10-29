@@ -593,7 +593,9 @@ class Profile(object):
         self.halted(os.path.basename(argv[0]))
         if stdout_path is not None:
             writes = tuple(writes) + (os.path.dirname(stdout_path),)
-        binds = self.binds(tuple(reads) + (argv[0],), writes)
+        # The image's own interpreter is the image's: a host file is never bound over it.
+        program = () if self.contained() and argv[0] == clicases.CONTAINER_PYTHON else (argv[0],)
+        binds = self.binds(tuple(reads) + program, writes)
         # This shared boundary also owns tools without a Namespace (decoders, renderers,
         # build-id readers). Until a result confirms cleanup, every writable path stays.
         result = LAUNCHING
@@ -677,20 +679,23 @@ class Profile(object):
         os.chmod(self.work, 0o700)
         return oracle.Namespace(self.work)
 
-    def release(self, namespace, uncertain=False):
+    def release(self, namespace, uncertain=False, why=None):
         """End one execution's namespace. Its lifecycle is checked before anything is removed:
         when a process the run started may still be live, the namespace and every byte in it
         are kept for the operator, its handles closed and nothing of it removed, and the run
-        stops launching (`halted`). Only a confirmed end lets the namespace be removed, and a
-        removal that is not confirmed keeps what is left the same way."""
+        stops launching (`halted`); `why`, when the caller knows it, names what left the end
+        unconfirmed. Only a confirmed end lets the namespace be removed, and a removal that
+        is not confirmed keeps what is left the same way."""
         if uncertain or self.retained or getattr(namespace, "reader_uncertain", False):
             path = namespace.keep()
             if path not in self.retained:
                 self.retained.append(path)
-            raise perfcapture.CaptureError(
-                "cleanup_uncertain", ("a process the run started may still be live, so its "
-                                      "scratch %s was kept for recovery and nothing more of "
-                                      "this run is launched" % namespace.path)[:4096])
+            detail = ("a process the run started may still be live, so its scratch %s was "
+                      "kept for recovery and nothing more of this run is launched"
+                      % namespace.path)
+            if why is not None:
+                detail = "%s; %s" % (why, detail)
+            raise perfcapture.CaptureError("cleanup_uncertain", detail[:4096])
         problems = namespace.remove()
         if problems:
             # Kept for the operator, never removed beneath a live process.
@@ -1404,6 +1409,8 @@ class Profile(object):
         environment = dict(CLI_ENVIRONMENT)
         environment.update(supervise.scratch_environment(scratch))
         environment.update(case.get("af_environment") or {})
+        if case["timing"]["boundary"] == "reported_interval":
+            environment.update(clicases.tui_home_environment(scratch))
         return environment
 
     def cli_run(self, side, case, binary, wrap=None, writes=(), file_bytes=None, trace=False,
@@ -1421,12 +1428,14 @@ class Profile(object):
         namespace before it is removed."""
         entry = self.cli_entry(side, case)
         namespace = self.namespace()
-        result = staged = room = None
+        result = staged = room = unconfirmed = None
         try:
             scratch = namespace.path
             probe = self.probes[side][0] if side in self.probes else None
             values = {"af": binary, "probe": probe or "", "scratch": scratch,
-                      "package_version": self.cli.versions[side]}
+                      "fixtures": self.cli.fixtures,
+                      "package_version": self.cli.versions[side],
+                      "python": clicases.driver_python(self.contained())}
             environment = self.cli_environment(case, scratch)
             if telemetry is not None:
                 environment[TELEMETRY_LEVEL] = telemetry
@@ -1439,9 +1448,13 @@ class Profile(object):
                 self.copy_seed(side, case, os.path.join(scratch, "seed"),
                                cli_seed=entry["seed"])
             elif entry["setup"] != "none":
+                seed_argument = "-"
+                if entry["setup"] == "registry_stores_20x10000":
+                    seed_argument = os.path.join(scratch, "seed")
+                    self.copy_seed(side, case, seed_argument, cli_seed=entry["seed"])
                 setup = (["/bin/sh", os.path.join(self.cli.fixtures, "setup.sh"),
                           entry["setup"], scratch, binary, probe or "-",
-                          clicases.setup_argument(entry, self.cli.receipts, side, "-")],
+                          clicases.setup_argument(entry, self.cli.receipts, side, seed_argument)],
                          environment, scratch, CLI_SETUP_SECONDS)
             argv = [clicases.expand(text, values) for text in entry["argv"]]
             if wrap is not None:
@@ -1459,6 +1472,31 @@ class Profile(object):
                 # watch cancelled the command while it was live or it finished first: settled
                 # on the bytes held now, before any supervision failure the cancellation caused.
                 self.settled_trace()
+            if (case["timing"]["boundary"] == "reported_interval"
+                    and result.supervised is not None):
+                # The PTY driver owns the browser's session outside the supervisor's group
+                # (ADR-0263): a cleanup it could not confirm (exit 3) is this execution's,
+                # whatever the supervisor refused or confirmed of its own group, and so is a
+                # driver that did not exit of its own accord (its supervisor's timeout,
+                # cancellation or kill), whose settlement of that session may not have
+                # finished; a container's PID namespace ends the session regardless. Read
+                # before any failure of the supervisor's own: nothing of the run is judged or
+                # removed, the namespace is kept and nothing more is launched.
+                reply = result.supervised.result
+                ended = reply["termination"]["kind"]
+                tail = result.stderr.decode("utf-8", "replace")[-512:]
+                if (ended == "exited"
+                        and supervise.returncode(reply) == clicases.DRIVER_UNCONFIRMED_EXIT):
+                    unconfirmed = ("%s: the PTY driver could not confirm that the browser's "
+                                   "session ended: %s" % (what, tail))
+                elif (ended not in ("exited", "setup_failed", "launch_failed")
+                      and not self.contained()):
+                    unconfirmed = ("%s: the PTY driver did not exit of its own accord (%s), so "
+                                   "its settlement of the browser's session is unconfirmed: %s"
+                                   % (what, ended, tail))
+                if unconfirmed is not None:
+                    result.uncertain = True
+                    raise perfcapture.CaptureError("cleanup_uncertain", unconfirmed[:4096])
             failure = result.supervision_failure(observed_stream=True)
             if failure is not None:
                 raise perfcapture.CaptureError("cli_failed", "%s: %s" % (what, failure))
@@ -1480,7 +1518,7 @@ class Profile(object):
                 self.discard_trace(staged, LAUNCHING if getattr(
                     namespace, "reader_uncertain", False) else result)
             finally:
-                self.release(namespace, _uncertain(result))
+                self.release(namespace, _uncertain(result), unconfirmed)
 
     def trace_stage(self, namespace):
         """(path, room) of the raw trace one traced execution exports: a new file below the

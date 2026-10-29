@@ -13,10 +13,11 @@ import shutil
 import subprocess
 import sys
 import time
+from fractions import Fraction
 from unittest import mock
 
 from perflab import builds, bundle, clicases, compare, contracts, hostlock, oracle, planning
-from perflab import runner
+from perflab import report, runner
 from perflab import schedule, supervise
 from perflab import suite as suite_module
 from perflab.values import ContractError, sha256_bytes
@@ -24,8 +25,12 @@ from tests.support import CLI, ROOT, Repo, SUITE, TempDir, fake_supervisor, obse
 from tests.support import read, release_recorded, writable_copy
 
 VERSION = "0.12.0-rc.3"
-LOCK = ('version = 4\n\n[[package]]\nname = "af"\nversion = "%s"\n\n[[package]]\n'
-        'name = "review-core"\nversion = "%s"\n' % (VERSION, VERSION))
+LOCK_TEMPLATE = ('version = 4\n\n[[package]]\nname = "af"\nversion = "%s"\n\n[[package]]\n'
+                 'name = "review-core"\nversion = "%s"\n')
+LOCK = LOCK_TEMPLATE % (VERSION, VERSION)
+# The first package version whose adapter (af_cli_v2) runs the browser case.
+BROWSER_VERSION = "0.13.0"
+TUI_EMPTY = "tui_open__registry_empty"
 DISCOVERY = "cli_discovery__command_version"
 SMALL = "canonical_serialize_small__package_small_envelope"
 TASK_SHOW = "cli_state_read__command_task_show_state_cli_state_10000"
@@ -109,6 +114,15 @@ elif args[:2] == ["review", "report"]:
                                  "runs_recorded": 1, "ledger_round": 1,
                                  "findings_summary": dict(SUMMARY, open=100),
                                  "findings": findings}) + "\n")
+elif args == [] and os.isatty(1):
+    # The browser: a splash, then a cleared frame whose last row is the status line; q quits.
+    import termios, tty
+    tty.setraw(0)
+    os.write(1, b"\x1b[?1049h\x1b[2Jsplash")
+    termios.tcdrain(1)
+    os.write(1, b"\x1b[2J\x1b[1;1Hpanes\x1b[30;1H\x1b[0;7mNORMAL  scope")
+    if os.read(0, 1) != b"q":
+        sys.exit(3)
 else:
     sys.exit(2)
 '''
@@ -217,11 +231,11 @@ def script(path, body):
     return path
 
 
-def authority_repo(path):
+def authority_repo(path, lock=LOCK):
     """A repository whose commits hold the authority registry, golden entries and CLI fixtures
-    exactly as this checkout has them, and a Cargo.lock recording af VERSION."""
+    exactly as this checkout has them, and a Cargo.lock recording af VERSION (or `lock`'s)."""
     repo = Repo(path)
-    files = {"Cargo.lock": LOCK, "README": "product v1\n"}
+    files = {"Cargo.lock": lock, "README": "product v1\n"}
     for relative in ("fixtures/performance/suite.toml", "fixtures/performance/golden/native.json",
                      "fixtures/performance/cli.toml"):
         files[relative] = read(os.path.join(ROOT, relative))
@@ -235,7 +249,8 @@ def authority_repo(path):
     return repo, base, head
 
 
-def plan_for(repo, base, head, cases, run_id="runner_run", shards=1, environment=None):
+def plan_for(repo, base, head, cases, run_id="runner_run", shards=1, environment=None,
+             lock=LOCK):
     loaded = suite_module.load(SUITE)
     environment = environment or "macos_arm64_local"
     request = planning.Request(trigger="manual", tier="nightly", scope="partial_scope",
@@ -245,7 +260,7 @@ def plan_for(repo, base, head, cases, run_id="runner_run", shards=1, environment
     ids = planning.Identities()
     ids.baseline, ids.candidate, ids.control = base, head, base
     ids.trigger = {"kind": "manual", "remeasure_of": None}
-    lock = sha256_bytes(LOCK.encode("utf-8"))
+    lock = sha256_bytes(lock.encode("utf-8"))
     digests = {"suite_sha256": loaded.raw_sha256, "policy_digest": loaded.policy_digest,
                "instrument_digest": sha256_bytes(b"instrument"),
                "fixture_digest": sha256_bytes(b"fixtures")}
@@ -331,8 +346,9 @@ class ShardHarness(TempDir):
         os.mkdir(self.path("locks"), 0o755)
 
     def prepare(self, cases, af_versions=None, run_id="runner_run", shards=1, slow_after=None,
-                overrides=None):
-        plan = plan_for(self.repo, self.base, self.head, cases, run_id=run_id, shards=shards)
+                overrides=None, lock=LOCK):
+        plan = plan_for(self.repo, self.base, self.head, cases, run_id=run_id, shards=shards,
+                        lock=lock)
         plan_path = self.path(run_id + ".json")
         with open(plan_path, "wb") as stream:
             stream.write(contracts.write_bytes(plan, "run"))
@@ -699,6 +715,146 @@ class Shards(ShardHarness):
         # The lock it took is the private one.
         self.assertTrue(os.path.exists(os.path.join(locks, hostlock.MACHINE_LOCK_NAME)))
 
+
+class BrowserShard(ShardHarness):
+    """The browser case end to end in trusted local mode: the supervisor runs the declared
+    `{python}` PTY driver around a stand-in browser in a real pseudo-terminal."""
+
+    def setUp(self):
+        TempDir.setUp(self)
+        self.lock = LOCK_TEMPLATE % (BROWSER_VERSION, BROWSER_VERSION)
+        self.repo, self.base, self.head = authority_repo(self.path("checkout"), self.lock)
+        os.mkdir(self.path("scratch"), 0o700)
+        os.mkdir(self.path("locks"), 0o755)
+
+    def test_a_browser_sample_records_its_frame_and_splash_through_the_report(self):
+        # The first browser sample runs the real driver around the stand-in browser in a real
+        # pseudo-terminal; the supervisor reports the schedule's other samples with distinct,
+        # exact values (`support.FAKE_SUPERVISOR`'s `reported`), so one real launch proves the
+        # integration and the whole plan proves what recording, comparison and the report keep.
+        versions = {"baseline": BROWSER_VERSION, "candidate": BROWSER_VERSION}
+        plan, plan_path, build = self.prepare([TUI_EMPTY], versions, lock=self.lock,
+                                              overrides={"tui_open": "reported_after_one"})
+        doc = runner.run_shard(self.options(plan_path, build))
+        self.assertEqual(doc["status"], "complete", doc["failure"])
+        browser = [record for record in self.records() if record["instance_id"] == TUI_EMPTY]
+        self.assertEqual(len(browser), 2 * (12 + 2))
+        for record in browser:
+            self.assertEqual(record["status"], "ok", record["failure"])
+            self.assertEqual(record["identity"]["adapter"], "af_cli_v2")
+            self.assertEqual(record["metric_scopes"],
+                             {"wall_ms": "probe_reported", "splash_ms": "probe_reported"})
+            self.assertEqual(record["unavailable_metrics"], {})
+            # The real sample's two reads may be one, when the splash and the frame arrived
+            # together; the driver's `Screen` test proves them apart when they did not.
+            self.assertGreaterEqual(Fraction(record["metrics"]["wall_ms"]["value"]),
+                                    Fraction(record["metrics"]["splash_ms"]["value"]))
+        # Every reported sample's pair of values is its own, kept exactly: invocation `call`
+        # reports a frame of `100 + call` and a half and a splash of `10 + call` and a
+        # quarter, so the pairs are distinct and each differs by 90.25; the real sample's are
+        # the measured ones.
+        # The first browser sample run is the one the supervisor ran for real
+        # (`reported_after_one`); the rest are the reported ones, known by their sequence.
+        real = min(browser, key=lambda record: record["sequence"])
+        reported = [(Fraction(record["metrics"]["wall_ms"]["value"]),
+                     Fraction(record["metrics"]["splash_ms"]["value"]))
+                    for record in browser if record is not real]
+        self.assertEqual(len(reported), len(browser) - 1)
+        self.assertEqual(len(set(reported)), len(reported))
+        self.assertEqual(set(frame - splash for frame, splash in reported),
+                         {Fraction("90.25")})
+        verdict = compare.compare(self.path("run"))
+        self.assert_valid_evidence(verdict)
+        # The report keeps every sample's splash_ms in its verified evidence copy.
+        doc = report.write(self.path("run"), self.path("report"))
+        samples = [item["path"] for item in doc["downloads"] if item["kind"] == "samples"]
+        self.assertEqual(samples, ["evidence/shards/0/samples.jsonl"])
+        copied = contracts.read_samples(read(self.path("report", *samples[0].split("/"))))
+        self.assertEqual([record["metrics"]["splash_ms"] for record in copied
+                          if record["instance_id"] == TUI_EMPTY],
+                         [record["metrics"]["splash_ms"] for record in browser])
+
+
+    # What the real driver reports when a member of the browser's group survives its kill.
+    UNCONFIRMED_DRIVER = ("import sys\n"
+                          "sys.stderr.write('tui-open: cleanup unconfirmed: held\\n')\n"
+                          "sys.exit(%d)\n" % clicases.DRIVER_UNCONFIRMED_EXIT)
+
+    def driven_by(self, run_id, driver, overrides=None):
+        """A plan of the browser case whose authority's PTY driver is the Python source
+        `driver`, a stand-in for what the real one reports, built with the fake supervisor's
+        `overrides`: (plan_path, build)."""
+        versions = {"baseline": BROWSER_VERSION, "candidate": BROWSER_VERSION}
+        plan, plan_path, _ = self.prepare([TUI_EMPTY], versions, run_id=run_id, lock=self.lock)
+        authority = self.repo.commit("authority",
+                                     {"fixtures/performance/cli/tui-open.py": driver})
+        plan = dict(plan)
+        plan["resolved"] = dict(plan["resolved"], authority_sha=authority)
+        plan["plan_digest"] = contracts.plan_digest(plan)
+        with open(plan_path, "wb") as stream:
+            stream.write(contracts.write_bytes(plan, "run"))
+        build = make_build(self.path(run_id + "-build-2"), plan, versions)
+        if overrides is not None:
+            with open(os.path.join(build, "control", "overrides.json"), "w") as stream:
+                json.dump(overrides, stream)
+        return plan_path, build
+
+    def assert_unconfirmed_shard(self, doc, detail):
+        """The shard failed `cleanup_uncertain` with `detail`, kept the one namespace and
+        failed the one browser record, which is returned."""
+        self.assertEqual(doc["status"], "failed")
+        self.assertEqual(doc["failure"]["reason"], "cleanup_uncertain")
+        self.assertIn(detail, doc["failure"]["detail"])
+        self.assert_kept_one_namespace(doc)
+        browser = [record for record in self.records() if record["instance_id"] == TUI_EMPTY]
+        self.assertEqual([record["status"] for record in browser], ["failed"])
+        return browser[0]
+
+    def test_a_driver_that_did_not_exit_of_its_own_accord_stops_the_shard(self):
+        # An authority whose driver a signal ends before it could settle the browser's
+        # session: the supervisor's own group is clean, and the sample's cleanup is not, since
+        # a process the browser started outside that group may live on (ADR-0263).
+        plan_path, build = self.driven_by(
+            "killed", "import os, sys\nsys.stderr.write('tui-open: ended\\n')\n"
+            "sys.stderr.flush()\nos.kill(os.getpid(), 9)\n")
+        doc = runner.run_shard(self.options(plan_path, build))
+        self.assert_unconfirmed_shard(doc, "did not exit of its own accord (signalled)")
+        self.assertIn("tui-open: ended", doc["failure"]["detail"])
+
+    def test_a_driver_its_supervisor_cancelled_is_an_unconfirmed_cleanup_too(self):
+        # A cancellation ends the supervisor's group, not the browser's session: the shard
+        # fails as unconfirmed and keeps the scratch rather than report an interruption.
+        plan_path, build = self.driven_by(
+            "cancelled", "import sys\nsys.stderr.write('tui-open: settling\\n')\n",
+            overrides={"tui_open": "cancelled"})
+        doc = runner.run_shard(self.options(plan_path, build))
+        record = self.assert_unconfirmed_shard(doc,
+                                               "did not exit of its own accord (cancelled)")
+        self.assertIn("tui-open: settling", doc["failure"]["detail"])
+        self.assertEqual(record["failure"]["kind"], "lifecycle_violation")
+
+    def test_a_driver_that_cannot_confirm_the_session_ended_stops_the_shard(self):
+        plan_path, build = self.driven_by("unconfirmed", self.UNCONFIRMED_DRIVER)
+        doc = runner.run_shard(self.options(plan_path, build))
+        record = self.assert_unconfirmed_shard(
+            doc, "could not confirm that the browser's session ended: tui-open: cleanup "
+            "unconfirmed: held")
+        self.assertEqual(record["unavailable_metrics"],
+                         {"splash_ms": "not observed by this sample"})
+
+    def test_a_driver_exit_the_supervisor_also_refused_still_keeps_the_scratch(self):
+        # The supervisor refused the lifecycle of its own group (a descendant it killed) and
+        # the driver could not confirm the browser's session, outside that group: the record
+        # fails as the supervisor says, and the driver's verdict keeps the scratch and stops
+        # the shard, whatever the supervisor settled of its own.
+        plan_path, build = self.driven_by("refused", self.UNCONFIRMED_DRIVER,
+                                          overrides={"tui_open": "leak"})
+        doc = runner.run_shard(self.options(plan_path, build))
+        record = self.assert_unconfirmed_shard(
+            doc, "could not confirm that the browser's session ended: tui-open: cleanup "
+            "unconfirmed: held")
+        self.assertEqual(record["failure"]["kind"], "lifecycle_violation")
+        self.assertIn("1 descendant outlived the child", record["failure"]["detail"])
 
 class SeedHarness(ShardHarness):
     def seeded(self, run_id, cases=(TASK_SHOW, LEDGER)):
@@ -1393,7 +1549,17 @@ class CliRegistry(TempDir):
                                                                   sort_keys=True))
                           for entry in adapter["commands"] if "pending" not in entry)
         self.assertEqual(len(runnable), 9)
-        self.assertEqual([entry for entry in adapter["commands"] if "pending" in entry], [])
+        self.assertEqual([entry["parameters"]["registry"] for entry in adapter["commands"]
+                          if "pending" in entry], ["empty", "stores_20x10000"])
+        current = [entry for entry in doc["adapters"]["af_cli_v2"]["commands"]
+                   if entry["case_id"] == "tui_open"]
+        self.assertEqual([(entry["parameters"]["registry"], entry["setup"])
+                          for entry in current],
+                         [("empty", "registry_empty"),
+                          ("stores_20x10000", "registry_stores_20x10000")])
+        self.assertTrue(all(entry["argv"] == ["{python}", "-I",
+                                               "{fixtures}/tui-open.py", "{af}"]
+                            for entry in current))
         # The commands the design requires exist and use the help that exists: task show
         # --json, review ledger's semantic text (it has no --json flag) and review report
         # --format json, each over a private copy of the side's own seed.
@@ -1418,6 +1584,46 @@ class CliRegistry(TempDir):
         with self.assertRaises(ContractError) as caught:
             clicases.check_registry(edited, loaded.doc)
         self.assertIn("no command for cli_discovery__command_version", str(caught.exception))
+
+    def test_both_browser_commands_expand_to_requests_the_supervisor_admits(self):
+        # The supervisor runs only an absolute program: each mode binds {python} to one.
+        doc = clicases.load(os.path.join(ROOT, "fixtures/performance/cli.toml"))
+        current = [entry for entry in doc["adapters"]["af_cli_v2"]["commands"]
+                   if entry["case_id"] == "tui_open"]
+        self.assertEqual(len(current), 2)
+        for mode, python, containment, scratch in (
+                (runner.TRUSTED_LOCAL, sys.executable, "process_group", None),
+                (runner.LINUX_CONTAINER, "/usr/bin/python3", "pid_namespace",
+                 supervise.SCRATCH)):
+            values = runner.cli_values(mode, "/opt/af", None, self.path("scratch"),
+                                       self.path("fixtures"), BROWSER_VERSION)
+            for entry in current:
+                with self.subTest(mode=mode, registry=entry["parameters"]["registry"]):
+                    argv = [clicases.expand(text, values) for text in entry["argv"]]
+                    self.assertEqual(argv[0], python)
+                    self.assertTrue(os.path.isabs(argv[0]))
+                    self.assertEqual(argv[2], values["fixtures"] + "/tui-open.py")
+                    order = supervise.request(
+                        argv, {"HOME": "/h"}, clicases.expand(entry["cwd"], values), "",
+                        120000, 1024, 4096, containment=containment, scratch=scratch,
+                        patterns=clicases.patterns(entry), selectors=clicases.selectors(entry))
+                    self.assertEqual(order["argv"], argv)
+        for argv in (["python3", "-I", "{fixtures}/tui-open.py", "{af}"],
+                     ["{python}", "-I", "{fixtures}/tui-open.py", "{af}", "--repo", "/"]):
+            edited = json.loads(json.dumps(doc))
+            edited["adapters"]["af_cli_v2"]["commands"][
+                doc["adapters"]["af_cli_v2"]["commands"].index(current[0])]["argv"] = argv
+            with self.subTest(argv=argv), self.assertRaisesRegex(
+                    ContractError, "runs the side's AF binary or the declared PTY driver"):
+                contracts.validate_cli(edited)
+        edited = json.loads(json.dumps(doc))
+        edited["adapters"]["af_cli_v2"]["commands"][0]["argv"] = ["{af}", "{python}"]
+        with self.assertRaisesRegex(ContractError, "only the PTY driver's command names"):
+            contracts.validate_cli(edited)
+        bare = dict(current[0], argv=["python3"] + current[0]["argv"][1:])
+        with self.assertRaisesRegex(ContractError, "the program is an absolute path"):
+            supervise.request([clicases.expand(text, values) for text in bare["argv"]], {},
+                              "/", "", 1000, 1024, 4096)
 
     def test_the_task_fixture_catalog_pins_its_packages_by_the_reference_digest(self):
         repo = os.path.join(ROOT, "fixtures/performance/cli/task-roots/repo")

@@ -8,14 +8,14 @@ The data of the continuous performance laboratory
 [ADR-0172](../../docs/adr/0172-admit-candidate-files-through-bounded-descriptors-and-report-archive-and-trend-runs-offline.md),
 [ADR-0174](../../docs/adr/0174-diagnose-in-separate-child-runs-that-record-only-the-bracketed-region-and-share-one-test-executable-boundary.md)).
 
-- `suite.toml` — the reviewed registry (`af.perf-suite/3`): cases, parameter domains, oracles,
+- `suite.toml` — the reviewed registry (`af.perf-suite/4`): cases, parameter domains, oracles,
   the native probe and each library case's probe contract and the seed it reads (ADR-0170),
   policies, budgets, recipes,
   environments, tiers and limits. `python3 scripts/performance/cli.py list` validates and
   expands it and checks that the golden entries cover every native instance. Every recipe,
   environment and case is executable where its host provides it (ADR-0169); a host that cannot
   refuses at run time with its reason, which `cli.py capabilities` lists.
-- `cli.toml` — the whole-CLI commands (`af.perf-cli/5`, ADR-0168 to ADR-0172): per CLI adapter
+- `cli.toml` — the whole-CLI commands (`af.perf-cli/6`, ADR-0168 to ADR-0172): per CLI adapter
   and process instance, the actual AF argv, its untimed fixture setup and the independent
   oracle rules, and the seeds each side writes once per shard. `task show`'s whole output must
   be one complete JSON document whose `task_id`, history numbered exactly 0..9999 in order and
@@ -25,6 +25,22 @@ The data of the continuous performance laboratory
   checks against the reference digests. `cli/campaign-roots` is the model-free review whose
   Campaign the `review ledger` and `review report` commands read; a test checks its pipeline
   pin.
+- `cli/tui-open.py` — the stdlib-only 100x30 PTY driver (`af.perf-tui-open/1`), run as
+  `{python} -I` with the absolute interpreter `{python}` names. It reports canonical decimal
+  millisecond strings for first output (`splash_ms`) and for the read that completes the
+  last-row `NORMAL` status line after the screen's last clear (`browser_ms`). `tui_open` uses
+  the checked `browser_ms` interval as its primary metric and records `splash_ms` as its
+  optional metric. The driver leads the browser's session: the child holds the driver's
+  stderr, its exit is observed unreaped, every live member of its group is killed before it is
+  reaped, a process that left the group is found by the run's token in its environment
+  (`AF_PERF_TUI_OPEN_SESSION`) and killed (one that also replaced its environment before
+  `exec` is beyond the driver, as beyond any process-group sample; on Linux an environment of
+  this user's that it cannot read leaves the cleanup unconfirmed, unless its process has exited
+  or given up its address space and runs nothing), a survivor fails the sample
+  and a cancellation ends the session first, pending while a settlement already under way is
+  confirmed. Its private registry setup registers all 20 copied Stores through each
+  side's own `af task gc --state` preview, which records the Store it names and writes nothing
+  else (ADR-0263).
 - `adapters.toml` — the reviewed native probe adapters (`af.perf-adapters/1`): each a fixed
   priority, an equivalence group, the contracts it serves and the exact closure of authority
   example files a build copies into a measured source before compiling it. A test requires each
@@ -236,7 +252,7 @@ python3 scripts/performance/cli.py profile --plan run.json --verdict verdict.jso
 
 `--case ID` (repeatable, at most 8) selects explicitly; `--verdict` selects the parent's
 regressed cases, then its inconclusive ones, by instance ID (3 by default, `--max-cases` at most
-8). The command freezes a child plan of scope `diagnostic` (`af.perf-run/6`, with the recipe's
+8). The command freezes a child plan of scope `diagnostic` (`af.perf-run/7`, with the recipe's
 declared kind, base recipe and tools), builds the diagnostic recipe like
 `cli.py build` (or takes `--build DIR`), and works within one wall deadline (15 minutes, at most
 30 with `--total-minutes`), a 128-MiB byte cap and a build cap, all checked while it runs.
@@ -257,11 +273,13 @@ telemetry documents (`telemetry/<case>/<side>/`, ADR-0214), and a bundle manifes
 exits 0 when everything requested was captured and 4 when anything was unavailable; each
 omission names its reason and exact reproduction.
 
-- **CLI cases**: each execution runs the side's own AF binary for its command in a private HOME,
-  XDG and TMPDIR after its declared setup, a state read on the side's own seed, and the
-  supervisor's observation of its whole output is judged by the command's oracle. A CPU profile
-  records each fresh process whole; a trace's region is the startup of a discovery command or
-  the dispatched command. A case that spawns processes runs only with `--mode linux_container`.
+- **CLI cases**: each execution runs the side's own AF binary, directly or through the declared
+  PTY driver, in a private HOME, XDG and TMPDIR after its setup. The supervisor's observation of
+  the whole output is judged by the command's oracle; a PTY driver exit of 3, or a driver that
+  did not exit of its own accord, is a cleanup it could not confirm, which keeps the
+  execution's namespace and launches nothing more (`cleanup_uncertain`, ADR-0263). A CPU profile records each fresh process
+  whole; a trace's region is the startup of a discovery command or the dispatched command.
+  Cases declared as requiring Linux containment run only with `--mode linux_container`.
 - **CPU profiles** (`linux_gnu_cpu_profile`, `linux_musl_cpu_profile`): `perf record` starts
   disabled and the probe's `perf-control` handshake enables it for exactly each region,
   acknowledged by perf. One

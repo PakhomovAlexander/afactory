@@ -1,5 +1,5 @@
 {
-  "schema": "af.perf-run/6",
+  "schema": "af.perf-run/7",
   "run_id": "schema_fixture_run",
   "parent_run_id": null,
   "scope": "bootstrap",
@@ -378,5 +378,5 @@
   "cohort": null,
   "diagnostic": null,
   "required_check_eligible": false,
-  "plan_digest": "sha256:6b625e7962bc8a0ae4545179fc024697c7d2d4565e8fa644d7cd56bc5a4e7771"
+  "plan_digest": "sha256:e80ded2daac1039ead69b7c9bc0f253685530b48e079127140de40b7bf2e5d80"
 }

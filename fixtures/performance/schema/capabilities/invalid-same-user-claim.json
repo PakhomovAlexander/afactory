@@ -53,7 +53,7 @@
       "path": null
     }
   },
-  "schema": "af.perf-capabilities/2",
+  "schema": "af.perf-capabilities/3",
   "tools": {
     "docker_client": {
       "identity": "27.4.0",
@@ -78,6 +78,6 @@
       "status": "available"
     },
     "same_user_isolation": "provided",
-    "scope": "discovery_and_nonspawning_library_cases"
+    "scope": "declared_cases_without_linux_containment"
   }
 }

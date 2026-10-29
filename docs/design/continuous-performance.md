@@ -276,13 +276,18 @@ that create new sessions. Unconfirmed cleanup stops the shard. Logs are drained 
 capped files; truncation is counted. Neither container setup nor teardown belongs in
 the AF child-lifetime metric. An AF command must finish its expected work before exit;
 unexpected live descendants fail its lifecycle oracle rather than produce a fast success.
-The supervisor's clock brackets child launch through observed child exit; its own startup
-is excluded. Record descendant cleanup separately and test this boundary explicitly.
+For child-lifetime process cases, the supervisor's clock brackets child launch through observed
+child exit; its own startup is excluded. The browser case instead reads the driver's checked
+launch-to-frame interval from its versioned JSON, which ends when the status line reaches the
+terminal. The browser leads a session of its own, outside the supervisor's process group, so
+the driver ends that session itself, on cancellation too, and a member that outlives the browser
+fails the sample (ADR-0263). Record descendant cleanup separately and test each boundary
+explicitly.
 
-macOS execution is local and explicitly trusted. In v1, timing covers discovery and
-known nonspawning library cases; process groups do not claim Linux namespace isolation.
-Spawning cases require Linux. Missing Docker or containment capability has no weaker
-automatic fallback.
+macOS execution is local and explicitly trusted. It covers discovery, the declared browser PTY
+case, and known nonspawning library cases; process groups do not claim Linux namespace
+isolation. Cases marked as requiring Linux containment run only there. Missing Docker or
+containment capability has no weaker automatic fallback.
 
 ### Run-health observations
 
@@ -393,6 +398,7 @@ the original result.
 | --- | --- |
 | CLI discovery under **50 ms** | Each of the four discovery commands; shipping binary; 20 fresh processes; private HOME; warm OS page cache |
 | State reads under **200 ms** | Each of the three state commands; exactly 10,000 relevant events; matching shipping recipe/cache treatment |
+| Bare `af` browser first frame under **200 ms** | From process launch to the first frame painting `NORMAL` on the last row of a 100x30 pseudo-terminal; shipping binary; 20 fresh processes; private HOME; warm OS page cache; both an empty registry and one naming 20 copies of the 10,000-event Task seed |
 
 A target is met on the **named environment** only when every measured sample is strictly
 below it; equality fails. Show maximum, median, p95, binary identity, and health evidence.
@@ -400,7 +406,8 @@ More samples means checking all of them. This is a finite observed budget demons
 not a guarantee about every future invocation or every user's machine.
 
 Initial environments are hosted Linux x86_64 GNU for quick comparisons, hosted Linux
-x86_64 musl for shipping, and a named local macOS arm64 host for discovery. Each includes
+x86_64 musl for shipping, and a named local macOS arm64 host for discovery and the browser case.
+Each includes
 its exact hardware/image fingerprint. macOS state-read budget coverage is unavailable
 in v1. A GNU PR comparison cannot satisfy a musl shipping target.
 
@@ -734,7 +741,7 @@ we write the implementation plan. The following are acceptance evidence, not tha
 | Cost | Five real PR comparisons and five same-source comparisons, each with cold and warm build caches; publish build/sampling median and maximum, per-case cost, artifact sizes, and all failures. |
 | Detection and reliability | The fixed cohort below, including environment health and inconclusive rates. No required check until it passes for the proposed policy. |
 | Diagnosis | Real symbolized Linux baseline/candidate/difference profiles, useful trace export, lost/unknown-frame reporting, and per-native-case trace-off/on overhead. Optional adapters report their supported capabilities honestly. |
-| Product speed | Twenty shipping samples per discovery command on named Linux/macOS and per state command on Linux; all samples checked against 50/200 ms. Missed targets become optimization work. |
+| Product speed | Twenty shipping samples per discovery command on named Linux/macOS, per state command on Linux, and for both bare-`af` browser instances on named Linux/macOS; all samples strictly below 50/200/200 ms respectively. Missed targets become optimization work. |
 | History and operations | Verified archive import/expiry/capacity behavior, collection before artifact expiry, compatible history, staging release handoff/deduplication, and recorded ruleset/release-pin compatibility. |
 | Experiments | Real kernel measure/compare integration, immutable sources, cache semantics, malformed/failure refusal, and separate tampered timing-boundary/fixture candidates unable to produce an improved receipt. |
 
@@ -855,7 +862,7 @@ whole output (`af.perf-supervisor-request/3`, `af.perf-supervisor-result/4`, `af
 p4 (ADR-0172) admits every file a measured side wrote through held, non-following descriptors
 within declared bounds and the run's deadline, and replaces the history's prefix observation by
 the supervisor's streamed observation of declared JSON fields (`af.perf-supervisor-request/4`,
-`af.perf-supervisor-result/5`, `af.perf-cli/5`). It adds `cli.py report`, `cli.py history` and
+`af.perf-supervisor-result/5`, `af.perf-cli/6`). It adds `cli.py report`, `cli.py history` and
 `cli.py archive` with its collector and runbook (`af.perf-report/1`, `af.perf-history/1`,
 `af.perf-archive/1`, `af.perf-archive-event/1`, `af.perf-archive-collection/1`,
 `af.perf-archive-status/1`, `af.perf-transport/1`); continuous collection remains an

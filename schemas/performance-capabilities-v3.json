@@ -1,13 +1,13 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "$id": "urn:af:schema:performance-capabilities:2",
-  "title": "af.perf-capabilities/2",
+  "$id": "urn:af:schema:performance-capabilities:3",
+  "title": "af.perf-capabilities/3",
   "description": "What this host can execute: actual tool identities, trusted local and Linux container capability, the bounded-scratch backend with the evidence of its enforcement fill, and each registry environment, with the reason for anything unavailable (ADR-0167).",
   "type": "object",
   "additionalProperties": false,
   "properties": {
     "schema": {
-      "const": "af.perf-capabilities/2"
+      "const": "af.perf-capabilities/3"
     },
     "host": {
       "type": "object",
@@ -115,7 +115,7 @@
           ]
         },
         "scope": {
-          "const": "discovery_and_nonspawning_library_cases"
+          "const": "declared_cases_without_linux_containment"
         },
         "same_user_isolation": {
           "const": "not_provided"

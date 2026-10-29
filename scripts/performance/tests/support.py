@@ -294,6 +294,14 @@ action = overrides.get(str(call))
 if action is None and '_seed_v1"' in request["stdin"]:
     # Every native seed writer's request (ADR-0170), whatever its index.
     action = overrides.get("native_seed_writer")
+elif action is None and any(arg.endswith("/tui-open.py") for arg in request["argv"]):
+    # Every PTY driver request (ADR-0263), whatever its index: `reported_after_one` runs the
+    # first driver for real and reports the rest.
+    action = overrides.get("tui_open")
+    if action == "reported_after_one":
+        marker = os.path.join(here, "driver-ran")
+        action = "reported" if os.path.exists(marker) else None
+        open(marker, "w").close()
 if action == "garbage":
     sys.stdout.write("not a supervisor reply\n")
     sys.exit(0)
@@ -338,7 +346,16 @@ if setup is not None:
                     "lifecycle": lifecycle}
     if termination["kind"] != "exited" or termination["code"] != 0:
         setup_failed = "it ended %s %s" % (termination["kind"], termination["code"])
-if setup_failed is None:
+if setup_failed is None and action == "reported":
+    # A PTY driver's document in place of running it (ADR-0263): distinct, exact values for
+    # each invocation, so a test can tell every sample's metrics apart downstream.
+    termination = {"kind": "exited", "code": 0, "signal": None, "detail": ""}
+    wall, observation, err = str(5000000 + call), "unreaped", b""
+    out = json.dumps({"schema": "af.perf-tui-open/1", "browser_ms": "%d.5" % (100 + call),
+                      "splash_ms": "%d.25" % (10 + call), "exit_code": 0},
+                     sort_keys=True, separators=(",", ":")).encode("utf-8") + b"\n"
+    lifecycle = LIFECYCLE
+elif setup_failed is None:
     termination, wall, observation, out, err = execute(
         request["argv"], request["stdin"].encode("utf-8"), request["environment"],
         request["cwd"], request["timeout_ms"])
@@ -358,6 +375,10 @@ patterns = [pattern.encode("utf-8") for pattern in request["stdout_patterns"]]
 
 if action == "timeout":
     termination = {"kind": "timeout", "code": None, "signal": None, "detail": ""}
+    wall = None
+elif action == "cancelled":
+    # The supervisor was cancelled and ended its child's group.
+    termination = {"kind": "cancelled", "code": None, "signal": 15, "detail": ""}
     wall = None
 elif action == "leak":
     lifecycle = {"observation": "process_group_scan", "descendants_at_exit": 1,

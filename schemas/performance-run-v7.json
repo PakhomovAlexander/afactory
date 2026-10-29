@@ -1,13 +1,13 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "$id": "urn:af:schema:performance-run:6",
-  "title": "af.perf-run/6",
+  "$id": "urn:af:schema:performance-run:7",
+  "title": "af.perf-run/7",
   "description": "A frozen comparison plan, run.json: resolved identities, each source's Cargo.lock digest read from its Git objects, authority digests, cases, seeded AB/BA schedule, sentinels and limits. The reader recomputes the plan digest, K, every rank, order and shard assignment; nothing rewrites a plan.",
   "type": "object",
   "additionalProperties": false,
   "properties": {
     "schema": {
-      "const": "af.perf-run/6"
+      "const": "af.perf-run/7"
     },
     "run_id": {
       "$ref": "#/$defs/id"
@@ -1070,6 +1070,27 @@
                   "boundary",
                   "region",
                   "setup_excluded",
+                  "description"
+                ]
+              },
+              {
+                "type": "object",
+                "additionalProperties": false,
+                "properties": {
+                  "boundary": {
+                    "const": "reported_interval"
+                  },
+                  "field": {
+                    "$ref": "#/$defs/id"
+                  },
+                  "description": {
+                    "type": "string",
+                    "maxLength": 4096
+                  }
+                },
+                "required": [
+                  "boundary",
+                  "field",
                   "description"
                 ]
               }

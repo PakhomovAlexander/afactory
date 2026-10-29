@@ -1,8 +1,9 @@
 # Whole-CLI workloads of the AF performance laboratory (ADR-0168 to ADR-0172).
 #
 # For every instance of a registry `process` case, each declared CLI adapter names the actual
-# AF binary's argv, the fixture setup that runs before it (untimed, under the same supervisor
-# and containment, in the sample's private scratch) and the independent oracle rules its output
+# AF binary's argv (or the reviewed PTY driver's argv for tui_open), the fixture setup that runs
+# before it (untimed, under the same supervisor and containment, in the sample's private scratch)
+# and the independent oracle rules its output
 # must satisfy. The authority wrote every rule from the product's documented command surface
 # and the fixture it declares; none is learned from an observed execution. A rule checks the
 # side's own package version (read from that side's Cargo.lock in the plan's Git objects),
@@ -24,12 +25,17 @@
 # requires a summary's counts to be exactly those of the items it summarizes. Fields the
 # product documents but the fixture does not declare are never frozen.
 #
-# Placeholders: {af} the side's verified AF binary, {probe} the side's verified probe, {scratch}
-# the sample's private scratch, {package_version} the side's own package version. Setups:
+# Placeholders: {af} the side's verified AF binary, {probe} the side's verified probe,
+# {fixtures} the authority's read-only CLI fixtures, {scratch}
+# the sample's private scratch, {package_version} the side's own package version, {python} the
+# absolute interpreter of the PTY driver (the sample image's /usr/bin/python3 in a sample
+# container, the laboratory's own interpreter in trusted local mode), named only as that
+# driver's program. Setups:
 # `none`; `task_repository` (a fresh Git repository of cli/task-roots/repo and its Task file);
 # `task_started` (that repository with the Task captured by the side's own `af task start`);
-# `seed_copy` (a private copy, at {scratch}/seed, of the command's `seed`). `cli/setup.sh`
-# performs them.
+# `seed_copy` (a private copy, at {scratch}/seed, of the command's `seed`);
+# `registry_empty` and `registry_stores_20x10000` prepare the browser's private HOME, the latter
+# copying and registering 20 Stores from `task_state`. `cli/setup.sh` performs them.
 #
 # A seed is large state each side writes once per shard through its own writers, before the
 # first sample that needs it, under the same supervisor and containment (`cli/setup.sh` with the
@@ -37,7 +43,7 @@
 # around every sample, and every sample copies it into its own scratch: no sample shares a
 # mutable Store, a side's state or a cached projection with another, and the copy is setup.
 
-schema = "af.perf-cli/5"
+schema = "af.perf-cli/6"
 description = "Whole-CLI commands, fixture setups and independent oracle rules, per CLI adapter."
 setup_script = "cli/setup.sh"
 
@@ -221,6 +227,23 @@ description = "review report --format json folds all 10,000 Campaign events: one
 
 # Higher priority selects the published 0.13 prerelease surface too; older supported
 # versions retain the explicit v1 command surface above. No output-driven fallback.
+
+[[adapters.af_cli_v1.commands]]
+case_id = "tui_open"
+parameters = { registry = "empty" }
+setup = "none"
+pending = "The older command surface has no reviewed browser registry setup."
+description = "The browser frame case is covered by af_cli_v2."
+
+
+[[adapters.af_cli_v1.commands]]
+case_id = "tui_open"
+parameters = { registry = "stores_20x10000" }
+setup = "none"
+pending = "The older command surface has no reviewed browser registry setup."
+description = "The browser frame case is covered by af_cli_v2."
+
+
 [adapters.af_cli_v2]
 description = "The AF command surface from published 0.13.0-rc.1, whose first-run command heading was introduced by 5ea4aedf."
 priority = 1
@@ -375,3 +398,37 @@ rules = [
   { kind = "json_tally", path = "findings", field = "status", counts = "findings_summary" },
 ]
 description = "review report --format json folds all 10,000 Campaign events: one recorded run, Ledger round 1, each of the fixture's 100 Findings exactly once with its own key, open, minor and at its line, and a findings summary that tallies them."
+
+
+[[adapters.af_cli_v2.commands]]
+case_id = "tui_open"
+parameters = { registry = "empty" }
+setup = "registry_empty"
+argv = ["{python}", "-I", "{fixtures}/tui-open.py", "{af}"]
+cwd = "{scratch}"
+rules = [
+  { kind = "exit_code", value = 0 },
+  { kind = "json_equals", path = "schema", value = "af.perf-tui-open/1" },
+  { kind = "json_equals", path = "exit_code", value = 0 },
+  { kind = "json_matches", path = "browser_ms", pattern = "^[0-9]+(?:\\.[0-9]+)?$" },
+  { kind = "json_matches", path = "splash_ms", pattern = "^[0-9]+(?:\\.[0-9]+)?$" },
+]
+description = "The driver sees the first NORMAL status line and reports launch-to-frame and launch-to-output intervals."
+
+
+[[adapters.af_cli_v2.commands]]
+case_id = "tui_open"
+parameters = { registry = "stores_20x10000" }
+setup = "registry_stores_20x10000"
+seed = "task_state"
+argv = ["{python}", "-I", "{fixtures}/tui-open.py", "{af}"]
+cwd = "{scratch}"
+rules = [
+  { kind = "exit_code", value = 0 },
+  { kind = "json_equals", path = "schema", value = "af.perf-tui-open/1" },
+  { kind = "json_equals", path = "exit_code", value = 0 },
+  { kind = "json_matches", path = "browser_ms", pattern = "^[0-9]+(?:\\.[0-9]+)?$" },
+  { kind = "json_matches", path = "splash_ms", pattern = "^[0-9]+(?:\\.[0-9]+)?$" },
+]
+description = "The driver sees the first NORMAL status line and reports launch-to-frame and launch-to-output intervals."
+

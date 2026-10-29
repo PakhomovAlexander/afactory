@@ -1,13 +1,13 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "$id": "urn:af:schema:performance-cli:5",
-  "title": "af.perf-cli/5",
+  "$id": "urn:af:schema:performance-cli:6",
+  "title": "af.perf-cli/6",
   "description": "fixtures/performance/cli.toml as parsed TOML (ADR-0168, ADR-0169): per CLI adapter and process case instance, the actual AF binary's argv, its untimed fixture setup (a private copy of a side-written seed included) and the independent oracle rules its output must satisfy, or why it is pending; and each seed's writer.",
   "type": "object",
   "additionalProperties": false,
   "properties": {
     "schema": {
-      "const": "af.perf-cli/5"
+      "const": "af.perf-cli/6"
     },
     "description": {
       "type": "string",
@@ -165,7 +165,9 @@
                       "none",
                       "task_repository",
                       "task_started",
-                      "seed_copy"
+                      "seed_copy",
+                      "registry_empty",
+                      "registry_stores_20x10000"
                     ]
                   },
                   "seed": {

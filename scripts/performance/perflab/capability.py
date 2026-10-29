@@ -1,8 +1,9 @@
 """What this host can execute, with actual identities and the reason for every gap (ADR-0166).
 
 Nothing here installs, configures or grants anything, and nothing missing is replaced by a
-weaker mode. Trusted local execution is the explicit macOS capability for discovery and
-nonspawning library cases. Linux samples need a Linux container runtime with cgroup v2 and a
+weaker mode. Trusted local execution is the explicit macOS capability for the cases declared
+without Linux containment: discovery, the browser's first frame and nonspawning library cases.
+Linux samples need a Linux container runtime with cgroup v2 and a
 configured, verified disk-bounded scratch filesystem of at most the environment's
 2-GiB scratch limit: tmpfs, a container's root layer and an unbounded bind mount are not one,
 and a host disk image's or `statvfs`'s report alone does not establish the bound, so
@@ -451,7 +452,7 @@ def docker_info(docker, timeout=TOOL_TIMEOUT_SECONDS):
 
 
 def report(suite_doc, docker="docker", scratch=None, verify_enforcement=False):
-    """The validated `af.perf-capabilities/2` report of this host."""
+    """The validated `af.perf-capabilities/3` report of this host."""
     system = host_platform()
     machine = platform.machine()
     arch = {"arm64": "aarch64", "amd64": "x86_64"}.get(machine.lower(), machine)
@@ -498,7 +499,7 @@ def report(suite_doc, docker="docker", scratch=None, verify_enforcement=False):
                     "python": platform.python_version()},
            "tools": tools,
            "trusted_local": {"capability": trusted,
-                             "scope": "discovery_and_nonspawning_library_cases",
+                             "scope": "declared_cases_without_linux_containment",
                              "same_user_isolation": "not_provided"},
            "linux_container": {"capability": container, "scratch": scratch_record},
            "environments": environments}

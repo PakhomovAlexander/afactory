@@ -35,7 +35,7 @@ LIFECYCLE_STATUSES = ("clean", "no_observed_descendants", "unexpected_descendant
 
 # af.perf-run/4 -----------------------------------------------------------------------------
 
-RUN_SCHEMA = "af.perf-run/6"
+RUN_SCHEMA = "af.perf-run/7"
 
 TRIGGER = Tagged("kind", {
     "pr": tagged_variant("kind", "pr", Field("number", Nullable(Int(1, 2 ** 31))),
@@ -179,7 +179,7 @@ RUN = Obj(
             Field("sha256", DIGEST), Field("admission", Str(enum=("calibrated",
                                                                     "equivalent_adapter"))),
             Field("readiness_sha256", DIGEST), Field("cohort_id", ID),
-            # The exact CPU/image groups the activation's cohort calibrated (af.perf-run/6,
+            # The exact CPU/image groups the activation's cohort calibrated (af.perf-run/7,
             # ADR-0184): a shard observed on any other host cannot satisfy the required check.
             Field("calibrated_groups", Arr(CPU_GROUP, 1, 16))))),
         Field("suite_sha256", DIGEST), Field("policy_digest", DIGEST),
@@ -2433,11 +2433,28 @@ def validate_adapters(doc, where="adapters.toml"):
     return doc
 
 
-# af.perf-cli/5 -----------------------------------------------------------------------------
+# af.perf-cli/6 -----------------------------------------------------------------------------
 
-CLI_SCHEMA = "af.perf-cli/5"
-CLI_SETUPS = ("none", "task_repository", "task_started", "seed_copy")
-CLI_PLACEHOLDERS = ("af", "probe", "scratch", "package_version")
+CLI_SCHEMA = "af.perf-cli/6"
+TUI_OPEN_SCHEMA = "af.perf-tui-open/1"
+TUI_OPEN = Obj(Field("schema", Const(TUI_OPEN_SCHEMA)),
+               Field("browser_ms", DECIMAL),
+               Field("splash_ms", DECIMAL),
+               Field("exit_code", Const(0)))
+
+
+def validate_tui_open(doc, where="tui-open"):
+    TUI_OPEN.validate(doc, where)
+    require(parse_decimal(doc["splash_ms"], where + ".splash_ms") <=
+            parse_decimal(doc["browser_ms"], where + ".browser_ms"),
+            where + ": splash arrived after the browser frame")
+    return doc
+CLI_SETUPS = ("none", "task_repository", "task_started", "seed_copy", "registry_empty",
+              "registry_stores_20x10000")
+CLI_PLACEHOLDERS = ("af", "probe", "scratch", "package_version", "fixtures", "python")
+# The reviewed PTY driver's command (ADR-0263): the absolute interpreter `{python}` names, never
+# one the supervisor would look up on PATH, runs the driver isolated around the side's AF.
+TUI_DRIVER_ARGV = ["{python}", "-I", "{fixtures}/tui-open.py", "{af}"]
 AF_TASK_ID = Str(pattern=r"^[a-z][a-z0-9-]{0,63}$", max_len=64)
 JSON_PATH = Str(pattern=r"^(?:[a-z0-9_]+|\*)(?:\.(?:[a-z0-9_]+|\*))*$", max_len=256)
 # A path the supervisor's streaming JSON observation selects (ADR-0172): one to eight segments,
@@ -2559,13 +2576,20 @@ def validate_cli(doc, where="cli.toml"):
                 require(not runnable and command["setup"] == "none" and "seed" not in command,
                         at + ": a pending command declares nothing to run")
                 continue
-            require(("seed" in command) == (command["setup"] == "seed_copy"),
-                    at + ".seed: named exactly by a seed_copy setup")
+            require(("seed" in command) == (command["setup"] in
+                    ("seed_copy", "registry_stores_20x10000")),
+                    at + ".seed: named exactly by a seed-copying setup")
             require("seed" not in command or command["seed"] in doc["seeds"],
                     at + ".seed: %s is not a declared seed" % command.get("seed"))
             require(len(runnable) == 3, at + ": a command declares argv, cwd and rules, or "
                     "is pending with its reason")
-            require(command["argv"][0] == "{af}", at + ".argv: runs the side's AF binary")
+            driver = command["case_id"] == "tui_open"
+            require(command["argv"] == TUI_DRIVER_ARGV if driver else
+                    command["argv"][0] == "{af}",
+                    at + ".argv: runs the side's AF binary or the declared PTY driver")
+            require(driver or not any("{python}" in text
+                                      for text in command["argv"] + [command["cwd"]]),
+                    at + ".argv: only the PTY driver's command names {python}")
             for text in command["argv"] + [command["cwd"]]:
                 for name in re.findall(r"\{([^}]*)\}", text):
                     require(name in CLI_PLACEHOLDERS,
@@ -2916,9 +2940,9 @@ def _check_lifecycle(doc, at):
             at + ": a scratch is cleared only after a verified-empty namespace")
 
 
-# af.perf-capabilities/2 --------------------------------------------------------------------
+# af.perf-capabilities/3 --------------------------------------------------------------------
 
-CAPABILITIES_SCHEMA = "af.perf-capabilities/2"
+CAPABILITIES_SCHEMA = "af.perf-capabilities/3"
 TOOL = Obj(Field("identity", Nullable(Str(min_len=1, max_len=512))),
            Field("unavailable", Nullable(Str(min_len=1, max_len=1024))))
 CAPABILITY = Obj(Field("status", Str(enum=("available", "unavailable"))),
@@ -2944,7 +2968,7 @@ CAPABILITIES = Obj(
                       Field("python", Str(min_len=1, max_len=64)))),
     Field("tools", Map(ID_PATTERN, TOOL, 1, 16)),
     Field("trusted_local", Obj(Field("capability", CAPABILITY),
-                               Field("scope", Const("discovery_and_nonspawning_library_cases")),
+                               Field("scope", Const("declared_cases_without_linux_containment")),
                                Field("same_user_isolation", Const("not_provided")))),
     Field("linux_container", Obj(
         Field("capability", CAPABILITY),
@@ -4884,6 +4908,9 @@ CONTRACTS = {
             "and process case instance, the actual AF binary's argv, its untimed fixture setup "
             "(a private copy of a side-written seed included) and the independent oracle rules "
             "its output must satisfy, or why it is pending; and each seed's writer."),
+    "tui-open": (TUI_OPEN_SCHEMA, TUI_OPEN, validate_tui_open,
+                 "The PTY driver's one-line report: launch-to-browser and launch-to-first-"
+                 "output intervals in milliseconds and the child exit code."),
     "schedule": (SCHEDULE_SCHEMA, SCHEDULE, validate_schedule,
                  "One Actions event's continuous schedule (ADR-0177, ADR-0180): the event "
                  "resolved once to full SHAs with its pull request metadata, whether it is "
