@@ -19,6 +19,16 @@ publish step — so everything it carried shipped in `0.9.0-rc.6`.
 Changes since the last release are notes under [`changelog.d/`](changelog.d/), one file per
 pull request; the release pull request collects them here.
 
+## [0.14.0-rc.3] - 2026-10-29
+
+### Authority compatibility
+
+Committed .af/ policy valid under 0.13.0 needs no hand edit. Run af onboard --refresh-lock to pin 0.14.0-rc.3 and its signed bytes. State written by other releases remains unsupported under ADR-0145.
+
+### Changes
+
+- release: v0.14.0-rc.2 (#458)
+
 ## [0.14.0-rc.2] - 2026-10-29
 
 ### Authority compatibility
