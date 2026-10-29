@@ -1,5 +1,8 @@
 //! Painting: a frame is a grid of printable ASCII cells, each with one entry of the `Paint`
-//! palette. Tests compare `Frame::text`; the terminal gets only the rows that changed.
+//! palette. Tests compare `Frame::text`; the terminal gets only the rows that changed. The one
+//! glyph the terminal gets that is not the frame's byte is a limit bar's cell in colour: the
+//! painter writes [`BAR_GLYPH`] for it, a block that stops short of the cell's top, so two bars
+//! one under the other keep a hairline between them where full cells would run together.
 
 use std::ffi::OsStr;
 use std::io::Write;
@@ -88,6 +91,7 @@ macro_rules! solid {
 }
 
 /// A cell of a pixel worker: solid in its colour, grey while it waits, or one of its ink eyes.
+/// A limit bar's cells name their colour with the same words ([`Paint::Bar`]).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum Pixel {
     Pink,
@@ -119,14 +123,22 @@ pub(crate) enum Paint {
     Chip(Tone),
     /// A cell of a pixel worker.
     Pixel(Pixel),
+    /// A cell of a limit bar: [`BAR_GLYPH`] in the colour, on the terminal's own ground, so the
+    /// bar keeps a hairline from the row above; grey for the track. Without colour, the frame's
+    /// own `#` or `.`.
+    Bar(Pixel),
 }
+
+/// What a bar's cell is drawn with in colour: LOWER SEVEN EIGHTHS BLOCK, which leaves the top
+/// eighth of the cell to the ground.
+pub(crate) const BAR_GLYPH: char = '\u{2587}';
 
 impl Paint {
     /// What the cursor row paints a span in: the row turns reverse, but a chip and a pixel
     /// worker keep their fill, so a state still shows on the selected row.
     pub(crate) fn under_cursor(self) -> Paint {
         match self {
-            Paint::Chip(_) | Paint::Pixel(_) => self,
+            Paint::Chip(_) | Paint::Pixel(_) | Paint::Bar(_) => self,
             _ => Paint::Cursor,
         }
     }
@@ -169,6 +181,27 @@ impl Paint {
             (Paint::Pixel(Pixel::Grey), Palette::Mono) => "\x1b[0;2m",
             (Paint::Pixel(Pixel::Eye), Palette::Mono) => "\x1b[0m",
             (Paint::Pixel(_), Palette::Mono) => "\x1b[0;1m",
+            (Paint::Bar(Pixel::Pink), Palette::True) => concat!("\x1b[0;38;2;", pink!(), "m"),
+            (Paint::Bar(Pixel::Green), Palette::True) => concat!("\x1b[0;38;2;", green!(), "m"),
+            (Paint::Bar(Pixel::Blue), Palette::True) => concat!("\x1b[0;38;2;", blue!(), "m"),
+            (Paint::Bar(Pixel::Grey), Palette::True) => concat!("\x1b[0;38;2;", grey!(), "m"),
+            (Paint::Bar(Pixel::Eye), Palette::True) => concat!("\x1b[0;38;2;", ink!(), "m"),
+            (Paint::Bar(Pixel::Pink), Palette::Ansi) => "\x1b[0;91m",
+            (Paint::Bar(Pixel::Green), Palette::Ansi) => "\x1b[0;32m",
+            (Paint::Bar(Pixel::Blue), Palette::Ansi) => "\x1b[0;94m",
+            (Paint::Bar(Pixel::Grey), Palette::Ansi) => "\x1b[0;90m",
+            (Paint::Bar(Pixel::Eye), Palette::Ansi) => "\x1b[0;30m",
+            (Paint::Bar(Pixel::Grey), Palette::Mono) => "\x1b[0;2m",
+            (Paint::Bar(_), Palette::Mono) => "\x1b[0;1m",
+        }
+    }
+
+    /// What the terminal gets for a cell holding `byte` in this paint: a bar's cell in colour
+    /// is drawn with [`BAR_GLYPH`]; every other cell is its own byte.
+    fn glyph(self, byte: u8, palette: Palette) -> char {
+        match (self, palette) {
+            (Paint::Bar(_), Palette::True | Palette::Ansi) => BAR_GLYPH,
+            _ => char::from(byte),
         }
     }
 }
@@ -358,7 +391,7 @@ impl Frame {
                 encoded.push_str(paint.sgr(palette));
                 current = Some(*paint);
             }
-            encoded.push(char::from(*byte));
+            encoded.push(paint.glyph(*byte, palette));
         }
         encoded.push_str(Paint::Plain.sgr(palette));
         encoded
@@ -627,6 +660,38 @@ mod tests {
         assert_eq!(
             frame.encode(0, Palette::Mono),
             "\x1b[0;7mab\x1b[0m ok \x1b[0;1mcd\x1b[0;1;7mef\x1b[0;1m    \x1b[0m"
+        );
+    }
+
+    /// A bar's cells reach the terminal as the block glyph in colour, on the terminal's own
+    /// ground, and as the frame's `#` and `.` without colour; the frame itself stays ASCII.
+    #[test]
+    fn a_bar_is_drawn_with_the_block_glyph_in_colour_only() {
+        let mut frame = Frame::new(6, 1);
+        let spans = [
+            Span::new("[", Paint::Plain),
+            Span::new("##", Paint::Bar(Pixel::Green)),
+            Span::new("..", Paint::Bar(Pixel::Grey)),
+            Span::new("]", Paint::Plain),
+        ];
+        frame.paint_spans(0, 0, 6, &spans, Paint::Plain);
+        assert_eq!(frame.text(), "[##..]\n");
+        assert_eq!(
+            frame.encode(0, Palette::True),
+            "\x1b[0m[\x1b[0;38;2;54;238;168m\u{2587}\u{2587}\x1b[0;38;2;153;153;153m\u{2587}\u{2587}\x1b[0m]\x1b[0m"
+        );
+        assert_eq!(
+            frame.encode(0, Palette::Ansi),
+            "\x1b[0m[\x1b[0;32m\u{2587}\u{2587}\x1b[0;90m\u{2587}\u{2587}\x1b[0m]\x1b[0m"
+        );
+        assert_eq!(
+            frame.encode(0, Palette::Mono),
+            "\x1b[0m[\x1b[0;1m##\x1b[0;2m..\x1b[0m]\x1b[0m"
+        );
+        // The cursor row keeps the bar as it is.
+        assert_eq!(
+            Paint::Bar(Pixel::Pink).under_cursor(),
+            Paint::Bar(Pixel::Pink)
         );
     }
 }

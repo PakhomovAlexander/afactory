@@ -89,6 +89,8 @@ pub(crate) enum Effect {
     Refresh,
     /// Open the named Pipeline in the Pipelines pane, when that pane lists it.
     OpenPipeline(String),
+    /// Open the entry a folder lists under this id in its pane, as the bar would.
+    OpenItem(crate::tui::tree::Tab, String),
     /// Open the `:` line holding this text, for the user to review; nothing is submitted.
     Prefill(String),
 }
@@ -119,6 +121,17 @@ pub(crate) trait Pane {
 
     /// The main pane shows another pane now; background reads for this one stop.
     fn close(&mut self) {}
+
+    /// The scope's name changed (its committed `[project] name` answered, or changed): a pane
+    /// whose title carries it takes the new one. Nothing is read again.
+    fn rename(&mut self, _scope: &Scope) {}
+
+    /// The bar id of the opened entry as the pane names it now, when a read may have renamed
+    /// it (a Task whose Store took a group once another checkout appeared): the App follows
+    /// it. `None` from a pane whose ids never change, or with nothing opened.
+    fn opened_id(&self) -> Option<String> {
+        None
+    }
 
     /// Whether a pane-local view, like an artifact opened from a row, covers the pane.
     fn nested(&self) -> bool {
@@ -153,8 +166,7 @@ pub(crate) trait Pane {
         self.load(scope)
     }
 
-    /// After a command handed the terminal ran: read again what it may have changed, without
-    /// anything `R` alone may start (a charged probe).
+    /// After a command handed the terminal ran: read again what it may have changed.
     fn reread(&mut self, scope: &Scope) -> Result<(), String> {
         self.load(scope)
     }

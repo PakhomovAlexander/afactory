@@ -7,7 +7,7 @@ use std::time::{Duration, Instant};
 
 use super::*;
 use crate::config::{self, MachineRoots};
-use crate::providers::{ProviderInventory, ProviderLimit, ProviderStatus, UsageProbe, UsageState};
+use crate::providers::{ProviderInventory, ProviderLimit, ProviderStatus, UsageState};
 
 const SETTINGS: &str = include_str!("../../tests/fixtures/tui/settings-100x30.txt");
 const PROVIDERS: &str = include_str!("../../tests/fixtures/tui/providers-100x30.txt");
@@ -73,7 +73,13 @@ fn git(repo: &Path, args: &[&str]) {
 /// `fixtures/consumers/hub` as a committed repository at `root/hub`: the hub's own `.af/` over
 /// the pinned Task packages it shares with `fixtures/task-runtime/pagination`.
 pub(crate) fn hub_repo(root: &Path) -> PathBuf {
-    let repo = root.join("hub");
+    hub_repo_at(root, "hub")
+}
+
+/// The hub as `hub_repo` makes it, at `root/name`: its declared `[project] name` stays `hub`,
+/// whatever the directory is called.
+pub(crate) fn hub_repo_at(root: &Path, name: &str) -> PathBuf {
+    let repo = root.join(name);
     let pagination = workspace().join("fixtures/task-runtime/pagination");
     copy_tree(&pagination, &repo);
     copy_tree(&workspace().join("fixtures/consumers/hub"), &repo);
@@ -162,9 +168,11 @@ pub(crate) fn hub_scope(root: &Path, repo: &Path) -> Scope {
         environment: Vec::new(),
     };
     let config = config::load_rooted(Some(repo), false, &roots).unwrap();
+    let toplevel = config.toplevel.clone().unwrap();
     Scope {
         kind: ScopeKind::Project,
-        root: config.toplevel.clone().unwrap(),
+        declared: super::scope::committed_name(&toplevel),
+        root: toplevel,
         config,
         home: Some(root.to_path_buf()),
         registry: Some(root.join("config/af/providers.toml")),
@@ -186,6 +194,7 @@ pub(crate) fn user_scope(root: &Path) -> Scope {
         kind: ScopeKind::User,
         root: root.to_path_buf(),
         config,
+        declared: None,
         home: Some(root.to_path_buf()),
         registry: Some(root.join("config/af/providers.toml")),
         state: Some(root.join("state")),
@@ -251,7 +260,7 @@ fn hub_app(root: &Path) -> App {
 
 fn app_at(root: &Path, repo: PathBuf) -> App {
     let scope = hub_scope(root, &repo);
-    let providers = ProvidersPane::with_inventory(inventory(), UsageProbe::Probe);
+    let providers = ProvidersPane::with_inventory(inventory());
     let mut app = App::new(scope, Some(repo), Panes::new(providers));
     app.settle();
     app.frame(100, 30);
@@ -678,6 +687,7 @@ fn masked(frame: &str) -> String {
         let unit = |word: &str, unit: char| word.strip_suffix(unit).is_some_and(digits);
         (unit(word, 'm') && next.len() == 3 && unit(next, 's'))
             || (unit(word, 'h') && next.len() == 3 && unit(next, 'm'))
+            || (unit(word, 'd') && next.len() == 3 && unit(next, 'h'))
     };
     let mut text = String::new();
     for line in frame.lines() {
@@ -738,6 +748,8 @@ fn masking_folds_durations_and_hides_ids_and_times() {
     let row = "  [ok]  check                 46ms        0 tok\n";
     let wider = "  [ok]  check               1.3s        0 tok\n";
     assert_eq!(masked(row), masked(wider));
+    let days = "  [ok]  check              6d 02h        0 tok\n";
+    assert_eq!(masked(row), masked(days));
     assert_eq!(masked(row), "  [ok]  check  <t>        0 tok\n");
 }
 
@@ -745,7 +757,7 @@ fn masking_folds_durations_and_hides_ids_and_times() {
 fn the_tasks_pane_golden_at_100x30_and_its_verbs() {
     let (_temp, root) = temp_root();
     let (repo, state) = hub_with_tasks(&root);
-    let mut app = app_at(&root, repo);
+    let mut app = app_at(&root, repo.clone());
     let mut host = Recorder::default();
     press(&mut app, &mut host, b"]]]]]]]]\r");
     assert_eq!(app.breadcrumb(), "tasks/");
@@ -825,6 +837,11 @@ fn the_tasks_pane_golden_at_100x30_and_its_verbs() {
     let status = status_line(&mut app);
     assert!(status.contains("pipeline elsewhere/pipeline is not listed under pipelines/"));
     assert_eq!(app.opened, Opened::Item(Tab::Pipelines, package.to_owned()));
+    // On the same recorded Tasks: the one checkout's Store ungrouped, the running filter's
+    // keys, then a Task opened across a regrouping of its Store.
+    a_project_of_one_checkout_lists_its_store_ungrouped(&app, &state);
+    f_filters_the_bar_and_the_folder_to_the_running_tasks(&mut app, &mut host);
+    an_opened_task_follows_its_store_into_a_group(&mut app, &mut host, &root, &repo, &state);
 }
 
 /// The first screen row holding `needle`, and the column it starts at.
@@ -957,8 +974,10 @@ fn a_store_this_binary_cannot_read_is_an_error_row_naming_it() {
     press(&mut app, &mut host, b"]]]]]]]]\r");
     let rows: Vec<String> = app.main_rows().iter().map(Row::text).collect();
     let shown = state.strip_prefix(&root).unwrap().display();
-    // The Store's location, then its cause on a row of its own.
-    let at = rows.iter().position(|row| *row == format!("~/{shown}:"));
+    // The Store's heading and location, then its cause on a row of its own.
+    let at = rows
+        .iter()
+        .position(|row| *row == format!("this checkout  ~/{shown}:"));
     let at = at.unwrap_or_else(|| panic!("{rows:#?}"));
     let cause = " error  this Store cannot be read: ";
     assert!(
@@ -973,6 +992,163 @@ fn a_store_this_binary_cannot_read_is_an_error_row_naming_it() {
     assert_eq!(app.breadcrumb(), "tasks/! Store unreadable");
     let rows: Vec<String> = app.main_rows().iter().map(Row::text).collect();
     assert!(rows.iter().any(|row| row.starts_with(cause)), "{rows:#?}");
+}
+
+/// A Project with no other checkout lists this checkout's Store alone, ungrouped as before and
+/// named as this checkout. Run on the hub by the Tasks golden test, before another checkout
+/// appears.
+fn a_project_of_one_checkout_lists_its_store_ungrouped(app: &App, state: &Path) {
+    use super::panes::tasks::Origin;
+    assert_eq!(
+        app.panes.tasks.described_targets(),
+        [(
+            state.to_path_buf(),
+            None,
+            Origin::Scope,
+            Some("this checkout".to_owned())
+        )]
+    );
+    let ids: Vec<String> = app
+        .panes
+        .tasks
+        .items()
+        .iter()
+        .map(|item| item.id.clone())
+        .collect();
+    assert_eq!(ids, ["done/", "failed/"]);
+}
+
+/// `f` filters the bar and the folder to the running Tasks, from the bar and from the main
+/// pane, and `Enter` on a Task row of the folder opens it, as the bar does. Run on the hub
+/// with its two recorded Tasks by the Tasks golden test, so the Tasks are recorded once.
+fn f_filters_the_bar_and_the_folder_to_the_running_tasks(app: &mut App, host: &mut Recorder) {
+    to_the_root(app, host);
+    press(app, host, b"]]]]]]]]\r");
+    assert_eq!(app.breadcrumb(), "tasks/");
+    // `f` on the bar: no Task of the fixture runs, so the folder says so and the bar lists
+    // none.
+    press(app, host, b"f");
+    let rows: Vec<String> = app.main_rows().iter().map(Row::text).collect();
+    assert!(
+        rows[0].ends_with("running Tasks only, latest first"),
+        "{rows:#?}"
+    );
+    assert!(
+        rows.contains(&"No Task is running.".to_owned()),
+        "{rows:#?}"
+    );
+    let frame = app.frame(100, 30).text();
+    assert!(!frame.contains("done/ (1)"), "{frame}");
+    press(app, host, b"\t");
+    let status = status_line(app);
+    assert!(status.contains("f all Tasks"), "{status}");
+    // `f` again, from the main pane: every Task, grouped as before.
+    press(app, host, b"f");
+    let frame = app.frame(100, 30).text();
+    assert!(
+        frame.contains("done/ (1)") && frame.contains("failed/ (1)"),
+        "{frame}"
+    );
+    let status = status_line(app);
+    assert!(status.contains("f running"), "{status}");
+    // Enter on a Task row of the folder opens it, as the bar does: the first match of the
+    // search is the attention view's row for the Task.
+    press(app, host, b"/pagination-cli\r");
+    let row = app.main_rows()[app.main.cursor].text();
+    assert!(row.starts_with("    pagination-cli  finished/"), "{row}");
+    press(app, host, b"\r");
+    assert_eq!(app.breadcrumb(), "tasks/pagination-cli");
+}
+
+/// An opened Task stays opened when its Store takes a group: another checkout of the Project
+/// with a Store appears, `R` discovers it, and this checkout's Store is grouped under its name,
+/// so the Task's bar id changes; the bar, the breadcrumb and the main pane follow it, and
+/// nothing says it is no longer listed (ADR-0240, ADR-0261). Run on the hub by the Tasks golden
+/// test, after the filter keys.
+fn an_opened_task_follows_its_store_into_a_group(
+    app: &mut App,
+    host: &mut Recorder,
+    root: &Path,
+    repo: &Path,
+    state: &Path,
+) {
+    to_the_root(app, host);
+    press(app, host, b"]]]]]]]]jj\r");
+    assert_eq!(app.breadcrumb(), "tasks/pagination-cli");
+    assert_eq!(
+        app.opened,
+        Opened::Item(Tab::Tasks, "pagination-cli".to_owned())
+    );
+    let other = root.join("hub-wt-other");
+    git(
+        repo,
+        &[
+            "worktree",
+            "add",
+            "-q",
+            "-b",
+            "other",
+            other.to_str().unwrap(),
+        ],
+    );
+    let other_state =
+        crate::task_execution::default_task_state(&root.join("state"), &other).unwrap();
+    copy_store(state, &other_state);
+    host.events.clear();
+    press(app, host, b"R");
+    assert_eq!(
+        app.opened,
+        Opened::Item(Tab::Tasks, "hub/pagination-cli".to_owned())
+    );
+    assert_eq!(app.breadcrumb(), "tasks/hub/pagination-cli");
+    assert!(
+        app.main_rows()[0]
+            .text()
+            .starts_with("TASK  pagination-cli"),
+        "{:#?}",
+        app.main_rows()
+    );
+    assert!(
+        !app.message
+            .as_ref()
+            .is_some_and(|(text, _)| text.contains("no longer listed")),
+        "{:?}",
+        app.message
+    );
+    let frame = app.frame(100, 30).text();
+    assert!(
+        frame.contains("hub/") && frame.contains("hub-wt-other/"),
+        "{frame}"
+    );
+    // The worktree goes: the group goes with it at the next `R`, and the Task is still open.
+    git(
+        repo,
+        &["worktree", "remove", "--force", other.to_str().unwrap()],
+    );
+    std::fs::remove_dir_all(&other_state).unwrap();
+    press(app, host, b"R");
+    assert_eq!(
+        app.opened,
+        Opened::Item(Tab::Tasks, "pagination-cli".to_owned())
+    );
+    assert_eq!(app.breadcrumb(), "tasks/pagination-cli");
+    assert!(
+        app.main_rows()[0]
+            .text()
+            .starts_with("TASK  pagination-cli"),
+        "{:#?}",
+        app.main_rows()
+    );
+}
+
+/// The bar focused on the scope's root, whatever was opened or typed before.
+fn to_the_root(app: &mut App, host: &mut Recorder) {
+    press(app, host, b"\x1b");
+    if app.focus == Focus::Main {
+        press(app, host, b"\t");
+    }
+    press(app, host, b"gg");
+    assert_eq!(app.focus, Focus::Bar);
 }
 
 #[test]
@@ -1002,8 +1178,9 @@ fn only_an_opened_running_task_is_read_again_about_once_a_second() {
     app.poll();
     assert_eq!(app.panes.tasks.reads(), 1);
     let deadline = Instant::now() + Duration::from_secs(60);
-    while !app.panes.tasks.poll() {
+    while app.panes.tasks.busy().is_some() {
         assert!(Instant::now() < deadline, "the live read never finished");
+        app.panes.tasks.poll();
         std::thread::sleep(Duration::from_millis(20));
     }
     // It found the Task finished, so nothing is read again.
@@ -1017,8 +1194,9 @@ fn only_an_opened_running_task_is_read_again_about_once_a_second() {
     app.poll();
     assert_eq!(app.panes.tasks.reads(), 2, "an awaiting Task is live");
     let deadline = Instant::now() + Duration::from_secs(60);
-    while !app.panes.tasks.poll() {
+    while app.panes.tasks.busy().is_some() {
         assert!(Instant::now() < deadline, "the live read never finished");
+        app.panes.tasks.poll();
         std::thread::sleep(Duration::from_millis(20));
     }
     assert!(app.main_rows()[1].text().contains("STATE done"));
@@ -1202,13 +1380,13 @@ fn the_workers_pane_golden_at_100x30_and_its_state_is_af_task_shows() {
     let (repo, state) = hub_with_tasks(&root);
     let mut app = app_at(&root, repo.clone());
     let mut host = Recorder::default();
-    // Nothing is read until the folder opens, so no other pane's bar changes.
+    // The folder lists its Workers from the start, read on its thread after the first frame.
     let folders: Vec<String> = app.tree.rows().iter().map(|row| row.text()).collect();
     let at = folders
         .iter()
         .position(|row| row == "  v workers/")
         .unwrap();
-    assert_eq!(folders[at + 1], "  v pipelines/", "{folders:#?}");
+    assert_eq!(folders[at + 1], "      fixture/evaluator", "{folders:#?}");
     press(&mut app, &mut host, b"]]]]\r");
     assert_eq!(app.breadcrumb(), "workers/");
     let listed: Vec<String> = app
@@ -1465,7 +1643,7 @@ fn scope_project_outside_a_repository_keeps_the_reason_for_a_spaced_start() {
         .join(&final_component);
     std::fs::create_dir_all(&start).unwrap();
     let scope = hub_scope(&root, &repo);
-    let providers = ProvidersPane::with_inventory(inventory(), UsageProbe::Probe);
+    let providers = ProvidersPane::with_inventory(inventory());
     let mut app = App::new(scope, Some(start.clone()), Panes::new(providers));
     app.settle();
     let mut host = Recorder::default();
@@ -1598,11 +1776,44 @@ fn a_hand_off_releases_first_reenters_after_and_reads_the_panes_again() {
     );
 }
 
-/// The Workers pane reads nothing until first opened (ADR-0122). Once it has read, a hand-off
-/// re-reads it whether it is opened or not; until then it stays unread, and its first open
-/// reads fresh.
+/// `Enter` on a Worker or a Pipeline the folder lists in the main pane opens it, as the bar
+/// does, and the bar's cursor follows.
 #[test]
-fn a_hand_off_rereads_a_workers_pane_that_has_read_even_when_not_opened() {
+fn enter_on_a_listed_entry_in_the_main_pane_opens_it() {
+    let (_temp, root) = temp_root();
+    let repo = hub_repo(&root);
+    let mut app = app_at(&root, repo);
+    let mut host = Recorder::default();
+    let row_of = |app: &App, prefix: &str| {
+        app.main_rows()
+            .iter()
+            .position(|row| row.text().starts_with(prefix))
+            .unwrap_or_else(|| panic!("{prefix}: {:#?}", main_texts(app)))
+    };
+    press(&mut app, &mut host, b"]]]]\r\t");
+    assert_eq!(app.breadcrumb(), "workers/");
+    let evaluator = row_of(&app, "  fixture/evaluator ");
+    press(&mut app, &mut host, "j".repeat(evaluator).as_bytes());
+    press(&mut app, &mut host, b"\r");
+    assert_eq!(app.breadcrumb(), "workers/fixture/evaluator");
+    assert_eq!(
+        app.tree.selected().id,
+        ".af/task-packages/fixture/evaluator/worker.toml"
+    );
+    // The Pipelines folder alike: `<C-w>h` to the bar, the next folder, open it, `<C-w>l` to
+    // the main pane; its title row names no entry, a Pipeline's row opens that Pipeline.
+    press(&mut app, &mut host, b"\x17h]]\r\x17l\r");
+    assert_eq!(app.breadcrumb(), "pipelines/");
+    let review = row_of(&app, "review ");
+    press(&mut app, &mut host, "j".repeat(review).as_bytes());
+    press(&mut app, &mut host, b"\r");
+    assert_eq!(app.breadcrumb(), "pipelines/review");
+}
+
+/// The Workers folder lists its Workers from the start, read on its thread, and a hand-off
+/// re-reads it whether it is opened or not.
+#[test]
+fn a_hand_off_rereads_a_workers_pane_even_when_not_opened() {
     let (_temp, root) = temp_root();
     let repo = hub_repo(&root);
     let mut app = app_at(&root, repo.clone());
@@ -1612,13 +1823,6 @@ fn a_hand_off_rereads_a_workers_pane_that_has_read_even_when_not_opened() {
         let text = std::fs::read_to_string(&declaration).unwrap();
         std::fs::write(&declaration, format!("{text}# edited\n")).unwrap();
     };
-    // Never opened: a hand-off leaves it unread.
-    host.child = Some(Box::new(edit.clone()));
-    press(&mut app, &mut host, b":task list\r");
-    assert!(app.panes.workers.items().is_empty(), "the scan stays lazy");
-    // Opened once, then another pane opened in its place.
-    press(&mut app, &mut host, b"]]]]\r");
-    assert_eq!(app.breadcrumb(), "workers/");
     let label = |app: &App| -> Vec<String> {
         app.panes
             .workers
@@ -1627,6 +1831,15 @@ fn a_hand_off_rereads_a_workers_pane_that_has_read_even_when_not_opened() {
             .map(|item| item.label)
             .collect()
     };
+    // Listed from the start, never opened.
+    assert_eq!(label(&app), ["fixture/evaluator", "fixture/implementer"]);
+    // A hand-off re-reads the unopened folder: the drift shows.
+    host.child = Some(Box::new(edit.clone()));
+    press(&mut app, &mut host, b":task list\r");
+    assert_eq!(label(&app), ["fixture/evaluator", "fixture/implementer *"]);
+    // Opened once, then another pane opened in its place.
+    press(&mut app, &mut host, b"]]]]\r");
+    assert_eq!(app.breadcrumb(), "workers/");
     assert_eq!(label(&app), ["fixture/evaluator", "fixture/implementer *"]);
     press(&mut app, &mut host, b"gg\r");
     assert_eq!(app.opened, Opened::Root);
@@ -1644,7 +1857,7 @@ fn a_user_scope_task_is_neither_prefilled_nor_completed() {
     let (_temp, root) = temp_root();
     let (_repo, _state) = hub_with_tasks(&root);
     let scope = user_scope(&root);
-    let providers = ProvidersPane::with_inventory(inventory(), UsageProbe::Probe);
+    let providers = ProvidersPane::with_inventory(inventory());
     let mut app = App::new(scope, None, Panes::new(providers));
     app.settle();
     app.frame(100, 30);
@@ -1829,6 +2042,176 @@ fn completion_comes_from_the_clap_definition() {
     assert!(host.events.is_empty());
 }
 
+/// With Caps Lock on, the key completing a sequence folds as a first key does: `<C-w>L` and
+/// `<C-w>H` move the focus as `<C-w>l` and `<C-w>h` do, and `zC` and `zO` close and open the
+/// folder under the cursor as `zc` and `zo` do.
+#[test]
+fn caps_lock_folds_the_key_completing_a_sequence_too() {
+    let (_temp, root) = temp_root();
+    let repo = hub_repo(&root);
+    let mut app = app_at(&root, repo);
+    let mut host = Recorder::default();
+    to_the_root(&mut app, &mut host);
+    press(&mut app, &mut host, b"\x17L");
+    assert_eq!(app.focus, Focus::Main);
+    press(&mut app, &mut host, b"\x17H");
+    assert_eq!(app.focus, Focus::Bar);
+    // `]]` puts the cursor on `providers/`, open with its two Providers under it.
+    press(&mut app, &mut host, b"]]");
+    let open = app.frame(100, 30).text();
+    assert!(open.contains("v providers/"), "{open}");
+    press(&mut app, &mut host, b"zC");
+    let closed = app.frame(100, 30).text();
+    assert!(closed.contains("> providers/"), "{closed}");
+    assert!(!closed.contains("claude-main"), "{closed}");
+    press(&mut app, &mut host, b"zO");
+    assert_eq!(app.frame(100, 30).text(), open);
+}
+
+/// The project scope is named by the `[project] name` the repository declares, before its
+/// directory's name, so every checkout of the Project is named alike: the bar's root, the
+/// panes' titles and the status line say `hub` for a checkout in `checkout-7`. The committed
+/// `.af/af.toml` is what declares it: an edit of the working tree's copy, its removal, a
+/// `.af/af.local.toml` or an `AF_PROJECT__NAME` of this checkout change the effective
+/// configuration, never the Project's name, which a commit changes; `R` at the root reads it
+/// again and renames the root and every title. A declared name's first line alone is used, and
+/// without one the directory's name stands.
+#[test]
+fn the_project_scope_is_named_by_the_declared_project_name_before_its_directory() {
+    let (_temp, root) = temp_root();
+    let repo = hub_repo_at(&root, "checkout-7");
+    let scope = hub_scope(&root, &repo);
+    assert_eq!(scope.name(), "hub");
+    let mut app = app_at(&root, repo.clone());
+    let mut host = Recorder::default();
+    let screen = app.frame(100, 30).text();
+    // The top row names the directory the browser was started in; the bar's root and the
+    // panes' titles name the Project.
+    assert!(screen.contains("~/checkout-7"), "{screen}");
+    assert!(screen.contains("hub  (project)"), "{screen}");
+    assert!(screen.contains("SETTINGS  project: hub"), "{screen}");
+    assert!(!screen.contains("checkout-7  (project)"), "{screen}");
+    assert_eq!(folder_titles(&mut app, &mut host), folder_titles_for("hub"));
+
+    // The working tree's copy, edited or gone, is not the Project's name yet.
+    let declared = repo.join(".af/af.toml");
+    let layer = std::fs::read_to_string(&declared).unwrap();
+    assert!(layer.contains("name = \"hub\"\n"), "{layer}");
+    let renamed = layer.replace(
+        "name = \"hub\"\n",
+        "name = \"\"\"Hub Project\nsecond line\"\"\"\n",
+    );
+    std::fs::write(&declared, &renamed).unwrap();
+    assert_eq!(hub_scope(&root, &repo).name(), "hub");
+    std::fs::remove_file(&declared).unwrap();
+    assert_eq!(hub_scope(&root, &repo).name(), "hub");
+    std::fs::write(&declared, &layer).unwrap();
+
+    // One checkout's overrides reach the effective configuration and nothing else.
+    std::fs::write(
+        repo.join(".af/af.local.toml"),
+        "[project]\nname = \"local-only\"\n",
+    )
+    .unwrap();
+    let overridden = {
+        let roots = MachineRoots {
+            system: root.join("etc/af"),
+            user: root.join("config/af"),
+            environment: vec![("AF_PROJECT__NAME".to_owned(), "\"env-only\"".to_owned())],
+        };
+        let config = config::load_rooted(Some(&repo), false, &roots).unwrap();
+        assert_eq!(
+            config.effective["project"]["name"].as_str(),
+            Some("env-only"),
+            "{:#?}",
+            config.effective
+        );
+        Scope {
+            root: config.toplevel.clone().unwrap(),
+            config,
+            ..hub_scope(&root, &repo)
+        }
+    };
+    assert_eq!(overridden.name(), "hub");
+    assert_eq!(hub_scope(&root, &repo).name(), "hub");
+    std::fs::remove_file(repo.join(".af/af.local.toml")).unwrap();
+
+    // Committed, the name is the Project's, its first line; `R` at the root reads it again
+    // and renames the bar's root and every pane's title.
+    std::fs::write(&declared, &renamed).unwrap();
+    git(&repo, &["commit", "-qam", "rename the project"]);
+    assert_eq!(hub_scope(&root, &repo).name(), "Hub Project");
+    to_the_root(&mut app, &mut host);
+    press(&mut app, &mut host, b"R");
+    let screen = app.frame(100, 30).text();
+    assert!(screen.contains("Hub Project  (project)"), "{screen}");
+    assert!(!screen.contains("hub  (project)"), "{screen}");
+    // Enter on the root row: the settings pane, titled for the renamed Project.
+    press(&mut app, &mut host, b"\r");
+    let screen = app.frame(100, 30).text();
+    assert!(
+        screen.contains("SETTINGS  project: Hub Project"),
+        "{screen}"
+    );
+    assert_eq!(
+        folder_titles(&mut app, &mut host),
+        folder_titles_for("Hub Project")
+    );
+    // Without a declared name the directory's stands.
+    let undeclared = layer.replace("name = \"hub\"\n", "");
+    std::fs::write(&declared, undeclared).unwrap();
+    git(&repo, &["commit", "-qam", "undeclare the name"]);
+    assert_eq!(hub_scope(&root, &repo).name(), "checkout-7");
+}
+
+/// The titles of the Providers, Workers, Pipelines and Tasks folders, each opened from the bar.
+fn folder_titles(app: &mut App, host: &mut Recorder) -> Vec<String> {
+    to_the_root(app, host);
+    (0..4)
+        .map(|_| {
+            press(app, host, b"]]\r");
+            app.main_rows()[0].text()
+        })
+        .collect()
+}
+
+/// What `folder_titles` lists for a project named `name`.
+fn folder_titles_for(name: &str) -> Vec<String> {
+    vec![
+        format!("PROVIDERS  project: {name}  (af provider status)"),
+        format!("WORKERS  project: {name}"),
+        format!("PIPELINES  project: {name}"),
+        format!("TASKS  project: {name}"),
+    ]
+}
+
+/// `docs/design/tui.md` states the Workers folder's loading rule as ADR-0261 has it, in every
+/// place it speaks of it: the folder reads from the start in a project scope, on its thread
+/// after the first frame, opened or not, and no longer waits for an open.
+#[test]
+fn design_tui_workers_loading_rule_matches_adr_0261() {
+    let page = std::fs::read_to_string(workspace().join("docs/design/tui.md")).unwrap();
+    let flat = page.split_whitespace().collect::<Vec<_>>().join(" ");
+    for stale in [
+        "reads nothing until it is first opened",
+        "Workers once opened",
+        "runs only when the Workers pane is opened",
+        "except catalogs synced",
+    ] {
+        assert!(
+            !flat.contains(stale),
+            "{stale:?} is the rule ADR-0261 replaced"
+        );
+    }
+    for rule in [
+        "lists its Workers from the start",
+        "first poll after the first frame starts it, opened or not",
+        "the user scope lists none",
+    ] {
+        assert!(flat.contains(rule), "{rule:?} is not stated");
+    }
+}
+
 /// `d` on a registered Provider, from the bar and from its opened pane, prefills the `:` line
 /// with `provider remove ID` and never submits it. An ambient candidate has no registry entry,
 /// and a row that is no Provider has nothing to remove.
@@ -1845,13 +2228,21 @@ fn the_providers_pane_prefills_remove_for_a_registered_provider() {
     assert_eq!(app.prompt.text, line);
     assert_eq!(app.prompt.cursor, line.len());
     press(&mut app, &mut host, b"\x1b");
+    // With Caps Lock on: `D` is the Tasks pane's own key, so to a Provider it is `d`.
+    press(&mut app, &mut host, b"D");
+    assert_eq!(app.mode, Mode::Command);
+    assert_eq!(app.prompt.text, line);
+    press(&mut app, &mut host, b"\x1b");
     // Opened, with the main pane focused: the same line, and the legend names the verb.
     press(&mut app, &mut host, b"\r\t");
     let status = status_line(&mut app);
     assert!(status.contains("d remove"), "{status}");
-    press(&mut app, &mut host, b"d");
-    assert_eq!(app.prompt.text, line);
-    press(&mut app, &mut host, b"\x1b");
+    for key in [&b"d"[..], b"D"] {
+        press(&mut app, &mut host, key);
+        assert_eq!(app.mode, Mode::Command);
+        assert_eq!(app.prompt.text, line);
+        press(&mut app, &mut host, b"\x1b");
+    }
     assert!(host.events.is_empty(), "nothing was submitted");
     // Enter on the prefilled line is what runs it, as typed.
     press(&mut app, &mut host, b"d\r");
@@ -2048,7 +2439,7 @@ fn an_empty_registry_opens_on_the_providers_pane_with_the_first_run_row() {
     let repo = hub_repo(&root);
     let mut only_candidates = inventory();
     only_candidates.providers.remove(0);
-    let providers = ProvidersPane::with_inventory(only_candidates, UsageProbe::Skip);
+    let providers = ProvidersPane::with_inventory(only_candidates);
     let mut app = App::new(hub_scope(&root, &repo), Some(repo), Panes::new(providers));
     app.settle();
     assert_eq!(app.opened, Opened::Folder(Tab::Providers));
@@ -2086,7 +2477,7 @@ fn a_repository_without_af_shows_its_project_layer_absent_with_af_onboard() {
     let repo = root.join("plain");
     std::fs::create_dir_all(&repo).unwrap();
     git(&repo, &["init", "-q", "-b", "main"]);
-    let providers = ProvidersPane::with_inventory(inventory(), UsageProbe::Skip);
+    let providers = ProvidersPane::with_inventory(inventory());
     let mut app = App::new(hub_scope(&root, &repo), Some(repo), Panes::new(providers));
     app.settle();
     assert_eq!(app.opened, Opened::Root);
@@ -2502,7 +2893,7 @@ fn the_tasks_pane_lists_every_registered_store_and_a_state_dir_for_the_session()
     let rows = main_texts(&app);
     let own = rows
         .iter()
-        .position(|row| row.starts_with("~/state/af/task/local/"));
+        .position(|row| row.starts_with("this checkout  ~/state/af/task/local/"));
     let theirs = rows
         .iter()
         .position(|row| row == "~/elsewhere/registered  (--state, in stores.toml)");
@@ -2765,25 +3156,75 @@ fn a_history_refusal_with_a_read_in_flight_falls_back_to_the_folder_at_once() {
 }
 
 /// The App's load records the panes' reads and starts none: the first frame is painted with
-/// the folders' spinners, and the first poll after it starts the reads. No Store is read
+/// the folders' spinners, and the first poll after it starts the reads, the committed
+/// `[project] name`'s `git show` among them. No Store is read, and no git runs for the name,
 /// before the browser's first frame, on any thread.
 #[test]
 fn the_first_frame_is_painted_before_any_read_of_a_store_starts() {
     let (_temp, root) = temp_root();
     let (repo, _state) = hub_with_tasks(&root);
-    let providers = ProvidersPane::with_inventory(inventory(), UsageProbe::Probe);
+    let providers = ProvidersPane::with_inventory(inventory());
     let mut app = App::new(hub_scope(&root, &repo), None, Panes::new(providers));
-    let started = |app: &App| (app.panes.tasks.started(), app.panes.campaigns.started());
-    assert_eq!(started(&app), (0, 0), "the load started no read");
+    let started = |app: &App| {
+        (
+            app.panes.tasks.started(),
+            app.panes.campaigns.started(),
+            app.panes.workers.started(),
+            app.name_reads(),
+        )
+    };
+    assert_eq!(started(&app), (0, 0, 0, 0), "the load started no read");
     let _ = app.frame(100, 30);
-    assert_eq!(started(&app), (0, 0), "painting starts none");
+    assert_eq!(started(&app), (0, 0, 0, 0), "painting starts none");
     app.poll();
     assert_eq!(
         started(&app),
-        (1, 1),
+        (1, 1, 1, 1),
         "the first poll after the frame starts them"
     );
     app.settle();
+}
+
+/// `R` at the root reads the committed `[project] name` on a thread, never on the key loop
+/// (ADR-0240): while that read waits on git, the browser answers keys and the root keeps the
+/// name it had; the new name takes the root and every title when the read answers.
+#[test]
+fn r_at_the_root_answers_while_the_committed_name_is_read() {
+    let (_temp, root) = temp_root();
+    let repo = hub_repo_at(&root, "checkout-7");
+    let mut app = app_at(&root, repo.clone());
+    let mut host = Recorder::default();
+    let declared = repo.join(".af/af.toml");
+    let layer = std::fs::read_to_string(&declared).unwrap();
+    std::fs::write(
+        &declared,
+        layer.replace("name = \"hub\"\n", "name = \"renamed\"\n"),
+    )
+    .unwrap();
+    git(&repo, &["commit", "-qam", "rename the project"]);
+    to_the_root(&mut app, &mut host);
+    // A git that does not answer: the read waits until the test lets it go.
+    let hold = app.hold_name_reads();
+    let reads = app.name_reads();
+    press_unsettled(&mut app, &mut host, b"R");
+    assert_eq!(app.name_reads(), reads + 1, "R started the name read");
+    let status = status_line(&mut app);
+    assert!(status.contains("settings read again"), "{status}");
+    // Keys are answered meanwhile, and the name read last stands.
+    press_unsettled(&mut app, &mut host, b"j");
+    app.poll();
+    let frame = app.frame(100, 30).text();
+    assert!(frame.contains("hub  (project)"), "{frame}");
+    assert!(!frame.contains("renamed  (project)"), "{frame}");
+    App::release_name_reads(&hold);
+    app.settle();
+    let frame = app.frame(100, 30).text();
+    assert!(frame.contains("renamed  (project)"), "{frame}");
+    assert!(!frame.contains("hub  (project)"), "{frame}");
+    assert_eq!(
+        folder_titles(&mut app, &mut host),
+        folder_titles_for("renamed")
+    );
 }
 
 /// `R` after the registry's Task Stores changed order: the Stores retained from the last read
@@ -2933,8 +3374,7 @@ fn an_ambient_provider_row_says_how_it_got_there_and_how_to_make_it_go() {
     let (_temp, root) = temp_root();
     let repo = hub_repo(&root);
     let scope = hub_scope(&root, &repo);
-    let providers = ProvidersPane::with_inventory(inventory(), UsageProbe::Probe)
-        .with_selectors(&["CODEX_HOME"]);
+    let providers = ProvidersPane::with_inventory(inventory()).with_selectors(&["CODEX_HOME"]);
     let mut app = App::new(scope, Some(repo.clone()), Panes::new(providers));
     app.settle();
     let mut host = Recorder::default();
@@ -2957,7 +3397,7 @@ fn an_ambient_provider_row_says_how_it_got_there_and_how_to_make_it_go() {
     );
     // Without the variable, the CLI's default directory is where it came from.
     let scope = hub_scope(&root, &repo);
-    let providers = ProvidersPane::with_inventory(inventory(), UsageProbe::Probe);
+    let providers = ProvidersPane::with_inventory(inventory());
     let mut app = App::new(scope, Some(repo), Panes::new(providers));
     app.settle();
     press(&mut app, &mut host, b"]]\r");

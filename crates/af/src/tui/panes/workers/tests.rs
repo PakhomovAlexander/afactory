@@ -137,16 +137,17 @@ fn every_committed_worker_is_found_however_nested_and_grouped_by_source() {
             (".af/vendor/v/w/worker.toml", "v/w"),
         ]
     );
-    // More than one source has Workers: each is a group named by its directory.
+    // More than one source has Workers: each is a group named by its directory. The load
+    // records the read and starts none; the first poll (here `settle`) starts it.
     let mut pane = WorkersPane::default();
     pane.load(&scope(root)).unwrap();
-    pane.settle();
     assert!(
-        pane.items().is_empty(),
-        "nothing is read before the pane opens"
+        pane.items().is_empty() && pane.busy().is_some(),
+        "recorded, not started"
     );
-    pane.open(None);
+    assert_eq!(pane.started(), 0);
     pane.settle();
+    assert_eq!(pane.started(), 1);
     let groups: Vec<String> = pane.items().into_iter().map(|item| item.label).collect();
     assert_eq!(
         groups,
@@ -549,6 +550,34 @@ fn the_prompt_is_the_file_the_kernel_sends_and_nothing_else() {
         Some(declaration)
     );
     assert_eq!(pane.yank(0).as_deref(), Some("fixture/bare"));
+}
+
+/// `Enter` on a listed Worker's row is the effect that opens it; a title row, a blank row and
+/// an opened entry's rows name none.
+#[test]
+fn enter_on_a_listed_worker_row_opens_it() {
+    let temp = tempfile::tempdir().unwrap();
+    let root = temp.path();
+    worker(root, ".af/packages/p", "p");
+    commit_all(root, "p");
+    let mut pane = WorkersPane::default();
+    pane.load(&scope(root)).unwrap();
+    pane.settle();
+    let rows = texts(pane.rows());
+    let row = rows
+        .iter()
+        .position(|row| row.starts_with("  p "))
+        .unwrap_or_else(|| panic!("{rows:#?}"));
+    let id = ".af/packages/p/worker.toml";
+    assert_eq!(
+        pane.key(Key::Enter, row),
+        Ok(Some(Effect::OpenItem(Tab::Workers, id.to_owned())))
+    );
+    assert_eq!(pane.key(Key::Enter, 0), Ok(None));
+    assert_eq!(pane.key(Key::Char('x'), row), Ok(None));
+    pane.open(Some(id));
+    pane.settle();
+    assert_eq!(pane.key(Key::Enter, row), Ok(None));
 }
 
 #[test]
@@ -1497,4 +1526,49 @@ fn the_runner_row_follows_the_catalogs_as_they_arrive() {
     assert!(pane.poll());
     let row = runner(&pane);
     assert!(row.ends_with("verdict (static rules): ok"), "{row}");
+}
+
+/// A Worker's STATE counts the Attempts in every checkout of the Project: the Tasks pane's
+/// discovery runs on the read's thread here too, so a worktree's own Store is counted beside
+/// this checkout's. A copy of this checkout's recorded Store stands for the worktree's.
+#[test]
+fn a_workers_state_counts_the_attempts_of_every_checkout_of_the_project() {
+    let temp = tempfile::tempdir().unwrap();
+    let root = std::fs::canonicalize(temp.path()).unwrap();
+    let (repo, state) = crate::tui::tests::hub_with_tasks(&root);
+    let worktree = root.join("hub-wt-branch");
+    let args = [
+        "worktree",
+        "add",
+        "-q",
+        "-b",
+        "branch",
+        worktree.to_str().unwrap(),
+    ];
+    git(&repo, &args).unwrap();
+    let branch_state =
+        crate::task_execution::default_task_state(&root.join("state"), &worktree).unwrap();
+    crate::tui::tests::copy_store(&state, &branch_state);
+    let scope = crate::tui::tests::hub_scope(&root, &repo);
+    let id = ".af/task-packages/fixture/implementer/worker.toml";
+    let mut pane = WorkersPane::default();
+    pane.load(&scope).unwrap();
+    assert_eq!(
+        pane.targets.len(),
+        1,
+        "the load resolves the own Store alone"
+    );
+    pane.settle();
+    assert_eq!(
+        pane.stores.len(),
+        2,
+        "the read discovered the worktree's Store"
+    );
+    assert!(pane.warning.is_none());
+    pane.open(Some(id));
+    pane.settle();
+    let rows = texts(pane.rows());
+    let attempts = rows.iter().find(|row| row.starts_with("attempts")).unwrap();
+    // One Attempt under `HEAD`'s digest in this checkout, one in the worktree.
+    assert!(attempts.contains("settled ok 2"), "{attempts}");
 }

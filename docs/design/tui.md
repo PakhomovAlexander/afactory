@@ -22,9 +22,19 @@ in a 100x30 pseudo-terminal, including a registry of 20 large Task Stores (ADR-0
 | invocation | scope | root of the left bar |
 |---|---|---|
 | `af` outside a git repository | **user** | `~` — user layer, provider registry, every Task in `$XDG_STATE_HOME/af` |
-| `af` inside a repository | **project** | `<toplevel basename>` — project + local layers, `.af/` packages, this repository's Tasks |
+| `af` inside a repository | **project** | the `[project] name` it declares, else `<toplevel basename>` — project + local layers, `.af/` packages at `HEAD`, the Project's Tasks across every worktree |
 | `af --repo DIR` | project | as above, for `DIR` |
 | `af` with stdout not a tty | — | prints help, exit 2 (today's behaviour) |
+
+The project scope's name is the `[project] name` the `.af/af.toml` at `HEAD` declares, its first
+line, read through git (one `git show` of that blob) on a thread like the Stores (ADR-0240,
+never on the key loop or before the first frame): the load records the read, the first poll
+after the first frame starts it, and `R` at the root starts it again; until it answers the name
+shown stands, the toplevel's basename at first. The working tree's copy of the file, a
+`.af/af.local.toml` and an `AF_PROJECT__NAME` change the effective configuration, never the
+name, so every checkout of the Project is named alike and an edit names it once committed;
+without one the toplevel's basename stands. A name the read finds changed renames the bar's
+root and every pane's title when it answers, nothing read again (ADR-0261).
 
 Scope resolution reuses `config::load(repo)`: `toplevel == None` means user scope. A toplevel is
 an ancestor whose `.git` git itself would open (a directory holding `HEAD`, or a linked
@@ -39,11 +49,12 @@ scope filters the same Store by repository identity. `arg_required_else_help` on
 reads anything, a few milliseconds after `af` starts. The scope resolves and every pane loads on
 a thread of their own; the splash animates while it waits on that load a step at a time and ends
 the moment the load arrives, so the browser is never later than it would be without one. That
-load reads no Store: a pane that lists Stores (Tasks, Campaigns, and Workers once opened) starts
-their read on a thread of its own and the event loop collects each Store as it is read, after
-the first frame, since the loop paints before it polls. The splash therefore waits for the scope
-only, whatever Stores the machine holds: a registry of eighty Stores and four gigabytes of event
-logs once kept it up for forty seconds ([ADR-0240](../adr/0240-open-the-browser-before-any-store-is-read.md)).
+load reads no Store: a pane that lists Stores (Tasks, Campaigns and, in a project scope, Workers)
+starts their read on a thread of its own and the event loop collects each Store as it is read,
+after the first frame, since the loop paints before it polls. The splash therefore waits for the
+scope only, whatever Stores the machine holds: a registry of eighty Stores and four gigabytes of
+event logs once kept it up for forty seconds
+([ADR-0240](../adr/0240-open-the-browser-before-any-store-is-read.md)).
 What it still waits for is small: the scope's files, the Store registry (one file), and the
 Pipelines pane's read of `HEAD` through git, milliseconds on a local repository.
 `q` or `<C-c>` on the splash quits at once; any other key typed meanwhile is the browser's first
@@ -62,16 +73,16 @@ input. A scope error (`--repo` outside a repository) leaves the terminal before 
 |       codex-main         |                                                           |
 |   v workers/             | limit  5h window   [########..........]  41% used  resets in 2h 10m
 |       correctness        | limit  7d window   [#############.....]  68% used  resets in 3d 4h |
-|       bugs               |                                                           |
-|   v pipelines/           | note   weekly limit read from the local /usage screen     |
-|       review             |                                                           |
+|       bugs               | note   weekly limit read from the local /usage screen     |
+|   v pipelines/           |                                                           |
+|       review             | <m> to show models                                        |
 |   v tasks/               |                                                           |
 |     v running (1)        |                                                           |
 |         task-01J9…  62%  |                                                           |
 |     > done (14)          |                                                           |
 |                          |                                                           |
 +--------------------------+-----------------------------------------------------------+
-| NORMAL  providers/claude-main          j/k move  Enter open  R probe  / search  :cmd  ? help |
+| NORMAL  providers/claude-main          j/k move  Enter open  / search  :cmd  ? help          |
 +--------------------------+-----------------------------------------------------------+
 ```
 
@@ -95,6 +106,10 @@ status line is blue, and pink while it carries an error. State chips put the bra
 words that carry a state: blue for running, green for passed, pink for failed or awaiting a
 person, on the Task header's STATE, the stage marks, the progress at the end of a Task's bar row,
 a Provider's STATUS, the Workers pane's Attempt counts and the `error` that starts an error row.
+A Provider's limit bars are the one place the terminal gets a glyph that is not the frame's
+byte: in colour each cell of a bar is U+2587 LOWER SEVEN EIGHTHS BLOCK in the bar's colour on
+the terminal's own ground, so two bars one under the other keep a hairline between them; the
+frame holds `#` and `.`, and without colour that is what is written.
 `COLORTERM=truecolor` takes the brand's values, other terminals black on their own blue, green
 and red, and `NO_COLOR` attributes only. This keeps the existing
 `terminal_data_is_printable_ascii` test meaningful and matches the CLI's own tree output.
@@ -122,9 +137,15 @@ few pane-local verbs, listed in its section and in the status line.
 | `Enter` `o` | open the selected node in the main pane |
 | `y` | yank the selected id (Task id, plan id, provider id) via OSC 52 |
 | `gf` | open the file behind the node in `$EDITOR` (worker prompt, pipeline TOML, config layer); the screen is released and re-entered, and the panes the edit could have changed read again |
-| `R` | refresh the pane under the focus from disk: the bar's selected node's pane when the bar has focus, the opened pane otherwise (providers: run the bounded probe) |
+| `R` | refresh the pane under the focus from disk: the bar's selected node's pane when the bar has focus, the opened pane otherwise (providers: discover and probe again) |
 | `?`, `:help` | help overlay: the panes, `: <af command>`, then the keys; `?`, `q` or `Esc` closes it |
 | `q` `:q` `ZZ` | quit; `<C-c>` cancels a prompt or a running probe first |
+
+An upper-case letter with no binding of its own is its lower-case key, so Caps Lock changes
+nothing: `Q` quits, `J` and `K` move. `G`, `N`, `R` and `Z` keep their own, and so does `D` in the
+Tasks pane, where it prefills `task deliver`; to every other pane `D` is `d`, so `D` on a Provider
+removes it as `d` does. The key completing a sequence folds the same way: `zO` opens a fold and
+`gF` opens the file, while `ZZ`, `zR` and `zM` keep their case.
 
 **Command line (`:`)** — the browser's own verbs, and any `af` command line:
 
@@ -147,7 +168,8 @@ The browser releases the terminal first. The child's process group then owns the
 foreground, so `<C-c>` stops the child and never the browser. When the child ends, the released
 screen shows one line, `af LINE: exit N -- Enter returns to the browser` (or the signal that
 ended it), and waits for Enter. Then the browser re-enters and reads again the scope, the
-settings and the Tasks, Campaigns, Workers and Providers panes (Providers without the charged probe). It
+settings and the Tasks, Campaigns, Workers and Providers panes (Providers with the usage probe, since
+the command may have spent a window). It
 keeps what is opened and the bar's selection. The status line says `af LINE: exit N`.
 
 `<Tab>` completes subcommand names at every level from `Af::command()` itself, alongside the
@@ -186,16 +208,46 @@ User scope shows only the machine-owned layers plus the provider registry path
 
 ### 5.2 Providers
 
-Mirrors `af provider status`; the left bar lists every entry from `providers::discover`.
-The main pane shows the same columns as the CLI table for the selected provider, then one row per
-`ProviderLimit` as a bar with `used_percent` and `format_limit`'s reset text, then `detail` as
-`note`. Ambient candidates render greyed. Under one, the pane says how it got there and how to
+Mirrors `af provider status --usage`; the left bar lists every entry from `providers::discover`.
+The folder's title names the scope as every pane's does, `PROVIDERS  project: hub  (af provider
+status)`; an opened Provider's names the Provider, `PROVIDERS  claude-main`.
+The main pane shows the same columns as the CLI table for the selected provider (for every
+provider on the folder, a blank row between two of them), then one row per
+`ProviderLimit` as a bar of twenty cells with `used_percent` and when the window resets (or who
+does not report that), then `detail` as `note`. The model catalogs (`af provider models`, ADR-0148)
+stay off screen until asked for: the pane's last row says `<m> to show models`, and `m` shows
+every listed Provider's `models` section, one blank row under its rows, one row per exact ID of
+that Provider's own catalog, until `m` hides them again.
+A Claude login's windows are the ones its `/usage` screen shows: the five-hour session, then the
+weekly ones. The window names are padded to the longest on the page, so every bar starts in one
+column. The bar's used cells are drawn in the brand's colour for how much is used, green
+under half, blue from half and pink from four fifths, the rest as a grey track, each cell the
+block glyph of §3 so the bars keep a hairline between them; without colour they are `#` and
+`.`. The quota windows are always on screen: the
+pane discovers first (one bounded authentication check per context, and the catalogs), hands
+the rows over, and then runs the bounded usage probe `--usage` runs (a Provider process or an
+app-server round trip per login, no tokens, a couple of seconds) on its own; an authenticated
+login's row says `reading the quota windows` meanwhile, and one that exposes no window says so.
+Ambient candidates render greyed. Under one, the pane says how it got there and how to
 make it go: `ambient (CODEX_HOME): found through CODEX_HOME, not in the registry` when the
 browser's environment sets the variable, else `ambient (~/.codex): the codex CLI's default
 directory, not in the registry`; then `register it: af provider add codex-main --kind codex`
 with the first free id, `unsetting CODEX_HOME lists ~/.codex instead` when the variable is set
 (the row is listed while the CLI is on `PATH` and its directory is not registered, so registering
-it is what makes it go), and the `af provider setup` hint the CLI prints (ADR-0141).
+it is what makes it go), and the `af provider setup` hint the CLI prints (ADR-0141). A default
+context whose login a registered Provider of its kind already holds is not listed at all
+(ADR-0260), as a logged-out one is not: the login is what the status answer names, for Claude
+the account and the organization its `auth status` reports, and both must match, since one
+account in two organizations is two logins; the Codex answer names no account, so a Codex default
+context is compared as a path, as before. The login never leaves discovery: the row and the login
+it answered with travel together only inside `discover_with_cancel`, and `ProviderStatus`, the
+JSON status document and the browser carry no account label. A context left out is not a
+sibling: the logged-in-sibling notes of a logged-out Provider are written after the drop, so no
+note points at a row that is not listed. The names-only scan of ADR-0206 still names the
+directory (`found but not registered: ~/.claude (not probed) → af provider detect`), and `af
+provider detect` still lists it. Everything ADR-0141 keeps, stays: a default context with a
+login of its own, one whose kind has no registered Provider, and one in any other state are
+listed as before.
 
 `d` on a registered Provider, on the bar or in its opened pane, fills the `:` line with
 `provider remove ID` and does not submit it; Enter runs it, handing the terminal over as
@@ -203,33 +255,45 @@ described in §4 (ADR-0136). `d` on an ambient candidate says on the status line
 registry entry to remove, and the `af provider add` command that adds it. After the command the pane discovers again, and an opened Provider it
 no longer lists gives way to the folder.
 
-`R` runs the provider probe (a probe cancelled with `<C-c>` is forgotten: the last complete
-inventory stays, and `R` probes again) (the bounded, possibly charged probe in `providers`) with a spinner in the bar
-row, polled from the event loop without blocking key handling.
+`R` discovers and probes again, as a command's return does (a probe cancelled with `<C-c>` is
+forgotten: the last complete inventory and its windows stay, and `R` reads again), with a
+spinner in the bar row, polled from the event loop without blocking key handling.
 
 ### 5.3 Workers
 
 The bar lists Worker packages found in the declared directories, in this order and with the
 source folded in as a second-level group when more than one exists:
 `.af/workers/` (reviewer Workers), `.af/task-packages/`, `.af/packages/`, `.af/vendor/`.
-User scope lists nothing here except catalogs synced under `~/.local/share/af` when present.
-The pane reads nothing until it is first opened; from then on each read (`HEAD`'s declarations
-through git, and every Task Store's Attempts for STATE) runs on a thread behind a spinner on
-`workers/`, never on the key loop.
+The user scope lists no Worker, and synced catalogs are not read.
+A project scope's folder lists its Workers from the start: the load records the read and the
+first poll after the first frame starts it, opened or not, as the other folders load
+(ADR-0261); the user scope lists none. Every read (`HEAD`'s declarations through git, and every
+Task Store's Attempts for STATE), the first and each one after, runs on a thread behind a
+spinner on `workers/`, never on the key loop.
 
 Main pane, three sections separated by rules:
 
 1. **Identity** — `name`, `version`, `schema`, source path, lock pin from `af.lock` (or
    `unpinned`), runner (`program` + args as `af.lock` records them), attempt bounds
    (`signature.attempt.tokens`, `wall_ms`), effects and roles.
-2. **State** — derived only from Store records for this scope: how many Attempts of this Worker
-   are `reserved`, `started`, `settled ok`, `settled failed`, `abandoned`, plus tokens charged
-   and wall time across those Attempts. Empty when the Store has no Attempt naming the Worker.
+2. **State** — derived only from Store records for this scope, this checkout's own Store and
+   the default Store of every other checkout of the Project the Tasks pane discovers (§5.5):
+   how many Attempts of this Worker are `reserved`, `started`, `settled ok`, `settled failed`,
+   `abandoned`, plus tokens charged and wall time across those Attempts. Empty when no Store
+   has an Attempt naming the Worker; a discovery that fails is a warning, and the own Store
+   still counts.
 3. **Prompt** — the file the kernel sends: `reviewer.md` for a reviewer Worker,
    `instructions.md` for a Task Worker package (§8), rendered as plain text, scrollable, with
    `gf` to edit. If a package has no prompt file the section says so instead of guessing.
 
+The folder's listing in the main pane is one row per Worker under its source; `Enter` on one
+opens it, as the bar does, and the bar's cursor follows.
+
 ### 5.4 Pipelines
+
+The folder's title names the scope as every pane's does (`PIPELINES  project: hub`), and its
+listing in the main pane is one row per Pipeline; `Enter` on one opens it, as the bar does, and
+the bar's cursor follows.
 
 For now the pane is the text `af task explain --tree` prints, produced by
 `task_execution::preview::render(…, tree = true)`, verbatim:
@@ -257,13 +321,23 @@ at that file; a file the catalog pins elsewhere, or not at all, says so and show
 instead of another file's plan. Selecting a pipeline package with
 no captured Task compiles a plan the token-free way `af task plan` does and renders that text; the two renders agree line for line except the identity lines
 (`PLAN`, `TIME`, `--confirm-plan`), which carry a fresh plan identity and deadline on every
-compilation. A package whose compilation the kernel refuses (required facts or public inputs
-the preview Task cannot invent) shows the refusal and the package's declared contract instead.
-A review Pipeline under `.af/pipelines/` is planned against a diff selector the browser does not
-hold, so its pane shows the committed declaration and the `af review plan` command, not a plan
-tree. Selecting a Task's pipeline from the Tasks pane shows the captured `ExecutionPlan`. `j`/`k`
-highlight a row; the status line shows its slot binding and provider. The ASCII DAG from the
-review TUI is not carried over; it can return as a `:set dag` view later.
+compilation. While that plan compiles, and when the kernel refuses it (required facts, public inputs
+or a Provider the preview Task cannot supply), the pane draws the committed declaration as the
+same kind of tree: `attempts N at most, M in parallel`, then one row per node in declared order
+(`implement  worker implementer -> default/implementer  attempts 1..1`, `check  checks: kernel`,
+`evaluate  verify evaluator -> ...  when check=passed`), a `call` expanded into the package the
+catalog pins by that name, as committed, with the call's slot bindings applied the way the
+kernel applies them (a bound slot is the caller's Worker, role and bounds); the contract follows
+the tree and the refusal, when there is one, comes last. A review Pipeline under
+`.af/pipelines/` is planned against a diff selector the browser does not hold, so it is always
+drawn from its declaration: the Subject, the convergence policy, the budgets and the checks,
+then one row per node (`correctness  reviewer -> correctness  after gate  demands required`,
+`gather  <- correctness, bugs`), and the `af review plan` command that plans it against a diff.
+No pane prints a declaration's TOML; `gf` opens the file. Selecting a Task's pipeline from the
+Tasks pane shows the captured `ExecutionPlan`. `j`/`k` highlight a row; the status line shows
+its slot binding and provider on a kernel plan, and the slot's declared Worker, role and bounds
+(or a reviewer's package or runner) on a declared tree. The ASCII DAG from the review TUI is
+not carried over; it can return as a `:set dag` view later.
 
 ### 5.5 Tasks
 
@@ -282,12 +356,52 @@ that repository. Then `Running (N): IDS` names the running Tasks and `Nothing to
 the rest; with nothing waiting it reads `No Task needs you now.` A scope whose Stores list no
 Task shows no attention view. A collected Task is not listed by the pane, so it is not counted.
 
-Beside the scope's own Stores, the pane lists every Task Store the Store registry
-(`$XDG_STATE_HOME/af/stores.toml`) records, the Stores `af task … --state DIR` made, and the
-ones `:state DIR` added for the session. Each is one more bar level named by the end of its path,
-and its main-pane heading is its path with `(--state, in stores.toml)` or `(:state, this
-session)`. `r` and `D` on its Tasks add `--state DIR` to the line. A registry this release cannot
-read is a warning above the Stores; the scope's own Stores are still listed.
+`f` filters the pane to the running Tasks. The bar lists under `tasks/` the running Tasks of
+every Store in one list, the one started last first, no group between; the folder lists one
+row per Task, `task-id  progress%  elapsed  tokens  where`, where `where` is the bar group the
+Task's Store stands in (a checkout's label, an explicit Store's path) or `this checkout`, and
+the status line gives the Store's heading for the highlighted row. A running Task has no
+outcome yet, so none is printed; a duration of a day or more prints as `6d 02h`, here as in
+every duration the pane prints. The Stores that cannot be read follow the list in the folder,
+each with its refusal, and are one muted `! N Stores unreadable` row in the bar, so an empty
+list never stands for a Store that was not read; with none running the folder says `No Task is
+running.` The filter is the pane's, kept across reads and `R`, and taken from the bar under
+`tasks/` whatever the main pane shows; `f` again lists every Task grouped by state as above. An
+opened Task the filtered bar no longer lists falls back to the folder, as any unlisted one
+does; the attention view is left out while the filter is on. `Enter` on a Task row of the
+folder, in the attention view or under a Store, filtered or not, opens the Task, as the bar
+does: the same opening, one inspection of that Task on the key loop (one `af task show`), as
+ADR-0240 has it.
+
+The project scope lists the Project's Tasks, not this directory's alone (ADR-0158: a Project
+is one repository across its worktrees and clones, and every checkout af worked in is a
+Workspace of it). Beside this checkout's own Store, headed `this checkout (Workspace LABEL)`
+when it is registered, the pane lists the default Store of every other checkout of the Project
+that holds Tasks (a Store af wrote, its `events.sqlite` there; a directory nothing wrote is not
+listed, and a Store whose database cannot be told is, with its refusal): the registered
+Workspaces, from the Project Store read under its shared lock, by label, then the worktrees
+`git worktree list` names that no Workspace covers, by directory name. Each is a bar level named by that label (`hub-wt-branch/ (3)`), and its heading is
+`Workspace LABEL  PATH` or `worktree NAME (not a Workspace)  PATH`, the opaque Store path last.
+A Workspace's Tasks are its checkout's default Store's, listed under its label whether or not
+the Workspace also names a `--state` Store (a clone no `git worktree list` names is found this
+way alone); a Store it names under another path, wherever it is kept, is the registry's, listed
+below with the Workspaces noted beside it. This checkout's Workspace is the one registered at
+its path (ADR-0158), whatever Store it names; a Workspace elsewhere naming this checkout's
+default Store is noted on it, `this checkout (Workspace hub; the Store of Workspace x)`.
+With no other checkout the own Store stands ungrouped as before. The read discovers them, never
+the load (ADR-0240), on every read, so a worktree added or a Task run meanwhile shows at the
+next `R`; a Project Store that cannot be read is a warning above the Stores, and the worktrees
+are still listed. A checkout that is no repository, has no commit or is a shallow clone has no
+Project to list.
+
+Then come every Task Store the Store registry (`$XDG_STATE_HOME/af/stores.toml`) records, the
+Stores `af task … --state DIR` made, and the ones `:state DIR` added for the session, each
+once, never one a checkout above already lists. Each is one more bar level named by the end of
+its path, and its main-pane heading is its path with `(--state, in stores.toml)` or `(:state,
+this session)`, and the Workspaces that name it when the Project has such: `(--state, in
+stores.toml; Workspaces wt-346, wt-363)`. `r` and `D` on the Tasks of any Store but this
+checkout's own add `--state DIR` to the line. A registry this release cannot read is a warning
+above the Stores; the scope's own Stores are still listed.
 
 Every read of the Stores runs on a thread, the one a load, `R` or `:state DIR` records as much
 as the live read of an opened running Task, each started at the first poll after it, which the
@@ -344,8 +458,8 @@ Sources: the event list from `TaskStore::events`, `TaskCompleted@1` totals for t
 state, attempt counts and charged tokens, `TaskRuntimeSpanV1` for the TIME row. A running Task
 re-reads the Store every second while it is selected; nothing is polled otherwise.
 
-Pane-local verbs: `Enter` on a HISTORY row opens that artifact as pretty JSON; `p` jumps to the
-Task's pipeline in the Pipelines pane. `r` on a Task, on the bar or in its opened pane, fills the
+Pane-local verbs: `f` toggles the running filter above; `Enter` on a HISTORY row opens that
+artifact as pretty JSON; `p` jumps to the Task's pipeline in the Pipelines pane. `r` on a Task, on the bar or in its opened pane, fills the
 `:` line with `task run ID --confirm-plan PLAN`, where PLAN is the Task's current recorded plan.
 `D` on a verified Task fills it with `task deliver ID --branch af/ID --worktree ../ID --confirm`
 and a space, and leaves the Task ID for the user to type, which keeps delivery's explicit confirmation. `D` on
@@ -476,9 +590,11 @@ Tests: keymap sequences, tree folding and search, and one golden render per pane
      package's plan. The captured `ExecutionPlan` stays with `af task explain`.
 4. Workers pane: identity, state and prompt. **Delivered** (package M4, ADR-0122). Deviations
    from §5.3:
-   - The folder reads nothing until it or one of its entries is first opened. STATE scans every
-     Task of the scope's Stores (§8), and an unopened folder costs nothing. Until then the bar
-     shows an empty `workers/`, as it did before, and `/` finds no Worker.
+   - The folder reads at load in a project scope, on its thread, as the other folders do: the
+     load records the read and the first poll after the first frame starts it (ADR-0240), with
+     a spinner on `workers/` meanwhile, so the bar lists the Workers without an open. STATE
+     counts the Attempts of every checkout's Store, this one's and each discovered one's (§8),
+     on that thread.
    - The user scope lists no Worker, and synced catalogs are not read. The pane says that
      Workers belong to a project.
    - The bar and every pane read what `HEAD` commits, like the Pipelines pane. A drifted
@@ -532,8 +648,9 @@ source-only review.
 
 - Worker "state" needs the Store to answer "which Attempts named this Worker"; today that is a
   scan of every Task's execution records. Cheap for one repository, slow for the user scope. An
-  index by `worker` in `tasks.sqlite` is the clean fix. Step 4 kept the scan: it runs only when
-  the Workers pane is opened in a project scope, and the user scope lists no Worker.
+  index by `worker` in `tasks.sqlite` is the clean fix. Step 4 kept the scan; since ADR-0261 it
+  runs on the Workers read's thread after the first frame in a project scope, opened or not, and
+  the user scope lists no Worker.
 - Which file is a package's prompt. **Answered** by package M4 (ADR-0122): the file the kernel
   itself sends, by the kernel's convention. That is `reviewer.md` for a reviewer Worker and
   `instructions.md` for a Task Worker package. A package without that file says so, and no

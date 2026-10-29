@@ -1,10 +1,17 @@
-//! Providers: the inventory `af provider status` prints, from `providers::discover_with_cancel`,
-//! and each Provider's model catalog `af provider models` prints (ADR-0148). Discovery runs one
-//! bounded authentication check per context, then reads each probed Provider's catalog
-//! token-free, and `R` adds the bounded usage probe; all of it runs on a thread the event loop
-//! polls and cancels, so a key is never waiting on a Provider. A Provider's `models` section is
-//! folded to its header line in the list and unfolds to one row per exact ID when the Provider
-//! is opened or `m` unfolds every section, and shows that Provider's own catalog only. The
+//! Providers: the inventory `af provider status --usage` prints, from
+//! `providers::discover_with_cancel`, and each Provider's model catalog `af provider models`
+//! prints (ADR-0148). Discovery runs one bounded authentication check per context, then reads
+//! each probed Provider's catalog token-free, and hands the inventory over; the bounded usage
+//! probe (`--usage`: a Provider process or an app-server round trip per login, no tokens) then
+//! runs on its own and hands the same inventory over with every quota window, so the limits are
+//! always on screen, a moment after the rows. `R` and a command's return run the probe again.
+//! All of it runs on a thread the event loop polls and cancels, so a key is never waiting on a
+//! Provider. Each window is a bar of twenty cells in the brand's colour for how much is used,
+//! green under half, blue from half, pink from four fifths, drawn so that two bars one under
+//! the other keep a hairline between them. The model catalogs are not on screen until asked
+//! for: one muted row at the end says `<m> to show models`, and `m` shows every listed
+//! Provider's `models` section, one row per exact ID of that Provider's own catalog, until `m`
+//! hides them again. The
 //! catalogs read are shared with the Workers pane under each Provider's id, which gives a
 //! runner's verdict once per Provider of its kind and follows the catalogs as they arrive: each
 //! hand-over advances the shared generation the Workers pane polls.
@@ -19,14 +26,23 @@ use review_runner_claude::models::{Catalog, Kind};
 
 use super::{Effect, Pane, Row, SPINNER};
 use crate::providers::models::{self as catalogs, CatalogOutcome, ProviderCatalog};
-use crate::providers::{self, ProviderInventory, ProviderStatus, UsageProbe};
+use crate::providers::{
+    self, ProviderInventory, ProviderLimit, ProviderStatus, UsageProbe, UsageState,
+};
 use crate::tui::keymap::Key;
-use crate::tui::paint::{Paint, Span, Tone};
+use crate::tui::paint::{Paint, Pixel, Span, Tone};
 use crate::tui::scope::Scope;
 use crate::tui::tree::Item;
 
-/// Columns of a limit bar.
-const BAR: usize = 10;
+/// Cells of a limit bar.
+const BAR: usize = 20;
+/// Row text for a login whose quota windows are still being read.
+const READING_LIMITS: &str = "limit  reading the quota windows";
+/// Row text for a login that exposes no quota window to read.
+const NO_LIMITS: &str = "limit  no quota window is reported for this login";
+/// The pane's last row while the model catalogs are off screen, and while they show.
+const MODELS_SHOW: &str = "<m> to show models";
+const MODELS_HIDE: &str = "<m> to hide models";
 
 /// What `d` says where no Provider is selected.
 pub(crate) const REMOVE_NEEDS_A_PROVIDER: &str =
@@ -112,12 +128,13 @@ struct Job {
 
 pub(crate) struct ProvidersPane {
     inventory: Option<ProviderInventory>,
-    /// What the shown inventory was probed with.
-    usage: UsageProbe,
     job: Option<Job>,
-    /// Discover on load. A pane over an inventory already taken never runs a Provider CLI
-    /// unless `R` asks.
+    /// Discover on load, and probe the quota windows once discovery answered. A pane over an
+    /// inventory already taken (a test's) never runs a Provider CLI.
     discover: bool,
+    /// A test's pane: `start` opens a job no thread feeds, and the test hands its answer over.
+    #[cfg(test)]
+    fed: Option<mpsc::Sender<Discovered>>,
     /// Whether the registry named no Provider when the pane loaded, read without a probe, for
     /// the time before discovery hands an inventory over.
     unregistered: bool,
@@ -126,12 +143,15 @@ pub(crate) struct ProvidersPane {
     spinner: usize,
     /// Each Provider's catalog, as the last complete discovery read it.
     catalogs: Vec<ProviderCatalog>,
-    /// `m` unfolds every Provider's `models` section in the list.
+    /// `m` shows every Provider's `models` section; off until asked.
     models_open: bool,
     shared: SharedCatalogs,
     /// The variables pointing a Provider CLI at its directory (`CLAUDE_CONFIG_DIR`,
     /// `CODEX_HOME`) the browser's environment sets: an ambient row says it came through one.
     selectors: BTreeSet<&'static str>,
+    /// The folder's title: the pane and the scope it was loaded for, as every pane's title
+    /// names them (ADR-0261); an opened Provider's title names the Provider instead.
+    title: String,
 }
 
 impl ProvidersPane {
@@ -139,9 +159,10 @@ impl ProvidersPane {
     pub(crate) fn discovering() -> ProvidersPane {
         ProvidersPane {
             inventory: None,
-            usage: UsageProbe::Skip,
             job: None,
             discover: true,
+            #[cfg(test)]
+            fed: None,
             unregistered: false,
             selected: None,
             rows: Vec::new(),
@@ -154,6 +175,7 @@ impl ProvidersPane {
                 .map(|kind| providers::ambient_selector(kind).0)
                 .filter(|name| std::env::var_os(name).is_some())
                 .collect(),
+            title: "PROVIDERS".to_owned(),
         }
     }
 
@@ -180,10 +202,9 @@ impl ProvidersPane {
     }
 
     #[cfg(test)]
-    pub(crate) fn with_inventory(inventory: ProviderInventory, usage: UsageProbe) -> ProvidersPane {
+    pub(crate) fn with_inventory(inventory: ProviderInventory) -> ProvidersPane {
         let mut pane = ProvidersPane::discovering();
         pane.inventory = Some(inventory);
-        pane.usage = usage;
         pane.discover = false;
         // A render never depends on the environment of the process painting it.
         pane.selectors.clear();
@@ -216,11 +237,25 @@ impl ProvidersPane {
         }
     }
 
+    /// Discover again on a thread, with or without the usage probe; the shown inventory stays
+    /// until the thread answers.
     fn start(&mut self, usage: UsageProbe) {
         self.cancel();
         let cancel = Arc::new(AtomicBool::new(false));
         let flag = Arc::clone(&cancel);
         let (sender, receiver) = mpsc::channel();
+        #[cfg(test)]
+        if self.fed.is_some() {
+            // No Provider CLI runs in a test: the job waits for what the test hands over.
+            self.fed = Some(sender);
+            self.job = Some(Job {
+                receiver,
+                cancel,
+                usage,
+            });
+            self.rebuild();
+            return;
+        }
         std::thread::spawn(move || {
             let inventory = providers::discover_with_cancel(&flag, usage);
             // A CLI that cannot start, or was not probed, has no catalog to read.
@@ -277,7 +312,7 @@ impl ProvidersPane {
     fn rebuild(&mut self) {
         let title = match &self.selected {
             Some(id) => format!("PROVIDERS  {id}"),
-            None => "PROVIDERS  (af provider status)".to_owned(),
+            None => format!("{}  (af provider status)", self.title),
         };
         let mut rows = vec![Row::painted(title, Paint::Title)];
         if self.none_registered() {
@@ -292,7 +327,8 @@ impl ProvidersPane {
                     open: self.models_open,
                     selectors: &self.selectors,
                 };
-                inventory_rows(inventory, selected, self.usage, &models, &mut rows);
+                let reading = self.job.is_some();
+                inventory_rows(inventory, selected, reading, &models, &mut rows);
             }
             None => rows.push(Row::plain("Discovering providers.")),
         }
@@ -303,7 +339,7 @@ impl ProvidersPane {
                     "checking authentication and reading model catalogs, bounded per context"
                 }
                 UsageProbe::Probe => {
-                    "probing subscription and quota windows and model catalogs, bounded"
+                    "reading quota windows and model catalogs, bounded per context"
                 }
             };
             rows.push(Row::blank());
@@ -314,7 +350,12 @@ impl ProvidersPane {
 }
 
 impl Pane for ProvidersPane {
-    fn load(&mut self, _scope: &Scope) -> Result<(), String> {
+    fn load(&mut self, scope: &Scope) -> Result<(), String> {
+        let title = format!("PROVIDERS  {}: {}", scope.word(), scope.name());
+        if title != self.title {
+            self.title = title;
+            self.rebuild();
+        }
         if self.discover && self.inventory.is_none() && self.job.is_none() {
             self.unregistered = providers::read_registry_entries().registered.is_empty();
             self.start(UsageProbe::Skip);
@@ -349,7 +390,7 @@ impl Pane for ProvidersPane {
     }
 
     /// `d` fills the `:` line with `provider remove ID` for the opened Provider; nothing is
-    /// removed until the user runs that line. `m` folds or unfolds the `models` sections.
+    /// removed until the user runs that line. `m` shows or hides the `models` sections.
     fn key(&mut self, key: Key, _row: usize) -> Result<Option<Effect>, String> {
         if key == Key::Char('m') {
             self.models_open = !self.models_open;
@@ -365,27 +406,30 @@ impl Pane for ProvidersPane {
         }
     }
 
+    fn rename(&mut self, scope: &Scope) {
+        self.title = format!("PROVIDERS  {}: {}", scope.word(), scope.name());
+        self.rebuild();
+    }
+
     fn legend(&self) -> &'static str {
         match self.selected {
-            Some(_) => "d remove  R probe usage  y yank id  gf registry  Tab bar  :cmd  q quit",
-            None => {
-                "j/k move  m models  R probe usage  y yank id  gf registry  Tab bar  :cmd  q quit"
-            }
+            Some(_) => "m models  d remove  y yank id  gf registry  Tab bar  :cmd  q quit",
+            None => "j/k move  m models  y yank id  gf registry  Tab bar  :cmd  q quit",
         }
     }
 
-    /// `R` runs the bounded usage probe `af provider status --usage` runs, and reads every
-    /// catalog again.
+    /// `R` discovers again with the usage probe `af provider status --usage` runs, and reads
+    /// every catalog again; the shown inventory stays until the probe answers.
     fn refresh(&mut self, _scope: &Scope) -> Result<(), String> {
         self.start(UsageProbe::Probe);
         Ok(())
     }
 
-    /// A command may have set up or removed a Provider: discover again, never probing, since a
-    /// probe may be charged and only `R` asks for one. A fixed inventory stays as it is.
+    /// A command may have set up or removed a Provider, or spent a window: discover again with
+    /// the probe, as `R` does. A fixed inventory stays as it is.
     fn reread(&mut self, _scope: &Scope) -> Result<(), String> {
         if self.discover {
-            self.start(UsageProbe::Skip);
+            self.start(UsageProbe::Probe);
         }
         Ok(())
     }
@@ -409,8 +453,12 @@ impl Pane for ProvidersPane {
                     self.selected = None;
                 }
                 self.inventory = Some(inventory);
-                self.usage = usage;
                 self.job = None;
+                // The rows are on screen: now the quota windows, which take a Provider process
+                // per login and a couple of seconds, behind their own spinner.
+                if usage == UsageProbe::Skip && self.discover {
+                    self.start(UsageProbe::Probe);
+                }
             }
             Err(TryRecvError::Empty) => self.spinner = self.spinner.wrapping_add(1),
             Err(TryRecvError::Disconnected) => self.job = None,
@@ -425,7 +473,7 @@ impl Pane for ProvidersPane {
     }
 
     /// Stop the probe and forget it: whatever it returns is never shown, so the last complete
-    /// inventory and its usage stay on screen and `R` can probe again.
+    /// inventory and its windows stay on screen and `R` reads again.
     fn cancel(&mut self) -> bool {
         match self.job.take() {
             Some(job) => {
@@ -447,7 +495,7 @@ impl Pane for ProvidersPane {
     }
 }
 
-/// The catalogs a rebuild shows, and whether `m` unfolded them.
+/// The catalogs a rebuild may show, and whether `m` asked for them.
 struct Models<'a> {
     catalogs: &'a [ProviderCatalog],
     open: bool,
@@ -455,12 +503,15 @@ struct Models<'a> {
     selectors: &'a BTreeSet<&'static str>,
 }
 
-/// The `af provider status` table for the selected provider, or for all of them, then each
-/// provider's limit bars, note and models, and the setup line for an ambient candidate.
+/// The `af provider status` table for the selected provider, or for all of them with a blank
+/// row between two providers, then each provider's limit bars and note, the setup line for an
+/// ambient candidate, and, once `m` asked for them, each provider's models; the last row says
+/// what `m` does while a catalog was read.
+/// `reading` while a discovery or probe runs: a login whose windows it has not read yet says so.
 fn inventory_rows(
     inventory: &ProviderInventory,
     selected: Option<&str>,
-    usage: UsageProbe,
+    reading: bool,
     models: &Models<'_>,
     rows: &mut Vec<Row>,
 ) {
@@ -478,25 +529,57 @@ fn inventory_rows(
         ids.insert(provider.id.clone());
     }
     rows.push(Row::painted(providers::status_table_header(), Paint::Title));
-    for provider in &inventory.providers {
-        if selected.is_none_or(|id| id == provider.id) {
-            provider_rows(provider, selected.is_some(), &ids, models.selectors, rows);
-            let catalog = models.catalogs.iter().find(|c| c.id == provider.id);
-            if let Some(catalog) = catalog {
-                model_rows(catalog, selected.is_some() || models.open, rows);
+    // Every bar on the page starts in one column: the window names are padded to the longest
+    // of every listed provider, not each provider's own.
+    let shown = |provider: &&ProviderStatus| selected.is_none_or(|id| id == provider.id);
+    let width = inventory
+        .providers
+        .iter()
+        .filter(shown)
+        .flat_map(|provider| &provider.limits)
+        .map(|limit| limit.name.len())
+        .max()
+        .unwrap_or(0);
+    let mut any_catalog = false;
+    for (listed, provider) in inventory.providers.iter().filter(shown).enumerate() {
+        if listed > 0 {
+            rows.push(Row::blank());
+        }
+        provider_rows(
+            provider,
+            selected.is_some(),
+            reading,
+            width,
+            &ids,
+            models.selectors,
+            rows,
+        );
+        let catalog = models.catalogs.iter().find(|c| c.id == provider.id);
+        if let Some(catalog) = catalog {
+            any_catalog = true;
+            if models.open {
+                // The models stand apart from the login's windows and note.
+                rows.push(Row::blank());
+                model_rows(catalog, rows);
             }
         }
     }
-    if usage == UsageProbe::Skip {
+    if any_catalog {
         rows.push(Row::blank());
-        let hint = "Subscription and quota windows are not probed by default; R probes them.";
-        rows.push(Row::plain(hint));
+        let hint = if models.open {
+            MODELS_HIDE
+        } else {
+            MODELS_SHOW
+        };
+        rows.push(Row::painted(hint, Paint::Muted));
     }
 }
 
 fn provider_rows(
     provider: &ProviderStatus,
     alone: bool,
+    reading: bool,
+    width: usize,
     ids: &BTreeSet<String>,
     selectors: &BTreeSet<&'static str>,
     rows: &mut Vec<Row>,
@@ -507,11 +590,7 @@ fn provider_rows(
     if alone {
         rows.push(Row::blank());
     }
-    for limit in &provider.limits {
-        let used = bar(limit.used_percent);
-        let text = providers::format_limit(limit);
-        rows.push(Row::painted(format!("limit  {used}  {text}"), paint));
-    }
+    limit_rows(provider, reading, width, paint, rows);
     if !provider.detail.is_empty() {
         rows.push(Row::painted(format!("note   {}", provider.detail), paint));
     }
@@ -527,10 +606,10 @@ fn provider_rows(
     }
 }
 
-/// A Provider's `models` section: the header line of `af provider models`, then, unfolded, one
-/// row per exact ID (ID, display name, effort levels, aliases); a catalog that could not be read
-/// says why.
-fn model_rows(catalog: &ProviderCatalog, unfolded: bool, rows: &mut Vec<Row>) {
+/// A Provider's `models` section: the header line of `af provider models`, then one row per
+/// exact ID (ID, display name, effort levels, aliases); a catalog that could not be read says
+/// why.
+fn model_rows(catalog: &ProviderCatalog, rows: &mut Vec<Row>) {
     let report = match &catalog.outcome {
         CatalogOutcome::Listed(report) => report,
         CatalogOutcome::CliRefused(reason) | CatalogOutcome::Unavailable(reason) => {
@@ -542,14 +621,10 @@ fn model_rows(catalog: &ProviderCatalog, unfolded: bool, rows: &mut Vec<Row>) {
         }
     };
     let count = report.catalog.models.len();
-    let fold = if unfolded { "" } else { "  (m unfolds)" };
     rows.push(Row::plain(format!(
-        "models {}  {count} exact IDs{fold}",
+        "models {}  {count} exact IDs",
         report.header()
     )));
-    if !unfolded {
-        return;
-    }
     for model in &report.catalog.models {
         let aliases = if model.aliases.is_empty() {
             String::new()
@@ -597,10 +672,73 @@ fn status_row(provider: &ProviderStatus, paint: Paint) -> Row {
     }
 }
 
-/// `used_percent` as a bar of `#` used and `.` left.
-fn bar(used_percent: u8) -> String {
-    let used = (usize::from(used_percent.min(100)) * BAR + 50) / 100;
-    format!("[{}{}]", "#".repeat(used), ".".repeat(BAR - used))
+/// One row per quota window, each a bar, the names padded to `width`; a login whose windows are
+/// still being read, or that reports none, says so in one muted row. A login that is not
+/// authenticated has no window, and one whose probe did not answer carries the cause in its
+/// `note`.
+fn limit_rows(
+    provider: &ProviderStatus,
+    reading: bool,
+    width: usize,
+    paint: Paint,
+    rows: &mut Vec<Row>,
+) {
+    if provider.limits.is_empty() {
+        let authenticated = provider.status == "authenticated";
+        match provider.usage {
+            UsageState::NotRequested if reading && authenticated => {
+                rows.push(Row::painted(READING_LIMITS, Paint::Muted));
+            }
+            UsageState::Unsupported => rows.push(Row::painted(NO_LIMITS, Paint::Muted)),
+            _ => {}
+        }
+        return;
+    }
+    for limit in &provider.limits {
+        rows.push(limit_row(&provider.kind, limit, width, paint));
+    }
+}
+
+/// A window as `limit  NAME  [####................]   20% used  resets in 6d 20h`: the bar's
+/// used cells are drawn in the band's colour (green under half, blue from half, pink from four
+/// fifths), the rest as a grey track, each cell a block that keeps a hairline from the row
+/// above ([`Paint::Bar`]); in the terminal's own colours the same, and without colour `#` and
+/// `.`. The text is what the CLI prints, the words put in bar order.
+fn limit_row(kind: &str, limit: &ProviderLimit, width: usize, paint: Paint) -> Row {
+    let used = usize::from(limit.used_percent.min(100));
+    let filled = (used * BAR + 50) / 100;
+    let mut spans = vec![Span::new(
+        format!("limit  {:<width$}  [", limit.name),
+        paint,
+    )];
+    if filled > 0 {
+        spans.push(Span::new(
+            "#".repeat(filled),
+            Paint::Bar(band(limit.used_percent)),
+        ));
+    }
+    if filled < BAR {
+        spans.push(Span::new(".".repeat(BAR - filled), Paint::Bar(Pixel::Grey)));
+    }
+    spans.push(Span::new(
+        format!(
+            "]  {:>3}% used  {}",
+            limit.used_percent,
+            providers::format_reset_of(kind, limit)
+        ),
+        paint,
+    ));
+    Row { spans }
+}
+
+/// The colour of a bar's used cells: green while under half is used, blue from half, pink from
+/// four fifths, when a window is close to its end.
+fn band(used_percent: u8) -> Pixel {
+    match used_percent {
+        0..=49 => Pixel::Green,
+        50..=79 => Pixel::Blue,
+        _ => Pixel::Pink,
+    }
 }
 
 #[cfg(test)]
@@ -644,13 +782,186 @@ pub(crate) mod tests {
         ]
     }
 
+    fn window(name: &str, used_percent: u8, resets_at: Option<u64>) -> ProviderLimit {
+        ProviderLimit {
+            name: name.to_owned(),
+            window_minutes: Some(10_080),
+            used_percent,
+            resets_at,
+        }
+    }
+
+    /// The bar's text, and the paint of its used and left cells.
+    fn bar_of(row: &Row) -> (String, Vec<(usize, Paint)>) {
+        let text = row.text();
+        let start = text.find('[').unwrap();
+        let end = text.find(']').unwrap();
+        let cells = row
+            .spans
+            .iter()
+            .filter(|span| matches!(span.paint, Paint::Bar(_)))
+            .map(|span| (span.text.len(), span.paint))
+            .collect();
+        (text[start..=end].to_owned(), cells)
+    }
+
     #[test]
-    fn limit_bars_round_to_the_nearest_column() {
-        assert_eq!(bar(0), "[..........]");
-        assert_eq!(bar(41), "[####......]");
-        assert_eq!(bar(68), "[#######...]");
-        assert_eq!(bar(100), "[##########]");
-        assert_eq!(bar(255), "[##########]");
+    fn limit_bars_round_to_the_nearest_cell_and_take_the_band_colour() {
+        let row = |used| limit_row("claude", &window("weekly", used, None), 6, Paint::Plain);
+        let (bar, cells) = bar_of(&row(0));
+        assert_eq!(bar, "[....................]");
+        assert_eq!(cells, [(20, Paint::Bar(Pixel::Grey))]);
+        let (bar, cells) = bar_of(&row(41));
+        assert_eq!(bar, "[########............]");
+        assert_eq!(
+            cells,
+            [(8, Paint::Bar(Pixel::Green)), (12, Paint::Bar(Pixel::Grey))]
+        );
+        let (bar, cells) = bar_of(&row(68));
+        assert_eq!(bar, "[##############......]");
+        assert_eq!(cells[0], (14, Paint::Bar(Pixel::Blue)));
+        let (bar, cells) = bar_of(&row(85));
+        assert_eq!(bar, "[#################...]");
+        assert_eq!(cells[0], (17, Paint::Bar(Pixel::Pink)));
+        let (bar, cells) = bar_of(&row(100));
+        assert_eq!(bar, "[####################]");
+        assert_eq!(cells, [(20, Paint::Bar(Pixel::Pink))]);
+        // A percentage past 100 fills the bar and is printed as reported.
+        let (bar, _) = bar_of(&row(255));
+        assert_eq!(bar, "[####################]");
+        assert!(row(255).text().contains("]  255% used"));
+    }
+
+    #[test]
+    fn a_limit_row_names_the_window_its_use_and_its_reset() {
+        let far = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_secs()
+            + 6 * 24 * 60 * 60
+            + 20 * 60 * 60
+            + 30 * 60;
+        let codex = limit_row("codex", &window("codex 1w", 5, Some(far)), 8, Paint::Plain);
+        assert_eq!(
+            codex.text(),
+            "limit  codex 1w  [#...................]    5% used  resets in 6d 20h"
+        );
+        let claude = limit_row("claude", &window("weekly", 68, None), 9, Paint::Plain);
+        assert_eq!(
+            claude.text(),
+            "limit  weekly     [##############......]   68% used  no reset time from Claude"
+        );
+        // An ambient Provider's words are muted; its bar keeps its colour.
+        let muted = limit_row("codex", &window("codex 1w", 5, Some(far)), 8, Paint::Muted);
+        assert_eq!(muted.spans[0].paint, Paint::Muted);
+        assert_eq!(muted.spans[1].paint, Paint::Bar(Pixel::Green));
+    }
+
+    /// Every bar on the page starts in one column, whatever its login's window names.
+    #[test]
+    fn the_bars_of_every_provider_start_in_one_column() {
+        let mut both = inventory(&["claude-main", "codex-main"]);
+        both.providers[0].kind = "claude".into();
+        both.providers[0].usage = UsageState::Available;
+        both.providers[0].limits = vec![
+            window("Claude session 5h", 16, None),
+            window("Claude all models 1w", 33, None),
+        ];
+        both.providers[1].usage = UsageState::Available;
+        both.providers[1].limits = vec![window("codex 1w", 6, Some(u64::MAX / 2))];
+        let mut pane = ProvidersPane::with_inventory(both);
+        let bars: Vec<usize> = pane
+            .rows()
+            .iter()
+            .map(Row::text)
+            .filter(|row| row.starts_with("limit  "))
+            .map(|row| row.find('[').unwrap())
+            .collect();
+        assert_eq!(bars, [29, 29, 29]);
+        // Opened alone, a login's own names set the column.
+        pane.open(Some("codex-main"));
+        let codex: Vec<String> = pane
+            .rows()
+            .iter()
+            .map(Row::text)
+            .filter(|row| row.starts_with("limit  "))
+            .collect();
+        assert_eq!(codex.len(), 1);
+        assert!(codex[0].starts_with("limit  codex 1w  ["), "{codex:#?}");
+    }
+
+    /// Discovery hands the rows over first; the quota windows follow from a probe the pane
+    /// starts itself, and a login says it is reading them meanwhile.
+    #[test]
+    fn the_quota_windows_are_read_right_after_discovery() {
+        let mut pane = ProvidersPane::discovering();
+        pane.fed = Some(mpsc::channel().0);
+        pane.unregistered = false;
+        pane.start(UsageProbe::Skip);
+        assert_eq!(
+            pane.job.as_ref().map(|job| job.usage),
+            Some(UsageProbe::Skip)
+        );
+        let mut found = inventory(&["codex-main"]);
+        found.providers[0].usage = UsageState::NotRequested;
+        pane.fed
+            .as_ref()
+            .unwrap()
+            .send(Discovered {
+                inventory: found,
+                catalogs: Vec::new(),
+            })
+            .unwrap();
+        assert!(pane.poll());
+        // The rows are on screen and the probe has started.
+        assert_eq!(
+            pane.job.as_ref().map(|job| job.usage),
+            Some(UsageProbe::Probe)
+        );
+        let rows: Vec<String> = pane.rows().iter().map(Row::text).collect();
+        assert!(
+            rows.iter().any(|row| row.starts_with("codex-main ")),
+            "{rows:#?}"
+        );
+        assert!(rows.contains(&READING_LIMITS.to_owned()), "{rows:#?}");
+        assert!(
+            rows.iter()
+                .any(|row| row.contains("reading quota windows and model catalogs")),
+            "{rows:#?}"
+        );
+        // The probe answers: the windows' bars take the placeholder's place, one under the
+        // other, and no third discovery starts.
+        let mut probed = inventory(&["codex-main"]);
+        probed.providers[0].usage = UsageState::Available;
+        probed.providers[0].limits =
+            vec![window("codex 5h", 40, None), window("codex 1w", 5, None)];
+        pane.fed
+            .as_ref()
+            .unwrap()
+            .send(Discovered {
+                inventory: probed,
+                catalogs: Vec::new(),
+            })
+            .unwrap();
+        assert!(pane.poll());
+        assert!(pane.job.is_none());
+        let rows: Vec<String> = pane.rows().iter().map(Row::text).collect();
+        assert!(!rows.contains(&READING_LIMITS.to_owned()), "{rows:#?}");
+        let first = rows
+            .iter()
+            .position(|row| row.starts_with("limit  codex 5h  [########...."))
+            .unwrap_or_else(|| panic!("{rows:#?}"));
+        assert!(
+            rows[first + 1].starts_with("limit  codex 1w  [#..."),
+            "{rows:#?}"
+        );
+        // A login that exposes no window says so instead of a bar.
+        let mut none = inventory(&["codex-main"]);
+        none.providers[0].usage = UsageState::Unsupported;
+        pane.inventory = Some(none);
+        pane.rebuild();
+        let rows: Vec<String> = pane.rows().iter().map(Row::text).collect();
+        assert!(rows.contains(&NO_LIMITS.to_owned()), "{rows:#?}");
     }
 
     fn inventory(ids: &[&str]) -> ProviderInventory {
@@ -691,10 +1002,56 @@ pub(crate) mod tests {
         assert!(pane.poll());
     }
 
+    /// `R` discovers again with the usage probe, as a command's return does: a job with the
+    /// probe starts, and the shown inventory, windows included, stays until it answers.
+    #[test]
+    fn r_discovers_again_with_the_usage_probe_and_keeps_the_shown_inventory() {
+        let mut pane = ProvidersPane::discovering();
+        pane.fed = Some(mpsc::channel().0);
+        pane.unregistered = false;
+        pane.start(UsageProbe::Skip);
+        let hand_over = |pane: &ProvidersPane, inventory: ProviderInventory| {
+            pane.fed
+                .as_ref()
+                .unwrap()
+                .send(Discovered {
+                    inventory,
+                    catalogs: Vec::new(),
+                })
+                .unwrap();
+        };
+        // Discovery answers, the automatic probe starts and answers: the windows are shown.
+        hand_over(&pane, inventory(&["codex-main"]));
+        assert!(pane.poll());
+        let mut probed = inventory(&["codex-main"]);
+        probed.providers[0].usage = UsageState::Available;
+        probed.providers[0].limits = vec![window("codex 5h", 40, None)];
+        hand_over(&pane, probed);
+        assert!(pane.poll());
+        assert!(pane.job.is_none());
+        let temp = tempfile::tempdir().unwrap();
+        let scope = crate::tui::tests::user_scope(temp.path());
+        pane.refresh(&scope).unwrap();
+        assert_eq!(
+            pane.job.as_ref().map(|job| job.usage),
+            Some(UsageProbe::Probe)
+        );
+        let rows: Vec<String> = pane.rows().iter().map(Row::text).collect();
+        assert!(
+            rows.iter().any(|row| row.starts_with("codex-main ")),
+            "{rows:#?}"
+        );
+        assert!(
+            rows.iter().any(|row| row.starts_with("limit  codex 5h  [")),
+            "{rows:#?}"
+        );
+        assert!(pane.busy().is_some(), "the spinner says a probe runs");
+    }
+
     #[test]
     fn a_discovery_without_the_opened_provider_shows_the_folder() {
         let both = inventory(&["codex-main", "codex-work"]);
-        let mut pane = ProvidersPane::with_inventory(both, UsageProbe::Skip);
+        let mut pane = ProvidersPane::with_inventory(both);
         pane.open(Some("codex-work"));
         assert_eq!(pane.rows()[0].text(), "PROVIDERS  codex-work");
         // `af provider remove codex-work` ran: the next discovery no longer lists it.
@@ -719,43 +1076,46 @@ pub(crate) mod tests {
     }
 
     #[test]
-    fn each_provider_shows_its_models_folded_in_the_list_and_unfolded_when_opened() {
+    fn the_models_are_off_screen_until_m_shows_them() {
         let mut catalogs = fixture_catalogs();
         catalogs.push(ProviderCatalog {
             id: "codex-work".into(),
             kind: Kind::Codex,
             outcome: CatalogOutcome::Unavailable("codex app-server exited 1".into()),
         });
-        let mut pane =
-            ProvidersPane::with_inventory(with_kinds(), UsageProbe::Skip).with_catalogs(catalogs);
-        let rows: Vec<String> = pane.rows().iter().map(Row::text).collect();
+        let mut pane = ProvidersPane::with_inventory(with_kinds()).with_catalogs(catalogs);
+        let texts = |pane: &ProvidersPane| pane.rows().iter().map(Row::text).collect::<Vec<_>>();
+        // The list: no models row, one hint at the end.
+        let rows = texts(&pane);
         assert!(
-            rows.contains(
-                &"models source claude list_models  version 2.1.300  freshness live  4 exact IDs  (m unfolds)"
-                    .to_owned()
-            ),
-            "{rows:#?}"
-        );
-        assert!(
-            rows.iter().any(|row| row.starts_with(
-                "models source codex app-server model/list  version 0.162.1  freshness \
-                 models_cache.json fetched_at 2026-10-15T09:58:12Z  5 exact IDs"
-            )),
-            "{rows:#?}"
-        );
-        assert!(
-            rows.contains(
-                &"models unavailable: codex app-server exited 1; the static rules apply".to_owned()
-            ),
+            !rows.iter().any(|row| row.starts_with("models ")),
             "{rows:#?}"
         );
         assert!(
             !rows.iter().any(|row| row.starts_with("  model ")),
-            "folded"
+            "{rows:#?}"
         );
-        // Opened, a Provider's section unfolds to one row per exact ID and what it proves.
+        assert_eq!(rows[rows.len() - 2], "");
+        assert_eq!(rows[rows.len() - 1], MODELS_SHOW);
+        // An opened Provider likewise.
         pane.open(Some("claude-work"));
-        let rows: Vec<String> = pane.rows().iter().map(Row::text).collect();
+        let rows = texts(&pane);
+        assert!(
+            !rows.iter().any(|row| row.starts_with("models ")),
+            "{rows:#?}"
+        );
+        assert_eq!(rows[rows.len() - 1], MODELS_SHOW);
+        // `m` shows the opened Provider's section: the header, one row per exact ID and what it
+        // proves, one blank row under the login's rows.
+        assert_eq!(pane.key(Key::Char('m'), 0), Ok(None));
+        let rows = texts(&pane);
+        let header = rows
+            .iter()
+            .position(|row| {
+                row == "models source claude list_models  version 2.1.300  freshness live  4 exact IDs"
+            })
+            .unwrap_or_else(|| panic!("{rows:#?}"));
+        assert_eq!(rows[header - 1], "", "{rows:#?}");
         let fable = rows
             .iter()
             .find(|row| row.starts_with("  model  claude-fable-5-1"))
@@ -764,28 +1124,46 @@ pub(crate) mod tests {
             assert!(fable.contains(part), "{part}: {fable}");
         }
         assert!(rows.iter().any(|row| row.contains("af provider doctor")));
-        // `m` unfolds every section in the list, and folds them again.
+        assert_eq!(rows[rows.len() - 1], MODELS_HIDE);
+        // Back in the list, every Provider's section shows, a catalog that could not be read
+        // as its reason.
         pane.open(None);
-        assert_eq!(pane.key(Key::Char('m'), 0), Ok(None));
-        let rows: Vec<String> = pane.rows().iter().map(Row::text).collect();
+        let rows = texts(&pane);
+        assert!(
+            rows.iter().any(|row| row.starts_with(
+                "models source codex app-server model/list  version 0.162.1  freshness \
+                 models_cache.json fetched_at 2026-10-15T09:58:12Z  5 exact IDs"
+            )),
+            "{rows:#?}"
+        );
         assert!(
             rows.iter()
                 .any(|row| row.starts_with("  model  gpt-6-luna") && !row.contains("ultra")),
             "{rows:#?}"
         );
-        assert_eq!(pane.key(Key::Char('m'), 0), Ok(None));
         assert!(
-            !pane
-                .rows()
-                .iter()
-                .any(|row| row.text().starts_with("  model "))
+            rows.contains(
+                &"models unavailable: codex app-server exited 1; the static rules apply".to_owned()
+            ),
+            "{rows:#?}"
         );
+        // `m` again hides them; the hint says so.
+        assert_eq!(pane.key(Key::Char('m'), 0), Ok(None));
+        let rows = texts(&pane);
+        assert!(
+            !rows.iter().any(|row| row.starts_with("  model ")),
+            "{rows:#?}"
+        );
+        assert_eq!(rows[rows.len() - 1], MODELS_SHOW);
+        // Without any catalog there is nothing to show and no hint.
+        let bare = ProvidersPane::with_inventory(with_kinds());
+        assert!(!texts(&bare).iter().any(|row| row.contains("<m>")));
     }
 
     #[test]
     fn a_discovery_hands_its_catalogs_to_the_workers_pane() {
         let shared = SharedCatalogs::default();
-        let mut pane = ProvidersPane::with_inventory(with_kinds(), UsageProbe::Skip);
+        let mut pane = ProvidersPane::with_inventory(with_kinds());
         pane.share(shared.clone());
         assert!(shared.of_kind(Kind::Claude).is_empty());
         let (sender, receiver) = mpsc::channel();
@@ -850,9 +1228,10 @@ pub(crate) mod tests {
             provider.kind = "claude".into();
         }
         let shared = SharedCatalogs::default();
-        let mut pane = ProvidersPane::with_inventory(inventory, UsageProbe::Skip)
-            .with_catalogs(two_claude_catalogs());
+        let mut pane =
+            ProvidersPane::with_inventory(inventory).with_catalogs(two_claude_catalogs());
         pane.share(shared.clone());
+        pane.models_open = true;
         let section = |pane: &mut ProvidersPane, id: &str| {
             pane.open(Some(id));
             pane.rows()

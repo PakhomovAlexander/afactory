@@ -100,6 +100,13 @@ impl Pane for SettingsPane {
         Ok(Some(Effect::RunCommand(words)))
     }
 
+    fn rename(&mut self, scope: &Scope) {
+        if let Some(first) = self.rows.first_mut() {
+            let title = format!("SETTINGS  {}: {}", scope.word(), scope.name());
+            *first = Row::painted(title, Paint::Title);
+        }
+    }
+
     fn legend(&self) -> &'static str {
         "j/k move  e edit layer  gf open file  Tab bar  :cmd  q quit"
     }

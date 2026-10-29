@@ -4,17 +4,17 @@ v hub  (project)            |PLAN  ########  configured  STATE done  started hh:
       claude-main           |
       codex-ambient         |PROGRESS  6 / 6 stages
   v workers/                |  [ok]  inputs
-  v pipelines/              |  [ok]  implement                         0 tok
-      review                |  [ok]  seal
-      fixture/implementation|  [ok]  check  <t>        0 tok
-  v tasks/                  |  [ok]  evaluate                          0 tok
-    v done/ (1)             |  [ok]  accept
-        pagination-c~  100% |
-    v failed/ (1)           |TOKENS  chargeable 0  input -  output -  cache read -  reasoning -
-        pagination-u~  100% |TIME  wall  <t>  checks  <t>  dependency prep -
-  v campaigns/              |
-                            |HISTORY  (af task show)
-                            |     0  opened                              ########
+      fixture/evaluator     |  [ok]  implement                         0 tok
+      fixture/implementer   |  [ok]  seal
+  v pipelines/              |  [ok]  check  <t>        0 tok
+      review                |  [ok]  evaluate                          0 tok
+      fixture/implementation|  [ok]  accept
+  v tasks/                  |
+    v done/ (1)             |TOKENS  chargeable 0  input -  output -  cache read -  reasoning -
+        pagination-c~  100% |TIME  wall  <t>  checks  <t>  dependency prep -
+    v failed/ (1)           |
+        pagination-u~  100% |HISTORY  (af task show)
+  v campaigns/              |     0  opened                              ########
                             |     1  plan_proposed                       ########
                             |     2  plan_admitted                       ########
                             |     4  execution_recorded invocation       ########
