@@ -567,7 +567,8 @@ A Task file says the same with `"continue": {"task": "pagination-cli", "round": 
 round, or have kept the edits of a Worker its Attempt wall stopped (below), and for a reviewed
 round the selected Pipeline must declare `findings` (the kernel's
 `kernel/implementation-reviewed`, `kernel/implementation-ux` and `kernel/review-light` do, and so
-does [`default/implementation`](#the-default-pipeline)), or the
+do [`default/implementation`](#the-default-pipeline) and
+[`default-light/implementation`](#the-light-default-pipeline)), or the
 plan is refused with the reason. `af task show NEW` prints `continues TASK round N`, `--json`
 carries `continues` (`af/task-inspection@14`), and `af task report` names it in NEW's row.
 
@@ -602,25 +603,31 @@ the goal is visible before the Task runs.
 
 ## The default pipeline
 
-Every change to Afactory runs through the default Task pipeline that this repository's own
-catalog, `.af/task-catalog.toml`, pins
+A change to Afactory that is not small and local enough for
+[the light default pipeline](#the-light-default-pipeline) runs through the default Task pipeline
+that this repository's own catalog, `.af/task-catalog.toml`, pins
 ([ADR-0253](adr/0253-the-default-task-pipeline-lives-in-the-catalog.md)), so any checkout plans
 it. `default/implementation` is `kernel/implementation-ux` with its five slots bound to the
 `default/*` Worker packages: one implementing iteration, the project's local gate on the sealed
-candidate, two required reviewers, one advisory reviewer and an independent evaluator. It
-declares `findings`, so `af task run NEW --from TASK` continues it. `default/verification` is
+candidate, two bound reviewers whose findings count (bugs, correctness), one advisory reviewer
+for gate time and quality and an independent evaluator. It declares `findings`, so
+`af task run NEW --from TASK` continues it. `default/verification` is
 `kernel/verification-ux` with the same four judging slots and no implementer: it judges an
 existing candidate read-only.
 
 | Slot | Package | Model | Effort | What it does |
 |---|---|---|---|---|
 | `implementer` | `default/implementer` | `claude-opus-5-5` | `high` | one implementing iteration (`default/implementation` only) |
-| `bugs` | `default/bugs` | `gpt-5.6-terra` | `high` | required reviewer: concrete functional defects |
+| `bugs` | `default/bugs` | `gpt-5.6-terra` | `high` | reviewer bound here, advisory in the catalog's policy: concrete functional defects |
 | `correctness` | `default/correctness` | `gpt-6-sol` | `high` | required reviewer: requirements, contracts and architecture |
 | `uix` | `default/advisor` | `gpt-6-astra` | `medium` | advisory reviewer: gate time and quality |
 | `evaluator` | `default/evaluator` | `gpt-6-astra` | `high` | independent evaluator of the requirements |
 
-The catalog's `[review.reviewers]` marks the `uix` slot advisory: its reviewer judges the time a
+The catalog's `[review.reviewers]` marks the `uix` slot advisory, and the `bugs` slot advisory
+so that [the light default pipeline](#the-light-default-pipeline) may leave it unbound.
+`default/implementation` binds `bugs`, so its findings count and its missing result leaves the
+round incomplete, as for a required reviewer; only a benchmark Demand it files is now advisory,
+so an open one no longer keeps the round from converging. The `uix` reviewer judges the time a
 change adds to every future gate and pull-request validation, and the quality a maintainer cares
 about, and files each finding at its honest severity. In this release its reports still count
 toward convergence like any reviewer's: an open `blocker` or `major` of the bound advisory
@@ -663,6 +670,58 @@ schema = "af.task-bindings/1"
 "default/correctness" = "codex-personal"
 "default/advisor" = "codex-personal"
 "default/evaluator" = "codex-personal"
+```
+
+## The light default pipeline
+
+For small, local changes the catalog pins a lighter variant of the default pipeline
+([ADR-0262](adr/0262-offer-a-light-default-pipeline-for-small-changes.md)):
+`default-light/implementation` runs one implementing iteration, the project's local gate on the
+sealed candidate, one required reviewer (correctness) and the independent evaluator, through the
+review Pipeline `default-light/review`. It declares `findings`, so `af task run NEW --from TASK`
+continues it. `default-light/verification` judges an existing candidate read-only with the same
+two judging slots and no implementer.
+
+| Slot | Package | Model | Effort | Attempt allowance |
+|---|---|---|---|---|
+| `implementer` | `default-light/implementer` | `claude-opus-5-5` | `medium` | 1,000,000 tokens, 2 h (`default-light/implementation` only) |
+| `correctness` | `default-light/correctness` | `gpt-6-sol` | `high` | 300,000 tokens, 30 min |
+| `evaluator` | `default-light/evaluator` | `gpt-6-astra` | `high` | 200,000 tokens, 20 min |
+
+It gives up the bug-bounty reviewer (`bugs`) and the gate-time and quality reviewer (`uix`). The
+correctness reviewer's prompt makes the concrete functional defects on the paths the change
+touches its own, beside requirements, contracts and architecture; the implementer's prompt makes
+testing the edge cases of every changed path and counting what the change adds to every future
+gate its own, since no judge estimates that. A change that is not small and local runs through
+the default pipeline.
+
+These Task limits fit it; the local gate alone reserves 2 h 10 min of the wall:
+
+```json
+{
+  "task_id": "issue-124",
+  "kind": "implement",
+  "goal": "Fix issue 124 as its text describes.",
+  "pipeline": { "name": "default-light/implementation", "fallback": "refuse" },
+  "limits": {
+    "tokens": 2500000,
+    "max_attempts": 7,
+    "wall_ms": 18600000,
+    "verification": { "tokens": 1200000, "attempts": 5, "wall_ms": 11100000 }
+  }
+}
+```
+
+The catalog binds `default-light/implementer` to `claude-main` and the two judges to
+`codex-main`; map them in your local bindings file as for the default pipeline:
+
+```toml
+schema = "af.task-bindings/1"
+
+[providers]
+"default-light/implementer" = "claude-personal"
+"default-light/correctness" = "codex-personal"
+"default-light/evaluator" = "codex-personal"
 ```
 
 ## The tree before the change

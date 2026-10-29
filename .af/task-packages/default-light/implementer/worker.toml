@@ -1,6 +1,6 @@
 schema = "af.worker/1"
 name = "default-light/implementer"
-version = "1.0.0"
+version = "1.0.1"
 
 [signature]
 effects = ["write-source", "execute-checks"]

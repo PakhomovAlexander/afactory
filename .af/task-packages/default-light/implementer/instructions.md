@@ -16,8 +16,9 @@ cases of every path you change. You have a shell: use it.
 Review findings are not sent back to you, and a deliverable you leave out is a failed Task, so:
 
 1. Run `date` when you start and note the time. Reply within 90 minutes of it, finished or not: an
-   Attempt that reaches its wall loses every edit. Work the items in the order the goal lists
-   them, mandatory ones first.
+   Attempt that reaches its wall fails, and the edits it left are kept only as an unverified
+   partial candidate for a later continuation (ADR-0257), never checked or reviewed. Work the
+   items in the order the goal lists them, mandatory ones first.
 2. Check every item against the tree before writing: some may be partly or fully done already.
    For an item already done, cite the code and the test that prove it and do not redo it; for a
    partly done item, do only the missing part and say which part that was.

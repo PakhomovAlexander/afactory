@@ -15,8 +15,9 @@ max_rounds = 2
 allow_targeted_repairs = false
 
 [review.reviewers]
-# `bugs` is advisory only so that a pipeline may leave it unbound (default-light/*); a
-# pipeline that binds it counts its findings and its missing result exactly as before.
+# `bugs` is advisory so that a pipeline may leave it unbound (default-light/*); a pipeline
+# that binds it counts its findings and its missing result exactly as before, but a benchmark
+# Demand it files is advisory and no longer blocks convergence (ADR-0262).
 bugs = "advisory"
 correctness = "required"
 uix = "advisory"
@@ -194,7 +195,7 @@ digest = "sha256:579f0f912f7bb51f86f0bd7115afb1593774e95aad48e65eec8670a1a537ff2
 path = ".af/task-packages/kernel/review-code-remote"
 
 # The repository's default Task pipeline (owner's decision, 27 October 2026): one implementing
-# iteration by Opus 5.5, two required reviewers (bugs: gpt-5.6-terra, correctness: gpt-6-sol), one
+# iteration by Opus 5.5, two bound reviewers (bugs: gpt-5.6-terra, correctness: gpt-6-sol), one
 # advisory reviewer for gate time and quality in the `uix` slot (gpt-6-astra medium) and an
 # evaluator (gpt-6-astra high); `default/verification` judges an existing candidate the same way.
 
@@ -236,20 +237,21 @@ path = ".af/task-packages/default/verification"
 # The light default pipeline (owner's decision, 29 October 2026) for small, local issues: one
 # implementing iteration by Opus 5.5 at medium effort, the correctness reviewer and the
 # evaluator of the default pipeline with smaller Attempt allowances, no bugs or advisory reviewer.
+# The correctness prompt also owns the concrete functional defects no bugs reviewer looks for.
 
 [packages."default-light/implementer"]
-version = "1.0.0"
-digest = "sha256:0ddc80a22d594fa43e6f3bea90d0c9c086920508be4ccb154ec111c5b5f96491"
+version = "1.0.1"
+digest = "sha256:50e1f32e3c3182579e591bf753c17cfc1186c07ba1a0d0d0134077e09f5cffd4"
 path = ".af/task-packages/default-light/implementer"
 
 [packages."default-light/correctness"]
-version = "1.0.0"
-digest = "sha256:575bd14a48c2f054cd8e09aa15c0e51b8e9f63083c23bf7bf7b4e60b369725f9"
+version = "1.0.1"
+digest = "sha256:66a423d4130474cc7c210827e4c17d30dc81b296e81fcced4f004a664fe07b55"
 path = ".af/task-packages/default-light/correctness"
 
 [packages."default-light/evaluator"]
-version = "1.0.0"
-digest = "sha256:27bb5c74dcc7805569838c46cfe41e8bc243567b4d3d87c4a7c0d7ff7a92642f"
+version = "1.0.1"
+digest = "sha256:674918b87e63d4a22f922f21971119e38fcc8a022b5fbec50009cea1a01698d3"
 path = ".af/task-packages/default-light/evaluator"
 
 [packages."default-light/review"]
