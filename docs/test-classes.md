@@ -113,8 +113,8 @@ older PR runs through their existing concurrency group.
 | `release:full`, `no-perf` | refused | none |
 | `test:perf`, `no-perf` | refused | none |
 
-Fmt, ordinary and diagnostic-feature clippy, source/catalog/selection validation, release-resolution
-and pin policy checks, and the binary version smoke are always-on base work. Their costs are retained
+Fmt, ordinary and diagnostic-feature clippy, source/catalog/selection validation, release-resolution,
+change-note and pin policy checks, and the binary version smoke are always-on base work. Their costs are retained
 separately; a perf-only plan still performs this work. Release archive, signature, architecture and
 actual packaged-binary onboarding/planning smoke always run for every shipped target.
 
