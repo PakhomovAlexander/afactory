@@ -834,7 +834,8 @@ pub(crate) enum ReviewCommand {
 Campaign ledger.\n\nEach reviewer runs in a private sandbox with an exact, role-scoped input and \
 a token budget reserved before dispatch; results are admitted in canonical order. The exit code \
 is the verdict: 0 pass, 3 fail, 4 incomplete.\n\nNever: mutates the repository, commits, pushes, \
-or contacts anything but the bound providers.",
+or contacts anything but the bound providers; with --file, a pipeline with remote checks pushes \
+its gate branches and a draft gate pull request (ADR-0140).",
         override_usage = "af review run [--heavy] [OPTIONS]",
         after_long_help = "Examples:\n  \
 # needs: Providers claude-main and codex-main (af provider setup)\n  \
@@ -848,7 +849,8 @@ af review run --campaign pr-42 --policy-rev main --base main \\\n    --candidate
     /// Show what a review would run, token-free, without Campaign state
     #[command(
         long_about = "Resolve policy, pipeline, Workers, providers, and the Subject and print the \
-plan.\n\nToken-free and stateless: no sandbox, no model call, no Campaign directory. The plan is \
+plan.\n\nToken-free and stateless: no sandbox, no model call, no Campaign directory; with --file it \
+opens a Task in the Task Store and records its proposed plan. The plan is \
 exactly what `run` would admit, so it is the right pre-flight for agents and CI.",
         override_usage = "af review plan [--heavy] [OPTIONS]",
         after_long_help = "Examples:\n  # needs: one registered Provider for every model Worker\n  \
