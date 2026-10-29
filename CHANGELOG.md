@@ -242,7 +242,7 @@ Tests, native check targets, timing/JUnit output and gate resource budgets are u
   Qualify the concurrency fixture's `Barrier::wait` calls to avoid false child-reap matches
   in the unchanged source guard, preserving simultaneous clock synchronization.
 
-# Performance laboratory whole-source repairs
+Performance laboratory whole-source repairs:
 
 - Run every disabled dispatcher dry-run guard even with an uncertain retained intent; preserve
   the journal and never dispatch from preflight.
