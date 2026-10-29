@@ -175,6 +175,20 @@ class TuiOpen(unittest.TestCase):
         except ProcessLookupError:
             pass
 
+    def reap_within(self, pid, seconds):
+        """Reap child `pid`, polling without blocking, within `seconds`; one that still runs
+        at the deadline is killed, and one not reaped within another such bound fails the
+        test rather than hold it."""
+        for killed in (False, True):
+            deadline = time.monotonic() + seconds
+            while time.monotonic() < deadline:
+                if os.waitpid(pid, os.WNOHANG)[0]:
+                    return
+                time.sleep(0.01)
+            if killed:
+                self.fail("pid %d was not reaped within %s s of its kill" % (pid, seconds))
+            self.release(pid)
+
     def recorded(self):
         """The pids the browser recorded, in order: itself first, then what it started that
         leads a session of its own."""
@@ -580,7 +594,7 @@ class TuiOpen(unittest.TestCase):
         zombie = os.fork()
         if zombie == 0:
             os._exit(0)
-        self.addCleanup(os.waitpid, zombie, 0)
+        self.addCleanup(self.reap_within, zombie, 10)
         deadline = time.monotonic() + 10
         while not self.state(zombie).startswith("Z"):
             self.assertLess(time.monotonic(), deadline, "the child did not become a zombie")
@@ -590,6 +604,9 @@ class TuiOpen(unittest.TestCase):
                 self.assertEqual(source.read(), b"")
         except PermissionError:
             pass  # this kernel owns a zombie's environment as root's
+        # The listing reads the real `/proc`, of the child alone: another process of this
+        # user's that is live, undumpable and unreadable is not what this proves.
+        driver.proc_names = lambda proc: [str(zombie)]
         self.assertEqual(driver.proc_listed(b"AF_PERF_TUI_OPEN_SESSION=t0ken", set(), None,
                                             driver.PROC), set())
 
