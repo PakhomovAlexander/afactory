@@ -5,7 +5,8 @@ status line reaches the terminal) and launch-to-first-output intervals for each 
 driver ends the browser's whole session on success, failure and cancellation, finds a process
 that left the session by the run's token in its environment (one that replaced its environment
 before `exec` is beyond it, as beyond any process-group sample), and refuses a sample whose
-browser left a process running or whose cleanup it cannot confirm; the shard and a diagnostic
+browser left a process running or whose cleanup it cannot confirm (on Linux a process that has
+exited and awaits its parent's reap runs nothing and is skipped); the shard and a diagnostic
 child run keep that sample's scratch for recovery, as they do when their supervisor had to end
 the driver. The case was added for the
 splash delay diagnosed

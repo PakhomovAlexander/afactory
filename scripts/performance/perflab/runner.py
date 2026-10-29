@@ -1169,8 +1169,9 @@ class Shard(object):
                 unconfirmed = ("the PTY driver did not exit of its own accord (%s), so its "
                                "settlement of the browser's session is unconfirmed: %s"
                                % (termination, tail))
-            elif (kind is None
+            elif (termination == "exited"
                   and supervise.returncode(result) == clicases.DRIVER_UNCONFIRMED_EXIT):
+                # Whatever the supervisor refused or confirmed of its own group.
                 unconfirmed = ("the PTY driver could not confirm that the browser's session "
                                "ended: " + tail)
         if kind is not None:
@@ -1224,8 +1225,12 @@ class Shard(object):
             # A process of the sample may still be live: its scratch is kept, never removed
             # beneath it, and the shard stops (ADR-0171). A container's confirmed removal ends
             # every process in it.
-            halted = _halted(supervised, unconfirmed if unconfirmed is not None else detail,
-                             retain=True)
+            if unconfirmed is not None:
+                # The driver's verdict on the session, whatever ended the supervisor's group:
+                # an uncertain cleanup, never an interruption.
+                halted = Stop("cleanup_uncertain", unconfirmed, retain=True)
+            else:
+                halted = _halted(supervised, detail, retain=True)
             self._release_namespace(namespace, record, halted)
             raise halted.with_record(record)
         try:

@@ -76,17 +76,22 @@ session is settled every live process whose environment carries the token (`/pro
 environment cannot be read, one that made itself undumpable, and that started no earlier than
 the browser leaves the listing unconfirmed, as does a `/proc` that cannot be listed or a
 process whose `status` or `stat` cannot be read; another user's, or one that predates the
-browser, is not the browser's. SIGTERM, SIGINT and SIGHUP, the supervisor's cancellation, end the
+browser, is not the browser's, and one that has exited or given up its address space,
+awaiting its parent's reap (its `stat` says so, and Linux owns its environment as root's from
+then on), runs nothing and is skipped, since the listing re-reads `/proc` right after killing
+what it found. SIGTERM, SIGINT and SIGHUP, the supervisor's cancellation, end the
 session the same way before the driver exits with 128 plus the signal; a cancellation that
 lands once the session is already being settled stays pending until the settlement, the token
 listing included, is confirmed, and ends the sample then with the same exit. A cleanup it
 cannot confirm, the listing included, exits 3, which stops the shard and keeps the sample's
 scratch, as any uncertain cleanup does (ADR-0171); a diagnostic child run (ADR-0176) reads
 that exit the same way, keeps the execution's namespace and launches nothing more, whatever
-its supervisor confirmed of its own group. A driver that did not exit of its own accord,
-ended by its supervisor's timeout or kill, may not have settled that session: in trusted local
-mode the shard and a diagnostic child run treat it the same way. A Linux sample container's
-PID namespace ends every process regardless.
+its supervisor confirmed or refused of its own group (a lifecycle the supervisor refused fails
+the record and still keeps the scratch). A driver that did not exit of its own accord, ended by
+its supervisor's timeout, cancellation or kill, may not have settled that session: in trusted
+local mode the shard and a diagnostic child run treat it the same way, read before any failure
+of the supervisor's own, and a cancellation is reported as that uncertain cleanup, not as an
+interruption. A Linux sample container's PID namespace ends every process regardless.
 
 The supervisor runs only an absolute program, so the driver's interpreter is the placeholder
 `{python}`, named only as that driver's program: the laboratory's own interpreter in trusted

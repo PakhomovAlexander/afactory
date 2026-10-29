@@ -505,13 +505,13 @@ class TuiOpen(unittest.TestCase):
         proc = os.path.join(self.root, "proc")
         uid = os.getuid()
 
-        def process(pid, environ, owner, started, readable=True):
+        def process(pid, environ, owner, started, readable=True, state=b"S", vsize=4096):
             os.makedirs(os.path.join(proc, str(pid)))
             with open(os.path.join(proc, str(pid), "status"), "wb") as output:
                 output.write(b"Name:\tx\nUid:\t%d\t%d\t%d\t%d\n" % ((owner,) * 4))
             with open(os.path.join(proc, str(pid), "stat"), "wb") as output:
-                output.write(b"%d (x y) S 1 1 1 0 -1 0 0 0 0 0 0 0 0 0 20 0 1 0 %d 0 0\n"
-                             % (pid, started))
+                output.write(b"%d (x y) %s 1 1 1 0 -1 0 0 0 0 0 0 0 0 0 20 0 1 0 %d %d 0\n"
+                             % (pid, state, started, vsize))
             if environ is not None:
                 with open(os.path.join(proc, str(pid), "environ"), "wb") as output:
                     output.write(environ)
@@ -526,6 +526,12 @@ class TuiOpen(unittest.TestCase):
         process(105, None, uid, 500)
         self.assertEqual(driver.proc_listed(marker, set(), 400, proc), {101})
         self.assertEqual(driver.proc_listed(marker, {101}, 400, proc), set())
+        # One that exited, awaiting its parent's reap, and one on its way out without an
+        # address space any more: Linux owns their environments as root's, and they run
+        # nothing, so neither is suspect whenever it started.
+        process(110, b"", uid, 500, readable=False, state=b"Z", vsize=0)
+        process(111, b"", uid, 500, readable=False, state=b"R", vsize=0)
+        self.assertEqual(driver.proc_listed(marker, set(), 400, proc), {101})
         process(106, b"", uid, 400, readable=False)
         with self.assertRaisesRegex(driver.Unconfirmed, "process 106, this user's, cannot"):
             driver.proc_listed(marker, set(), 400, proc)
@@ -543,7 +549,7 @@ class TuiOpen(unittest.TestCase):
         drop(106)
         process(107, b"", uid, 500, readable=False)
         os.chmod(os.path.join(proc, "107", "stat"), 0)
-        with self.assertRaisesRegex(driver.Unconfirmed, "start of process 107"):
+        with self.assertRaisesRegex(driver.Unconfirmed, "stat of process 107"):
             driver.proc_listed(marker, set(), 400, proc)
         drop(107)
         process(108, b"", uid, 500, readable=False)
@@ -562,6 +568,30 @@ class TuiOpen(unittest.TestCase):
         self.addCleanup(os.chmod, proc, 0o700)
         with self.assertRaisesRegex(driver.Unconfirmed, "the process listing failed"):
             driver.proc_listed(marker, set(), 400, proc)
+
+    def test_the_proc_listing_skips_a_zombie_whose_environment_linux_withholds(self):
+        # A child that exited and is not reaped yet: Linux owns its `environ` as root's (a
+        # process without an address space), so the read fails as an undumpable process's
+        # would, and the listing must know the difference, as it does when it re-lists right
+        # after killing what it found. (The kernel's `task_dump_owner`.)
+        if not os.path.isdir("/proc/self/task"):
+            self.skipTest("a Linux /proc")
+        driver = load_driver()
+        zombie = os.fork()
+        if zombie == 0:
+            os._exit(0)
+        self.addCleanup(os.waitpid, zombie, 0)
+        deadline = time.monotonic() + 10
+        while not self.state(zombie).startswith("Z"):
+            self.assertLess(time.monotonic(), deadline, "the child did not become a zombie")
+            time.sleep(0.01)
+        try:
+            with open("/proc/%d/environ" % zombie, "rb") as source:
+                self.assertEqual(source.read(), b"")
+        except PermissionError:
+            pass  # this kernel owns a zombie's environment as root's
+        self.assertEqual(driver.proc_listed(b"AF_PERF_TUI_OPEN_SESSION=t0ken", set(), None,
+                                            driver.PROC), set())
 
     def test_a_descendant_that_outlives_the_browser_is_killed_and_fails_the_sample(self):
         # The stray sleeps for 30 s holding the driver's stderr: the pipe ends within the

@@ -26,11 +26,14 @@ killed and fails the sample; one that also replaced its environment before `exec
 the driver, as beyond any process-group sample. On Linux a process of this user's whose
 environment cannot be read, one that made itself undumpable, and that started no earlier than
 the browser leaves the listing unconfirmed, as does a `/proc` that cannot be listed or a
-process whose `status` or `stat` cannot be read. SIGTERM, SIGINT and SIGHUP, the supervisor's
+process whose `status` or `stat` cannot be read; one that has exited or given up its address
+space, awaiting its parent's reap (Linux owns its environment as root's then), runs nothing
+and is skipped. SIGTERM, SIGINT and SIGHUP, the supervisor's
 cancellation, end the session the same way before the driver exits; one that lands once the
 session is already being settled stays pending until that settlement is confirmed, and ends the
-sample then. A cleanup that cannot be confirmed, a listing included, exits 3, and the processes
-left still hold the supervisor's pipe.
+sample then. A cleanup that cannot be confirmed, a listing included, exits 3; a process it
+could not find may hold nothing of the supervisor's, so that exit is the caller's to read as an
+unconfirmed cleanup, whatever its pipes settled.
 """
 
 import errno
@@ -56,6 +59,8 @@ LISTING_SECONDS = 10
 UNCONFIRMED_EXIT = 3
 SESSION_VARIABLE = "AF_PERF_TUI_OPEN_SESSION"
 PROC = "/proc"
+# The `stat` states of a process that has exited: a zombie awaiting its parent's reap, or dead.
+EXITED = (b"Z", b"X", b"x")
 CLEAR = b"\x1b[2J"
 STATUS = re.compile(rb"\x1b\[30;[0-9]+H(?:\x1b\[[0-9;]*m|[^\x1b])*?NORMAL")
 SCREEN_MAX = 131072
@@ -128,7 +133,7 @@ def live_members(group):
                     continue
                 raise Unconfirmed("process %s cannot be read: %s" % (name, error)) from error
             fields = stat[stat.rindex(b")") + 2:].split()
-            if int(fields[2]) == group and fields[0] not in (b"Z", b"X", b"x"):
+            if int(fields[2]) == group and fields[0] not in EXITED:
                 return True
         return False
     try:
@@ -161,18 +166,26 @@ def settle(group, deadline, wait):
     return True, found
 
 
-def proc_started(name, proc):
-    """When process `name` under `proc` started, in clock ticks since boot, from its `stat`,
-    which is readable whatever the process did to itself; None once it is gone. A `stat` that
-    cannot be read otherwise leaves the cleanup unconfirmed."""
+def proc_stat(name, proc):
+    """The fields of process `name`'s `stat` under `proc` after its command name (its state
+    first, its start in clock ticks since boot twentieth, its address space's size twenty-first),
+    readable whatever the process did to itself; None once it is gone. A `stat` that cannot be
+    read otherwise leaves the cleanup unconfirmed."""
     try:
         with open("%s/%s/stat" % (proc, name), "rb") as source:
             stat = source.read()
     except OSError as error:
         if gone(error):
             return None
-        raise Unconfirmed("the start of process %s cannot be read: %s" % (name, error)) from error
-    return int(stat[stat.rindex(b")") + 2:].split()[19])
+        raise Unconfirmed("the stat of process %s cannot be read: %s" % (name, error)) from error
+    return stat[stat.rindex(b")") + 2:].split()
+
+
+def proc_runs(fields):
+    """Whether a process whose `stat` fields these are still runs anything: one that has exited
+    (a zombie awaiting its parent's reap) or given up its address space on its way out does
+    not, and Linux owns its `environ` as root's from then on, so that it cannot be read."""
+    return fields[0] not in EXITED and int(fields[20]) != 0
 
 
 def proc_owned(name, proc):
@@ -195,11 +208,12 @@ def proc_owned(name, proc):
 def proc_listed(marker, exclude, born, proc):
     """`listed` on Linux: the environments under `proc`. A process that is gone is skipped, and
     so is one whose environment another user's permissions keep, since the browser runs as
-    this user, or one of this user's that started before the browser did (`born`, its start
-    in clock ticks; None when unknown). One of this user's that started no earlier and whose
-    environment cannot be read, as a process that made itself undumpable, may be the
-    browser's doing: the listing is unconfirmed, as it is when `proc` cannot be listed or a
-    process's owner or start cannot be read."""
+    this user, one of this user's that started before the browser did (`born`, its start in
+    clock ticks; None when unknown), and one that runs nothing any more (`proc_runs`). One of
+    this user's that started no earlier, still runs and whose environment cannot be read, as
+    a process that made itself undumpable, may be the browser's doing: the listing is
+    unconfirmed, as it is when `proc` cannot be listed or a process's owner or `stat` cannot be
+    read."""
     found = set()
     for name in proc_names(proc):
         if int(name) in exclude:
@@ -210,8 +224,10 @@ def proc_listed(marker, exclude, born, proc):
         except OSError as error:
             if gone(error) or not proc_owned(name, proc):
                 continue
-            started = proc_started(name, proc)
-            if started is None or (born is not None and started < born):
+            fields = proc_stat(name, proc)
+            if fields is None or not proc_runs(fields):
+                continue
+            if born is not None and int(fields[19]) < born:
                 continue
             raise Unconfirmed("the environment of process %s, this user's, cannot be read"
                               % name) from error
@@ -417,7 +433,8 @@ def measure(argv):
         os.close(slave)
         slave = -1
         if os.path.isdir(PROC + "/self/task"):
-            born = proc_started(child.pid, PROC)
+            fields = proc_stat(child.pid, PROC)
+            born = None if fields is None else int(fields[19])
         deadline = started + DEADLINE_SECONDS * 1000000000
         while screen.browser is None:
             remaining = (deadline - time.monotonic_ns()) / 1000000000

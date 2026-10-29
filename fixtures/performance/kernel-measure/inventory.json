@@ -157,8 +157,8 @@
   },
   {
    "path": "fixtures/performance/README.md",
-   "sha256": "sha256:15ef43a16e0fe39568337e3273bddac961201d5b154d7254b60b21a8cf828733",
-   "size": 26056
+   "sha256": "sha256:6e096ec25dbdda86bd79e329a43ce621d034f87f73d6c7c2954a1869ec8110ae",
+   "size": 26136
   },
   {
    "path": "fixtures/performance/adapters.toml",
@@ -272,8 +272,8 @@
   },
   {
    "path": "fixtures/performance/cli/tui-open.py",
-   "sha256": "sha256:a441bcb3fc3decf849560b5d12318eac28902ce1e94e29d594efeb4f5138d056",
-   "size": 22642
+   "sha256": "sha256:b765fae63e42efc43bf252bba2869c1eb6c3b9e8f24e462478c54ac8aa6a2122",
+   "size": 23637
   },
   {
    "path": "fixtures/performance/cohort-quick-20261023-hosted-v6.json",
@@ -2572,8 +2572,8 @@
   },
   {
    "path": "scripts/performance/perflab/diagnostics.py",
-   "sha256": "sha256:be6206d37003ea53c2fd9a938038cadef282368cfee155a68c220acf23bf7e4b",
-   "size": 151753
+   "sha256": "sha256:e5a12b1e10b9ca6a86754bad173a83d1e9bfe007b6d3c80341c3a72adcbabb96",
+   "size": 151626
   },
   {
    "path": "scripts/performance/perflab/equivalence.py",
@@ -2697,8 +2697,8 @@
   },
   {
    "path": "scripts/performance/perflab/runner.py",
-   "sha256": "sha256:fe198eff6728ca82482d2895b3e3ee4d255ca752e6ee51fd0a2989bd7868f461",
-   "size": 85788
+   "sha256": "sha256:34aeeb54fcba5d008893ed7d66a048c445f336cb2378c4224e7bd07e68a8c2cb",
+   "size": 86103
   },
   {
    "path": "scripts/performance/perflab/schedule.py",
@@ -2897,8 +2897,8 @@
   },
   {
    "path": "scripts/performance/tests/support.py",
-   "sha256": "sha256:7587aa10f4c2b77b463bc1edb3d04930f3430a58728d3dd8e8d89833d7455dfb",
-   "size": 23333
+   "sha256": "sha256:47b17cb4f2215cffae5bdbb554b68be3ca31340fdb19567af7fa5945ec8b7a95",
+   "size": 23523
   },
   {
    "path": "scripts/performance/tests/telemetry_build_smoke.py",
@@ -2987,8 +2987,8 @@
   },
   {
    "path": "scripts/performance/tests/test_diagnostics.py",
-   "sha256": "sha256:5c599182ab3b86aa68aee3853492b1009bf96c612b5978bf23638c5bd692b4f9",
-   "size": 154209
+   "sha256": "sha256:81084fe1fa7cb602c73a70d08472b0696d9411fcaa06cb0ed6f8abd4d411b691",
+   "size": 155438
   },
   {
    "path": "scripts/performance/tests/test_evidence_tools.py",
@@ -3072,8 +3072,8 @@
   },
   {
    "path": "scripts/performance/tests/test_runner.py",
-   "sha256": "sha256:fd99b81cf26a70f023580f28b7487852a5645c4bb555c7c80b8c7bb4e2c16736",
-   "size": 125509
+   "sha256": "sha256:32996028fd298647ecb980e5cd3aa3fc5f4c3d4d6646636876556145ac4283e8",
+   "size": 127163
   },
   {
    "path": "scripts/performance/tests/test_sdlc.py",
@@ -3182,8 +3182,8 @@
   },
   {
    "path": "scripts/performance/tests/test_tui_open.py",
-   "sha256": "sha256:62e1ad9acefae0ca79913bdf34b0d1e2de26247dbfd5202b7df7aad98db3e66b",
-   "size": 36528
+   "sha256": "sha256:1daafc863d09063c6d2c5164dc45e35c7be3fb3d874ae2cb83a2a3d3e30326b6",
+   "size": 38319
   },
   {
    "path": "scripts/performance/tests/test_values.py",
@@ -3206,7 +3206,7 @@
    "size": 6777
   }
  ],
- "harness_digest": "sha256:c76e3377ee54080f4c028fef157b979d34629e4e706f01595f5c67a49984ce9d",
+ "harness_digest": "sha256:b6bfcd288820ff66cdcfb039e3ebc278e68efffc46b0f119931bffc409f05fef",
  "inner_metric": "pending",
  "inner_metric_reason": "the inner wall_ms metric is recorded in every Measurement but no staged objective selects it until the guard's real kernel integration and tampered-candidate tests are accepted on the sealed source and a reviewed human change installs and selects it",
  "objective_metric": "elapsed_ms",

@@ -364,7 +364,7 @@ fn collection_after_a_run_takes_finished_tasks_only_when_auto_gc_is_on() {
 }
 
 /// The laboratory's browser fixture registers its Stores by this rule
-/// (`fixtures/performance/cli/setup.sh`, ADR-0258): a command that resolves a `--state` Store
+/// (`fixtures/performance/cli/setup.sh`, ADR-0260): a command that resolves a `--state` Store
 /// records it, and `af task gc`'s preview writes nothing else; `af task list` only reads.
 #[test]
 fn a_task_gc_preview_registers_its_state_store_and_a_listing_does_not() {

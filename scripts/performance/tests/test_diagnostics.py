@@ -2180,6 +2180,24 @@ class BrowserDiagnostic(ChildRunBase):
         self.assertEqual(doc["execution"]["retained_scratch"], 1)
         self.assertEqual(self.profile_object.retained, [kept])
 
+    def test_a_driver_exit_the_supervisor_also_refused_still_keeps_the_scratch(self):
+        # The supervisor refused the lifecycle of its own group and the driver exited 3: the
+        # driver's verdict on the browser's session is read first, so the scratch is kept
+        # rather than the execution failed and its namespace removed.
+        held = b"tui-open: cleanup unconfirmed: held\n"
+        doc, kept = self.driver_ended(
+            {"kind": "exited", "code": clicases.DRIVER_UNCONFIRMED_EXIT, "signal": None,
+             "detail": ""}, held, code=clicases.DRIVER_UNCONFIRMED_EXIT,
+            lifecycle="1 descendant outlived the child; it was killed")
+        baseline, candidate = doc["traces"]
+        self.assertEqual(baseline["omission"]["reason"], "cleanup_uncertain")
+        self.assertIn("could not confirm that the browser's session ended: tui-open: cleanup "
+                      "unconfirmed: held", baseline["omission"]["detail"])
+        self.assertEqual(candidate["omission"]["reason"], "cleanup_uncertain")
+        self.assertIn(kept, baseline["omission"]["detail"])
+        self.assertEqual(doc["execution"]["retained_scratch"], 1)
+        self.assertEqual(self.profile_object.retained, [kept])
+
 
 class ContainedRuns(ChildRunBase):
     """The contained Linux mode's driver over a stand-in container runtime (ADR-0176): one

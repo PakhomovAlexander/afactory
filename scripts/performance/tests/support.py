@@ -376,6 +376,10 @@ patterns = [pattern.encode("utf-8") for pattern in request["stdout_patterns"]]
 if action == "timeout":
     termination = {"kind": "timeout", "code": None, "signal": None, "detail": ""}
     wall = None
+elif action == "cancelled":
+    # The supervisor was cancelled and ended its child's group.
+    termination = {"kind": "cancelled", "code": None, "signal": 15, "detail": ""}
+    wall = None
 elif action == "leak":
     lifecycle = {"observation": "process_group_scan", "descendants_at_exit": 1,
                  "remaining_after_cleanup": 0, "pipes_held": False,

@@ -109,7 +109,8 @@ diagnostic), and the protected-harness inventory
 `fixtures/performance/kernel-measure/code-policy-measures.toml` and `inventory.json`,
 re-rendered for them. No registry, setup or product code changed, and the runner changed only
 in that reading. The driver did
-change after the run, in its cleanup and its reading of the terminal, not in what it
+change after the run, in its cleanup, its reading of the terminal and its Linux listing (a
+process that has exited and awaits its parent's reap is skipped), not in what it
 measures: the review rounds after it made the driver find a process that left the browser's
 session by a token in its environment and fail closed on a listing it cannot confirm, count
 what its settlement finds, end the session when its exit watcher is refused and read the

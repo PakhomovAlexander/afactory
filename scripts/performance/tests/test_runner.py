@@ -775,58 +775,86 @@ class BrowserShard(ShardHarness):
                          [record["metrics"]["splash_ms"] for record in browser])
 
 
-    def test_a_driver_that_did_not_exit_of_its_own_accord_stops_the_shard(self):
+    # What the real driver reports when a member of the browser's group survives its kill.
+    UNCONFIRMED_DRIVER = ("import sys\n"
+                          "sys.stderr.write('tui-open: cleanup unconfirmed: held\\n')\n"
+                          "sys.exit(%d)\n" % clicases.DRIVER_UNCONFIRMED_EXIT)
+
+    def driven_by(self, run_id, driver, overrides=None):
+        """A plan of the browser case whose authority's PTY driver is the Python source
+        `driver`, a stand-in for what the real one reports, built with the fake supervisor's
+        `overrides`: (plan_path, build)."""
         versions = {"baseline": BROWSER_VERSION, "candidate": BROWSER_VERSION}
-        plan, plan_path, _ = self.prepare([TUI_EMPTY], versions, run_id="killed",
-                                          lock=self.lock)
+        plan, plan_path, _ = self.prepare([TUI_EMPTY], versions, run_id=run_id, lock=self.lock)
+        authority = self.repo.commit("authority",
+                                     {"fixtures/performance/cli/tui-open.py": driver})
+        plan = dict(plan)
+        plan["resolved"] = dict(plan["resolved"], authority_sha=authority)
+        plan["plan_digest"] = contracts.plan_digest(plan)
+        with open(plan_path, "wb") as stream:
+            stream.write(contracts.write_bytes(plan, "run"))
+        build = make_build(self.path(run_id + "-build-2"), plan, versions)
+        if overrides is not None:
+            with open(os.path.join(build, "control", "overrides.json"), "w") as stream:
+                json.dump(overrides, stream)
+        return plan_path, build
+
+    def assert_unconfirmed_shard(self, doc, detail):
+        """The shard failed `cleanup_uncertain` with `detail`, kept the one namespace and
+        failed the one browser record, which is returned."""
+        self.assertEqual(doc["status"], "failed")
+        self.assertEqual(doc["failure"]["reason"], "cleanup_uncertain")
+        self.assertIn(detail, doc["failure"]["detail"])
+        self.assert_kept_one_namespace(doc)
+        browser = [record for record in self.records() if record["instance_id"] == TUI_EMPTY]
+        self.assertEqual([record["status"] for record in browser], ["failed"])
+        return browser[0]
+
+    def test_a_driver_that_did_not_exit_of_its_own_accord_stops_the_shard(self):
         # An authority whose driver a signal ends before it could settle the browser's
         # session: the supervisor's own group is clean, and the sample's cleanup is not, since
         # a process the browser started outside that group may live on (ADR-0260).
-        authority = self.repo.commit("authority", {
-            "fixtures/performance/cli/tui-open.py":
-                "import os, sys\nsys.stderr.write('tui-open: ended\\n')\nsys.stderr.flush()\n"
-                "os.kill(os.getpid(), 9)\n"})
-        plan = dict(plan)
-        plan["resolved"] = dict(plan["resolved"], authority_sha=authority)
-        plan["plan_digest"] = contracts.plan_digest(plan)
-        with open(plan_path, "wb") as stream:
-            stream.write(contracts.write_bytes(plan, "run"))
-        build = make_build(self.path("killed-build-2"), plan, versions)
+        plan_path, build = self.driven_by(
+            "killed", "import os, sys\nsys.stderr.write('tui-open: ended\\n')\n"
+            "sys.stderr.flush()\nos.kill(os.getpid(), 9)\n")
         doc = runner.run_shard(self.options(plan_path, build))
-        self.assertEqual(doc["status"], "failed")
-        self.assertEqual(doc["failure"]["reason"], "cleanup_uncertain")
-        self.assertIn("did not exit of its own accord (signalled)", doc["failure"]["detail"])
+        self.assert_unconfirmed_shard(doc, "did not exit of its own accord (signalled)")
         self.assertIn("tui-open: ended", doc["failure"]["detail"])
-        self.assert_kept_one_namespace(doc)
-        browser = [record for record in self.records() if record["instance_id"] == TUI_EMPTY]
-        self.assertEqual([record["status"] for record in browser], ["failed"])
+
+    def test_a_driver_its_supervisor_cancelled_is_an_unconfirmed_cleanup_too(self):
+        # A cancellation ends the supervisor's group, not the browser's session: the shard
+        # fails as unconfirmed and keeps the scratch rather than report an interruption.
+        plan_path, build = self.driven_by(
+            "cancelled", "import sys\nsys.stderr.write('tui-open: settling\\n')\n",
+            overrides={"tui_open": "cancelled"})
+        doc = runner.run_shard(self.options(plan_path, build))
+        record = self.assert_unconfirmed_shard(doc,
+                                               "did not exit of its own accord (cancelled)")
+        self.assertIn("tui-open: settling", doc["failure"]["detail"])
+        self.assertEqual(record["failure"]["kind"], "lifecycle_violation")
 
     def test_a_driver_that_cannot_confirm_the_session_ended_stops_the_shard(self):
-        versions = {"baseline": BROWSER_VERSION, "candidate": BROWSER_VERSION}
-        plan, plan_path, _ = self.prepare([TUI_EMPTY], versions, run_id="unconfirmed",
-                                          lock=self.lock)
-        # An authority whose driver reports what the real one does when a member of the
-        # browser's group survives its kill.
-        authority = self.repo.commit("authority", {
-            "fixtures/performance/cli/tui-open.py":
-                "import sys\nsys.stderr.write('tui-open: cleanup unconfirmed: held\\n')\n"
-                "sys.exit(%d)\n" % clicases.DRIVER_UNCONFIRMED_EXIT})
-        plan = dict(plan)
-        plan["resolved"] = dict(plan["resolved"], authority_sha=authority)
-        plan["plan_digest"] = contracts.plan_digest(plan)
-        with open(plan_path, "wb") as stream:
-            stream.write(contracts.write_bytes(plan, "run"))
-        build = make_build(self.path("unconfirmed-build-2"), plan, versions)
+        plan_path, build = self.driven_by("unconfirmed", self.UNCONFIRMED_DRIVER)
         doc = runner.run_shard(self.options(plan_path, build))
-        self.assertEqual(doc["status"], "failed")
-        self.assertEqual(doc["failure"]["reason"], "cleanup_uncertain")
-        self.assertIn("could not confirm that the browser's session ended: tui-open: cleanup "
-                      "unconfirmed: held", doc["failure"]["detail"])
-        self.assert_kept_one_namespace(doc)
-        browser = [record for record in self.records() if record["instance_id"] == TUI_EMPTY]
-        self.assertEqual([record["status"] for record in browser], ["failed"])
-        self.assertEqual(browser[0]["unavailable_metrics"],
+        record = self.assert_unconfirmed_shard(
+            doc, "could not confirm that the browser's session ended: tui-open: cleanup "
+            "unconfirmed: held")
+        self.assertEqual(record["unavailable_metrics"],
                          {"splash_ms": "not observed by this sample"})
+
+    def test_a_driver_exit_the_supervisor_also_refused_still_keeps_the_scratch(self):
+        # The supervisor refused the lifecycle of its own group (a descendant it killed) and
+        # the driver could not confirm the browser's session, outside that group: the record
+        # fails as the supervisor says, and the driver's verdict keeps the scratch and stops
+        # the shard, whatever the supervisor settled of its own.
+        plan_path, build = self.driven_by("refused", self.UNCONFIRMED_DRIVER,
+                                          overrides={"tui_open": "leak"})
+        doc = runner.run_shard(self.options(plan_path, build))
+        record = self.assert_unconfirmed_shard(
+            doc, "could not confirm that the browser's session ended: tui-open: cleanup "
+            "unconfirmed: held")
+        self.assertEqual(record["failure"]["kind"], "lifecycle_violation")
+        self.assertIn("1 descendant outlived the child", record["failure"]["detail"])
 
 class SeedHarness(ShardHarness):
     def seeded(self, run_id, cases=(TASK_SHOW, LEDGER)):
