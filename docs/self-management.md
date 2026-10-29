@@ -192,6 +192,18 @@ the default path.
 `af` runs on Linux and macOS only. Windows and other non-unix hosts are unsupported, and so are the
 BSDs: a source build on any of them stops with a compile error.
 
+## Nightlies
+
+The owner's Linux VM builds a nightly af from the newest green commit of main
+([`nightly.md`](nightly.md),
+[ADR-0265](adr/0265-build-nightlies-from-the-newest-green-main-on-the-owners-vm.md)), for
+`x86_64-unknown-linux-musl` and `aarch64-unknown-linux-musl` only. A nightly is tagged
+`nightly-YYYY.MM.DD`, never `vX.Y.Z`, and versioned `<core>-nightly.<YYYYMMDD>`
+(`0.14.0-nightly.20261029`), and its `SHA256SUMS` is signed with a separate nightly key, never
+the release key. `install.sh` and `af self` on the stable and rc channels never choose a
+nightly, and a nightly is never pinned by `.af/af.lock`: `scripts/pin-release.sh` pins only
+`X.Y.Z` and `X.Y.Z-rc.N`, and the release workflow never resolves a `nightly-…` tag.
+
 ## Removing af
 
 ```sh

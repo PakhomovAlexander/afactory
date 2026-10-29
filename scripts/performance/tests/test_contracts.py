@@ -17,7 +17,7 @@ from tests.support import ROOT, read
 FIXTURES = os.path.join(ROOT, "fixtures/performance/schema")
 SCHEMAS = os.path.join(ROOT, "schemas")
 TOML_CONTRACTS = ("suite", "activation", "adapters", "cli", "diagnostics", "telemetry-lab",
-                  "telemetry-collector")
+                  "telemetry-collector", "nightly-config")
 
 
 class SchemaSubset:
@@ -132,6 +132,8 @@ def read_with_contract(entry):
         return contracts.validate_telemetry_lab(tomlfile.loads(data, path), path)
     if contract == "telemetry-collector":
         return contracts.validate_telemetry_collector(tomlfile.loads(data, path), path)
+    if contract == "nightly-config":
+        return contracts.validate_nightly_config(tomlfile.loads(data, path), path)
     doc = contracts.read_json(data, contract, path)
     if "companion" in entry:
         cohort = contracts.read_file(os.path.join(FIXTURES, entry["companion"]), "cohort")
