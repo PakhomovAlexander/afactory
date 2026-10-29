@@ -588,6 +588,11 @@ impl Pane for PipelinesPane {
         Ok(id.map(|id| Effect::OpenItem(Tab::Pipelines, id)))
     }
 
+    fn rename(&mut self, scope: &Scope) {
+        self.title = format!("PIPELINES  {}: {}", scope.word(), scope.name());
+        self.rebuild();
+    }
+
     fn legend(&self) -> &'static str {
         match self.selected {
             Some(_) => "j/k slot  R recompile  gf open TOML  y yank name  Tab bar  :cmd  q quit",

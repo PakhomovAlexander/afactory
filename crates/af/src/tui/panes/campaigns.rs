@@ -1137,6 +1137,11 @@ impl Pane for CampaignsPane {
         }
     }
 
+    fn rename(&mut self, scope: &Scope) {
+        self.title = format!("CAMPAIGNS  {}: {}", scope.word(), scope.name());
+        self.rebuild();
+    }
+
     fn legend(&self) -> &'static str {
         if self.selected.is_some() {
             "Enter command to : line  y yank name  R re-read  Tab bar"

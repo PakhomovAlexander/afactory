@@ -3156,7 +3156,8 @@ fn a_history_refusal_with_a_read_in_flight_falls_back_to_the_folder_at_once() {
 }
 
 /// The App's load records the panes' reads and starts none: the first frame is painted with
-/// the folders' spinners, and the first poll after it starts the reads. No Store is read
+/// the folders' spinners, and the first poll after it starts the reads, the committed
+/// `[project] name`'s `git show` among them. No Store is read, and no git runs for the name,
 /// before the browser's first frame, on any thread.
 #[test]
 fn the_first_frame_is_painted_before_any_read_of_a_store_starts() {
@@ -3169,18 +3170,61 @@ fn the_first_frame_is_painted_before_any_read_of_a_store_starts() {
             app.panes.tasks.started(),
             app.panes.campaigns.started(),
             app.panes.workers.started(),
+            app.name_reads(),
         )
     };
-    assert_eq!(started(&app), (0, 0, 0), "the load started no read");
+    assert_eq!(started(&app), (0, 0, 0, 0), "the load started no read");
     let _ = app.frame(100, 30);
-    assert_eq!(started(&app), (0, 0, 0), "painting starts none");
+    assert_eq!(started(&app), (0, 0, 0, 0), "painting starts none");
     app.poll();
     assert_eq!(
         started(&app),
-        (1, 1, 1),
+        (1, 1, 1, 1),
         "the first poll after the frame starts them"
     );
     app.settle();
+}
+
+/// `R` at the root reads the committed `[project] name` on a thread, never on the key loop
+/// (ADR-0240): while that read waits on git, the browser answers keys and the root keeps the
+/// name it had; the new name takes the root and every title when the read answers.
+#[test]
+fn r_at_the_root_answers_while_the_committed_name_is_read() {
+    let (_temp, root) = temp_root();
+    let repo = hub_repo_at(&root, "checkout-7");
+    let mut app = app_at(&root, repo.clone());
+    let mut host = Recorder::default();
+    let declared = repo.join(".af/af.toml");
+    let layer = std::fs::read_to_string(&declared).unwrap();
+    std::fs::write(
+        &declared,
+        layer.replace("name = \"hub\"\n", "name = \"renamed\"\n"),
+    )
+    .unwrap();
+    git(&repo, &["commit", "-qam", "rename the project"]);
+    to_the_root(&mut app, &mut host);
+    // A git that does not answer: the read waits until the test lets it go.
+    let hold = app.hold_name_reads();
+    let reads = app.name_reads();
+    press_unsettled(&mut app, &mut host, b"R");
+    assert_eq!(app.name_reads(), reads + 1, "R started the name read");
+    let status = status_line(&mut app);
+    assert!(status.contains("settings read again"), "{status}");
+    // Keys are answered meanwhile, and the name read last stands.
+    press_unsettled(&mut app, &mut host, b"j");
+    app.poll();
+    let frame = app.frame(100, 30).text();
+    assert!(frame.contains("hub  (project)"), "{frame}");
+    assert!(!frame.contains("renamed  (project)"), "{frame}");
+    App::release_name_reads(&hold);
+    app.settle();
+    let frame = app.frame(100, 30).text();
+    assert!(frame.contains("renamed  (project)"), "{frame}");
+    assert!(!frame.contains("hub  (project)"), "{frame}");
+    assert_eq!(
+        folder_titles(&mut app, &mut host),
+        folder_titles_for("renamed")
+    );
 }
 
 /// `R` after the registry's Task Stores changed order: the Stores retained from the last read

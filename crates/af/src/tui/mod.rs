@@ -423,7 +423,24 @@ pub(crate) struct App {
     /// legend takes turns with [`IDLE_HINT`]. `None` outside the event loop, so a frame a test
     /// paints never depends on the clock.
     idle_since: Option<std::time::Instant>,
+    /// The read of the committed `[project] name` in flight (`scope::committed_name`, on a
+    /// thread), with the root it was started for; `None` while none runs.
+    name_read: Option<(PathBuf, std::sync::mpsc::Receiver<Option<String>>)>,
+    /// A name read the load recorded: the first poll after the first frame starts it
+    /// (ADR-0240), as the folders' reads start.
+    name_pending: bool,
+    /// Name reads started, for tests.
+    #[cfg(test)]
+    name_reads: usize,
+    /// A test's hold on the name reads: their thread waits for its release before reading, a
+    /// git that does not answer, so the test sees the browser answer keys meanwhile.
+    #[cfg(test)]
+    name_hold: Option<NameHold>,
 }
+
+/// What `App::hold_name_reads` hands a test: released by `App::release_name_reads`.
+#[cfg(test)]
+pub(crate) type NameHold = std::sync::Arc<(std::sync::Mutex<bool>, std::sync::Condvar)>;
 
 impl App {
     pub(crate) fn new(scope: Scope, start: Option<PathBuf>, panes: Panes) -> App {
@@ -452,6 +469,12 @@ impl App {
             handed: false,
             exe: std::env::current_exe().map_err(|error| format!("the af executable: {error}")),
             idle_since: None,
+            name_read: None,
+            name_pending: false,
+            #[cfg(test)]
+            name_reads: 0,
+            #[cfg(test)]
+            name_hold: None,
         };
         app.load();
         // A first run: nothing registered yet, so the browser opens where that is fixed.
@@ -468,6 +491,9 @@ impl App {
     /// Stores starts that read on a thread here and lists them as `poll` collects them: the
     /// event loop paints before it polls, so the first frame never waits on a Store.
     fn load(&mut self) {
+        // The committed name is read with the folders: recorded here, started by the first
+        // poll after the first frame, never on the key loop (ADR-0240).
+        self.name_pending = self.scope.kind == ScopeKind::Project;
         for tab in PANES {
             let loaded = self.panes.get_mut(tab).load(&self.scope);
             if let Err(error) = loaded {
@@ -483,6 +509,13 @@ impl App {
     /// real one would collect the Stores a few frames later.
     #[cfg(test)]
     pub(crate) fn settle(&mut self) {
+        if self.name_pending {
+            self.start_name_read();
+        }
+        if let Some((root, receiver)) = self.name_read.take() {
+            let answer = receiver.recv().ok();
+            self.apply_name(&root, answer);
+        }
         self.panes.tasks.settle();
         self.panes.campaigns.settle();
         self.panes.workers.settle();
@@ -501,7 +534,10 @@ impl App {
     /// longer lists (a Worker whose declaration went, a Task whose Store refused) falls back
     /// to its folder with the message `show` gives, as it does when opening finds it gone.
     pub(crate) fn poll(&mut self) {
-        let mut changed = false;
+        if self.name_pending {
+            self.start_name_read();
+        }
+        let mut changed = self.take_name();
         for tab in PANES {
             changed |= self.panes.get_mut(tab).poll();
         }
@@ -510,6 +546,106 @@ impl App {
         }
         self.sync();
         self.follow_listing();
+    }
+
+    /// Read the committed `[project] name` on a thread (ADR-0240): the bar's root and every
+    /// pane's title take it when `poll` collects it. Until then the name shown stands, the
+    /// toplevel's basename at first. A read for another root, or one an `R` superseded, is
+    /// dropped when it answers.
+    fn start_name_read(&mut self) {
+        self.name_pending = false;
+        if self.scope.kind != ScopeKind::Project {
+            self.name_read = None;
+            return;
+        }
+        let root = self.scope.root.clone();
+        let at = root.clone();
+        let (sender, receiver) = std::sync::mpsc::channel();
+        #[cfg(test)]
+        let hold = self.name_hold.clone();
+        #[cfg(test)]
+        {
+            self.name_reads += 1;
+        }
+        std::thread::spawn(move || {
+            #[cfg(test)]
+            if let Some(hold) = hold {
+                let (released, signal) = &*hold;
+                let guard = released
+                    .lock()
+                    .unwrap_or_else(|poisoned| poisoned.into_inner());
+                let _released = signal
+                    .wait_while(guard, |released| !*released)
+                    .unwrap_or_else(|poisoned| poisoned.into_inner());
+            }
+            let _ = sender.send(scope::committed_name(&at));
+        });
+        self.name_read = Some((root, receiver));
+    }
+
+    /// Collect the name read when it answered; `true` when the answer renamed anything.
+    fn take_name(&mut self) -> bool {
+        let answered = match &self.name_read {
+            Some((_, receiver)) => match receiver.try_recv() {
+                Ok(name) => Some(Some(name)),
+                Err(std::sync::mpsc::TryRecvError::Empty) => None,
+                Err(std::sync::mpsc::TryRecvError::Disconnected) => Some(None),
+            },
+            None => None,
+        };
+        let Some(answer) = answered else {
+            return false;
+        };
+        let Some((root, _)) = self.name_read.take() else {
+            return false;
+        };
+        self.apply_name(&root, answer)
+    }
+
+    /// A name read's answer for `root`: a name other than the scope's renames the bar's root
+    /// and every pane's title, nothing read again. `true` when it did; an answer for another
+    /// root, or none (the thread died), changes nothing.
+    fn apply_name(&mut self, root: &Path, answer: Option<Option<String>>) -> bool {
+        let Some(name) = answer else {
+            return false;
+        };
+        if root != self.scope.root
+            || self.scope.kind != ScopeKind::Project
+            || self.scope.declared == name
+        {
+            return false;
+        }
+        self.scope.declared = name;
+        self.tree.set_root(&root_label(&self.scope));
+        for tab in PANES {
+            self.panes.get_mut(tab).rename(&self.scope);
+        }
+        true
+    }
+
+    /// Name reads started so far, for tests.
+    #[cfg(test)]
+    pub(crate) fn name_reads(&self) -> usize {
+        self.name_reads
+    }
+
+    /// Hold every name read started from now on until `release_name_reads`: a git that does
+    /// not answer, for a test to see the browser answer keys meanwhile.
+    #[cfg(test)]
+    pub(crate) fn hold_name_reads(&mut self) -> NameHold {
+        let hold = NameHold::default();
+        self.name_hold = Some(hold.clone());
+        hold
+    }
+
+    /// Let the held name reads go on.
+    #[cfg(test)]
+    pub(crate) fn release_name_reads(hold: &NameHold) {
+        let (released, signal) = &**hold;
+        *released
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner()) = true;
+        signal.notify_all();
     }
 
     /// The opened entry, if a read no longer lists it, falls back to its folder with the
@@ -1545,15 +1681,11 @@ impl App {
             self.enter_scope(scope);
             return Ok(());
         }
-        let renamed = scope.name() != self.scope.name();
+        // The name read last stands; the committed one is read again on a thread, never on
+        // the key loop (ADR-0240), and a change renames the root and every title when it
+        // answers.
         self.scope = scope;
-        if renamed {
-            // The committed `[project] name` changed: the bar's root and every pane's title
-            // carry it, so every pane loads again for the renamed scope.
-            self.tree.set_root(&root_label(&self.scope));
-            self.load();
-            return Ok(());
-        }
+        self.start_name_read();
         self.panes.settings.load(&self.scope)
     }
 

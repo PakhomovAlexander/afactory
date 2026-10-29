@@ -1287,6 +1287,11 @@ impl Pane for WorkersPane {
         Ok(id.map(|id| Effect::OpenItem(Tab::Workers, id)))
     }
 
+    fn rename(&mut self, scope: &Scope) {
+        self.title = format!("WORKERS  {}: {}", scope.word(), scope.name());
+        self.rebuild();
+    }
+
     fn legend(&self) -> &'static str {
         match self.selected {
             Some(_) => "j/k scroll  gf open file  y yank name  R re-read  Tab bar",

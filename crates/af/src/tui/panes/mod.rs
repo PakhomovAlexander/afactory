@@ -122,6 +122,10 @@ pub(crate) trait Pane {
     /// The main pane shows another pane now; background reads for this one stop.
     fn close(&mut self) {}
 
+    /// The scope's name changed (its committed `[project] name` answered, or changed): a pane
+    /// whose title carries it takes the new one. Nothing is read again.
+    fn rename(&mut self, _scope: &Scope) {}
+
     /// The bar id of the opened entry as the pane names it now, when a read may have renamed
     /// it (a Task whose Store took a group once another checkout appeared): the App follows
     /// it. `None` from a pane whose ids never change, or with nothing opened.

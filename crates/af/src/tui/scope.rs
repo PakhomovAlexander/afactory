@@ -27,8 +27,8 @@ pub(crate) struct Scope {
     /// `None` when neither `XDG_STATE_HOME` nor `HOME` names one.
     pub(crate) state: Option<PathBuf>,
     /// The `[project] name` the repository declares in the `.af/af.toml` its `HEAD` commits,
-    /// read with the scope (`committed_name`); `None` for the user scope and for a repository
-    /// declaring none.
+    /// as the browser's name read (`committed_name`, on a thread after the first frame) last
+    /// answered; `None` until it does, for the user scope and for a repository declaring none.
     pub(crate) declared: Option<String>,
 }
 
@@ -68,11 +68,10 @@ impl Scope {
     }
 
     pub(crate) fn project(toplevel: PathBuf, config: Config) -> Scope {
-        let declared = committed_name(&toplevel);
         Scope {
             kind: ScopeKind::Project,
             root: toplevel,
-            declared,
+            declared: None,
             config,
             home: config::home().ok(),
             registry: crate::providers::registry_location(),
@@ -91,6 +90,11 @@ impl Scope {
         scope.home.clone_from(&self.home);
         scope.registry.clone_from(&self.registry);
         scope.state.clone_from(&self.state);
+        // The same project's name read last stands until the browser's next read answers;
+        // another scope starts without one.
+        if scope.kind == self.kind && scope.root == self.root {
+            scope.declared.clone_from(&self.declared);
+        }
         Ok(scope)
     }
 
@@ -102,7 +106,9 @@ impl Scope {
     /// declares, else the toplevel's basename; `~` for the user scope. The Project is one
     /// across its worktrees, so every checkout of it is named alike.
     pub(crate) fn name(&self) -> String {
-        if let Some(name) = &self.declared {
+        if self.kind == ScopeKind::Project
+            && let Some(name) = &self.declared
+        {
             return name.clone();
         }
         match (self.kind, self.root.file_name()) {
@@ -142,8 +148,8 @@ impl Scope {
 /// edit is not the Project's name until it is committed, and never the effective configuration,
 /// which a `.af/af.local.toml` or an `AF_PROJECT__NAME` of one checkout changes, so every
 /// checkout of the Project is named alike (ADR-0158, ADR-0261). A file the kernel would refuse
-/// names nothing. One `git show` of a small blob, read with the scope: on the browser's load
-/// thread and on `R` at the root, as the Pipelines pane reads `HEAD` (ADR-0240).
+/// names nothing. One `git show` of a small blob, which the browser runs on a thread of its
+/// own after the first frame and again on `R` at the root, never on the key loop (ADR-0240).
 pub(crate) fn committed_name(toplevel: &Path) -> Option<String> {
     let text = super::panes::pipelines::git(toplevel, &["show", "HEAD:.af/af.toml"]).ok()?;
     let text = String::from_utf8(text).ok()?;

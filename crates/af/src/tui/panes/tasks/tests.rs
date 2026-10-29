@@ -2841,8 +2841,11 @@ fn a_shallow_checkout_lists_no_other_checkout() {
         ],
     )
     .unwrap();
+    // A Store discovery would list, with its refusal, were it run: `events.sqlite` is there
+    // but is not a file, so `store_present` says so rather than "no Store".
     let linked_state = task_execution::default_task_state(&xdg, &linked).unwrap();
-    std::fs::create_dir_all(&linked_state).unwrap();
+    std::fs::create_dir_all(linked_state.join("events.sqlite")).unwrap();
+    assert!(task_execution::store_present(&linked_state).is_err());
     let own = task_execution::default_task_state(&xdg, &shallow).unwrap();
 
     let scope = crate::tui::tests::hub_scope(&root, &shallow);
@@ -2866,6 +2869,85 @@ fn a_shallow_checkout_lists_no_other_checkout() {
         [(own.as_path(), None, Origin::Scope, Some("this checkout"))]
     );
     assert!(pane.error.is_none() && pane.discovered.is_none());
+}
+
+/// This checkout's Workspace is the one registered at its path (ADR-0158), whatever Store it
+/// names: registered with a `--state` Store, the checkout still carries its label and that
+/// Store is the registry's, noted with the label. A Workspace at another path naming this
+/// checkout's default Store does not relabel it; it is noted on the Store, as on a registry
+/// Store, and the Store stays this checkout's.
+#[test]
+fn this_checkouts_label_is_its_registered_paths_whatever_store_either_workspace_names() {
+    let temp = tempfile::tempdir().unwrap();
+    let root = std::fs::canonicalize(temp.path()).unwrap();
+    let repo = crate::tui::tests::hub_repo(&root);
+    let xdg = root.join("state");
+    let own = task_execution::default_task_state(&xdg, &repo).unwrap();
+    let explicit = task_execution::local_task_states(&xdg).join("hub-explicit");
+    std::fs::create_dir_all(&explicit).unwrap();
+    let registry = crate::storage::registry::location(&xdg);
+    std::fs::create_dir_all(registry.parent().unwrap()).unwrap();
+    std::fs::write(
+        &registry,
+        format!(
+            "version = 2\n\n[[store]]\npath = {:?}\nkind = \"task\"\nfirst_use_unix_ms = 1\n\
+             last_use_unix_ms = 1\n",
+            explicit.display().to_string()
+        ),
+    )
+    .unwrap();
+    let worktree = root.join("hub-wt-x");
+    git(
+        &repo,
+        &[
+            "worktree",
+            "add",
+            "-q",
+            "-b",
+            "x",
+            worktree.to_str().unwrap(),
+        ],
+    )
+    .unwrap();
+    register_workspace(&xdg, &repo, "hub", &repo, &explicit);
+    register_workspace(&xdg, &repo, "x", &worktree, &own);
+
+    let scope = crate::tui::tests::hub_scope(&root, &repo);
+    let mut pane = TasksPane::default();
+    pane.load(&scope).unwrap();
+    pane.settle();
+    assert!(pane.error.is_none() && pane.discovered.is_none());
+    let shown = scope.abbreviate(&explicit);
+    assert_eq!(
+        pane.described_targets(),
+        [
+            (
+                own.clone(),
+                None,
+                Origin::Scope,
+                Some("this checkout (Workspace hub; the Store of Workspace x)".to_owned()),
+            ),
+            (
+                explicit.clone(),
+                Some(shown.clone()),
+                Origin::Registered,
+                Some("Workspace hub".to_owned()),
+            ),
+        ]
+    );
+    pane.open(None);
+    let rows: Vec<String> = pane.rows().iter().map(Row::text).collect();
+    assert!(
+        rows.iter()
+            .any(|row| row.starts_with("this checkout (Workspace hub; the Store of Workspace x)  ")),
+        "{rows:#?}"
+    );
+    assert!(
+        rows.iter().any(|row| row.starts_with(&format!(
+            "{shown}  (--state, in stores.toml; Workspace hub)"
+        ))),
+        "{rows:#?}"
+    );
 }
 
 /// A Workspace's Tasks are its checkout's default Store's, listed under its label whether or

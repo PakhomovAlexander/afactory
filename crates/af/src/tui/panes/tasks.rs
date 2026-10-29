@@ -1384,9 +1384,20 @@ impl Discovery {
                 let name = project.label.clone().unwrap_or_else(|| {
                     crate::projects::label_from_name(toplevel.file_name().unwrap_or_default())
                 });
-                own.note = Some(match &project.label {
-                    Some(label) => format!("this checkout (Workspace {label})"),
-                    None => "this checkout".to_owned(),
+                // Other Workspaces naming this checkout's Store as theirs are noted on it, as
+                // they are on a registry Store; the Store is this checkout's all the same.
+                let shared = project
+                    .named
+                    .iter()
+                    .find(|(dir, _)| same_store(dir, &own.dir))
+                    .map(|(_, labels)| format!("the Store of {}", workspaces(labels)));
+                own.note = Some(match (&project.label, shared) {
+                    (Some(label), Some(shared)) => {
+                        format!("this checkout (Workspace {label}; {shared})")
+                    }
+                    (Some(label), None) => format!("this checkout (Workspace {label})"),
+                    (None, Some(shared)) => format!("this checkout ({shared})"),
+                    (None, None) => "this checkout".to_owned(),
                 });
                 own.repo = grouped.then(|| unique(name, &mut taken));
                 let mut targets = vec![own];
@@ -1405,17 +1416,12 @@ impl Discovery {
                         note: Some(note),
                     });
                 }
+                let own_dir = targets[0].dir.clone();
                 let notes = project
                     .named
                     .into_iter()
-                    .map(|(dir, labels)| {
-                        let word = if labels.len() == 1 {
-                            "Workspace"
-                        } else {
-                            "Workspaces"
-                        };
-                        (dir, format!("{word} {}", labels.join(", ")))
-                    })
+                    .filter(|(dir, _)| !same_store(dir, &own_dir))
+                    .map(|(dir, labels)| (dir, workspaces(&labels)))
                     .collect();
                 Ok(Found {
                     targets,
@@ -1425,6 +1431,16 @@ impl Discovery {
             }
         }
     }
+}
+
+/// `Workspace x`, or `Workspaces x, y`.
+fn workspaces(labels: &[String]) -> String {
+    let word = if labels.len() == 1 {
+        "Workspace"
+    } else {
+        "Workspaces"
+    };
+    format!("{word} {}", labels.join(", "))
 }
 
 /// `name`, or `name-2`, `name-3`, … when a checkout listed before took it: two checkouts of
@@ -2614,6 +2630,11 @@ impl Pane for TasksPane {
             }
             _ => Ok(None),
         }
+    }
+
+    fn rename(&mut self, scope: &Scope) {
+        self.title = format!("TASKS  {}: {}", scope.word(), scope.name());
+        self.rebuild();
     }
 
     fn legend(&self) -> &'static str {

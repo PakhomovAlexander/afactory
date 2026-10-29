@@ -1530,12 +1530,12 @@ fn the_runner_row_follows_the_catalogs_as_they_arrive() {
 
 /// A Worker's STATE counts the Attempts in every checkout of the Project: the Tasks pane's
 /// discovery runs on the read's thread here too, so a worktree's own Store is counted beside
-/// this checkout's.
+/// this checkout's. A copy of this checkout's recorded Store stands for the worktree's.
 #[test]
 fn a_workers_state_counts_the_attempts_of_every_checkout_of_the_project() {
     let temp = tempfile::tempdir().unwrap();
     let root = std::fs::canonicalize(temp.path()).unwrap();
-    let (repo, _state) = crate::tui::tests::hub_with_tasks(&root);
+    let (repo, state) = crate::tui::tests::hub_with_tasks(&root);
     let worktree = root.join("hub-wt-branch");
     let args = [
         "worktree",
@@ -1548,7 +1548,7 @@ fn a_workers_state_counts_the_attempts_of_every_checkout_of_the_project() {
     git(&repo, &args).unwrap();
     let branch_state =
         crate::task_execution::default_task_state(&root.join("state"), &worktree).unwrap();
-    crate::tui::tests::record_task(&root, &worktree, &branch_state, "pagination-branch");
+    crate::tui::tests::copy_store(&state, &branch_state);
     let scope = crate::tui::tests::hub_scope(&root, &repo);
     let id = ".af/task-packages/fixture/implementer/worker.toml";
     let mut pane = WorkersPane::default();

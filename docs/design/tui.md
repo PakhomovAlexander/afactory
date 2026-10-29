@@ -24,12 +24,14 @@ mouse support.
 | `af` with stdout not a tty | — | prints help, exit 2 (today's behaviour) |
 
 The project scope's name is the `[project] name` the `.af/af.toml` at `HEAD` declares, its first
-line, read through git with the scope (one `git show` of that blob, on the browser's load thread
-and again on `R` at the root, as the Pipelines pane reads `HEAD`; ADR-0240). The working tree's
-copy of the file, a `.af/af.local.toml` and an `AF_PROJECT__NAME` change the effective
-configuration, never the name, so every checkout of the Project is named alike and an edit names
-it once committed; without one the toplevel's basename stands. A name `R` at the root finds
-changed renames the bar's root and every pane's title (ADR-0261).
+line, read through git (one `git show` of that blob) on a thread like the Stores (ADR-0240,
+never on the key loop or before the first frame): the load records the read, the first poll
+after the first frame starts it, and `R` at the root starts it again; until it answers the name
+shown stands, the toplevel's basename at first. The working tree's copy of the file, a
+`.af/af.local.toml` and an `AF_PROJECT__NAME` change the effective configuration, never the
+name, so every checkout of the Project is named alike and an edit names it once committed;
+without one the toplevel's basename stands. A name the read finds changed renames the bar's
+root and every pane's title when it answers, nothing read again (ADR-0261).
 
 Scope resolution reuses `config::load(repo)`: `toplevel == None` means user scope. A toplevel is
 an ancestor whose `.git` git itself would open (a directory holding `HEAD`, or a linked
@@ -380,7 +382,9 @@ Workspaces, from the Project Store read under its shared lock, by label, then th
 A Workspace's Tasks are its checkout's default Store's, listed under its label whether or not
 the Workspace also names a `--state` Store (a clone no `git worktree list` names is found this
 way alone); a Store it names under another path, wherever it is kept, is the registry's, listed
-below with the Workspaces noted beside it.
+below with the Workspaces noted beside it. This checkout's Workspace is the one registered at
+its path (ADR-0158), whatever Store it names; a Workspace elsewhere naming this checkout's
+default Store is noted on it, `this checkout (Workspace hub; the Store of Workspace x)`.
 With no other checkout the own Store stands ungrouped as before. The read discovers them, never
 the load (ADR-0240), on every read, so a worktree added or a Task run meanwhile shows at the
 next `R`; a Project Store that cannot be read is a warning above the Stores, and the worktrees

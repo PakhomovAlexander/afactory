@@ -406,6 +406,11 @@ impl Pane for ProvidersPane {
         }
     }
 
+    fn rename(&mut self, scope: &Scope) {
+        self.title = format!("PROVIDERS  {}: {}", scope.word(), scope.name());
+        self.rebuild();
+    }
+
     fn legend(&self) -> &'static str {
         match self.selected {
             Some(_) => "m models  d remove  y yank id  gf registry  Tab bar  :cmd  q quit",

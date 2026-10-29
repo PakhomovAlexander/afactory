@@ -27,7 +27,8 @@ pub(super) struct Project {
     /// The Workspaces that name a `--state` Store, by Store: what the folder says beside a
     /// Store the registry lists.
     pub(super) named: Vec<(PathBuf, Vec<String>)>,
-    /// This checkout's Workspace label, when it is registered with its default Store.
+    /// This checkout's Workspace label: the Workspace registered at its path (ADR-0158),
+    /// whatever Store that Workspace names.
     pub(super) label: Option<String>,
     /// Why the registered Workspaces are not listed: the Project Store cannot be read.
     pub(super) warning: Option<String>,
@@ -74,9 +75,14 @@ pub(super) fn discover(state: &Path, toplevel: &Path) -> Result<Project, String>
                 let is_default = default
                     .as_ref()
                     .is_some_and(|default| super::same_store(default, &store));
-                if super::same_store(&store, &own) {
+                // This checkout's Workspace is the one registered at its path, whatever
+                // Store it names (ADR-0158). A Workspace at another path naming this
+                // checkout's default Store shares it and is noted beside it, as a `--state`
+                // Store's Workspaces are.
+                if std::fs::canonicalize(&path).is_ok_and(|path| path == toplevel) {
                     project.label = Some(label.clone());
-                } else if !is_default {
+                }
+                if !is_default {
                     match project
                         .named
                         .iter_mut()
