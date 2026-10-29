@@ -1082,6 +1082,12 @@ class Quarantine(unittest.TestCase):
         # Today is the last valid day; a date after since is required, not the clock.
         self.held_file({self.held: self.entry(since='2026-10-15', expires='2026-10-29')})
         self.assertEqual(list(tc.quarantine()), [self.held])
+        # The window is checked as a difference, so the last representable dates still pass
+        # or refuse with the entry's message.
+        self.held_file({self.held: self.entry(since='9999-12-20', expires='9999-12-21')})
+        self.assertEqual(list(tc.quarantine()), [self.held])
+        self.refusal({self.held: self.entry(since='9999-12-01', expires='9999-12-31')},
+                     '.config/test-quarantine.json: ' + self.held, 'at most 14 days')
 
     def test_the_file_shape_and_the_entry_bound_are_guarded(self):
         for value in ({'schema': 'af.test-quarantine/2', 'tests': {}}, {'schema': 'af.test-quarantine/1'},

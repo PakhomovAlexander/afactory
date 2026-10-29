@@ -122,7 +122,8 @@ def quarantine(cat=None, today=None, value=None):
             refuse(f'state {entry["state"]!r} is neither quarantined nor flaky',
                    'write "quarantined" or "flaky"')
         since, expires = date(identity, entry, 'since'), date(identity, entry, 'expires')
-        if not since < expires <= since + dt.timedelta(days=QUARANTINE_DAYS):
+        # A difference, not `since + 14 days`: that sum overflows near 9999-12-31.
+        if not dt.timedelta(0) < expires - since <= dt.timedelta(days=QUARANTINE_DAYS):
             refuse(f'expires {expires} is not after since {since} and at most {QUARANTINE_DAYS} days after it',
                    f'set expires within {QUARANTINE_DAYS} days after since')
         evidence = entry['evidence']
