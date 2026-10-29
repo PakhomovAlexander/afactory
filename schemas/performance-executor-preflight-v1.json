@@ -201,6 +201,58 @@
                   ]
                 }
               ]
+            },
+            "partition": {
+              "anyOf": [
+                {
+                  "type": "null"
+                },
+                {
+                  "type": "object",
+                  "additionalProperties": false,
+                  "properties": {
+                    "comparison_id": {
+                      "$ref": "#/$defs/id"
+                    },
+                    "comparison_digest": {
+                      "$ref": "#/$defs/digest"
+                    },
+                    "index": {
+                      "type": "integer",
+                      "minimum": 0,
+                      "maximum": 15
+                    },
+                    "shards": {
+                      "type": "array",
+                      "items": {
+                        "type": "integer",
+                        "minimum": 0,
+                        "maximum": 15
+                      },
+                      "minItems": 1,
+                      "maxItems": 16,
+                      "uniqueItems": true
+                    },
+                    "build_from": {
+                      "anyOf": [
+                        {
+                          "type": "null"
+                        },
+                        {
+                          "$ref": "#/$defs/id"
+                        }
+                      ]
+                    }
+                  },
+                  "required": [
+                    "comparison_id",
+                    "comparison_digest",
+                    "index",
+                    "shards",
+                    "build_from"
+                  ]
+                }
+              ]
             }
           },
           "required": [
@@ -220,7 +272,8 @@
             "cohort_digest",
             "member_id",
             "parameters_sha256",
-            "parent"
+            "parent",
+            "partition"
           ]
         }
       ]

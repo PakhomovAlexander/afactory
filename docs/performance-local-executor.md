@@ -49,7 +49,8 @@ Replace its deliberately unusable zero SHA and image digests with real accepted 
 Review paths, repository, machine/journal IDs, byte caps, queue bound, total wall bound, tier,
 local environment, shard count, case selection, telemetry profile and diagnostic settings.
 The configuration is `af.perf-executor/3`; misspellings and obsolete v1 and v2 configurations
-refuse.
+refuse. `diagnostic.observer = "host_perf"` selects the trusted host CPU observer described
+below; unset, perf runs inside the contained child.
 For `tier = "nightly"` or `"release"` with `environment = "linux_x86_64_musl_claw"`, set
 `zigbuild_bin` to the canonical absolute directory **inside the pinned build image** holding
 `cargo-zigbuild` and `zig` (or its `python3 -m ziglang`). For example,
@@ -160,8 +161,11 @@ fit the tier's `run_total_minutes` and the executor's `run_seconds`. A submissio
 bound is refused before any original, claim or build, naming the shards that would fit (quick:
 1 of 60 minutes; nightly and release: 2 of 120 minutes). No window, sentinel, sample count or
 deadline is relaxed to fit, and Actions keeps its own parallel schedule, never a fallback. A
-run that fits may still stop at a window or the deadline; its stopping reason and missing slots
-remain visible. Builds, preparation and measurement all hold the same machine exclusion.
+whole family that does not fit one original is a native comparison instead
+(`comparison-launch`, below): it partitions the same plan's shards into sequential bounded
+originals. A run that fits may still stop at a window or the deadline; its stopping reason and
+missing slots remain visible. Builds, preparation and measurement all hold the same machine
+exclusion.
 
 Before submitting, run the same checks as the compute account without reserving anything:
 
@@ -174,7 +178,9 @@ python3 -I -B /opt/af-perf/control/scripts/performance/cli.py executor \
 It prints `af.perf-executor-preflight/1` and exits 0 when `ready`, or 4 with the exact first
 refusal: an unreachable root or mirror through any ancestor, a source that does not resolve, a
 reused key, a full queue or journal, missing capacity, the serial bounds above (`serial`) or a
-profile's diagnostic tools (`tools`). A ready preflight is not a reservation: submit next.
+profile's diagnostic tools (`tools`, with the host observer's actual capability as
+`host_observer`, checked under the machine exclusion). A ready preflight is not a reservation:
+submit next.
 
 Submit telemetry with `--work telemetry` and a new key, then `cycle`. Each side is compiled
 through `telemetrybuild`, each execution is contained, the exact configured overhead,
@@ -194,16 +200,51 @@ CPU-profile recipes need the explicitly configured host tools: `diagnostic.perf`
 executable) and `diagnostic.inferno_bin` (the directory holding the pinned Inferno 0.12.8
 `inferno-collapse-perf`, `inferno-diff-folded` and `inferno-flamegraph`), canonical absolute
 paths, never searched for on `PATH`. Install Inferno from its registry pin as root, for example
-`cargo install --locked --version 0.12.8 --root /opt/af-perf-tools/inferno-0.12.8 inferno`, and
+`cargo install --locked --version 0.12.8 --root /opt/af-perf/tools/inferno-0.12.8 inferno`, and
 leave the directory unwritable by the compute account. Submission and execution, before the
-first build, refuse a profile whose recipe tools are missing or not executable, and in the
-contained mode one whose kernel denies every unprivileged perf event
-(`kernel.perf_event_paranoid` above 2): the contained child holds no capability, and the
-executor never changes a sysctl or grants one. The child run then probes each tool's version
-and an actual acknowledged perf capture inside the same contained boundary; a path is not
-proof. Docker's default seccomp profile refuses `perf_event_open` to a container without
-`CAP_PERFMON`, so on a host where that holds the contained probe records `perf_refused` as an
-explicit omission. A trusted host observer of the contained child is not part of this executor.
+first build, refuse a profile whose recipe tools are missing or not executable.
+
+`diagnostic.observer` chooses where perf runs. Unset, perf runs inside the contained child,
+which holds no capability: a kernel that denies every unprivileged perf event
+(`kernel.perf_event_paranoid` above 2) refuses the profile before any build, and Docker's
+default seccomp profile refuses `perf_event_open` to a container without `CAP_PERFMON`. With
+`observer = "host_perf"`, a CPU-profile recipe uses the trusted host observer instead: the
+candidate keeps its unchanged container (network none, every capability dropped, no new
+privileges, read-only root), and the configured perf runs on the host as the compute account,
+under the same authority supervisor, deadline, output bounds and machine exclusion as every
+diagnostic tool. Each contained command starts behind a private gate FIFO. The observer finds
+the one process of the owned container waiting at that gate (its cgroup names the container's
+full ID, its ancestry reaches the container's init, it runs as the compute account), freezes
+its host PID and start time, attaches `perf record -p PID` disabled, enables it (a CLI command,
+recorded whole) or leaves it disabled until the probe's acknowledged region (a native probe),
+waits for perf's acknowledgement, checks the frozen identity again (a recycled PID is refused)
+and only then opens the gate. A command that exits in milliseconds is recorded from its first
+instruction, and no Docker client or waiting-shell time is attributed to AF. perf leaves when
+its target does; its end is confirmed before the container's removal is, and either one
+unconfirmed keeps the machine fence. Each recording keeps an `af.perf-host-observer/1` record
+(`observer-*.json`) beside its capture. perf is never bound into a candidate container: the
+host observer runs `perf script`, `perf buildid-list` and Inferno on the host too, reading the
+admitted AF binary at the same path the container saw. The capability is checked by doing it,
+not from a path or a sysctl: `preflight`, `comparison-preflight` and the profile's execution,
+before any build, attach this perf to an owned gated loop and decode its samples; a refusal
+names perf's own reason. The executor never changes a sysctl, grants a capability or runs a
+privileged container.
+
+Operator setup for the host observer (once, as root, reviewed): install the pinned perf
+outside every candidate path, owned by root, group the compute account's group, mode 0750,
+with only `cap_perfmon` (DWARF unwinding also reads the target's stack, which the same
+capability allows for a process of the same account):
+
+```sh
+install -o root -g af-perf-exec -m 0750 perf /opt/af-perf/tools/perf-7.0.14/bin/perf
+setcap cap_perfmon=ep /opt/af-perf/tools/perf-7.0.14/bin/perf
+getcap /opt/af-perf/tools/perf-7.0.14/bin/perf
+```
+
+Then configure `perf = "/opt/af-perf/tools/perf-7.0.14/bin/perf"`,
+`inferno_bin = "/opt/af-perf/tools/inferno-0.12.8/bin"` and `observer = "host_perf"` under
+`[diagnostic]`. Leave `kernel.perf_event_paranoid` as it is. The compute account already has
+Docker access; the observer reads `docker inspect` of its own containers only.
 
 A request has `requests/exp_<opaque>/request.json`, its frozen configuration/plan and
 `state.json`. After completion `result.json` binds actual backend, persistent-machine environment,
@@ -215,7 +256,8 @@ commit/tree/blob objects, independent of later mirror GC. Reports are at:
 | --- | --- |
 | Core | `requests/ID/run/`, `requests/ID/report/report.html`, `requests/ID/history/history.html`; shared `core-archive/` |
 | Telemetry | `requests/ID/run/report.html`, raw documents and builds; shared `local-telemetry-history/history.html` |
-| Profile | `requests/ID/profile/` and its native profile report, separate from verdict samples; `requests/ID/parent-verdict.json` for a parent-selected profile |
+| Profile | `requests/ID/profile/` and its native profile report, separate from verdict samples; `requests/ID/parent-verdict.json` for a parent-selected profile; `observer-*.json` beside each host-observed capture |
+| Comparison | `comparisons/CMP_ID/comparison.json`, `plan.json`, `aggregate/` (its run, report and `aggregate.json`); refusals in `comparison-refusals/` |
 | Failed/lost controller | Original request and state diagnostic, plus any bounded native partial evidence and recovery paths |
 
 Verify an original locally, without Actions artifacts or network transport:
@@ -225,7 +267,8 @@ python3 -I -B /opt/af-perf/control/scripts/performance/cli.py executor \
   --config /etc/af-perf/executor.toml verify --request-id "$REQUEST_ID"
 ```
 
-Combine a release comparison's originals into one overview from their retained native state:
+A full release comparison is one durable native lifecycle (below). For a smoke or one
+family, combine chosen originals into one overview from their retained native state:
 
 ```sh
 python3 -I -B /opt/af-perf/control/scripts/performance/cli.py executor \
@@ -251,10 +294,11 @@ partial original never contributes coverage or a verdict. Links point at the nat
 the journal, which stays the evidence; copy the overview directory together with the journal
 root (`requests/`) it links into, so its relative links keep working.
 
-`status`, `verify` and `overview` take no journal lock: they read the retained, atomically
-published state while a `cycle` holding the journal's exclusive lock executes an original, so a
-running comparison can be watched natively. `submit`, `preflight` and `cycle` still take the
-lock and report busy when another controller holds it.
+`status`, `verify`, `overview`, `comparison-status`, `comparison-report` and
+`comparison-export` take no journal lock: they read the retained, atomically published state
+while a `cycle` holding the journal's exclusive lock executes an original, so a running
+comparison can be watched natively. `submit`, `preflight`, `cycle` and the other `comparison-*`
+operations still take the lock and report busy when another controller holds it.
 
 Core admission rehashes retained objects, plans and raw evidence and recomputes the native
 comparison. Telemetry's matching native verifier is also used at execution/import. Keep the
@@ -312,40 +356,81 @@ The operator runs these on the VM as the compute account after installing a cand
 nothing here was executed by the change that documents it. `CLI` stands for
 `python3 -I -B /opt/af-perf/control/scripts/performance/cli.py executor --config
 /etc/af-perf/executor.toml`; `BASE`, `HEAD` and `TAG` are the exact full release SHAs and tag
-(for example v0.13.0 against v0.14.0-rc.1), and every key is new.
+(for example v0.13.0 against v0.14.0-rc.1), and every key is new. Configure `core.cases = []`
+(the whole family), keep `core.shards` at the tier's count, and configure the CPU-profile tools
+and `observer = "host_perf"` as above.
 
 ```sh
-CLI preflight --work core --kind release --tag "$TAG" --base "$BASE" --head "$HEAD" --key rel_core_1
-CLI submit --work core --kind release --tag "$TAG" --base "$BASE" --head "$HEAD" --key rel_core_1
-CLI submit --work telemetry --kind release --tag "$TAG" --base "$BASE" --head "$HEAD" --key rel_tel_1
-CLI cycle   # once per queued original; `status` shows each state and terminal detail
-CLI preflight --work profile --kind release --tag "$TAG" --base "$BASE" --head "$HEAD" \
-  --key rel_prof_1 --parent "$CORE_ID"
-CLI submit --work profile --kind release --tag "$TAG" --base "$BASE" --head "$HEAD" \
-  --key rel_prof_1 --parent "$CORE_ID"
-CLI cycle
-CLI status  # usable while another `cycle` executes
-CLI verify --request-id "$CORE_ID"
-CLI overview --scope full --member "$CORE_ID" --member "$TEL_ID" --member "$TRACE_ID" \
-  --member "$CPU_ID" --output "$OUT"
+CLI comparison-preflight --kind release --tag "$TAG" --base "$BASE" --head "$HEAD" --key rel_1
+CLI comparison-launch --kind release --tag "$TAG" --base "$BASE" --head "$HEAD" --key rel_1
+CLI comparison-run --comparison "$CMP_ID"     # repeat until it exits 0; resumable
+CLI comparison-status --comparison "$CMP_ID"  # usable while another command executes
+CLI comparison-report --comparison "$CMP_ID" --output "$REPORT_DIR"
+CLI comparison-export --comparison "$CMP_ID" --output "$BUNDLE_DIR"
+python3 -I -B /opt/af-perf/control/scripts/performance/cli.py executor comparison-verify \
+  --bundle "$BUNDLE_DIR"
 ```
 
-The trace and CPU profiles are two profile originals with `--parent "$CORE_ID"`, one submitted
-with a `linux_*_trace` recipe and one with a `linux_*_cpu_profile` recipe configured. Copy
-`$OUT` and the journal's `requests/` directory together to keep the overview's links working.
+`comparison-preflight` prints `af.perf-comparison-preflight/1` and exits 0 when `ready`, 4 with
+the first refusal; it reserves nothing, and every refusal (also of `comparison-launch`) is kept
+under the journal's `comparison-refusals/`. It declares the comparison (`af.perf-comparison/1`,
+its ID `cmp_…`): the exact source pair, one frozen plan of the whole core family, the serial
+partition of that plan's shards, the telemetry original and the trace and CPU profile lanes
+with the recipe each must use for the plan's target (the shipping musl parent uses
+`linux_musl_trace` and `linux_musl_cpu_profile`; no GNU recipe is substituted). It checks every
+member as the compute account: each partition's submission, the telemetry configuration, the
+diagnostic tools and the host observer's actual capability. A lane that has no recipe for the
+target, missing tools or an observer that cannot record refuses the whole comparison.
 
-`preflight` refuses a release core whose shards cannot fit the serial schedule; set
-`core.shards` to the count it names (2 for release) and keep the whole family, sample counts
-and windows. A family that does not fit those windows stops at `sampling_deadline` or
-`run_deadline` with its missing records counted: the overview is then `incomplete`, never a
-pass. The profile uses `cases = []` and a CPU-profile recipe with `perf` and `inferno_bin`
-configured. Repeat the comparison with new keys to see run-to-run spread. A same-source A/A
-comparison submits `--base "$HEAD" --head "$HEAD"`; an injected slowdown and the A/A
+The partition makes the whole family feasible without relaxing anything: each core original
+runs a sequence of the plan's shards, each in its unchanged sampling window with its own health
+sentinels, under its own unchanged run deadline. The first partition builds (the plan's
+`build_minutes`); every later one runs on that partition's verified, immutable build after a
+600-second reuse reserve, so every shard bundle binds one build. The preflight's `schedule`
+names the shards per original and each partition's worst case; for release, 2 shards per
+original (20 + 2 × 45 + 0.5 of 120 minutes, then 10 + 2 × 45 + 0.5). A plan whose single shard
+window cannot fit one original is refused, never split further.
+
+`comparison-launch` retains the declaration and frozen plan under `comparisons/CMP_ID/`, then
+submits the partitions in order and the telemetry original. `comparison-run` drives them:
+it advances and runs one `cycle` per queued original, reopening the journal each time, until
+nothing is queued; its exit is not the comparison's result. When every partition has ended,
+`comparison-advance` (which `comparison-run` calls) assembles the declared shards of the
+verified partitions into one run of the frozen plan and evaluates it once
+(`aggregate/aggregate.json`, `af.perf-comparison-aggregate/1`, with its report and the shared
+`core-archive/`): the whole family's denominator, a failed, missing or uncertain partition's
+records missing, never a falsely complete result. The aggregate's verdict then selects the
+regressed, then inconclusive cases (at most `max_cases`) that the trace and CPU profile
+originals diagnose; a profile's parent is the aggregate. A verdict with nothing to diagnose
+leaves those lanes `not_applicable`, named in the report. Every original keeps its own record:
+a failed or uncertain one is never retried, and a lost controller makes a claimed original
+`uncertain` with the fence kept.
+
+`comparison-report` writes `report.json` (`af.perf-comparison-report/1`), `report.md` and
+`report.html`, prints the JSON and exits 0 only for a `complete` comparison, 4 otherwise. It
+verifies every complete original offline now. `complete` needs the core aggregate over every
+partition and not `incomplete` (a missing closing sentinel or an unstable environment leaves
+it ineligible), every telemetry run measured, usable trace evidence and a differential
+flamegraph for every selected case, and every original verified. Completeness, evidence
+verification, the performance verdict and calibration eligibility (never, for a release
+comparison) are separate: a complete comparison may hold a real regression. `comparison-status`
+prints the same document from durable state without verifying, so it is never `complete`.
+
+`comparison-export` writes a new self-contained bundle: the report, with its links rewritten
+into the bundle, and below `evidence/` every native record it names at its journal path (the
+declaration, plan, aggregate and its report, each original's request, state, result and
+configuration, the telemetry report and every profile's evidence), with `manifest.json`
+(`af.perf-comparison-export/1`) hashing every file, bounded by `archive_bytes`. Copy the
+directory anywhere; `comparison-verify --bundle` needs no journal or configuration and refuses
+a changed, missing or extra file, a link outside the bundle or a result that is not the one
+the report names.
+
+Repeat the comparison with new keys to see run-to-run spread. A same-source A/A comparison
+uses `--base "$HEAD" --head "$HEAD"` with a new key; an injected slowdown and the A/A
 calibration with qualification use the local cohort below, never an ad hoc run. Telemetry
 read latency is judged only over its declared 10,000 corpus runs: a `corpus_runs = 200` result
-is valid evidence but `not_judged`, and qualifying it needs a separate telemetry original with
-`corpus_runs = 10000` that fits the profile's timeout. Keep the historical failed report
-unchanged beside new evidence.
+is valid evidence but `not_judged`, and qualifying it needs `corpus_runs = 10000` that fits the
+profile's timeout. Keep the historical failed report unchanged beside new evidence.
 
 Telemetry overhead and invocation-cost runs select each side's fixture contract from the
 version its `af --version` prints: v0.13.0 measures under `check-receipt@1` (the same packages
@@ -363,13 +448,6 @@ scratch disk each. The finished Store is then copied, every file flushed, into t
 directory, re-read through a fresh Store and judged by the seed's oracle; the probe's stderr
 names both paths. Whether this alone brings each writer under its 120-second bound on Claw is
 for that run to show: the per-event protected-writer CPU cost is unchanged.
-
-Not implemented by this change, and reported as not covered rather than passed: a trusted host
-perf observer of the contained child (contained perf needs `CAP_PERFMON` under Docker's
-default seccomp profile, which the contained child never holds, so a CPU profile original on
-Claw ends `unavailable` before any build), and a partition of a release core comparison that
-does not fit one serial run into bounded sequential native child originals (`preflight` still
-refuses it, naming the shards that fit).
 
 ## Local calibration declaration and review checkpoint
 

@@ -37,6 +37,9 @@ def register(c):
              Field("max_cases", Nullable(Int(1, c.limits.DIAGNOSTIC_CASES_MAX)), required=False),
              Field("perf", Nullable(tool), required=False),
              Field("inferno_bin", Nullable(tool), required=False),
+             # The CPU observer of a contained CPU profile: perf inside the container (null) or
+             # the trusted host observer of the owned contained process (`host_perf`).
+             Field("observer", Nullable(Str(enum=("host_perf",))), required=False),
              Field("total_minutes", Int(1, c.limits.DIAGNOSTIC_RUN_MINUTES_MAX)),
              Field("duration_seconds", Int(1, c.limits.DIAGNOSTIC_SECONDS_MAX)),
              Field("frequency_hz", Int(1, c.limits.DIAGNOSTIC_HZ_MAX)),
@@ -50,6 +53,12 @@ def register(c):
     parent = Obj(Field("request_id", ID), Field("request_digest", DIGEST),
                  Field("result_sha256", DIGEST), Field("plan_sha256", DIGEST),
                  Field("verdict_sha256", DIGEST))
+    # A core child of a durable comparison: the shards of the comparison's one frozen plan it
+    # executes, and the earlier child whose verified immutable build it reuses (none: it builds).
+    shard = Int(0, 15)
+    partition = Obj(Field("comparison_id", ID), Field("comparison_digest", DIGEST),
+                    Field("index", Int(0, 15)), Field("shards", Arr(shard, 1, 16, unique=True)),
+                    Field("build_from", Nullable(ID)))
     request = Obj(Field("schema", Const("af.perf-executor-request/2")), Field("request_id", ID),
         Field("backend", backend), Field("journal_id", ID), Field("machine_id", ID),
         Field("configuration_digest", DIGEST), Field("sources", frozen),
@@ -57,7 +66,8 @@ def register(c):
         Field("created_unix_ms", c.UNIX_MS), Field("environment_digest", DIGEST),
         Field("producer_digest", DIGEST), Field("plan_sha256", Nullable(DIGEST)),
         Field("cohort_digest", Nullable(DIGEST)), Field("member_id", Nullable(ID)),
-        Field("parameters_sha256", Nullable(DIGEST)), Field("parent", Nullable(parent)))
+        Field("parameters_sha256", Nullable(DIGEST)), Field("parent", Nullable(parent)),
+        Field("partition", Nullable(partition)))
     seconds = Int(0, 10 ** 9)
     serial = Obj(Field("backend", Const("local_serial")), Field("shards", Int(1, 256)),
         Field("build_seconds", seconds), Field("shard_sampling_seconds", seconds),
@@ -141,6 +151,7 @@ def register(c):
         return doc
 
     states = ("queued", "claimed", "complete", "failed", "interrupted", "uncertain", "submitted", "expired")
+    states_all = states
     state = Obj(Field("schema", Const("af.perf-executor-state/2")), Field("request_id", ID),
         Field("request_digest", DIGEST), Field("state", Str(enum=states)),
         Field("started_unix_ms", Nullable(c.UNIX_MS)), Field("ended_unix_ms", Nullable(c.UNIX_MS)),
@@ -195,7 +206,7 @@ def register(c):
                 or doc["zigbuild_bin"] is not None, "local musl requires zigbuild_bin in the pinned image")
         for key in ("pairs", "scale", "corpus_runs"):
             doc["telemetry"].setdefault(key, None)
-        for key in ("telemetry", "max_cases", "perf", "inferno_bin"):
+        for key in ("telemetry", "max_cases", "perf", "inferno_bin", "observer"):
             doc["diagnostic"].setdefault(key, None)
         for key in ("perf", "inferno_bin"):
             value = doc["diagnostic"][key]
@@ -275,6 +286,184 @@ def register(c):
                 "only a profile names a parent comparison")
         require(doc["parent"] is None or doc["plan_sha256"] == doc["parent"]["plan_sha256"],
                 "a parent-selected profile diagnoses its parent's exact plan")
+        require(doc["partition"] is None or (doc["work"] == "core" and doc["plan_sha256"]
+                is not None and doc["cohort_digest"] is None),
+                "only a core original is a partition of a comparison's plan")
+        require(doc["partition"] is None or (doc["partition"]["index"] == 0)
+                == (doc["partition"]["build_from"] is None),
+                "exactly a comparison's first partition builds; later ones reuse its build")
+        return doc
+
+    # The trusted host CPU observer's record of one recording (`hostobserver`).
+    target = Obj(Field("pid", Int(1, 2 ** 31)), Field("start_ticks", Int(0, 2 ** 63)),
+                 Field("uid", Int(0, 2 ** 32)), Field("cmdline_sha256", DIGEST),
+                 Field("container_id", Nullable(Str(pattern=r"^[0-9a-f]{64}$", max_len=64))),
+                 Field("init_pid", Nullable(Int(1, 2 ** 31))))
+    observer = Obj(Field("schema", Const("af.perf-host-observer/1")),
+        Field("observer", Const("host_perf")), Field("perf_sha256", Nullable(DIGEST)),
+        Field("event", Str(min_len=1, max_len=256)),
+        Field("region", Str(enum=("whole_command", "acknowledged_region"))),
+        Field("target", Nullable(target)), Field("attached_before_release", Bool()),
+        Field("attach_ms", Nullable(Int(0, 10 ** 9))), Field("exit_code", Nullable(Int(-255, 255))),
+        Field("stopped_confirmed", Bool()), Field("detail", Str(max_len=4096)))
+
+    def validate_observer(doc, where="host observer"):
+        observer.validate(doc, where)
+        require(not doc["attached_before_release"] or (doc["target"] is not None
+                and doc["attach_ms"] is not None),
+                "an attachment names its frozen target and when it was acknowledged")
+        return doc
+
+    lanes = ("core", "telemetry", "trace", "cpu_profile")
+    lane = Str(enum=lanes)
+    key = Str(min_len=1, max_len=256)
+    schedule = Obj(Field("backend", Const("local_serial")), Field("shards", Int(1, 16)),
+        Field("build_seconds", seconds), Field("reuse_seconds", seconds),
+        Field("shard_sampling_seconds", seconds), Field("finish_reserve_seconds", seconds),
+        Field("available_seconds", seconds), Field("first_child_shards", Int(1, 16)),
+        Field("later_child_shards", Int(1, 16)), Field("children", Int(1, 16)))
+    child = Obj(Field("index", Int(0, 15)), Field("shards", Arr(shard, 1, 16, unique=True)),
+                Field("key", key), Field("request_id", ID), Field("build_from", Nullable(ID)),
+                Field("needed_seconds", seconds))
+    diagnostic_lane = Obj(Field("lane", Str(enum=("trace", "cpu_profile"))),
+        Field("recipe", Nullable(ID)), Field("observer", Nullable(Str(enum=("host_perf",)))),
+        Field("key", key), Field("request_id", Nullable(ID)),
+        Field("unsupported", Nullable(Str(max_len=4096))))
+    declaration = Obj(Field("schema", Const("af.perf-comparison/1")),
+        Field("comparison_id", ID), Field("journal_id", ID), Field("machine_id", ID),
+        Field("submission", submission), Field("sources", frozen),
+        Field("configuration_digest", DIGEST), Field("environment_digest", DIGEST),
+        Field("producer_digest", DIGEST), Field("created_unix_ms", c.UNIX_MS),
+        Field("plan_sha256", DIGEST), Field("run_id", ID),
+        Field("lanes", Arr(lane, 4, 4, unique=True)), Field("schedule", schedule),
+        Field("partitions", Arr(child, 1, 16)),
+        Field("telemetry", Obj(Field("key", key), Field("request_id", ID))),
+        Field("diagnostics", Arr(diagnostic_lane, 2, 2)))
+
+    def validate_declaration(doc, where="comparison"):
+        declaration.validate(doc, where)
+        require(doc["lanes"] == list(lanes), "a full comparison declares core, telemetry, trace "
+                "and CPU profile lanes")
+        children = doc["partitions"]
+        covered = [index for item in children for index in item["shards"]]
+        require(sorted(covered) == list(range(doc["schedule"]["shards"]))
+                and len(children) == doc["schedule"]["children"]
+                and [item["index"] for item in children] == list(range(len(children))),
+                "a comparison's partitions cover every shard of its plan exactly once, in order")
+        require(children[0]["build_from"] is None and all(
+                item["build_from"] == children[0]["request_id"] for item in children[1:]),
+                "the first partition builds; every later one reuses its verified build")
+        ids = [item["request_id"] for item in children] + [doc["telemetry"]["request_id"]] + [
+            item["request_id"] for item in doc["diagnostics"] if item["request_id"]]
+        require(len(ids) == len(set(ids)), "a comparison names each original once")
+        require([item["lane"] for item in doc["diagnostics"]] == ["trace", "cpu_profile"]
+                and all((item["recipe"] is None) == (item["unsupported"] is not None)
+                        == (item["request_id"] is None) for item in doc["diagnostics"]),
+                "each diagnostic lane names its recipe and original, or why it is unsupported")
+        return doc
+
+    coverage = Obj(Field("required", count), Field("observed", count), Field("failed", count),
+                   Field("missing", count))
+    aggregate_child = Obj(Field("index", Int(0, 15)), Field("request_id", ID),
+        Field("state", Str(enum=states_all)),
+        Field("verification", Str(enum=("verified", "refused", "not_complete"))),
+        Field("result_sha256", Nullable(DIGEST)), Field("shards", Arr(shard, 1, 16, unique=True)),
+        Field("included", Bool()), Field("detail", Str(max_len=4096)))
+    aggregate = Obj(Field("schema", Const("af.perf-comparison-aggregate/1")),
+        Field("comparison_id", ID), Field("comparison_digest", DIGEST),
+        Field("plan_sha256", DIGEST), Field("builds_sha256", Nullable(DIGEST)),
+        Field("partitions", Arr(aggregate_child, 1, 16)),
+        Field("verdict_sha256", Nullable(DIGEST)),
+        Field("result", Nullable(Str(enum=("pass", "fail", "incomplete")))),
+        Field("coverage", Nullable(coverage)), Field("regressions", Arr(ID, 0, 4096)),
+        Field("created_unix_ms", c.UNIX_MS))
+
+    def validate_aggregate(doc, where="comparison aggregate"):
+        aggregate.validate(doc, where)
+        for item in doc["partitions"]:
+            require(item["included"] == (item["verification"] == "verified")
+                    and (item["verification"] == "not_complete") == (item["state"] != "complete"),
+                    "exactly a verified complete partition contributes its shards")
+        require((doc["verdict_sha256"] is None) == (doc["result"] is None)
+                == (doc["coverage"] is None) and (doc["builds_sha256"] is not None
+                                                  or doc["verdict_sha256"] is None),
+                "a verdict is computed exactly over a verified build")
+        require(doc["coverage"] is None or doc["coverage"]["observed"] + doc["coverage"]["missing"]
+                == doc["coverage"]["required"], "coverage accounts for every planned record")
+        require(doc["result"] != "pass" or all(item["included"] for item in doc["partitions"]),
+                "a missing partition never passes")
+        return doc
+
+    member_states = states_all
+    verification = Str(enum=("verified", "refused", "not_checked", "not_terminal"))
+    report_member = Obj(Field("request_id", ID), Field("lane", lane),
+        Field("work", Str(enum=("core", "telemetry", "profile"))), Field("key", key),
+        Field("state", Str(enum=member_states + ("not_submitted",))),
+        Field("state_detail", Str(max_len=4096)), Field("verification", verification),
+        Field("result_sha256", Nullable(DIGEST)),
+        Field("measurement_status", Nullable(Str(max_len=128))))
+    report_lane = Obj(Field("lane", lane),
+        Field("state", Str(enum=("waiting", "queued", "running", "complete", "failed",
+                                 "unsupported", "not_applicable"))),
+        Field("members", Arr(ID, 0, 16)), Field("coverage", Nullable(coverage)),
+        Field("detail", Str(max_len=4096)), Field("links", Arr(c.REL_PATH, 0, 64)))
+    report_doc = Obj(Field("schema", Const("af.perf-comparison-report/1")),
+        Field("comparison_id", ID), Field("comparison_digest", DIGEST),
+        Field("journal_id", ID), Field("machine_id", ID), Field("sources", frozen),
+        Field("submission", submission),
+        Field("status", Str(enum=("complete", "incomplete", "running"))),
+        Field("verification", verification),
+        Field("calibration", Obj(Field("eligible", Const(False)), Field("detail", Str(max_len=1024)))),
+        Field("performance", Obj(Field("core_verdict", Nullable(Str(enum=("pass", "fail", "incomplete")))),
+                                 Field("regressions", Arr(ID, 0, 4096)),
+                                 Field("telemetry_verdict", Nullable(Str(max_len=32))))),
+        Field("lanes", Arr(report_lane, 4, 4)), Field("members", Arr(report_member, 1, 32)),
+        Field("diagnostic_selection", Arr(Obj(Field("lane", Str(enum=("trace", "cpu_profile"))),
+            Field("instance_id", ID), Field("selected", Bool()), Field("reason", Str(max_len=256))),
+            0, 256)),
+        Field("reasons", Arr(Str(max_len=4096), 0, 1024)), Field("links", Arr(c.REL_PATH, 0, 256)))
+
+    def validate_report(doc, where="comparison report"):
+        report_doc.validate(doc, where)
+        require([item["lane"] for item in doc["lanes"]] == list(lanes),
+                "a comparison report states its four lanes in order")
+        ids = [item["request_id"] for item in doc["members"]]
+        require(len(ids) == len(set(ids)), "a comparison report states each original once")
+        settled = all(item["state"] in ("complete", "not_applicable") for item in doc["lanes"])
+        require((doc["status"] == "complete") == (settled and not doc["reasons"]
+                and doc["verification"] == "verified"),
+                "a comparison is complete only when every lane is complete (or has nothing to "
+                "diagnose), every original verified and no reason remains")
+        require(doc["status"] != "running" or any(item["state"] in ("waiting", "queued", "running")
+                for item in doc["lanes"]), "a running comparison has an unfinished lane")
+        require(doc["status"] == "complete" or doc["reasons"],
+                "an unfinished or incomplete comparison says why")
+        return doc
+
+    export = Obj(Field("schema", Const("af.perf-comparison-export/1")),
+        Field("comparison_id", ID), Field("comparison_digest", DIGEST),
+        Field("report_sha256", DIGEST), Field("status", Str(enum=("complete", "incomplete", "running"))),
+        Field("files", Arr(Obj(Field("path", c.REL_PATH), Field("size", Int(0, c.limits.ARCHIVE_BYTES_MAX)),
+                               Field("sha256", DIGEST)), 1, 16384)))
+    comparison_preflight = Obj(Field("schema", Const("af.perf-comparison-preflight/1")),
+        Field("operation", Str(enum=("preflight", "launch"))),
+        Field("status", Str(enum=("ready", "refused", "launched"))), Field("detail", Str(max_len=4096)),
+        Field("unix_ms", c.UNIX_MS), Field("submission", submission),
+        Field("comparison", Nullable(declaration)),
+        Field("checks", Arr(Obj(Field("name", ID),
+                                Field("state", Str(enum=("passed", "refused", "not_checked"))),
+                                Field("detail", Str(max_len=4096))), 0, 64)))
+
+    def validate_comparison_preflight(doc, where="comparison preflight"):
+        comparison_preflight.validate(doc, where)
+        require((doc["status"] == "refused") == bool(doc["detail"])
+                and (doc["status"] == "refused") == (doc["comparison"] is None)
+                and (doc["status"] == "launched") == (doc["operation"] == "launch"
+                                                      and doc["status"] != "refused"),
+                "a refusal carries its reason and no declaration; a ready or launched one its "
+                "declaration")
+        if doc["comparison"] is not None:
+            validate_declaration(doc["comparison"], where + ".comparison")
         return doc
 
     c.LOCAL_COHORT = local_cohort
@@ -292,6 +481,12 @@ def register(c):
         "comparison-overview": (comparison, validate_comparison), "executor-state": (state, None),
         "executor-result": (outcome, validate_result), "local-cohort-declaration": (local_cohort, c.validate_cohort),
         "local-readiness-assessment": (readiness, validate_local_readiness),
+        "host-observer": (observer, validate_observer),
+        "comparison": (declaration, validate_declaration),
+        "comparison-aggregate": (aggregate, validate_aggregate),
+        "comparison-report": (report_doc, validate_report),
+        "comparison-export": (export, None),
+        "comparison-preflight": (comparison_preflight, validate_comparison_preflight),
     }
     for name, (node, validator) in entries.items():
         schema = node.by_name["schema"].node.value

@@ -689,3 +689,36 @@ an indented line; a bare `\` after a cut piece, then the next piece at column 0.
   `task_outcomes::a_next_line_fits_the_terminal_and_runs_as_printed` failed because the printed
   command is wider than the test's 250-column terminal. It passes at 104 and did not fail in
   the gate. Its assertions were kept unchanged; it is out of this repair's scope.
+
+## Host CPU observer and the durable release comparison (2026-10-30)
+
+This change adds the trusted host CPU observer (`perflab/hostobserver.py`), the partitioned
+serial core comparison and the native comparison lifecycle (`perflab/comparison.py`). Its
+focused checks ran on a macOS development host, with injected computation:
+
+- **Host observer** (`tests/test_hostobserver.py`, 9 tests). Real processes: a gated shell, a
+  stand-in perf that speaks perf's acknowledged control protocol and ends with its target, and
+  the observer's bounded runner. A fixture process table stands in for `/proc`. The tests show
+  perf's acknowledgement before the command's first instruction, a region probe attached
+  disabled, a recycled PID refused with the gate kept closed, a target outside the owned
+  container or account refused, the capability probe decoding samples and refusing a perf that
+  cannot record, and trusted tools routed to the host while perf and the host shell are never
+  bound into the candidate container.
+- **Comparison** (`tests/test_comparison.py`, 4 tests). The real journal, Git retention,
+  claims, offline verification, aggregation, rendering and export, with synthetic builds and
+  shards. Checked: the serial schedule, retained refusals that reserve nothing, launch and
+  resume without a replay, read-only status while the journal is locked, build reuse by the
+  second partition, the aggregate over the whole family's denominator, lanes selected by the
+  aggregate verdict, a portable export verified after copying (also through `cli.py executor
+  comparison-verify`), and a lost controller with its failed reuse leaving the family
+  incomplete. The synthetic stand-in writes no seed copies, so its real aggregate is
+  `incomplete`; the `complete` report is shown with that aggregate injected as whole.
+- **Unchanged contracts.** The contract parity, executor, diagnostics, report-diagnostics,
+  supervision, reproduction and whole-source tests pass. Three executor tests (four cases)
+  need a Linux host for the contained mode (`host_mismatch` on macOS). With `host_os` patched
+  to Linux, all three pass. One of them needed a repair: it asserted that no tool is probed at
+  all, while the executor's existing pre-build tool check probes once before any build. It now
+  asserts that every tool probe precedes the first build.
+
+Not established here: Docker, a real perf, Claw, the v0.13.0 against v0.14.0-rc.1 comparison or
+its export. The outer operator runs that from the installed candidate control.

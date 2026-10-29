@@ -330,7 +330,8 @@ def _repetitions(run, channel, alive, started, on_begin, on_end, on_record, capt
 
 def bracketed_run(supervisor, argv, env, cwd, request_path, fifo_dir, on_begin, on_end,
                   on_record, capture_seconds, run_deadline, handshake_seconds, timeout_seconds,
-                  on_next=None, file_bytes=None, clock=time.monotonic, watch=None, binds=()):
+                  on_next=None, file_bytes=None, clock=time.monotonic, watch=None, binds=(),
+                  after_start=None):
     """Run `argv` (a profiler wrapping the probe, or the probe itself) once under `supervisor`,
     with the probe's region channel in `fifo_dir` and its request, at `request_path`, as stdin.
     `on_begin(deadline)` and `on_end(deadline)` switch the recording on and off; a region is
@@ -341,7 +342,8 @@ def bracketed_run(supervisor, argv, env, cwd, request_path, fifo_dir, on_begin, 
     the recording continues. `file_bytes` bounds every file the recording writes, and `watch`
     all of them together while they are written (`toolrun.Running`): a recording that outgrew
     its room is cancelled and refused as `evidence_over_room`. A contained supervisor binds
-    `binds` into the recording's container. Returns a `Bracketed` whose
+    `binds` into the recording's container. `after_start(running)`, when given, is called once
+    the run started and before its handshake (the host observer's attachment). Returns a `Bracketed` whose
     profiler exited 0 with a clean lifecycle; anything else raises."""
     channel = Channel(fifo_dir)
     running = None
@@ -360,6 +362,8 @@ def bracketed_run(supervisor, argv, env, cwd, request_path, fifo_dir, on_begin, 
         run = Bracketed(launched)
         alive = lambda: not running.done()  # noqa: E731
         try:
+            if after_start is not None:
+                after_start(running)
             _repetitions(run, channel, alive, launched, on_begin, on_end, on_record,
                          capture_seconds, run_deadline, launched + timeout_seconds,
                          handshake_seconds, on_next, clock)

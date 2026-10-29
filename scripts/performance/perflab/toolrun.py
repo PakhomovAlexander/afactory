@@ -63,6 +63,9 @@ class Supervisor(object):
         self.grace_ms = grace_ms
 
     scratch = None
+    # The name of the container a contained request runs in while it runs, for the trusted
+    # host observer's identity check (`hostobserver.inspect`); a host request has none.
+    active = None
 
     def reserve(self):
         """Seconds a request keeps before the deadline for its cancellation and start."""
@@ -123,11 +126,15 @@ class Contained(Supervisor):
         self.requests += 1
         name = "af-perf-diag-%s-%d-%s" % (self.label[-12:], self.requests,
                                           os.urandom(4).hex())
-        contained = supervise.run_contained(
-            self.docker, name, self.image, self.environment, self.path, {}, self.scratch_root,
-            self.uid, self.gid, self.cpus, request_doc, deadline=deadline, clock=clock,
-            binds=binds, file_bytes=file_bytes, started=started,
-            extra=(supervise.DIAGNOSTIC_DIRECTORY,))
+        self.active = name
+        try:
+            contained = supervise.run_contained(
+                self.docker, name, self.image, self.environment, self.path, {},
+                self.scratch_root, self.uid, self.gid, self.cpus, request_doc,
+                deadline=deadline, clock=clock, binds=binds, file_bytes=file_bytes,
+                started=started, extra=(supervise.DIAGNOSTIC_DIRECTORY,))
+        finally:
+            self.active = None
         problems = []
         if not contained.removed:
             problems.append(contained.removal)

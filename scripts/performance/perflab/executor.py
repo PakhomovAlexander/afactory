@@ -11,9 +11,10 @@ import signal
 import stat
 import subprocess
 import time
+import types
 
 from . import (admission, archive, budget, builds, calibration, compare, contracts, diagnostics,
-               gitrefs, history, host, hostlock, hostprep, planning, report, runner,
+               gitrefs, history, host, hostlock, hostobserver, hostprep, planning, report, runner,
                telemetrybuild, telemetrylab, tomlfile)
 from .values import ContractError, add_note, canonical_digest, require, sha256_bytes
 
@@ -50,6 +51,24 @@ def serial_bounds(plan, run_seconds):
             "fitting_shards": fitting, "feasible": needed <= available}
 
 
+# What a later partition spends before its first shard: verifying the first partition's
+# retained build and evidence, retaining its own sources and preparing its scratch.
+REUSE_SECONDS = 600
+
+
+def available_seconds(plan, run_seconds):
+    return min(plan["limits"]["run_total_minutes"] * 60, run_seconds)
+
+
+def partition_seconds(plan, partition):
+    """The worst-case serial wall of one partition original: its build (the first) or build
+    reuse (later ones), each of its shards' whole sampling windows, and the finish reserve."""
+    limits = plan["limits"]
+    fixed = limits["build_minutes"] * 60 if partition["build_from"] is None else REUSE_SECONDS
+    return (fixed + len(partition["shards"]) * limits["shard_sampling_minutes"] * 60
+            + runner.FINISH_RESERVE_SECONDS)
+
+
 def require_serial(plan, run_seconds):
     bounds = serial_bounds(plan, run_seconds)
     require(bounds["feasible"], "infeasible on the serial local backend: %(shards)d shards of "
@@ -72,15 +91,24 @@ def reachable(path, name):
             % (name, path, os.geteuid()))
 
 
+def observed(config, registry, recipe):
+    """The CPU observer a profile of `recipe` runs with: `host_perf` for a CPU-profile recipe
+    when the executor configures the trusted host observer, None (perf contained) otherwise."""
+    if registry["recipes"][recipe]["kind"] != "cpu_profile":
+        return None
+    return config["diagnostic"]["observer"]
+
+
 def diagnostic_tools(config, registry, recipe, mode, paranoid_path=None):
     """The configured tools a profile's recipe needs, checked before anything is built.
 
     Returns (records, refusal or None). Tools come only from the executor's explicit `perf`
     and `inferno_bin`; nothing is searched for on PATH. A path is not proof the tool runs:
-    the native child run still probes each tool's version and perf's actual capture inside the
-    same contained boundary. What is refused here is only what makes that probe certain to
-    fail: a missing or unexecutable configured tool, or, in the contained mode (whose child
-    holds no capability), a kernel that denies every unprivileged perf event.
+    the native child run still probes each tool's version and perf's actual capture. What is
+    refused here is only what makes that probe certain to fail: a missing or unexecutable
+    configured tool, or, in the contained mode (whose child holds no capability), a kernel that
+    denies every unprivileged perf event. The trusted host observer's capability is not
+    guessed from a sysctl: `observer_capability` records an actual attachment.
     """
     d = config["diagnostic"]
     entry = registry["recipes"][recipe]
@@ -91,7 +119,8 @@ def diagnostic_tools(config, registry, recipe, mode, paranoid_path=None):
                if path is None]
     if missing:
         return records, "recipe %s needs tools this executor cannot run: %s" % (recipe, "; ".join(missing))
-    if "perf" in entry["tools"] and mode == diagnostics.LINUX_CONTAINER:
+    if ("perf" in entry["tools"] and mode == diagnostics.LINUX_CONTAINER
+            and observed(config, registry, recipe) is None):
         paranoid_path = paranoid_path or PERF_PARANOID
         try:
             with open(paranoid_path, "rb") as stream:
@@ -103,6 +132,30 @@ def diagnostic_tools(config, registry, recipe, mode, paranoid_path=None):
                              "contained child, which holds no capability; the executor never "
                              "changes host sysctls or grants capabilities" % paranoid)
     return records, None
+
+
+def observer_capability(config, registry, recipe, workdir, seconds=60, clock=time.monotonic):
+    """The trusted host observer's actual capability, as the executing account under the held
+    machine exclusion, before any build: the configured perf attached by PID to an owned gated
+    process and its samples decoded (`hostobserver.probe`). Returns (record, refusal or None,
+    uncertain). Nothing is checked for a recipe that is not observed on the host."""
+    if observed(config, registry, recipe) is None:
+        return None, None, False
+    d = config["diagnostic"]
+    os.mkdir(workdir, 0o700)
+    try:
+        available, reason, detail = hostobserver.probe(
+            hostobserver.bounded_start(diagnostics.TOOL_ENV, workdir, clock), d["perf"],
+            registry["capture"]["event"], d["frequency_hz"], workdir, clock() + seconds, clock)
+    finally:
+        problems = admission.remove_tree(workdir)
+    uncertain = reason == "cleanup_uncertain" or bool(problems)
+    record = {"name": "host_observer", "state": "available" if available else "unavailable",
+              "detail": (detail if available else "%s: %s" % (reason, detail))[:4096]}
+    refusal = None if available and not problems else (
+        "the trusted host observer cannot record: " + record["detail"]
+        + ("; " + "; ".join(problems) if problems else ""))
+    return record, refusal, uncertain
 
 
 class JournalBusy(ContractError):
@@ -229,6 +282,9 @@ class Journal:
     A directory is the original reservation. Torn directories, pending writes and claims
     are never silently requeued. Capacity refuses new work rather than deleting originals.
     """
+    # The machine lock's directory (tests only); the anchored system lock otherwise.
+    lock_directory = None
+
     def __init__(self, config, readonly=False):
         self.config = contracts.validate_executor(config)
         self.root = config["root"]
@@ -349,6 +405,30 @@ class Journal:
         with timing.enforce("freezing original request"):
             return self._submit(*args, **kwargs)
 
+    def capability(self, config, registry, recipe):
+        """`observer_capability` under the machine's one exclusion, taken for it and settled:
+        a busy machine refuses the check; an unconfirmed end keeps the fence."""
+        try:
+            if self.lock_directory is None:
+                hostlock.read_anchor(required=True)
+            lock = hostlock.MachineLock(self.lock_directory)
+        except hostlock.Refused as refused:
+            if refused.reason == "concurrent_shard":
+                raise JournalBusy("the host observer capability check needs the machine "
+                                  "exclusion, which another experiment holds: %s" % refused)
+            raise ContractError(str(refused))
+        try:
+            lock.guard()
+            record, refusal, uncertain = observer_capability(
+                config, registry, recipe, os.path.join(self.root, "observer-probe"))
+            if uncertain:
+                lock.uncertain = True
+            else:
+                lock.confirm_clean()
+            return record, refusal
+        finally:
+            lock.release()
+
     def preflight(self, work, base, head, key, kind="manual", *, parent=None, **kwargs):
         """Everything a submission checks, as the account that runs it, without reserving an
         original: the `af.perf-executor-preflight/1` document, `ready` or `refused` with the
@@ -370,12 +450,21 @@ class Journal:
                 "tools": checked["tools"]}
 
     def _submit(self, work, base, head, key, kind="manual", *, git=None, installed=ROOT,
-               cohort=None, member=None, parameters=None, parent=None, checked=None):
+               cohort=None, member=None, parameters=None, parent=None, checked=None,
+               config=None, frozen_parent=None, frozen_plan=None, partition=None):
+        """`config` is a comparison lane's derived configuration (its diagnostic recipe);
+        `frozen_parent` is (parent record, plan, verdict bytes) of a comparison's verified
+        aggregate; `frozen_plan` and `partition` make a core original one partition of a
+        comparison's frozen plan."""
         require(work in ("core", "telemetry", "profile"), "unknown experiment kind")
         require(parent is None or work == "profile", "only a profile names a parent comparison")
+        require(frozen_parent is None or (work == "profile" and parent is None),
+                "a comparison's aggregate parent is a profile's only parent")
+        require((frozen_plan is None) == (partition is None) and (partition is None
+                or work == "core"), "only a core partition carries a comparison's frozen plan")
         timing = budget.Budget(time.monotonic() + self.config["cycle_seconds"], time.monotonic, 0)
         git = git or source_repository(self.config, timing)
-        c = self.config
+        c = contracts.validate_executor(config) if config is not None else self.config
         control = git.resolve(c["control_sha"], "installed control")
         require(control == c["control_sha"], "control must be an exact full SHA")
         trusted = git.exact_ref(c["trusted_ref"], "reviewed main")
@@ -388,9 +477,12 @@ class Journal:
             original = self.request(ident)
             require(original["sources"] == sources and original["submission"] == submission
                     and original["work"] == work, "original submission key was reused for another source")
-            require(original["parent"] is None if parent is None
-                    else (original["parent"] or {}).get("request_id") == parent,
+            wanted = parent if frozen_parent is None else frozen_parent[0]["request_id"]
+            require(original["parent"] is None if wanted is None
+                    else (original["parent"] or {}).get("request_id") == wanted,
                     "original submission key was reused for another parent comparison")
+            require(original["partition"] == partition,
+                    "original submission key was reused for another comparison partition")
             return original
         require(ident not in self.names(), "the submission key already names an original")
         require(len(self.names()) < c["max_requests"], "original journal is full")
@@ -422,6 +514,8 @@ class Journal:
         elif kind == "calibration":
             raise ContractError("calibration submissions need their immutable declaration")
         plan = parent_record = verdict_bytes = None
+        if partition is not None:
+            plan = frozen_plan
         if work == "profile" and c["backend"] == "local":
             d = c["diagnostic"]
             suite = planning.read_suite(git, control)
@@ -434,7 +528,15 @@ class Journal:
                 checked["tools"] = [{"name": r["name"], "state": r["state"], "detail": r["detail"]}
                                     for r in records]
             require(refusal is None, "profile refused before any build: " + str(refusal))
-            if parent is not None:
+            if checked is not None and observed(c, registry, d["recipe"]) is not None:
+                # The actual attachment, not a path or sysctl guess, before anything is built.
+                record, refusal = self.capability(c, registry, d["recipe"])
+                checked["tools"].append(record)
+                require(refusal is None, "profile refused before any build: " + str(refusal))
+            if frozen_parent is not None:
+                require(not d["cases"], "a parent-selected profile names no diagnostic.cases")
+                parent_record, plan, verdict_bytes = frozen_parent
+            elif parent is not None:
                 require(not d["cases"], "a parent-selected profile names no diagnostic.cases")
                 # Only a verified completed local core original selects; its retained plan
                 # and verdict are this profile's exact parent identity.
@@ -473,6 +575,15 @@ class Journal:
                 if checked is not None:
                     checked["serial"] = serial_bounds(plan, c["run_seconds"])
                 require_serial(plan, c["run_seconds"])
+        elif work == "core" and partition is not None:
+            require(c["backend"] == "local" and cohort is None,
+                    "a comparison partition is a local, non-calibration core original")
+            require(plan["run_id"] == "local_" + partition["comparison_id"][4:]
+                    and plan["resolved"] == sources
+                    and set(partition["shards"]) <= set(s["index"] for s in plan["shards"]),
+                    "a partition executes shards of its comparison's frozen plan")
+            require(partition_seconds(plan, partition) <= available_seconds(plan, c["run_seconds"]),
+                    "the partition does not fit one bounded local original")
         elif work == "telemetry":
             registry = telemetrylab.load_registry(installed)[0]
             t = c["telemetry"]
@@ -485,7 +596,7 @@ class Journal:
             "producer_digest": produced, "plan_sha256": None if plan is None else sha256_bytes(contracts.write_bytes(plan, "run")),
             "cohort_digest": None if cohort is None else canonical_digest(cohort), "member_id": member,
             "parameters_sha256": None if parameters is None else sha256_bytes(contracts.write_bytes(parameters, "calibration-parameters")),
-            "parent": parent_record}
+            "parent": parent_record, "partition": partition}
         contracts.CONTRACTS["executor-request"][2](request, "request")
         self.capacity(16 * 1024 * 1024)
         if checked is not None:
@@ -735,23 +846,49 @@ def execute_local(config, request, path, lease, installed=ROOT):
             authority = request["sources"]["authority_sha"]
             registry = diagnostics.load_bytes(git.read_file(authority, diagnostics.REGISTRY_PATH),
                 diagnostics.REGISTRY_PATH, planning.read_suite(git, authority).doc)
-            _, refusal = diagnostic_tools(config, registry, config["diagnostic"]["recipe"],
-                                          diagnostics.LINUX_CONTAINER)
+            recipe = config["diagnostic"]["recipe"]
+            _, refusal = diagnostic_tools(config, registry, recipe, diagnostics.LINUX_CONTAINER)
+            if refusal is None:
+                # The trusted host observer's actual attachment, under this held exclusion.
+                _, refusal, uncertain = observer_capability(
+                    config, registry, recipe, os.path.join(path, "observer-probe"),
+                    clock=time.monotonic)
+                if uncertain:
+                    lease.uncertain = True
+                    raise ContractError("host observer capability cleanup is uncertain: "
+                                        + str(refusal))
             if refusal is not None:
                 return {"status": "failed", "measurement_status": "unavailable",
                         "evidence": file_manifest(path, EVIDENCE_PREFIXES, terminal),
                         "actions": None, "detail": ("profile refused before any build: "
                                                     + refusal)[:4096]}
-        build = builds.Builder(owner, plan, None, bounded_container=True,
-                               zigbuild_bin=config["zigbuild_bin"], deadline_unix_ms=deadline_ms)
-        built = build.build()
-        require(built["cleanup"]["status"] == "removed", "core build cleanup unconfirmed")
+        partition = request["partition"]
+        if partition is not None and partition["build_from"] is not None:
+            # A later partition runs on the first partition's verified, immutable build: the
+            # one build every shard bundle of the comparison binds. Nothing is rebuilt.
+            try:
+                build_dir, builds_bytes = partition_build(config, request, installed)
+            except (ContractError, OSError) as error:
+                return {"status": "failed", "measurement_status": "unavailable",
+                        "evidence": file_manifest(path, EVIDENCE_PREFIXES, terminal),
+                        "actions": None, "detail": ("partition refused before any launch: the "
+                                                    "first partition's build is not admitted: %s"
+                                                    % error)[:4096]}
+            build = types.SimpleNamespace(layout=types.SimpleNamespace(build=build_dir))
+            built = contracts.read_json(builds_bytes, "builds")
+        else:
+            build = builds.Builder(owner, plan, None, bounded_container=True,
+                                   zigbuild_bin=config["zigbuild_bin"], deadline_unix_ms=deadline_ms)
+            built = build.build()
+            require(built["cleanup"]["status"] == "removed", "core build cleanup unconfirmed")
         with timing.enforce("preparing local sample scratch"):
             hostprep.prepare(scratch_image, scratch, plan["profile"]["environment"]["scratch_limit_bytes"],
                              host=preparation_host)
         if work == "core":
             runner.prepare_run_dir(run, contracts.write_bytes(plan, "run"), contracts.write_bytes(built, "builds"))
             for shard in plan["shards"]:
+                if partition is not None and shard["index"] not in partition["shards"]:
+                    continue
                 try:
                     doc = runner.run_shard(runner.Options(
                         plan=os.path.join(path, "plan.json"), build=build.layout.build,
@@ -769,17 +906,22 @@ def execute_local(config, request, path, lease, installed=ROOT):
             with terminal.enforce("rendering and archiving local measurement"):
                 evaluation = compare.evaluate(run)
                 report.write(run, os.path.join(path, "report"))
-                archive_root = os.path.join(config["root"], "core-archive")
-                if not os.path.exists(archive_root):
-                    archive.Archive.create(archive_root, config["archive_bytes"])
-                with archive.Archive(archive_root) as store:
-                    store.import_run(run)
-                    if request["cohort_digest"]:
-                        store.pin(plan["run_id"], "active_cohort", "Local calibration original")
-                    store.retain()
-                history_output = os.path.join(path, "history")
-                history.write([archive_root], history_output)
-                measurement = evaluation.verdict["aggregate"]["result"]
+                if partition is not None:
+                    # A partition's shards are judged only in its comparison's aggregate,
+                    # which the comparison archives once; alone it is never a verdict.
+                    measurement = "partition_measured"
+                else:
+                    archive_root = os.path.join(config["root"], "core-archive")
+                    if not os.path.exists(archive_root):
+                        archive.Archive.create(archive_root, config["archive_bytes"])
+                    with archive.Archive(archive_root) as store:
+                        store.import_run(run)
+                        if request["cohort_digest"]:
+                            store.pin(plan["run_id"], "active_cohort", "Local calibration original")
+                        store.retain()
+                    history_output = os.path.join(path, "history")
+                    history.write([archive_root], history_output)
+                    measurement = evaluation.verdict["aggregate"]["result"]
         else:
             d = config["diagnostic"]
             require(timing.left() >= d["total_minutes"] * 60,
@@ -801,7 +943,8 @@ def execute_local(config, request, path, lease, installed=ROOT):
                 diagnostics.Options(plan=os.path.join(path, "plan.json"), cases=d["cases"],
                     verdict=verdict, max_cases=d["max_cases"], perf=d["perf"],
                     inferno_bin=d["inferno_bin"],
-                    recipe=d["recipe"], output=os.path.join(path, "profile"), parent_build=build.layout.build,
+                    recipe=d["recipe"], observer=observed(config, registry, d["recipe"]),
+                    output=os.path.join(path, "profile"), parent_build=build.layout.build,
                     repo=sources, mode=diagnostics.LINUX_CONTAINER, image=config["sample_image"],
                     scratch_fs=scratch, builder=diagnostic_builder, build_image=config["build_image"],
                     duration_seconds=d["duration_seconds"], frequency_hz=d["frequency_hz"],
@@ -861,6 +1004,28 @@ def execute_local(config, request, path, lease, installed=ROOT):
         evidence = file_manifest(path, EVIDENCE_PREFIXES, terminal)
     return {"status": "complete", "measurement_status": measurement, "evidence": evidence,
             "actions": None, "detail": "Advisory local measurement; original evidence retained. No required-check claim."}
+
+
+def partition_build(config, request, installed=ROOT):
+    """(build directory, builds.json bytes) of the first partition a later partition reuses:
+    a completed, offline-verified original of the same comparison and plan, whose build lies in
+    its retained, hash-bound evidence (`sources.git`). Refused otherwise."""
+    partition = request["partition"]
+    with Journal(config, readonly=True) as journal:
+        first, _, _ = verify_original(journal, partition["build_from"], installed)
+        require(first["partition"] is not None
+                and first["partition"]["comparison_id"] == partition["comparison_id"]
+                and first["partition"]["index"] == 0
+                and first["plan_sha256"] == request["plan_sha256"]
+                and first["sources"] == request["sources"],
+                "the reused build belongs to another comparison, plan or source pair")
+        root = journal.path(partition["build_from"])
+    plan = contracts.read_json(read(os.path.join(root, "plan.json")), "run")
+    builds_bytes = read(os.path.join(root, "run", "builds.json"))
+    layout = builds.Layout(os.path.join(root, "sources.git"), plan["run_id"])
+    require(os.path.isdir(layout.build) and not os.path.islink(layout.build),
+            "the first partition retains no build directory")
+    return layout.build, builds_bytes
 
 
 def dispatch_actions(config, request, path, transport=None):
@@ -944,7 +1109,8 @@ def verify_original(journal, ident, installed=ROOT):
     if request["work"] == "core":
         plan = contracts.read_json(read(os.path.join(path, "plan.json")), "run")
         require(sha256_bytes(contracts.write_bytes(plan, "run")) == request["plan_sha256"], "original plan changed")
-        require(plan["run_id"] == "local_" + ident[4:]
+        owner = ident if request["partition"] is None else request["partition"]["comparison_id"]
+        require(plan["run_id"] == "local_" + owner[4:]
                 and plan["profile"]["environment"]["runner"] == "dedicated",
                 "hosted evidence cannot be reclassified as a local original")
         cohort = (contracts.read_json(read(os.path.join(path, "cohort.json")), "local-cohort-declaration")

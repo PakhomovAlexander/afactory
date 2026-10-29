@@ -798,6 +798,14 @@ class Journal(ExecutorFixture):
             borrowed.append(machine_lease)
             options.contained_host = lambda *a: (options.scratch_fs, [0, 1], "synthetic runtime")
             return native(git, options, machine_lease=machine_lease)
+        # Tool checks only before the first build (the executor's own pre-build check): none
+        # after the diagnostic build's container removal became uncertain.
+        probed = []
+        real_tools = diagnostics.probe_tools
+
+        def checked_tools(*args, **kwargs):
+            probed.append(len(calls))
+            return real_tools(*args, **kwargs)
         with executor.Journal(self.c) as j:
             request = self.submit(j, "profile", "uncertain-profile")
             path = j.path(request["request_id"])
@@ -805,14 +813,14 @@ class Journal(ExecutorFixture):
                     mock.patch.object(executor.hostprep, "prepare", prepare), \
                     mock.patch.object(executor.hostprep, "cleanup") as cleanup, \
                     mock.patch.object(diagnostics, "run_profile", profile), \
-                    mock.patch.object(diagnostics, "probe_tools") as tools:
+                    mock.patch.object(diagnostics, "probe_tools", checked_tools):
                 with self.assertRaises(diagnostics.Unavailable) as caught:
                     j.cycle(lock_directory=self.locks)
             self.assertEqual(caught.exception.reason, "build_container_unconfirmed")
             self.assertFalse(caught.exception.cleanup_confirmed)
             self.assertTrue(borrowed[0].uncertain)
             cleanup.assert_not_called()
-            tools.assert_not_called()
+            self.assertEqual(probed, [0], "no tool is probed after a build began")
             self.assertEqual(calls, ["build", "build"])
             self.assertEqual(j.state(request["request_id"])["state"], "uncertain")
             self.assertIn(b"af-perf-probe-", read(os.path.join(path, "profile/cleanup-uncertain.txt")))

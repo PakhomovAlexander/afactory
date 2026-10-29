@@ -2633,6 +2633,83 @@
       "valid": false,
       "error": "a comparison is complete only when",
       "shape": false
+    },
+    {
+      "path": "host-observer/valid-attached.json",
+      "contract": "host-observer",
+      "valid": true
+    },
+    {
+      "path": "host-observer/invalid-attached-without-target.json",
+      "contract": "host-observer",
+      "valid": false,
+      "error": "an attachment names its frozen target",
+      "shape": false
+    },
+    {
+      "path": "comparison/valid-release.json",
+      "contract": "comparison",
+      "valid": true
+    },
+    {
+      "path": "comparison/invalid-uncovered-shard.json",
+      "contract": "comparison",
+      "valid": false,
+      "error": "cover every shard of its plan exactly once",
+      "shape": false
+    },
+    {
+      "path": "comparison-aggregate/valid-incomplete.json",
+      "contract": "comparison-aggregate",
+      "valid": true
+    },
+    {
+      "path": "comparison-aggregate/invalid-missing-partition-passes.json",
+      "contract": "comparison-aggregate",
+      "valid": false,
+      "error": "a missing partition never passes",
+      "shape": false
+    },
+    {
+      "path": "comparison-report/valid-running.json",
+      "contract": "comparison-report",
+      "valid": true
+    },
+    {
+      "path": "comparison-report/invalid-claimed-complete.json",
+      "contract": "comparison-report",
+      "valid": false,
+      "error": "a comparison is complete only when",
+      "shape": false
+    },
+    {
+      "path": "comparison-export/valid-bundle.json",
+      "contract": "comparison-export",
+      "valid": true
+    },
+    {
+      "path": "comparison-export/invalid-version.json",
+      "contract": "comparison-export",
+      "valid": false,
+      "error": "expected af.perf-comparison-export/1",
+      "shape": true
+    },
+    {
+      "path": "comparison-preflight/valid-refused.json",
+      "contract": "comparison-preflight",
+      "valid": true
+    },
+    {
+      "path": "comparison-preflight/valid-ready.json",
+      "contract": "comparison-preflight",
+      "valid": true
+    },
+    {
+      "path": "comparison-preflight/invalid-refused-with-declaration.json",
+      "contract": "comparison-preflight",
+      "valid": false,
+      "error": "a refusal carries its reason",
+      "shape": false
     }
   ]
 }

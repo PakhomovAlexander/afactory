@@ -12,8 +12,24 @@
 - A profile with `diagnostic.cases = []` diagnoses the regressions of a verified parent core
   original (`submit --work profile --parent REQUEST_ID`), bound to its exact plan and verdict
   (`af.perf-executor-request/2`); `diagnostic.perf` and `diagnostic.inferno_bin`
-  (`af.perf-executor/3`) reach the native CPU capture, and missing tools or a kernel that denies
-  every unprivileged perf event refuse the profile before any build.
+  (`af.perf-executor/3`) reach the native CPU capture, and missing tools refuse the profile
+  before any build.
+- `diagnostic.observer = "host_perf"` records a contained CPU profile with a trusted host
+  observer: the operator's perf runs on the host under the authority supervisor, attached by
+  frozen PID and start time to the owned container's gated process and acknowledged before the
+  gate lets the command execute, so a millisecond CLI command is recorded whole and no Docker
+  client time is attributed to AF; the candidate keeps its unprivileged container and never
+  sees perf. Each recording keeps `af.perf-host-observer/1`, and the capability is checked by
+  an actual attachment before any build, never from `perf_event_paranoid`.
+- `cli.py executor comparison-preflight|comparison-launch|comparison-run|comparison-advance|
+  comparison-status|comparison-report|comparison-export|comparison-verify` run one durable full
+  release comparison (`af.perf-comparison/1`): the whole core family's frozen plan partitioned
+  into sequential bounded core originals (later ones reuse the first one's verified build), the
+  telemetry original, and trace and CPU profile lanes on the recipes of the plan's target,
+  selected by the aggregate verdict (`af.perf-comparison-aggregate/1`). The report
+  (`af.perf-comparison-report/1`) keeps completeness, verification, the verdict and calibration
+  eligibility apart; refusals are retained; the export is a self-contained bundle with a hash
+  manifest (`af.perf-comparison-export/1`) that `comparison-verify` checks after copying.
 - The telemetry overhead and invocation-cost drain latency now runs from the harness's last
   write to the command's observed exit, both read on `CLOCK_MONOTONIC`
   (`harness_last_write_to_command_exit`), never from file timestamps; a negative drain is kept as

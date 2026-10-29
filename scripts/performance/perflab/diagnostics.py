@@ -53,11 +53,12 @@ import lzma
 import os
 import socket
 import stat
+import sys
 import time
 from fractions import Fraction
 
 from . import (admission, builds, bundle, clicases, contracts, counters, diagcontracts,
-               flamegraph, hostlock, oracle, perfcapture, phasetrace, render, reproduce, seeds,
+               flamegraph, hostlock, hostobserver, oracle, perfcapture, phasetrace, render, reproduce, seeds,
                stats, supervise, symbolarchive, telemetrydiag, toolrun, tomlfile)
 from . import budget as deadlines
 from . import limits
@@ -90,6 +91,10 @@ BUILD_ID_LIST_BYTES = 256 * 1024
 OVER_ROOM = "evidence_over_room"
 TRUSTED_LOCAL = "trusted_local"
 LINUX_CONTAINER = "linux_container"
+# The trusted host CPU observer of a contained run (`hostobserver`): perf on the host,
+# attached by frozen PID to the owned gated process; the candidate stays contained.
+HOST_PERF = "host_perf"
+OBSERVERS = (None, HOST_PERF)
 MODES = (TRUSTED_LOCAL, LINUX_CONTAINER)
 # A CLI command's environment, as a shard's (`runner.CLI_ENVIRONMENT`), with its private
 # HOME, XDG directories and TMPDIR and the case's declared AF settings added.
@@ -407,6 +412,14 @@ class Profile(object):
     entries the probe is judged by; `supervisor` is the verified authority supervisor every
     execution runs under (`toolrun.Supervisor`)."""
 
+    # The host observer (`HOST_PERF`): the authority supervisor on the host that runs the
+    # trusted perf and Inferno tools, the run's host-private work for perf's control FIFOs, and
+    # the container runtime that names each owned container. None runs perf contained.
+    host = None
+    host_work = None
+    docker = "docker"
+    observers = 0
+
     def __init__(self, output, parent_plan, plan, registry, registry_sha256, recipe_id,
                  selection, cases, authority_doc, golden, probes, parent_probes, tools,
                  budget, reproduction, builds_sha256=None, host_os=None, omissions=(),
@@ -473,6 +486,59 @@ class Profile(object):
         self.frequency = diagnostic["frequency_hz"]
         self.duration_ms = diagnostic["duration_ms"]
         self.event = capture["event"]
+
+    def trusted_argv(self, argv):
+        """Whether `argv` runs a configured trusted host tool (perf or Inferno, or the one
+        script loop of perf), which the host observer mode runs on the host, never bound into a
+        candidate container."""
+        trusted = set(entry[1] for name, entry in self.tools.items()
+                      if entry[1] is not None and (name == "perf" or name.startswith("inferno")))
+        return bool(argv) and (argv[0] in trusted or (
+            argv[0] == toolrun.SHELL and len(argv) > 3 and argv[3] in trusted
+            and not hostobserver.is_gated(argv)))
+
+    def observer(self, staged, unwind, room, gate_root, whole):
+        """A host observer of the next contained run: its gate FIFO below `gate_root` (bound
+        writable into the container), its control FIFOs in the host-private work, its
+        recording at `staged`."""
+        self.observers += 1
+        tag = "%04d-%s" % (self.observers, os.urandom(4).hex())
+        control = os.path.join(self.host_work, "observer", tag)
+        os.makedirs(control, 0o700)
+        gate = os.path.join(gate_root, "gate-" + tag)
+        supervisor = self.supervisor
+        docker = self.docker
+
+        def container(deadline=self.budget.deadline, clock=self.clock):
+            name = getattr(supervisor, "active", None)
+            return hostobserver.inspect(docker, name, deadline, clock) if name else None
+        observer = hostobserver.Observer(
+            hostobserver.supervised_start(self.host, TOOL_ENV, control, self.clock),
+            self.tool("perf"), self.event, self.frequency, unwind, staged, control, gate,
+            self.budget.deadline, whole, container=container, file_bytes=room,
+            clock=self.clock)
+        observer.make_gate()
+        return observer
+
+    def settle_observer(self, observer, relative, region, failing=False):
+        """Stop the host observer and keep its `af.perf-host-observer/1` record beside the
+        capture. An observer whose end is unconfirmed is kept for recovery like any uncertain
+        tool (the machine fence stays) and refuses the capture; a failed one refuses it unless
+        the capture is already `failing` for its own reason, which then stands."""
+        try:
+            observer.stop(True)
+        except perfcapture.CaptureError:
+            self.retained.append(observer.control_dir)
+            raise
+        finally:
+            if observer.control_dir not in self.retained:
+                admission.remove_tree(observer.control_dir)
+            doc = observer.document(self.tools["perf"][0]["executable_sha256"], region)
+            self.write(relative + "/observer-%s.json" % os.path.basename(observer.gate)[5:],
+                       contracts.write_bytes(doc, "host-observer"))
+        if observer.failure() is not None and not failing:
+            raise perfcapture.CaptureError("observer_failed", "host perf: "
+                                           + observer.failure())
 
     # Bookkeeping -------------------------------------------------------------------------
 
@@ -587,28 +653,51 @@ class Profile(object):
                       key=lambda item: item["path"])
 
     def tool_run(self, argv, timeout, cap, cwd, env=None, stdin=b"", stdout_path=None,
-                 file_bytes=None, reads=(), writes=(), setup=None, patterns=(), selectors=()):
+                 file_bytes=None, reads=(), writes=(), setup=None, patterns=(), selectors=(),
+                 observe=None):
         """One supervised run of `argv`; a contained one binds the executable and `reads`
-        read-only and `writes` writable, and nothing else (ADR-0176)."""
+        read-only and `writes` writable, and nothing else (ADR-0176). Under the host observer a
+        trusted tool runs on the host under the same authority supervisor and binds nothing.
+        `observe(running)` is called once the run started (the host observer's attachment)."""
         self.halted(os.path.basename(argv[0]))
         if stdout_path is not None:
             writes = tuple(writes) + (os.path.dirname(stdout_path),)
-        # The image's own interpreter is the image's: a host file is never bound over it.
-        program = () if self.contained() and argv[0] == clicases.CONTAINER_PYTHON else (argv[0],)
-        binds = self.binds(tuple(reads) + program, writes)
+        # The image's own interpreter and shell are the image's: a host file is never bound
+        # over them.
+        program = () if self.contained() and (argv[0] == clicases.CONTAINER_PYTHON
+                                              or hostobserver.is_gated(argv)) else (argv[0],)
+        host = self.host is not None and self.trusted_argv(argv)
+        supervisor = self.host if host else self.supervisor
+        binds = () if host else self.binds(tuple(reads) + program, writes)
         # This shared boundary also owns tools without a Namespace (decoders, renderers,
         # build-id readers). Until a result confirms cleanup, every writable path stays.
         result = LAUNCHING
         error = None
         try:
-            result = toolrun.run(self.supervisor, argv, env or TOOL_ENV, timeout, cap, stdin=stdin,
-                           cwd=cwd, deadline=self.budget.deadline, clock=self.clock,
-                           stdout_path=stdout_path, file_bytes=file_bytes,
-                           watch=self.over_room,
-                           binds=binds, setup=setup,
-                           patterns=patterns, selectors=selectors)
+            if observe is None:
+                result = toolrun.run(supervisor, argv, env or TOOL_ENV, timeout, cap,
+                               stdin=stdin, cwd=cwd, deadline=self.budget.deadline,
+                               clock=self.clock, stdout_path=stdout_path,
+                               file_bytes=file_bytes, watch=self.over_room, binds=binds,
+                               setup=setup, patterns=patterns, selectors=selectors)
+            else:
+                running = toolrun.start(supervisor, argv, env or TOOL_ENV, timeout, cap,
+                               stdin=stdin, cwd=cwd, deadline=self.budget.deadline,
+                               clock=self.clock, stdout_path=stdout_path,
+                               file_bytes=file_bytes, watch=self.over_room, binds=binds,
+                               setup=setup, patterns=patterns, selectors=selectors)
+                if isinstance(running, toolrun.Result):
+                    result = running
+                else:
+                    try:
+                        observe(running)
+                    except BaseException as failure:
+                        # Cancelled through its supervisor; its end is still settled.
+                        error = failure
+                        running.cancel()
+                    result = running.wait()
         except BaseException as failure:
-            error = failure
+            error = error or failure
         if _uncertain(result):
             recovery = (cwd, self.work, self.stage, os.path.join(self.output, WORK_DIR))
             if setup is not None:
@@ -830,7 +919,7 @@ class Profile(object):
             self.copy_seed(side, case, seed_copy)
 
     def bracketed(self, side, case, argv_for, on_begin, on_end, capture_seconds, repeat=True,
-                  messages=None, file_bytes=None, reads=(), writes=()):
+                  messages=None, file_bytes=None, reads=(), writes=(), after_start=None):
         """One recording under the region handshake, its repetitions fresh executions on fresh
         state while the capture's duration, the repetition cap, the supervised window and the
         budgets allow; (Bracketed, judged). Each repetition's message is judged as it arrives
@@ -883,8 +972,11 @@ class Profile(object):
                     min(self.budget.tool_seconds, toolrun.TIMEOUT_MS_MAX / 1000.0),
                     on_next=on_next if repeat else None, file_bytes=file_bytes,
                     clock=self.clock, watch=self.over_room,
-                    binds=self.binds(tuple(reads) + (argv[0], self.probes[side][0]),
-                                     tuple(writes) + (namespace.path,)))
+                    binds=self.binds(tuple(reads) + ((self.probes[side][0],)
+                                                     if hostobserver.is_gated(argv)
+                                                     else (argv[0], self.probes[side][0])),
+                                     tuple(writes) + (namespace.path,)),
+                    after_start=after_start)
             except perfcapture.CaptureError as error:
                 uncertain = error.reason == "cleanup_uncertain"
                 raise
@@ -940,10 +1032,20 @@ class Profile(object):
             room = self.budget.room()
 
             def argv_for(fifo):
+                if self.host is not None:
+                    # The host observer attaches to the gated probe; its region switches the
+                    # host recording through the same acknowledged control.
+                    holder["observer"] = self.observer(staged, unwind, room, fifo, False)
+                    holder["control"] = holder["observer"]
+                    return hostobserver.gated([self.probes[side][0]], holder["observer"].gate)
                 holder["control"] = perfcapture.PerfControl(fifo)
                 return perfcapture.record_argv(perf, self.event, self.frequency, unwind,
                                                staged, holder["control"],
                                                [self.probes[side][0]], max_bytes=room)
+
+            def after_start(running):
+                if "observer" in holder:
+                    holder["observer"].attach(lambda: not running.done())
 
             try:
                 run, _ = self.bracketed(
@@ -951,9 +1053,13 @@ class Profile(object):
                     lambda deadline: holder["control"].send(b"enable\n", deadline),
                     lambda deadline: holder["control"].send(b"disable\n", deadline),
                     self.duration_ms / 1000.0, messages=relative + "/messages.jsonl",
-                    file_bytes=room, writes=(os.path.dirname(staged),))
+                    file_bytes=room, writes=(os.path.dirname(staged),),
+                    after_start=after_start)
             finally:
-                if "control" in holder:
+                if "observer" in holder:
+                    self.settle_observer(holder["observer"], relative, "acknowledged_region",
+                                         failing=sys.exc_info()[0] is not None)
+                elif "control" in holder:
                     holder["control"].close()
             region = run.region_ms
             self.settle("the %s recording of %s" % (side, case["instance_id"]))
@@ -1061,19 +1167,39 @@ class Profile(object):
                 name = "rep-%04d.data" % (len(names) + 1)
                 staged = self.produced(relative + "/" + name)
                 room = self.budget.room()
+                observer = observe = None
+                writes = (os.path.dirname(staged),)
 
                 def wrap(argv, staged=staged, room=room):
                     return perfcapture.whole_argv(perf, self.event, self.frequency, unwind,
                                                   staged, argv, max_bytes=room)
+                if self.host is not None:
+                    # The trusted host perf records the whole command, attached to the owned
+                    # gated process before the gate lets it execute (`hostobserver`).
+                    # The gate lives in the run's own work, bound writable, never staged
+                    # evidence: a FIFO is not evidence.
+                    gates = os.path.join(self.work, "gates")
+                    os.makedirs(gates, 0o700, exist_ok=True)
+                    observer = self.observer(staged, unwind, room, gates, True)
+                    writes = (gates,)
+
+                    def wrap(argv, gate=observer.gate):
+                        return hostobserver.gated(argv, gate)
+
+                    def observe(running, observer=observer):
+                        observer.attach(lambda: not running.done())
 
                 started = self.clock()
                 try:
                     result, value, _ = self.cli_run(
                         side, case, self.afs[side][0], wrap=wrap, file_bytes=room,
-                        writes=(os.path.dirname(staged),),
+                        writes=writes, observe=observe,
                         what="repetition %d of the recorded command" % (len(names) + 1))
                 finally:
                     wall += self.clock() - started
+                    if observer is not None:
+                        self.settle_observer(observer, relative, "whole_command",
+                                             failing=sys.exc_info()[0] is not None)
                     self.collect(relative)
                 self.settle("repetition %d of %s %s" % (len(names) + 1, case["instance_id"],
                                                         side))
@@ -1414,7 +1540,7 @@ class Profile(object):
         return environment
 
     def cli_run(self, side, case, binary, wrap=None, writes=(), file_bytes=None, trace=False,
-                what="the CLI command", telemetry=None, after=None):
+                what="the CLI command", telemetry=None, after=None, observe=None):
         """One supervised execution of the case's command by the AF `binary` of `side`, in a new
         private namespace that is its HOME, XDG directories and TMPDIR, after the command's
         declared fixture setup; its seed, if it reads one, is that side's own, admitted and
@@ -1466,7 +1592,7 @@ class Profile(object):
                 clicases.expand(entry["cwd"], values), env=environment, setup=setup,
                 patterns=clicases.patterns(entry), selectors=clicases.selectors(entry),
                 file_bytes=file_bytes, reads=(binary, probe, self.cli.fixtures),
-                writes=(namespace.path,) + tuple(writes))
+                writes=(namespace.path,) + tuple(writes), observe=observe)
             if trace and not _uncertain(result):
                 # A trace whose bytes left the evidence over its room is that reason whether the
                 # watch cancelled the command while it was live or it finished first: settled
@@ -2321,6 +2447,9 @@ class Options(object):
         # The explicitly selected telemetry level of each eligible CLI case's telemetry capture
         # (`spans` or `content`), or None for none (ADR-0214).
         self.telemetry = None
+        # The CPU observer of a contained run: None runs perf inside the container, `host_perf`
+        # the trusted host observer (`hostobserver`), selected explicitly, never implied.
+        self.observer = None
         for key, value in values.items():
             require(hasattr(self, key), "unknown profile option " + key)
             setattr(self, key, value)
@@ -2595,11 +2724,38 @@ def _run_locked(git, options, authority_factory, parent, plan, registry, raw, en
         # A contained version or capability check sees its executable and its own directory.
         return ((path, False), (checks, True)) if contained is not None else ()
 
-    tools = probe_tools(registry, configured, host, entry["tools"], supervised,
-                        budget.deadline, cwd=checks, binds=binds)
+    observing = options.observer == HOST_PERF
+    trusted = None
+    if observing:
+        # The trusted tools run on the host under the same authority supervisor; perf is never
+        # bound into a candidate container. Only a contained CPU profile is observed so.
+        require(contained is not None and entry["kind"] == "cpu_profile",
+                "the host observer records a contained CPU profile; recipe %s is a %s recipe "
+                "in %s mode" % (options.recipe, entry["kind"], mode))
+        if supervisor is not None:
+            trusted = toolrun.Supervisor(supervisor[0])
+    tools = probe_tools(registry, configured, host, entry["tools"],
+                        trusted if observing else supervised, budget.deadline, cwd=checks,
+                        binds=None if observing else binds)
     if "perf" in tools and tools["perf"][1] is not None:
         if supervised is None:
             tools["perf"] = (tools["perf"][0], None)
+        elif observing:
+            # The actual capability: the host perf attached by PID to an owned gated process
+            # and its samples decoded, not a path or a sysctl value.
+            available, reason, detail = hostobserver.probe(
+                hostobserver.supervised_start(trusted, TOOL_ENV, checks, budget.clock),
+                tools["perf"][1], registry["capture"]["event"], frequency, checks,
+                min(budget.deadline, budget.clock() + budget.tool_seconds), budget.clock)
+            if reason == "cleanup_uncertain":
+                raise Unavailable(reason, "host observer capability: " + detail,
+                                  cleanup_confirmed=False)
+            tools["perf"][0]["detail"] = ("host observer capability: " + detail)[:4096]
+            if not available:
+                tools["perf"] = (tools["perf"][0], None)
+                omissions.append({"kind": "cpu_profile", "instance_id": None, "side": None,
+                                  "reason": reason, "detail": detail[:4096],
+                                  "reproduction": reproduction(None)})
         else:
             available, reason, detail, _ = perfcapture.probe_capability(
                 supervised, tools["perf"][1], registry["capture"]["event"], frequency, checks,
@@ -2634,6 +2790,10 @@ def _run_locked(git, options, authority_factory, parent, plan, registry, raw, en
                       reproduction, builds_sha, host, omissions, supervisor=supervised,
                       execution=execution, cli=cli, afs=afs, parent_afs=parent_afs, work=work,
                       telemetry=options.telemetry)
+    if observing:
+        profile.host = trusted
+        profile.host_work = host_work
+        profile.docker = options.docker
     result = profile.run()
     finish(output, result, profile.trace_docs, budget)
     actionable = [item for item in result["omissions"] if item["reproduction"] is not None]

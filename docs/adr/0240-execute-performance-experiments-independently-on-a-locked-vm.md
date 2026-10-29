@@ -92,3 +92,17 @@ lock. A run that fits may still stop incomplete. Each telemetry side is measured
 contract its release accepts, and drain latency is read from two `CLOCK_MONOTONIC` readings.
 A 10,000-event seed writer prepares its Store in a bounded tmpfs and publishes it flushed.
 The [operator guide](../performance-local-executor.md) gives the commands.
+
+**Amended 2026-10-30.** A full release comparison is one durable native lifecycle: its
+declaration (`af.perf-comparison/1`) freezes the source pair, one plan of the whole core family,
+the serial partition of that plan's shards into sequential core originals that each keep the
+unchanged windows, sentinels and run deadline (later ones reuse the first one's verified
+immutable build), the telemetry original and the trace and CPU profile lanes on the recipes of
+the plan's target. Once every partition ends, one aggregate evaluates the declared shards of
+the verified partitions over the whole denominator, and its verdict selects what the profiles
+diagnose. The report keeps completeness, verification, verdict and calibration eligibility
+apart, and an exported bundle verifies after copying. A contained CPU profile may be recorded
+by a trusted host observer: perf on the host, under the authority supervisor and the machine
+exclusion, attached by frozen PID and start time to the owned container's gated process before
+the gate opens; the candidate's container and privileges are unchanged. This supersedes the
+sentence above that full serial runs may remain incomplete for want of a partition.

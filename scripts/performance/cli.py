@@ -1409,10 +1409,35 @@ def cmd_harness_digest(args):
 
 
 
+def _trusted_pair(git, args):
+    """PR/release metadata is an explicit trusted operator submission. Never read candidate
+    workflows or run hooks on this controller."""
+    base, head = args.base, args.head
+    if args.kind == "pr":
+        parents = git.parents(git.resolve(head, "PR merge"))
+        require(len(parents) == 2 and parents[0] == git.resolve(base, "PR base")
+                and args.pr_head and parents[1] == git.resolve(args.pr_head, "PR head"),
+                "PR submission must bind the exact merge and its ordered parents")
+    elif args.kind == "release":
+        require(args.tag, "release submission needs --tag")
+        tagged, _, _, predecessor = gitrefs.release_baseline(git, args.tag)
+        require(git.resolve(head, "release") == tagged and git.resolve(base, "predecessor") == predecessor,
+                "release submission disagrees with the tag/predecessor rule")
+
+
 def cmd_executor(args):
     """Operator controller; all executable authority comes from this installed checkout."""
-    from perflab import executor, localcalibration
+    from perflab import comparison, executor, localcalibration
     try:
+        if args.operation == "comparison-verify":
+            # A copied bundle verifies on its own: no journal or configuration is read.
+            require(args.bundle, "comparison-verify needs --bundle DIRECTORY")
+            manifest, doc = comparison.verify_export(args.bundle)
+            print(json.dumps({"status": "verified", "comparison_id": doc["comparison_id"],
+                              "comparison": doc["status"], "files": len(manifest["files"])},
+                             sort_keys=True))
+            return 0
+        require(args.config, "executor %s needs --config" % args.operation)
         config = executor.load_config(args.config)
         if args.operation == "cohort-declare":
             require(args.cohort_id and args.start_date and args.output and args.group,
@@ -1424,25 +1449,48 @@ def cmd_executor(args):
             return 0
         # Readers take no journal lock: status, verify and an overview are usable while the
         # controller holding it executes an original.
-        readonly = args.operation in ("status", "verify", "overview")
+        readonly = args.operation in ("status", "verify", "overview", "comparison-status",
+                                      "comparison-report", "comparison-export")
+        if args.operation == "comparison-run":
+            require(args.comparison, "comparison-run needs --comparison CMP_ID")
+            with executor.cancellation():
+                doc, outcomes = comparison.run(
+                    lambda readonly: executor.Journal(config, readonly=readonly),
+                    args.comparison, lambda journal: journal.cycle())
+            print(json.dumps({"cycles": outcomes, "status": doc}, sort_keys=True))
+            # The loop's end is not the comparison's: `comparison-report` judges it.
+            return 0 if doc["status"] != "running" else 4
         with executor.cancellation(), executor.Journal(config, readonly=readonly) as journal:
+            if args.operation in ("comparison-preflight", "comparison-launch"):
+                require(args.base and args.head and args.key,
+                        args.operation + " needs exact --base, --head and --key")
+                _trusted_pair(executor.source_repository(config), args)
+                doc = comparison.preflight(journal, args.base, args.head, args.key, args.kind,
+                                           launch=args.operation == "comparison-launch")
+                _emit(contracts.write_bytes(doc, "comparison-preflight"), None)
+                return 0 if doc["status"] != "refused" else 4
+            elif args.operation.startswith("comparison-"):
+                require(args.comparison, args.operation + " needs --comparison CMP_ID")
+                if args.operation == "comparison-advance":
+                    doc = comparison.advance(journal, args.comparison)
+                elif args.operation == "comparison-status":
+                    doc = comparison.status(journal, args.comparison)
+                elif args.operation == "comparison-report":
+                    require(args.output, "comparison-report needs --output DIRECTORY")
+                    doc = comparison.status(journal, args.comparison,
+                                            verify=executor.verify_original)
+                    comparison.write(doc, args.output, os.path.relpath(
+                        config["root"], os.path.abspath(args.output)))
+                else:
+                    require(args.output, "comparison-export needs --output DIRECTORY")
+                    _, doc = comparison.export(journal, args.comparison, args.output)
+                _emit(contracts.write_bytes(doc, "comparison-report"), None)
+                return 0 if doc["status"] == "complete" else 4
             if args.operation in ("submit", "preflight"):
                 require(args.base and args.head and args.key,
                         args.operation + " needs exact --base, --head and --key")
-                git = executor.source_repository(config)
                 base, head = args.base, args.head
-                # PR/release metadata is an explicit trusted operator submission. Never read
-                # candidate workflows or run hooks on this controller.
-                if args.kind == "pr":
-                    parents = git.parents(git.resolve(head, "PR merge"))
-                    require(len(parents) == 2 and parents[0] == git.resolve(base, "PR base")
-                            and args.pr_head and parents[1] == git.resolve(args.pr_head, "PR head"),
-                            "PR submission must bind the exact merge and its ordered parents")
-                elif args.kind == "release":
-                    require(args.tag, "release submission needs --tag")
-                    tagged, _, _, predecessor = gitrefs.release_baseline(git, args.tag)
-                    require(git.resolve(head, "release") == tagged and git.resolve(base, "predecessor") == predecessor,
-                            "release submission disagrees with the tag/predecessor rule")
+                _trusted_pair(executor.source_repository(config), args)
                 if args.operation == "preflight":
                     # Every submission check as this account, nothing reserved: a refusal
                     # prints its exact reason and exits 4 before any claim or build.
@@ -1510,14 +1558,17 @@ def parser():
     commands.required = True
 
     execution = commands.add_parser("executor", help="independent local or GitHub performance backend")
-    execution.add_argument("--config", required=True)
+    execution.add_argument("--config", help="the operator configuration; every operation but "
+                           "comparison-verify, which reads only the copied bundle, needs it")
     execution.add_argument("operation", choices=("submit", "preflight", "cycle", "service",
-        "status", "verify", "overview",
+        "status", "verify", "overview", "comparison-preflight", "comparison-launch",
+        "comparison-advance", "comparison-run", "comparison-status", "comparison-report",
+        "comparison-export", "comparison-verify",
         "cohort-declare", "calibration-dispatch", "calibration-prepare", "readiness"))
     execution.add_argument("--work", choices=("core", "telemetry", "profile"), default="core")
     execution.add_argument("--kind", choices=("manual", "pr", "release"), default="manual")
     for option in ("base", "head", "key", "pr-head", "tag", "request-id", "cohort", "parameters",
-                   "cohort-id", "start-date", "output", "parent"):
+                   "cohort-id", "start-date", "output", "parent", "comparison", "bundle"):
         execution.add_argument("--" + option)
     execution.add_argument("--group", nargs=3, action="append")
     execution.add_argument("--member", action="append", help="an original of the overview")

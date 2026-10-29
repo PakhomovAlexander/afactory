@@ -851,6 +851,26 @@
    "size": 15440
   },
   {
+   "path": "fixtures/performance/schema/comparison-aggregate/invalid-missing-partition-passes.json",
+   "sha256": "sha256:3039695e3974c4bf91f7f8834d9355e4980e17fffc916ee31718ac1ac99740e2",
+   "size": 1210
+  },
+  {
+   "path": "fixtures/performance/schema/comparison-aggregate/valid-incomplete.json",
+   "sha256": "sha256:59339bb1c19e288e1efdfb4ca8d6dc30ee4cf03aaa781b14fad3287e08213a5b",
+   "size": 1216
+  },
+  {
+   "path": "fixtures/performance/schema/comparison-export/invalid-version.json",
+   "sha256": "sha256:bd2b4b0a92783b27d46433f15aae1487b985ff956b05aa6719a811678a1f42f4",
+   "size": 649
+  },
+  {
+   "path": "fixtures/performance/schema/comparison-export/valid-bundle.json",
+   "sha256": "sha256:d08afc974f19a015e39ed621640006a4635ac7a64e09ddf74113d44001e808d8",
+   "size": 649
+  },
+  {
    "path": "fixtures/performance/schema/comparison-overview/invalid-claimed-complete.json",
    "sha256": "sha256:7bb158d8f481fd1a55c7433210af18c077788909e2fd5afb5e906d38159630e7",
    "size": 1961
@@ -859,6 +879,41 @@
    "path": "fixtures/performance/schema/comparison-overview/valid-incomplete.json",
    "sha256": "sha256:d247cfb43004d64b2e6c11185431af513d4a5e55ebaf29b4bc7151cfc69a296d",
    "size": 1963
+  },
+  {
+   "path": "fixtures/performance/schema/comparison-preflight/invalid-refused-with-declaration.json",
+   "sha256": "sha256:118da9ad46b17a40a7f60ac6ca2c1f8f9c732685070b9c9c290f5dfe2efcb167",
+   "size": 2611
+  },
+  {
+   "path": "fixtures/performance/schema/comparison-preflight/valid-ready.json",
+   "sha256": "sha256:e326e718cbfb47d4e1ef94d35ad5f9c83b5127a565929e8d10528c683ae4e60a",
+   "size": 2472
+  },
+  {
+   "path": "fixtures/performance/schema/comparison-preflight/valid-refused.json",
+   "sha256": "sha256:ac15995f3217cebfb6e078f4dcd5c3641de4889d3fd56714432ded10ae847897",
+   "size": 508
+  },
+  {
+   "path": "fixtures/performance/schema/comparison-report/invalid-claimed-complete.json",
+   "sha256": "sha256:7dfda9ce2f34dfa75fd7048d82c663681940c901243143bd4166bb8c2caac58c",
+   "size": 2262
+  },
+  {
+   "path": "fixtures/performance/schema/comparison-report/valid-running.json",
+   "sha256": "sha256:2f445f05cbe01923d850301615ba1de0fd8280f1e7ae73cf483bbc85100311e1",
+   "size": 2347
+  },
+  {
+   "path": "fixtures/performance/schema/comparison/invalid-uncovered-shard.json",
+   "sha256": "sha256:099008a615b03eded2b99499d1d8be7b57513a317a6a354c0c9a9e15959ee2b9",
+   "size": 2106
+  },
+  {
+   "path": "fixtures/performance/schema/comparison/valid-release.json",
+   "sha256": "sha256:83637190a71f389a6be1b9747554168852e821a74ae193be60cb765907e8e70e",
+   "size": 2108
   },
   {
    "path": "fixtures/performance/schema/cost/invalid-cache.json",
@@ -957,8 +1012,8 @@
   },
   {
    "path": "fixtures/performance/schema/executor-preflight/valid-ready.json",
-   "sha256": "sha256:216e9ac3d4bf1b556b46a66c6b9c2bfff8c6044a25b48dc978eb7d55bbd1ba48",
-   "size": 1300
+   "sha256": "sha256:91c7b7f83e2702a1acabd188dc8356927b8b577c2f821b0b66d56c00738513ac",
+   "size": 1317
   },
   {
    "path": "fixtures/performance/schema/executor-preflight/valid-refused.json",
@@ -967,13 +1022,13 @@
   },
   {
    "path": "fixtures/performance/schema/executor-request/invalid-version.json",
-   "sha256": "sha256:ea2daa684cd27b653702b6a92c501ab0ae9cb5ca3a643881dbacee8d62eae274",
-   "size": 927
+   "sha256": "sha256:3b50758c7b732ac5e63fa564b5e48288ff87a9a7596eb97056c134e4ccf03f52",
+   "size": 944
   },
   {
    "path": "fixtures/performance/schema/executor-request/valid-synthetic.json",
-   "sha256": "sha256:408c7cedae39b63e7380117532caa01adb552f2a912d2abf734cb600837e4903",
-   "size": 941
+   "sha256": "sha256:1d76ffca2b901bb9135a83a66a4a52de616ed85b6d2d4826b347d811c229e3ca",
+   "size": 958
   },
   {
    "path": "fixtures/performance/schema/executor-result/invalid-version.json",
@@ -1056,9 +1111,19 @@
    "size": 4830
   },
   {
+   "path": "fixtures/performance/schema/host-observer/invalid-attached-without-target.json",
+   "sha256": "sha256:5ad35b73df99c785695ea3804b56bce87a57e895a39addc7d8d7e45909a38cf8",
+   "size": 307
+  },
+  {
+   "path": "fixtures/performance/schema/host-observer/valid-attached.json",
+   "sha256": "sha256:cd6f323af3c92c1f2b15692e32688b4e4e1f0b5688e588b470faf194ca29455a",
+   "size": 537
+  },
+  {
    "path": "fixtures/performance/schema/index.json",
-   "sha256": "sha256:03ffe0387dba7f6fcf27c4ba7c129a31985c4a05f8f47e74d091a372665e8c25",
-   "size": 73094
+   "sha256": "sha256:f141cda9f2ecc325ade63adfad56da6567f201fcde1ec226c09b4020c1d1c950",
+   "size": 75258
   },
   {
    "path": "fixtures/performance/schema/kernel-inventory/invalid-digest.json",
@@ -2437,8 +2502,8 @@
   },
   {
    "path": "scripts/performance/cli.py",
-   "sha256": "sha256:8a7d4920f365623f6db948da9498272f8556edf9a8ea0dbdb9a223868501a896",
-   "size": 121566
+   "sha256": "sha256:fa36da22ce884be5af28d348200748ec4f2e77bb323301711bab4f66d5d0331e",
+   "size": 124973
   },
   {
    "path": "scripts/performance/cohort-dispatch.py",
@@ -2571,6 +2636,11 @@
    "size": 39623
   },
   {
+   "path": "scripts/performance/perflab/comparison.py",
+   "sha256": "sha256:48764a2f4b3e0267c01c6e4cc02694ce4a030738c36783dadffbce5e1044da91",
+   "size": 53535
+  },
+  {
    "path": "scripts/performance/perflab/contracts.py",
    "sha256": "sha256:6b389ab53dedd953064e5ba39e491293e5dea0e74e94d4f5a9ff68c87b8b68e4",
    "size": 310665
@@ -2597,8 +2667,8 @@
   },
   {
    "path": "scripts/performance/perflab/diagnostics.py",
-   "sha256": "sha256:6f71352362a06e55564a106bafdc89f0fc77c5414480b9b0dbd270a62a92e269",
-   "size": 151626
+   "sha256": "sha256:a17a9051b082773ac6c759c797ffce6e214246bbd1def2d1e8a2772f18694390",
+   "size": 161005
   },
   {
    "path": "scripts/performance/perflab/equivalence.py",
@@ -2607,13 +2677,13 @@
   },
   {
    "path": "scripts/performance/perflab/executor.py",
-   "sha256": "sha256:e6ac7f42dbdbd285b3f76189e7210ed3bb610b126b401972fc37d916bb8265e1",
-   "size": 61587
+   "sha256": "sha256:73762df3967a16963d84622964c635ced05fd65456d0e240946941a21a0081c4",
+   "size": 71486
   },
   {
    "path": "scripts/performance/perflab/executorcontracts.py",
-   "sha256": "sha256:fc1a0de41b19385b60f29b1fd7bb1c80131fef36e0d9bb8229e7b49338a03b3e",
-   "size": 20811
+   "sha256": "sha256:150a50fcde00ca65639197d5ef8dd01e7325b53c9b6900d5e97a1d8171fdc0fe",
+   "size": 34187
   },
   {
    "path": "scripts/performance/perflab/flamegraph.py",
@@ -2639,6 +2709,11 @@
    "path": "scripts/performance/perflab/hostlock.py",
    "sha256": "sha256:711d0007ed0dd95087557cd7f64e2af4dce591dab8541327b22c0ae75f18e393",
    "size": 11916
+  },
+  {
+   "path": "scripts/performance/perflab/hostobserver.py",
+   "sha256": "sha256:b5bec86db3ac7b0e6a28132d8e7247a1b74c695cae907ca1edeb72d5df8052c5",
+   "size": 24125
   },
   {
    "path": "scripts/performance/perflab/hostprep.py",
@@ -2687,8 +2762,8 @@
   },
   {
    "path": "scripts/performance/perflab/perfcapture.py",
-   "sha256": "sha256:4fc57e2de08139c8ea3aead1da530c2e98f813eee4f82c50fcaa2694ad9733a2",
-   "size": 35423
+   "sha256": "sha256:8e17a9ce354784b430aebf9ec5cc0dee98c31e63d5a3a94edc4cabcfa4b9e98a",
+   "size": 35666
   },
   {
    "path": "scripts/performance/perflab/phasetrace.py",
@@ -2812,8 +2887,8 @@
   },
   {
    "path": "scripts/performance/perflab/toolrun.py",
-   "sha256": "sha256:d93d840a586d380c92a3f40a45a9981f51e3104c76a584d11bf55c429a3f5aa7",
-   "size": 20529
+   "sha256": "sha256:daf4c608c741a59a49bcc0a1377b65ff14bbbbfa144b88cbe4c00cefd656d79a",
+   "size": 20834
   },
   {
    "path": "scripts/performance/perflab/transport.py",
@@ -2867,8 +2942,8 @@
   },
   {
    "path": "scripts/performance/service/executor.example.toml",
-   "sha256": "sha256:3ee6247bebfce5daeebb33d8676fed927b4add16e8b7baf529f512aa84ceec4e",
-   "size": 2597
+   "sha256": "sha256:d2b28e68b936213d7feeff87990d5255b5a2b13837b968552b9d80a9dbe0efac",
+   "size": 2947
   },
   {
    "path": "scripts/performance/service/telemetry-collector.example.toml",
@@ -3001,6 +3076,11 @@
    "size": 52615
   },
   {
+   "path": "scripts/performance/tests/test_comparison.py",
+   "sha256": "sha256:b700b6a914fc74e4b8877c9aa9577181b92ca6980b7f58f81c361b8672551a6c",
+   "size": 20874
+  },
+  {
    "path": "scripts/performance/tests/test_continuous.py",
    "sha256": "sha256:b30e22f10505f284c2e76f9ed8816cf05586736c06c6b2db518b08d2b2b43310",
    "size": 20213
@@ -3027,8 +3107,8 @@
   },
   {
    "path": "scripts/performance/tests/test_executor.py",
-   "sha256": "sha256:783d1683d31841df865ced883231514034980af00c75240dcef962b9cec4436c",
-   "size": 70492
+   "sha256": "sha256:18e978f6729e1340cbccd136786ba150ffa8dd7aaf14b9f5e35a32ac3d7646da",
+   "size": 70906
   },
   {
    "path": "scripts/performance/tests/test_fixtures.py",
@@ -3044,6 +3124,11 @@
    "path": "scripts/performance/tests/test_hostlock.py",
    "sha256": "sha256:d19774cc0ea8cefc6d6122782ba45fc2d920b884c44919d1fe6f0922f535cfa3",
    "size": 10381
+  },
+  {
+   "path": "scripts/performance/tests/test_hostobserver.py",
+   "sha256": "sha256:c3c49fd1035003260279806f83f57f87e78ad51b96e99034e52371090626bf53",
+   "size": 13849
   },
   {
    "path": "scripts/performance/tests/test_kernelguard.py",
@@ -3241,7 +3326,7 @@
    "size": 6777
   }
  ],
- "harness_digest": "sha256:dadef1ed47707f192f95a62b3d6eeb0c4f94055b5570d40a054bd3dd32f440de",
+ "harness_digest": "sha256:3c4f99e3b0333e9f6c8abc8e2b7c9a1b3ebef8ad7f28dc7026a0868a66778c77",
  "inner_metric": "pending",
  "inner_metric_reason": "the inner wall_ms metric is recorded in every Measurement but no staged objective selects it until the guard's real kernel integration and tampered-candidate tests are accepted on the sealed source and a reviewed human change installs and selects it",
  "objective_metric": "elapsed_ms",
