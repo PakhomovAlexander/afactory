@@ -17,8 +17,13 @@ import xml.etree.ElementTree as ET
 sys.dont_write_bytecode = True
 ROOT = Path(__file__).resolve().parent.parent
 CATALOG = ROOT / '.config/test-classes.json'
+QUARANTINE = ROOT / '.config/test-quarantine.json'
 CLASSES = ('functional', 'e2e', 'uix', 'perf')
 FAST = list(CLASSES[:3])
+# A listed test classifies as this, and no plan selects it (ADR-0264).
+QUARANTINED = 'quarantine'
+QUARANTINE_LIMIT = 20
+QUARANTINE_DAYS = 14
 SCHEMA = 'af.test-plan/2'
 BINDING = 'af.release-tests/2'
 PERF_VARIANTS = (
@@ -27,6 +32,11 @@ PERF_VARIANTS = (
     ('calibration', 'review-pipeline/perf-calibration',
      'binary_id(=review-pipeline::perf_probe) & test(calibration_build)'),
 )
+# What each feature variant's fixed selector reaches: (binary, test name substring). The
+# Makefile's perf-feature-tests runs the same selectors through cargo test.
+FEATURE_SELECTORS = {'trace': ('review-core', 'perf_'),
+                     'calibration': ('review-pipeline::perf_probe', 'calibration_build')}
+FILTER_OPTIONS = ('-E', '--filterset', '--filter-expr')
 
 
 def read(path):
@@ -45,6 +55,109 @@ def catalog():
                       'always_on_scripts', 'exact', 'ignored', 'hosted_checks'} or value['schema'] != 'af.test-catalog/1':
         raise ValueError('unsupported test catalog')
     return value
+
+
+def quarantine_today():
+    """Today's date for the expiry guard; AF_TEST_QUARANTINE_TODAY (YYYY-MM-DD) replaces the clock."""
+    value = os.getenv('AF_TEST_QUARANTINE_TODAY')
+    if value is None:
+        return dt.date.today()
+    try:
+        if re.fullmatch(r'\d{4}-\d{2}-\d{2}', value):
+            return dt.date.fromisoformat(value)
+    except ValueError:
+        pass
+    raise ValueError(f'AF_TEST_QUARANTINE_TODAY={value!r} is not a YYYY-MM-DD date')
+
+
+def quarantine(cat=None, today=None, value=None):
+    """Validate the quarantine file and return its tests: identity -> entry.
+
+    Every refusal names the entry and the fix. The inventory guard runs in partition."""
+    cat = cat or catalog()
+    today = today or quarantine_today()
+    if value is None:
+        value = read(QUARANTINE)
+    where = '.config/test-quarantine.json'
+    if (not isinstance(value, dict) or set(value) != {'schema', 'tests'}
+            or value['schema'] != 'af.test-quarantine/1' or not isinstance(value['tests'], dict)):
+        raise ValueError(f'{where}: unsupported test quarantine; fix: write '
+                         '{"schema": "af.test-quarantine/1", "tests": {...}}')
+    tests = value['tests']
+    if len(tests) > QUARANTINE_LIMIT:
+        raise ValueError(f'{where}: {len(tests)} entries, at most {QUARANTINE_LIMIT}: {sorted(tests)}; '
+                         'fix: fix and remove a quarantined test before adding another')
+
+    def date(identity, entry, field):
+        text = entry.get(field)
+        try:
+            if isinstance(text, str) and re.fullmatch(r'\d{4}-\d{2}-\d{2}', text):
+                return dt.date.fromisoformat(text)
+        except ValueError:
+            pass
+        raise ValueError(f'{where}: {identity}: `{field}` {text!r} is not a YYYY-MM-DD date; '
+                         'fix: write an ISO date')
+
+    for identity, entry in tests.items():
+        def refuse(problem, fix):
+            raise ValueError(f'{where}: {identity}: {problem}; fix: {fix}')
+        if not re.fullmatch(r'[A-Za-z0-9_:./-]+ [A-Za-z0-9_:]+', identity):
+            refuse('not a `<binary_id> <test name>` nextest identity',
+                   'name the test the way .config/test-classes.json `exact` does')
+        binary, name = identity.split(' ')
+        for label, (selected, pattern) in FEATURE_SELECTORS.items():
+            if binary == selected and pattern in name:
+                refuse(f'the {label} feature build\'s fixed selector `{selected}` `{pattern}` runs it, and '
+                       'quarantine covers the default-feature inventory only',
+                       'fix the test, or exclude it from its feature selector by hand')
+        if not isinstance(entry, dict):
+            refuse('entry is not an object', 'write state, since, expires, evidence and optional issue')
+        unknown = sorted(set(entry) - {'state', 'since', 'expires', 'evidence', 'issue'})
+        if unknown:
+            refuse(f'unknown field {unknown}', 'keep only state, since, expires, evidence and issue')
+        missing = sorted({'state', 'since', 'expires', 'evidence'} - set(entry))
+        if missing:
+            refuse(f'missing field {missing}', 'write state, since, expires and evidence')
+        if entry['state'] not in ('quarantined', 'flaky'):
+            refuse(f'state {entry["state"]!r} is neither quarantined nor flaky',
+                   'write "quarantined" or "flaky"')
+        since, expires = date(identity, entry, 'since'), date(identity, entry, 'expires')
+        if not since < expires <= since + dt.timedelta(days=QUARANTINE_DAYS):
+            refuse(f'expires {expires} is not after since {since} and at most {QUARANTINE_DAYS} days after it',
+                   f'set expires within {QUARANTINE_DAYS} days after since')
+        evidence = entry['evidence']
+        if (not isinstance(evidence, list) or not evidence
+                or not all(isinstance(t, str) and re.fullmatch(r'[A-Za-z0-9][A-Za-z0-9_-]{0,127}', t)
+                           for t in evidence)):
+            refuse('evidence is not a non-empty list of af Task IDs',
+                   'list the Tasks whose structured check reports show the test flaky')
+        if 'issue' in entry and (type(entry['issue']) is not int or entry['issue'] < 1):
+            refuse(f'issue {entry["issue"]!r} is not a positive integer', 'write the GitHub issue number')
+        if expires < today:
+            refuse(f'expired on {expires} (today is {today})',
+                   'fix the test and remove the entry, or confirm it again and renew since and expires')
+        if identity in cat['ignored']:
+            refuse('an #[ignore] test cannot be quarantined', 'remove the entry')
+    return tests
+
+
+def quarantine_exclusion(held):
+    """The nextest filter that leaves every quarantined identity out, or None when none is held."""
+    if not held:
+        return None
+    clauses = [f'(binary_id(={binary}) & test(={name}))'
+               for binary, name in sorted(identity.split(' ') for identity in held)]
+    return 'not (' + ' | '.join(clauses) + ')'
+
+
+def gate_arguments(arguments, held):
+    """nextest-gate.py's arguments for the full gate's unplanned run (`make test`): the caller's,
+    plus the quarantine exclusion when an entry is held, so an empty file changes nothing."""
+    if any(a in FILTER_OPTIONS or a.startswith(tuple(o + '=' for o in FILTER_OPTIONS)) for a in arguments):
+        raise ValueError('nextest-gate: the quarantine exclusion is this run\'s only filter; fix: run '
+                         'scripts/nextest-gate.py with an explicit filter instead (make test-repeat)')
+    exclusion = quarantine_exclusion(held)
+    return [*arguments, '-E', exclusion] if exclusion else list(arguments)
 
 
 def schema_documents():
@@ -79,11 +192,21 @@ def schema_documents():
                        'base': text, 'head': text, 'merged_at': text})]}, 'plan': plan})
     receipt = obj({'schema': {'const': 'af.test-class-receipt/2'}, 'plan': plan,
                    'platform': text, 'class': kind, 'status': {'const': 'success'}})
+    day = {'type': 'string', 'pattern': r'^\d{4}-\d{2}-\d{2}$'}
+    held = obj({'state': {'enum': ['quarantined', 'flaky']}, 'since': day, 'expires': day,
+                'evidence': {'type': 'array', 'minItems': 1, 'items': {
+                    'type': 'string', 'pattern': '^[A-Za-z0-9][A-Za-z0-9_-]{0,127}$'}},
+                'issue': {'type': 'integer', 'minimum': 1}}, ['state', 'since', 'expires', 'evidence'])
+    quarantined = obj({'schema': {'const': 'af.test-quarantine/1'},
+                       'tests': {'type': 'object', 'maxProperties': QUARANTINE_LIMIT,
+                                 'propertyNames': {'pattern': '^[A-Za-z0-9_:./-]+ [A-Za-z0-9_:]+$'},
+                                 'additionalProperties': held}})
     return {f'{name}-v{version}.json': {'$schema': 'https://json-schema.org/draft/2020-12/schema',
                                       '$id': f'urn:af:schema:{name}:{version}', **document}
             for name, version, document in [('test-class-catalog', 1, cat), ('test-class-plan', 2, plan),
                                             ('release-test-binding', 2, binding),
-                                            ('test-class-receipt', 2, receipt)]}
+                                            ('test-class-receipt', 2, receipt),
+                                            ('test-quarantine', 1, quarantined)]}
 
 
 def schema_parity(rewrite=False):
@@ -208,9 +331,14 @@ def validate_source_pr(source, sha, version):
         raise ValueError('release PR provenance does not match SHA/version/main')
 
 
-def classify(binary, name, cat=None):
-    """One default per registered binary; optional explicit top-module overrides."""
+def classify(binary, name, cat=None, held=None):
+    """One default per registered binary; optional explicit top-module overrides.
+
+    A quarantined identity (`held`, the quarantine file's tests) wins over every catalog rule."""
     cat = cat or catalog()
+    held = quarantine(cat) if held is None else held
+    if binary + ' ' + name in held:
+        return QUARANTINED
     if binary + ' ' + name in cat['exact']:
         return cat['exact'][binary + ' ' + name]
     if binary in cat['modules']:
@@ -228,8 +356,9 @@ def classify(binary, name, cat=None):
     return matches[0] if matches else cat['binaries'][binary]
 
 
-def partition(inventory, cat=None):
+def partition(inventory, cat=None, held=None):
     cat = cat or catalog()
+    held = quarantine(cat) if held is None else held
     entries = []
     for binary, suite in inventory['rust-suites'].items():
         if binary not in cat['binaries'] and binary not in cat['modules']:
@@ -237,11 +366,14 @@ def partition(inventory, cat=None):
         if suite.get('status') == 'skipped':
             raise ValueError(f'inventory unexpectedly skipped binary {binary}')
         for name, test in suite['testcases'].items():
+            if test['ignored'] and binary + ' ' + name in held:
+                raise ValueError(f'.config/test-quarantine.json: {binary} {name}: an #[ignore] test '
+                                 'cannot be quarantined; fix: remove the entry')
             ignored = cat['ignored'].get(binary + ' ' + name)
             if test['ignored'] != (ignored is not None):
                 raise ValueError(f'ignored-test policy drift: {binary}: {name}')
-            kind = classify(binary, name, cat)
-            if kind not in CLASSES:
+            kind = classify(binary, name, cat, held)
+            if kind not in (*CLASSES, QUARANTINED):
                 raise ValueError(f'invalid class {kind}')
             entries.append({'binary': binary, 'test': name, 'class': kind,
                             'ignored': test['ignored'], 'ignored_policy': ignored})
@@ -250,6 +382,10 @@ def partition(inventory, cat=None):
     identities = {(e['binary'], e['test']) for e in entries}
     if len(identities) != len(entries):
         raise ValueError('duplicate test identities')
+    absent = sorted(set(held) - {b + ' ' + n for b, n in identities})
+    if absent:
+        raise ValueError(f'.config/test-quarantine.json: {absent[0]}: not in the test inventory; '
+                         'fix: correct the identity or remove the entry')
     return entries
 
 
@@ -311,6 +447,13 @@ def audit_source(cat=None):
                     *cat['overrides'].values()]:
         if set(mapping.values()) - set(CLASSES):
             raise ValueError('unknown class in catalog')
+    # The file's guards; each held identity must also resolve to a catalogued class.
+    for identity in quarantine(cat):
+        try:
+            classify(*identity.split(' '), cat, {})
+        except ValueError as error:
+            raise ValueError(f'.config/test-quarantine.json: {identity}: {error}; '
+                             'fix: correct the identity or remove the entry') from None
 
 
 def aggregate(plan, needs):
@@ -447,6 +590,7 @@ def duration(value):
 def report(plan, junit_paths, step_paths=(), inventory=None, provenance=None, replay=False):
     validate_plan(plan)
     cat = catalog()
+    held = quarantine(cat)
     rows = {c: {'selected': c in plan['selected'], 'state': 'NO EVIDENCE' if c in plan['selected'] else 'NOT RUN', 'count': 0,
                 'executed': 0, 'passed': 0, 'failed': 0, 'skipped': 0, 'not_run': None,
                 'test_seconds': None, 'step_seconds': None} for c in CLASSES}
@@ -480,7 +624,9 @@ def report(plan, junit_paths, step_paths=(), inventory=None, provenance=None, re
                 if binary in cat['scripts']:
                     kind = cat['scripts'][binary]
                 else:
-                    kind = classify(binary, name, cat)
+                    kind = classify(binary, name, cat, held)
+                if kind == QUARANTINED:
+                    continue  # Excluded from every class row and timing estimate.
                 row = rows[kind]
                 row['count'] += 1
                 skip = case.find('skipped') is not None
@@ -647,8 +793,7 @@ def run_class(plan, kind, out, threads, build_scope='class'):
         if kind == 'perf':
             for label, features, expression in PERF_VARIANTS:
                 feature_entries = partition(read(out / f'feature-{label}-list.json'))
-                binary, pattern = ('review-core', 'perf_') if label == 'trace' else (
-                    'review-pipeline::perf_probe', 'calibration_build')
+                binary, pattern = FEATURE_SELECTORS[label]
                 expected = {(e['binary'], e['test']) for e in feature_entries
                             if e['binary'] == binary and pattern in e['test'] and not e['ignored']}
                 if not expected:
@@ -720,6 +865,8 @@ def main():
     gate.add_argument('--needs', required=True)
     gate.add_argument('--evidence', required=True)
     gate.add_argument('--platforms', nargs='+', required=True)
+    gate_run = sub.add_parser('nextest-gate', help='run scripts/nextest-gate.py without the quarantined tests')
+    gate_run.add_argument('arguments', nargs=argparse.REMAINDER)
     metrics = sub.add_parser('report')
     metrics.add_argument('--plan', required=True)
     metrics.add_argument('--junit', nargs='*', default=[])
@@ -755,6 +902,10 @@ def main():
                 stream.write('perf=' + str('perf' in value['selected']).lower() + '\n')
     elif args.command == 'audit':
         audit_source()
+    elif args.command == 'nextest-gate':
+        arguments = args.arguments[1:] if args.arguments[:1] == ['--'] else args.arguments
+        gate = str(ROOT / 'scripts/nextest-gate.py')
+        os.execv(sys.executable, [sys.executable, gate, *gate_arguments(arguments, quarantine())])
     elif args.command == 'schemas':
         schema_parity(args.write)
     elif args.command == 'measurement-scope':
