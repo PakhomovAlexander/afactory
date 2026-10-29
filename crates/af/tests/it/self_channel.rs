@@ -3,8 +3,9 @@
 //! into the user layer, keeping the file's other keys and comments, and makes that newest the
 //! default, moving back to an older release when the channel says so; `--no-update` only records.
 //! The nightly is verified against the nightly key alone: a build without one refuses the channel
-//! with one sentence, and a nightly signed with the release key is refused. A switch that fails
-//! leaves the user layer and the default as they were. Running the nightly it activated, the
+//! with one sentence, and a nightly signed with the release key is refused. A switch that fails,
+//! even once the default was moved, leaves the user layer and the default as they were. Running
+//! the nightly it activated, the binary the source published, the
 //! check tells a newer date and the status names the nightly; a lock that pins a nightly and a
 //! request for another version of an installed nightly's date are refused. Nothing reaches the
 //! network.
@@ -265,16 +266,39 @@ fn a_failed_switch_leaves_the_user_layer_and_the_default_as_they_were() {
         .output()
         .unwrap();
     unchanged(&refused, &format!("reading {}", missing.display()));
-}
 
-/// The fake nightly binary the switch installed, replaced by the binary under test: run with
-/// `AF_TEST_RUNNING_VERSION`, it is the activated nightly as `af self` sees one running, its
-/// receipt the install's.
-fn run_as_nightly(sandbox: &Sandbox, version: &str) -> PathBuf {
-    let binary = sandbox.versions().join(version).join("af");
-    std::fs::remove_file(&binary).unwrap();
-    common::install_private_af(&binary);
-    binary
+    // The nightly verifies and installs, but the activation cannot be recorded: a directory
+    // where the state file goes. The link was moved and is put back, the layer too; the nightly
+    // stays installed for the retry the message names.
+    sandbox.sign_tag(NIGHTLY_TAG, &nightly, None);
+    let state = sandbox.path("state/af/self.toml");
+    let was = std::fs::read(&state).unwrap();
+    std::fs::remove_file(&state).unwrap();
+    std::fs::create_dir(&state).unwrap();
+    let refused = af_self(&sandbox, &real, key, &["channel", "nightly"]);
+    assert_eq!(refused.status.code(), Some(1), "{}", out(&refused));
+    assert!(
+        err(&refused).contains(&format!(
+            "recording the activation of af {NIGHTLY}: renaming into {}",
+            std::fs::canonicalize(&state).unwrap().display()
+        )) && err(&refused).contains("the default is as it was")
+            && err(&refused).contains(
+                "the switch to the nightly channel changed nothing: [self] channel and the default are as they were — fix: `af self channel nightly` tries again"
+            ),
+        "{}",
+        err(&refused)
+    );
+    assert_eq!(
+        std::fs::read_to_string(user_layer(&sandbox)).unwrap(),
+        layer
+    );
+    assert_eq!(sandbox.default_target().as_deref(), Some("0.13.0"));
+    assert!(sandbox.versions().join(NIGHTLY).join("af").is_file());
+    std::fs::remove_dir(&state).unwrap();
+    std::fs::write(&state, was).unwrap();
+    let switched = af_self(&sandbox, &real, key, &["channel", "nightly"]);
+    assert!(switched.status.success(), "{}", err(&switched));
+    assert_eq!(sandbox.default_target().as_deref(), Some(NIGHTLY));
 }
 
 #[test]
@@ -284,14 +308,31 @@ fn a_running_nightly_is_told_a_newer_date_and_no_pin_or_other_version_reaches_a_
     let nightly = Signer::new(&keys.path().join("nightly"));
     let sandbox = Sandbox::new().with_key(&release);
     sources(&sandbox, &release, &nightly);
+    // The nightly of the goal is the binary under test, which reports NIGHTLY as its version
+    // while `AF_TEST_RUNNING_VERSION` says so: the switch installs it from the source, and it is
+    // what then runs as the nightly below. Its commit is the build's.
+    sandbox.publish_nightly_binary(NIGHTLY_TAG);
+    sandbox.sign_tag(NIGHTLY_TAG, &nightly, None);
     let older = "nightly-2026.10.28";
     sandbox.publish_nightly(older, "0.14.0-nightly.20261028");
     sandbox.sign_tag(older, &nightly, None);
     let real = sandbox.adopt_real_binary();
     let key = Some(nightly.public_key_file.as_path());
-    let switched = af_self(&sandbox, &real, key, &["channel", "nightly"]);
+    let switched = sandbox
+        .command(&real)
+        .args(["self", "channel", "nightly"])
+        .env("AF_NIGHTLY_KEY", &nightly.public_key_file)
+        .env("AF_TEST_RUNNING_VERSION", NIGHTLY)
+        .output()
+        .unwrap();
     assert!(switched.status.success(), "{}", err(&switched));
     assert_eq!(sandbox.default_target().as_deref(), Some(NIGHTLY));
+    let running = sandbox.versions().join(NIGHTLY).join("af");
+    assert_eq!(
+        std::fs::read(&running).unwrap(),
+        std::fs::read(common::private_af()).unwrap(),
+        "the installed nightly is the binary the source published"
+    );
 
     // A lock that pins the installed nightly pins nothing: one sentence, and this af runs. A
     // lock that pins a release still dispatches to it.
@@ -358,8 +399,8 @@ fn a_running_nightly_is_told_a_newer_date_and_no_pin_or_other_version_reaches_a_
     assert!(!sandbox.versions().join(other).exists());
     assert_eq!(sandbox.default_target().as_deref(), Some(NIGHTLY));
 
-    // Running the activated nightly: the newest nightly is its own date, so it is up to date.
-    let running = run_as_nightly(&sandbox, NIGHTLY);
+    // Running the activated nightly, installed from the source: the newest nightly is its own
+    // date, so it is up to date, and so it is when the listing holds only an older nightly.
     let as_nightly = |args: &[&str]| {
         sandbox
             .command(&running)
@@ -369,12 +410,35 @@ fn a_running_nightly_is_told_a_newer_date_and_no_pin_or_other_version_reaches_a_
             .output()
             .unwrap()
     };
+    let version = String::from_utf8(
+        sandbox
+            .command(&running)
+            .args(["--version", "--json"])
+            .env("AF_TEST_RUNNING_VERSION", NIGHTLY)
+            .output()
+            .unwrap()
+            .stdout,
+    )
+    .unwrap();
+    let reported: serde_json::Value = serde_json::from_str(&version).unwrap();
+    assert_eq!(reported["version"], NIGHTLY, "{version}");
+    let commit = reported["commit"].as_str().unwrap().to_string();
     let check = as_nightly(&["update", "--check"]);
     assert_eq!(check.status.code(), Some(0), "{}", err(&check));
     assert_eq!(
         out(&check).trim(),
         format!("af {NIGHTLY} is up to date (the newest nightly is {NIGHTLY_TAG})")
     );
+    let published = sandbox.path(&format!("releases/{NIGHTLY_TAG}"));
+    let aside = sandbox.path(&format!("aside-{NIGHTLY_TAG}"));
+    std::fs::rename(&published, &aside).unwrap();
+    let check = as_nightly(&["update", "--check"]);
+    assert_eq!(check.status.code(), Some(0), "{}", err(&check));
+    assert_eq!(
+        out(&check).trim(),
+        format!("af {NIGHTLY} is up to date (the newest nightly is {older})")
+    );
+    std::fs::rename(&aside, &published).unwrap();
 
     // A nightly of a later date: news, exit 10, and the status names the running nightly's tag
     // and commit and the newest the check found.
@@ -392,7 +456,7 @@ fn a_running_nightly_is_told_a_newer_date_and_no_pin_or_other_version_reaches_a_
     assert!(
         out(&status).starts_with(&format!("af {NIGHTLY} ("))
             && out(&status).contains(&format!(
-                "nightly:    running {NIGHTLY_TAG} (commit {NIGHTLY_COMMIT}) · newest {newer} (af self update)"
+                "nightly:    running {NIGHTLY_TAG} (commit {commit}) · newest {newer} (af self update)"
             )),
         "{}",
         out(&status)

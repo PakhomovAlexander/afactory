@@ -56,9 +56,10 @@ const NIGHTLY_KEY_ENV: &str = "AF_NIGHTLY_KEY";
 /// Pinned projects remembered for `remove` and `prune`; the oldest entries age out.
 const MAX_SEEN_PINS: usize = 64;
 
-/// The version `af self update` on the nightly channel and `af self status` take the running af
-/// for: [`VERSION`]. A debug build reads `AF_TEST_RUNNING_VERSION` in its place, so a fixture can run
-/// the nightly it activated as that nightly runs (ADR-0267); a release binary never reads it.
+/// The version `af --version`, `af self update` on the nightly channel and `af self status` take
+/// the running af for: [`VERSION`]. A debug build reads `AF_TEST_RUNNING_VERSION` in its place, so
+/// a fixture can publish the binary under test as a nightly and run the nightly it activated as
+/// that nightly runs (ADR-0267); a release binary never reads it.
 fn running_version() -> &'static str {
     #[cfg(debug_assertions)]
     {
@@ -1906,7 +1907,9 @@ fn set_default_unless_changed(
     Ok(Some(default_mark(paths)))
 }
 
-/// [`set_default`] for a caller that holds the versions lock.
+/// [`set_default`] for a caller that holds the versions lock: the link is retargeted, then the
+/// activation recorded, and when the record cannot be written the link is put back, so a failed
+/// activation leaves the default as it was (ADR-0267); the error says when it could not be.
 fn set_default_locked(paths: &Paths, version: &str) -> Result<(), String> {
     let binary = version_binary(paths, version);
     if !binary.is_file() {
@@ -1918,24 +1921,21 @@ fn set_default_locked(paths: &Paths, version: &str) -> Result<(), String> {
         std::fs::create_dir_all(parent)
             .map_err(|error| format!("creating {}: {error}", parent.display()))?;
     }
-    if paths.bin.exists()
-        && std::fs::symlink_metadata(&paths.bin).is_ok_and(|m| !m.file_type().is_symlink())
-        && !running_binary_is(&paths.bin)
-    {
-        return Err(format!(
-            "{} exists and is not a symlink — fix: move it aside; af manages this path as a symlink into {}",
-            paths.bin.display(),
-            paths.versions.display()
-        ));
-    }
-    let tmp = paths
-        .bin
-        .with_extension(format!("tmp.{}", std::process::id()));
-    let _ = std::fs::remove_file(&tmp);
-    std::os::unix::fs::symlink(&binary, &tmp)
-        .map_err(|error| format!("linking {}: {error}", tmp.display()))?;
-    std::fs::rename(&tmp, &paths.bin)
-        .map_err(|error| format!("activating {}: {error}", paths.bin.display()))?;
+    let previous = match std::fs::symlink_metadata(&paths.bin) {
+        Ok(meta) if meta.file_type().is_symlink() => std::fs::read_link(&paths.bin)
+            .map(PreviousDefault::Link)
+            .map_err(|error| format!("reading {}: {error}", paths.bin.display()))?,
+        Ok(_) if running_binary_is(&paths.bin) => PreviousDefault::RunningBinary,
+        Ok(_) => {
+            return Err(format!(
+                "{} exists and is not a symlink — fix: move it aside; af manages this path as a symlink into {}",
+                paths.bin.display(),
+                paths.versions.display()
+            ));
+        }
+        Err(_) => PreviousDefault::Absent,
+    };
+    link_default(paths, &binary)?;
     let mut state = read_state(paths);
     if state
         .activations
@@ -1947,7 +1947,51 @@ fn set_default_locked(paths: &Paths, version: &str) -> Result<(), String> {
             at: iso_now(),
         });
     }
-    write_state(paths, &state)
+    let Err(error) = write_state(paths, &state) else {
+        return Ok(());
+    };
+    let put_back = match previous {
+        PreviousDefault::Link(target) => link_default(paths, &target),
+        PreviousDefault::Absent => std::fs::remove_file(&paths.bin)
+            .map_err(|error| format!("removing {}: {error}", paths.bin.display())),
+        PreviousDefault::RunningBinary => Err(format!(
+            "{} was the running binary, which the link replaced",
+            paths.bin.display()
+        )),
+    };
+    Err(match put_back {
+        Ok(()) => {
+            format!("recording the activation of af {version}: {error}; the default is as it was")
+        }
+        Err(undo) => format!(
+            "recording the activation of af {version}: {error}; and the default could not be put back ({undo}): {} now points at af {version}",
+            paths.bin.display()
+        ),
+    })
+}
+
+/// What `$XDG_BIN_HOME/af` was before an activation replaced it, for putting it back.
+enum PreviousDefault {
+    /// A symlink, to this target.
+    Link(PathBuf),
+    /// Nothing.
+    Absent,
+    /// The running binary itself, a file an explicit install replaces and cannot restore.
+    RunningBinary,
+}
+
+/// Point `$XDG_BIN_HOME/af` at `target` atomically: a temporary link renamed over it.
+fn link_default(paths: &Paths, target: &Path) -> Result<(), String> {
+    let tmp = paths
+        .bin
+        .with_extension(format!("tmp.{}", std::process::id()));
+    let _ = std::fs::remove_file(&tmp);
+    std::os::unix::fs::symlink(target, &tmp)
+        .map_err(|error| format!("linking {}: {error}", tmp.display()))?;
+    std::fs::rename(&tmp, &paths.bin).map_err(|error| {
+        let _ = std::fs::remove_file(&tmp);
+        format!("activating {}: {error}", paths.bin.display())
+    })
 }
 
 // ------------------------------------------------------------------------------------------
@@ -3541,13 +3585,28 @@ pub(crate) fn channel(choice: Option<Channel>, no_update: bool) -> Result<(), St
     let written = config::set_user_string("self", "channel", channel.name()).map_err(unchanged)?;
     let before = default_version(&paths);
     if let Err(error) = set_default(&paths, &staged.version) {
-        return Err(match written.undo() {
-            Ok(()) => unchanged(error),
-            Err(undo) => format!(
+        let default_as_it_was = default_version(&paths) == before;
+        return Err(match (default_as_it_was, written.undo()) {
+            (true, Ok(())) => unchanged(error),
+            (true, Err(undo)) => format!(
                 "{error}\nthe default is as it was, but {} could not be put back ({undo}) and records [self] channel = \"{}\" — fix: `af self channel {} --no-update` records the channel you had",
                 written.path.display(),
                 channel.name(),
                 previous.name()
+            ),
+            (false, Ok(())) => format!(
+                "{error}\n[self] channel is {} as it was, but the default now points at af {} — fix: once that is repaired, `af self channel {}` finishes the switch and `af self channel {}` moves back",
+                previous.name(),
+                staged.version,
+                channel.name(),
+                previous.name()
+            ),
+            (false, Err(undo)) => format!(
+                "{error}\nthe default now points at af {}, and {} could not be put back ({undo}), so it records [self] channel = \"{}\" — fix: once that is repaired, `af self channel {}` finishes the switch",
+                staged.version,
+                written.path.display(),
+                channel.name(),
+                channel.name()
             ),
         });
     }
@@ -4312,7 +4371,7 @@ fn version_view() -> VersionView {
             .map(|receipt| version_dir(&paths, &receipt.version).join("receipt.toml"))
     });
     VersionView {
-        version: VERSION,
+        version: running_version(),
         commit: COMMIT,
         target: TARGET,
         release_key: release_key_source(),
@@ -4333,7 +4392,7 @@ pub(crate) fn version_document() -> serde_json::Value {
 
 pub(crate) fn print_version(json: bool) -> Result<(), String> {
     if !json {
-        println!("af {VERSION}");
+        println!("af {}", running_version());
         return Ok(());
     }
     let view = version_view();

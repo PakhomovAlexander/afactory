@@ -49,9 +49,10 @@ version: the version is known only once its binary says it. Nightlies are built 
   nightly key, that no layer above the user file sets another channel, and, unless
   `--no-update`, a receipted af and an unset `AF_SELF_OFFLINE`; it then lists the channel,
   downloads and verifies its newest (signature, and a nightly's version) and installs it. A
-  switch that fails at any step leaves the channel and the default as they were, the user file
-  put back when the default cannot be moved after the write, and names `af self channel <name>`
-  to try again.
+  switch that fails at any step leaves the channel and the default as they were: the user file
+  is put back when the default cannot be moved after the write, and the default link when the
+  activation cannot be recorded after it moved (the one unrecoverable case, a running binary the
+  link replaced, is said); the message names `af self channel <name>` to try again.
 - `af self update` follows the channel. On nightly, `--check` exits 10 when a nightly with a
   later date than the running nightly exists, and an af that runs no nightly is always told of
   the newest nightly, with `af self channel nightly` as the command, since its version is

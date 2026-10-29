@@ -295,17 +295,37 @@ impl Sandbox {
         self.publish_nightly_for(tag, version, TARGET)
     }
 
+    /// A nightly tagged `tag` for this machine's target whose `af` is the binary under test: run
+    /// with `AF_TEST_RUNNING_VERSION` set to `version`, it reports that version as its own, so
+    /// the nightly a switch installs from it is the af that then runs as that nightly. Returns
+    /// the archive's digest.
+    pub fn publish_nightly_binary(&self, tag: &str) -> String {
+        self.publish_tag_with(tag, TARGET, false, |af| copy_by_a_child(private_af(), af))
+    }
+
     /// `releases/<tag>/af-<tag>-<target>.tar.gz` holding `script` as `af`, beside a
     /// `SHA256SUMS` that lists it (tampered when asked) and a second target.
     fn publish_tag(&self, tag: &str, target: &str, script: &str, tamper: bool) -> String {
+        self.publish_tag_with(tag, target, tamper, |af| write(af, script))
+    }
+
+    /// [`Sandbox::publish_tag`] with `af` written by `stage`, which gets its path.
+    fn publish_tag_with(
+        &self,
+        tag: &str,
+        target: &str,
+        tamper: bool,
+        stage: impl FnOnce(&Path),
+    ) -> String {
         let tag_dir = self.path(&format!("releases/{tag}"));
         std::fs::create_dir_all(&tag_dir).unwrap();
-        let stage = self.path(&format!("stage-{tag}"));
-        std::fs::create_dir_all(&stage).unwrap();
-        write(&stage.join("af"), script);
+        let staging = self.path(&format!("stage-{tag}"));
+        std::fs::create_dir_all(&staging).unwrap();
+        let _ = std::fs::remove_file(staging.join("af"));
+        stage(&staging.join("af"));
         {
             use std::os::unix::fs::PermissionsExt;
-            std::fs::set_permissions(stage.join("af"), std::fs::Permissions::from_mode(0o755))
+            std::fs::set_permissions(staging.join("af"), std::fs::Permissions::from_mode(0o755))
                 .unwrap();
         }
         let asset = format!("af-{tag}-{target}.tar.gz");
@@ -313,7 +333,7 @@ impl Sandbox {
             .arg("-czf")
             .arg(tag_dir.join(&asset))
             .arg("-C")
-            .arg(&stage)
+            .arg(&staging)
             .arg("af")
             .status()
             .unwrap();

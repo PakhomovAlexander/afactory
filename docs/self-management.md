@@ -98,10 +98,12 @@ the user file (an `AF_SELF__CHANNEL` variable or a user `conf.d` file) sets anot
 unless `--no-update`, that this af was installed by `af self` and that `AF_SELF_OFFLINE` is not
 set. It then lists the channel at the release source, downloads its newest, verifies the
 signature of its `SHA256SUMS` and, for a nightly, the version its binary reports, and installs it
-beside the other versions. Only then does it write the file and move the default. A switch that
+beside the other versions. Only then does it write the file and move the default, and when the
+activation cannot be recorded after the default moved, the default is put back. A switch that
 fails at any of these steps leaves `[self] channel` and the default as they were (a version it
 installed stays installed) and names `af self channel <name>` to try again; `af self update`
-cannot finish a switch that moves backwards.
+cannot finish a switch that moves backwards. The one step that cannot be undone is said: the
+message names what the default now points at.
 
 On the nightly channel `af self update --check` exits 10 when a nightly with a later date than
 the running one exists and 0 otherwise, naming the nightly's tag; an af that runs no nightly is
