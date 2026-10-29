@@ -91,6 +91,7 @@ jobs:
         run: |
           make fmt lint base-check
           python3 scripts/ci-step.py --stage release cli-smoke cargo run --locked --bin af -- --version
+          python3 scripts/ci-step.py --stage release release-smoke bash scripts/release-smoke.sh target/debug/af
       - name: Save Cargo cache
         if: always() && !cancelled()
         uses: ./.github/actions/cargo-cache

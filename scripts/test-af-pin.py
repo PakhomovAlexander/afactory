@@ -66,7 +66,9 @@ class Repository(unittest.TestCase):
         self.git('commit', '-qm', 'fixture')
 
     def changelog(self, *versions):
-        sections = ''.join(f'## [{version}] - today\n\n- change\n\n' for version in versions)
+        # A version given as 'X [YANKED]' is a release that was tagged but never published.
+        sections = ''.join(f'## [{version.split()[0]}] - today{version[len(version.split()[0]):]}\n\n- change\n\n'
+                           for version in versions)
         (self.repo / 'CHANGELOG.md').write_text('# Changelog\n\n## [Unreleased]\n\n' + sections)
 
     def git(self, *args, cwd=None):
@@ -99,6 +101,18 @@ class Repository(unittest.TestCase):
         self.assertEqual(result.returncode, 1)
         self.assertIn('it must pin the newest release, 0.4.0', result.stderr)
         self.assertIn('scripts/pin-release.sh', result.stderr)
+
+    def test_a_yanked_release_is_skipped(self):
+        self.changelog('0.4.0', '0.3.0 [YANKED]', '0.2.0', '0.1.0')
+        result = self.check()
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn('pins 0.4.0 once it is published', result.stdout)
+
+    def test_a_yanked_release_does_not_widen_the_lag(self):
+        self.changelog('0.5.0', '0.4.0 [YANKED]', '0.3.0', '0.2.0')
+        result = self.check()
+        self.assertEqual(result.returncode, 1)
+        self.assertIn('it must pin the newest release, 0.5.0 (or 0.3.0 while 0.5.0 is released)', result.stderr)
 
     def test_a_target_without_a_digest_fails(self):
         (self.repo / '.af/af.lock').write_text(lock('0.2.0', targets=TARGETS[:1]))

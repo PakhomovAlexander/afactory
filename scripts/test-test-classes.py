@@ -779,6 +779,7 @@ ET.ElementTree(root).write(path, encoding='unicode')
                 (scripts / name).write_text(sample)
             for name in ('test-classes.py', 'changelog-notes.py', 'af-pin.py'):
                 (scripts / name).write_text('pass\n')
+            (scripts / 'release-smoke.sh').write_text('[ "$1" = target/debug/af ]\n')
             tools = root / 'bin'
             tools.mkdir()
             (tools / 'python3').symlink_to(sys.executable)
@@ -802,7 +803,7 @@ ET.ElementTree(root).write(path, encoding='unicode')
             records = [json.loads(line) for line in (source / metrics_path).read_text().splitlines()]
             self.assertEqual([r['label'] for r in records], ['fmt', 'lint', 'lint-diagnostic-features',
                              'release-resolution', 'changelog-notes', 'af-pin-tests', 'af-pin',
-                             'gate-owner', 'test-classes', 'test-catalog', 'cli-smoke'])
+                             'gate-owner', 'test-classes', 'test-catalog', 'cli-smoke', 'release-smoke'])
             self.assertTrue(all(r['schema'] == 'af.ci-step/1' and r['exit_code'] == 0
                                 and r['elapsed_seconds'] >= 0 and r['started_at'] for r in records))
             self.assertEqual([json.loads(line)[0] for line in calls.read_text().splitlines()],

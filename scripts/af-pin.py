@@ -13,6 +13,10 @@ The release pull request cannot pin its own version: the lock binds archive dige
 the signed SHA256SUMS, which exist only once the release is published. The release workflow pins
 it right after publishing (scripts/pin-release.sh --push); until then the previous release is the
 newest one that can be pinned, so the check accepts it.
+
+A release that was tagged but never published (its workflow failed after the tag) keeps its
+section, marked `[YANKED]` after the date as Keep a Changelog does; it has no signed digests to
+pin, so the check skips it and the next release is judged against the one before it.
 """
 import re
 import subprocess
@@ -55,8 +59,10 @@ def pin(text):
 
 
 def releases():
-    """The released versions CHANGELOG.md has sections for, newest first."""
-    return re.findall(r"^## \[(\d+\.\d+\.\d+(?:-rc\.\d+)?)\]", CHANGELOG.read_text(), re.M)
+    """The released versions CHANGELOG.md has sections for, newest first; a `[YANKED]` section
+    was never published and is skipped."""
+    sections = re.findall(r"^## \[(\d+\.\d+\.\d+(?:-rc\.\d+)?)\](.*)$", CHANGELOG.read_text(), re.M)
+    return [version for version, rest in sections if "[YANKED]" not in rest]
 
 
 def targets():

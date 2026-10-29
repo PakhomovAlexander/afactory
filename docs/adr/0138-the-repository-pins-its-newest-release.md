@@ -48,7 +48,11 @@ signed and published the release.
   requires pull requests on `main`, the `pin` job fails with git's refusal and says to run the
   script by hand; the ruleset would need a bypass for GitHub Actions to keep the pin automatic.
 - A release whose publish fails leaves its `CHANGELOG.md` section unpinnable. The next release
-  pull request then fails the check until that section is corrected.
+  pull request then fails the check until that section is corrected. The correction (added
+  2026-10-29, when v0.14.0-rc.1 was tagged but never published) is the Keep a Changelog marker:
+  the next release pull request appends `[YANKED]` to the dead section's heading with one line
+  saying why. The check skips a yanked section, so the next release is judged against the
+  newest published one before it. A tag is never reused; the fix ships as the next version.
 
 ## Considered options
 

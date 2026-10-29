@@ -19,7 +19,31 @@ publish step — so everything it carried shipped in `0.9.0-rc.6`.
 Changes since the last release are notes under [`changelog.d/`](changelog.d/), one file per
 pull request; the release pull request collects them here.
 
-## [0.14.0-rc.1] - 2026-10-29
+## [0.14.0-rc.2] - 2026-10-29
+
+### Authority compatibility
+
+Committed .af/ policy valid under 0.13.0 needs no hand edit. Run af onboard --refresh-lock to pin 0.14.0-rc.2 and its signed bytes. State written by other releases remains unsupported under ADR-0145.
+
+### Changes
+
+- release: v0.14.0-rc.1 (#455)
+- af self optimize: repository-relative source paths; name an unavailable source (#456)
+- release workflow: the packaged-binary smoke accepts `af review plan`'s binding refusal that carries the plan in `details.plan` (#363, #434); v0.14.0-rc.1 was tagged but never published because of it
+- the smoke is now `scripts/release-smoke.sh`, run with a private HOME by the release on each packaged binary and by every pull request's base job on its debug binary, so a change that breaks it fails its own pull request
+- `scripts/af-pin.py --check` skips a `CHANGELOG.md` section marked `[YANKED]` (tagged, never published), so the release after a dead one is judged against the newest published release (ADR-0138)
+
+- `af self optimize` resolves a relative `[[sources]].path` in `.af/optimization-sources.toml`
+  from the repository root, like every other `.af/` path, instead of from `.af/`: a source
+  declared as `history.jsonl` that lived at `.af/history.jsonl` is now declared as
+  `.af/history.jsonl`. A declared source that is missing or cannot be opened or read, a read
+  failure after it opened included, still records the unchanged gap `unavailable_<adapter>_<hash>`,
+  which does not name the source; the command now names it on stderr before the run, with its
+  `source_id`, resolved path and whether it is missing or unreadable (#196).
+
+## [0.14.0-rc.1] - 2026-10-29 [YANKED]
+
+Tagged but never published: the release workflow's packaged-binary smoke refused the binding refusal of `af review plan` (#434). Its changes ship in 0.14.0-rc.2.
 
 ### Authority compatibility
 
