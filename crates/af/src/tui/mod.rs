@@ -738,10 +738,31 @@ impl App {
             Action::Quit => return Some(Effect::Quit),
             Action::Command => self.begin(Mode::Command),
             Action::Cancel => self.cancel(),
-            Action::Pane(key) if self.focus == Focus::Bar => return self.bar_key(key),
-            Action::Pane(key) => return self.pane_key(key),
+            Action::Pane(key) => {
+                let key = self.fold_task_only(key);
+                return match self.focus {
+                    Focus::Bar => self.bar_key(key),
+                    Focus::Main => self.pane_key(key),
+                };
+            }
         }
         None
+    }
+
+    /// `D` is the Tasks pane's own key (`task deliver`); to every other pane it is `d`, as an
+    /// upper-case letter with no binding of its own is its lower-case key, so Caps Lock
+    /// changes nothing on a Provider: `D` removes it as `d` does. The pane the key reaches
+    /// decides: the bar's selected node's while the bar has focus, the opened one otherwise;
+    /// the root addresses no pane, so `D` stays `D` there and says what it acts on.
+    fn fold_task_only(&self, key: Key) -> Key {
+        let tab = match self.focus {
+            Focus::Bar => self.selected_tab(),
+            Focus::Main => self.opened_tab(),
+        };
+        match key {
+            Key::Char('D') if tab.is_some_and(|tab| tab != Tab::Tasks) => Key::Char('d'),
+            other => other,
+        }
     }
 
     fn step(&mut self, delta: isize) {

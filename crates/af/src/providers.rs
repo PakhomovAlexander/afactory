@@ -287,14 +287,21 @@ pub fn discover_with_cancel(cancelled: &AtomicBool, usage: UsageProbe) -> Provid
                 .map(|spec| (unprobed_status(spec), None)),
         );
     }
-    // A context left out is never named as a logged-in sibling.
-    let mut providers = drop_unused_ambient_contexts(probed);
-    cross_reference_logged_in_siblings(&mut providers);
+    let providers = inventory_rows(probed);
     ProviderInventory {
         providers,
         registry,
         warning,
     }
+}
+
+/// The inventory's rows from the probed contexts: the default contexts ADR-0141 and ADR-0260
+/// leave out are dropped first, then a logged-out Provider's detail names its logged-in
+/// siblings, so no note points at a row that is not listed.
+fn inventory_rows(probed: Vec<(ProviderStatus, Option<String>)>) -> Vec<ProviderStatus> {
+    let mut providers = drop_unused_ambient_contexts(probed);
+    cross_reference_logged_in_siblings(&mut providers);
+    providers
 }
 
 /// Leave out a CLI's default context once a Provider of its kind is registered when it has no
@@ -7986,6 +7993,81 @@ auth_dir = "{}"
         assert_eq!(
             ids(&providers),
             ["claude-ambient", "claude-personal", "codex-ambient"]
+        );
+    }
+
+    /// A default context left out for holding a registered login is not a sibling either: the
+    /// notes are written after the drop, so a logged-out Provider of its kind names the
+    /// registered Provider alone. A default context kept is a sibling as before (ADR-0260).
+    #[test]
+    fn a_dropped_default_context_is_never_named_as_a_logged_in_sibling() {
+        fn row(
+            id: &str,
+            context: &str,
+            status: &str,
+            login: Option<&str>,
+        ) -> (ProviderStatus, Option<String>) {
+            let ambient = id.ends_with("-ambient");
+            let logged_in = status == "authenticated";
+            let status = ProviderStatus {
+                disabled_until: None,
+                id: id.to_string(),
+                kind: "claude".to_string(),
+                auth_context: context.to_string(),
+                source: if ambient {
+                    "ambient CLI candidate; unstable local context label".to_string()
+                } else {
+                    "registry".to_string()
+                },
+                status: status.to_string(),
+                auth_type: "claude.ai".to_string(),
+                subscription: if logged_in { "Claude Max" } else { "-" }.to_string(),
+                limits: Vec::new(),
+                usage: UsageState::NotRequested,
+                detail: if logged_in { "" } else { "no login" }.to_string(),
+            };
+            (status, login.map(str::to_owned))
+        }
+        let same = Some("me@example.test\norg-1");
+        let providers = inventory_rows(vec![
+            row("claude-ambient", "CLI default", "authenticated", same),
+            row(
+                "claude-personal",
+                "/profiles/personal",
+                "authenticated",
+                same,
+            ),
+            row("claude-stale", "/profiles/stale", "not authenticated", None),
+        ]);
+        let ids: Vec<&str> = providers.iter().map(|p| p.id.as_str()).collect();
+        assert_eq!(ids, ["claude-personal", "claude-stale"]);
+        assert_eq!(
+            providers[1].detail,
+            "no login; claude-personal is authenticated in /profiles/personal (Claude Max)"
+        );
+        // The same account in another organization is a login of its own: the row stays, and
+        // it is a sibling.
+        let providers = inventory_rows(vec![
+            row(
+                "claude-ambient",
+                "CLI default",
+                "authenticated",
+                Some("me@example.test\norg-2"),
+            ),
+            row(
+                "claude-personal",
+                "/profiles/personal",
+                "authenticated",
+                same,
+            ),
+            row("claude-stale", "/profiles/stale", "not authenticated", None),
+        ]);
+        let ids: Vec<&str> = providers.iter().map(|p| p.id.as_str()).collect();
+        assert_eq!(ids, ["claude-ambient", "claude-personal", "claude-stale"]);
+        assert_eq!(
+            providers[2].detail,
+            "no login; claude-ambient is authenticated in the CLI default directory (Claude \
+             Max); claude-personal is authenticated in /profiles/personal (Claude Max)"
         );
     }
 

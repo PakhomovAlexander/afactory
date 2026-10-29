@@ -190,7 +190,9 @@ pub(crate) struct KeyMap {
 }
 
 /// The upper-case letters with a binding of their own: the keymap's `G` `N` `R` `Z` and the
-/// Tasks pane's `D`. Every other upper-case letter is read as its lower-case key.
+/// Tasks pane's `D`. Every other upper-case letter is read as its lower-case key. `D` is handed
+/// on as it is, since the table does not know which pane it reaches; `App::fold_task_only`
+/// reads it as `d` for every pane but Tasks.
 const UPPER_CASE_OWN: [char; 5] = ['D', 'G', 'N', 'R', 'Z'];
 
 /// `key`, an upper-case letter with no binding of its own read as its lower-case key.

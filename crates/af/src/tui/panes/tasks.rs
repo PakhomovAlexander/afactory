@@ -2529,7 +2529,9 @@ impl Pane for TasksPane {
         let detail = match &self.detail {
             Some(Ok(detail)) => detail,
             _ => {
-                // The folder: Enter opens the Task of the row under the cursor, as the bar does.
+                // The folder: Enter opens the Task of the row under the cursor, as the bar does,
+                // through the same `open`: one inspection of that Task on the key loop
+                // (`Detail::read`, one `af task show`), as ADR-0240 has it.
                 if key != Key::Enter {
                     return Ok(None);
                 }

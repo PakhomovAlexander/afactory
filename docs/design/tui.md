@@ -36,11 +36,12 @@ scope filters the same Store by repository identity. `arg_required_else_help` on
 reads anything, a few milliseconds after `af` starts. The scope resolves and every pane loads on
 a thread of their own; the splash animates while it waits on that load a step at a time and ends
 the moment the load arrives, so the browser is never later than it would be without one. That
-load reads no Store: a pane that lists Stores (Tasks, Campaigns, and Workers once opened) starts
-their read on a thread of its own and the event loop collects each Store as it is read, after
-the first frame, since the loop paints before it polls. The splash therefore waits for the scope
-only, whatever Stores the machine holds: a registry of eighty Stores and four gigabytes of event
-logs once kept it up for forty seconds ([ADR-0240](../adr/0240-open-the-browser-before-any-store-is-read.md)).
+load reads no Store: a pane that lists Stores (Tasks, Campaigns and, in a project scope, Workers)
+starts their read on a thread of its own and the event loop collects each Store as it is read,
+after the first frame, since the loop paints before it polls. The splash therefore waits for the
+scope only, whatever Stores the machine holds: a registry of eighty Stores and four gigabytes of
+event logs once kept it up for forty seconds
+([ADR-0240](../adr/0240-open-the-browser-before-any-store-is-read.md)).
 What it still waits for is small: the scope's files, the Store registry (one file), and the
 Pipelines pane's read of `HEAD` through git, milliseconds on a local repository.
 `q` or `<C-c>` on the splash quits at once; any other key typed meanwhile is the browser's first
@@ -128,7 +129,9 @@ few pane-local verbs, listed in its section and in the status line.
 | `q` `:q` `ZZ` | quit; `<C-c>` cancels a prompt or a running probe first |
 
 An upper-case letter with no binding of its own is its lower-case key, so Caps Lock changes
-nothing: `Q` quits, `J` and `K` move. `G`, `N`, `R`, `Z` and the Tasks pane's `D` keep their own.
+nothing: `Q` quits, `J` and `K` move. `G`, `N`, `R` and `Z` keep their own, and so does `D` in the
+Tasks pane, where it prefills `task deliver`; to every other pane `D` is `d`, so `D` on a Provider
+removes it as `d` does.
 
 **Command line (`:`)** — the browser's own verbs, and any `af` command line:
 
@@ -217,7 +220,18 @@ with the first free id, `unsetting CODEX_HOME lists ~/.codex instead` when the v
 (the row is listed while the CLI is on `PATH` and its directory is not registered, so registering
 it is what makes it go), and the `af provider setup` hint the CLI prints (ADR-0141). A default
 context whose login a registered Provider of its kind already holds is not listed at all
-(ADR-0260).
+(ADR-0260), as a logged-out one is not: the login is what the status answer names, for Claude
+the account and the organization its `auth status` reports, and both must match, since one
+account in two organizations is two logins; the Codex answer names no account, so a Codex default
+context is compared as a path, as before. The login never leaves discovery: the row and the login
+it answered with travel together only inside `discover_with_cancel`, and `ProviderStatus`, the
+JSON status document and the browser carry no account label. A context left out is not a
+sibling: the logged-in-sibling notes of a logged-out Provider are written after the drop, so no
+note points at a row that is not listed. The names-only scan of ADR-0206 still names the
+directory (`found but not registered: ~/.claude (not probed) → af provider detect`), and `af
+provider detect` still lists it. Everything ADR-0141 keeps, stays: a default context with a
+login of its own, one whose kind has no registered Provider, and one in any other state are
+listed as before.
 
 `d` on a registered Provider, on the bar or in its opened pane, fills the `:` line with
 `provider remove ID` and does not submit it; Enter runs it, handing the terminal over as
@@ -235,9 +249,11 @@ The bar lists Worker packages found in the declared directories, in this order a
 source folded in as a second-level group when more than one exists:
 `.af/workers/` (reviewer Workers), `.af/task-packages/`, `.af/packages/`, `.af/vendor/`.
 User scope lists nothing here except catalogs synced under `~/.local/share/af` when present.
-The pane reads nothing until it is first opened; from then on each read (`HEAD`'s declarations
-through git, and every Task Store's Attempts for STATE) runs on a thread behind a spinner on
-`workers/`, never on the key loop.
+A project scope's folder lists its Workers from the start: the load records the read and the
+first poll after the first frame starts it, opened or not, as the other folders load
+(ADR-0261); the user scope lists none. Every read (`HEAD`'s declarations through git, and every
+Task Store's Attempts for STATE), the first and each one after, runs on a thread behind a
+spinner on `workers/`, never on the key loop.
 
 Main pane, three sections separated by rules:
 
@@ -328,7 +344,8 @@ every Store in one list, the one started last first, no group between; the folde
 row per Task, `task-id  progress%  elapsed  tokens  where`, where `where` is the bar group the
 Task's Store stands in (a checkout's label, an explicit Store's path) or `this checkout`, and
 the status line gives the Store's heading for the highlighted row. A running Task has no
-outcome yet, so none is printed. The Stores that cannot be read follow the list in the folder,
+outcome yet, so none is printed; a duration of a day or more prints as `6d 02h`, here as in
+every duration the pane prints. The Stores that cannot be read follow the list in the folder,
 each with its refusal, and are one muted `! N Stores unreadable` row in the bar, so an empty
 list never stands for a Store that was not read; with none running the folder says `No Task is
 running.` The filter is the pane's, kept across reads and `R`, and taken from the bar under
@@ -336,7 +353,8 @@ running.` The filter is the pane's, kept across reads and `R`, and taken from th
 opened Task the filtered bar no longer lists falls back to the folder, as any unlisted one
 does; the attention view is left out while the filter is on. `Enter` on a Task row of the
 folder, in the attention view or under a Store, filtered or not, opens the Task, as the bar
-does.
+does: the same opening, one inspection of that Task on the key loop (one `af task show`), as
+ADR-0240 has it.
 
 The project scope lists the Project's Tasks, not this directory's alone (ADR-0158: a Project
 is one repository across its worktrees and clones, and every checkout af worked in is a
@@ -605,8 +623,9 @@ source-only review.
 
 - Worker "state" needs the Store to answer "which Attempts named this Worker"; today that is a
   scan of every Task's execution records. Cheap for one repository, slow for the user scope. An
-  index by `worker` in `tasks.sqlite` is the clean fix. Step 4 kept the scan: it runs only when
-  the Workers pane is opened in a project scope, and the user scope lists no Worker.
+  index by `worker` in `tasks.sqlite` is the clean fix. Step 4 kept the scan; since ADR-0261 it
+  runs on the Workers read's thread after the first frame in a project scope, opened or not, and
+  the user scope lists no Worker.
 - Which file is a package's prompt. **Answered** by package M4 (ADR-0122): the file the kernel
   itself sends, by the kernel's convention. That is `reviewer.md` for a reviewer Worker and
   `instructions.md` for a Task Worker package. A package without that file says so, and no

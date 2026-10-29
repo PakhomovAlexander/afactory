@@ -73,7 +73,13 @@ fn git(repo: &Path, args: &[&str]) {
 /// `fixtures/consumers/hub` as a committed repository at `root/hub`: the hub's own `.af/` over
 /// the pinned Task packages it shares with `fixtures/task-runtime/pagination`.
 pub(crate) fn hub_repo(root: &Path) -> PathBuf {
-    let repo = root.join("hub");
+    hub_repo_at(root, "hub")
+}
+
+/// The hub as `hub_repo` makes it, at `root/name`: its declared `[project] name` stays `hub`,
+/// whatever the directory is called.
+pub(crate) fn hub_repo_at(root: &Path, name: &str) -> PathBuf {
+    let repo = root.join(name);
     let pagination = workspace().join("fixtures/task-runtime/pagination");
     copy_tree(&pagination, &repo);
     copy_tree(&workspace().join("fixtures/consumers/hub"), &repo);
@@ -1914,6 +1920,65 @@ fn completion_comes_from_the_clap_definition() {
     assert!(host.events.is_empty());
 }
 
+/// The project scope is named by the `[project] name` the repository declares, before its
+/// directory's name, so every checkout of the Project is named alike: the bar's root, the
+/// panes' titles and the status line say `hub` for a checkout in `checkout-7`. A declared
+/// name's first line alone is used, and without one the directory's name stands.
+#[test]
+fn the_project_scope_is_named_by_the_declared_project_name_before_its_directory() {
+    let (_temp, root) = temp_root();
+    let repo = hub_repo_at(&root, "checkout-7");
+    let scope = hub_scope(&root, &repo);
+    assert_eq!(scope.name(), "hub");
+    let mut app = app_at(&root, repo.clone());
+    let screen = app.frame(100, 30).text();
+    // The top row names the directory the browser was started in; the bar's root and the
+    // panes' titles name the Project.
+    assert!(screen.contains("~/checkout-7"), "{screen}");
+    assert!(screen.contains("hub  (project)"), "{screen}");
+    assert!(screen.contains("SETTINGS  project: hub"), "{screen}");
+    assert!(!screen.contains("checkout-7  (project)"), "{screen}");
+
+    let declared = repo.join(".af/af.toml");
+    let layer = std::fs::read_to_string(&declared).unwrap();
+    assert!(layer.contains("name = \"hub\"\n"), "{layer}");
+    let first_line = layer.replace(
+        "name = \"hub\"\n",
+        "name = \"\"\"Hub Project\nsecond line\"\"\"\n",
+    );
+    std::fs::write(&declared, first_line).unwrap();
+    assert_eq!(hub_scope(&root, &repo).name(), "Hub Project");
+    let undeclared = layer.replace("name = \"hub\"\n", "");
+    std::fs::write(&declared, undeclared).unwrap();
+    assert_eq!(hub_scope(&root, &repo).name(), "checkout-7");
+}
+
+/// `docs/design/tui.md` states the Workers folder's loading rule as ADR-0261 has it, in every
+/// place it speaks of it: the folder reads from the start in a project scope, on its thread
+/// after the first frame, opened or not, and no longer waits for an open.
+#[test]
+fn design_tui_workers_loading_rule_matches_adr_0261() {
+    let page = std::fs::read_to_string(workspace().join("docs/design/tui.md")).unwrap();
+    let flat = page.split_whitespace().collect::<Vec<_>>().join(" ");
+    for stale in [
+        "reads nothing until it is first opened",
+        "Workers once opened",
+        "runs only when the Workers pane is opened",
+    ] {
+        assert!(
+            !flat.contains(stale),
+            "{stale:?} is the rule ADR-0261 replaced"
+        );
+    }
+    for rule in [
+        "lists its Workers from the start",
+        "first poll after the first frame starts it, opened or not",
+        "the user scope lists none",
+    ] {
+        assert!(flat.contains(rule), "{rule:?} is not stated");
+    }
+}
+
 /// `d` on a registered Provider, from the bar and from its opened pane, prefills the `:` line
 /// with `provider remove ID` and never submits it. An ambient candidate has no registry entry,
 /// and a row that is no Provider has nothing to remove.
@@ -1930,13 +1995,21 @@ fn the_providers_pane_prefills_remove_for_a_registered_provider() {
     assert_eq!(app.prompt.text, line);
     assert_eq!(app.prompt.cursor, line.len());
     press(&mut app, &mut host, b"\x1b");
+    // With Caps Lock on: `D` is the Tasks pane's own key, so to a Provider it is `d`.
+    press(&mut app, &mut host, b"D");
+    assert_eq!(app.mode, Mode::Command);
+    assert_eq!(app.prompt.text, line);
+    press(&mut app, &mut host, b"\x1b");
     // Opened, with the main pane focused: the same line, and the legend names the verb.
     press(&mut app, &mut host, b"\r\t");
     let status = status_line(&mut app);
     assert!(status.contains("d remove"), "{status}");
-    press(&mut app, &mut host, b"d");
-    assert_eq!(app.prompt.text, line);
-    press(&mut app, &mut host, b"\x1b");
+    for key in [&b"d"[..], b"D"] {
+        press(&mut app, &mut host, key);
+        assert_eq!(app.mode, Mode::Command);
+        assert_eq!(app.prompt.text, line);
+        press(&mut app, &mut host, b"\x1b");
+    }
     assert!(host.events.is_empty(), "nothing was submitted");
     // Enter on the prefilled line is what runs it, as typed.
     press(&mut app, &mut host, b"d\r");

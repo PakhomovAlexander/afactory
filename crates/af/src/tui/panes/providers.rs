@@ -988,6 +988,52 @@ pub(crate) mod tests {
         assert!(pane.poll());
     }
 
+    /// `R` discovers again with the usage probe, as a command's return does: a job with the
+    /// probe starts, and the shown inventory, windows included, stays until it answers.
+    #[test]
+    fn r_discovers_again_with_the_usage_probe_and_keeps_the_shown_inventory() {
+        let mut pane = ProvidersPane::discovering();
+        pane.fed = Some(mpsc::channel().0);
+        pane.unregistered = false;
+        pane.start(UsageProbe::Skip);
+        let hand_over = |pane: &ProvidersPane, inventory: ProviderInventory| {
+            pane.fed
+                .as_ref()
+                .unwrap()
+                .send(Discovered {
+                    inventory,
+                    catalogs: Vec::new(),
+                })
+                .unwrap();
+        };
+        // Discovery answers, the automatic probe starts and answers: the windows are shown.
+        hand_over(&pane, inventory(&["codex-main"]));
+        assert!(pane.poll());
+        let mut probed = inventory(&["codex-main"]);
+        probed.providers[0].usage = UsageState::Available;
+        probed.providers[0].limits = vec![window("codex 5h", 40, None)];
+        hand_over(&pane, probed);
+        assert!(pane.poll());
+        assert!(pane.job.is_none());
+        let temp = tempfile::tempdir().unwrap();
+        let scope = crate::tui::tests::user_scope(temp.path());
+        pane.refresh(&scope).unwrap();
+        assert_eq!(
+            pane.job.as_ref().map(|job| job.usage),
+            Some(UsageProbe::Probe)
+        );
+        let rows: Vec<String> = pane.rows().iter().map(Row::text).collect();
+        assert!(
+            rows.iter().any(|row| row.starts_with("codex-main ")),
+            "{rows:#?}"
+        );
+        assert!(
+            rows.iter().any(|row| row.starts_with("limit  codex 5h  [")),
+            "{rows:#?}"
+        );
+        assert!(pane.busy().is_some(), "the spinner says a probe runs");
+    }
+
     #[test]
     fn a_discovery_without_the_opened_provider_shows_the_folder() {
         let both = inventory(&["codex-main", "codex-work"]);
