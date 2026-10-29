@@ -142,7 +142,7 @@ the sealer treated anything that was not a directory or a link as a file, so a F
   record, as it can write anything the user owns. As ADR-0131 says, the records make the layer
   honest as evidence of what the kernel did, not proof against a check acting on the host.
 
-**Amended 2026-10-29** (issue #459). This repository's `.af/code-policy.toml` now declares
+**Amended 2026-10-29.** Issue #459. This repository's `.af/code-policy.toml` now declares
 `[warm] clone_when_busy = true`. A gate held its warm layer for its whole check, a 25-106 s build
 and then 17-26 minutes of tests, so gates of one key waited for each other's whole test phase, and
 the wait counted against the waiting gate's check deadline: in one night ten gates waited
