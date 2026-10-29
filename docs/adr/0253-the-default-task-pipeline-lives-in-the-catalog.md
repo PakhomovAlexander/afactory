@@ -2,6 +2,15 @@
 
 **Status:** proposed (2026-10-28).
 
+**Amended 2026-10-29** by
+[ADR-0262](0262-offer-a-light-default-pipeline-for-small-changes.md): the catalog's
+`[review.reviewers]` now marks `bugs` advisory, so a light pipeline may leave it unbound. The
+default pipeline still binds it and counts its findings and its missing result; where this record
+calls bugs and correctness the two required reviewers, read the two bound reviewers whose findings
+count, of which only correctness is required in the catalog's policy terms. Not every change runs
+through the default pipeline any more: a small, local one may run through the light default
+pipeline.
+
 ## Context
 
 Every change to this repository is made through af Tasks (AGENTS.md). On 27 October 2026 the

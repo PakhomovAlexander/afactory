@@ -2930,6 +2930,36 @@ fn print_render(options: &Options) -> Result<(), String> {
     Ok(())
 }
 
+/// The most changed paths the first screen lists one per line; a larger Subject is summarized.
+const PLAN_LISTED_PATHS: usize = 3;
+
+/// The `change` lines of `af review plan`'s text: one per changed path under `--long` or for a
+/// Subject of at most [`PLAN_LISTED_PATHS`]; else one line `width` columns wide with as many of
+/// the first paths as fit (at least one), how many more there are and the pointer to `--long`.
+/// `--json` always carries every path.
+fn plan_change_lines(paths: &[String], long: bool, width: usize) -> Vec<String> {
+    if long || paths.len() <= PLAN_LISTED_PATHS {
+        return paths
+            .iter()
+            .map(|path| format!("  change  {path}"))
+            .collect();
+    }
+    let line = |shown: usize| {
+        let more = paths.len() - shown;
+        let listed = paths[..shown].join(", ");
+        if more == 0 {
+            format!("  change  {listed}")
+        } else {
+            format!("  change  {listed} and {more} more; --long lists each")
+        }
+    };
+    let mut shown = 1;
+    while shown < paths.len() && line(shown + 1).chars().count() <= width {
+        shown += 1;
+    }
+    vec![line(shown)]
+}
+
 /// The first screen identifies Snapshots by a readable prefix; --long and --json carry the
 /// complete digest for exact inspection.
 fn plan_snapshot_id(value: &str, long: bool) -> String {
@@ -3056,12 +3086,14 @@ fn print_plan(options: &Options, long: bool) -> Result<(), String> {
             terminal_text(selectors["candidate"].as_str().unwrap_or("?")),
         );
     }
-    for path in plan["subject"]["changed_paths"]
+    let paths: Vec<String> = plan["subject"]["changed_paths"]
         .as_array()
         .into_iter()
         .flatten()
-    {
-        plan_line!("  change  {}", terminal_text(path.as_str().unwrap_or("?")));
+        .map(|path| terminal_text(path.as_str().unwrap_or("?")))
+        .collect();
+    for line in plan_change_lines(&paths, long, human::width()) {
+        plan_line!("{line}");
     }
     if let Some(route) = plan["route"].as_object() {
         plan_line!(
@@ -5952,6 +5984,63 @@ mod terminal_text_tests {
              paths=esc\\u{1b}]0;PWNED\\u{7}name,new\\u{a}  sha256:forged base=x \
              applicability=current paths=y"
         );
+    }
+}
+
+#[cfg(test)]
+mod plan_change_tests {
+    use super::plan_change_lines;
+
+    fn paths(count: usize) -> Vec<String> {
+        (1..=count)
+            .map(|n| format!("src/module_{n:02}.rs"))
+            .collect()
+    }
+
+    /// #425 item 3: a small Subject lists each path; a larger one takes one line of the first
+    /// paths that fit, how many more and the pointer to `--long`, which lists every path.
+    #[test]
+    fn the_first_screen_summarizes_a_large_subject_and_long_lists_every_path() {
+        assert_eq!(
+            plan_change_lines(&paths(3), false, 80),
+            [
+                "  change  src/module_01.rs",
+                "  change  src/module_02.rs",
+                "  change  src/module_03.rs"
+            ]
+        );
+        assert!(plan_change_lines(&[], false, 80).is_empty());
+        let summary = plan_change_lines(&paths(25), false, 80);
+        assert_eq!(
+            summary,
+            ["  change  src/module_01.rs, src/module_02.rs and 23 more; --long lists each"]
+        );
+        assert!(summary[0].chars().count() <= 80);
+        assert_eq!(
+            plan_change_lines(&paths(25), false, 100),
+            [
+                "  change  src/module_01.rs, src/module_02.rs, src/module_03.rs and 22 more; \
+                 --long lists each"
+            ]
+        );
+        // The first path is shown even when it alone is wider than the line.
+        let wide = vec!["a/".repeat(50), "b".into(), "c".into(), "d".into()];
+        assert_eq!(
+            plan_change_lines(&wide, false, 80),
+            [format!(
+                "  change  {} and 3 more; --long lists each",
+                "a/".repeat(50)
+            )]
+        );
+        // Every path that fits is listed whole, with no pointer.
+        let short: Vec<String> = ["a", "b", "c", "d"].map(String::from).to_vec();
+        assert_eq!(
+            plan_change_lines(&short, false, 80),
+            ["  change  a, b, c, d"]
+        );
+        let long = plan_change_lines(&paths(25), true, 80);
+        assert_eq!(long.len(), 25);
+        assert_eq!(long[24], "  change  src/module_25.rs");
     }
 }
 

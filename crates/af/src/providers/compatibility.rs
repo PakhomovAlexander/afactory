@@ -125,6 +125,9 @@ impl AgentEnvironment {
     }
 }
 
+/// Whether a CLI's own error text reports a host permission denial. An errno value matches only
+/// on a word boundary: `os error 1` (EPERM) never matches `os error 11` (EAGAIN) or `os error 111`
+/// (ECONNREFUSED).
 fn permission_denied(error: &str) -> bool {
     let lower = error.to_ascii_lowercase();
     [
@@ -136,7 +139,23 @@ fn permission_denied(error: &str) -> bool {
         "eacces",
     ]
     .iter()
-    .any(|word| lower.contains(word))
+    .any(|word| contains_word(&lower, word))
+}
+
+/// Whether `text` holds `word` not followed by another digit.
+fn contains_word(text: &str, word: &str) -> bool {
+    text.match_indices(word).any(|(at, _)| {
+        !text[at + word.len()..]
+            .bytes()
+            .next()
+            .is_some_and(|next| next.is_ascii_digit())
+    })
+}
+
+/// Whether the operating system refused to start a CLI for lack of permission (EPERM or EACCES),
+/// judged by the typed error kind, never by its text.
+fn spawn_denied(error: &std::io::Error) -> bool {
+    error.kind() == std::io::ErrorKind::PermissionDenied
 }
 
 /// What the CLI lacks, what it said, and how to fix it.
@@ -244,7 +263,9 @@ pub(super) fn check_invocation(
             )));
         }
         BoundedRun::Unstartable(error) => {
-            if permission_denied(&error) {
+            let denied = spawn_denied(&error);
+            let error = error.to_string();
+            if denied {
                 return Err(CliRefusal::Denied(DeniedProbe::new(
                     spec,
                     format!(
@@ -834,5 +855,76 @@ mod tests {
             "{message}"
         );
         assert!(!message.contains("upgrade"), "{message}");
+    }
+
+    #[test]
+    fn errno_values_are_matched_on_word_boundaries() {
+        for denied in [
+            "Error: Operation not permitted (os error 1)",
+            "Error: Permission denied (os error 13)",
+            "spawn failed: os error 1",
+            "spawn failed: os error 13",
+            "spawn EPERM",
+            "spawn EACCES",
+        ] {
+            assert!(permission_denied(denied), "{denied}");
+        }
+        for other in [
+            "Resource temporarily unavailable (os error 11)",
+            "Connection refused (os error 111)",
+            "os error 11",
+            "os error 111",
+            "os error 131",
+        ] {
+            assert!(!permission_denied(other), "{other}");
+        }
+        assert!(permission_denied("os error 111; then os error 1"));
+    }
+
+    #[test]
+    fn a_spawn_failure_is_denied_by_its_error_kind() {
+        for errno in [1, 13] {
+            assert!(
+                spawn_denied(&std::io::Error::from_raw_os_error(errno)),
+                "{errno}"
+            );
+        }
+        for errno in [2, 11, 111] {
+            assert!(
+                !spawn_denied(&std::io::Error::from_raw_os_error(errno)),
+                "{errno}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_help_probe_the_host_refused_to_spawn_is_denied() {
+        let directory = tempfile::tempdir().unwrap();
+        let program = program(directory.path(), "claude", "exit 0");
+        std::fs::set_permissions(&program, std::fs::Permissions::from_mode(0o600)).unwrap();
+        let Err(CliRefusal::Denied(denied)) = check_invocation(
+            &program,
+            &spec(directory.path(), ProviderKind::Claude),
+            std::ffi::OsStr::new("/usr/bin:/bin"),
+            &AtomicBool::new(false),
+            None,
+        ) else {
+            panic!("a help probe the host refused to spawn was not classified");
+        };
+        let message = denied.message();
+        assert!(
+            message.contains("`claude --help`: Permission denied"),
+            "{message}"
+        );
+    }
+
+    #[test]
+    fn a_help_probe_failing_with_connection_refused_is_not_denied() {
+        let directory = tempfile::tempdir().unwrap();
+        let body = "echo 'Error: Connection refused (os error 111)' >&2\nexit 1";
+        assert!(matches!(
+            check(directory.path(), ProviderKind::Claude, body),
+            Err(CliRefusal::CannotStart(_))
+        ));
     }
 }

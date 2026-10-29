@@ -28,6 +28,11 @@ as `install.sh` does, and uses `gh` only when that is refused (401, 403, 404, or
 judging it by the call it makes rather than by `gh auth status`. `af self update` without
 `--version` refuses a listed newest that is older than the running release.
 
+**Amended 2026-10-29** ([#430](https://github.com/PakhomovAlexander/afactory/issues/430)).
+"Token-free and stateless" above describes `af review plan` without `--file`. With `--file` it
+plans a Review Task: it opens the Task in the Task Store and records its proposed plan, the
+Store write `af help --json` declares for it. That it never installs is unchanged.
+
 Consumers ran `af` through per-repository launcher scripts that carried a version and digests,
 while `af.lock` (ADR for #47) already recorded the release that wrote it and could only warn or
 refuse on drift. The CLI parsed argv by hand with one usage string for every command, had no

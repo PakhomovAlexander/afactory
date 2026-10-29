@@ -171,13 +171,18 @@ it got. After `reviewer_findings` this is the command `next_action` names.
 
 Hand a finding to the agent that will fix it through its `agent_prompt`: the location on the
 reviewed Snapshot, the evidence, the requested change, how verification will judge the fix, and
-all of it as one `text`. Read the round's `coverage` before you read an empty list as clean: a
-reviewer whose `state` is `not_run` never looked, and its `reason` says why; a path is
-`reviewed`, `partially_reviewed`, `not_reviewed` or `outside_round`. A finding is verified fixed
-only when the round's `verified_fixed` names it with its verification record; a `fixed` status
-or a later change to the file is not proof. `af task findings TASK_ID --format sarif` prints
-the same findings as one SARIF 2.1.0 log for code-scanning tools; a review Campaign's report
-takes the same `--format sarif`.
+all of it as one `text`: when the evidence or the title is too long to fit the bound, `text`
+cuts it, marked `[… truncated to fit the prompt]`, and keeps the requested change and the
+verification whole when they fit after the evidence and the title are cut. A requested change
+too long to fit even then is cut with the same marker, the location and the verification stay
+whole, and the structured `requested_change` field always holds the complete bounded value.
+Read the round's `coverage` before you read an empty list as clean: a reviewer whose `state` is
+`not_run` has no admitted review result for the round, and its `reason` says what was recorded;
+a path is `reviewed`, `partially_reviewed`, `not_reviewed` or `outside_round`. A finding is
+verified fixed only when the round's `verified_fixed` names it with its verification record; a
+`fixed` status or a later change to the file is not proof.
+`af task findings TASK_ID --format sarif` prints the same findings as one SARIF 2.1.0 log for
+code-scanning tools; a review Campaign's report takes the same `--format sarif`.
 
 ## 5. Look at the change
 

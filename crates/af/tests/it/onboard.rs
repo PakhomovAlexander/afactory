@@ -95,25 +95,123 @@ fn preview_detects_gate_and_writes_nothing() {
     assert_eq!(words.last().map(String::as_str), Some("--apply"));
 }
 
+/// The words of the command a next step of the text preview continues over its lines, the one
+/// whose first line starts `prefix` under its step: as a shell reads it pasted.
+fn step_command(text: &str, prefix: &str) -> Vec<String> {
+    let mut lines = text
+        .lines()
+        .skip_while(|line| !line.trim_start().starts_with(prefix));
+    let mut command = lines.next().unwrap_or_default().to_owned();
+    for line in lines {
+        if !command.ends_with('\\') {
+            break;
+        }
+        command.push('\n');
+        command.push_str(line);
+    }
+    shell_words::split(&command).unwrap()
+}
+
+/// The rows `text` takes on a terminal `columns` wide: a line wider than the terminal wraps onto
+/// as many rows as it needs.
+fn display_rows(text: &str, columns: usize) -> usize {
+    text.lines()
+        .map(|line| line.chars().count().div_ceil(columns).max(1))
+        .sum()
+}
+
+/// The rows the preview `text` takes on an 80-column terminal where the repository sits at
+/// `/tmp/repo` instead of `path`. The path is as long as the host's temp root, not the
+/// preview's: its `repository` line takes the placeholder, and the apply command, which the
+/// preview continues between its arguments and cuts inside a path wider than a line, is laid
+/// out again with it as `fit_command` lays a command: its words after a five-column label while
+/// each leaves room for ` \`, each continuation nine columns in.
+fn rows_with_short_repo(text: &str, path: &str) -> usize {
+    let mut rest = Vec::new();
+    let mut lines = text.lines();
+    let mut command = None;
+    while let Some(line) = lines.next() {
+        if command.is_some() || !line.trim_start().starts_with("af onboard ") {
+            rest.push(line.replace(path, "/tmp/repo"));
+            continue;
+        }
+        let mut block = line.to_owned();
+        while block.ends_with('\\') {
+            let Some(next) = lines.next() else { break };
+            block.push('\n');
+            block.push_str(next);
+        }
+        command = Some(shell_words::split(&block).unwrap());
+    }
+    let command_rows = command.map_or(0, |words| {
+        let mut rows = 1;
+        let mut current = 5;
+        let mut fresh = true;
+        for word in words {
+            let word = if word == path {
+                "/tmp/repo".to_owned()
+            } else {
+                word
+            };
+            let width = shell_words::quote(&word).chars().count();
+            let space = usize::from(!fresh);
+            if current + space + width + 2 <= 80 {
+                current += space + width;
+            } else {
+                rows += 1;
+                current = 9 + width;
+            }
+            fresh = false;
+        }
+        rows
+    });
+    display_rows(&rest.join("\n"), 80) + command_rows
+}
+
+/// The preview of a source build (no install receipt) on a machine with no Provider registered,
+/// its longest case, reads on one 80x24 terminal: no line wraps and it takes at most 24 rows.
 #[test]
 fn default_preview_fits_one_screen_and_long_shows_topology() {
     let root = tempfile::tempdir().unwrap();
     let repo = repo(root.path());
     std::fs::write(repo.join("Makefile"), "check:\n\t@true\n").unwrap();
-    let short = af(&repo, &[]);
+    let none = registry(&root.path().join("none"), &[]);
+    let short = onboard_with(&repo, &none, &[]);
     assert!(short.status.success(), "{}", stderr(&short));
     let text = stdout(&short);
-    assert!(
-        text.lines().count() <= 24,
-        "{} lines:\n{text}",
-        text.lines().count()
-    );
+    assert!(text.contains("none registered"), "{text}");
+    assert!(text.contains("warning     no install receipt"), "{text}");
+    let path = repo.canonicalize().unwrap().display().to_string();
+    // Only the `repository` line, which prints the path whole, may be wider.
+    for line in text.lines() {
+        assert!(
+            line.chars().count() <= 80 || line == format!("repository  {path}"),
+            "{line:?}\n{text}"
+        );
+    }
+    // The rows are counted with the repository at a short path: its length is the host's.
+    let rows = rows_with_short_repo(&text, &path);
+    assert!(rows <= 24, "{rows} rows at /tmp/repo:\n{text}");
     assert!(!text.contains("topology\n"), "{text}");
     assert!(text.contains("--long lists each"), "{text}");
-    let long = af(&repo, &["--long"]);
+    // The apply command, continued between its arguments, still runs as copied.
+    let words = step_command(&text, "af onboard ");
+    assert_eq!(
+        words[..4],
+        ["af", "onboard", "--repo", path.as_str()],
+        "{text}"
+    );
+    assert_eq!(words.last().map(String::as_str), Some("--apply"), "{text}");
+    let long = onboard_with(&repo, &none, &["--long"]);
     assert!(long.status.success(), "{}", stderr(&long));
-    assert!(stdout(&long).contains("topology\n"));
-    assert!(stdout(&long).contains("  .af/README.md"));
+    let long = stdout(&long);
+    assert!(long.contains("topology\n"));
+    assert!(long.contains("  .af/README.md"));
+    assert!(
+        long.contains("convergence 1 clean Round; 2 Round maximum"),
+        "{long}"
+    );
+    assert!(long.contains("no install receipt at"), "{long}");
 }
 
 #[test]
@@ -492,25 +590,42 @@ fn the_providers_block_and_the_runner_follow_the_registered_kinds() {
     assert!(output.status.success(), "{}", stderr(&output));
     let text = stdout(&output);
     assert!(
-        text.contains("profile     multi-review@1 · runner mixed (no Provider is registered on this machine yet; see providers below; pass --runner to change)"),
+        text.contains("profile     multi-review@1 · runner mixed (no Provider registered yet)"),
         "{text}"
     );
     // The block stands between the reviewers and the gates.
     let order: Vec<&str> = text
         .lines()
-        .filter(|line| ["reviewers", "providers", "gates"].contains(line))
+        .filter_map(|line| line.split_whitespace().next())
+        .filter(|label| ["reviewers", "providers", "gates"].contains(label))
         .collect();
     assert_eq!(order, ["reviewers", "providers", "gates"], "{text}");
+    // One gate takes the label's line.
+    assert!(
+        text.contains("\ngates       check: make check [detected Makefile target]\n"),
+        "{text}"
+    );
     assert_eq!(
         block(&text, "providers"),
         [
-            "correctness needs a claude Provider: none registered   ← af provider detect, or af provider setup claude-main --kind claude --login",
-            "architecture needs a codex Provider: none registered   ← af provider detect, or af provider setup codex-main --kind codex --login",
+            "correctness needs a claude Provider: none registered",
+            "← af provider detect, or af provider setup claude-main --kind claude --login",
+            "architecture needs a codex Provider: none registered",
+            "← af provider detect, or af provider setup codex-main --kind codex --login",
         ]
     );
+    // The block names the fix in text; the document's next steps carry it for an agent.
+    assert!(!text.contains("Register a Provider"), "{text}");
+    let report: serde_json::Value =
+        serde_json::from_slice(&onboard_with(&repo, &none, &["--json"]).stdout).unwrap();
     assert!(
-        text.contains("Register a Provider if the providers block says none: af provider detect"),
-        "{text}"
+        report["next_steps"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|step| step
+                == "Register a Provider if the providers block says none: af provider detect"),
+        "{report}"
     );
 
     // One kind: the runner follows it, and each Worker is bound to its Provider.
@@ -519,14 +634,16 @@ fn the_providers_block_and_the_runner_follow_the_registered_kinds() {
     assert!(output.status.success(), "{}", stderr(&output));
     let text = stdout(&output);
     assert!(
-        text.contains("runner codex (the only Provider kind registered on this machine; pass --runner to change)"),
+        text.contains("runner codex (the only Provider kind registered)"),
         "{text}"
     );
     assert_eq!(
         block(&text, "providers"),
         [
-            "correctness needs a codex Provider: codex-main (registered; --probe checks its login)   ← bind with --provider correctness=codex-main",
-            "architecture needs a codex Provider: codex-main (registered; --probe checks its login)   ← bind with --provider architecture=codex-main",
+            "correctness needs a codex Provider: codex-main (--probe checks its login)",
+            "← bind with --provider correctness=codex-main",
+            "architecture needs a codex Provider: codex-main (--probe checks its login)",
+            "← bind with --provider architecture=codex-main",
         ]
     );
     assert!(text.contains(" --runner codex "), "{text}");
@@ -545,14 +662,16 @@ fn the_providers_block_and_the_runner_follow_the_registered_kinds() {
     let output = onboard_with(&repo, &both, &[]);
     let text = stdout(&output);
     assert!(
-        text.contains("runner mixed (claude and codex Providers are both registered on this machine; pass --runner to change)"),
+        text.contains("runner mixed (both Provider kinds registered)"),
         "{text}"
     );
     assert_eq!(
         block(&text, "providers"),
         [
-            "correctness needs a claude Provider: claude-work (registered; --probe checks its login)   ← bind with --provider correctness=claude-work",
-            "architecture needs a codex Provider: codex-main (registered; --probe checks its login)   ← bind with --provider architecture=codex-main",
+            "correctness needs a claude Provider: claude-work (--probe checks its login)",
+            "← bind with --provider correctness=claude-work",
+            "architecture needs a codex Provider: codex-main (--probe checks its login)",
+            "← bind with --provider architecture=codex-main",
         ]
     );
 
@@ -609,15 +728,18 @@ fn apply_and_validate_say_what_to_register_and_fill_the_plan_line() {
     let validated = onboard_with(&repo, &both, &[]);
     assert!(validated.status.success(), "{}", stderr(&validated));
     let text = stdout(&validated);
-    assert!(
-        text.contains("`af review plan --policy-rev HEAD --base HEAD --uncommitted --provider architecture=codex-main --provider correctness=claude-work`"),
+    assert_eq!(
+        step_command(&text, "af review plan "),
+        shell_words::split("af review plan --policy-rev HEAD --base HEAD --uncommitted --provider architecture=codex-main --provider correctness=claude-work").unwrap(),
         "{text}"
     );
     assert!(!text.contains("Register a Provider"), "{text}");
     // Without them it keeps placeholders and says how to register.
     let text = stdout(&onboard_with(&repo, &none, &[]));
     assert!(
-        text.contains("--provider architecture=<codex-provider-id> --provider correctness=<claude-provider-id>"),
+        step_command(&text, "af review plan ").ends_with(
+            &shell_words::split("--provider architecture=<codex-provider-id> --provider correctness=<claude-provider-id>").unwrap()
+        ),
         "{text}"
     );
     assert!(
@@ -861,8 +983,20 @@ fn afactory_authority_plans_a_three_field_task_with_its_defaults() {
     let project: toml::Value =
         toml::from_str(&std::fs::read_to_string(repo.join(".af/af.toml")).unwrap()).unwrap();
     assert_eq!(
+        project["task"]["defaults"]["pipeline"].as_str(),
+        Some("default/implementation")
+    );
+    assert_eq!(
         project["task"]["defaults"]["limits"]["tokens"].as_integer(),
-        Some(6_000_000)
+        Some(8_000_000)
+    );
+    assert_eq!(
+        project["task"]["defaults"]["limits"]["max_attempts"].as_integer(),
+        Some(16)
+    );
+    assert_eq!(
+        project["task"]["defaults"]["limits"]["wall_ms"].as_integer(),
+        Some(43_200_000)
     );
     assert_eq!(
         project["task"]["defaults"]["limits"]["verification"]["tokens"].as_integer(),
@@ -870,11 +1004,11 @@ fn afactory_authority_plans_a_three_field_task_with_its_defaults() {
     );
     assert_eq!(
         project["task"]["defaults"]["limits"]["verification"]["attempts"].as_integer(),
-        Some(8)
+        Some(9)
     );
     assert_eq!(
         project["task"]["defaults"]["limits"]["verification"]["wall_ms"].as_integer(),
-        Some(14_400_000)
+        Some(18_000_000)
     );
     commit(&repo);
     let ticket = root.path().join("short.json");
@@ -924,12 +1058,32 @@ fn afactory_authority_plans_a_three_field_task_with_its_defaults() {
         stderr(&planned)
     );
     assert!(
-        stderr(&planned).contains("limits (tokens 6000000, max_attempts 16, wall_ms 28800000)")
+        stderr(&planned).contains("limits (tokens 8000000, max_attempts 16, wall_ms 43200000)")
     );
     assert!(
-        stdout(&planned).contains("kernel/implementation-reviewed"),
+        stdout(&planned).contains("default/implementation"),
         "{}",
         stdout(&planned)
+    );
+    // Every default-pipeline binding is checked against the recorded catalogs: the Codex
+    // fixture lists `gpt-5.6-terra`, which `default/bugs` binds.
+    for worker in [
+        "default/implementer",
+        "default/bugs",
+        "default/correctness",
+        "default/advisor",
+        "default/evaluator",
+    ] {
+        assert!(
+            stderr(&planned).contains(&format!("model {worker} ")),
+            "{worker}: {}",
+            stderr(&planned)
+        );
+    }
+    assert!(
+        !stderr(&planned).contains("unverified against the catalog"),
+        "{}",
+        stderr(&planned)
     );
 }
 

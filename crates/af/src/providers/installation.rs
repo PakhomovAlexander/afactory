@@ -230,9 +230,9 @@ fn version_run(
         probe_timeout(PROBE_TIMEOUT),
     ) {
         BoundedRun::GaveUp(_) => VersionCheck::Undetermined,
-        BoundedRun::Unstartable(error) => {
-            VersionCheck::Failed(StartFailure::Unstartable(bounded_cli_line(&error)))
-        }
+        BoundedRun::Unstartable(error) => VersionCheck::Failed(StartFailure::Unstartable(
+            bounded_cli_line(&error.to_string()),
+        )),
         BoundedRun::Exited {
             status,
             stdout,
@@ -269,8 +269,9 @@ pub(super) enum BoundedRun {
         stdout: Vec<u8>,
         stderr: Vec<u8>,
     },
-    /// The operating system refused to start it.
-    Unstartable(String),
+    /// The operating system refused to start it, with its typed error so a host denial is told
+    /// apart by its kind rather than its text.
+    Unstartable(std::io::Error),
     /// af stopped waiting — the timeout, the Attempt deadline or cancellation — or could not
     /// read the process's streams. Nothing about the CLI follows.
     GaveUp(String),
@@ -311,7 +312,7 @@ pub(super) fn run_bounded(
     command.process_group(0);
     let mut child = match review_process::spawn(&mut command) {
         Ok(child) => child,
-        Err(error) => return BoundedRun::Unstartable(error.to_string()),
+        Err(error) => return BoundedRun::Unstartable(error),
     };
     let mut watch = review_process::ExitWatch::new(child.id());
     let mut stdout = child.stdout.take().expect("bounded run stdout was piped");
