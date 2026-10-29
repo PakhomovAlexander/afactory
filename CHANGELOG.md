@@ -19,6 +19,1019 @@ publish step — so everything it carried shipped in `0.9.0-rc.6`.
 Changes since the last release are notes under [`changelog.d/`](changelog.d/), one file per
 pull request; the release pull request collects them here.
 
+## [0.14.0-rc.1] - 2026-10-29
+
+### Authority compatibility
+
+Committed .af/ policy valid under 0.13.0 needs no hand edit. Run af onboard --refresh-lock to pin 0.14.0-rc.1 and its signed bytes. State written by other releases remains unsupported under ADR-0145.
+
+### Changes
+
+- release: v0.13.0-rc.2 (#337)
+- chore(deps): bump actions/setup-python from 7.0.0 to 7.1.0 in the actions-minor-and-patch group (#339)
+- release: v0.13.0 (#344)
+- perf: connect telemetry experiments and diagnostics to the performance lab (#338)
+- test: preserve private AF fixtures across filesystems (#350)
+- fix(perf): run real telemetry fixtures within bounded scratch (#354)
+- fix(perf): bind CPU symbol evidence and prevent perf cache cleanup failures (#356)
+- perf: declare the replacement hosted calibration cohort (#377)
+- docs: rewrite the README for people and agents (#383)
+- Stabilize guarded macOS performance gate (#345)
+- feat(ci): add label-controlled test classes and fast/full releases (#342)
+- test: prove release profiles in CI without publishing (#396)
+- fix: land reviewed telemetry and test-validation follow-ups (#404)
+- ci: default every PR to fast validation (#405)
+- gate: fast Task gate, manual kernel measurement, targeted Worker tests (ADR-0251, ADR-0252) (#419)
+- feat(perf): run Performance Lab independently on a locked VM (#398)
+- Add the default Task pipeline to the catalog (ADR-0253) (#422)
+- tui: open the browser before any Store is read (#402) (#407)
+- Agent UX, first tier: sandbox-aware probes, agent entry point, classified refusals (#392)
+- fix(perf): confirm container removal by a typed outcome, within its allowance (#388) (#417)
+- feat(task): close out #331: attempt-wall sealing, worker input trees, check walls, typed acceptance, error@2 recovery, stress proofs (#428)
+- Agent UX, next tier: additive Task onboarding, review JSON and first screens, Task waits (#423)
+- Agent UX, later tier: native reviewer schemas, command catalog, findings handoff, attention view, event stream (#429)
+- catalog: carry the kernel's diff_subject input in the default reviewer packages (main's default pipeline does not compile since #428) (#437)
+- Derive Task gate evidence from the check report, one tests record per run (#346) (#438)
+- Batch scratch enforcement syncs within the existing verification budget (#442)
+- tests: make the macOS kernel gate pass again on main (wrapped next lines under a long TMPDIR, read-only copies in the receipt migration) (#440)
+- Agent entry point: four rules, skills Codex loads, refusals that name the next command (#363, #394, #434) (#444)
+- tui: shape the browser around what a person looks for (limits always, the Project's view, f for what runs) (#446)
+- docs: correct the long-TMPDIR counts in the local executor note (#447)
+- fix(provider): match errno values on word boundaries (#448)
+- fix(handoff): keep the requested change and verification in a long agent prompt (#450)
+- fix(task): refuse a planned Task on every event poll; bound the follower test (#451)
+- fix(catalog): complete the effects of four commands (#453)
+- Review screens: compact plan path list, onboarding preview width, starter boilerplate (#454)
+- chore(af): make the default pipeline afactory's [task.defaults] (#449)
+- Offer a light default pipeline for small changes (ADR-0262) (#452)
+- perf(tui): bare af's first browser frame as a performance target (ADR-0258, Task B of #402) (#439)
+- tests: read a wrapped next line exactly as a shell does (follow-up to #440) (#445)
+
+Calibration groups now take separate ID, CPU model and pinned registry-image arguments,
+preserving `@` inside both CPU names and complete OCI references. Calibration dispatches carry
+the checked full main SHA: a moved or missing source is visibly refused as a non-member before
+planning or measurement. The retained operator entry point supports genuine preflight with
+`--dry-run` while disabled, preserves durable one-shot intent and ambiguous-request latches,
+and has synthetic parser, workflow and operator regression coverage. The old cohort remains
+frozen; a new cohort must be declared from the committed repaired producer with fresh history,
+future dates and exact observed groups. No deployment, calibration readiness or activation is
+claimed.
+
+Make performance seed-refusal fixtures exercise both `0022` and `0077` creation umasks,
+restore the process umask even on setup failure, and compare original modes and bytes after
+refusal. Model macOS protected executable resolution in the samply capability fixture so
+Linux system symlinks cannot change its expectations, retaining flags, version, self-built
+and hardened-runtime coverage. Production admission and profiler protections, golden oracle
+bytes, gates and budgets are unchanged.
+
+- Contain telemetry experiments and collect only results verified under their authority. Every
+  execution of `cli.py telemetry-run` runs through one executor. `--mode linux_container`, the
+  only mode for a pull request, gives each execution its own container of the pinned image with
+  only its own scratch directory writable, bounded while it writes. An uncertain cleanup or a
+  changed binary, authority, corpus or result stops the run. A document is admitted only as its
+  planned run, with every figure recomputed (read latency included), and a result verifies only
+  under exactly its measurement authority. The workflow builds in the pinned image and uploads
+  only what `telemetry-admit` verified and found credential-free. The new
+  `cli.py telemetry-collect` lane keeps verified results in a locked, bounded history beside the
+  unchanged archive collector
+  ([ADR-0215](docs/adr/0215-contain-telemetry-experiments-and-collect-only-results-verified-under-their-authority.md)).
+
+- Bring Telemetry into the performance laboratory while preserving the timing verdict and old
+  calibration cohort bytes. The integrated `performance.yml` includes published-main changes
+  and the dispatch-head repair; it requires a fresh cohort from the final committed reviewed
+  producer. `cli.py profile --telemetry spans|content`
+  records each eligible CLI case per side and reads it back through that side's own
+  `af telemetry` documents and their committed schemas. The child page and report show phase
+  rows, a timeline and a Perfetto file, with partial evidence named and never complete
+  (`af.perf-profiles/5`, `af.perf-report/3`). The advisory `Performance telemetry` workflow and
+  `cli.py telemetry-run|verify|history` measure Telemetry's overhead, invocation cost and read
+  latency on a baseline and a candidate binary, judged by each script's own rule and compared
+  only per level on one host. `cli.py probe --trace-output` gives the `authority_runtime_new`
+  investigation a phase breakdown
+  ([ADR-0214](docs/adr/0214-integrate-telemetry-into-the-performance-lab-as-diagnostics-and-advisory-experiments.md)).
+
+Performance Lab reference generation now constructs deterministic letters, padding and source-file
+fill from their literal periods and scans the exact restricted ASCII domain without Python loops
+per character. The independent oracle still rederives every expected fact for the supplied registry;
+all committed golden bytes are unchanged. Six unprofiled samples on one host reduced the focused
+two-document median from 3.934 s to 0.987 s; this is not a product or complete-gate speed claim.
+The [measurement report](../docs/performance-reference-throughput.md) retains every sample and digest.
+
+Accounting fixtures renew their existing three-second writer lease through setup and operation
+boundaries. Task dispatch now releases an admitted but unstarted reservation when cancellation
+or authority checks stop it before launch, keeping the original scheduler failure. Ordinary
+accounting appends may revalidate and retry once after a proven suffix of only the same live
+writer's heartbeat renewals; other changes, expiry, stale writers and owned cross-log fences
+still refuse. Review's outstanding-Attempt error names pending IDs and scheduler reports.
+Deterministic regressions cover those failure paths; no earlier intermittent failure is
+claimed resolved without its original evidence
+([ADR-0218](docs/adr/0218-reapply-an-accounting-append-once-after-only-this-writers-heartbeat-renewals.md)).
+
+Repair three repository planning fixtures that substituted command Workers under
+`distinct_models = true`: reuse the published model-preserving replacements, isolated fake
+Provider probes, admission reservations and check-tool PATH, with same-model and command
+refusals before dispatch. Fix the credential fixture's whole-message `sk-` collision with a
+trusted executable path by checking complete synthetic secret markers, retaining exact
+withheld-line and safe-stderr assertions, and exercising an explicit `task-sk-parent` directory;
+production redaction is unchanged. Regenerate the protected harness inventory and policy with
+the existing generator (output is byte-identical); preserve `.af/`, the old cohort and
+the captured integrated `performance.yml`, including published-main and dispatch-head changes.
+At this earlier fixture-repair checkpoint, Rust 1.88.0 formatting and all three staged-generator
+tests passed. The focused credential, positive/negative planning, original scratch/source-mutation report and
+lease-fencing cases could not compile because cached Cargo dependencies were missing and
+`static.crates.io` DNS was unavailable; Clippy was blocked for the same reason. At that checkpoint,
+the report lease conflict remained unreproduced and unresolved: the exact append permit checks
+sequence and expiry inside an IMMEDIATE transaction, and ADR-0128 documents a reserve-renewal race, but
+neither identifies this failure's cause. No lease, deadline, retry or suite policy changed;
+sealed-gate, independent review and goal acceptance were pending. Subsequent deterministic
+settlement evidence and its limits are recorded in
+[the settlement repair report](docs/performance-task-settlement-repair.md); final acceptance
+must come from the enclosing Task's sealed-source gate, independent reviews and evaluation.
+
+- Reconcile the mechanical Performance Lab merge with published main: keep published ADR0001–0213
+  and their references, resolve the ADR index conflict, and renumber the eight unpublished lab
+  decisions to ADR0214–0221. Preserve the published CLI isolation fixture and changelog, release
+  and policy bytes, historical hashes and measurement evidence. Align documentation, source,
+  help and configuration references, and regenerate schema descriptions and protected inventory
+  and staged policy with the existing generators. Substantive decisions and behavior are unchanged; the
+  [numbering table](docs/performance-telemetry.md#adr-numbering-after-source-reconciliation)
+  records the simultaneous renumbering. Scope implementation and deployment limitations to their
+  recorded checkpoints; current operations require dated operator records. No cohort is declared
+  or activated and no deployment is performed by this reconciliation. The final sealed-source
+  gate, independent reviews and goal evaluation remain the enclosing Task's acceptance work.
+
+Repair trusted local telemetry execution under a Linux ancestor subreaper. Keep the script
+leader unreaped while ending its owned process group, distinguish terminal processes from
+executing survivors with complete bounded evidence, including a zombie leader with live
+threads, and keep failed observations uncertain.
+Leftover live descendants still fail the run, deadlines still stop the group, and cancellation
+or active disk-check errors clean up before propagating. Isolated subreaper regressions reproduce
+both predecessor failures without changing the verdict sample bound or telemetry profiles.
+The ancestor and inner regression helpers resolve the captured source from their own file path;
+all six modes launch without inherited `PYTHONPATH` and from a temporary working directory.
+
+Fix telemetry collection repeatedly selecting the same newest run prefix when completed
+history exceeds the per-cycle run cap. List within the existing page bound, then rotate
+bounded processing through a locked, atomically written attempted-run position. Old verified
+results can reach history; missing, expired and refused results and higher attempts remain
+eligible within lookback. A fixed upper run ID keeps new arrivals from extending a rotation.
+Incomplete listings and capped or interrupted cycles report their
+limits. The new `af.perf-telemetry-collection-position/1` scheduling record fails closed on
+invalid state; the telemetry runbook documents operator reset and reachability limits.
+Artifact admission, history bounds and the archive lane retain their contracts.
+
+The native gate now has a dedicated Linux child owner around its complete execution.
+It promptly reaps exited orphans while tests run, so an outer AF subreaper does not
+accumulate gate zombies. Each owner waits only for its own children and reserves the
+gate leader's status; normal execution lets live descendants finish. After leader exit,
+live descendants have ten seconds to drain before the gate fails and performs bounded
+termination. Cancellation forwards the signal, then escalates after two seconds and
+allows two seconds to confirm cleanup. An unconfirmed cleanup is reported as a failure.
+The body and ordinary descendants retain the enclosing supervisor's process group, so its
+immediate SIGKILL reaches even adopted orphans that clear their environment. Cooperative
+cleanup signals only unreaped child PIDs, never the enclosing group or unrelated siblings.
+This is lifecycle management, not containment; an uncatchable kill of the owner still
+requires outer-supervisor reaping, and descendants that detach and clear their marker can
+escape that cleanup. Non-Linux hosts execute the original gate body directly after restoring
+Python-ignored SIGPIPE and available SIGXFZ/SIGXFSZ to default signal dispositions.
+The lifecycle contract and platform limits are recorded in ADR-0219.
+Tests, native check targets, timing/JUnit output and gate resource budgets are unchanged.
+
+- Make the Store wide-usage and Review provenance fixtures deterministic with scoped unit-test
+  time, retaining their original reservation and verification limits. Add real Store dispatch
+  boundary, durable accounting and clock-isolation regressions
+  ([ADR-0220](../docs/adr/0220-control-store-fixture-time-with-a-scoped-thread-clock.md)).
+  Qualify the concurrency fixture's `Barrier::wait` calls to avoid false child-reap matches
+  in the unchanged source guard, preserving simultaneous clock synchronization.
+
+# Performance laboratory whole-source repairs
+
+- Run every disabled dispatcher dry-run guard even with an uncertain retained intent; preserve
+  the journal and never dispatch from preflight.
+- Admit read latency only with the generator's complete corpus counts and content index.
+  Version its raw protocol and registry to v2, retaining the existing statistical bounds.
+- Bind measurement identity to the complete laboratory code/schema/fixture closure. Retain
+  trusted authority trees, require matching installed verifier semantics and re-verify history;
+  history v2 records the authority location and counts its bytes.
+- Bound collection, Git, local verification, import, retention, history and cleanup by one
+  absolute deadline. Collection v2 records unknown accounting honestly after interruption.
+- Reconcile diagnostic executions with unique segment observations and metadata during capture
+  and report admission; missing evidence is partial and contradictions are refused. The
+  existing subreaper regression helper also recognizes Linux ESRCH on an opened process file
+  as a vanished fixture process; permission and I/O uncertainty still fail.
+
+No new cohort, hosted measurement, deployment or performance improvement is claimed. Existing
+calibration bytes, verdict thresholds, containment and lifecycle repairs remain unchanged.
+
+Fix telemetry collection interruption boundaries: revoke HTTP exchanges before terminal
+accounting, synchronize socket ownership with cancellation, and close history lock descriptors
+even when the deadline interrupts open or flock. A blocked cancelled resolver remains explicitly
+unconfirmed and cannot perform later network operations.
+
+Reconcile diagnostic retained counts, sealed/open execution summaries and both reader inventories
+during capture and report admission. Contradictions are refused; observational differences stay
+partial. Add production-path interruption and hash-consistent report regressions without changing
+schemas, budgets, calibration evidence or statistical policy.
+
+Refuse diagnostic execution/span identity reassignment and duplicate immutable spans in either
+reader inventory, including offline report rederivation. Distinct inventory changes stay partial.
+Defer Python's deadline handler only across descriptor ownership transfer/close, including with
+cancelled resolver threads still alive. Preserve bounded cleanup uncertainty in Python 3.9+
+exception messages and persisted cycle, run, artifact and shared archive refusals.
+
+Integrate the Performance Lab producer with published GA Task continuation, gate reporting,
+warm layers and writer recovery while retaining telemetry diagnostics, containment, collection
+and calibration guards. Preserve the production 60,000 ms lease and current performance
+goldens; move the seven unpublished lab decisions to ADR-0214–0220. Make the two reported
+short-Attempt Store fixtures and adjacent paths deterministic with the existing scoped test
+clock, prove exact deadline refusal without spend, and align the slow accounting fixture with
+GA's observed-usage recovery contract. This adds no cohort, deployment or performance claim.
+
+Reconcile the published 0.13.0-rc.1 release and trusted PR Performance report with the lab:
+retain numeric verdicts, exact-plan rendering, advisory qualification and unavailable/exempt
+states, plus both workflow regression sets. Control the two observed-usage recovery fixtures
+with the scoped Store clock, including explicit lease expiry, cold replay and fencing checks;
+keep their original budgets and the binary-copy behavior unchanged. Validation uses the current
+Python runtime and latest-stable CI policy; complete native acceptance remains separate.
+
+Refuse unchecked installed dispatcher bytecode and module authority; bind telemetry artifacts
+to retained original-event plans for each Actions attempt; compile hosted telemetry sources with
+owned writable state and a verified image toolchain; and bound and account for interrupted
+history report staging. Add a minimal live Docker permission smoke to validation. No cohort,
+deployment readiness or performance improvement is claimed.
+
+- Separate locked telemetry dependency fetching from offline, network-disabled compilation;
+  bound all writable build state on a verified 8 GiB filesystem within one deadline. Admit
+  only confined bounded binary bytes, and keep tool provenance outside candidate mounts.
+  Include collection status, position and incomplete records in locked peak-capacity
+  reservations and final accounting. Extend the real Docker CI smoke with small-budget
+  storage, network and output attacks. Hosted CI remains required before rollout
+  ([ADR-0215](docs/adr/0215-contain-telemetry-experiments-and-collect-only-results-verified-under-their-authority.md)).
+
+Reserve rounded history allocation before downloaded staging, authority expansion and retained/import
+copies, including directories, parent growth and bindings. Validate bounded regular authority Git
+objects and the complete path set before materializing. Keep interrupted owned bytes accounted until
+locked cleanup, without evicting results. Preserve diagnostic reader uncertainty from launch through
+namespace release and profile shutdown; retain scratch and writable evidence and prevent later
+execution when any reader may remain live. Add actual-filesystem collection and every-reader
+interruption regressions without changing persisted formats, caps, verdicts or release metadata.
+
+Keep allocation fixtures in owned temporary scratch outside the source tree, including when
+source is read-only. Preserve the shared authority-materialization interruption boundary after
+the complete coexistence reservation, using the same bounded immutable Git-object admission.
+
+Reuse the bounded immutable Git authority buffers within one collection operation after the full
+coexistence reservation, preserving the materialization interruption entry point. Import captures
+fresh confined authority bytes after verification, checks their complete digest/count/registry
+identity, and retains those immutable buffers through the retention entry point. Unbound or
+corrupted prepared evidence is refused; retained and imported output are still read back. No
+preparation survives an operation. During each write-free locked allocation calculation, examine
+each parent once and use its single filesystem allocation unit for unchanged rounding. All root
+scans, simultaneous-copy reservations, terminal reserve and cleanup boundaries remain enforced.
+These changes address measured redundant admission work before the unchanged one-second expiry
+test's retention phase; hosted Python and committed whole-source verification remain required.
+
+The guarded kernel experiment test now builds its disposable consumer from every crate file
+and the complete protected performance instrument, including inventory-listed build inputs
+wherever they live. Unrelated repository material no longer consumes its evaluator's existing
+five-second Attempt wall twice through source and base preparation. A regression checks exact
+crate, harness and staged-policy bytes and retains the evaluator's wall and read-source effect;
+all original guarded-measure assertions and production timing, fencing and gate contracts stay
+in force. This is fixture preparation repair, with no cohort, deployment or speedup claim.
+
+Telemetry measurements now disable Docker daemon logging and writable shared memory and
+reuse the build image's volume admission check before any candidate execution. Mandatory
+Docker smoke coverage adds legitimate measurements, denied writes, output flooding,
+aggregate and unlinked allocation, volume refusal and confirmed cleanup beside the existing
+eight build/admission cases.
+
+The telemetry workflow carries private, bounded scratch ownership through every execution
+and final cleanup. Pending or uncertain launches and missing, corrupt or foreign evidence
+retain the exact image, mount and control paths without unmounting or unlinking them. Clean
+completion and a proved pre-launch refusal still clean up. Result JSON cannot authorize
+cleanup, including after cancellation before publication.
+
+Gate-owner test readiness markers publish atomically; production supervision and all
+existing fixture assertions are unchanged. Calibration SHA acceptance is unchanged:
+[GitHub documents case-insensitive string comparisons](https://docs.github.com/en/actions/reference/workflows-and-actions/expressions#operators).
+The executable run-name test now models that rule without lowercasing the dispatch input.
+These repairs make no performance, calibration readiness or rollout claim.
+
+Telemetry experiments now report failed filesystem deletion as uncertain cleanup, retain recovery
+paths and fence trusted hosted cleanup ownership before removing candidate scratch. Diagnostic
+readers share the sample builder's disabled IPC/logging policy and pre-launch image-volume
+admission. One entry-time deadline covers CLI build-record admission, bounded input hashing,
+corpus copies, integrity checks, cleanup and terminal publication, with synchronous interruption
+and the existing profile/reserve bounds. Add unprivileged cleanup and deadline regressions plus
+mandatory hosted native-supervisor reader probes beside the existing Docker smoke cases.
+Independent reviews, whole-source checks and live hosted validation remain separate obligations
+([ADR-0222](docs/adr/0222-fence-filesystem-cleanup-and-bound-telemetry-admission-through-publication.md)).
+
+Keep hosted telemetry scratch durably fenced throughout controller work, bound ownership
+failure paths to the original deadline, and release machine locks across interrupted acquisition
+handoffs. Retain decoder and renderer staging on uncertain diagnostic cleanup and refuse later
+launches and bundle admission. Owner records use version 2 and refuse earlier state.
+
+Settle fenced telemetry preparation refusals only with explicit evidence that no work began,
+under the original deadline. Preserve typed launch ownership through shared supervisor pipe,
+callback and removal exceptions so diagnostic readers, decoders and renderers retain writable
+state and stop further launches when cleanup is uncertain. Keep owner version 2 and existing
+Docker smoke assertions; live Docker and exact committed-source verification remain required.
+
+PR validation now defaults to functional, e2e and CLI/TUI interaction tests, with performance checks
+available through explicit class labels. A reviewed catalog partitions every Rust test and Python
+check; stable validation gates require all selected work and report excluded classes as NOT RUN.
+Local `make check` stays full. Release PR labels directly control validation without a metadata commit;
+first tag creation captures the single exact merged release PR and freezes its provenance and plan
+in SHA/version-bound annotated tags,
+with unconfigured/manual tags defaulting full and packaged binary/archive/signature smoke always on.
+Per-class JUnit and step reports distinguish execution time, summed test-seconds and runner cost,
+and provide clearly labeled historical replay estimates. Separate Performance measurements follow
+PR selection, report exemptions explicitly and remain asynchronous after release publication.
+`make test-labels` previews idempotent label setup (explicit `APPLY=1`); release preparation checks the
+profile label before mutations, and sealed AF gates keep Python evidence outside the source.
+Fresh CI checkouts create the configured timing directory before recording; class runner costs and
+shares count only class intervals, with base/container work reported separately.
+Telemetry build/measurement smoke is selected with perf and required by both stable aggregations;
+its cost stays separate from class runner shares. Native gates retain their ownership wrapper and
+mandatory owner preflight. Advisory telemetry producers keep their existing scheduling and safety.
+
+Measure the telemetry cleanup regression at the unused-work settlement boundary, including
+deadline refusal and exceptional return, with the existing one-second bound. Prove boundary
+entry and retain real deadline interruption, persisted fencing and cleanup refusal checks.
+Delayed-preparation regressions reproduce the former total-setup false failure while checking
+stalled and expired settlement independently. Production behavior and budgets are unchanged.
+
+- Fix the CLI test fixture on hosts where the temporary directory and Cargo output use
+  different filesystems; verify both shared hard links and the child-copy fallback.
+
+- Provision bounded telemetry scratch of 16/20/24 GiB for PR, nightly/manual and release
+  profiles, retaining AF's 10 GiB admission floor and the existing workload allowances plus
+  filesystem headroom. Use deterministic serial corpus preparation under `--ipc none`.
+  Add hosted regression coverage with actual release AF for admission and all three
+  telemetry experiments; full hosted rollout and calibration remain separate obligations.
+- Select the explicit first-run help oracle from `0.13.0-rc.1` (heading introduced by
+  committed change `5ea4aedf`, contained in rc.1, rc.2 and stable), retaining the older
+  `0.12.0-rc.3` surface and usage, required-command, version and exit assertions. This
+  changes authority for a future cohort; frozen cohorts and historical evidence are unchanged.
+
+GNU CPU diagnostics retain line-table debug information and frame pointers within the existing
+build cap. Exact executables use bounded content-addressed XZ evidence; profiles bind each
+retained archive's compressed hash/size to its capture and admission checks its decompressed
+binary identity. Shared binaries pay once. Both perf capture paths avoid automatic build-ID
+cache hard links while preserving IDs and the existing cleanup refusal rules. The ADR and
+attributed prior executed-build report are retained for independent review. Actual perf
+capture/render qualification remains coordinator-owned; no new speed claim is made.
+
+Authority compatibility: profiles now write and read only `af.perf-profiles/6`, with required
+nullable `symbols.archive`; versions 1–5 are refused. Other persisted contracts, ordinary
+verdict/release recipes and all existing hard limits are unchanged.
+
+- Rewrite the README for people and agents: what `af` does and why on the first screen, the same
+  tested Quickstart, a Boundaries section (your checkout, publishing, credentials, environment,
+  `trusted_local`) and a For agents section (planning, JSON schemas, exit codes, `next_action`,
+  logins, one light review).
+
+- Declare `quick_20261028_hosted_v7` from the actual accepted producer with six exact observed
+  CPU/image groups, a fresh history anchor and the seven-day UTC schedule starting 2026-10-28.
+  Preserve the invalid v6 cohort and every original; retain all statistical requirements and
+  the separate parameter-sealing review before trials. Document Claw scheduling and reporting;
+  no deployment, measurement success, readiness or enforcement is claimed
+  ([ADR-0225](../docs/adr/0225-declare-the-replacement-hosted-cohort-from-the-accepted-producer.md)).
+
+Give the guarded experiment's successful comparison a disposable 7,500 ms baseline sleep,
+then restore a separate 1,500 ms consumer revision for refusal scenarios. A fast constructed
+regression checks the observed loaded medians against the actual staged elapsed-time
+objective and confirms three validations fit the existing sample timeout. The staged policy,
+real builds, repetitions, budgets, guard, golden oracle and tampered assertions remain
+unchanged. This repairs test reliability and makes no product speed or deployment claim.
+
+Split the public v3 receipts into separate missing-inputs (0 ms), improvement (7,500 ms)
+and refusal (1,500 ms) documents, preserving all eleven Task receipts and validating each
+against the unchanged schema and reader. Phase-specific filenames prevent overwrites within
+one run. A fast regression checks the exact partition and rejects missing, extra or reordered
+Tasks, so one document no longer mislabels evidence from different source revisions.
+
+Provider probes now distinguish a host permission denial from an incompatible CLI. Status and
+detect report `probe_denied` with exit 8 and permission guidance; doctor shows agent sandbox
+context, and `af help agents` explains what to tell a user running inside an agent.
+
+Agent help now offers a repository pointer, explicit preview and installation of two agent
+skills, and a map from launcher scripts to af commands. Provider detection and review timeout
+help now state their actual effects and scope. The installer uses its declared temporary directory
+for scratch files.
+
+Classified first-run CLI refusals in `af/error@2` with stable causes, structured details and
+copyable next commands. `af help errors` explains the causes. Review selector and Provider
+suggestions now spell every flag and require unambiguous local authority and enabled Provider
+registration; generated agent guidance follows the returned command.
+
+Add a read-only fast/full release validation proof workflow using the existing Linux and
+macOS release gates, with explicit dispatch or narrowly filtered PR label opt-in. Retain an
+exact SHA/version/catalog plan, local production-resolver binding simulations and existing
+selected-class timing artifacts. Fast reports perf NOT RUN; no release is published and
+production profile defaults and `.af/` remain unchanged.
+
+- Add an independent Claw VM performance backend beside GitHub Actions, using the existing
+  contained builders and laboratory. Retain durable local requests, exact source objects,
+  reports and local calibration originals; extend the common machine lock with crash fences.
+  Include bounded operator/systemd examples and explicit advisory provenance. Deployment,
+  real VM measurements and calibration qualification remain operator work
+  ([ADR-0240](../docs/adr/0240-execute-performance-experiments-independently-on-a-locked-vm.md)).
+- Preserve checked lease forwarding in the isolated runner CLI regression. Settle only the
+  telemetry build smoke's own observed fence after reaping its CLI and proving Docker and
+  exact scratch cleanup under the common flock; retain uncertain or foreign state. Hostile
+  builds must reach their intended compilation or admission rejection before a case passes.
+
+- Repair diagnostic build-container ownership uncertainty for owning and borrowed machine leases;
+  stop further launches and retain named recovery evidence independently of diagnostic scratch.
+  Freeze a validated image-local Zig/cargo-zigbuild directory in executor configuration v2 and
+  pass it to shipping parent/diagnostic builders with unchanged version pins. Drain admitted
+  originals before polling a bounded full queue. Recheck frozen calibration member days after
+  capacity/source preparation and retain missed originals as explicit non-executed `expired`
+  state/result v2 outcomes, off schedule in readiness with unchanged denominators. Obsolete
+  configuration/state/result v1 shapes refuse; no migration or fallback is provided.
+
+Selected native execution explicitly builds the entire plan's variants before its first
+successful build receipt. Independent hosted class runs build only their own variants, so a
+full plan no longer causes functional, e2e or uix jobs to compile perf-only features. Hosted
+perf still completes both feature builds before its build receipt. Full-plan receipts,
+inventory audits, required-build failure handling, process supervision and deadlines remain
+unchanged. Focused fixtures cover full native execution, every hosted class and failed builds.
+Hosted timing reports recognize only the four canonical outer class labels, preserving nested
+`class-build` evidence without treating it as a fifth class or counting build time twice.
+CLI report/aggregation fixtures cover zero durations, unknown missing outer timings, exact
+selected receipts and refusal of missing, failed, duplicate or invalid outer timing evidence.
+
+Measure telemetry ownership-fence and final-settlement stalls from their selected I/O
+boundaries, preserving real 80 ms interruption, one-second assertions and retained recovery
+checks. Independent read/write cases and delayed preparation/deletion regressions prevent
+setup load and earlier failures from hiding the target. Production enforcement entry/order
+guards and three bypass mutation controls prevent injected timers from masking missing
+production enforcement. Uniform bootstrap observations now
+use their mathematically identical median directly; general inputs keep all 10,000 seeded
+resamples, with exact serialized-equivalence and RNG-draw regressions. Bounded local timings
+show reduced uniform computation, without claiming a hosted or whole-suite speedup.
+
+Selected native validation now records successful workspace and selected perf feature compilation
+before running class suites, so the existing warm-check test allowance starts at a real build
+boundary. Inventory JSON and compiler diagnostics are preserved; failed default or feature builds
+stop before tests and cannot claim successful class completion. Focused native and hosted runner
+regressions cover phase order and build failures without changing deadlines or coverage.
+
+Telemetry experiments now refuse negative, nonfinite or unrepresentable physical measurements
+before summarization, including individual samples hidden by a valid median. Result v2 retains
+a bounded sanitized original numeric token, precise field path and source identities with a
+side/round/experiment diagnostic, then publishes a typed partial or failed result using the
+existing cleanup and verification boundaries. Signed derived differences remain valid. Offline
+verification replays retained refusals; upload and collection still require verified bundles.
+Older result shapes fail closed without fallback. Stand-in regressions cover admission,
+finalization, tampering and incomplete-result retention; the original hosted failure's field
+remains unknown.
+Refused paths retain complete numeric property names such as `machine.load1` and resolve only
+canonical bounded paths through the exact schema. Original nonzero tokens cannot underflow
+silently to zero, including negative raw latencies and signed derived figures; signed zero
+remains valid. Regressions cover mixed/all-refused load results, original-byte drain/read
+underflow, masked samples, long exponents, schema parity and offline/upload tampering.
+Online numeric projection now respects the verifier's declared array bounds. Oversized arrays
+remain whole for schema admission and produce ordinary document refusals, preventing retained
+out-of-bound evidence from breaking offline verification or upload. Controller regressions cover
+oversized fixture/measurement arrays and nested intervals, mixed/all-refused results, and invalid
+values at the last legal index.
+
+`af onboard --tasks` now previews and adds pinned, model-driven Task authority. In a
+new repository, `--apply` installs review and Task policy together. In a repository
+already onboarded for review, it adds absent Task files and appends
+`[task.defaults]` without changing existing review policy bytes. The command refuses
+existing Task targets or a `[task]` table, and the missing-catalog error points to
+onboarding.
+
+Every GitHub pull request now defaults to functional, e2e and uix validation, including AF gate
+and release PRs. `make release` and `scripts/release.sh` default to fast; explicit class labels
+and `release:full` retain their precedence. An unlabeled matching merged release PR keeps its
+fast selection in the immutable release tag binding. Local `make check`, ordinary main and
+unbound releases remain full. Version 2 plan, receipt and release-binding schemas record the
+new release PR context; earlier versions fail closed. Base gates and packaged-release smoke
+remain mandatory, and excluded perf work is reported as NOT RUN or exempt.
+
+- Kernel implementer Workers now run only filtered tests of changed code through the `ci`
+  nextest profile. A bare nextest run uses four test threads and protects the same timing
+  sensitive tests as the gate; the Task gate runs the fast profile (ADR-0251).
+
+The guarded kernel experiment's perf test refuses every tampered harness as a baseline with
+no build. Its judged comparison plus tampered-candidate refusals after a measured baseline are
+now an ignored manual measurement. Run `make perf-kernel-measure` before a
+pull request that changes the protected harness, experiment runtime or kernel receipts. The
+measurement assertions and repetitions are unchanged.
+
+Review ledger and finding inspection now have versioned JSON output; review report accepts
+`--json`. Onboarding and review planning keep topology behind `--long`, and the generated
+authority guide starts with a token-free quickstart. Reviewer prompts omit Git build options
+while the canonical Change Set retains them. Afactory Task defaults supply common limits and
+an implementation pipeline for short Task files. Reader guides now use plain terms and
+the documentation index is organized by what the reader wants to do.
+
+Performance Lab: a sample, diagnostic or telemetry container's removal is now confirmed only by
+the typed outcome `supervise.remove_container` returns (`supervise.Removal`, removed and
+confirmed absent, apart from its human detail), never by that detail's wording. A failed
+launch whose removal raised an exception worded like `container was not removed` was certain,
+and diagnostics removed the namespace a live process could reach; now it stays uncertain and
+the namespace is kept (issue #388). A removal whose confirmation ends after its allowance,
+however long its `docker` client took to start, is reported unconfirmed (issue #403, item 4).
+Every deadline, the removal allowance and the existing messages are unchanged. The telemetry
+cleanup docs now state what a failed ownership write keeps. A failure before `state.json` is
+replaced keeps the earlier fenced record. A directory sync failing after the replacement leaves
+the new record, which was already proved, and the next controller and the workflow's cleanup
+are admitted. Regression tests pin both boundaries.
+
+The repository's local Task gate now runs the reviewed fast validation profile (functional,
+e2e and uix), records its selection plan in the private gate run directory, and records the
+shared `test-build` step before class tests. Bare
+`scripts/verify.sh`, `make check`, main validation and unbound releases continue to run the
+full check; pull requests default to the fast selection (ADR-0239).
+
+- Bare `af` opens its browser before any Task or Campaign Store is read: the Tasks, Campaigns and
+  Workers panes read their Stores on a thread behind a spinner on their folder, Store by Store,
+  so a machine whose registry names dozens of Stores no longer sits on the splash for as long as
+  every event log takes to replay (40 s measured; issue #402,
+  [ADR-0240](docs/adr/0240-open-the-browser-before-any-store-is-read.md)).
+- The user scope's walk of the state root for every repository's Store is that read's too, and a
+  Store registered or `:state`-added while a Task or Campaign is opened never shows the opened
+  entry as gone: the listing stands until the read answers for its Store.
+
+- The repository's catalog now pins its default Task pipeline, `default/implementation` and
+  `default/verification`: one implementing iteration (`claude-opus-5-5`, high), two required
+  reviewers (bugs on `gpt-5.6-terra`, correctness on `gpt-6-sol`, both high), one advisory
+  reviewer for gate time and quality in the `uix` slot (`gpt-6-astra`, medium) and an evaluator
+  (`gpt-6-astra`, high), so any checkout plans it; `docs/tasks.md` ("The default pipeline") says
+  how to run it and bind its Providers
+  ([ADR-0253](docs/adr/0253-the-default-task-pipeline-lives-in-the-catalog.md)).
+
+Task plans and status now show the last comparable recorded Gate duration when one exists. Status
+puts reserved, charged and remaining tokens together and marks unknown usage separately. Task
+wait can ring a terminal bell or request an OS notification, while notification failures leave
+the wait result intact. Pull request bodies open their Task report with an outcome, checks,
+findings, tokens and active time receipt.
+
+- An implementer stopped by its Attempt wall keeps its edits: the kernel seals the tree it left as
+  a partial candidate (`af/TaskPartialCandidate@1`), never accepted, verified or delivered on its
+  own, and records the end as `af/TaskAttemptWallEnd@1` with the wall and the time the Attempt
+  took. The Task ends `exhausted/attempt_wall` (exit 4), not `malformed_reply`; `af task show`,
+  its `--json` (`attempt_wall_ends`), `af task report` and the run's stderr say `implementer
+  reached its Attempt wall of 30 min after 30 min`, and the next command, `af task run NEW_TASK_ID
+  --from TASK`, starts a new Task from those edits. The Attempt is charged and counted as every
+  failed Attempt is and spends no recovery allowance. `af task plan` prints each Worker slot's
+  Attempt wall beside its model (`slots` under `--json`). Identity probes that proved nothing
+  after their retries now read `provider_failed/provider_environment` with `af provider status`
+  next, and an account that answered as another reads `identity_changed`. The Task state is
+  `task-state-v2`, so the documents that print it are `af/task-inspection@14`, `af/task-list@4`,
+  `af/task-list-entry@4`, `af/task-checks@3`, `af/task-collected-inspection@3`,
+  `af/task-detached@3`, `af/task-findings@2`, `af/task-report@3`, `af/task-status@2` and
+  `af/task-cancelled@2`
+  ([ADR-0257](../docs/adr/0257-seal-the-implementers-tree-when-its-attempt-wall-ends-it.md)).
+- A wall end survives its writer: the Attempt's reported usage is retained before the wall end is
+  written, so a CAS failure then loses no counter, and the wall end's ID is kept in the Store
+  before the rest of the Attempt is published, so a run interrupted after it is resumed with
+  that Attempt settled `failed` at its wall, its partial tree kept for `--from` and no recovery
+  allowance spent; `af task gc --apply` run before that resume keeps the wall end and the partial
+  tree it names. `af task report` counts the Attempt under the new failure class
+  `attempt_wall`, never `provider_failure`, and its row ends with `next: af task run NEW_TASK_ID
+  --from TASK`. The plan preview lists every slot that runs with its Attempt wall, the ninth
+  included, the walls beside each Worker in `--tree`, and an optimization experiment's baseline
+  and candidate arms with the wall their Worker packages declare (`attempt_wall_ms` under
+  `--json`) ([ADR-0257](../docs/adr/0257-seal-the-implementers-tree-when-its-attempt-wall-ends-it.md)).
+
+- A check the kernel stops at its wall now says so everywhere: its check receipt,
+  `af/TaskCheckReceipt@2`, records `stopped` with the cause `wall`, the wall and how long it ran;
+  the Task ends `check_failed`, never `preflight_failed`; and `af task show`, `af task show
+  --checks` (`af/task-checks@3`), `af task report` and the run's stderr say `check NAME stopped
+  at its 90 min wall after 88 min` and what to do next. Only a check that did not start says
+  `never started`. A Task file may state `acceptance`, typed items each judged by its ID: they
+  are captured as `af/TaskAcceptance@1`, carried in the receipt and handed to the evaluator on
+  the Pipeline's optional `acceptance` input, and a pass that leaves an item unjudged does not
+  verify. `af/TaskCheckReceipt@1` is refused by name: rename it to `@2` in every package and
+  re-pin with `af catalog digest`
+  ([ADR-0255](docs/adr/0255-say-a-check-stopped-at-its-wall-and-carry-typed-acceptance-in-the-check-receipt.md)).
+- Structured acceptance is refused unless an evaluator is held to it: a Pipeline that declares
+  the `acceptance` port but hands it to no `verify` node is refused when the plan is compiled, a
+  Task of a kind whose domain does not judge items by ID (a review, document, report or
+  optimization Task) is refused at plan time, and a passing evaluation over a receipt with items is refused
+  unless its evaluator received that record on its own `acceptance` input. Both plan-time
+  refusals name the Task file and, under `--json`, are the typed `task_file_invalid` diagnosis
+  of its `acceptance` field (`file`, `field`, the item IDs as `value`, and `next_action` the
+  `af task plan --file` that plans it again), as `limits.wall_ms` is refused. The performance
+  laboratory gives each side of a pair across ADR-0255 the check receipt its own source writes,
+  read from that side's source, so `cli_task_start` and `cli_task_run_check` measure both sides
+  ([ADR-0255](docs/adr/0255-say-a-check-stopped-at-its-wall-and-carry-typed-acceptance-in-the-check-receipt.md)).
+
+- Test children no longer die of a sibling's stale kill under load (issue #331 item 7): no test
+  guard or fixture signals a process or group it does not hold as its own unreaped child any
+  more. Inspecting an ID and then signalling it is a race no start time closes (the process can
+  be reaped and its ID reused in between), and on a shared gate host the ID space wraps within
+  minutes while nextest makes every test a group leader, so such a kill could end a whole sibling
+  test with its `af` and `git` children. A test ends what it holds; the fixture Workers, the
+  parked `git` and the held Codex stand-in end their own child and themselves once the `af` that
+  started them is gone; a laboratory fixture's escaped child ends when its test releases it
+  (`tests.support.release_recorded`); the docker stand-in's init ends its container's group, not
+  `docker rm`, and a group that ended before its signal is still reaped and reported ended; the
+  laboratory's fake supervisor forwards a cancellation only while its child is unreaped (it reaps
+  with SIGTERM blocked and forgets the child first); and the shared `Leftovers` guard only waits
+  for and reports what a test recorded.
+  The telemetry tail's real-time test joins the exclusive tests of `.config/nextest.toml`; no
+  wall, retry bound, assertion or fixture budget changed. `make check` keeps running the stress
+  proof's own tests (`scripts/test-stress-proof.py`) in its preflight, besides their e2e class.
+- `make stress-proof` (`scripts/stress-proof.py`) is the repeatable concurrent-load proof of the
+  recurring flakes (issue #331 item 8): it runs the named tests 20 times (`STRESS_RUNS`) through
+  the gate's profile beside CPU-bound and process-spawning load workers it starts and kills by
+  pid on every exit path, and prints each test's passes, load range and wall time
+  (CONTRIBUTING.md).
+- The stress proof counts a skipped case and a run nextest ended nonzero as not passed, and a
+  load worker that ends on its own, printed with its status and stderr, ends the proof unproven;
+  a spawn worker waits out a host's refusal to spawn instead of ending.
+- The stress proof of issue #331 item 8, `scripts/stress-proof.py --runs 20 --test-threads 7` on
+  a 14-CPU macOS gate host shared with other gates, 14 CPU and 2 spawn load workers beside it,
+  run on the rebuilt #331 tree before its last close-out round (that round changed none of
+  these tests): every test passed every run, over 42.4 min at a 1-minute load of 27.7 to 191.1.
+
+  | Test | Passes | Load (1-min avg) | Wall s min/median/max |
+  | --- | --- | --- | --- |
+  | `task_starters::heavy_starter_repair_uses_current_evidence` | 20/20 | 27.7-178.9 | 30.2/39.1/91.3 |
+  | `task_repair::interrupted_fix_verification_resumes_same_continuation_and_charges_the_lost_attempt` | 20/20 | 39.1-191.1 | 73.6/77.6/85.9 |
+  | `campaign_loop::trusted_reuse_keeps_evidence_satisfaction_current_after_head_change` | 20/20 | 39.1-191.1 | 5.5/8.0/12.2 |
+  | `campaign_loop::waiver_remains_current_when_the_subject_advances` | 20/20 | 39.1-191.1 | 5.6/7.8/12.9 |
+  | `telemetry_runs::telemetry_tail_follows_a_live_run_within_the_flush_latency` | 20/20 | 39.1-191.1 | 3.9/4.5/6.8 |
+  | `task_file::captured_task_kind_packages_keep_business_names_and_domain_acceptance` | 20/20 | 39.1-191.1 | 9.2/12.3/20.9 |
+  | `review_plan_refusals::first_run_refusals_name_the_fix` | 20/20 | 39.1-191.1 | 2.4/2.5/3.7 |
+
+- An interrupted command under `--json` prints `af/error@2` (version 1 is no longer printed):
+  `cause: interrupted`, exit 130 or 143, `details` with the `signal` and the `task`, and
+  `next_action` the command that continues it, `af task run TASK_ID` with the selectors given,
+  so a script no longer parses the sentence
+  ([ADR-0256](../docs/adr/0256-carry-the-recovery-of-an-interrupted-command-as-a-typed-field.md)).
+  Every `af/error@2` document's `next_action` is null where no pasted line can carry it, a
+  selector with a tab or a newline, or a line past 4096 characters, so each validates against
+  `schemas/error-v2.json`; a `recovery_exhausted` document, whose fix the schema requires, then
+  carries `af task start --file TASK_FILE` without the selectors, which its sentence completes.
+- On a terminal the `next:` lines of `af task show`, `af task run` and `af task run --detach`,
+  the run log's last line, and the log a detached run that ended at once replays, are held to
+  its width; without one they stay whole for the script that reads them. In those lines, and in
+  `af task list`, `af review plan` and `af doctor`, no line is wider than the terminal: an
+  argument wider than a line, a long `--state` path or the program's own path, is cut into
+  quoted pieces a shell joins, a label too wide for the command beside it (`Task ID: STATE;
+  next:`) is wrapped first, and each runs as printed.
+- `af doctor` offers a fix only where running it can clear its check: no `af self update --check`
+  for an `AF_RELEASE_SOURCE` that is no directory, no `af onboard --repo` preview (the hint gives
+  the preview and the `--apply`, the sentence's `;` outside the path), and no `af provider detect
+  --apply` unless a CLI on PATH reports an unregistered login of the kind needed logged in (a
+  marker alone, a logged-out context or an empty `~/.claude` registers nothing; the hint gives
+  the setup to run at a private terminal). A project whose Worker needs a kind no login is found
+  for names that kind (`no codex login was found to register`) and never denies a login of
+  another kind that `af provider detect --apply` would register. With the default link absent, the PATH fix
+  installs first, also when its directory is already on PATH, and an install with no `af` on
+  PATH runs this binary by its path; a long PATH line, the elvish one included, is cut where its
+  shell joins it again. A broken `.af/` is named where `af onboard` stops, by taking its steps in
+  its order: a Worker package's pin before its typed `reviewer.toml`, a typed error with its file
+  and line, a changed package with the `--refresh-lock` that re-pins it, a Worker package too
+  large or unreadable named at that package rather than at the pipeline, and only paths below
+  `.af/`. An install fix that runs this binary by a long path, alone or chained by `&&` to the
+  PATH line, is broken where its shell joins it, its path in fish's quoting under fish, and
+  pastes and runs as printed at 80 and 100 columns; its quoting is read as that of the shell it
+  is printed for, so a path holding a backslash is never cut inside fish's `\\` escape.
+
+- A Worker is told to read only rules and context its own tree holds. The "Read first" list names
+  the Snapshot the Worker reads, and lists that tree's `.af/rules.md` and context files by digest,
+  recorded as `af/TaskReadFirst@2` (`@1` is neither written nor read). A continued Task (`af task
+  run NEW --from TASK`) lists its candidate's rules. Its plan prints `read first: from Snapshot
+  S, …` on stderr, and a `rules:` line with both digests when they differ from what TASK read.
+  Continuing a Task that an earlier release planned is refused, with the command that plans it
+  again
+  ([ADR-0254](../docs/adr/0254-name-the-tree-of-a-workers-rules-and-deliver-the-diff-subject-as-a-typed-input.md)).
+- The Diff Subject is a typed input. A judging Worker declares the optional `diff_subject` port,
+  and the kernel fills it with an `af/DiffSubject@1` whose payload is the `af/diff-subject@1`
+  document. Its absence where a base exists, or any other value, fails before dispatch. No
+  Pipeline may bind it. `../diff-subject.json` is no longer written; `../base` stays.
+  `kernel/bugs` 1.6.0, `kernel/correctness` 1.4.0, `kernel/evaluator` 1.3.0, `kernel/ux` 1.2.0
+  and `kernel/uix` 1.6.0 read the port and are re-pinned.
+- Judging Attempts still materialize their tree and base. Cloning a warm template with the fresh
+  stamps (#266) and integrity check a safe clone needs measured slower than materializing on
+  this repository. `attach_base_template` now stamps the cloned base with the current time, and
+  `cargo run -p review-pipeline --example judge-materialization` repeats the measurement.
+- A Worker port named `diff_subject` of any type but `af/DiffSubject@1` is refused when the plan
+  is compiled, bound or not, instead of planning and then failing before its Worker starts
+  ([ADR-0254](../docs/adr/0254-name-the-tree-of-a-workers-rules-and-deliver-the-diff-subject-as-a-typed-input.md)).
+
+- Review-Campaign reviewers now reply under a native schema, as typed Task Workers already did:
+  Claude Code receives the Reviewer Result schema as `--json-schema`, Codex its strict projection
+  as `--output-schema`, so the CLI refuses a structurally wrong reply inside the call instead of
+  the kernel failing a paid Attempt on it. The flat result contract and the kernel's parsing and
+  admission are unchanged. A reviewer whose CLI ends without a constrained reply now fails as
+  `provider_failure`, charged the usage that call reported, rather than `invalid_output_contract`
+  ([ADR-0246](docs/adr/0246-carry-the-reviewer-result-schema-natively-on-the-campaign-path.md)).
+- `af review render` prints the reply schema a model Worker's dispatch passes on its own `reply`
+  header line; `--json` now prints `af/review-render@2` (`schemas/review-render-v2.json`) with a
+  `reply_schema` field, `null` for a command Worker.
+
+- A Task-file refusal that ends naming the command to run next (`acceptance` on a review,
+  document, report or optimization Task, or a Pipeline without the `acceptance` input, and
+  `limits.wall_ms=0`) no longer prints that command inside one over-wide line on a terminal: the
+  sentence is wrapped to the terminal and ends `then run this command again:`, and the command
+  follows on a `next:` line of its own, continued between its arguments, so it runs as pasted.
+  Piped stderr and the `--json` document are unchanged. The performance laboratory and its tests
+  run again on Python 3.9 (macOS's `/usr/bin/python3`), as ADR-0162 requires: the container
+  init regression no longer needs `os.waitid`, and the supervisor's and telemetry run's added
+  error notes no longer need `BaseException.add_note`.
+
+- `af help --json` prints a machine-readable catalog of every command, and `af help COMMAND
+  --json` (`af help task run --json`) of one command and those below it: one
+  `af/command-catalog@1` document (`schemas/command-catalog-v1.json`) generated from the command
+  definitions the binary parses, with each command's usage, subcommands and arguments, and each
+  runnable command's effects: whether it may charge tokens, the state it may write (`store`,
+  `files`, `machine`, `remote`) and what it needs from a person (`login`, `approval`,
+  `terminal`), each with the flag that turns it on. A command without an effects entry fails the
+  build's tests ([ADR-0247](docs/adr/0247-generate-a-machine-readable-command-catalog.md)).
+- `af schema show ID` prints the JSON Schema of any document `af help json` lists, as `schemas/`
+  holds it (`af schema show af/task-status@2`); `af schema show` lists the IDs.
+
+- `af task findings --json` prints `af/task-findings@2` and `af review report --json` prints
+  `af/review-report@5`: each finding carries an `agent_prompt` (its location on the reviewed
+  Snapshot, the evidence, the requested change and how verification will judge the fix, and all
+  of it as one prompt), and each round says what it covered per reviewer (`reviewed`, or
+  `not_run` with why) and per path (`reviewed`, `partially_reviewed`, `not_reviewed`,
+  `outside_round`). A reviewer that did not run now reads `not reviewed`, never `no findings`.
+  "Verified fixed" appears only with the verification record and Snapshot that prove it.
+  `--format sarif` on both commands prints the findings as one SARIF 2.1.0 log for
+  code-scanning tools
+  ([ADR-0248](docs/adr/0248-hand-review-findings-to-the-agent-that-will-fix-them.md)).
+
+- An auth directory below `HOME` reads `~/…` in the doctor, onboarding and `af provider status`
+  lists of directories found but not registered also when `HOME` is reached through a symbolic
+  link (macOS's `/var`), as it does on Linux. The doctor tests that prove the cut forms of a
+  PATH line now use a directory long enough to be cut whatever the temporary root is, so they
+  hold on Linux CI's short `/tmp` as on macOS, and the test of a long install path gives `af
+  doctor` a PATH it controls, so it proves both forms of the binary's fix (the `af` on PATH, and
+  this binary by its path when none is) whatever the host's PATH holds. In `af doctor`'s text
+  form a chained fix (`af onboard … --refresh-lock --af VERSION && af self install VERSION`)
+  keeps its `&&` or `||` at the end of the first command's line; before, an operator that did
+  not fit there started the next line, which a shell rejects (#331).
+
+- `af task list --attention` groups the Tasks of a Store by what they wait for: approval, a failed
+  gate, findings to answer, verified and ready to deliver, and stopped (a Provider, an interrupt,
+  a limit or the wall clock ended it). Each Task in those groups is printed with its one next
+  command; running Tasks are named on one line and the Tasks that need nothing are counted.
+  `--json` prints `af/task-attention@1` (`schemas/task-attention-v1.json`) with all seven groups,
+  `needs_you` on each. The groups are read from each Task's state alone and never recorded; `af
+  help task-states` and `docs/tasks.md` list them. The browser's Tasks folder opens on the same
+  groups under `NEEDS YOU`, with each Task's next command.
+
+- `af task events TASK_ID` follows a Task as JSON lines: one `af/task-event@1` document
+  (`schemas/task-event-v1.json`) per event of the Task's log, numbered with the Store's own
+  gap-free `sequence`, naming what changed, the node and Attempt and a settled Attempt's result
+  and exact charge. Once the Task settles it prints exactly one terminal record with the Task's
+  `state` (outcome and `next_action`) and exits with the Task's exit code, as `af task wait`
+  does. `--after N` prints only the events after sequence N, so a follower that reconnects gets
+  the rest; `--timeout S` stops with 124 and names the `--after` that continues. The command
+  takes no `--json`, every other command's `--json` stays one document, and its refusals are
+  one `af/error@2` line
+  ([ADR-0250](docs/adr/0250-follow-a-task-as-a-stream-of-its-store-events.md)).
+
+- The browser's Providers pane always shows every login's quota windows: discovery hands the rows
+  over, then the usage probe `af provider status --usage` runs follows on its own, so `R` no longer
+  stands for a separate probe. Each window is a bar of twenty cells drawn in the brand's colour
+  for how much is used (green under half, blue from half, pink from four fifths) on a grey track
+  with a hairline between two bars, with the percentage used and when the window resets; the
+  `models` section stands one blank row under them
+  ([ADR-0261](docs/adr/0261-shape-the-browser-around-what-a-person-looks-for.md)).
+- The Claude usage probe reads the five-hour session window from the `/usage` screen as well as
+  the weekly ones: `af provider status --usage` and the browser list `Claude session 5h` first
+  ([ADR-0261](docs/adr/0261-shape-the-browser-around-what-a-person-looks-for.md)).
+- The Providers pane keeps the model catalogs off screen until asked for: its last row says
+  `<m> to show models`, and `m` shows every listed Provider's `models` section (one row per exact
+  ID) until `m` hides them again
+  ([ADR-0261](docs/adr/0261-shape-the-browser-around-what-a-person-looks-for.md)).
+- With Caps Lock on the browser still answers: an upper-case letter with no binding of its own
+  (`Q`, `J`, `K`, ...) is read as its lower-case key; `G`, `N`, `R` and `Z` keep their own, and so
+  does `D` in the Tasks pane, where it prefills `task deliver`; to every other pane `D` is `d`, so
+  `D` on a Provider removes it as `d` does. The key completing a sequence folds the same way:
+  `zO` opens a fold and `gF` opens the file
+  ([ADR-0261](docs/adr/0261-shape-the-browser-around-what-a-person-looks-for.md)).
+- `af provider status` and the Providers pane leave out a CLI default context whose login a
+  registered Provider of its kind already holds (the Claude CLI's `~/.claude` reading the same
+  Keychain login as a registered directory), as they leave out a logged-out one; the row is not
+  named as a logged-in sibling either, and the names-only scan still names the directory
+  ([ADR-0260](docs/adr/0260-leave-out-a-default-context-that-holds-a-registered-login.md)).
+- The Workers folder lists its Workers from the start in a project scope, read on its thread
+  after the first frame like the other folders; it no longer waits for an open
+  ([ADR-0261](docs/adr/0261-shape-the-browser-around-what-a-person-looks-for.md)).
+- `Enter` on a Worker or a Pipeline listed in the main pane of its folder opens it, as the bar
+  does; the folders' legends say so
+  ([ADR-0261](docs/adr/0261-shape-the-browser-around-what-a-person-looks-for.md)).
+- The Pipelines pane never prints a declaration's TOML: a review Pipeline under
+  `.af/pipelines/` is drawn from its committed declaration (Subject, convergence, budgets,
+  checks, one row per node with its package or runner, gate and Demands, and the `af review
+  plan` command), and a package the kernel has not planned yet, or refuses to plan, is drawn the
+  same way (one row per node with its slot's Worker and Attempt bounds, a `call` expanded into
+  the pinned callee with the call's bindings applied, the contract, then the refusal). The
+  status line names the highlighted row's Worker
+  ([ADR-0261](docs/adr/0261-shape-the-browser-around-what-a-person-looks-for.md)).
+- The project scope is the Project's view, not the directory's: the bar's root and the panes'
+  titles carry the `[project] name` the repository's committed `.af/af.toml` declares (read
+  again on `R` at the root), and `tasks/` lists, after this checkout's own Store, the default
+  Store of every other worktree of the Project that holds
+  Tasks (its registered Workspaces by label, then the worktrees git lists by name), each a bar
+  group of its own; a registry Store a Workspace uses is listed once, with the Workspaces beside
+  it. A Worker's STATE counts the Attempts of every checkout's Store. The checkouts are
+  discovered on the read's thread, never at startup
+  ([ADR-0261](docs/adr/0261-shape-the-browser-around-what-a-person-looks-for.md)).
+- `f` in the Tasks pane lists the running Tasks only: those of every Store in one list, the one
+  started last first, each with its progress, how long it has run, its charge so far and where
+  it runs; the Stores that cannot be read follow, so an empty list never hides one. `f` again
+  lists every Task grouped by state. `Enter` on a Task row of the Tasks folder opens it, as the
+  bar does ([ADR-0261](docs/adr/0261-shape-the-browser-around-what-a-person-looks-for.md)).
+- A duration of a day or more in the Tasks pane prints as `6d 02h`, where it printed hours
+  alone (`142h 22m`)
+  ([ADR-0261](docs/adr/0261-shape-the-browser-around-what-a-person-looks-for.md)).
+
+Bare `af` now has a pending 200 ms first-browser-frame performance target in the continuous
+laboratory. A 100x30 pseudo-terminal case measures an empty private registry and 20 privately
+registered copies of the 10,000-event Task seed, recording launch-to-browser (ending when the
+status line reaches the terminal) and launch-to-first-output intervals for each sample. Its
+driver ends the browser's whole session on success, failure and cancellation, finds a process
+that left the session by the run's token in its environment (one that replaced its environment
+before `exec` is beyond it, as beyond any process-group sample), and refuses a sample whose
+browser left a process running or whose cleanup it cannot confirm (on Linux a process that has
+exited and awaits its parent's reap runs nothing and is skipped); the shard and a diagnostic
+child run keep that sample's scratch for recovery, as they do when their supervisor had to end
+the driver. The case was added for the
+splash delay diagnosed
+in [issue #402](https://github.com/PakhomovAlexander/afactory/issues/402) and measures whatever
+binary it is given, the repaired browser included; it does not activate a shipping budget
+([ADR-0263](docs/adr/0263-bound-bare-afs-first-browser-frame.md)).
+
+- A Task's gate evidence comes from its check report
+  ([ADR-0258](docs/adr/0258-task-gate-evidence-comes-from-the-check-report.md), #346). A check
+  writes one `tests` record per test run, and af folds them into one, so a gate that runs one
+  nextest selection per test class no longer has its `af/TaskCheckReport@1` refused (`line 26 is
+  a second tests record`). The gate's failed and flaky tests and the step that stopped a check
+  come from its report when the check writes one, and from the text scan of its output only for
+  a check without one (absent or refused): the failing fixtures a preflight prints are no longer
+  reported as the Task's failing or flaky tests, a passed gate names only its real flaky tests,
+  and `af task show --checks` ends each check line that prints this evidence with
+  `evidence: report` or `evidence: output`.
+
+- The agent pointer `af setup agents` installs in `AGENTS.md` and both skills is now four rules:
+  run `af help agents` first, add `--json`, run `state.next_action`, and never add `--login`
+  in an agent session. `af help agents` starts the loop at step 1 with no readiness check, and
+  a command it describes needs no `effects` lookup first
+  ([ADR-0259](docs/adr/0259-point-agents-at-the-loop-in-four-rules-and-own-skills-by-their-bytes.md)).
+- The generated `SKILL.md` files open with YAML frontmatter, so Codex and Claude Code load
+  them. `af setup agents --write` replaces only a skill whose bytes are one af wrote, the
+  previous version included; any other file, one under a recomputed digest line included, is
+  refused as foreign.
+- With no Provider of a reviewer's kind registered, the `review_binding_missing` refusal of
+  `af review plan` and `af review run` names `af provider detect` as the next command and says
+  which kind each reviewer needs; with a choice, it lists `NODE: ID, ID` in words, never as a
+  debug map. `af review plan` also prints the plan it computed: its reviewers and their models,
+  gates, convergence and budgets before the refusal, and the whole document in
+  `details.plan` under `--json`.
+- `af provider detect` no longer says every authenticated login is registered when the only auth
+  directory it found is logged out: it says no authenticated login was found and points to the
+  private login step.
+- `af help agents --json`, and `af help TOPIC --json` for every page `af help` prints, now prints
+  the page as one `af/help-topic@1` document (`schemas/help-topic-v1.json`): its name, description
+  and text; `af help errors CAUSE --json` too. Words that are a command still print the command
+  catalog, and words that name neither still exit 2. `af help errors CAUSE` with a cause af does
+  not know now exits 2 (usage), as an unknown topic does, in both forms.
+- On the default branch with an uncommitted change and reviewers that still need a Provider,
+  `af review plan --json` no longer says the default branch cannot be determined: its refusal's
+  `next_action` is the command with the selectors af would choose, and the message names each
+  reviewer that still needs a Provider. Running that command reaches the binding refusal, which
+  names `af provider detect` or the choice.
+- `af review plan --uncommitted --policy-rev REV` without `--base` is refused like `af review run`:
+  `review_selectors_missing`, with the command that adds `--base REV`, instead of an internal
+  capture error. Both give that refusal, instead of "no route covers the 0 changed path(s)",
+  when the project's routing refuses unmatched paths and every route is on a diff pipeline.
+
+- The performance lab's scratch enforcement fill syncs its file once every 64 MiB written and
+  once more after the filesystem refuses a write, instead of after every MiB. A sync after every
+  MiB left an 8-GiB build scratch on nested ext4 short of its capacity when the 120 s check
+  ended. The refusal rules, byte bound, deadlines and 30 s cleanup reserve are unchanged, and a
+  delayed ENOSPC, EDQUOT or EIO from the last sync is still the fill's
+  ([ADR-0167](docs/adr/0167-bound-every-supervisor-wait-and-verify-only-what-was-observed.md)).
+
+- The local executor verification note now states the long-`TMPDIR` results per length: the
+  complete 17-test selection passed at length 104 and with `TMPDIR` unset, the three targeted
+  regressions passed at 104, 144 and 224, and the separate
+  `task_outcomes::a_next_line_fits_the_terminal_and_runs_as_printed` failed at 144 and 224.
+
+- A Provider capability probe that fails with `os error 11` or `os error 111` (such as
+  `Connection refused`) is no longer reported as a host permission denial (`probe_denied`): errno
+  values are matched on word boundaries, and a CLI the host refuses to start is judged by its typed
+  error kind ([#393](https://github.com/PakhomovAlexander/afactory/issues/393)).
+
+- A finding's `agent_prompt.text` in `af task findings --json`, `af review report --json` and
+  their `--format sarif` keeps its location, requested change and verification even when the
+  evidence or the title is too long to fit: it cuts the evidence first and then the title, each
+  marked `[… truncated to fit the prompt]`. Only a requested change too long to fit even then is
+  cut, with the same marker, while the location and verification stay whole; the structured
+  `requested_change` field always holds the complete bounded value
+  ([ADR-0248](docs/adr/0248-hand-review-findings-to-the-agent-that-will-fix-them.md)).
+  `docs/agents.md` now says that a `not_run` reviewer has no admitted review result for the
+  round, rather than that it never looked.
+
+- `af task events TASK_ID` refuses a planned Task with no run in progress (exit 1, one
+  `af/error@2` line) at every poll, not only the first: a run that was starting when the follower
+  began and ended before it took the Task no longer yields a terminal record of the planned
+  state with exit 0
+  ([ADR-0250](docs/adr/0250-follow-a-task-as-a-stream-of-its-store-events.md)).
+
+- `af help --json` declares the effects four commands left out: `af provider models` may write
+  machine state for a Codex Provider (`codex app-server` caches its model list in
+  `$CODEX_HOME/models_cache.json`), `af review plan --file` writes the Task Store,
+  `af review run --file` (and `af review --file`) may write remote state with a pipeline that
+  declares remote checks, and `af task deliver` writes the Task Store as well as files
+  ([ADR-0247](docs/adr/0247-generate-a-machine-readable-command-catalog.md)).
+
+- `af review plan` lists each changed path only for a Subject of at most three; a larger one
+  takes one `change` line with the first paths that fit, how many more and `--long lists each`,
+  so a 25-file plan fits one 80x24 screen. `--long` lists every path, and the `--json` Subject
+  still carries them all (#425).
+- The `af onboard` text preview keeps its lines within 80 columns and a source-build preview
+  with no Provider registered within 24 rows: the `profile` reason is shorter, a `providers`
+  line too wide puts its `←` fix on a line of its own, a next step's long command continues
+  between its arguments, the file count joins the `pipeline` line, the Round maximum joins
+  `budget`, and a build without an install receipt says so in one line. `--long` adds the
+  `convergence` line, every file and the whole warning; `--json` is unchanged apart from
+  shorter next-step wording (#425).
+- The software starter's `implementation-reviewed.json` no longer names `strategy`,
+  `verification` or `facts.standard`: the `implement` kind's defaults supply review verification
+  and `facts.standard = true`, with strategy `reviewed` in place of the `fast` it named, which
+  selected nothing because the file names its pipeline (#425).
+
+- The repository's catalog now also pins a light default Task pipeline for small, local changes,
+  `default-light/implementation` and `default-light/verification`: one implementing iteration
+  (`claude-opus-5-5`, medium; 1,000,000 tokens, 2 h), the correctness reviewer (`gpt-6-sol`,
+  high; 300,000 tokens, 30 min) and the evaluator (`gpt-6-astra`, high; 200,000 tokens, 20 min),
+  with no bug-bounty or gate-time reviewer: the correctness reviewer also owns concrete
+  functional defects on the changed paths. The catalog's `[review.reviewers]` now marks `bugs`
+  advisory so that pipeline may leave it unbound; a pipeline that binds it counts its findings
+  and its missing result as before, but its benchmark Demands no longer block convergence.
+  `docs/tasks.md` ("The light default pipeline") gives its limits and Provider bindings
+  ([ADR-0262](docs/adr/0262-offer-a-light-default-pipeline-for-small-changes.md)).
+
+- This repository's `.af/af.toml` `[task.defaults]` names `default/implementation`, the default
+  pipeline every Afactory change runs through, instead of `kernel/implementation-reviewed`: a
+  Task file of this repository that names no pipeline plans on it, with limits sized for it
+  (tokens 8000000, max_attempts 16, wall_ms 43200000; verification tokens 2000000, attempts 9,
+  wall_ms 18000000), the limits of the default-pipeline example in `docs/tasks.md`, whose
+  verification Attempts rise from 8 to 9: the planner reserves one verification Attempt for each
+  judging node (checks, bugs, correctness, uix, evaluator) and one for each of the four Provider
+  admissions it protects, and 8 refused every plan of `default/implementation`
+  ([ADR-0253](docs/adr/0253-the-default-task-pipeline-lives-in-the-catalog.md)).
+
+Full `make check` now runs the Python performance laboratory suite as a mandatory tests-stage
+step after the genuine Rust no-run build and ordinary Rust suite, preserving both runner
+modes, standalone `make test`, all coverage and the existing build/test deadlines. Lightweight
+preflight, catalog/schema and source-integrity checks remain mandatory; selected class wiring,
+native process ownership and `.af/` authority are unchanged. A focused regression exercises
+the real native wrapper, Make graph and step receipts, including a build failure that prevents
+suite execution.
+
+- Integrate exact main `bdf17c2b` with the accepted independent performance executor. Retain
+  upstream fast defaults for every PR, release provenance and selection v2, and the owned
+  fixture-copy permission repair. Preserve upstream ADR-0239 and move only the executor
+  decision to ADR-0240. Regenerate descriptions and protected pins with unchanged generators;
+  record focused non-root ordinary/read-only checks in the executor verification note.
+
+Repair macOS performance-laboratory fixture setup by canonicalizing newly created temporary
+roots, using explicit Python no-op executables, modeling the Linux mount host explicitly and
+exercising log preallocation with real dense allocation where the platform lacks
+`posix_fallocate`. Preserve strict symlink refusal, allocation-before-launch, log overflow,
+absolute deadlines and cleanup ownership assertions; production behavior and test-class
+selection remain unchanged. Anchor the terminal stall fixture’s simulated clock jump to its
+recorded start so setup duration cannot consume its declared boundary interval twice.
+
+Make the telemetry collection interruption fixture reach verification, authority expansion,
+authority retention, pruning and history rendering independently of preparation cost. A scoped
+test clock separates real preparation from the unchanged one-second work/cleanup deadline;
+real timer interruption, incomplete terminal accounting, partial-import checks and lock release
+remain asserted. Production deadlines, telemetry semantics and test-class selection are unchanged.
+
+Integrate upstream telemetry runtime compatibility and cross-filesystem private AF fixtures
+with class-selected validation. The real AF contained runtime smoke now runs for selected perf,
+is mandatory for full validation and fails both stable aggregates on absent or unsuccessful
+selected work; fast without perf records an intentional skip. Preserve upstream serial corpus
+preparation, versioned CLI oracles, all contained security and timeout limits, and the existing
+portability, Make build ordering and five-boundary interruption repairs. Retain runtime smoke
+costs separately from class shares and regenerate protected harness identities.
+
+- Reconcile four-class validation with bounded upstream through `91f75edb`, retaining profile
+  v6 and symbol archive protections, the replacement calibration cohort, guarded experiment
+  fixtures and README changes. Preserve label/release selection, both perf smoke dependencies,
+  macOS and interruption repairs, and Rust-build-before-Python ordering. Renumber only unmerged
+  feature ADRs and regenerate protected harness hashes. Focused local checks prepare an
+  unverified candidate for operator publication and GitHub CI; no full local validation or
+  independent review pass is claimed.
+
 ## [0.13.0] - 2026-10-26
 
 ### Authority compatibility
