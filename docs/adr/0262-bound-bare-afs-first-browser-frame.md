@@ -1,4 +1,4 @@
-# ADR-0260: Bound bare af's first browser frame
+# ADR-0262: Bound bare af's first browser frame
 
 **Status:** proposed (2026-10-27). See [issue #402](https://github.com/PakhomovAlexander/afactory/issues/402).
 

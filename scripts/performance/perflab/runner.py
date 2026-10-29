@@ -1160,7 +1160,7 @@ class Shard(object):
         kind, detail, halt = supervise.outcome(supervised, containment, control_record=False)
         # The PTY driver owns the browser's session outside the supervisor's group: its own
         # unconfirmed cleanup is the sample's, and so is a driver that did not exit of its own
-        # accord, whose settlement of that session may not have finished (ADR-0260).
+        # accord, whose settlement of that session may not have finished (ADR-0262).
         termination = result["termination"]["kind"]
         unconfirmed = None
         if case["timing"]["boundary"] == "reported_interval":
@@ -1193,7 +1193,7 @@ class Shard(object):
             if case["timing"]["boundary"] == "reported_interval":
                 if passed:
                     # The driver's browser_ms is the primary interval; its splash_ms, first
-                    # output, is the declared optional metric beside it (ADR-0260).
+                    # output, is the declared optional metric beside it (ADR-0262).
                     browser, splash = reported
                     record["metrics"][case["primary_metric"]["key"]] = {
                         "value": format_decimal(browser), "unit": "ms"}

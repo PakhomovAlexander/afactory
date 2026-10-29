@@ -490,5 +490,5 @@ future readers need.
   report](0258-task-gate-evidence-comes-from-the-check-report.md)
 - [0259 — Point agents at the loop in four rules and own skills by their
   bytes](0259-point-agents-at-the-loop-in-four-rules-and-own-skills-by-their-bytes.md)
-- [0260 — Bound bare af's first browser
-  frame](0260-bound-bare-afs-first-browser-frame.md)
+- [0262 — Bound bare af's first browser
+  frame](0262-bound-bare-afs-first-browser-frame.md)
