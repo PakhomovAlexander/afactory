@@ -12,4 +12,4 @@ the driver. The case was added for the
 splash delay diagnosed
 in [issue #402](https://github.com/PakhomovAlexander/afactory/issues/402) and measures whatever
 binary it is given, the repaired browser included; it does not activate a shipping budget
-([ADR-0262](docs/adr/0262-bound-bare-afs-first-browser-frame.md)).
+([ADR-0263](docs/adr/0263-bound-bare-afs-first-browser-frame.md)).

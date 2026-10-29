@@ -2107,7 +2107,7 @@ class UncertainCleanup(ChildRunBase):
 
 
 class BrowserDiagnostic(ChildRunBase):
-    """The browser case under a diagnostic (ADR-0262): its PTY driver owns the browser's
+    """The browser case under a diagnostic (ADR-0263): its PTY driver owns the browser's
     session outside the supervisor's group, so a cleanup the driver could not confirm is the
     execution's, whatever the supervisor confirmed of its own group."""
 

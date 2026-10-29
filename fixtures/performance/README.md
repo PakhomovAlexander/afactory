@@ -40,7 +40,7 @@ The data of the continuous performance laboratory
   and a cancellation ends the session first, pending while a settlement already under way is
   confirmed. Its private registry setup registers all 20 copied Stores through each
   side's own `af task gc --state` preview, which records the Store it names and writes nothing
-  else (ADR-0262).
+  else (ADR-0263).
 - `adapters.toml` — the reviewed native probe adapters (`af.perf-adapters/1`): each a fixed
   priority, an equivalence group, the contracts it serves and the exact closure of authority
   example files a build copies into a measured source before compiling it. A test requires each
@@ -277,7 +277,7 @@ omission names its reason and exact reproduction.
   PTY driver, in a private HOME, XDG and TMPDIR after its setup. The supervisor's observation of
   the whole output is judged by the command's oracle; a PTY driver exit of 3, or a driver that
   did not exit of its own accord, is a cleanup it could not confirm, which keeps the
-  execution's namespace and launches nothing more (`cleanup_uncertain`, ADR-0262). A CPU profile records each fresh process
+  execution's namespace and launches nothing more (`cleanup_uncertain`, ADR-0263). A CPU profile records each fresh process
   whole; a trace's region is the startup of a discovery command or the dispatched command.
   Cases declared as requiring Linux containment run only with `--mode linux_container`.
 - **CPU profiles** (`linux_gnu_cpu_profile`, `linux_musl_cpu_profile`): `perf record` starts

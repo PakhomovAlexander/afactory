@@ -1475,7 +1475,7 @@ class Profile(object):
             if (case["timing"]["boundary"] == "reported_interval"
                     and result.supervised is not None):
                 # The PTY driver owns the browser's session outside the supervisor's group
-                # (ADR-0262): a cleanup it could not confirm (exit 3) is this execution's,
+                # (ADR-0263): a cleanup it could not confirm (exit 3) is this execution's,
                 # whatever the supervisor refused or confirmed of its own group, and so is a
                 # driver that did not exit of its own accord (its supervisor's timeout,
                 # cancellation or kill), whose settlement of that session may not have

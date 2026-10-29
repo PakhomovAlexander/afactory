@@ -813,7 +813,7 @@ class BrowserShard(ShardHarness):
     def test_a_driver_that_did_not_exit_of_its_own_accord_stops_the_shard(self):
         # An authority whose driver a signal ends before it could settle the browser's
         # session: the supervisor's own group is clean, and the sample's cleanup is not, since
-        # a process the browser started outside that group may live on (ADR-0262).
+        # a process the browser started outside that group may live on (ADR-0263).
         plan_path, build = self.driven_by(
             "killed", "import os, sys\nsys.stderr.write('tui-open: ended\\n')\n"
             "sys.stderr.flush()\nos.kill(os.getpid(), 9)\n")

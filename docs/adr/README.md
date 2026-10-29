@@ -494,5 +494,5 @@ future readers need.
   login](0260-leave-out-a-default-context-that-holds-a-registered-login.md)
 - [0261 — Shape the browser around what a person looks
   for](0261-shape-the-browser-around-what-a-person-looks-for.md)
-- [0262 — Bound bare af's first browser
-  frame](0262-bound-bare-afs-first-browser-frame.md)
+- [0263 — Bound bare af's first browser
+  frame](0263-bound-bare-afs-first-browser-frame.md)

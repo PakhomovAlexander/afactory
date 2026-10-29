@@ -295,7 +295,7 @@ if action is None and '_seed_v1"' in request["stdin"]:
     # Every native seed writer's request (ADR-0170), whatever its index.
     action = overrides.get("native_seed_writer")
 elif action is None and any(arg.endswith("/tui-open.py") for arg in request["argv"]):
-    # Every PTY driver request (ADR-0262), whatever its index: `reported_after_one` runs the
+    # Every PTY driver request (ADR-0263), whatever its index: `reported_after_one` runs the
     # first driver for real and reports the rest.
     action = overrides.get("tui_open")
     if action == "reported_after_one":
@@ -347,7 +347,7 @@ if setup is not None:
     if termination["kind"] != "exited" or termination["code"] != 0:
         setup_failed = "it ended %s %s" % (termination["kind"], termination["code"])
 if setup_failed is None and action == "reported":
-    # A PTY driver's document in place of running it (ADR-0262): distinct, exact values for
+    # A PTY driver's document in place of running it (ADR-0263): distinct, exact values for
     # each invocation, so a test can tell every sample's metrics apart downstream.
     termination = {"kind": "exited", "code": 0, "signal": None, "detail": ""}
     wall, observation, err = str(5000000 + call), "unreaped", b""
