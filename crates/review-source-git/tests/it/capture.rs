@@ -259,21 +259,79 @@ fn an_untracked_file_created_between_passes_retries_without_a_cas_error() {
     );
 }
 
-/// A staged change with no file-content change still moves the index, and the boundary sees it.
+/// Staging a file already in the worktree, bytes unchanged, moves the index and nothing a worktree
+/// pass reads, so only the index boundary can reject the pass.
 struct StageBetweenPasses<'a> {
     fixture: &'a Fixture,
+    /// What a worktree pass reads, just before and just after the staging.
+    views: std::cell::RefCell<Vec<WorktreeView>>,
+    /// `git ls-files -s`, just before and just after the staging.
+    indexes: std::cell::RefCell<Vec<String>>,
 }
 
 impl CaptureObserver for StageBetweenPasses<'_> {
     fn between_passes(&self, attempt: u32) {
         if attempt == 1 {
+            self.record();
             settled_change(self.fixture, || {
-                self.fixture
-                    .write("newly_staged.rs", b"// staged mid-capture\n");
                 self.fixture.git(&["add", "newly_staged.rs"]);
             });
+            self.record();
         }
     }
+}
+
+impl StageBetweenPasses<'_> {
+    fn record(&self) {
+        self.views.borrow_mut().push(worktree_view(self.fixture));
+        self.indexes
+            .borrow_mut()
+            .push(self.fixture.git(&["ls-files", "-s", "-z"]));
+    }
+}
+
+/// Each path's mode, bytes (a symlink's target), and device, inode, modification and change
+/// times: everything a capture's worktree pass fingerprints.
+type WorktreeView = std::collections::BTreeMap<String, (u32, Vec<u8>, [i64; 6])>;
+
+/// What a capture's worktree pass reads: the paths `git ls-files` lists as cached, or untracked
+/// and not ignored, merged as the pass merges them, with each one's metadata and bytes.
+fn worktree_view(fixture: &Fixture) -> WorktreeView {
+    use std::os::unix::ffi::OsStrExt;
+    use std::os::unix::fs::MetadataExt;
+    let mut view = WorktreeView::new();
+    for args in [
+        &["ls-files", "-z", "--cached"][..],
+        &["ls-files", "-z", "--others", "--exclude-standard"],
+    ] {
+        for path in fixture
+            .git(args)
+            .split('\0')
+            .filter(|path| !path.is_empty())
+        {
+            let full = fixture.repo_path().join(path);
+            let metadata = std::fs::symlink_metadata(&full).unwrap();
+            let bytes = if metadata.file_type().is_symlink() {
+                std::fs::read_link(&full)
+                    .unwrap()
+                    .as_os_str()
+                    .as_bytes()
+                    .to_vec()
+            } else {
+                std::fs::read(&full).unwrap()
+            };
+            let stamp = [
+                metadata.dev() as i64,
+                metadata.ino() as i64,
+                metadata.mtime(),
+                metadata.mtime_nsec(),
+                metadata.ctime(),
+                metadata.ctime_nsec(),
+            ];
+            view.insert(path.to_owned(), (metadata.mode(), bytes, stamp));
+        }
+    }
+    view
 }
 
 /// Make `change` and return once a watcher of the repository started afterwards, as the next
@@ -289,13 +347,15 @@ impl CaptureObserver for StageBetweenPasses<'_> {
 /// repository, started before `change`, must report a fence file written there after it: a
 /// stalled host reports nothing for seconds, to watchers already running too, and then hands it
 /// all on. Then each round starts a probe watching the repository, as the capture's watcher
-/// does, and the fences directory, then writes a fresh fence file there, never inside the
-/// repository. A probe that reports its own fence with no repository event before it or in the
-/// same batch was handed no replay; a probe handed one, or that loses its fence for a second, is
-/// replaced by the next round until the bounded deadline. One clean probe can still be ahead of
-/// a replay delivered late, so two in a row settle the change. Fences are written one second
-/// apart at most, each once the last is reported or lost; the wait is on that observable state,
-/// never a sleep.
+/// does, and the fences directory, and judges it with [`probe_is_clean`]: two barrier files
+/// written there in turn, never inside the repository, must each be reported with no repository
+/// event before or with them. The second barrier is written only once the first is reported, so
+/// a repository callback delivered after the first barrier's is ordered against a later barrier
+/// the probe observes, not against a momentarily empty queue. A probe handed a repository event,
+/// or that loses a barrier for a second, is replaced by the next round; two clean probes in a
+/// row settle the change. None of this proves the platform holds no later callback: one that
+/// reaches the next pass's watcher makes the capture take a third attempt, and the test fails on
+/// it. Every wait is on observable state within the 120-second deadline, never a sleep.
 fn settled_change(fixture: &Fixture, change: impl FnOnce()) {
     use notify::Watcher as _;
     use std::sync::mpsc::RecvTimeoutError;
@@ -347,7 +407,10 @@ fn settled_change(fixture: &Fixture, change: impl FnOnce()) {
             Instant::now() < deadline,
             "a watcher started after the change was still handed stale events"
         );
-        let fence = fences.join(format!("fence-{round}"));
+        let barriers = [
+            fences.join(format!("fence-{round}-a")),
+            fences.join(format!("fence-{round}-b")),
+        ];
         let (send, events) = std::sync::mpsc::channel();
         let mut probe = notify::recommended_watcher(move |event| {
             let _ = send.send(event);
@@ -358,32 +421,10 @@ fn settled_change(fixture: &Fixture, change: impl FnOnce()) {
                 .watch(&root, notify::RecursiveMode::Recursive)
                 .unwrap();
         }
-        std::fs::write(&fence, b"").unwrap();
-        let replace_at = Instant::now() + Duration::from_secs(1);
-        let mut own_fence = false;
-        let clean = loop {
-            let event = if own_fence {
-                // The rest of the batch that carried the probe's own fence.
-                match events.try_recv() {
-                    Ok(event) => event,
-                    Err(_) => break true,
-                }
-            } else {
-                let left = replace_at
-                    .min(deadline)
-                    .saturating_duration_since(Instant::now());
-                match events.recv_timeout(left) {
-                    Ok(event) => event,
-                    Err(RecvTimeoutError::Timeout) => break false,
-                    Err(RecvTimeoutError::Disconnected) => panic!("the probe disconnected"),
-                }
-            };
-            let event = event.unwrap_or_else(|error| panic!("the probe failed: {error}"));
-            if event.paths.iter().any(|path| !path.starts_with(&fences)) {
-                break false;
-            }
-            own_fence |= event.paths.contains(&fence);
-        };
+        let clean = probe_is_clean(&events, &fences, &barriers, deadline, |barrier| {
+            std::fs::write(barrier, b"").unwrap();
+        });
+        drop(probe);
         clean_in_a_row = if clean { clean_in_a_row + 1 } else { 0 };
         if clean_in_a_row == 2 {
             return;
@@ -391,18 +432,168 @@ fn settled_change(fixture: &Fixture, change: impl FnOnce()) {
     }
 }
 
+/// Whether a probe watching the repository and `fences` was handed no repository event. `write`
+/// writes each of `barriers` in turn, the next only once the probe has reported the last. The
+/// probe is clean when it reports every barrier, and then the rest of the batch carrying the
+/// last, with no event outside `fences` among them; an event outside `fences` at any point, a
+/// barrier not reported within a second of its write, or the deadline, and it is not.
+fn probe_is_clean(
+    events: &std::sync::mpsc::Receiver<notify::Result<notify::Event>>,
+    fences: &std::path::Path,
+    barriers: &[std::path::PathBuf],
+    deadline: std::time::Instant,
+    mut write: impl FnMut(&std::path::Path),
+) -> bool {
+    use std::sync::mpsc::RecvTimeoutError;
+    use std::time::{Duration, Instant};
+    let mut reported = 0;
+    write(&barriers[0]);
+    let mut replace_at = Instant::now() + Duration::from_secs(1);
+    loop {
+        let event = if reported == barriers.len() {
+            // The rest of the batch that carried the last barrier.
+            match events.try_recv() {
+                Ok(event) => event,
+                Err(_) => return true,
+            }
+        } else {
+            let left = replace_at
+                .min(deadline)
+                .saturating_duration_since(Instant::now());
+            match events.recv_timeout(left) {
+                Ok(event) => event,
+                Err(RecvTimeoutError::Timeout) => return false,
+                Err(RecvTimeoutError::Disconnected) => panic!("the probe disconnected"),
+            }
+        };
+        let event = event.unwrap_or_else(|error| panic!("the probe failed: {error}"));
+        if event.paths.iter().any(|path| !path.starts_with(fences)) {
+            return false;
+        }
+        if reported < barriers.len() && event.paths.contains(&barriers[reported]) {
+            reported += 1;
+            if reported < barriers.len() {
+                write(&barriers[reported]);
+                replace_at = Instant::now() + Duration::from_secs(1);
+            }
+        }
+    }
+}
+
+/// The settlement rule on scripted deliveries, with no filesystem watcher: each script hands the
+/// probe its callbacks as `probe_is_clean` writes a barrier. Every callback is queued before the
+/// probe looks for it, so nothing here waits.
+#[test]
+fn a_repository_callback_after_the_fence_does_not_settle_the_probe() {
+    use std::path::{Path, PathBuf};
+    use std::sync::mpsc::Sender;
+    use std::time::{Duration, Instant};
+    type Events = Sender<notify::Result<notify::Event>>;
+    let fences = PathBuf::from("/fences");
+    let barriers = [fences.join("fence-0-a"), fences.join("fence-0-b")];
+    let repository = PathBuf::from("/repo/.git/index");
+    let send = |events: &Events, path: &Path| {
+        events
+            .send(Ok(notify::Event::default().add_path(path.to_path_buf())))
+            .unwrap();
+    };
+    let probe = |deadline: Instant, script: &dyn Fn(&Path, &Events)| {
+        let (sender, events) = std::sync::mpsc::channel();
+        let mut written = Vec::new();
+        let clean = probe_is_clean(&events, &fences, &barriers, deadline, |barrier| {
+            written.push(barrier.to_path_buf());
+            script(barrier, &sender);
+        });
+        (clean, written)
+    };
+    let later = Instant::now() + Duration::from_secs(120);
+
+    let (clean, written) = probe(later, &|barrier, events| send(events, barrier));
+    assert!(clean, "barriers alone settle the probe");
+    assert_eq!(written, barriers, "the second barrier follows the first");
+
+    // The order the old rule missed: the first fence's callback, then an empty queue, then a
+    // repository callback. An empty queue after the fence settled the probe; now the second
+    // barrier is written only once the first was consumed, and the late callback lands first.
+    let (clean, written) = probe(later, &|barrier, events| {
+        if barrier == barriers[1] {
+            send(events, &repository);
+        }
+        send(events, barrier);
+    });
+    assert!(
+        !clean,
+        "a repository callback after the fence settled the probe"
+    );
+    assert_eq!(written, barriers);
+
+    // A repository callback in the batch that carries the closing barrier.
+    let (clean, _) = probe(later, &|barrier, events| {
+        send(events, barrier);
+        if barrier == barriers[1] {
+            send(events, &repository);
+        }
+    });
+    assert!(
+        !clean,
+        "a repository callback with the last barrier settled the probe"
+    );
+
+    // A repository callback before the first fence: no second barrier is written.
+    let (clean, written) = probe(later, &|barrier, events| {
+        if barrier == barriers[0] {
+            send(events, &repository);
+        }
+        send(events, barrier);
+    });
+    assert!(
+        !clean,
+        "a repository callback before the fence settled the probe"
+    );
+    assert_eq!(written, barriers[..1]);
+
+    // The first fence reported and the second never: not settled. The deadline has passed, so
+    // the queued first fence is still read but the probe gives up without waiting.
+    let (clean, written) = probe(Instant::now(), &|barrier, events| {
+        if barrier == barriers[0] {
+            send(events, barrier);
+        }
+    });
+    assert!(!clean, "one reported fence settled the probe");
+    assert_eq!(written, barriers);
+}
+
 #[test]
 fn an_index_change_alone_invalidates_a_pass() {
     let fixture = Fixture::new();
     fixture.with_content();
     fixture.commit_all("initial");
+    // In the worktree, untracked, before the capture starts: both passes read the same file.
+    fixture.write("newly_staged.rs", b"// staged mid-capture\n");
 
     let repo = repo_of(&fixture);
     let cas = cas_of(&fixture);
-    let snapshot = Capture::new(&repo, &cas)
-        .dirty_observed(&StageBetweenPasses { fixture: &fixture })
-        .unwrap();
+    let observer = StageBetweenPasses {
+        fixture: &fixture,
+        views: Default::default(),
+        indexes: Default::default(),
+    };
+    let snapshot = Capture::new(&repo, &cas).dirty_observed(&observer).unwrap();
     assert_eq!(snapshot.attempts, 2, "the index fingerprint caught it");
+
+    let views = observer.views.into_inner();
+    assert!(views[0].contains_key("newly_staged.rs"));
+    assert_eq!(
+        views[0], views[1],
+        "staging changed what a worktree pass reads, not only the index"
+    );
+    let indexes = observer.indexes.into_inner();
+    assert!(!indexes[0].contains("newly_staged.rs"));
+    assert!(indexes[1].contains("newly_staged.rs"), "the index changed");
+    assert_eq!(
+        snapshot.manifest.get("newly_staged.rs").unwrap().content,
+        review_source_git::digest_bytes(b"// staged mid-capture\n")
+    );
 }
 
 #[test]
