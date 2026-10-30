@@ -243,20 +243,22 @@ def bounded(text):
 def junit_results(junit):
     """identity -> None (passed) or its failure output, for every case the JUnit ran; None when
     there is no readable JUnit."""
-    try:
-        root = ET.parse(junit).getroot()
-    except (OSError, ET.ParseError):
+    # nextest-gate.py decides what failed, as it does for the gate; this adds what ran and the output.
+    failed = ng.failed_tests(junit)
+    if failed is None:
         return None
+    failed = {f'{binary} {name}' for binary, name in failed}
+    root = ET.parse(junit).getroot()
     results = {}
     for suite in root.iter('testsuite'):
         for case in suite.iter('testcase'):
             if case.find('skipped') is not None:
                 continue  # Not run: no result.
             identity = f'{case.get("classname") or suite.get("name") or ""} {case.get("name") or ""}'
-            failures = [*case.findall('failure'), *case.findall('error')]
-            if not failures:
+            if identity not in failed:
                 results[identity] = None
                 continue
+            failures = [*case.findall('failure'), *case.findall('error')]
             parts = [(failure.text or '').strip() or failure.get('message') or failure.tag
                      for failure in failures]
             for stream in ('system-out', 'system-err'):

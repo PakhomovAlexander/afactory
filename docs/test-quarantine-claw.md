@@ -50,23 +50,26 @@ commit (the `main` commit whose `.config/test-quarantine.json` holds the entries
 
 ```sh
 COMMIT=$(git rev-parse origin/main)
-ssh claw-3
 ```
 
-On Claw, with the same `COMMIT` set there:
+Then run the confirmation on Claw. The commit is passed to the remote shell, which reads the
+commands from the quoted here-document, so nothing in it is expanded on the owner's machine:
 
 ```sh
+ssh claw-3 COMMIT="$COMMIT" bash -s <<'CLAW'
+set -e
 WORK="$HOME/af-quarantine-$COMMIT"
 mkdir -p "$WORK"
 docker run --rm -v "$WORK":/work -w /work rust:1.88.0 sh -c "
   git clone https://github.com/PakhomovAlexander/afactory.git src &&
   git -C src checkout --detach $COMMIT"
+test "$(git -C "$WORK/src" rev-parse HEAD)" = "$COMMIT"
 docker run --rm -v "$WORK":/work -w /work/src rust:1.88.0 sh -c '
   set -e
   apt-get update && apt-get install -y python3 git
   cargo install cargo-nextest --locked
   python3 scripts/test-quarantine.py confirm --report /work/confirm.json'
-exit
+CLAW
 ```
 
 Back on the owner's machine, copy the report:
@@ -115,12 +118,33 @@ gh issue create --title 'P0: <identity> fails in every run' --label P0 \
 ```
 
 Optionally write a flaky issue's number into its entry's `issue` field. Then check the file and
-open the pull request that carries it; `make check` validates it again:
+commit it; `make check` validates it again:
 
 ```sh
 python3 scripts/test-classes.py audit
 git commit -am 'test quarantine: apply the confirmation of <commit>'
-gh pr create --fill
+```
+
+Like every change to this repository, the pull request carries an `af task report` block
+([ADR-0142](adr/0142-carry-the-af-task-report-in-every-pull-request.md)) and the lines-added block
+([ADR-0195](adr/0195-state-the-lines-a-pull-request-adds-per-directory-and-check-them.md)), which the PR report
+check requires. The commit is a hand-made candidate, so an af verification Task judges it
+(`default-light/verification`,
+[ADR-0262](adr/0262-offer-a-light-default-pipeline-for-small-changes.md)), with `../base` the commit before it and the
+confirmation report as its evidence. Then build the body from that Task and open the pull request:
+
+```sh
+{
+  echo '## What'; echo
+  echo 'Apply the Claw confirmation of <commit> to .config/test-quarantine.json.'; echo
+  echo '## af task report'; echo
+  af task report <verification Task ID>
+  echo; echo '## Lines added'; echo
+  python3 scripts/pr-lines.py --base origin/main
+} > "$TMPDIR/quarantine-pr.md"
+git push -u origin test-quarantine-confirm
+gh pr create --title 'test quarantine: apply the confirmation of <commit>' \
+    --body-file "$TMPDIR/quarantine-pr.md"
 ```
 
 ## A macOS-only entry
