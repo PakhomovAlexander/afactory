@@ -1,5 +1,6 @@
-"""Closed contracts of the owner's nightly build (ADR-0265): its configuration, the plan it
-prints and the record each night leaves in its directory.
+"""Closed contracts of the owner's nightly build (ADR-0265) and its publication (ADR-0268): the
+configuration, the plan `build` prints, the record each night leaves in its directory and the
+receipt `publish` writes beside it.
 
 A nightly is a separate train from the releases: its tag is `nightly-YYYY.MM.DD` and its
 version `<core>-nightly.<YYYYMMDD>`, both derived here from the night's date and the
@@ -14,6 +15,7 @@ from .values import ContractError, require
 CONFIG_SCHEMA = "af.nightly-config/1"
 PLAN_SCHEMA = "af.nightly-plan/1"
 BUILD_SCHEMA = "af.nightly-build/1"
+PUBLISH_SCHEMA = "af.nightly-publish/1"
 
 # The Linux targets a nightly ships, in the order they are built and recorded. The VM cannot
 # build macOS, so a nightly has no aarch64-apple-darwin archive.
@@ -23,6 +25,13 @@ SIGNATURE = "dist/SHA256SUMS.minisig"
 DATE_PATTERN = r"^[0-9]{4}-[0-9]{2}-[0-9]{2}$"
 TAG_PATTERN = r"^nightly-[0-9]{4}\.[0-9]{2}\.[0-9]{2}$"
 VERSION_PATTERN = r"^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)-nightly\.[0-9]{8}$"
+# The files a published night's release carries after its two archives, in upload order: the
+# signed sums and the build record `build` wrote, then the report N3 composed. Only the report
+# (and the release notes) is ever replaced.
+SHIPPED_FILES = ("SHA256SUMS", "SHA256SUMS.minisig", "nightly.json")
+REPORT_FILES = ("daily.json", "report.html")
+KEEP_NIGHTS_DEFAULT = 14
+TELEGRAM_CHAT_PATTERN = r"^(-?[1-9][0-9]{0,19}|@[A-Za-z][A-Za-z0-9_]{4,31})$"
 # The workspace version a nightly is derived from: plain SemVer, no build metadata.
 _WORKSPACE_VERSION = re.compile(r"^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)"
                                 r"(?:-([0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*))?$")
@@ -72,6 +81,16 @@ def asset_name(tag, target):
     return "af-%s-%s.tar.gz" % (tag, target)
 
 
+def release_assets(tag):
+    """The names of a published night's release assets, in upload order."""
+    return [asset_name(tag, target) for target in TARGETS] + list(SHIPPED_FILES + REPORT_FILES)
+
+
+def release_url(repository, tag):
+    """The release page GitHub reports as a release's `html_url`."""
+    return "https://github.com/%s/releases/tag/%s" % (repository, tag)
+
+
 def register(c):
     SHA, DIGEST = c.GIT_SHA, c.DIGEST
     path = c.ABSOLUTE_PATH
@@ -83,7 +102,13 @@ def register(c):
         Field("sign_key", path), Field("public_key", path),
         Field("required_checks", Arr(check_name, 0, 64, unique=True)),
         Field("max_walk", Int(1, 200), required=False),
-        Field("github_token_file", path, required=False))
+        Field("github_token_file", path, required=False),
+        Field("publish", Obj(
+            Field("github_token_file", path),
+            Field("telegram_token_file", path, required=False),
+            Field("telegram_chat_id", Str(pattern=TELEGRAM_CHAT_PATTERN, max_len=33),
+                  required=False),
+            Field("keep_nights", Int(3, 60), required=False)), required=False))
     rejected = Obj(Field("sha", SHA), Field("reason", Str(min_len=1, max_len=2048)))
     common = (
         Field("date", Str(pattern=DATE_PATTERN, max_len=10)),
@@ -114,6 +139,27 @@ def register(c):
         Field("sha256sums", Nullable(Obj(Field("path", Const(SUMS)),
                                          Field("signature_path", Const(SIGNATURE))))),
         Field("timings", Map(r"^[a-z0-9][a-z0-9_.-]{0,63}$", phase, 1, 32)))
+    tag_name = Str(pattern=TAG_PATTERN, max_len=19)
+    uploaded = Obj(Field("name", Str(pattern=r"^[A-Za-z0-9._-]+$", max_len=128)),
+                   Field("size", Int(1, 2 ** 40)), Field("digest", DIGEST))
+    receipt = Obj(
+        Field("schema", Const(PUBLISH_SCHEMA)),
+        Field("status", Str(enum=("published", "skipped"))),
+        Field("date", Str(pattern=DATE_PATTERN, max_len=10)), Field("tag", tag_name),
+        Field("head_sha", SHA), Field("repository", c.REPOSITORY),
+        Field("release", Nullable(Obj(
+            Field("id", Int(1, 2 ** 53)),
+            Field("url", Str(pattern=r"^https://github\.com/", max_len=512))))),
+        Field("assets", Arr(uploaded, 0, len(TARGETS) + len(SHIPPED_FILES + REPORT_FILES))),
+        Field("telegram", Nullable(Obj(Field("message_id", Int(1, 2 ** 53))))),
+        Field("telegram_reason", Nullable(Str(min_len=1, max_len=1024))),
+        Field("pruned", Arr(tag_name, 0, 1024, unique=True)),
+        Field("prune_failures", Arr(Obj(Field("tag", tag_name),
+                                        Field("reason", Str(min_len=1, max_len=1024))),
+                                    0, 1024)),
+        Field("foreign", Arr(tag_name, 0, 1024, unique=True)),
+        Field("amendments", Int(0, 10000)),
+        Field("published_unix_ms", c.UNIX_MS))
 
     def validate_config(doc, where="nightly.toml"):
         configuration.validate(doc, where)
@@ -121,6 +167,14 @@ def register(c):
             require(name not in RELEASE_JOBS and not name.startswith(RELEASE_JOB_PREFIX),
                     "%s.required_checks: %r is a job of the release workflow, which a "
                     "nightly never waits for" % (where, name))
+        publish = doc.get("publish")
+        if publish is not None:
+            require(("telegram_token_file" in publish) == ("telegram_chat_id" in publish),
+                    where + ".publish: telegram_token_file and telegram_chat_id are set together "
+                    "or not at all")
+            require(publish["github_token_file"] != doc.get("github_token_file"),
+                    where + ".publish.github_token_file: the write token is not the read-only "
+                    "github_token_file")
         root = doc["builds_root"].rstrip("/") + "/"
         mirror = doc["mirror"].rstrip("/") + "/"
         require(not root.startswith(mirror) and not mirror.startswith(root),
@@ -175,15 +229,42 @@ def register(c):
                         where, entry["target"], entry["target"]))
         return doc
 
+    def validate_receipt(doc, where="publish.json"):
+        receipt.validate(doc, where)
+        night_date(doc["date"], where + ".date")
+        require(doc["tag"] == nightly_tag(doc["date"]),
+                where + ".tag: a night's tag is nightly-YYYY.MM.DD of its date")
+        require((doc["telegram"] is None) != (doc["telegram_reason"] is None),
+                where + ": a Telegram message id, or the reason there is none")
+        require(doc["tag"] not in doc["foreign"],
+                where + ".foreign: a night never refuses its own release")
+        failed = [entry["tag"] for entry in doc["prune_failures"]]
+        require(len(set(failed)) == len(failed) and not set(failed) & set(doc["pruned"]),
+                where + ".prune_failures: each tag once, never one pruned")
+        if doc["status"] == "skipped":
+            require(doc["release"] is None and not doc["assets"] and not doc["pruned"]
+                    and not doc["prune_failures"] and not doc["foreign"],
+                    where + ": a skipped night publishes, uploads and prunes nothing")
+            return doc
+        require(doc["release"] is not None, where + ".release: a published night has one")
+        require(doc["release"]["url"] == release_url(doc["repository"], doc["tag"]),
+                where + ".release.url: expected " + release_url(doc["repository"], doc["tag"]))
+        require([entry["name"] for entry in doc["assets"]] == release_assets(doc["tag"]),
+                where + ".assets: every asset of the night, in order: "
+                + ", ".join(release_assets(doc["tag"])))
+        return doc
+
     c.validate_nightly_config = validate_config
     c.validate_nightly_plan = validate_plan
     c.validate_nightly_build = validate_record
+    c.validate_nightly_publish = validate_receipt
     c.CONTRACTS["nightly-config"] = (
         CONFIG_SCHEMA, configuration, validate_config,
         "The owner's nightly build configuration as parsed TOML (ADR-0265): the repository, "
         "the bare mirror and builds root, the pinned musl build image, the aarch64 user-mode "
         "runner, the nightly signing key pair, the check runs a green commit must carry and "
-        "how far back the walk may go.")
+        "how far back the walk may go, and, for publishing (ADR-0268), the write token, the "
+        "optional Telegram bot and chat and how many nightly releases stay.")
     c.CONTRACTS["nightly-plan"] = (
         PLAN_SCHEMA, plan, validate_plan,
         "What one night would build (ADR-0265): the newest green first-parent commit of main "
@@ -195,3 +276,11 @@ def register(c):
         "plan it built, the build image, each Linux target's archive with its digest, size, "
         "smoke and version report, the signed SHA256SUMS and every phase's timing, or why "
         "the night was skipped.")
+    c.CONTRACTS["nightly-publish"] = (
+        PUBLISH_SCHEMA, receipt, validate_receipt,
+        "What publishing one night did, builds_root/<date>/publish.json (ADR-0268): the "
+        "pre-release of its tag with each asset's name, size and digest as GitHub reports "
+        "them, or nothing for a skipped night; the Telegram message id or why there is none; "
+        "the nightly pre-releases pruned, each whose release went but whose tag deletion "
+        "failed, and the nightly-named releases refused as foreign; "
+        "how many times the night was amended and when.")

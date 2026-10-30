@@ -202,7 +202,11 @@ The owner's Linux VM builds a nightly af from the newest green commit of main
 (`0.14.0-nightly.20261029`), and its `SHA256SUMS` is signed with a separate nightly key, never
 the release key. `install.sh` and `af self` on the stable and rc channels never choose a
 nightly, and a nightly is never pinned by `.af/af.lock`: `scripts/pin-release.sh` pins only
-`X.Y.Z` and `X.Y.Z-rc.N`, and the release workflow never resolves a `nightly-…` tag.
+`X.Y.Z` and `X.Y.Z-rc.N`, and the release workflow never resolves a `nightly-…` tag. Each
+night is published on GitHub as a pre-release of its tag, never marked latest, holding the two
+archives, the signed `SHA256SUMS`, the build record and the daily report; only the newest
+nightly pre-releases stay, 14 by default
+([ADR-0268](adr/0268-publish-nightlies-as-pre-releases-and-prune-them.md)).
 
 ## Removing af
 

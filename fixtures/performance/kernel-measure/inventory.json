@@ -1097,8 +1097,8 @@
   },
   {
    "path": "fixtures/performance/schema/index.json",
-   "sha256": "sha256:797b03464d02511f9a607d33b951ac5f9557246b11b7b6cc984163a0af5a414f",
-   "size": 77610
+   "sha256": "sha256:135bc6204f481f7d76ac16590603ceff5a4f39c0cac42584c3b1e8858a1eeb2f",
+   "size": 79512
   },
   {
    "path": "fixtures/performance/schema/kernel-inventory/invalid-digest.json",
@@ -1356,6 +1356,11 @@
    "size": 2207
   },
   {
+   "path": "fixtures/performance/schema/nightly-config/invalid-telegram-chat-without-a-token.toml",
+   "sha256": "sha256:f2271e5a882fb3dbf7f00b41337f0149e175cacd845d76a5c00adbaf26b242d4",
+   "size": 3205
+  },
+  {
    "path": "fixtures/performance/schema/nightly-config/invalid-unpinned-image.toml",
    "sha256": "sha256:697d9cfe5b35c1b56bd73710e53f087c1740f783418a53e2624eb05e329e5e3b",
    "size": 2169
@@ -1384,6 +1389,46 @@
    "path": "fixtures/performance/schema/nightly-plan/valid-skipped.json",
    "sha256": "sha256:e8189b172c5d61b00202997dfa690dfc8595994d974576b0b05ed60a0a747234",
    "size": 847
+  },
+  {
+   "path": "fixtures/performance/schema/nightly-publish/invalid-asset-digest-without-algorithm.json",
+   "sha256": "sha256:d088d66a2e8e51582b15af327ca5f94f0c3de40d6d63d4e2315a8875b063fd82",
+   "size": 1769
+  },
+  {
+   "path": "fixtures/performance/schema/nightly-publish/invalid-assets-out-of-order.json",
+   "sha256": "sha256:9710d3995a332441b605a4749374ea4074e1f81b30a14523e838a6afdcfbaf6c",
+   "size": 1776
+  },
+  {
+   "path": "fixtures/performance/schema/nightly-publish/invalid-prune-failure-of-a-pruned-tag.json",
+   "sha256": "sha256:7a7360a0604c8d015b1893fb78d306cca6318d0870e49fe1802e71a16b61fae6",
+   "size": 1947
+  },
+  {
+   "path": "fixtures/performance/schema/nightly-publish/invalid-release-of-another-night.json",
+   "sha256": "sha256:e0d9ea7129634cdca5ab025be9dfe5bb8f4aad880e7c4773ec5549deb3e1b7a0",
+   "size": 1776
+  },
+  {
+   "path": "fixtures/performance/schema/nightly-publish/invalid-skipped-with-a-release.json",
+   "sha256": "sha256:390b3f072c06ca29b510ceeb312650faa759791afb5ec78d8cc7ab85698db721",
+   "size": 602
+  },
+  {
+   "path": "fixtures/performance/schema/nightly-publish/invalid-telegram-without-a-reason.json",
+   "sha256": "sha256:d71976bc55faf3c8a13b07a8f953de6954075f95359f87f732696f357aa407d6",
+   "size": 1752
+  },
+  {
+   "path": "fixtures/performance/schema/nightly-publish/valid-published.json",
+   "sha256": "sha256:8497224906435b338af320c9f2fd1cf36070592e94e1e6062cd61d743f724609",
+   "size": 1776
+  },
+  {
+   "path": "fixtures/performance/schema/nightly-publish/valid-skipped.json",
+   "sha256": "sha256:6b58891889de45f3333a91c83c38264ce80b460db2d987895041a49d3eb0dee1",
+   "size": 489
   },
   {
    "path": "fixtures/performance/schema/plan-refusal/invalid-status.json",
@@ -2797,8 +2842,8 @@
   },
   {
    "path": "scripts/performance/perflab/nightlycontracts.py",
-   "sha256": "sha256:4ed19c1915623b0c338130f5cf55fbb48914f9249c7040d393efce77797507bb",
-   "size": 10765
+   "sha256": "sha256:2129a661c0e3af43644cc1628a9dfc2b140d055ac3c3fe591d347efd9456a64a",
+   "size": 16257
   },
   {
    "path": "scripts/performance/perflab/oracle.py",
@@ -3181,6 +3226,11 @@
    "size": 46746
   },
   {
+   "path": "scripts/performance/tests/test_nightly_publish.py",
+   "sha256": "sha256:99409610cbf442746c01451513b7a44a37ad0f586d45438abb97eb139057dbdc",
+   "size": 37801
+  },
+  {
    "path": "scripts/performance/tests/test_oracle.py",
    "sha256": "sha256:0182bb0b2cfb3b31d00bfb89a7e666c9977486291a668f14bb47dc51e38d1f93",
    "size": 57570
@@ -3361,7 +3411,7 @@
    "size": 6777
   }
  ],
- "harness_digest": "sha256:40171565da6c9c71967b551cc1c2a4c55cfe5b658e02ff16c0c44be14e34a4ad",
+ "harness_digest": "sha256:138b9fd55807a460ffd8c8bbda0af72952d7df12c7d2655ad8622c0e3806675f",
  "inner_metric": "pending",
  "inner_metric_reason": "the inner wall_ms metric is recorded in every Measurement but no staged objective selects it until the guard's real kernel integration and tampered-candidate tests are accepted on the sealed source and a reviewed human change installs and selects it",
  "objective_metric": "elapsed_ms",
