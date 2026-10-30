@@ -1423,7 +1423,14 @@ def cmd_executor(args):
             _emit(contracts.write_bytes(doc, "local-cohort-declaration"), args.output)
             return 0
         with executor.cancellation(), executor.Journal(config) as journal:
-            if args.operation == "submit":
+            if args.operation == "submit" and args.kind == "nightly":
+                # The key is the tag and work; the baseline defaults to the highest stable
+                # release reachable from the frozen main commit (ADR-0266).
+                require(args.head and args.tag and not args.key,
+                        "a nightly submit needs --tag and --head, an optional --base and no --key")
+                doc = journal.submit_nightly(args.work, args.tag, args.head, args.base)
+                print(json.dumps(doc, sort_keys=True))
+            elif args.operation == "submit":
                 require(args.base and args.head and args.key, "submit needs exact --base, --head and --key")
                 git = executor.source_repository(config)
                 base, head = args.base, args.head
@@ -1491,7 +1498,7 @@ def parser():
     execution.add_argument("operation", choices=("submit", "cycle", "service", "status", "verify",
         "cohort-declare", "calibration-dispatch", "calibration-prepare", "readiness"))
     execution.add_argument("--work", choices=("core", "telemetry", "profile"), default="core")
-    execution.add_argument("--kind", choices=("manual", "pr", "release"), default="manual")
+    execution.add_argument("--kind", choices=("manual", "pr", "release", "nightly"), default="manual")
     for option in ("base", "head", "key", "pr-head", "tag", "request-id", "cohort", "parameters",
                    "cohort-id", "start-date", "output"):
         execution.add_argument("--" + option)

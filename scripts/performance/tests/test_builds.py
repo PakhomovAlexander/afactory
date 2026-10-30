@@ -43,12 +43,13 @@ class FakeBuild(TempDir):
         return builder, builder.build()
 
     def test_the_build_establishes_the_run_s_one_execution_start_and_total_deadline(self):
-        # A deterministic wall clock: the build is the run's first execution (ADR-0170).
+        # A deterministic wall clock: the build is the run's first execution (ADR-0170); the
+        # nightly tier's frozen deadline counts it (ADR-0266).
         builder, doc = self.build(wall=lambda: 1800000000.0)
         execution = doc["execution"]
         self.assertEqual(execution["run"], {"started_unix_ms": 1800000000000,
-                                            "deadline_unix_ms": 1800000000000 + 120 * 60000,
-                                            "total_minutes": 120})
+                                            "deadline_unix_ms": 1800000000000 + 180 * 60000,
+                                            "total_minutes": 180})
         self.assertEqual((execution["caller_deadline_unix_ms"], execution["deadline_unix_ms"]),
                          (None, execution["run"]["deadline_unix_ms"]))
         self.assertEqual(execution["ended_unix_ms"], 1800000000000)

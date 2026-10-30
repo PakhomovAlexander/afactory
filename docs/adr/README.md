@@ -500,3 +500,5 @@ future readers need.
   frame](0263-bound-bare-afs-first-browser-frame.md)
 - [0265 — Build nightlies from the newest green main on the owner's
   VM](0265-build-nightlies-from-the-newest-green-main-on-the-owners-vm.md)
+- [0266 — Measure nightlies as originals of the independent
+  executor](0266-measure-nightlies-as-originals-of-the-independent-executor.md)
