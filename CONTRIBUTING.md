@@ -387,7 +387,8 @@ A test listed in `.config/test-quarantine.json` classifies as `quarantine`, whic
 until a fix removes its entry or the entry expires
 ([ADR-0264](docs/adr/0264-quarantine-flaky-tests-on-gate-evidence-and-confirm-them-on-claw.md)).
 `scripts/test-quarantine.py scan` proposes those entries from af Tasks' gate flaky lists and adds
-them only with `--write` (`docs/test-classes.md`, "Quarantine").
+them only with `--write` (`docs/test-classes.md`, "Quarantine"); its `confirm` and `apply` settle
+them after 50 runs under load (`docs/test-quarantine-claw.md`).
 
 The guarded kernel perf-class test refuses every tampered harness as a baseline with no build.
 Its judged comparison and tampered-candidate refusals after a measured baseline are an ignored

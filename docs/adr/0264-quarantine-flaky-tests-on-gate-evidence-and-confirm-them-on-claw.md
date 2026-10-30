@@ -122,6 +122,23 @@ and the scan lists them as rejected. A real test the fallback reports flaky with
 having rerun it is a false positive this rule admits; Q3's confirmation catches it, removing an
 entry whose test never fails in its 50 runs.
 
+**Amended 2026-10-30** ([#466](https://github.com/PakhomovAlexander/afactory/issues/466), Q3).
+The confirmation is `scripts/test-quarantine.py confirm`, and its report is applied by
+`scripts/test-quarantine.py apply`. It does not run `scripts/nextest-gate.py --repeat`, whose
+runs stop at the first failure: it runs N whole runs (50 by default) of an exact filter through
+`nextest-gate.py`'s run, with `--no-fail-fast --retries 0`, never stopping early and never
+rerunning a failure alone. The functional class's selection runs in a loop beside them as the
+load. An identity that failed in some runs is `flaky`. One that failed in every run is
+`always_fails`: its entry is removed and a P0 issue filed, because main is broken. One that never
+failed is `clean`. The report (`af.test-quarantine-confirm/1`) records the host's
+`platform.system()`. The platform rule cannot read the platform of each evidence Task's check
+report: the list rows the scan reads carry none, and the entry does not repeat it. So the evidence
+platform is an argument of `apply`, `--evidence-platform`, defaulting to macOS (`Darwin`),
+because this repository's af gates run locally on macOS. A clean report from a host whose
+`platform.system()` differs keeps the entry `quarantined` with its dates untouched. A clean macOS
+confirmation, run locally, releases it. The runbook is
+[`docs/test-quarantine-claw.md`](../test-quarantine-claw.md).
+
 ## Consequences
 
 - A flaky test costs the gates that met it, then leaves every gate until it is fixed or its 14

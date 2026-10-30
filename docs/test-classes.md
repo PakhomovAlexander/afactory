@@ -128,8 +128,7 @@ Entries are reviewed data, changed by pull request. A test is added when the gat
 distinct Tasks within 7 days list it as flaky, then confirmed by 50 runs under load on Claw: a
 failure makes it `flaky` with an issue for its fix, 50 passes remove the entry, except that an
 entry with only macOS evidence stays `quarantined` until it is fixed or expires. A fix is its own
-change and removes the entry. The confirmation script is not built yet; until it is, the owner
-confirms and removes entries by hand.
+change and removes the entry.
 
 `scripts/test-quarantine.py scan` proposes the entries:
 
@@ -164,6 +163,30 @@ every guard above, or refuses and writes nothing, and runs those guards even wit
 `AF_TEST_QUARANTINE_TODAY`, else the clock. The exit code is 0 with or without proposals, 1 on bad
 input or a guard refusal and 2 on a usage error. `scripts/test-test-quarantine.py` (run by `make check` and the base
 check) proves it on test-local lists and inventories.
+
+`scripts/test-quarantine.py confirm` and `apply` settle the entries; the runbook,
+[`test-quarantine-claw.md`](test-quarantine-claw.md), gives the exact commands:
+
+```sh
+python3 scripts/test-quarantine.py confirm --report confirm.json     # on Claw, in a container
+python3 scripts/test-quarantine.py apply confirm.json --write --issues DIR
+```
+
+`confirm` runs the entries (or the `--only` ones) in N whole runs (`--runs`, default 50), each
+one `cargo nextest run --no-fail-fast --retries 0` of an exact filter at the CPU count's threads
+through `scripts/nextest-gate.py`'s run, never stopping early and never rerunning a failure. The
+functional class's selection, without the quarantined identities, runs in a loop beside them
+(`--load functional`, the default; `--load none` turns it off), and its failures never count. Each
+identity is `flaky` (failed in some runs), `always_fails` (in every run) or `clean` (in none); a run
+without a JUnit, or whose JUnit lacks an identity, writes no report. The report is one
+`af.test-quarantine-confirm/1` document (`schemas/test-quarantine-confirm-v1.json`, checked for
+parity by `audit`) in a new `--report` file. `apply` makes a `flaky` entry `state: flaky` for 14
+days from today with a `flaky: <identity>` issue body, removes an `always_fails` entry with a P0
+issue body, and removes a `clean` entry only when the report's `platform.system()` is the evidence
+platform: `Darwin` by default, because list rows carry no platform and the af gates run on macOS,
+or `Linux` with `--evidence-platform linux`; otherwise it keeps the entry unchanged and says why. It
+refuses a report from a later day or naming an identity the file no longer holds, runs every guard
+above before it writes, changes nothing without `--write`, and never runs `gh`.
 
 ## Selection and precedence
 
