@@ -255,7 +255,6 @@ same plan and exits as `build` would (0 or 3) without writing anything. `--previ
 compares with a built or skipped record other than the newest one. `publish` prints the
 release URL; running it again amends the night.
 
-
 ## The daily report
 
 `compose` writes one night's report from what the night left behind, without measuring,
