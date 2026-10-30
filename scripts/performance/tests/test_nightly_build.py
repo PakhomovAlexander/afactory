@@ -522,10 +522,17 @@ class CargoRewrite(TempDir):
         current = nightly.workspace_version(read(os.path.join(ROOT, "Cargo.toml")).decode())
         version = nightly.nightly_version(current, "2026-10-29")
 
+        # Resolve for the host only: --offline over every platform needs every platform's
+        # crates, and CI's cargo cache holds only the Linux build's (#483).
+        rustc = subprocess.run(["rustc", "-vV"], cwd=copy, stdout=subprocess.PIPE,
+                               stderr=subprocess.PIPE, check=True).stdout.decode()
+        host = next(line.split(":", 1)[1].strip() for line in rustc.splitlines()
+                    if line.startswith("host:"))
+
         def metadata():
             return subprocess.run(["cargo", "metadata", "--locked", "--offline",
-                                   "--format-version", "1"], cwd=copy, stdout=subprocess.PIPE,
-                                  stderr=subprocess.PIPE)
+                                   "--filter-platform", host, "--format-version", "1"],
+                                  cwd=copy, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
 
         # Only Cargo.toml moved: --locked refuses the stale lock, so the proof below is real.
         manifest_path = os.path.join(copy, "Cargo.toml")
