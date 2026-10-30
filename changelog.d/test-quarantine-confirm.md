@@ -7,4 +7,4 @@
   body, removes an always-failing entry with a P0 body, and removes a clean entry only when the
   report's platform is the evidence platform (`--evidence-platform`, default macOS); it never
   runs `gh`. `docs/test-quarantine-claw.md` gives the Claw runbook
-  ([ADR-0264](docs/adr/0264-quarantine-flaky-tests-on-gate-evidence-and-confirm-them-on-claw.md)).
+  ([ADR-0268](docs/adr/0268-quarantine-flaky-tests-on-gate-evidence-and-confirm-them-on-claw.md)).

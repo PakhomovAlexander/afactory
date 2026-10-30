@@ -20,7 +20,7 @@ CATALOG = ROOT / '.config/test-classes.json'
 QUARANTINE = ROOT / '.config/test-quarantine.json'
 CLASSES = ('functional', 'e2e', 'uix', 'perf')
 FAST = list(CLASSES[:3])
-# A listed test classifies as this, and no plan selects it (ADR-0264).
+# A listed test classifies as this, and no plan selects it (ADR-0268).
 QUARANTINED = 'quarantine'
 QUARANTINE_LIMIT = 20
 QUARANTINE_DAYS = 14

@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Propose, confirm and settle test quarantine entries (ADR-0264; stdlib only).
+"""Propose, confirm and settle test quarantine entries (ADR-0268; stdlib only).
 
     scripts/test-quarantine.py scan --list FILE | --state DIR [...] [--inventory FILE]
                                     [--today YYYY-MM-DD] [--write] [--json]
@@ -500,7 +500,7 @@ def issue_body(identity, result, report, entry, expires=None):
     if result['classification'] == 'flaky':
         opening = (f'`{identity}` failed in {len(failed)} of {runs} runs of '
                    '`scripts/test-quarantine.py confirm` and passed in the others: it is flaky '
-                   '(ADR-0264). Its quarantine entry is now `flaky` until '
+                   '(ADR-0268). Its quarantine entry is now `flaky` until '
                    f'{expires}, so no gate runs it.')
         fix = ('Fix its cause in its own change, prove the fix with `make test-repeat` '
                '(`CONTRIBUTING.md`), and remove the entry from `.config/test-quarantine.json`.')

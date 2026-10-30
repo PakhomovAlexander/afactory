@@ -49,7 +49,9 @@ unclassified hosted validation jobs, and aggregation requires each selected comp
 ignored state. The classifier refuses unknown identities, overlapping overrides and empty inventory.
 It partitions every identity once, including ignored tests, then generates bounded nextest filters
 from the audited inventory. Tests in each root module are grouped only when their selection agrees;
-other names stay exact. Explicit singleton overrides classify manual measurement tests as perf.
+other names stay exact. Explicit singleton overrides classify manual measurement tests as perf,
+and the Codex session parser and privacy regressions (`codex_*`) inside the `af` binary's perf
+`self_optimizer::` unit module as functional.
 Every ignored identity also records its manual/child/container policy; a new ignored test fails
 the audit until reviewed. The guarded kernel baseline refusal test is build-free; the judged comparison and
 tampered-candidate refusals after a measured baseline are `manual-measurement`: run
@@ -86,7 +88,7 @@ existing probe selections, including their ignored tests. They remain outside de
 ## Quarantine
 
 A test shown flaky in the gates leaves every plan until it is fixed
-([ADR-0264](adr/0264-quarantine-flaky-tests-on-gate-evidence-and-confirm-them-on-claw.md)).
+([ADR-0268](adr/0268-quarantine-flaky-tests-on-gate-evidence-and-confirm-them-on-claw.md)).
 `.config/test-quarantine.json` (`af.test-quarantine/1`) lists it under `tests` by its outer
 nextest identity, in the form the catalog's `exact` map uses:
 

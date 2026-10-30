@@ -1,7 +1,7 @@
 # Confirming quarantined tests on Claw
 
 How the owner settles the entries of `.config/test-quarantine.json`
-([ADR-0264](adr/0264-quarantine-flaky-tests-on-gate-evidence-and-confirm-them-on-claw.md),
+([ADR-0268](adr/0268-quarantine-flaky-tests-on-gate-evidence-and-confirm-them-on-claw.md),
 [`test-classes.md`](test-classes.md), "Quarantine"): `scripts/test-quarantine.py confirm` runs
 the quarantined tests 50 times under load on the Claw VM and writes a report, and
 `scripts/test-quarantine.py apply` turns that report into the file change and the issue bodies on
