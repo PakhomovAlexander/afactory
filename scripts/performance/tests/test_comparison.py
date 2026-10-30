@@ -7,6 +7,7 @@ executor tests' synthetic computation), never Docker, perf or a speed claim.
 import copy
 import io
 import os
+import re
 import shutil
 import signal
 import subprocess
@@ -69,6 +70,104 @@ def relabel(edit):
 def write_json(path, doc, contract):
     with open(path, "wb") as f:
         f.write(contracts.write_bytes(doc, contract))
+
+
+def stand_in_profiles(plan, selection, kind):
+    """A child run's `profiles.json` valid under its contract and nothing more: for each
+    selected case a complete baseline and candidate trace (a trace recipe) or both directions
+    of its differential flamegraph (a CPU recipe); no capture, tool or counter."""
+    digest = "sha256:" + "a" * 64
+    by_id = dict((case["instance_id"], case) for case in plan["cases"])
+
+    def artifact(path):
+        return {"path": path, "bytes": 1, "sha256": digest}
+    traces, renders = [], []
+    for item in selection["cases"]:
+        instance = item["instance_id"]
+        library = by_id[instance]["kind"] == "library"
+        if kind == "trace":
+            phase = "probe_region" if library else diagnostics.cli_region_phase(by_id[instance])
+            traces += [{"instance_id": instance, "side": side,
+                        "subject": "probe_region" if library else "cli_process",
+                        "region_phase": phase, "region_spans": 1, "coverage": "complete",
+                        "spans": 2, "dropped": 0, "open": 0, "async_spans": 0, "overhead": None,
+                        "artifacts": [artifact("traces/%s/%s/trace.json" % (instance, side))],
+                        "omission": None} for side in ("baseline", "candidate")]
+        else:
+            renders += [{"instance_id": instance, "kind": name, "color": "sample_share_change",
+                         "inputs": [digest, digest],
+                         "original": artifact("flamegraphs/%s/%s.svg" % (instance, name)),
+                         "sanitized": artifact("flamegraphs/%s/%s.safe.svg" % (instance, name)),
+                         "removed": {"elements": 0, "attributes": 0}}
+                        for name in ("difference_forward", "difference_reverse")]
+    use = {"limit": 8, "used": len(selection["cases"])}
+    return {"schema": diagnostics.diagcontracts.PROFILES_SCHEMA, "run_id": "child_run",
+            "parent_run_id": plan["run_id"], "parent_plan_digest": plan["plan_digest"],
+            "plan_digest": digest, "registry_sha256": digest, "verdict_effect": "none",
+            "selection": selection,
+            "sources": {"baseline_sha": "b" * 40, "candidate_sha": "c" * 40,
+                        "authority_sha": "d" * 40},
+            "recipe": {"recipe_id": "linux_gnu_" + kind, "kind": kind, "recipe_digest": digest,
+                       "base_recipe": "linux_gnu", "features": [], "debug_symbols": True,
+                       "frame_pointers": True, "builds_sha256": None},
+            "capture": {"frequency_hz": 99, "duration_ms": 1000, "event": "task-clock",
+                        "dwarf_stack_bytes": diagnostics.limits.DIAGNOSTIC_DWARF_STACK_BYTES},
+            "budgets": {"wall_ms": {"limit": 1000, "used": 1}, "cases": use,
+                        "builds": {"limit": 2, "used": 2},
+                        "bytes": {"limit": 1 << 20, "administrative_reserve": 0,
+                                  "evidence_used": 1, "evidence_overage": 0}},
+            "execution": {"mode": "trusted_local", "containment": "process_group",
+                          "declared_containment": "trusted_local_process_group",
+                          "matches_environment": True, "supervisor_sha256": digest,
+                          "machine_lock": None,
+                          "scratch_bound": "not_enforced_in_trusted_local_mode",
+                          "container": None, "retained_scratch": 0, "started_unix_ms": 1,
+                          "ended_unix_ms": 2, "deadline_unix_ms": 3, "host": "stand-in"},
+            "tools": [], "captures": [], "renders": renders, "traces": traces, "counters": [],
+            "telemetry": {"level": None, "perturbing": False, "verdict_effect": "none",
+                          "captures": []},
+            "omissions": []}
+
+
+def sealed_members(edit=copy.deepcopy):
+    """A change that rewrites the bundled report as `edit(report)` returns it, every member
+    naming the sealed result its bundled state now names: a resealed original's report."""
+    def apply(root):
+        def members(report_doc):
+            report_doc = edit(report_doc)
+            for m in report_doc["members"]:
+                path = os.path.join(root, comparison.EVIDENCE, "requests", m["request_id"],
+                                    "state.json")
+                if m["result_sha256"] is not None and os.path.isfile(path):
+                    m["result_sha256"] = contracts.read_json(read(path), "executor-state")[
+                        "result_sha256"]
+            return report_doc
+        relabel(members)(root)
+    return apply
+
+
+def reseal(root, ident, relative, data=None, request=None):
+    """A forger's rewrite of one bundled original: `relative` below its directory replaced by
+    `data`, or its request by `request(request)`, with its sealed result, its state and their
+    digests recomputed so every receipt agrees with the bytes. The bundle's manifest is then
+    rehashed (`rehash`) by the caller."""
+    path = os.path.join(root, comparison.EVIDENCE, "requests", ident)
+    state = contracts.read_json(read(os.path.join(path, "state.json")), "executor-state")
+    result = contracts.read_json(read(os.path.join(path, "result.json")), "executor-result")
+    if data is not None:
+        with open(os.path.join(path, relative), "wb") as f:
+            f.write(data)
+        result["evidence"] = [dict(item, size=len(data), sha256=sha256_bytes(data))
+                              if item["path"] == relative else item
+                              for item in result["evidence"]]
+    if request is not None:
+        doc = request(contracts.read_json(read(os.path.join(path, "request.json")),
+                                          "executor-request"))
+        write_json(os.path.join(path, "request.json"), doc, "executor-request")
+        state["request_digest"] = result["request_digest"] = canonical_digest(doc)
+    write_json(os.path.join(path, "result.json"), result, "executor-result")
+    state["result_sha256"] = sha256_bytes(contracts.write_bytes(result, "executor-result"))
+    write_json(os.path.join(path, "state.json"), state, "executor-state")
 
 
 class Comparison(ExecutorFixture):
@@ -318,7 +417,7 @@ class Comparison(ExecutorFixture):
             self.assertEqual(j.cycle(lock_directory=self.locks,
                                      execute=self.telemetry_stand_in()), "complete")
             advanced = comparison.advance(j, ident)
-            agg, _ = comparison.read_aggregate(j, contracts.read_json(read(os.path.join(
+            agg, agg_raw = comparison.read_aggregate(j, contracts.read_json(read(os.path.join(
                 comparison.directory(j, ident), "comparison.json")), "comparison"))
             # The whole family's denominator over both partitions' shards, judged once. The
             # synthetic stand-in writes no seed copies, so the aggregate is honestly
@@ -358,10 +457,18 @@ class Comparison(ExecutorFixture):
             seen = []
 
             def profile_run(git, options, machine_lease=None):
+                # The selection `run_profile` makes from the frozen parent verdict, and a
+                # contract-valid profiles.json of usable evidence for exactly those cases.
                 seen.append((options.recipe, options.observer))
                 os.makedirs(options.output)
-                with open(os.path.join(options.output, diagnostics.PROFILES_FILE), "w") as f:
-                    f.write("{}")
+                parent = contracts.read_file(options.plan, "run")
+                verdict = read(options.verdict)
+                selection, _ = diagnostics.select(parent, contracts.read_json(verdict, "verdict"),
+                                                  options.cases, options.max_cases,
+                                                  sha256_bytes(verdict))
+                write_json(os.path.join(options.output, diagnostics.PROFILES_FILE),
+                           stand_in_profiles(parent, selection, "trace" if options.recipe
+                                             .endswith("_trace") else "cpu_profile"), "profiles")
                 return 0, None, "stand-in profile"
             builder = SimpleNamespace(build=lambda: {"cleanup": {"status": "removed"}})
             with mock.patch.object(executor.builds, "Builder", lambda owner, plan, tc, **kw:
@@ -380,15 +487,13 @@ class Comparison(ExecutorFixture):
             # every time under the machine fence.
             self.assertEqual(self.probes, [True] * 4)
             self.assertEqual(j.cycle(lock_directory=self.locks), "idle")
-        # The profile stand-in wrote no native children: its usability and the telemetry
-        # result's coverage are injected, for the journal's report and the offline one alike.
-        for patcher in (mock.patch.object(overview, "_telemetry", lambda path: (
-                            {"required": 3, "observed": 3, "failed": 0, "missing": 0},
-                            {"verdict": "pass", "regressions": []}, "complete")),
-                        mock.patch.object(comparison, "_profile_usable",
-                                          lambda path, lane: ([], None))):
-            patcher.start()
-            self.addCleanup(patcher.stop)
+        # The telemetry result's coverage is injected, for the journal's report and the
+        # offline one alike; each profile's usability is derived from its profiles.json.
+        patcher = mock.patch.object(overview, "_telemetry", lambda path: (
+            {"required": 3, "observed": 3, "failed": 0, "missing": 0},
+            {"verdict": "pass", "regressions": []}, "complete"))
+        patcher.start()
+        self.addCleanup(patcher.stop)
         with executor.Journal(self.c, readonly=True) as j:
             unverified = comparison.status(j, ident)
             self.assertEqual(unverified["status"], "incomplete")
@@ -398,11 +503,12 @@ class Comparison(ExecutorFixture):
                              ("incomplete", "verified"))
             self.assertEqual(report["lanes"][0]["state"], "failed")
             self.assertIn("core aggregate result is incomplete", " ".join(report["reasons"]))
-            # The same durable state with the family judged whole (injected): complete.
+            # The same durable state with the family judged whole (injected; the aggregate's
+            # sealed bytes stay the receipt its profiles' parent names): complete.
             judged = dict(agg, result="fail", coverage=dict(agg["coverage"], observed=agg[
                 "coverage"]["required"], missing=0))
             with mock.patch.object(comparison, "read_aggregate", lambda journal, doc: (
-                    judged, contracts.write_bytes(judged, "comparison-aggregate"))):
+                    judged, agg_raw)):
                 complete = comparison.status(j, ident, verify=self.verify)
             self.assertEqual((complete["status"], complete["verification"]),
                              ("complete", "verified"), complete["reasons"])
@@ -411,7 +517,7 @@ class Comparison(ExecutorFixture):
             self.assertFalse(complete["calibration"]["eligible"])
             complete_bundle = self.path("complete-bundle")
             with mock.patch.object(comparison, "read_aggregate", lambda journal, doc: (
-                    judged, contracts.write_bytes(judged, "comparison-aggregate"))):
+                    judged, agg_raw)):
                 comparison.export(j, ident, complete_bundle, verify=self.verify)
             bundle = self.path("bundle")
             manifest, exported = comparison.export(j, ident, bundle, verify=self.verify)
@@ -552,7 +658,7 @@ class Comparison(ExecutorFixture):
         judged_core = (dict(agg["coverage"], observed=agg["coverage"]["required"], missing=0),
                        {"verdict": "fail", "regressions": agg["regressions"]})
         injected = (mock.patch.object(comparison, "read_aggregate", lambda journal, doc: (
-                        judged, contracts.write_bytes(judged, "comparison-aggregate"))),
+                        judged, agg_raw)),
                     mock.patch.object(overview, "_core", lambda path: judged_core))
         with injected[0], injected[1]:
             _, regressed = comparison.verify_export(complete_bundle)
@@ -565,9 +671,123 @@ class Comparison(ExecutorFixture):
                 return report_doc
             with self.assertRaisesRegex(ContractError, "performance are not what"):
                 comparison.verify_export(forge(relabel(passed), complete_bundle))
+            self.assert_trace_lane_needs_both_complete_sides(
+                ident, doc, plan, complete_bundle, regressed, forge)
+            self.assert_diagnosis_is_the_aggregate_selection(
+                doc, plan, complete_bundle, regressed, forge)
         # Without the injection, the bundled aggregate's own verdict is not that claim.
         with self.assertRaisesRegex(ContractError, "not its verdict's|not what its bundled"):
             comparison.verify_export(complete_bundle)
+
+    def assert_trace_lane_needs_both_complete_sides(self, ident, doc, plan, bundle, complete,
+                                                    forge):
+        """A missing side, a side's omission, a partial and a setup-only (`region_missing`)
+        trace of a selected case leave the trace lane failed with its reason, in the journal's
+        report and offline: claimed complete over resealed evidence it is refused, reported as
+        it is it verifies incomplete (ADR-0176)."""
+        trace = doc["diagnostics"][0]["request_id"]
+        relative = "profile/" + diagnostics.PROFILES_FILE
+        honest = contracts.read_file(os.path.join(bundle, comparison.EVIDENCE, "requests", trace,
+                                                  relative), "profiles")
+        first = honest["selection"]["cases"][0]["instance_id"]
+
+        def candidate(edit):
+            def change(profiles):
+                for item in profiles["traces"]:
+                    if (item["instance_id"], item["side"]) == (first, "candidate"):
+                        edit(item)
+                profiles["traces"] = [item for item in profiles["traces"]
+                                      if item.get("side") is not None]
+            return change
+
+        def drop(item):
+            item["side"] = None
+        variants = (
+            ("no candidate trace", candidate(drop)),
+            ("its candidate trace omitted (trace_refused: stand-in", candidate(
+                lambda item: item.update(omission={"reason": "trace_refused",
+                                                   "detail": "stand-in refusal"},
+                                         artifacts=[], coverage=None, region_spans=0,
+                                         spans=0))),
+            ("a candidate trace of partial coverage", candidate(
+                lambda item: item.update(coverage="partial", dropped=1))),
+            ("a candidate trace of region_missing coverage", candidate(
+                lambda item: item.update(coverage="region_missing", region_spans=0))))
+        for needle, change in variants:
+            edited = copy.deepcopy(honest)
+            change(edited)
+            data = contracts.write_bytes(edited, "profiles")
+            why = "trace lane: case %s has no complete two-sided trace: %s" % (first, needle)
+            with executor.Journal(self.c, readonly=True) as j:
+                target = os.path.join(j.path(trace), relative)
+                kept = read(target)
+                with open(target, "wb") as f:
+                    f.write(data)
+                try:
+                    derived = comparison.status(j, ident, verify=self.verify)
+                finally:
+                    with open(target, "wb") as f:
+                        f.write(kept)
+            lanes = dict((lane["lane"], lane["state"]) for lane in derived["lanes"])
+            self.assertEqual((derived["status"], lanes["trace"], lanes["cpu_profile"]),
+                             ("incomplete", "failed", "complete"), needle)
+            self.assertTrue(any(reason.startswith(why) for reason in derived["reasons"]),
+                            derived["reasons"])
+            # The complete claim over that evidence, every receipt resealed: refused.
+            with self.assertRaisesRegex(ContractError, "not what its bundled .*derived "
+                                        "incomplete.*" + re.escape(why)):
+                comparison.verify_export(forge(lambda root: (
+                    reseal(root, trace, relative, data), sealed_members()(root)), bundle))
+            # Reported as it is, the same resealed evidence verifies incomplete with its reason.
+            _, shown = comparison.verify_export(forge(lambda root: (
+                reseal(root, trace, relative, data),
+                sealed_members(lambda _: copy.deepcopy(derived))(root)), bundle))
+            self.assertEqual((shown["status"], shown["lanes"], shown["reasons"]),
+                             (derived["status"], derived["lanes"], derived["reasons"]))
+        self.assertEqual(complete["status"], "complete")
+
+    def assert_diagnosis_is_the_aggregate_selection(self, doc, plan, bundle, complete, forge):
+        """Otherwise valid children of a parent case the aggregate verdict did not select, or
+        a child whose parent receipt is another aggregate's, every receipt and the manifest
+        recomputed: the public verifier refuses the complete claim; the honest bundle of the
+        selected cases verifies complete (`complete`)."""
+        relative = "profile/" + diagnostics.PROFILES_FILE
+        lanes = [(lane["request_id"], lane["lane"]) for lane in doc["diagnostics"]]
+        honest = contracts.read_file(os.path.join(bundle, comparison.EVIDENCE, "requests",
+                                                  lanes[0][0], relative), "profiles")
+        selected = set(case["instance_id"] for case in honest["selection"]["cases"])
+        other = [case for case in plan["cases"] if case["instance_id"] not in selected][0]
+        unrelated = dict(honest["selection"], not_selected=[], cases=[
+            {"instance_id": other["instance_id"], "case_id": other["case_id"],
+             "reason": "regressed"}])
+
+        def substitute(root):
+            for ident, lane in lanes:
+                reseal(root, ident, relative, contracts.write_bytes(stand_in_profiles(
+                    plan, unrelated, lane), "profiles"))
+            sealed_members()(root)
+        import cli
+        with mock.patch("sys.stdout", new=io.TextIOWrapper(io.BytesIO())), \
+                mock.patch("sys.stderr", new=io.StringIO()) as printed:
+            self.assertEqual(cli.main(["executor", "comparison-verify", "--bundle",
+                                       forge(substitute, bundle)]), cli.EXIT_UNAVAILABLE)
+        self.assertIn("trace lane: the profile selected automatic ['%s']" % other["instance_id"],
+                      printed.getvalue())
+        self.assertIn("cpu_profile lane: the profile selected automatic", printed.getvalue())
+        self.assertEqual(complete["status"], "complete")
+        self.assertEqual(sorted(p["instance_id"] for p in complete["diagnostic_selection"]
+                                if p["lane"] == "trace" and p["selected"]), sorted(selected))
+
+        def another_parent(root):
+            reseal(root, lanes[0][0], None, request=lambda request: dict(request, parent=dict(
+                request["parent"], result_sha256="sha256:" + "0" * 64)))
+            sealed_members()(root)
+        with self.assertRaisesRegex(ContractError, "its parent receipt is not the "
+                                    "aggregate's result"):
+            comparison.verify_export(forge(another_parent, bundle))
+        with mock.patch("sys.stdout", new=io.StringIO()) as printed:
+            self.assertEqual(cli.main(["executor", "comparison-verify", "--bundle", bundle]), 0)
+        self.assertIn('"comparison": "complete"', printed.getvalue())
 
     def test_a_controller_cancelled_in_a_shard_runs_no_later_shard_or_original(self):
         """SIGTERM to `comparison-run` during a shard: the runner's handler consumed it and

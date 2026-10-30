@@ -733,8 +733,14 @@ controller, still just ends `interrupted`.
 `report.html`, prints the JSON and exits 0 only for a `complete` comparison, 4 otherwise. It
 verifies every complete original offline now. `complete` needs the core aggregate over every
 partition and not `incomplete` (a missing closing sentinel or an unstable environment leaves
-it ineligible), every telemetry run measured, usable trace evidence and a differential
-flamegraph for every selected case, and every original verified. Completeness, evidence
+it ineligible), every telemetry run measured, and for every case the aggregate verdict
+selects a baseline and a candidate trace without omission whose region coverage is complete (a
+missing side, an omitted side, a `partial` or a setup-only `region_missing` trace leaves the
+trace lane failed with its reason) and a differential flamegraph, and every original verified.
+Each profile's own selection must be exactly the one the aggregate's verdict derives (mode,
+limit, parent verdict digest, cases and reasons), and its parent receipt the aggregate's
+result, plan and verdict; a profile of another case or another aggregate never completes a
+lane. Completeness, evidence
 verification, the performance verdict and calibration eligibility (never, for a release
 comparison) are separate: a complete comparison may hold a real regression. `comparison-status`
 prints the same document from durable state without verifying, so it is never `complete`.
@@ -760,8 +766,9 @@ each original's state bound to its sealed result (an original the bundle does no
 submitted), the aggregate's partitions, run, result and coverage recomputed from those
 originals and its verdict, and every lane's state, coverage and diagnostic selection. A report
 that says anything else is refused, however its hashes and manifest were rewritten: a failed
-or missing original relabelled complete, a dropped member or a passed verdict over a
-regression. An honest incomplete or running bundle verifies, as what it is. That checks what
+or missing original relabelled complete, a dropped member, a passed verdict over a
+regression, a one-sided, partial or setup-only trace of a selected case, or valid diagnostic
+children of a case the aggregate did not select with every receipt resealed. An honest incomplete or running bundle verifies, as what it is. That checks what
 the originals sealed; it is not a new performance acceptance. Run it from the trusted control installation that produced the bundle, or a
 checkout of the same measurement authority: the telemetry result is refused under any other.
 

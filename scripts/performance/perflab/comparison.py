@@ -37,8 +37,8 @@ import shutil
 import time
 import urllib.parse
 
-from . import (admission, archive, budget, compare, contracts, diagnostics, executor, overview,
-               planning, report, runner, telemetrylab)
+from . import (admission, archive, budget, compare, contracts, diagcontracts, diagnostics,
+               executor, overview, planning, report, runner, telemetrylab)
 from .values import ContractError, canonical_digest, require, sha256_bytes
 
 DIRECTORY = "comparisons"
@@ -581,23 +581,54 @@ def advance(journal, ident, installed=executor.ROOT, git=None):
     return status(journal, ident, verify=None, installed=installed)
 
 
-def _profile_usable(path, lane):
-    """Reasons the profile's evidence is not usable for its selected cases."""
+def _trace_side(doc, instance, side):
+    """Why the profile holds no complete `side` trace of `instance`, or None: an admitted trace
+    without omission whose region coverage is complete (a partial or setup-only trace is never
+    complete, ADR-0176)."""
+    found = [item for item in doc["traces"]
+             if item["instance_id"] == instance and item["side"] == side]
+    if any(item["omission"] is None and item["coverage"] == "complete" for item in found):
+        return None
+    if not found:
+        return "no %s trace" % side
+    item = found[0]
+    if item["omission"] is not None:
+        return "its %s trace omitted (%s: %s)" % (side, item["omission"]["reason"],
+                                                  item["omission"]["detail"][:256])
+    return "a %s trace of %s coverage (%d %s spans, %d dropped, %d open)" % (
+        side, item["coverage"], item["region_spans"], item["region_phase"], item["dropped"],
+        item["open"])
+
+
+def _profile_usable(path, lane, expected):
+    """Reasons the profile's evidence is not usable for the cases the aggregate verdict selects.
+    `expected` is the selection record `selection` derives from the bundled aggregate: the
+    profile's own selection must be exactly that record (mode, limit, parent verdict digest,
+    cases and reasons), never a self-declared one, and each expected case needs a differential
+    flamegraph (CPU) or a complete baseline and candidate trace (trace)."""
     doc = contracts.read_file(os.path.join(path, "profile", diagnostics.PROFILES_FILE),
                               "profiles")
     reasons = []
-    selected = [case["instance_id"] for case in doc["selection"]["cases"]]
-    for instance in selected:
+    own = doc["selection"]
+    if own != expected:
+        reasons.append("%s lane: the profile selected %s %s under verdict %s, not the aggregate "
+                       "verdict's %s %s under %s" % (
+                           lane, own["mode"], [c["instance_id"] for c in own["cases"]][:8],
+                           own["parent_verdict_sha256"], expected["mode"],
+                           [c["instance_id"] for c in expected["cases"]][:8],
+                           expected["parent_verdict_sha256"]))
+    for instance in [case["instance_id"] for case in expected["cases"]]:
         if lane == "cpu_profile":
-            usable = any(item["instance_id"] == instance and item["kind"].startswith("difference")
-                         for item in doc["renders"])
-            what = "no differential flamegraph"
+            if not any(item["instance_id"] == instance and item["kind"].startswith("difference")
+                       for item in doc["renders"]):
+                reasons.append("%s lane: case %s has no differential flamegraph"
+                               % (lane, instance))
         else:
-            usable = any(item["instance_id"] == instance and item["omission"] is None
-                         for item in doc["traces"])
-            what = "no trace without omission"
-        if not usable:
-            reasons.append("%s lane: case %s has %s" % (lane, instance, what))
+            missing = [why for why in (_trace_side(doc, instance, side)
+                                       for side in diagcontracts.SIDES) if why]
+            if missing:
+                reasons.append("%s lane: case %s has no complete two-sided trace: %s"
+                               % (lane, instance, "; ".join(missing)))
     return reasons, doc
 
 
@@ -607,7 +638,7 @@ def status(journal, ident, verify=None, installed=executor.ROOT):
     comparison is never complete (`status` reads cheaply while an original executes)."""
     doc, plan, raw_plan = load(journal, ident)
     root = journal.root
-    agg, _ = read_aggregate(journal, doc)
+    agg, agg_raw = read_aggregate(journal, doc)
     base = os.path.relpath(directory(journal, ident), root)
     members, reasons, lanes, picks, links = [], [], [], [], []
     verified = {}
@@ -724,10 +755,10 @@ def status(journal, ident, verify=None, installed=executor.ROOT):
                   "coverage": coverage, "detail": detail[:4096], "links": tel_links})
 
     # Diagnostic lanes, driven by the aggregate's verdict.
-    chosen = None
+    chosen = parent = None
     if agg is not None and agg["verdict_sha256"] is not None:
-        (record, cases), _ = selection(journal, doc, plan, agg)
-        chosen = record
+        (record, cases), verdict_bytes = selection(journal, doc, plan, agg)
+        chosen, parent = record, _parent(doc, agg_raw, raw_plan, verdict_bytes)
     for lane in doc["diagnostics"]:
         entry = {"lane": lane["lane"], "state": "waiting", "members": [], "coverage": None,
                  "detail": "", "links": []}
@@ -751,6 +782,13 @@ def status(journal, ident, verify=None, installed=executor.ROOT):
                               "selected": False, "reason": case["reason"]})
             prof = member(lane["request_id"], lane["lane"], "profile", lane["key"],
                           declared=lane)
+            if prof["state"] != "not_submitted" and prof["verification"] != "refused" \
+                    and journal.request(prof["request_id"])["parent"] != parent:
+                # Diagnosed under another parent receipt: never this aggregate's diagnosis.
+                prof["verification"] = "refused"
+                reasons.append("%s original %s is not this comparison's member: its parent "
+                               "receipt is not the aggregate's result, plan and verdict"
+                               % (lane["lane"], prof["request_id"]))
             entry["members"] = [prof["request_id"]]
             waiting = lane_state([prof])
             if waiting is not None:
@@ -764,7 +802,7 @@ def status(journal, ident, verify=None, installed=executor.ROOT):
                 result = verified.get(prof["request_id"])
                 measured = None if result is None else result["measurement_status"]
                 if os.path.isfile(os.path.join(path, "profile", diagnostics.PROFILES_FILE)):
-                    unusable, _ = _profile_usable(path, lane["lane"])
+                    unusable, _ = _profile_usable(path, lane["lane"], chosen)
                 else:
                     unusable = ["%s lane: the profile retained no profiles.json" % lane["lane"]]
                 entry["links"] = [os.path.relpath(os.path.join(path, name), root)

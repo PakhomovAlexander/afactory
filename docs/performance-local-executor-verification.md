@@ -1609,3 +1609,74 @@ to be updated but --locked was passed` (Cargo 1.88) or `cannot update the lock f
 succeed and every workspace member must report the nightly version. Without the filter, the
 same test fails on macOS with the CI error. The nightly build, its `cargo fetch`, the CI cache
 and the test selection do not change.
+
+**Focused validation on `b909` (operator).** On `b909353dac34882326c5636677206ed8061d0949`, the
+sealed Task 23 candidate
+`sha256:08cfba24762a7dd3a7a631591f6a0bd0dbdd2a3e84d6942c0a5a9d652ba048d7`, the outer operator
+ran, at the repository root with Python 3.14.7 and the pinned Rust 1.88.0 through
+`rustup run 1.88.0`:
+
+```sh
+rustup run 1.88.0 python3.14 -I -B -c 'import sys,unittest; sys.path.insert(0,"scripts/performance"); suite=unittest.defaultTestLoader.loadTestsFromName("tests.test_nightly_build.CargoRewrite"); result=unittest.TextTestRunner(verbosity=2).run(suite); raise SystemExit(not result.wasSuccessful())'
+```
+
+`tests.test_nightly_build.CargoRewrite`: 3 tests, `OK`, 6.378 seconds, exit 0. That is the
+operator's observation on `b909`, not a run of any later candidate. CI run 41050608459 on
+`fb3b632d` (above) is the predecessor failure CI706. CI707, GitHub run 41057018586 on `b909`,
+then passed all 11 jobs, among them 1268 Python performance tests and the selected Rust
+performance tests. Neither CI run is a run of the candidate below, and no CI run or VM execution
+of that candidate is claimed here.
+
+## Diagnostic lanes need two complete sides and the aggregate's selection (2026-10-30)
+
+**Findings.** The required correctness review of `b909` found that a comparison's trace lane
+was complete when any trace of a selected case had no omission: a one-sided trace, a trace whose
+other side was omitted, a `partial` or a setup-only `region_missing` trace (never complete under
+ADR-0176) completed it. It also found that each profile's coverage was checked against the
+profile's own selection, so otherwise valid trace and CPU children of a parent-plan case the
+aggregate verdict did not select, with their sealed results, states and the export manifest
+resealed, completed both lanes while the report's diagnostic selection named the actual
+regression.
+
+**Change.** `comparison.status`, which `comparison-report` and `comparison-verify` both derive
+the report through, recomputes the selection record from the aggregate's own verdict
+(`diagnostics.select` with the frozen configuration's `max_cases` and that verdict's digest) and
+requires each profile's selection to be exactly it: mode, limit, parent verdict digest, cases
+with their reasons, and the cases left over the limit. Each expected case needs, for the trace
+lane, one baseline and one candidate trace without omission whose region coverage is
+`complete`, and for the CPU lane a differential flamegraph. A profile whose request's parent
+receipt is not the aggregate's (its comparison, declaration digest, result, plan and verdict
+hashes) is refused as not the comparison's member. Each failure keeps its lane `failed` with a
+reason naming the case, the side and what the trace holds; the evidence stays bundled, and an
+honest incomplete bundle verifies as incomplete. Standalone profiles, the `not_applicable` lane
+of a verdict with nothing to diagnose, measurement, capture budgets and contracts do not change.
+
+**Tests.** `tests.test_comparison.Comparison.test_full_comparison_partitions_aggregates_diagnoses_reports_and_exports`
+no longer injects profile usability: its profile stand-in writes a contract-valid
+`profiles.json` of the selection the frozen parent verdict derives, and the honest complete
+bundle verifies complete through `cli.py executor comparison-verify`. For a missing candidate
+trace, an omitted one, a `partial` one and a `region_missing` one, the journal's report leaves
+the trace lane failed with its reason, the complete claim over the resealed evidence is
+refused, and the same evidence reported as it is verifies incomplete. Children of an unselected
+case with every receipt resealed fail `comparison-verify` (exit 4) naming both lanes'
+selections, and a profile whose parent receipt names another aggregate result is refused. With
+each of the three checks removed in turn, the test fails at its attack.
+
+**Focused validation of this candidate.** Run by this repair Task's implementer on its
+candidate, the source tree of `b909` with this change, at the repository root, offline, with
+Python 3.14.7 and Rust 1.88.0 (`cargo 1.88.0 (873a06493 2025-05-10)`) through
+`rustup run 1.88.0`, on 2026-10-30 at 14:10 to 14:15 UTC. The commands are the one above with
+the named tests in place of `tests.test_nightly_build.CargoRewrite`:
+
+- `tests.test_nightly_build.CargoRewrite`: 3 tests, `OK`, 0.928 seconds, exit 0.
+- `tests.test_executor.Journal.test_hosted_declared_windows_refuse_before_any_original_or_transport`:
+  1 test, `OK`, 0.242 seconds, exit 0.
+- `tests.test_comparison` and `tests.test_report_diagnostics`: 46 tests, `OK`, 233.742 seconds
+  on a shared, loaded host, exit 0.
+
+These are this candidate's focused runs, recorded by its native Task record; no commit SHA, CI
+run or VM execution of it exists yet, and none is claimed. The earlier focused run of the
+hosted-windows test, 1 of 1 in 0.676 seconds, belongs to Task 22's candidate. The full 33-case
+`6d8208d` comparison and its offline verification remain that producer's evidence; the
+integration on Claw and the final head's CI are the outer operator's, after this change is
+adopted.
