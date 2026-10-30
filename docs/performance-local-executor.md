@@ -49,11 +49,14 @@ Replace its deliberately unusable zero SHA and image digests with real accepted 
 Review paths, repository, machine/journal IDs, byte caps, queue bound, total wall bound, tier,
 local environment, shard count, case selection, telemetry profile and diagnostic settings.
 The configuration is `af.perf-executor/4`; misspellings and obsolete v1, v2 and v3
-configurations refuse. `[core.windows]` (optional; absent or empty keeps the tier's own)
-declares the `shard_sampling_minutes` and `run_total_minutes` a core plan freezes instead of
-its tier's, within the same hard maxima (90 and 180 minutes for `nightly` and `release`, 30 and
-120 for `quick`); they are part of the frozen configuration digest and the plan digest, and a
-calibration original refuses them. Only the full release comparison recipe below declares them. `diagnostic.observer = "host_perf"` selects the trusted host CPU observer described
+configurations refuse. `[core.windows]` (optional; absent, or JSON `null`, keeps the tier's
+own) declares the `shard_sampling_minutes` and `run_total_minutes` a core plan freezes instead
+of its tier's; a declared table must supply both numbers (an empty table refuses), within the
+same hard maxima (90 and 180 minutes for `nightly` and `release`, 30 and 120 for `quick`); they
+are part of the frozen configuration digest and the plan digest, and a calibration original
+refuses them. They are a `local` backend setting: `performance.yml` has no windows input, so a
+`github_actions` configuration that declares them is refused when it is loaded, before any
+original is reserved or dispatched. Only the full release comparison recipe below declares them. `diagnostic.observer = "host_perf"` selects the trusted host CPU observer described
 below; unset, perf runs inside the contained child.
 For `tier = "nightly"` or `"release"` with `environment = "linux_x86_64_musl_claw"`, set
 `zigbuild_bin` to the canonical absolute directory **inside the pinned build image** holding
@@ -495,8 +498,10 @@ the operator's to run, not something this change ran.
    the recipe was measured in. The `nightly` tier's own windows are 15 and 180 minutes
    ([ADR-0266](adr/0266-measure-nightlies-as-originals-of-the-independent-executor.md)) and stay
    the ordinary nightly's; a 15-minute window cannot hold this recipe's largest shard (440
-   records, which took 30 minutes 52 seconds, all valid, in the operator's run of the frozen
-   PR #473 producer `6d8208d`, evidence of that producer only). The tier's own 4 shards
+   records, which took 30 minutes 52 seconds, all valid, in the operator's run of the
+   preliminary PR #473 producer `cbd8661c`, evidence of that producer only; the frozen producer
+   `6d8208d`'s shard 0 sealed complete, 440 of 440 records, none failed or unstarted, in
+   2032.2 seconds, 33 minutes 52.2 seconds, evidence of that producer only). The tier's own 4 shards
    did not fit either: on the v0.13.0 against v0.14.0-rc.1 pair, a measured first shard of 776 slots
    stopped at 738 inside its unchanged 45-minute window
    ([verification record](performance-local-executor-verification.md#eight-serial-shards-for-the-full-release-comparison-2026-10-30)).
@@ -955,7 +960,8 @@ operator. Keeping hosted PR/release validation is a separate intentional selecti
 
 To switch the operator controller back, stop its timers and drain its local queue. Set
 `backend="github_actions"`; use the hosted environment/configuration and remove telemetry
-scale/corpus overrides the existing workflow cannot express (unsupported settings refuse).
+scale/corpus overrides and any `[core.windows]` table, which the existing workflow cannot
+express (unsupported settings refuse).
 Supply the token only to the trusted controller/`gh` transport and resume one producer.
 The same journal deduplicates a submission key across defaults; queued requests retain their
 original backend/settings. Hosted dispatch returns `submitted`, not a fabricated measurement:

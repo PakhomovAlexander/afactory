@@ -223,6 +223,40 @@ class Journal(ExecutorFixture):
             self.assertEqual(result["actions"]["requested_ref"], "refs/heads/main")
             self.assertEqual(calls[0][1]["inputs"]["head"], self.head)
 
+    def test_hosted_declared_windows_refuse_before_any_original_or_transport(self):
+        """performance.yml has no windows input, so a github_actions configuration declaring
+        core.windows is refused at admission: no original is reserved and nothing is dispatched.
+        Without windows the hosted dispatch still runs; local declared windows stay valid."""
+        windows = {"shard_sampling_minutes": 20, "run_total_minutes": 110}
+        local = copy.deepcopy(self.c)
+        local["core"]["windows"] = dict(windows)
+        self.assertEqual(contracts.validate_executor(local)["core"]["windows"], windows)
+        hosted = copy.deepcopy(self.c)
+        hosted.update(backend="github_actions")
+        hosted["core"]["environment"] = "linux_x86_64_gnu_hosted"
+        hosted["telemetry"].update(scale=None, corpus_runs=None)
+        declared = copy.deepcopy(hosted)
+        declared["core"]["windows"] = dict(windows)
+        with self.assertRaisesRegex(ContractError, "hosted workflow cannot express declared windows"):
+            contracts.validate_executor(copy.deepcopy(declared))
+        with self.assertRaisesRegex(ContractError, "hosted workflow cannot express declared windows"):
+            executor.Journal(copy.deepcopy(declared))
+        self.assertFalse(os.path.exists(self.c["root"]))
+        calls = []
+        transport = lambda w, p: calls.append((w, p)) or "accepted"
+        with executor.Journal(hosted) as j:
+            with self.assertRaisesRegex(ContractError, "hosted workflow cannot express declared windows"):
+                self.submit(j, config=copy.deepcopy(declared))
+            self.assertEqual(j.names(), [])
+            self.assertEqual(j.cycle(transport=transport), "idle")
+            self.assertEqual(calls, [])
+            self.submit(j)
+            self.assertEqual(j.cycle(transport=transport), "submitted")
+        self.assertEqual(len(calls), 1)
+        self.assertEqual(calls[0][0], "performance.yml")
+        self.assertEqual(sorted(calls[0][1]["inputs"]), ["authority", "base", "cases", "control",
+                                                        "head", "scope", "shards", "tier"])
+
     def test_uncertain_cleanup_fences_every_later_workspace(self):
         with executor.Journal(self.c) as j:
             self.submit(j)

@@ -35,6 +35,7 @@ def register(c):
         Field("poll_main", Bool()),
         # executor/4: a core plan's declared run windows (ADR-0269), frozen into the plan and
         # this configuration's digest instead of the tier's; absent or null keeps the tier's.
+        # A local-backend setting: github_actions refuses declared windows (validate_config).
         Field("core", Obj(Field("tier", Str(enum=c.TIERS)), Field("environment", ID),
                           Field("shards", Int(1, 16)), Field("cases", Arr(ID, 0, 64, unique=True)),
                           Field("windows", Nullable(Obj(
@@ -251,6 +252,11 @@ def register(c):
         windows = doc["core"]["windows"]
         require(windows is None or windows["shard_sampling_minutes"] <= windows["run_total_minutes"],
                 "core.windows: a shard's sampling window fits inside its run total")
+        # performance.yml has no windows input: a hosted dispatch would measure the tier's own
+        # windows, so declared ones refuse here, before any reservation or transport.
+        require(windows is None or doc["backend"] == "local",
+                "core.windows: the hosted workflow cannot express declared windows; "
+                "refuse rather than measure the tier's own")
         for key in ("pairs", "scale", "corpus_runs"):
             doc["telemetry"].setdefault(key, None)
         for key in ("telemetry", "max_cases", "perf", "inferno_bin", "observer"):

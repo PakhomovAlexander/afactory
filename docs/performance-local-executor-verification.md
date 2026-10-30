@@ -1493,15 +1493,19 @@ kept; the shared contracts were reconciled:
   `parent` or `partition` as none. A request/3 shape labelled request/1 or request/2 is
   refused (`invalid-v2-partition.json`), as is a request/2 shape labelled request/3
   (`invalid-v3-missing-partition.json`). A nightly is never a partition or a parent-selected
-  profile. A comparison's members, its export and its overview accept only request/3 and
-  result/3 originals, and `preflight`, `comparison-preflight` and `overview` refuse a
-  nightly. Result/3 is main's, unchanged.
+  profile. A durable comparison (`comparison.Bundled`) admits only current request/3 and
+  result/3 members, so its members and its export carry only those versions. The standalone
+  `overview` reads each named original through `overview.member`, which still reads an earlier
+  request version and treats its absent `parent` as none, as ADR-0266 states. `preflight`,
+  `comparison-preflight` and `overview` refuse a nightly. Result/3 is main's, unchanged.
 - **Windows.** Main gave the `nightly` tier 15 sampling and 180 run minutes. The full release
   comparison recipe keeps the 45 and 120 its largest shard (440 records) was measured in, by
   an explicit `[core.windows]` of `af.perf-executor/4`. The plan freezes the windows in place
   of the tier's, under the unchanged hard maxima; they are part of the configuration and plan
   digests and of the recomputation `verify` performs, and a calibration original refuses
-  them. Executor v2 and v3 configurations are refused. So the 6d full comparison's executor/3
+  them. Executor v2 and v3 configurations are refused. Declared windows are a `local` backend
+  setting: `performance.yml` has no windows input, so a `github_actions` configuration that
+  declares them is refused when it is admitted (see the record below). So the 6d full comparison's executor/3
   journal is never verified under this source.
 - **ADR.** Main's ADR-0265 (nightly build), 0266, 0267 and 0268 are unchanged. The PR's
   partition ADR is renumbered ADR-0269, with a dated amendment, and every reference to it
@@ -1547,3 +1551,36 @@ Docker, network or benchmark was used. Each command below ran from `scripts/perf
 The 6d full comparison running under the frozen PR head remains that producer's evidence. It
 is not this candidate's validation, and nothing here claims a Claw run, a final report or green
 CI for this source.
+
+## Hosted windows refusal and integration evidence corrections (2026-10-30)
+
+**Reproduction.** On the integrated candidate `208fab5b84e7b7f292dd051b91532440f3055a6b`, with
+Python 3.14.7, the outer operator drove the native `ExecutorFixture`, the real `Journal.submit`
+and `dispatch_actions` with a fake transport (no network, nothing measured). A
+`github_actions` executor/4 configuration declaring quick windows 20 and 110 (tier defaults 25
+and 60) was admitted, and dispatch returned `submitted` with a payload of only `base`, `head`,
+`control`, `scope`, `tier`, `cases`, `shards` and `authority`: `performance.yml` has no windows
+input, so the declared windows were silently ignored.
+
+**Change.** `validate_config` refuses a non-null `core.windows` unless the backend is `local`,
+so a hosted configuration that declares them fails when it is loaded, when a `Journal` opens
+it, or when `submit` is given it, before any original is reserved or dispatched. The workflow
+is not extended and the windows are never cleared. The executor/4 shape is unchanged, so no
+schema version, schema file or fixture changes. `Journal.test_hosted_declared_windows_refuse_before_any_original_or_transport`
+proves the refusal at all three points with no original and no transport call, that the same
+hosted configuration without windows still dispatches `performance.yml` with exactly those
+eight inputs, and that a local configuration keeps the declared windows.
+
+**Corrections.** The executor guide said an absent or empty `[core.windows]` keeps the tier's
+own; an empty table is refused (`executor.core.windows missing field shard_sampling_minutes`),
+so it now says absent (or JSON `null`) keeps the tier's own and a declared table supplies both
+numbers. The guide's 30 minutes 52 seconds for the 440-record shard is the preliminary producer
+`cbd8661c`'s, not `6d8208d`'s. The frozen producer `6d8208d`'s shard 0 sealed complete, 440 of
+440 records, 0 failed and 0 unstarted, started `1793354884652` and ended `1793356916852` Unix
+ms, 2032.200 seconds (33 minutes 52.2 seconds); its native `shard.json` has SHA-256
+`0a6ff1e81cb090ebd32aaa9f22c10e1266c2aa133bc4a0cc1faa5a7e8ff2d8d7`. Both are evidence of their
+own producers only, neither is this source's validation, and the full `6d` comparison
+continues as that producer's evidence. The integration record above said a comparison's
+overview accepts only request/3 and result/3; it now distinguishes the durable comparison's
+current-version members and export from the standalone overview, which still reads earlier
+request versions.
