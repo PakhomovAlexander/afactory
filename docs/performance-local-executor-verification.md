@@ -1584,3 +1584,28 @@ continues as that producer's evidence. The integration record above said a compa
 overview accepts only request/3 and result/3; it now distinguishes the durable comparison's
 current-version members and export from the standalone overview, which still reads earlier
 request versions.
+
+## The nightly lock-rewrite proof resolves for the host platform (2026-10-30)
+
+**Reproduction.** GitHub CI run 41050608459 on `fb3b632d`, performance job 124045553040:
+`scripts/test-performance.py` ran 1268 tests with one failure,
+`CargoRewrite.test_a_rewritten_copy_of_this_tree_still_resolves_locked_and_offline`. After the
+nightly rewrite, `cargo metadata --locked --offline` exited 101 with `failed to download
+anstyle-wincon v3.0.11` and `attempting to make an HTTP request, but --offline was specified`.
+Unfiltered `cargo metadata` downloads every platform's packages, and the CI Cargo cache holds
+only the Linux build's. On macOS with Cargo 1.88, a Cargo home holding the index and only the
+187 archives `--filter-platform x86_64-unknown-linux-gnu` resolves gave exactly that error. The
+stale-lock step already failed before any download.
+
+**Change.** The test now runs `cargo metadata --locked --offline --filter-platform <host>`,
+where `<host>` is what `cargo -vV` prints. It first resolves the unchanged copy through the
+test's own Cargo home. From that, it builds a private Cargo home with the shared index, the
+host's archives and their unpacked sources, and nothing else. It asserts the lock names
+packages this home does not hold, so the proof runs with the CI cache's gap on every host.
+Rewriting only `Cargo.toml` must fail with Cargo's stale-lock refusal: `the lock file ... needs
+to be updated but --locked was passed` (Cargo 1.88) or `cannot update the lock file ... because
+--locked was passed` (Cargo 1.94). The refusal must also contain no `failed to download`,
+`--offline was specified` or `no matching package`. After `rewrite_source`, the resolution must
+succeed and every workspace member must report the nightly version. Without the filter, the
+same test fails on macOS with the CI error. The nightly build, its `cargo fetch`, the CI cache
+and the test selection do not change.
