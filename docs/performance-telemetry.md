@@ -81,7 +81,7 @@ The child keeps, under `telemetry/<instance>/<side>/`:
 | `runs.json`, `show.json`, `status.json`, `config.json` | the side's own documents, byte for byte |
 | `perfetto.json` | Chrome trace-event JSON of `show.json` for Perfetto or `chrome://tracing`: a process per execution, nested tracks, async tracks for what does not nest, instants for open spans; identities, names, statuses and times only, no attribute |
 
-`profiles.json` (`af.perf-profiles/6`) records the selected level, whether it is perturbing
+`profiles.json` (`af.perf-profiles/7`) records the selected level, whether it is perturbing
 (`content` is), and each capture. A capture names its case, side, source SHA and binary SHA-256,
 the run, trace and Store ids, every execution with its segment state and outcome, and the AF
 version and target from the configuration record. It holds the phase rows: per span name, its

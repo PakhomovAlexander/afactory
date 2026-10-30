@@ -12,13 +12,19 @@
   every omission with its reason and reproduction. Version 5 added the explicitly selected
   telemetry level and each telemetry capture of a CLI case, derived from the side's own
   `af telemetry` documents (ADR-0214). Version 6 binds retained XZ archives to captures and
-  their binary identity (ADR-0224).
-  Versions 1 to 5 are refused.
+  their binary identity (ADR-0224). Version 7 moves a repeated capture's raw recordings and
+  host-observer records out of its bounded `artifacts` list into its hash-bound repetition
+  index (`repetitions`), so a CLI capture of thousands of fresh processes stays representable.
+  Versions 1 to 6 are refused.
+- `af.perf-repetitions/1`: that index, `repetitions.json` beside the capture: every
+  repetition in order, its raw recording, its host-observer record and the region time each
+  contributed, with the boundary that time was measured at.
 - `af.perf-trace/1`: the metadata-only phase spans a `perf-trace` build exports
   (`review_core::perf_trace`).
 
 Diagnostics never touch a verdict: `verdict_effect` is the constant `none`.
 """
+import re
 from fractions import Fraction
 
 from . import limits
@@ -30,6 +36,8 @@ SIDES = ("baseline", "candidate")
 ARGV = Arr(Str(min_len=1, max_len=512), 1, 64)
 ARTIFACT = Obj(Field("path", REL_PATH), Field("bytes", COUNT), Field("sha256", DIGEST))
 OMISSION = Obj(Field("reason", ID), Field("detail", TEXT))
+# The most fresh-process repetitions one capture records (`capture.max_repetitions`).
+REPETITIONS_MAX = 10000
 
 # af.perf-diagnostics/1 ---------------------------------------------------------------------
 
@@ -85,7 +93,7 @@ DIAGNOSTICS = Obj(
         Field("dwarf_when_unknown_ratio_above", DECIMAL),
         # Fewer samples than this never attribute a region: the capture is kept, not rendered.
         Field("minimum_samples", Int(1, 1000000)),
-        Field("max_repetitions", Int(1, 10000)),
+        Field("max_repetitions", Int(1, REPETITIONS_MAX)),
         Field("handshake_timeout_seconds", Int(1, 120)),
         Field("description", TEXT))),
     Field("trace", Obj(
@@ -232,9 +240,9 @@ def validate_trace(doc, where="trace.json"):
     return doc
 
 
-# af.perf-profiles/6 ------------------------------------------------------------------------
+# af.perf-profiles/7 ------------------------------------------------------------------------
 
-PROFILES_SCHEMA = "af.perf-profiles/6"
+PROFILES_SCHEMA = "af.perf-profiles/7"
 # What a capture or trace observes: the native probe's acknowledged region, or a whole AF CLI
 # process judged by its command's oracle (ADR-0176).
 SUBJECTS = ("probe_region", "cli_process")
@@ -317,9 +325,91 @@ CAPTURE = Obj(
                                                 0, 256)),
                          Field("binary_build_id_present", Nullable(Bool())),
                          Field("archive", Nullable(ARTIFACT)))),
+    # A repeated capture's own files (its script, folded stacks and any partial output); its
+    # per-repetition recordings and observer records are listed by its index instead.
     Field("artifacts", Arr(ARTIFACT, 0, 64)),
+    # The `af.perf-repetitions/1` index of a capture of fresh processes, or None.
+    Field("repetitions", Nullable(ARTIFACT)),
     Field("omission", Nullable(OMISSION)),
 )
+
+# af.perf-repetitions/1 ---------------------------------------------------------------------
+
+REPETITIONS_SCHEMA = "af.perf-repetitions/1"
+REPETITIONS_FILE = "repetitions.json"
+# Where each repetition's region time was measured: the gated command's exec to its exit,
+# decoded from the trusted host recording (no observer attachment, gate wait or Docker client
+# time); the supervised child's own wall, the wrapping perf included; or the driver's wall
+# around samply, which states no per-repetition region.
+BOUNDARIES = ("perf_exec_to_exit", "supervised_child_wall", "driver_wall")
+RECORDING_SUFFIX = {"perf": ".data", "samply": ".json.gz"}
+OBSERVER_NAME = r"^observer-[0-9]{4,}-[0-9a-f]{8}\.json$"
+# One repetition: `completed` once its command passed its oracle and its files were settled;
+# the one repetition a failure ended keeps whatever of its files exist, and no region time.
+REPETITION = Obj(Field("index", Int(1, REPETITIONS_MAX)), Field("completed", Bool()),
+                 Field("recording", Nullable(ARTIFACT)), Field("observer", Nullable(ARTIFACT)),
+                 Field("region_ns", Nullable(NS)))
+REPETITIONS = Obj(
+    Field("schema", Const(REPETITIONS_SCHEMA)),
+    Field("instance_id", ID), Field("side", Str(enum=SIDES)), Field("attempt", Int(1, 2)),
+    Field("tool", Str(enum=CAPTURE_TOOLS)), Field("binary_sha256", DIGEST),
+    Field("boundary", Str(enum=BOUNDARIES)),
+    Field("repetitions", Arr(REPETITION, 1, REPETITIONS_MAX)),
+)
+
+
+def capture_directory(item):
+    """The evidence directory of one capture or its index: `captures/CASE/SIDE/ATTEMPT`."""
+    return "captures/%s/%s/%d" % (item["instance_id"], item["side"], item["attempt"])
+
+
+def repeated_name(name):
+    """Whether `name` is a per-repetition file a repetition index lists."""
+    return (re.match(r"^rep-[0-9]{4,}(?:\.data|\.json\.gz)$", name) is not None
+            or re.match(OBSERVER_NAME, name) is not None)
+
+
+def validate_repetitions(doc, where=REPETITIONS_FILE):
+    """Every repetition once and in order, each at its own name in its capture's directory,
+    with an observer record exactly at the host-observed boundary and a region time exactly
+    where its boundary states one."""
+    REPETITIONS.validate(doc, where)
+    prefix = capture_directory(doc) + "/"
+    observed = doc["boundary"] == "perf_exec_to_exit"
+    require((doc["boundary"] == "driver_wall") == (doc["tool"] == "samply"),
+            where + ".boundary: exactly samply's repetitions are bounded by the driver's wall")
+    seen = set()
+    last = len(doc["repetitions"]) - 1
+    for position, item in enumerate(doc["repetitions"]):
+        at = "%s.repetitions[%d]" % (where, position)
+        require(item["index"] == position + 1, at + ".index: every repetition once, in order")
+        recording, observer = item["recording"], item["observer"]
+        if item["completed"]:
+            require(recording is not None and (observer is not None) == observed
+                    and (item["region_ns"] is None) == (doc["boundary"] == "driver_wall"),
+                    at + ": a completed repetition keeps its recording, its observer record "
+                    "exactly when host-observed, and its region time where its boundary "
+                    "states one")
+        else:
+            require(position == last and item["region_ns"] is None
+                    and (recording is not None or observer is not None)
+                    and (observer is None or observed),
+                    at + ": only the last repetition, the one a failure ended, is incomplete; "
+                    "it keeps what of its files exist and no region time")
+        if recording is not None:
+            require(recording["path"] == prefix + "rep-%04d%s" % (
+                item["index"], RECORDING_SUFFIX[doc["tool"]]),
+                at + ".recording: the repetition's own recording in its capture's directory")
+        if observer is not None:
+            name = observer["path"][len(prefix):]
+            require(observer["path"].startswith(prefix) and "/" not in name
+                    and re.match(OBSERVER_NAME, name) is not None,
+                    at + ".observer: an observer record in its capture's directory")
+        for artifact in (recording, observer):
+            if artifact is not None:
+                require(artifact["path"] not in seen, at + ": every file once")
+                seen.add(artifact["path"])
+    return doc
 
 RENDER = Obj(
     Field("instance_id", ID), Field("kind", Str(enum=RENDER_KINDS)),
@@ -611,7 +701,7 @@ def validate_profiles(doc, where="profiles.json"):
                 at + ".region: exactly perf's capture of a probe records its acknowledged "
                 "region; samply and a CLI process are whole processes")
         if capture["omission"] is None:
-            require(capture["artifacts"] and region["observed"]
+            require((capture["artifacts"] or capture["repetitions"]) and region["observed"]
                     and capture["samples"] is not None and capture["samples"] > 0,
                     at + ": a capture without omission observed its region and has samples "
                     "and artifacts")
@@ -642,6 +732,20 @@ def validate_profiles(doc, where="profiles.json"):
         if capture["effective_frequency_hz"] is not None:
             require(parse_rational(capture["effective_frequency_hz"], at) > 0,
                     at + ".effective_frequency_hz: positive")
+        # A capture of fresh processes, each repetition its own recording, indexes them.
+        repeated = capture["tool"] == "samply" or capture["subject"] == "cli_process"
+        index = capture["repetitions"]
+        require(index is None or (repeated and index["path"] == capture_directory(capture)
+                                  + "/" + REPETITIONS_FILE),
+                at + ".repetitions: the index of a capture of fresh processes, beside it")
+        require(not repeated or capture["omission"] is not None or index is not None,
+                at + ": a capture of fresh processes without omission indexes its repetitions")
+        require(not repeated or not any(repeated_name(item["path"].rsplit("/", 1)[-1])
+                                        for item in capture["artifacts"]),
+                at + ".artifacts: a repeated capture's recordings and observer records are "
+                "listed by its repetition index")
+        if index is not None:
+            paths.append(index["path"])
         paths.extend(item["path"] for item in capture["artifacts"])
     for key, attempts in seen.items():
         numbers = sorted(capture["attempt"] for capture in attempts)

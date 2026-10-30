@@ -1177,11 +1177,14 @@ def validate_verdict(doc, where="verdict.json"):
     return doc
 
 
-# af.perf-profiles/6 (ADR-0224), af.perf-trace/1 and af.perf-diagnostics/1 (ADR-0174) -----
+# af.perf-profiles/7 (ADR-0224), af.perf-repetitions/1, af.perf-trace/1 and
+# af.perf-diagnostics/1 (ADR-0174) -----------------------------------------------------------
 
 PROFILES_SCHEMA = diagcontracts.PROFILES_SCHEMA
 PROFILES = diagcontracts.PROFILES
 validate_profiles = diagcontracts.validate_profiles
+REPETITIONS_SCHEMA = diagcontracts.REPETITIONS_SCHEMA
+validate_repetitions = diagcontracts.validate_repetitions
 TRACE_SCHEMA = diagcontracts.TRACE_SCHEMA
 validate_trace = diagcontracts.validate_trace
 DIAGNOSTICS_SCHEMA = diagcontracts.DIAGNOSTICS_SCHEMA
@@ -4795,7 +4798,15 @@ CONTRACTS = {
                  "and symbols; baseline, candidate and both-direction difference flamegraphs, "
                  "original and sanitized; phase traces with their region's coverage and "
                  "measured overhead; counters as explanatory proxies; and every omission with "
-                 "its reason and reproduction."),
+                 "its reason and reproduction. A capture of fresh processes lists its own "
+                 "files and names its repetition index for the per-repetition ones."),
+    "repetitions": (REPETITIONS_SCHEMA, diagcontracts.REPETITIONS, validate_repetitions,
+                    "The repetition index of one capture of fresh processes, repetitions.json: "
+                    "every repetition once and in order with its raw recording, its host "
+                    "observer record and the region time it contributed, and the boundary that "
+                    "time was measured at (the gated command's exec to its exit decoded from "
+                    "the trusted host recording, the supervised child's wall, or samply's "
+                    "driver wall). Every listed file is bound by its size and SHA256."),
     "trace": (TRACE_SCHEMA, diagcontracts.TRACE, validate_trace,
               "The metadata-only phase spans a perf-trace diagnostic build exports (ADR-0174): "
               "the process, the recorder's monotonic clock and wall epoch, its capacity, the "

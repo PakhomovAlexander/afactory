@@ -35,9 +35,10 @@ report is a separate derived directory.
 from fractions import Fraction
 import os
 
-from . import (bundle, compare, contracts, diagnostics, limits, phasetrace, render,
-               reproduce, schedule, svgsafe, symbolarchive, telemetrydiag)
-from .values import ContractError, document_bytes, require, sha256_bytes
+from . import (admission, bundle, compare, contracts, diagcontracts, diagnostics, limits,
+               perfcapture, phasetrace, render, reproduce, schedule, svgsafe, symbolarchive,
+               telemetrydiag)
+from .values import ContractError, document_bytes, parse_decimal, require, sha256_bytes
 
 REPORT_HTML = "report.html"
 REPORT_JSON = "report.json"
@@ -342,6 +343,7 @@ def admit_child(source, plan):
         require(artifact["path"] in hashes and hashes[artifact["path"]] == artifact["sha256"],
                 "%s: %s is not the verified member its profiles name" % (label,
                                                                        artifact["path"]))
+    _admit_repetitions(source, label, doc, hashes)
     symbolarchive.admit(source, doc, hashes)
     _admit_views(source, label, doc, hashes)
     return Child(source, doc, child_plan, identity, hashes, sha256_bytes(data))
@@ -441,6 +443,91 @@ def _same_workload(label, parent_case, child_case):
                        and parent_case.get(name) != child_case.get(name))
     require(not differing, "%s: its frozen child plan's %s is not this run's workload: %s "
             "differs" % (label, parent_case["instance_id"], ", ".join(differing)))
+
+
+def _admit_repetitions(source, label, doc, hashes):
+    """Refuse a child whose repeated captures are not exactly what their indexes name: each
+    `af.perf-repetitions/1` index is the verified member its capture names, of that capture,
+    with as many completed repetitions as the capture records and region times summing to its
+    region; every file it lists is the verified member with its size and hash; its directory
+    holds nothing else than the capture's own artifacts; a host-observed repetition's observer
+    record froze the process its recording bounds and its region time is that recording's own
+    exec-to-exit interval, decoded again; and no per-repetition file anywhere is unlisted."""
+    listed = set()
+    for capture in doc["captures"]:
+        listed.update(item["path"] for item in capture["artifacts"])
+        index = capture["repetitions"]
+        if index is None:
+            continue
+        at = "%s: %s" % (label, index["path"])
+        data = bundle.read_member(source, index["path"], hashes, limits.MAX_JSON_BYTES, label)
+        require(len(data) == index["bytes"] and sha256_bytes(data) == index["sha256"],
+                at + " is not the index its capture names")
+        repetitions = contracts.read_json(data, "repetitions", at)
+        require(all(repetitions[name] == capture[name] for name in (
+            "instance_id", "side", "attempt", "tool", "binary_sha256")),
+            at + " indexes another capture")
+        observed = repetitions["boundary"] == "perf_exec_to_exit"
+        require((repetitions["boundary"] == "driver_wall") == (capture["tool"] == "samply"),
+                at + ": only samply's repetitions are bounded by the driver's wall")
+        completed = [item for item in repetitions["repetitions"] if item["completed"]]
+        require(len(completed) == capture["region"]["repetitions"],
+                at + ": %d completed repetitions for the capture's %d" % (
+                    len(completed), capture["region"]["repetitions"]))
+        if not repetitions["boundary"] == "driver_wall":
+            require(Fraction(sum(item["region_ns"] for item in completed), 1000000)
+                    == parse_decimal(capture["region"]["region_ms"], at),
+                    at + ": its repetitions' region times are not the capture's region")
+        own = set([index["path"]] + [item["path"] for item in capture["artifacts"]])
+        for item in repetitions["repetitions"]:
+            for artifact in (item["recording"], item["observer"]):
+                if artifact is None:
+                    continue
+                require(hashes.get(artifact["path"]) == artifact["sha256"]
+                        and os.lstat(os.path.join(source, artifact["path"])).st_size
+                        == artifact["bytes"],
+                        "%s: %s is not the verified member its index names"
+                        % (label, artifact["path"]))
+                own.add(artifact["path"])
+            if observed and item["completed"]:
+                _admit_observed(source, label, item)
+        directory = diagcontracts.capture_directory(capture) + "/"
+        present = set(path for path in hashes if path.startswith(directory))
+        require(present == own, "%s: %s holds %s beyond its index and artifacts, and lacks %s"
+                % (label, directory, sorted(present - own)[:8], sorted(own - present)[:8]))
+        listed.update(own)
+    stray = sorted(path for path in hashes if path.startswith("captures/")
+                   and diagcontracts.repeated_name(path.rsplit("/", 1)[1]) and path not in listed)
+    require(not stray, "%s: repetition files no capture names: %s" % (label, ", ".join(stray[:8])))
+
+
+def _admit_observed(source, label, item):
+    """One completed host-observed repetition: its observer record attached to its frozen
+    target before releasing it and confirmed its end, and its region time is the exec-to-exit
+    interval of that target in its recording."""
+    path = item["observer"]["path"]
+    record = contracts.read_json(bundle.read_member(source, path, {path: item["observer"][
+        "sha256"]}, limits.RECORD_BYTES_MAX, label), "host-observer", label + ": " + path)
+    require(record["attached_before_release"] and record["stopped_confirmed"]
+            and record["exit_code"] == 0 and record["region"] == "whole_command",
+            "%s: %s does not record an attachment before release, a confirmed end and a "
+            "clean exit" % (label, path))
+    recording = item["recording"]["path"]
+    fd, info = admission.open_confined(source, recording, label + ": " + recording)
+    try:
+        require(info.st_size == item["recording"]["bytes"], "%s: %s changed size" % (label,
+                                                                                recording))
+        try:
+            executed, exited = perfcapture.decode_lifetime(
+                lambda offset, count: os.pread(fd, count, offset), info.st_size,
+                record["target"]["pid"])
+        except perfcapture.CaptureError as error:
+            raise ContractError("%s: %s: %s" % (label, recording, error.detail))
+    finally:
+        os.close(fd)
+    require(exited - executed == item["region_ns"], "%s: %s bounds its command at %d ns, not "
+            "the %d ns its index records" % (label, recording, exited - executed,
+                                             item["region_ns"]))
 
 
 def _admit_views(source, label, doc, hashes):

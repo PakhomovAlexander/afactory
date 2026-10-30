@@ -1,5 +1,5 @@
 {
-  "schema": "af.perf-profiles/6",
+  "schema": "af.perf-profiles/7",
   "run_id": "diag_child",
   "parent_run_id": "schema_fixture_run",
   "parent_plan_digest": "sha256:de1427adef11aa8cb7886c5519b526f973597182a824a146bcc1e835a3b10358",
@@ -174,16 +174,16 @@
           "sha256": "sha256:5727ca72d45ee16998e8ae58f82f7881b0176cb8f12c309dc6a0793c78ab2899"
         },
         {
-          "path": "captures/cli_state_read__command_task_show_state_cli_state_10000/baseline/1/rep-0001.data",
-          "bytes": 100,
-          "sha256": "sha256:b2d858546d17efc18677e647ae6ad336ee56c0d6a1e32b2e4e277695ce6921a0"
-        },
-        {
           "path": "captures/cli_state_read__command_task_show_state_cli_state_10000/baseline/1/rep-0001.script",
           "bytes": 100,
           "sha256": "sha256:d273eb059e142b93dd51734d5ab2b90e04ee8f2aa4174b8fe0c8a39fd87177b3"
         }
       ],
+      "repetitions": {
+        "path": "captures/cli_state_read__command_task_show_state_cli_state_10000/baseline/1/repetitions.json",
+        "bytes": 512,
+        "sha256": "sha256:eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee"
+      },
       "omission": null,
       "losses": {
         "state": "decoded",
@@ -242,16 +242,16 @@
           "sha256": "sha256:f006f843b5e6b79f8bca29ee89b090b235bf977fd8f826d7dab328fc31e0f573"
         },
         {
-          "path": "captures/cli_state_read__command_task_show_state_cli_state_10000/baseline/2/rep-0001.data",
-          "bytes": 100,
-          "sha256": "sha256:77fe0a8ea3eaa6d579fd1c5daf931fcf8c4b88d247d4a67e8b4e016934fe3e57"
-        },
-        {
           "path": "captures/cli_state_read__command_task_show_state_cli_state_10000/baseline/2/rep-0001.script",
           "bytes": 100,
           "sha256": "sha256:7704a919259b9ae574cd52a90dca17cca4adc42096a05d840f5c3afe38603179"
         }
       ],
+      "repetitions": {
+        "path": "captures/cli_state_read__command_task_show_state_cli_state_10000/baseline/2/repetitions.json",
+        "bytes": 512,
+        "sha256": "sha256:eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee"
+      },
       "omission": null,
       "losses": {
         "state": "decoded",
@@ -310,16 +310,16 @@
           "sha256": "sha256:41621b1df4292e478eb16e920881727332da08761f528c7c15deea0c5cce1e82"
         },
         {
-          "path": "captures/cli_state_read__command_task_show_state_cli_state_10000/candidate/1/rep-0001.data",
-          "bytes": 100,
-          "sha256": "sha256:b3f1d6ad10618c129eef965985c5c6f9d804aae83f8a1bd68ec9ec1e6a2c6c99"
-        },
-        {
           "path": "captures/cli_state_read__command_task_show_state_cli_state_10000/candidate/1/rep-0001.script",
           "bytes": 100,
           "sha256": "sha256:f543795cfaa1ec9cd11cc6befe54043f23f126b4df3e4ce094cb119af2472224"
         }
       ],
+      "repetitions": {
+        "path": "captures/cli_state_read__command_task_show_state_cli_state_10000/candidate/1/repetitions.json",
+        "bytes": 512,
+        "sha256": "sha256:eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee"
+      },
       "omission": null,
       "losses": {
         "state": "decoded",
@@ -378,16 +378,16 @@
           "sha256": "sha256:14b438c27bc03e38e794efc89646aea9b22b04b4faf28a81bd93ec816428cfe5"
         },
         {
-          "path": "captures/cli_state_read__command_task_show_state_cli_state_10000/candidate/2/rep-0001.data",
-          "bytes": 100,
-          "sha256": "sha256:341e52a49132e765c5d03316bc757ffd566606233b3b5870fad1bc298ef7279f"
-        },
-        {
           "path": "captures/cli_state_read__command_task_show_state_cli_state_10000/candidate/2/rep-0001.script",
           "bytes": 100,
           "sha256": "sha256:3e5049062d3b862cebd87d1467d0ee17cea9e315eb6ea57e75f30af1bc7d563c"
         }
       ],
+      "repetitions": {
+        "path": "captures/cli_state_read__command_task_show_state_cli_state_10000/candidate/2/repetitions.json",
+        "bytes": 512,
+        "sha256": "sha256:eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee"
+      },
       "omission": null,
       "losses": {
         "state": "decoded",

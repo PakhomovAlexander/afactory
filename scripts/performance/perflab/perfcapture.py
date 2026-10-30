@@ -30,6 +30,8 @@ a collapsed weight is one sample) yields the samples, frames and unknown frames 
 symbols, which inferno shows as DSO placeholders, are counted from the script, not guessed from
 folded names); the loss records are decoded from the file itself (`decode_losses`), and `perf
 buildid-list --with-hits` the build IDs. The effective frequency is samples over the region.
+A host-observed command's own time is its exec to its exit in its recording
+(`decode_lifetime`), never the wall of the shell that waited at the observer's gate.
 
 **Capability.** `probe_capability` runs a real acknowledged capture of the declared event on a
 bounded shell loop and requires decoded samples: a present tool or a zero exit status is not
@@ -601,6 +603,102 @@ def decode_losses(read, size):
         return unknown_losses("the last record ends at %d, past its data section's end %d"
                               % (position, end))
     return dict(counts, state="decoded", detail="")
+
+
+PERF_RECORD_COMM = 3
+PERF_RECORD_EXIT = 4
+PERF_RECORD_MISC_COMM_EXEC = 1 << 13
+PERF_SAMPLE_TID = 1 << 1
+PERF_SAMPLE_TIME = 1 << 2
+# The `sample_id` fields every non-sample record carries with `sample_id_all`, in their order:
+# TID, TIME, ID, STREAM_ID, CPU, IDENTIFIER; only TID precedes TIME.
+PERF_SAMPLE_ID_FIELDS = (1 << 1) | (1 << 2) | (1 << 6) | (1 << 9) | (1 << 7) | (1 << 16)
+PERF_ATTR_SAMPLE_ID_ALL = 1 << 18
+PERF_ATTR_BYTES = 48
+
+
+def _unknown_lifetime(pid, detail):
+    return CaptureError("command_boundary_unknown", "the recording does not bound process %d's "
+                        "command: %s; its wait at the observer's gate cannot be told apart from "
+                        "the command's own time, so none of it is attributed" % (pid, detail))
+
+
+def decode_lifetime(read, size, pid):
+    """(exec, exit) of process `pid` in perf's clock, in nanoseconds, decoded from a `perf.data`
+    file of `size` bytes read through `read(offset, count)`: the kernel's `PERF_RECORD_COMM`
+    with its exec flag (the gate executing the command in the attached task) and its
+    `PERF_RECORD_EXIT`. The interval between them is the command alone, without the observer's
+    attachment, the wait at the gate or any Docker client time. A recording this reader cannot
+    decode, or one without both records of `pid`, raises `command_boundary_unknown`, never an
+    estimate."""
+    header = read(0, PERF_HEADER_BYTES)
+    if len(header) < PERF_HEADER_BYTES or header[:8] != PERF_FILE_MAGIC:
+        raise _unknown_lifetime(pid, "not a little-endian perf.data file")
+    header_size, attr_size, attrs_offset, attrs_size, data_offset, data_size = \
+        struct.unpack_from("<QQQQQQ", header, 8)
+    if header_size != PERF_HEADER_BYTES or data_size == 0 \
+            or data_offset < PERF_HEADER_BYTES or data_offset + data_size > size:
+        raise _unknown_lifetime(pid, "an unfinished or malformed header")
+    if attr_size < PERF_ATTR_BYTES + 16 or not attrs_size or attrs_size % attr_size \
+            or attrs_offset + attrs_size > size or attrs_size // attr_size > 64:
+        raise _unknown_lifetime(pid, "no readable event attributes")
+    kinds = set()
+    for offset in range(attrs_offset, attrs_offset + attrs_size, attr_size):
+        attr = read(offset, PERF_ATTR_BYTES)
+        if len(attr) < PERF_ATTR_BYTES:
+            raise _unknown_lifetime(pid, "an event attribute is cut short")
+        sample_type, = struct.unpack_from("<Q", attr, 24)
+        flags, = struct.unpack_from("<Q", attr, 40)
+        if not flags & PERF_ATTR_SAMPLE_ID_ALL or not sample_type & PERF_SAMPLE_TIME:
+            raise _unknown_lifetime(pid, "its events carry no time on their task records")
+        kinds.add(sample_type & PERF_SAMPLE_ID_FIELDS)
+    if len(kinds) != 1:
+        raise _unknown_lifetime(pid, "its events disagree on their record identity fields")
+    fields = kinds.pop()
+    trailer = 8 * bin(fields).count("1")
+    time_at = 8 if fields & PERF_SAMPLE_TID else 0
+    executed = exited = None
+    position, end = data_offset, data_offset + data_size
+    while position < end:
+        head = read(position, 8)
+        if len(head) < 8:
+            raise _unknown_lifetime(pid, "a record header at %d is cut short" % position)
+        kind, misc, length = struct.unpack("<IHH", head)
+        if length < 8 or position + length > end:
+            raise _unknown_lifetime(pid, "a record at %d does not fit its data section"
+                                    % position)
+        step = length
+        if kind == PERF_RECORD_COMPRESSED:
+            raise _unknown_lifetime(pid, "it holds compressed records")
+        if kind == PERF_RECORD_COMM and misc & PERF_RECORD_MISC_COMM_EXEC:
+            if length < 16 + trailer:
+                raise _unknown_lifetime(pid, "a COMM record of %d bytes at %d"
+                                        % (length, position))
+            owner, thread = struct.unpack("<II", read(position + 8, 8))
+            if owner == pid and thread == pid and executed is None:
+                executed, = struct.unpack("<Q", read(position + length - trailer + time_at, 8))
+        elif kind == PERF_RECORD_EXIT:
+            if length < 32:
+                raise _unknown_lifetime(pid, "an EXIT record of %d bytes at %d"
+                                        % (length, position))
+            owner, _, thread, _, when = struct.unpack("<IIIIQ", read(position + 8, 24))
+            if owner == pid and thread == pid:
+                exited = when
+        elif kind == PERF_RECORD_AUXTRACE:
+            if length < 16:
+                raise _unknown_lifetime(pid, "an AUXTRACE record of %d bytes at %d"
+                                        % (length, position))
+            extra, = struct.unpack("<Q", read(position + 8, 8))
+            step += extra
+        position += step
+    if position != end:
+        raise _unknown_lifetime(pid, "the last record ends past its data section")
+    if executed is None or exited is None:
+        raise _unknown_lifetime(pid, "it holds no %s of it" % (
+            "exec" if executed is None else "exit"))
+    if exited < executed:
+        raise _unknown_lifetime(pid, "it exited before it executed its command")
+    return executed, exited
 
 
 def parse_build_ids(text):

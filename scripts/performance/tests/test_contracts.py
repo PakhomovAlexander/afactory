@@ -248,7 +248,8 @@ class Parity(unittest.TestCase):
         # (ADR-0185); readiness/6 binds each case to its observed shard CPU group
         # (ADR-0194); executor/3 names the diagnostic perf and Inferno tools and a
         # parent-selected profile, and executor-request/2 a profile's verified parent
-        # comparison; nothing reads an earlier version.
+        # comparison; profiles/7 lists a repeated capture's recordings by its repetition
+        # index; nothing reads an earlier version.
         changed = ("run", "capabilities", "tui-open", "builds", "verdict", "sample",
                    "shard", "supervisor-request",
                    "supervisor-result", "probe-request", "golden", "cohort",
@@ -256,11 +257,12 @@ class Parity(unittest.TestCase):
                    "shipping", "profiles", "executor", "executor-state", "executor-result",
                    "executor-request")
         self.assertEqual([contracts.schema_version(name) for name in changed],
-                         [7, 3, 1, 6, 2, 2, 4, 4, 5, 2, 2, 4, 2, 6, 3, 3, 3, 6, 3, 2, 2, 2])
+                         [7, 3, 1, 6, 2, 2, 4, 4, 5, 2, 2, 4, 2, 6, 3, 3, 3, 7, 3, 2, 2, 2])
         self.assertEqual(contracts.schema_version("activation"), 3)
-        # profiles/6 binds retained archives (ADR-0224); report/3 keeps telemetry (ADR-0214).
+        # profiles/6 bound retained archives (ADR-0224) and profiles/7 indexes a repeated
+        # capture's recordings; report/3 keeps telemetry (ADR-0214).
         self.assertEqual((contracts.schema_version("profiles"), contracts.schema_version("report")),
-                         (6, 3))
+                         (7, 3))
         self.assertEqual((contracts.schema_version("cli"), contracts.schema_version("suite")),
                          (6, 4))
         valid = dict((entry["contract"], entry) for entry in self.index if entry["valid"]

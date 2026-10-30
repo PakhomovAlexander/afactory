@@ -264,7 +264,17 @@ is cancelled through its supervisor: a cancellation the supervisor confirms rele
 command's scratch and the capture records the observer's own reason, and one it does not
 confirm is `cleanup_uncertain` with that reason first, the scratch kept and the fence held.
 Each recording keeps an `af.perf-host-observer/1` record
-(`observer-*.json`) beside its capture. perf is never bound into a candidate container: the
+(`observer-*.json`) beside its capture. A host-observed CLI command's region time is its exec to
+its exit in that trusted recording (the kernel's exec `COMM` and `EXIT` records of the frozen
+process), never the supervised child's wall, which includes the attachment and the wait at the
+gate; a recording that does not hold both records stops the capture as
+`command_boundary_unknown`, its files kept, and nothing of it is attributed. A CLI capture
+lists every repetition's recording and observer record, in order with the region time each
+contributed, in its `af.perf-repetitions/1` index (`repetitions.json`), which `profiles.json`
+binds by size and SHA-256; admission refuses a missing, changed or unlisted repetition, and
+decodes each host-observed recording again to check its region time. Each recording is decoded
+by its own `perf script`, in that order, under the tool's own time bound and the diagnostic
+deadline, and a decoding that fails names its recording and keeps the earlier ones' output. perf is never bound into a candidate container: the
 host observer runs `perf script`, `perf buildid-list` and Inferno on the host too, reading the
 admitted AF binary at the same path the container saw. The capability is checked by doing it,
 not from a path or a sysctl: `preflight`, `comparison-preflight` and the profile's execution,

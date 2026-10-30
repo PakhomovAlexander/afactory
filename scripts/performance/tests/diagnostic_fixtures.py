@@ -247,6 +247,11 @@ if args[0] == "record":
 data = read_data(option("-i"))
 def option_event(data):
     return data["event"]
+if args[0] == "script" and config.get("fail_script") == os.path.basename(option("-i")):
+    # A decoding that fails part way: some output, then perf's own error.
+    sys.stdout.write("perf-probe 4242/4242 0.000000: partial\n")
+    sys.stderr.write("failed to process sample\n")
+    sys.exit(3)
 if args[0] == "script":
     for index, phase in enumerate(data["samples"]):
         sys.stdout.write("perf-probe 4242/4242 %d.%06d: %s:\n" % (

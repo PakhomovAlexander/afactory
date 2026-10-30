@@ -1694,8 +1694,15 @@ class CliCases(ChildRunBase):
             self.assertEqual(item["region"]["stopped"], "duration_reached")
             self.assertGreater(item["samples"], 0)
             names = [artifact["path"].rsplit("/", 1)[1] for artifact in item["artifacts"]]
-            self.assertIn("rep-0001.data", names)
             self.assertIn("capture.script", names)
+            self.assertNotIn("rep-0001.data", names, "the index lists every recording")
+            index = contracts.read_file(os.path.join(output, item["repetitions"]["path"]),
+                                        "repetitions")
+            self.assertEqual(index["boundary"], "supervised_child_wall")
+            self.assertEqual([entry["recording"]["path"].rsplit("/", 1)[1]
+                              for entry in index["repetitions"]],
+                             ["rep-%04d.data" % (number + 1)
+                              for number in range(item["region"]["repetitions"])])
         self.assertEqual(sorted(item["kind"] for item in doc["renders"]),
                          ["baseline", "candidate", "difference_forward", "difference_reverse"])
         folded = read(os.path.join(output, "flamegraphs", DISCOVERY, "baseline.folded"))

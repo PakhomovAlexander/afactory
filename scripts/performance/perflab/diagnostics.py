@@ -411,6 +411,39 @@ def _uncertain(result):
 
 STOPPED = {"capped": "recording_cap", "single": "single_repetition",
            "window": "supervised_window"}
+# The most one repetition's entry of a repetition index takes, the index's own head and one
+# host-observer record: kept free before each repetition runs, so neither its recording nor
+# its observer record can take the room its index needs (`Attempts.room`).
+INDEX_ENTRY_BYTES = 1024
+INDEX_HEAD_BYTES = 1024
+OBSERVER_RECORD_BYTES = 8192
+
+
+class Attempts(object):
+    """The repetitions of one capture of fresh processes as they are attempted, in order, for
+    its `af.perf-repetitions/1` index: each one's file names, whether it completed, and the
+    region nanoseconds it contributed."""
+
+    def __init__(self):
+        self.items = []
+
+    def begin(self, recording, observer=None):
+        self.items.append({"index": len(self.items) + 1, "recording": recording,
+                           "observer": observer, "completed": False, "region_ns": None})
+
+    def complete(self, region_ns=None):
+        self.items[-1].update(completed=True, region_ns=region_ns)
+
+    def room(self, observed=False):
+        """The evidence bytes kept for the index of one more repetition, and its observer
+        record when it is host-observed."""
+        return (INDEX_HEAD_BYTES + INDEX_ENTRY_BYTES * (len(self.items) + 1)
+                + (OBSERVER_RECORD_BYTES if observed else 0))
+
+
+def observer_name(observer):
+    """The file name of an observer's `af.perf-host-observer/1` record beside its capture."""
+    return "observer-%s.json" % os.path.basename(observer.gate)[5:]
 
 
 class Profile(object):
@@ -543,7 +576,7 @@ class Profile(object):
             if observer.control_dir not in self.retained:
                 admission.remove_tree(observer.control_dir)
             doc = observer.document(self.tools["perf"][0]["executable_sha256"], region)
-            self.write(relative + "/observer-%s.json" % os.path.basename(observer.gate)[5:],
+            self.write(relative + "/" + observer_name(observer),
                        contracts.write_bytes(doc, "host-observer"))
         if observer.failure() is not None and not failing:
             raise perfcapture.CaptureError("observer_failed", "host perf: "
@@ -1059,7 +1092,7 @@ class Profile(object):
                   "frames": None, "unknown_frames": None, "unknown_frame_ratio": None,
                   "symbols": {"state": "missing", "build_ids": [],
                               "binary_build_id_present": None, "archive": None},
-                  "artifacts": [], "omission": None}
+                  "artifacts": [], "repetitions": None, "omission": None}
         data = os.path.join(directory, "capture.data")
         # Where perf writes it: the evidence, or the stage when contained (`produced`).
         staged = self.produced(relative + "/capture.data")
@@ -1140,9 +1173,11 @@ class Profile(object):
                                                             "detail": str(error)[:4096]}
         return self.finish_capture(record, relative)
 
-    def finish_capture(self, record, relative):
+    def finish_capture(self, record, relative, attempts=None, boundary=None):
         """A perf capture's last checks: samples to attribute, its admitted artifacts, and the
-        record kept with every reason it is not rendered."""
+        record kept with every reason it is not rendered. A capture of fresh processes passes
+        its `attempts` (`Attempts`) and their `boundary`: its index lists every repetition's
+        files, and its artifacts are its own."""
         if record["omission"] is None and not record["samples"]:
             record["omission"] = {"reason": "region_without_samples",
                                   "detail": "the enabled region recorded no %s sample"
@@ -1157,19 +1192,81 @@ class Profile(object):
                              minimum))}
         try:
             record["artifacts"] = self.artifacts(relative)
-        except (ContractError, OSError) as error:
-            record["artifacts"] = []
-            record["omission"] = {"reason": "capture_unadmitted", "detail": str(error)[:4096]}
+            if attempts is not None and record["artifacts"]:
+                record["repetitions"] = self.index_repetitions(record, relative, attempts,
+                                                               boundary)
+                record["artifacts"] = [
+                    item for item in self.artifacts(relative)
+                    if item["path"] != record["repetitions"]["path"]
+                    and not diagcontracts.repeated_name(item["path"].rsplit("/", 1)[1])]
+        except (ContractError, OSError, Exhausted) as error:
+            # A capture that already failed keeps its own cause first.
+            record["artifacts"], record["repetitions"] = [], None
+            record["omission"] = record["omission"] or {
+                "reason": "capture_unadmitted", "detail": str(getattr(error, "detail",
+                                                                      error))[:4096]}
         if not record["artifacts"] and record["omission"] is None:
             record["omission"] = {"reason": "no_artifacts", "detail": "nothing was captured"}
         self.captures.append(record)
         return record
 
+    def index_repetitions(self, record, relative, attempts, boundary):
+        """Write the capture's `af.perf-repetitions/1` index: every attempted repetition in
+        order with its admitted recording and observer record and the region time it
+        contributed, each file bound by its size and SHA256. Its room was kept before each
+        repetition (`Attempts.room`). Every per-repetition file of the directory is listed;
+        one that is not, or a completed repetition without its files, refuses."""
+        listed = dict((item["path"], item) for item in self.artifacts(relative))
+        entries, indexed = [], set()
+        for item in attempts.items:
+            recording = listed.get(relative + "/" + item["recording"])
+            observer = (listed.get(relative + "/" + item["observer"])
+                        if item["observer"] else None)
+            if not item["completed"] and recording is None and observer is None:
+                continue
+            require(not item["completed"] or (recording is not None and (
+                observer is not None) == (boundary == "perf_exec_to_exit")),
+                "%s: repetition %d's files are not all in its evidence" % (
+                    relative, item["index"]))
+            entries.append({"index": item["index"], "completed": item["completed"],
+                            "recording": recording, "observer": observer,
+                            "region_ns": item["region_ns"] if item["completed"] else None})
+            indexed.update(artifact["path"] for artifact in (recording, observer) if artifact)
+        stray = sorted(path for path in listed if path not in indexed
+                       and diagcontracts.repeated_name(path.rsplit("/", 1)[1]))
+        require(not stray, "%s: repetition files no repetition names: %s" % (
+            relative, ", ".join(stray[:8])))
+        doc = {"schema": diagcontracts.REPETITIONS_SCHEMA, "instance_id": record["instance_id"],
+               "side": record["side"], "attempt": record["attempt"], "tool": record["tool"],
+               "binary_sha256": record["binary_sha256"], "boundary": boundary,
+               "repetitions": entries}
+        path = relative + "/" + diagcontracts.REPETITIONS_FILE
+        return dict(self.write(path, contracts.write_bytes(doc, "repetitions")), path=path)
+
+    def observed_region(self, relative, observer):
+        """The nanoseconds of one host-observed repetition's command: its exec to its exit in
+        its trusted recording (`perfcapture.decode_lifetime`), never the supervised child's
+        wall, which includes the observer's attachment and the wait at the gate."""
+        require(observer.target is not None, "an observed repetition has a frozen target")
+        fd, info = admission.open_confined(self.output, relative, relative)
+        try:
+            self.halted("decoding " + relative)
+            executed, exited = perfcapture.decode_lifetime(
+                lambda offset, count: os.pread(fd, count, offset), info.st_size,
+                observer.target.pid)
+        finally:
+            os.close(fd)
+        return exited - executed
+
     def cli_perf_capture(self, case, side, attempt, unwind):
         """A CLI case's CPU profile: each repetition a fresh AF process on fresh private state,
-        recorded whole by its own `perf record` and judged by its command's oracle as it ends,
-        until the recorded processes' time reaches the capture's duration, the repetition cap
-        or the budget; then one script of every recording (ADR-0176)."""
+        recorded whole by its own `perf record` (or the host observer's) and judged by its
+        command's oracle as it ends, until the recorded commands' time reaches the capture's
+        duration, the repetition cap or the budget; then each recording decoded in order and
+        every repetition listed by the capture's index (ADR-0176). A host-observed command's
+        time is its exec to its exit in the trusted recording, so the observer's attachment and
+        the wait at its gate are never counted; otherwise the supervised child's own wall, the
+        wrapping perf included."""
         perf = self.tool("perf")
         relative = "captures/%s/%s/%d" % (case["instance_id"], side, attempt)
         directory = self.directory(relative)
@@ -1188,8 +1285,11 @@ class Profile(object):
                   "frames": None, "unknown_frames": None, "unknown_frame_ratio": None,
                   "symbols": {"state": "missing", "build_ids": [],
                               "binary_build_id_present": None, "archive": None},
-                  "artifacts": [], "omission": None}
+                  "artifacts": [], "repetitions": None, "omission": None}
         names, region, setup_ns, wall, stop = [], Fraction(0), 0, 0.0, "not_started"
+        attempts = Attempts()
+        observed = self.host is not None
+        boundary = "perf_exec_to_exit" if observed else "supervised_child_wall"
         try:
             while True:
                 if region >= self.duration_ms:
@@ -1198,9 +1298,16 @@ class Profile(object):
                 if len(names) >= self.registry["capture"]["max_repetitions"]:
                     stop = "repetition_cap"
                     break
+                what = "repetition %d of %s %s" % (len(names) + 1, case["instance_id"], side)
                 try:
-                    self.budget.check("repetition %d of %s %s" % (len(names) + 1,
-                                                                 case["instance_id"], side))
+                    self.budget.check(what)
+                    # Its recording may take the room left but what its index needs.
+                    room = self.budget.room() - attempts.room(observed)
+                    if room < 1:
+                        raise Exhausted("profile_bytes_exhausted", "%s needs %d bytes of "
+                                        "evidence room for its index, and %d are left" % (
+                                            what, attempts.room(observed),
+                                            max(self.budget.room(), 0)))
                 except Exhausted as error:
                     stop = "diagnostic_budget"
                     if names:
@@ -1210,14 +1317,13 @@ class Profile(object):
                     raise
                 name = "rep-%04d.data" % (len(names) + 1)
                 staged = self.produced(relative + "/" + name)
-                room = self.budget.room()
                 observer = observe = None
                 writes = (os.path.dirname(staged),)
 
                 def wrap(argv, staged=staged, room=room):
                     return perfcapture.whole_argv(perf, self.event, self.frequency, unwind,
                                                   staged, argv, max_bytes=room)
-                if self.host is not None:
+                if observed:
                     # The trusted host perf records the whole command, attached to the owned
                     # gated process before the gate lets it execute (`hostobserver`).
                     # The gate lives in the run's own work, bound writable, never staged
@@ -1233,11 +1339,12 @@ class Profile(object):
 
                     def observe(running, observer=observer):
                         observer.attach(lambda: not running.done())
+                attempts.begin(name, observer_name(observer) if observer else None)
 
                 started = self.clock()
                 primary = None
                 try:
-                    result, value, _ = self.cli_run(
+                    result, _, _ = self.cli_run(
                         side, case, self.afs[side][0], wrap=wrap, file_bytes=room,
                         writes=writes, observe=observe,
                         what="repetition %d of the recorded command" % (len(names) + 1))
@@ -1247,11 +1354,15 @@ class Profile(object):
                 finally:
                     wall += self.clock() - started
                     self.settle_repetition(observer, relative, primary)
-                self.settle("repetition %d of %s %s" % (len(names) + 1, case["instance_id"],
-                                                        side))
-                names.append(name)
-                region += Fraction(value)
+                self.settle(what)
                 reply = result.supervised.result
+                if observed:
+                    spent = self.observed_region(relative + "/" + name, observer)
+                else:
+                    spent = int(reply["timing"]["child_wall_ns"])
+                names.append(name)
+                attempts.complete(spent)
+                region += Fraction(spent, 1000000)
                 if reply["setup"] is not None and reply["setup"]["wall_ns"] is not None:
                     setup_ns += int(reply["setup"]["wall_ns"])
         except (perfcapture.CaptureError, Exhausted) as error:
@@ -1268,7 +1379,8 @@ class Profile(object):
         except (perfcapture.CaptureError, ContractError, OSError) as error:
             record["omission"] = record["omission"] or {
                 "reason": "capture_unadmitted", "detail": str(error)[:4096]}
-        # The recorded processes' own time, perf included: the whole process is the region.
+        # The recorded commands' own time at the capture's boundary: the whole process is the
+        # region.
         record["region"].update(
             repetitions=len(names), observed=bool(names), region_ms=format_decimal(region),
             enabled_ms=format_decimal(region), setup_ms=_ms(setup_ns / 1e9), wall_ms=_ms(wall),
@@ -1283,7 +1395,7 @@ class Profile(object):
             except (ContractError, OSError) as error:
                 record["omission"] = record["omission"] or {"reason": "capture_unadmitted",
                                                             "detail": str(error)[:4096]}
-        return self.finish_capture(record, relative)
+        return self.finish_capture(record, relative, attempts, boundary)
 
     def analyse(self, record, directory, relative, region_ms, names=("capture.data",),
                 binary=None):
@@ -1297,13 +1409,10 @@ class Profile(object):
         data = os.path.join(self.output, name)
         if len(names) == 1:
             argv = [perf, "script", "-i", data, "-F", perfcapture.SCRIPT_FIELDS]
+            script = self.tool_output(relative + "/capture.script", argv,
+                                      "perf script of " + relative)
         else:
-            # One script of every repetition's recording, in order, by one supervised shell.
-            argv = [toolrun.SHELL, "-c", 'cd "$1" && for f in rep-*.data; do "$0" script -i '
-                    '"$f" -F "$2" || exit 1; done', perf, os.path.join(self.output, relative),
-                    perfcapture.SCRIPT_FIELDS]
-        script = self.tool_output(relative + "/capture.script", argv,
-                                  "perf script of " + relative)
+            script = self.scripts(relative, names)
         parsed = perfcapture.parse_script(script.decode("utf-8", "replace"))
         perfcapture.check_event(parsed, self.event)
         listed = self.tool_run([perf, "buildid-list", "--with-hits", "-i", data],
@@ -1334,6 +1443,41 @@ class Profile(object):
                 flamegraph.check_folded(folded)
             except flamegraph.RenderError:
                 raise
+
+    def scripts(self, relative, names):
+        """`capture.script` of a capture of fresh processes: each recording `names` decoded in
+        exactly that order by its own supervised `perf script`, each bounded by the tool's own
+        time and the room left of the one script bound, all of them by the diagnostic deadline,
+        and appended, charged first. A decoding that fails names its recording and keeps what
+        the earlier ones decoded; its partial output is kept and counted beside them."""
+        perf = self.tool("perf")
+        target = relative + "/capture.script"
+        part = relative + "/capture.script.part"
+        chunks, total = [], 0
+        with open(os.path.join(self.output, target), "xb") as stream:
+            for index, name in enumerate(names):
+                what = "perf script of recording %d of %d (%s/%s)" % (
+                    index + 1, len(names), relative, name)
+                try:
+                    self.budget.check(what)
+                    data = self.tool_output(
+                        part, [perf, "script", "-i", os.path.join(self.output, relative, name),
+                               "-F", perfcapture.SCRIPT_FIELDS], what,
+                        limit=SCRIPT_BYTES_MAX - total)
+                except (perfcapture.CaptureError, Exhausted) as error:
+                    if error.reason != "cleanup_uncertain" and not self.retained:
+                        # Whatever the failed decoding wrote is kept and counted, never used.
+                        self.collect(part)
+                    error.detail = "%s; %s keeps the %d recordings decoded before it" % (
+                        error.detail, target, index)
+                    raise
+                os.unlink(os.path.join(self.output, part))
+                self.budget.charge(len(data), target)
+                stream.write(data)
+                stream.flush()
+                chunks.append(data)
+                total += len(data)
+        return b"".join(chunks)
 
     def symbols(self, profiled, ids):
         """Retain the exact profiled executable as deterministic XZ, once per source hash.
@@ -1489,9 +1633,10 @@ class Profile(object):
                       "frames": None, "unknown_frames": None, "unknown_frame_ratio": None,
                       "symbols": {"state": "missing", "build_ids": [],
                                   "binary_build_id_present": None, "archive": None},
-                      "artifacts": [], "omission": None}
+                      "artifacts": [], "repetitions": None, "omission": None}
             wall = 0.0
             stop = "duration_reached"
+            attempts = Attempts()
             try:
                 while wall * 1000 < self.duration_ms:
                     if record["region"]["repetitions"] >= \
@@ -1499,21 +1644,27 @@ class Profile(object):
                         stop = "repetition_cap"
                         break
                     self.budget.check("samply repetition of " + case["instance_id"])
+                    # Its profile may take the room left but what its index needs.
+                    room = self.budget.room() - attempts.room()
+                    if room < 1:
+                        raise Exhausted("profile_bytes_exhausted", "no evidence room is left "
+                                        "for another samply repetition and its index")
                     repetition = record["region"]["repetitions"] + 1
                     name = "rep-%04d.json.gz" % repetition
                     output = self.produced(relative + "/" + name)
+                    attempts.begin(name)
                     if cli:
                         started = self.clock()
                         try:
                             self.cli_run(side, case, binaries[side][0], wrap=lambda argv: (
                                 counters.samply_argv(samply, self.frequency, output, argv)),
-                                file_bytes=self.budget.room(),
+                                file_bytes=room,
                                 writes=(os.path.dirname(output),),
                                 what="samply repetition %d" % repetition)
                         finally:
                             wall += self.clock() - started
                     else:
-                        wall += self.samply_probe(side, case, samply, output)
+                        wall += self.samply_probe(side, case, samply, output, room)
                     self.settle("samply repetition %d of %s" % (repetition,
                                                                  case["instance_id"]))
                     self.collect(relative + "/" + name)
@@ -1525,6 +1676,7 @@ class Profile(object):
                                                        "knows; it is kept")
                     record["samples"] += counted
                     record["region"].update(repetitions=repetition, observed=True)
+                    attempts.complete()
             except (perfcapture.CaptureError, Exhausted) as error:
                 record["omission"] = {"reason": error.reason, "detail": error.detail[:4096]}
             except (ContractError, OSError) as error:
@@ -1536,21 +1688,35 @@ class Profile(object):
                 record["omission"] = {"reason": "region_without_samples",
                                       "detail": "samply recorded no sample"}
             try:
+                # What a failed repetition staged is kept and counted with the rest.
+                self.collect(relative)
+            except (perfcapture.CaptureError, ContractError, OSError) as error:
+                record["omission"] = record["omission"] or {
+                    "reason": "capture_unadmitted", "detail": str(error)[:4096]}
+            try:
                 record["artifacts"] = self.artifacts(relative)
-            except (ContractError, OSError) as error:
-                record["artifacts"] = []
-                record["omission"] = {"reason": "capture_unadmitted",
-                                      "detail": str(error)[:4096]}
-            if not record["artifacts"] and record["omission"] is None:
+                if record["artifacts"]:
+                    record["repetitions"] = self.index_repetitions(record, relative, attempts,
+                                                                   "driver_wall")
+                    record["artifacts"] = [
+                        item for item in self.artifacts(relative)
+                        if item["path"] != record["repetitions"]["path"]
+                        and not diagcontracts.repeated_name(item["path"].rsplit("/", 1)[1])]
+            except (ContractError, OSError, Exhausted) as error:
+                record["artifacts"], record["repetitions"] = [], None
+                record["omission"] = record["omission"] or {
+                    "reason": "capture_unadmitted", "detail": str(getattr(error, "detail",
+                                                                          error))[:4096]}
+            if record["repetitions"] is None and record["omission"] is None:
                 record["omission"] = {"reason": "no_artifacts", "detail": "nothing was saved"}
             self.captures.append(record)
         self.omit("flamegraph", case, None, "samply_profile_not_collapsed",
                   "samply saves its own profile format, which this laboratory keeps but does "
                   "not collapse into inferno flamegraphs", reproduce=False)
 
-    def samply_probe(self, side, case, samply, output):
+    def samply_probe(self, side, case, samply, output, room):
         """One samply repetition of the side's probe on fresh state, its message judged; the
-        seconds it ran."""
+        seconds it ran. Its profile may take `room` bytes."""
         namespace = self.namespace()
         result = None
         try:
@@ -1561,7 +1727,7 @@ class Profile(object):
                 counters.samply_argv(samply, self.frequency, output, [self.probes[side][0]]),
                 case["sample_timeout_ms"] / 1000.0, limits.RECORD_BYTES_MAX, namespace.path,
                 env=supervise.probe_environment(namespace.path), stdin=canonical_bytes(request),
-                file_bytes=self.budget.room(),
+                file_bytes=room,
                 writes=(namespace.path, os.path.dirname(output)))
             elapsed = self.clock() - started
             if result.supervision_failure() is not None:

@@ -470,7 +470,7 @@ Use deterministic colors and script-free SVG in the report; inferno exposes thes
 Retained ELF executables use lossless XZ (preset 6, CRC64, no filename or timestamp) at
 `symbols/<original-binary-sha256>.xz`. Decompress with `xz -dc FILE.xz > BINARY` and check
 the resulting SHA-256 against the filename and capture's binary identity before use.
-`af.perf-profiles/6` requires the exact archive path, compressed hash and size on each retained
+`af.perf-profiles/7` requires the exact archive path, compressed hash and size on each retained
 capture; referenced/missing symbols require null. Collection and report admission independently
 check the manifest's compressed integrity and bounded decompressed identity, once per shared
 archive. They reject missing, unrelated, corrupt, truncated, trailing and oversized evidence.
@@ -899,7 +899,11 @@ seeds written by that side's writers and its whole output judged by the command'
 musl shipping recipes beside GNU and macOS. It fails a run whose stdout was truncated before any
 oracle, bounds a step's files together while they are written, admits a seed tree before it is
 copied, and states each trace's region coverage (`af.perf-profiles/4`). A qualified contained
-capture remains operational evidence of package p8.
+capture remains operational evidence of package p8. A capture of fresh processes lists each
+repetition's recording and host-observer record in its own hash-bound index
+(`af.perf-repetitions/1`, named by `af.perf-profiles/7`), decodes each recording by its own
+bounded `perf script` in order, and bounds a host-observed command by its exec and exit in the
+trusted recording, so a capture of thousands of CLI processes still serializes and verifies.
 p6a (ADR-0177) adds `.github/workflows/performance.yml` and the `ci-*` commands. Each event is
 resolved once from the trusted control revision's own worktree (`af.perf-schedule/1`). Gate
 branches are skipped, and a pull request is never trusted. The primary comparison is full
@@ -1009,7 +1013,7 @@ multiple groups. Unknown or unprepared hosts still invalidate the whole trial.
 
 Telemetry joins the laboratory beside the verdict, not inside it (ADR-0214). A diagnostic child
 may record its CLI cases at an explicitly selected telemetry level and read them back through
-the side's own `af telemetry` documents (`af.perf-profiles/6`, `af.perf-report/3`). The bench
+the side's own `af telemetry` documents (`af.perf-profiles/7`, `af.perf-report/3`). The bench
 scripts of the telemetry design's §12 run as advisory telemetry experiments on a baseline and a
 candidate binary in their own workflow (`af.perf-telemetry-lab/1`,
 `af.perf-telemetry-result/2`, `af.perf-telemetry-history/1`). §13 of that design proposed

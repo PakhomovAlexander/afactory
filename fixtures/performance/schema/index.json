@@ -1155,7 +1155,7 @@
       "path": "profiles/invalid-previous-version.json",
       "contract": "profiles",
       "valid": false,
-      "error": "expected af.perf-profiles/6",
+      "error": "expected af.perf-profiles/7",
       "shape": true
     },
     {
@@ -1276,6 +1276,72 @@
       "contract": "profiles",
       "valid": false,
       "error": "content-addressed",
+      "shape": false
+    },
+    {
+      "path": "profiles/invalid-cli-capture-lists-its-recordings.json",
+      "contract": "profiles",
+      "valid": false,
+      "error": "listed by its repetition index",
+      "shape": false
+    },
+    {
+      "path": "profiles/invalid-cli-capture-without-its-index.json",
+      "contract": "profiles",
+      "valid": false,
+      "error": "without omission indexes its repetitions",
+      "shape": false
+    },
+    {
+      "path": "repetitions/valid-host-observed-cli-capture.json",
+      "contract": "repetitions",
+      "valid": true
+    },
+    {
+      "path": "repetitions/invalid-repetitions-out-of-order.json",
+      "contract": "repetitions",
+      "valid": false,
+      "error": "every repetition once, in order",
+      "shape": false
+    },
+    {
+      "path": "repetitions/invalid-recording-outside-its-capture.json",
+      "contract": "repetitions",
+      "valid": false,
+      "error": "the repetition's own recording in its capture's directory",
+      "shape": false
+    },
+    {
+      "path": "repetitions/invalid-observed-repetition-without-its-observer.json",
+      "contract": "repetitions",
+      "valid": false,
+      "error": "its observer record exactly when host-observed",
+      "shape": false
+    },
+    {
+      "path": "repetitions/invalid-incomplete-repetition-before-the-last.json",
+      "contract": "repetitions",
+      "valid": false,
+      "error": "only the last repetition, the one a failure ended, is incomplete",
+      "shape": false
+    },
+    {
+      "path": "repetitions/invalid-empty-index.json",
+      "contract": "repetitions",
+      "valid": false,
+      "error": "must hold 1..10000 items",
+      "shape": true
+    },
+    {
+      "path": "repetitions/valid-samply-driver-wall.json",
+      "contract": "repetitions",
+      "valid": true
+    },
+    {
+      "path": "repetitions/invalid-perf-bounded-by-the-driver-wall.json",
+      "contract": "repetitions",
+      "valid": false,
+      "error": "exactly samply's repetitions are bounded by the driver's wall",
       "shape": false
     },
     {
