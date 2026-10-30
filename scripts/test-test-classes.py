@@ -19,6 +19,35 @@ ROOT = Path(__file__).resolve().parent.parent
 spec = importlib.util.spec_from_file_location('testclasses', ROOT / 'scripts/test-classes.py')
 tc = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(tc)
+SHIPPED_QUARANTINE = tc.QUARANTINE
+EMPTY_QUARANTINE = {'schema': 'af.test-quarantine/1', 'tests': {}}
+
+
+def shipped_today(value):
+    """The explicit today the shipped quarantine is checked on: its latest `since`, or the
+    day before the first entry was written when it holds none. Never the clock."""
+    days = []
+    for entry in value.get('tests', {}).values() if isinstance(value, dict) else ():
+        try:
+            days.append(tc.dt.date.fromisoformat(entry['since']))
+        except (KeyError, TypeError, ValueError):
+            pass  # The guards refuse the malformed entry by name.
+    return max(days, default=tc.dt.date(2026, 10, 29)).isoformat()
+
+
+def setUpModule():
+    # Every test reads a test-local, empty quarantine file unless it is about quarantine, so
+    # the suite passes whatever entries the shipped file holds. The `test-classes.py`
+    # children these tests start from the repository read the shipped file on an explicit today.
+    tmp = tempfile.TemporaryDirectory()
+    unittest.addModuleCleanup(tmp.cleanup)
+    local = Path(tmp.name) / 'test-quarantine.json'
+    tc.write(local, EMPTY_QUARANTINE)
+    today = shipped_today(tc.read(SHIPPED_QUARANTINE))
+    for patch in (mock.patch.object(tc, 'QUARANTINE', local),
+                  mock.patch.dict(os.environ, {'AF_TEST_QUARANTINE_TODAY': today})):
+        patch.start()
+        unittest.addModuleCleanup(patch.stop)
 
 
 class Selection(unittest.TestCase):
@@ -433,8 +462,8 @@ class SealedEvidence(unittest.TestCase):
                 if source.name != 'test-classes.py':
                     shutil.copy2(source, scripts / source.name)
             (root / '.config').mkdir()
-            for name in ('test-classes.json', 'test-quarantine.json'):
-                shutil.copy2(ROOT / '.config' / name, root / '.config' / name)
+            shutil.copy2(ROOT / '.config/test-classes.json', root / '.config/test-classes.json')
+            tc.write(root / '.config/test-quarantine.json', EMPTY_QUARANTINE)
             (root / 'schemas').mkdir()
             for name in tc.schema_documents():
                 shutil.copy2(ROOT / 'schemas' / name, root / 'schemas' / name)
@@ -629,6 +658,8 @@ class SealedEvidence(unittest.TestCase):
             for path in root.rglob('*'):
                 if path.is_file() and not path.is_symlink():
                     path.chmod(stat.S_IMODE(path.stat().st_mode) | stat.S_IWUSR)
+            # The fixture inventory holds none of the shipped file's identities.
+            tc.write(root / '.config/test-quarantine.json', EMPTY_QUARANTINE)
             scripts = root / 'scripts'
             for name in ('test-class-python.py', 'changelog-notes.py', 'af-pin.py',
                          'performance/schemas.py', 'performance/cli.py'):
@@ -997,16 +1028,43 @@ class Quarantine(unittest.TestCase):
                 return tc.re.match(clause[len(prefix):-len('/))')], name) is not None
         return False
 
-    def test_the_shipped_file_is_empty_and_passes_every_guard(self):
-        self.assertEqual(tc.read(tc.QUARANTINE), {'schema': 'af.test-quarantine/1', 'tests': {}})
-        self.assertEqual(tc.quarantine(today=tc.dt.date(2026, 10, 29)), {})
+    def test_the_shipped_file_passes_every_guard_and_an_empty_file_selects_what_the_catalog_does(self):
         self.assertIn('test-quarantine-v1.json', tc.schema_documents())
-        with mock.patch.dict(os.environ, {'AF_TEST_QUARANTINE_TODAY': self.today}):
-            tc.audit_source()
-            # An empty quarantine selects exactly what the catalog alone selects.
+        shipped = tc.read(SHIPPED_QUARANTINE)
+        today = shipped_today(shipped)
+        if not shipped['tests']:
+            self.assertEqual(today, self.today)
+        with mock.patch.object(tc, 'QUARANTINE', SHIPPED_QUARANTINE), \
+                mock.patch.dict(os.environ, {'AF_TEST_QUARANTINE_TODAY': today}):
+            # The shape, entry, feature-selector, expiry and #[ignore] guards.
+            held = tc.quarantine()
+            self.assertEqual(held, shipped['tests'])
+            # The catalog guard: each held identity resolves to a catalogued class.
+            with mock.patch.object(sys, 'argv', ['test-classes.py', 'audit']):
+                tc.main()  # The `test-catalog` step of make check.
+            # partition's #[ignore] and policy-drift guards, on the fixture inventory plus every
+            # held identity. Its absent-identity guard needs the real `cargo nextest list`
+            # inventory, which the class runner partitions; this offline test has none.
             fixture = self.inventory()
-            self.assertEqual(tc.partition(fixture), tc.partition(fixture, held={}))
-            self.assertTrue(all(e['class'] in tc.CLASSES for e in tc.partition(fixture)))
+            for identity in held:
+                binary, name = identity.split(' ')
+                fixture['rust-suites'].setdefault(binary, {'testcases': {}})['testcases'][name] = {
+                    'ignored': False}
+            entries = tc.partition(fixture)
+            self.assertEqual({e['binary'] + ' ' + e['test'] for e in entries if e['class'] == 'quarantine'},
+                             set(held))
+        # An empty quarantine selects exactly what the catalog alone selects, in every plan.
+        self.held_file({})
+        fixture = self.inventory()
+        entries = tc.partition(fixture)
+        self.assertEqual(entries, tc.partition(fixture, held={}))
+        self.assertTrue(all(e['class'] in tc.CLASSES for e in entries))
+        plans = [tc.resolve(), tc.resolve(['release:fast'], 'gate'), tc.resolve(['release:full'], 'pr'),
+                 *(tc.resolve(['test:' + c]) for c in tc.CLASSES)]
+        for plan in plans:
+            with self.subTest(selected=plan['selected']):
+                self.assertEqual(tc.filterset(entries, plan['selected']),
+                                 tc.filterset(tc.partition(fixture, held={}), plan['selected']))
 
     def test_a_quarantined_test_leaves_the_fast_and_full_filters_but_its_siblings_stay(self):
         other = 'review-process::cancellation cancellation_before_spawn_cannot_execute_the_command'
