@@ -332,12 +332,13 @@ Every planned run is recorded once: `ok`, `failed`, `timeout`, `refused_document
 result is `complete` only when every run succeeded on a host observed the same at both ends,
 every cleanup was confirmed and nothing protected changed.
 
-`result/` holds `result.json` (`af.perf-telemetry-result/2`), every script's document under
+`result/` holds `result.json` (`af.perf-telemetry-result/3`), every script's document under
 `raw/<experiment>/round-<n>-<side>.json`, capped stderr under `logs/`, the offline
 `report.html`, the job summary `summary.md` and `manifest.json`. The result records:
 
-- the sources, both binaries' SHA-256, versions and build records (`af.perf-telemetry-build/1`:
-  the pinned image, `rustc -V`, `cargo -V` and the command), and the authority digest;
+- the sources, both binaries' SHA-256, versions and build records (`af.perf-telemetry-build/2`:
+  the build image as its build admission took it, a local image ID `sha256:<64 hex>` or a
+  manifest digest `name@sha256:<64 hex>` (ADR-0170), `rustc -V`, `cargo -V` and the command), and the authority digest;
 - the execution: its mode and containment, the container's image identity, runtime, CPUs and
   limits, the work and file bounds, the cleanup state, any kept work and any protected state
   that changed, and the mode's limitations in words;

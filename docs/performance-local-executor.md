@@ -478,7 +478,13 @@ regressed, then inconclusive cases (at most `max_cases`) that the trace and CPU 
 originals diagnose; a profile's parent is the aggregate. A verdict with nothing to diagnose
 leaves those lanes `not_applicable`, named in the report. Every original keeps its own record:
 a failed or uncertain one is never retried, and a lost controller makes a claimed original
-`uncertain` with the fence kept.
+`uncertain` with the fence kept. A termination signal (SIGTERM, SIGINT) to the controller during
+a shard cancels the whole controller, not only that shard: the shard seals its `interrupted`
+record, no later shard of the original and no later original starts, and the executor removes
+the original's scratch. With that cleanup and every owned descendant confirmed, the original
+ends `interrupted` with its partial evidence and the fence settles; otherwise it is `uncertain`
+and the fence stays. Either way the original is never replayed. A shard run alone, outside a
+controller, still just ends `interrupted`.
 
 `comparison-report` writes `report.json` (`af.perf-comparison-report/1`), `report.md` and
 `report.html`, prints the JSON and exits 0 only for a `complete` comparison, 4 otherwise. It

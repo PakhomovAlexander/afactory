@@ -4235,13 +4235,13 @@ def validate_enforcement(doc, where="enforcement.toml"):
 
 
 # Telemetry experiments (ADR-0214) ----------------------------------------------------------
-# af.perf-telemetry-lab/2 is fixtures/performance/telemetry.toml; af.perf-telemetry-result/2 one
+# af.perf-telemetry-lab/2 is fixtures/performance/telemetry.toml; af.perf-telemetry-result/3 one
 # experiment run of a baseline and a candidate binary on one host with this checkout's scripts
 # and fixtures; af.perf-telemetry-history/2 the compatible series across results. Advisory: no
 # verdict, sample or required check reads any of them.
 
 TELEMETRY_LAB_SCHEMA = "af.perf-telemetry-lab/2"
-TELEMETRY_RESULT_SCHEMA = "af.perf-telemetry-result/2"
+TELEMETRY_RESULT_SCHEMA = "af.perf-telemetry-result/3"
 TELEMETRY_HISTORY_SCHEMA = "af.perf-telemetry-history/2"
 # A separate immutable Actions planning artifact, emitted before any candidate execution.
 TELEMETRY_BINDING_SCHEMA = "af.perf-telemetry-binding/1"
@@ -4402,11 +4402,13 @@ def validate_telemetry_owner(doc, where="telemetry ownership"):
     return doc
 
 
-TELEMETRY_BUILD_SCHEMA = "af.perf-telemetry-build/1"
+TELEMETRY_BUILD_SCHEMA = "af.perf-telemetry-build/2"
 TELEMETRY_BUILD = Obj(
     Field("schema", Const(TELEMETRY_BUILD_SCHEMA)), Field("side", Str(enum=SIDES)),
     Field("source_sha", GIT_SHA), Field("binary_sha256", DIGEST),
-    Field("image", Str(pattern=r"^[^\s@]+@sha256:[0-9a-f]{64}$", max_len=512)),
+    # The build image exactly as its build admission took it (ADR-0170): a local image ID
+    # `sha256:<64 hex>` or a manifest digest `name@sha256:<64 hex>`, never a tag.
+    Field("image", images.REFERENCE),
     Field("rustc", Str(min_len=1, max_len=512)), Field("cargo", Str(min_len=1, max_len=512)),
     Field("command", Str(min_len=1, max_len=512)))
 
@@ -5008,7 +5010,9 @@ CONTRACTS = {
     "telemetry-build": (TELEMETRY_BUILD_SCHEMA, TELEMETRY_BUILD, validate_telemetry_build,
                         "How one side's AF binary of a telemetry experiment was built "
                         "(ADR-0215): its side, source commit, the binary's SHA-256, the "
-                        "pinned image, the toolchain identities and the command."),
+                        "build image pinned by digest in its canonical form (a local image "
+                        "ID or a manifest digest, ADR-0170), the toolchain identities and "
+                        "the command."),
     "telemetry-collector": (TELEMETRY_COLLECTOR_SCHEMA, TELEMETRY_COLLECTOR,
                             validate_telemetry_collector,
                             "The trusted telemetry collector's configuration as parsed TOML "

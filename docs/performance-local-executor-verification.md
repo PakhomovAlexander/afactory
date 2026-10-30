@@ -912,3 +912,49 @@ above used Homebrew's Rust 1.94.0, so it is not proof on the pinned 1.88.0 toolc
 established here: `make perf-kernel-measure` with the pinned Rust 1.88.0 on Claw, a full
 release comparison, telemetry, an actual trace or CPU capture of this candidate, or a portable
 verified report. The outer operator runs those.
+
+## Whole-controller cancellation and the telemetry build image ID (2026-10-30)
+
+Two integration failures of an actual Claw full comparison (`cmp_1dd3108b…`), whose failed
+evidence stays as recorded and is not replayed. The focused checks below ran on a macOS
+development host (Python 3.14) with injected computation. Nothing here ran Docker, Claw or
+GitHub Actions, and no signal was sent to any process.
+
+- **A controller's signal no longer ends only one shard** (`perflab/runner.py`,
+  `perflab/executor.py`). SIGTERM to `comparison-run` during shard 2 was consumed by the
+  shard's own handler; `execute_local` went on to shard 3 and `comparison.run` to the queued
+  telemetry original. Under a controller's lease, `run_shard` now seals the shard's
+  `interrupted` record and then raises `runner.Cancelled`. The executor removes the original's
+  scratch (`settle_cancellation`), and the cycle publishes an `interrupted` result with the
+  partial evidence and settles the fence only when every owned cleanup was confirmed, then
+  re-raises; otherwise the claim is `uncertain` and the fence stays.
+  `test_runner.ControllerCancellation` calls the handler the real shard installed: under a
+  lease it raises with the sealed record, and alone the shard returns its `interrupted`
+  record as before. `test_executor` covers the confirmed outcome, an `interrupted` original
+  that is never replayed
+  (`test_a_cancelled_shard_settles_confirmed_cleanup_interrupted_and_never_replays`), and an
+  unconfirmed cleanup that stays `uncertain` with the fence kept
+  (`test_a_cancelled_shard_with_unconfirmed_cleanup_is_uncertain_and_keeps_the_fence`).
+  `test_comparison.test_a_controller_cancelled_in_a_shard_runs_no_later_shard_or_original`
+  runs a nightly partition of shards 0 and 1 through `comparison.run`. A cancellation in
+  shard 0 leaves shard 1, the second partition and the telemetry original unstarted and
+  queued, and the next cycle claims only the second partition.
+- **A telemetry build in a local image ID** (`perflab/contracts.py`). Build admission takes
+  `sha256:<64 hex>` (ADR-0170), but the build record's image allowed only `name@sha256:…`, so
+  a comparison's telemetry original compiled both sides and was then refused at
+  `validate_telemetry_build`. The record now uses `images.REFERENCE`, the same canonical
+  authority as admission, as `af.perf-telemetry-build/2` inside `af.perf-telemetry-result/3`.
+  The previous versions are refused. A tag, a tag before a digest, an uppercase name, a short
+  or uppercase ID, and a bare hexadecimal ID are refused too.
+  `test_local_telemetry_publishes_and_verifies_an_actual_local_image_id` publishes the actual
+  ID through the executor and verifies the native result carrying it.
+  `test_telemetry_build_records_refuse_previous_versions_and_mutable_references` refuses
+  those references through `telemetry-build-record` and a `/1` record through `read_build`.
+  The golden fixtures add the local ID and each refusal.
+
+The protected harness was re-pinned from this final tree with
+`python3 -I scripts/performance/cli.py harness-digest --write` to
+`sha256:348cf76d702a1bcd1f483303207b65aec29256a300278afcd8b5f85660441805` (682 files), and
+`--check` passes. Not established here: the actual Claw full comparison and its cancellation,
+a telemetry build in the real local image, or the final head's CI. The outer operator runs
+those.

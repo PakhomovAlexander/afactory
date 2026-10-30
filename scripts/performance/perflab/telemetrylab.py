@@ -811,7 +811,7 @@ class Settings(object):
         self.scratch_owner = None
         self.uid = os.getuid()
         self.gid = os.getgid()
-        # Each side's build record (`af.perf-telemetry-build/1`, as parsed), or None.
+        # Each side's build record (`af.perf-telemetry-build/2`, as parsed), or None.
         self.builds = {"baseline": None, "candidate": None}
         self.build_paths = {}
         self.started = None
@@ -874,7 +874,7 @@ def _binary(path, name, budget=None):
 
 
 def read_build(path, side, source_sha, binary_sha256, budget=None):
-    """A side's build record (`af.perf-telemetry-build/1`), bound to that side's source and
+    """A side's build record (`af.perf-telemetry-build/2`), bound to that side's source and
     binary: refused when it names another."""
     absolute = os.path.abspath(path)
     fd, info = admission.open_confined(os.path.sep, absolute.lstrip(os.path.sep), path)

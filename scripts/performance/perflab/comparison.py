@@ -1065,7 +1065,9 @@ def run(journal_factory, ident, cycle, installed=executor.ROOT, rounds=None):
     """Drive a launched comparison to its end: advance, then one `cycle` per queued original,
     until nothing is queued and advancing submits nothing new. Each step reopens the journal,
     so `status` reads it in between; the result is the durable status, never this loop's
-    exit. `rounds` bounds the loop (default: two per declared original)."""
+    exit. `rounds` bounds the loop (default: two per declared original). A cancellation of
+    the controller (`runner.Cancelled`, a signal a shard consumed) leaves the loop as it
+    leaves the cycle that settled it: no later original of the comparison is claimed."""
     with journal_factory(True) as journal:
         doc, _, _ = load(journal, ident)
     limit = rounds or 2 * (len(doc["partitions"]) + 3) + 2

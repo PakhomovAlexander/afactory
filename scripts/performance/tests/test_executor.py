@@ -6,6 +6,7 @@ import copy
 import io
 import json
 import os
+import runpy
 import shutil
 import signal
 import subprocess
@@ -24,6 +25,8 @@ from tests.support import ROOT, TempDir, lab_repo, read
 
 LAB = os.path.join(ROOT, "scripts/performance")
 IMAGE = "registry.invalid/sample@sha256:" + "1" * 64
+# The actual local image ID a full comparison's build admitted (`docker image inspect` ID).
+LOCAL_IMAGE_ID = "sha256:4f5e1e215d31e1e7844332afa5c4585bc63cdad88ae6e0b9237ffdbdeefbc2e1"
 PRODUCER = synthetic.label_digest("installed-producer-test-only")
 # The journal root's filesystem as the admission boundary sees it: tests never depend on the
 # host's actual free space (`Journal.free_bytes`).
@@ -363,6 +366,92 @@ class Journal(ExecutorFixture):
                 mock.patch.dict(os.environ, {"HOME": self.path("private-home"), "TMPDIR": self.tmp}, clear=True):
             self.assertEqual(j.cycle(lock_directory=self.locks), "complete")
         return calls
+
+    def run_cancelled_core(self, j, request, cancel_at, cleanup_problems=()):
+        """`run_synthetic_core` whose shard `cancel_at` consumed the controller's signal:
+        the stand-in seals that shard's record and raises what `runner.run_shard` raises
+        under a lease. Returns the orchestration calls and the cancellation that left."""
+        path = j.path(request["request_id"])
+        plan = contracts.read_json(read(os.path.join(path, "plan.json")), "run")
+        staged = synthetic.write_run(plan, self.path("synthetic-" + request["request_id"]),
+            lambda slot, case: 100)
+        calls = []
+        class Builder:
+            def __init__(self, owner, plan, toolchain, **kw):
+                self.layout = SimpleNamespace(build=os.path.join(owner, "target/performance/test/build"))
+                self.plan = plan
+            def build(self):
+                calls.append("build")
+                os.makedirs(self.layout.build)
+                return synthetic.builds(self.plan)
+        def prepare(image, mount, size_bytes, **kwargs):
+            calls.append("prepare")
+            with open(image, "xb") as f:
+                f.write(b"x")
+            os.mkdir(mount)
+        def shard(options, machine_lease=None):
+            machine_lease.check()
+            calls.append("shard_%d" % options.shard)
+            target = os.path.join(options.run_dir, "shards", str(options.shard))
+            shutil.copytree(os.path.join(staged, "shards", str(options.shard)), target)
+            doc = contracts.read_file(os.path.join(target, "shard.json"), "shard")
+            if options.shard == cancel_at:
+                raise runner.Cancelled(signal.SIGTERM, doc)
+            return doc
+        def cleanup(image, mount, **kwargs):
+            calls.append("cleanup")
+            if cleanup_problems:
+                return list(cleanup_problems)
+            os.rmdir(mount)
+            os.unlink(image)
+            return []
+        with mock.patch.object(executor.builds, "Builder", Builder), \
+                mock.patch.object(executor.hostprep, "prepare", prepare), \
+                mock.patch.object(executor.hostprep, "cleanup", cleanup), \
+                mock.patch.object(executor.runner, "run_shard", shard), \
+                mock.patch.object(executor.compare, "evaluate", side_effect=AssertionError("verdict")), \
+                mock.patch.dict(os.environ, {"HOME": self.path("private-home"), "TMPDIR": self.tmp}, clear=True):
+            with self.assertRaises(runner.Cancelled) as raised:
+                j.cycle(lock_directory=self.locks)
+        return calls, raised.exception
+
+    def test_a_cancelled_shard_settles_confirmed_cleanup_interrupted_and_never_replays(self):
+        # A serial original fits one shard of this tier; later shards of one original, and
+        # later originals, are `test_comparison`'s whole-controller cancellation.
+        with executor.Journal(self.c) as j:
+            request = self.submit(j)
+            ident = request["request_id"]
+            calls, cancelled = self.run_cancelled_core(j, request, cancel_at=0)
+            self.assertEqual(calls, ["build", "prepare", "shard_0", "cleanup"],
+                             "the cancelled original's scratch is still removed")
+            self.assertEqual(j.state(ident)["state"], "interrupted")
+            result = contracts.read_file(os.path.join(j.path(ident), "result.json"), "executor-result")
+            self.assertEqual((result["status"], result["measurement_status"]),
+                             ("interrupted", "interrupted"))
+            self.assertIn("signal %d during shard 0" % signal.SIGTERM, result["detail"])
+            self.assertIn("shards none and every later original were not started", result["detail"])
+            paths = [item["path"] for item in result["evidence"]]
+            self.assertIn("run/shards/0/shard.json", paths, "the sealed partial record is kept")
+            self.assertNotIn("report/report.html", paths, "a cancelled original has no verdict")
+            self.assertEqual(cancelled.result["status"], "interrupted")
+            # The confirmed cleanup settled the fence; the original never replays.
+            hostlock.MachineLock(self.locks).release()
+            self.assertEqual(j.cycle(execute=lambda *a: self.fail("replayed original"),
+                                     lock_directory=self.locks), "idle")
+            self.assertEqual(j.state(ident)["state"], "interrupted")
+
+    def test_a_cancelled_shard_with_unconfirmed_cleanup_is_uncertain_and_keeps_the_fence(self):
+        with executor.Journal(self.c) as j:
+            request = self.submit(j)
+            calls, cancelled = self.run_cancelled_core(j, request, cancel_at=0,
+                                                       cleanup_problems=["umount exited 32"])
+            self.assertEqual(calls, ["build", "prepare", "shard_0", "cleanup"])
+            self.assertIsNone(cancelled.result)
+            self.assertIn("umount exited 32", " ".join(getattr(cancelled, "__notes__", [])))
+            self.assertEqual(j.state(request["request_id"])["state"], "uncertain")
+            self.assertFalse(os.path.exists(os.path.join(j.path(request["request_id"]), "result.json")))
+        with self.assertRaisesRegex(hostlock.Refused, "unfinished experiment"):
+            hostlock.MachineLock(self.locks)
 
     def test_core_path_uses_retained_git_native_archive_and_reports_failed_verdict(self):
         """Real local orchestration; synthetic builder/shards and filesystem stand-ins."""
@@ -952,7 +1041,57 @@ class Journal(ExecutorFixture):
             hostlock.MachineLock(self.locks)
 
     def test_local_telemetry_builds_both_sides_verifies_raw_and_keeps_separate_history(self):
+        self.run_local_telemetry(IMAGE)
+
+    def test_local_telemetry_publishes_and_verifies_an_actual_local_image_id(self):
+        """The image ID a full comparison's build admission took (ADR-0170) is the build
+        record's image as is: published by the executor after both builds and verified with
+        the native result, never rewritten into, or equated with, a manifest digest."""
+        records = self.run_local_telemetry(LOCAL_IMAGE_ID)
+        self.assertEqual([r["image"] for r in records], [LOCAL_IMAGE_ID] * 2)
+
+    def test_telemetry_build_records_refuse_previous_versions_and_mutable_references(self):
+        binary = self.path("af")
+        with open(binary, "wb") as f:
+            f.write(b"stand-in binary, never executed")
+        os.chmod(binary, 0o500)
+        cli = runpy.run_path(os.path.join(LAB, "cli.py"), run_name="af_build_record_test_cli")
+
+        def record(image, output):
+            stdout = io.TextIOWrapper(io.BytesIO(), encoding="utf-8")
+            with mock.patch.object(sys, "stdout", stdout), mock.patch.object(sys, "stderr", io.StringIO()):
+                code = cli["main"](["telemetry-build-record", "--side", "candidate",
+                    "--source-sha", self.head, "--binary", binary, "--image", image,
+                    "--rustc", "rustc 1.88.0", "--cargo", "cargo 1.88.0",
+                    "--command", "cargo build --release --locked --bin af", "--output", output])
+                stdout.flush()
+                return code, stdout.buffer.getvalue()
+
+        written = self.path("local.json")
+        self.assertEqual(record(LOCAL_IMAGE_ID, written), (0, b""))
+        doc = telemetrylab.read_build(written, "candidate", self.head, sha256_bytes(read(binary)))
+        self.assertEqual((doc["schema"], doc["image"]), ("af.perf-telemetry-build/2", LOCAL_IMAGE_ID))
+        for image in ("registry.invalid/sample:latest", "registry.invalid/sample:1.88@sha256:" + "1" * 64,
+                      "Registry.invalid/Sample@sha256:" + "1" * 64, "sha256:" + "4f5e1e215d31",
+                      "sha256:" + "A" * 64, "4f5e1e215d31e1e7844332afa5c4585bc63cdad88ae6e0b9237ffdbdeefbc2e1"):
+            with self.subTest(image=image):
+                output = self.path("refused-%d.json" % len(os.listdir(self.tmp)))
+                code, out = record(image, output)
+                self.assertEqual(code, 2)
+                self.assertEqual(json.loads(out)["reason"], "invalid_telemetry_build")
+                self.assertFalse(os.path.exists(output), "nothing is written for a refused image")
+        # The previous version fails closed, whatever image it names.
+        old = self.path("old.json")
+        with open(old, "wb") as f:
+            f.write(json.dumps(dict(doc, schema="af.perf-telemetry-build/1", image=IMAGE)).encode())
+        with self.assertRaisesRegex(ContractError, "expected af.perf-telemetry-build/2"):
+            telemetrylab.read_build(old, "candidate", self.head, doc["binary_sha256"])
+
+    def run_local_telemetry(self, build_image):
+        """One local telemetry original through the real executor, both builds and their
+        records, the native result and its verification; the build records it published."""
         self.c["core"]["cases"] = ["canonical_serialize_small"]
+        self.c["build_image"] = contracts.validate_executor(dict(self.c, build_image=build_image))["build_image"]
         with executor.Journal(self.c) as j:
             request = self.submit(j, "telemetry", "telemetry_1")
             seen = []
@@ -992,7 +1131,7 @@ class Journal(ExecutorFixture):
                 self.assertEqual(j.cycle(lock_directory=self.locks), "complete")
             self.assertEqual([i[0] for i in seen], [self.base, self.head])
             self.assertEqual(len(observed), 1)
-            self.assertTrue(all(i[1] == IMAGE and 30 < i[2] <= 4800 for i in seen))
+            self.assertTrue(all(i[1] == build_image and 30 < i[2] <= 4800 for i in seen))
             _, _, result = executor.verify_original(j, request["request_id"])
             self.assertEqual(result["measurement_status"], "complete")
             history_path = os.path.join(self.c["root"], "local-telemetry-history/history.json")
@@ -1000,6 +1139,13 @@ class Journal(ExecutorFixture):
             self.assertEqual(len(hist["results"]), 1)
             self.assertTrue(hist["results"][0]["result_id"].startswith("local_"))
             self.assertFalse(os.path.exists(os.path.join(self.c["root"], "hosted-telemetry-history")))
+            path = j.path(request["request_id"])
+            measured, _, _ = telemetrylab.verify(os.path.join(path, "run"), executor.ROOT)
+            records = [contracts.read_file(os.path.join(path, side + "-build", "build.json"),
+                                           "telemetry-build") for side in contracts.SIDES]
+            self.assertEqual([measured["binaries"][side]["build"] for side in contracts.SIDES],
+                             records, "the verified result carries the published records")
+            return records
 
 
 PROCESS = r'''

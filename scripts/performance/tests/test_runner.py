@@ -10,6 +10,7 @@ artifact changed mid-shard). No number here describes the AF product.
 import json
 import os
 import shutil
+import signal
 import subprocess
 import sys
 import time
@@ -1139,6 +1140,62 @@ class NativeSeeds(SeedHarness):
                          (SOURCE_100, "baseline", "lifecycle_violation"))
         self.assertEqual(os.listdir(self.path("scratch")), [])
         self.assertEqual(compare.compare(self.path("run"))["aggregate"]["result"], "incomplete")
+
+
+class ControllerCancellation(ShardHarness):
+    """A termination signal the shard's own handler consumes: alone, the shard just ends
+    `interrupted`; under a controller's lease it seals the same record and then raises
+    `runner.Cancelled`, so the controller's cancellation is never swallowed by one shard. The
+    handler the shard installed is invoked directly; no signal is sent to any process."""
+
+    def cancelling_clock(self, build, fired):
+        def clock():
+            if self.calls(build) >= 1 and not fired:
+                handler = signal.getsignal(signal.SIGTERM)
+                self.assertIn("Shard.run", getattr(handler, "__qualname__", ""),
+                              "only the shard's own installed handler is invoked")
+                fired.append(signal.SIGTERM)
+                handler(signal.SIGTERM, None)
+            return time.monotonic()
+        return clock
+
+    def assert_cancelled_record(self, doc, fired):
+        self.assertEqual(fired, [signal.SIGTERM])
+        self.assertEqual((doc["status"], doc["failure"]["reason"]), ("interrupted", "cancelled"))
+        self.assertGreaterEqual(doc["record_count"], 1)
+        self.assertGreater(doc["slots"]["unstarted"], 0)
+        self.assertEqual(contracts.read_file(self.path("run", "shards", "0", runner.SHARD_FILE),
+                                             "shard"), doc, "the partial record is sealed")
+        self.assertEqual(len(self.records()), doc["record_count"])
+
+    def test_a_signal_under_a_controller_lease_seals_the_shard_then_cancels_the_controller(self):
+        plan, plan_path, build = self.prepare([DISCOVERY], run_id="cancelled")
+        before = signal.getsignal(signal.SIGTERM)
+        lease = hostlock.MachineLock(self.path("locks"))
+        try:
+            lease.guard()
+            fired = []
+            with self.assertRaises(runner.Cancelled) as raised:
+                runner.run_shard(self.options(plan_path, build,
+                                              clock=self.cancelling_clock(build, fired)),
+                                 machine_lease=lease)
+            self.assertEqual(raised.exception.signum, signal.SIGTERM)
+            self.assertIsNone(raised.exception.result, "the owner settles its own outcome")
+            self.assert_cancelled_record(raised.exception.doc, fired)
+            self.assertFalse(lease.uncertain, "a confirmed sample end leaves no uncertainty")
+            self.assertIs(signal.getsignal(signal.SIGTERM), before)
+            lease.confirm_clean()
+        finally:
+            lease.release()
+
+    def test_a_standalone_shard_a_signal_ends_returns_its_interrupted_record(self):
+        plan, plan_path, build = self.prepare([DISCOVERY], run_id="alone")
+        fired = []
+        doc = runner.run_shard(self.options(plan_path, build,
+                                            clock=self.cancelling_clock(build, fired)))
+        self.assert_cancelled_record(doc, fired)
+        # Its own confirmed cleanup settled its own lock: the next shard may run.
+        hostlock.MachineLock(self.path("locks")).release()
 
 
 class RunDeadline(ShardHarness):

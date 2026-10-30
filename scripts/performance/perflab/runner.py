@@ -37,7 +37,8 @@ reply, a changed binary, a scratch filesystem not restored exactly, or container
 than the environment's stop the shard (`failed`); the sampling or total deadline, checked
 against each sample's worst case before it starts, or a termination signal ends it
 (`interrupted`). Slots never started are counted as unstarted; nothing is recorded for them, so
-the comparator reports them missing and the run incomplete.
+the comparator reports them missing and the run incomplete. A signal a shard consumed while a
+controller owned it cancels that controller too (`Cancelled`), after the terminal record.
 """
 from fractions import Fraction
 import os
@@ -110,6 +111,20 @@ class Unavailable(ContractError):
         ContractError.__init__(self, detail)
         self.reason = reason
         self.cleanup_confirmed = cleanup_confirmed
+
+
+class Cancelled(KeyboardInterrupt):
+    """A termination signal the shard consumed while a controller owned it (`machine_lease`):
+    the shard stopped and sealed its terminal record (`doc`), and the cancellation is the
+    controller's, so it goes on to its caller instead of ending one shard only. `result` is
+    the owner's terminal outcome once it confirmed its own cleanup; None while unsettled."""
+
+    def __init__(self, signum, doc):
+        KeyboardInterrupt.__init__(self, "local controller cancelled by signal %d during "
+                                   "shard %d" % (signum, doc["shard"]))
+        self.signum = signum
+        self.doc = doc
+        self.result = None
 
 
 class Stop(Exception):
@@ -1615,7 +1630,8 @@ def run_shard(options, machine_lease=None):
 
     The machine lock is taken before anything shared is touched (the run directory, the
     scratch filesystem's enforcement fill, a container) and held until the terminal evidence
-    is written, whatever happens."""
+    is written, whatever happens. A standalone shard a termination signal ended returns its
+    `interrupted` record; under a controller's lease it raises `Cancelled` with that record."""
     lock = machine_lock(options.lock_directory, lease=machine_lease)
     try:
         if machine_lease is None:
@@ -1626,6 +1642,10 @@ def run_shard(options, machine_lease=None):
             lock.mark_uncertain()
         if machine_lease is None and not shard.retained and not shard.seed_cleanup:
             lock.confirm_clean()
+        if machine_lease is not None and shard.interrupted is not None:
+            # The signal was the owning controller's: its record is sealed and its cleanup
+            # stated in the lease, and no later shard or original of that controller starts.
+            raise Cancelled(shard.interrupted, doc)
         return doc
     except Unavailable as error:
         # Constructor refusal precedes all candidate launches. Its preflight subprocesses

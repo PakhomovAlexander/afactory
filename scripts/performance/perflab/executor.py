@@ -871,11 +871,19 @@ class Journal:
                 lock.guard()
             started = state["started_unix_ms"]
             terminal = budget.Budget(time.monotonic() + frozen_config["run_seconds"], time.monotonic, 0)
+            cancelled = None
             try:
                 operation = execute or execute_local
                 if request["backend"] == "local":
                     require(transport is None, "local execution refuses an Actions transport")
-                    result = operation(frozen_config, request, self.path(ident), lock, installed)
+                    try:
+                        result = operation(frozen_config, request, self.path(ident), lock, installed)
+                    except runner.Cancelled as error:
+                        # A cancellation whose owned cleanup was confirmed ends this original
+                        # interrupted, then goes on: nothing later of this controller runs.
+                        if error.result is None:
+                            raise
+                        result, cancelled = error.result, error
                 else:
                     result = dispatch_actions(frozen_config, request, self.path(ident), transport)
                 with terminal.enforce("publishing executor terminal evidence"):
@@ -893,7 +901,8 @@ class Journal:
                     # Terminal evidence precedes release; uncertainty never settles a fence.
                     if lock is not None and result["status"] != "uncertain":
                         lock.confirm_clean()
-                return result["status"]
+                if cancelled is None:
+                    return result["status"]
             except BaseException as error:
                 # Claims never replay, including an ambiguous remote handoff or publication.
                 try:
@@ -910,6 +919,8 @@ class Journal:
                 except BaseException as recording:
                     add_note(error, "uncertainty publication unconfirmed; retain original claim: %s" % recording)
                 raise
+            # Its terminal record is published and its fence settled; the cancellation goes on.
+            raise cancelled
         finally:
             if lock is not None:
                 lock.release()
@@ -1121,6 +1132,10 @@ def execute_local(config, request, path, lease, installed=ROOT):
                     # No candidate launched; absent shard remains incomplete, never a pass.
                     require(not lease.uncertain, "preflight scratch cleanup is uncertain")
                     continue
+                except runner.Cancelled as cancelled:
+                    raise settle_cancellation(cancelled, plan, partition, path, lease, terminal,
+                                              lambda: hostprep.cleanup(scratch_image, scratch,
+                                                                       host=preparation_host))
                 require(not lease.uncertain, "owned shard cleanup is uncertain")
                 if doc["failure"] and doc["failure"]["reason"] in (
                         "cleanup_uncertain", "seed_cleanup_failed"):
@@ -1246,6 +1261,38 @@ def execute_local(config, request, path, lease, installed=ROOT):
         evidence = file_manifest(path, EVIDENCE_PREFIXES, terminal)
     return {"status": "complete", "measurement_status": measurement, "evidence": evidence,
             "actions": None, "detail": "Advisory local measurement; original evidence retained. No required-check claim."}
+
+
+def settle_cancellation(cancelled, plan, partition, path, lease, terminal, cleanup):
+    """The controller's cancellation a shard consumed (`runner.Cancelled`), after this
+    original's owned scratch cleanup: with every cleanup confirmed it carries the original's
+    `interrupted` outcome, its sealed partial evidence kept and no later shard started; with
+    any unconfirmed it carries none, so the claim turns uncertain and the fence stays."""
+    if lease.uncertain:
+        add_note(cancelled, "owned shard cleanup is uncertain; retained original fence")
+        return cancelled
+    try:
+        with terminal.enforce("cleaning local scratch after cancellation"):
+            problems = cleanup()
+    except Exception as error:  # noqa: BLE001 - kept on the cancellation, never swallowed
+        problems = ["%s: %s" % (type(error).__name__, error)]
+    if problems:
+        add_note(cancelled, "scratch cleanup unconfirmed; retained original fence: "
+                 + "; ".join(problems)[:2048])
+        return cancelled
+    index = cancelled.doc["shard"]
+    owned = [s["index"] for s in plan["shards"]
+             if partition is None or s["index"] in partition["shards"]]
+    later = [i for i in owned if i > index]
+    with terminal.enforce("sealing cancelled local evidence"):
+        evidence = file_manifest(path, EVIDENCE_PREFIXES, terminal)
+    cancelled.result = {
+        "status": "interrupted", "measurement_status": "interrupted", "evidence": evidence,
+        "actions": None, "detail": (
+            "cancelled by signal %d during shard %d: its sealed record is kept, shards %s and "
+            "every later original were not started; cleanup confirmed. No verdict." % (
+                cancelled.signum, index, ", ".join(map(str, later)) or "none"))[:4096]}
+    return cancelled
 
 
 def partition_authority(plan, partition, request_id, builds_bytes, built, started_unix_ms):

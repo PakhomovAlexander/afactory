@@ -8,6 +8,7 @@ import copy
 import io
 import os
 import shutil
+import signal
 from types import SimpleNamespace
 from unittest import mock
 
@@ -55,6 +56,9 @@ class Comparison(ExecutorFixture):
         return comparison.preflight(j, self.base, head or self.head, key, launch=True)
 
     def run_partition(self, j, staged, calls):
+        return self.run_partition_with(staged, calls, lambda: j.cycle(lock_directory=self.locks))
+
+    def run_partition_with(self, staged, calls, operation):
         class Builder:
             def __init__(self, owner, plan, toolchain, **kw):
                 self.layout = SimpleNamespace(build=os.path.join(
@@ -89,7 +93,7 @@ class Comparison(ExecutorFixture):
                 mock.patch.object(executor.hostprep, "cleanup", cleanup), \
                 mock.patch.object(executor.runner, "run_shard", shard), \
                 mock.patch.dict(os.environ, {"HOME": self.path("home"), "TMPDIR": self.tmp}):
-            return j.cycle(lock_directory=self.locks)
+            return operation()
 
     def staged(self, j, ident):
         doc, plan, _ = comparison.load(j, ident)
@@ -407,6 +411,63 @@ class Comparison(ExecutorFixture):
         with self.assertRaisesRegex(ContractError, "sealed run is not bundled"):
             comparison.verify_export(forge(lambda root: shutil.rmtree(os.path.join(root,
                                                                                    first))))
+
+    def test_a_controller_cancelled_in_a_shard_runs_no_later_shard_or_original(self):
+        """SIGTERM to `comparison-run` during a shard: the runner's handler consumed it and
+        sealed the shard (`runner.Cancelled`, what `run_shard` raises under the controller's
+        lease). The partition's later shard, the next partition and the queued telemetry
+        original never start; the cancelled partition ends interrupted with its partial
+        evidence and a settled fence, and is never replayed."""
+        # The nightly tier's 120-minute original holds two 45-minute shards after its build.
+        self.c["core"].update(tier="nightly", environment="linux_x86_64_musl_claw", shards=3)
+        self.c["zigbuild_bin"] = "/opt/zig/bin"
+        with executor.Journal(self.c) as j:
+            launched = self.launch(j)
+            self.assertEqual(launched["status"], "launched", launched["detail"])
+            doc = launched["comparison"]
+            ident = doc["comparison_id"]
+            partitions = [p["request_id"] for p in doc["partitions"]]
+            self.assertEqual([p["shards"] for p in doc["partitions"]][0], [0, 1])
+            staged = self.staged(j, ident)
+        calls = []
+
+        def cancel_in_first_shard(original):
+            def shard(options, machine_lease=None):
+                doc = original(options, machine_lease)
+                if options.shard == 0:
+                    raise executor.runner.Cancelled(signal.SIGTERM, doc)
+                return doc
+            return shard
+
+        def cycle(journal):
+            real = executor.runner.run_shard
+            with mock.patch.object(executor.runner, "run_shard", cancel_in_first_shard(real)):
+                return journal.cycle(lock_directory=self.locks)
+
+        def journal(readonly):
+            return executor.Journal(self.c, readonly=readonly)
+
+        with mock.patch.object(executor.compare, "evaluate", side_effect=AssertionError("verdict")):
+            with self.assertRaises(executor.runner.Cancelled):
+                self.run_partition_with(staged, calls, lambda: comparison.run(journal, ident, cycle))
+        self.assertEqual(calls, ["build", "shard_0"], "no later shard of the partition")
+        with executor.Journal(self.c, readonly=True) as j:
+            states = [j.state(i)["state"] for i in partitions + [doc["telemetry"]["request_id"]]]
+            self.assertEqual(states, ["interrupted"] + ["queued"] * (len(states) - 1),
+                             "no later partition or queued telemetry original was claimed")
+            result = contracts.read_file(os.path.join(j.path(partitions[0]), "result.json"),
+                                         "executor-result")
+            self.assertIn("shards 1 and every later original were not started", result["detail"])
+            self.assertIn("run/shards/0/shard.json", [e["path"] for e in result["evidence"]])
+        # The fence settled on confirmed cleanup; the interrupted original never replays.
+        executor.hostlock.MachineLock(self.locks).release()
+        with executor.Journal(self.c) as j:
+            claimed = []
+            self.assertEqual(j.cycle(lock_directory=self.locks, execute=lambda c, request, *a: (
+                claimed.append(request["request_id"]) or self.stand_in("pass")(c, request, *a))),
+                "complete")
+            self.assertEqual(claimed, [partitions[1]])
+            self.assertEqual(j.state(partitions[0])["state"], "interrupted")
 
     def test_failed_partition_and_lost_controller_leave_the_family_incomplete(self):
         """A claimed partition whose controller was lost becomes uncertain and is never

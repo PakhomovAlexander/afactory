@@ -1989,6 +1989,20 @@
       "shape": true
     },
     {
+      "path": "telemetry-build/invalid-tagged-digest.json",
+      "contract": "telemetry-build",
+      "valid": false,
+      "error": "does not match",
+      "shape": true
+    },
+    {
+      "path": "telemetry-build/invalid-truncated-image-id.json",
+      "contract": "telemetry-build",
+      "valid": false,
+      "error": "does not match",
+      "shape": true
+    },
+    {
       "path": "telemetry-build/invalid-unpinned-image.json",
       "contract": "telemetry-build",
       "valid": false,
@@ -1996,7 +2010,26 @@
       "shape": true
     },
     {
+      "path": "telemetry-build/invalid-uppercase-name.json",
+      "contract": "telemetry-build",
+      "valid": false,
+      "error": "does not match",
+      "shape": true
+    },
+    {
+      "path": "telemetry-build/invalid-version.json",
+      "contract": "telemetry-build",
+      "valid": false,
+      "error": "expected af.perf-telemetry-build/2",
+      "shape": true
+    },
+    {
       "path": "telemetry-build/valid-candidate.json",
+      "contract": "telemetry-build",
+      "valid": true
+    },
+    {
+      "path": "telemetry-build/valid-local-image-id.json",
       "contract": "telemetry-build",
       "valid": true
     },
@@ -2592,7 +2625,7 @@
       "path": "telemetry-result/invalid-version.json",
       "contract": "telemetry-result",
       "valid": false,
-      "error": "expected af.perf-telemetry-result/2",
+      "error": "expected af.perf-telemetry-result/3",
       "shape": true
     },
     {

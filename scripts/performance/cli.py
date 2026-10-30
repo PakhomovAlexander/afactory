@@ -861,7 +861,7 @@ def cmd_telemetry_verify(args):
 
 
 def cmd_telemetry_build_record(args):
-    """Write one side's build record (`af.perf-telemetry-build/1`) beside its binary."""
+    """Write one side's build record (`af.perf-telemetry-build/2`) beside its binary."""
     try:
         doc = {"schema": contracts.TELEMETRY_BUILD_SCHEMA, "side": args.side,
                "source_sha": args.source_sha,
@@ -1809,7 +1809,7 @@ def parser():
     telemetry_run.add_argument("--scratch-owner", help="linux_container: trusted ownership "
                                "directory created by ci-scratch --telemetry-owner")
     telemetry_run.add_argument("--baseline-build", help="the baseline's build record "
-                               "(af.perf-telemetry-build/1)")
+                               "(af.perf-telemetry-build/2)")
     telemetry_run.add_argument("--candidate-build", help="the candidate's build record")
     telemetry_run.set_defaults(handler=cmd_telemetry_run)
 
@@ -1854,7 +1854,9 @@ def parser():
     telemetry_build.add_argument("--side", required=True, choices=("baseline", "candidate"))
     telemetry_build.add_argument("--source-sha", required=True)
     telemetry_build.add_argument("--binary", required=True)
-    telemetry_build.add_argument("--image", required=True)
+    telemetry_build.add_argument("--image", required=True,
+                                 help="the build image pinned by digest: sha256:<image ID> "
+                                 "or name@sha256:<manifest digest>, without a tag")
     telemetry_build.add_argument("--rustc", required=True)
     telemetry_build.add_argument("--cargo", required=True)
     telemetry_build.add_argument("--command", dest="command_text", required=True)
