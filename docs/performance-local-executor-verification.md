@@ -1778,3 +1778,76 @@ full 33-case `6d8208d` comparison and its offline verification remain that produ
 evidence, and nothing here changes them. The integration running on Claw for `4caf525f`, its
 final evidence and the final head's CI belong to the outer operator, after this change is
 adopted.
+
+## The aggregate names its declaration and includes every admitted partition (2026-10-30)
+
+`aggregate_claims` checked admission only for partition entries the aggregate marked
+`included`. It did not compare the aggregate's `comparison_id` or `plan_sha256` with the
+declaration. So an aggregate with only those identity fields changed, or one that marked a
+complete, admitted partition `refused` and dropped its shards, still derived a verified
+report. The diagnostic children submitted under it carried matching parent receipts.
+
+`aggregate_claims` now requires the aggregate's `comparison_id` and `plan_sha256` to equal the
+declaration's. It derives each partition entry from the original, as `aggregate` writes it:
+
+- The original's state must be terminal.
+- A partition is included and `verified` exactly when its original is this comparison's member
+  (`_binding`), complete, among the admitted originals, and, for a later partition, carries
+  its declared execution window (`_window`).
+- Otherwise the entry is `refused` when the original is complete and `not_complete` when it is
+  not, and it is never included.
+
+Both directions are checked: an included entry that does not derive is refused as before, and
+an excluded entry that derives is refused with `the aggregate excludes partition N, whose
+original … is this comparison's admitted complete member`. The run's shards are checked
+against the derived inclusion. An incomplete, foreign or unadmitted partition still reports
+honestly as incomplete. `comparison-status` (`verify` absent) is unchanged and verifies
+nothing. Schemas, the writer, shard and verdict checks and persisted shapes do not change.
+
+**Tests.** In `tests.test_comparison`:
+
+- `Comparison.test_an_aggregate_of_another_identity_or_excluding_an_admitted_partition_is_refused`
+  uses three fresh journals. In each, the real aggregate is rewritten before `advance` submits
+  the lanes, so both profiles' parent receipts name the rewritten bytes:
+  - the comparison ID alone changed;
+  - the plan digest alone changed;
+  - the writer run again with the admitted later partition reported refused, which drops its
+    shard from the family's run and re-evaluates its verdict.
+
+  Each time, `cli.py executor comparison-report` and `comparison-export` exit 4 with core,
+  trace and CPU lanes failed, verification `refused` and the guard's reason. The exported
+  bundle passes `comparison-verify` (exit 0, `incomplete`), and `verify_export` derives exactly
+  the journal's report. Then the excluded partition's sealed verdict is changed, so it is
+  genuinely not admitted. The same aggregate bytes then report without an aggregate refusal:
+  `core partition 1 … is complete, refused`.
+- `Comparison.test_failed_partition_and_lost_controller_leave_the_family_incomplete` now also
+  checks that the verified report of an uncertain and a failed partition is `incomplete` and
+  `verified`, with no aggregate refusal.
+
+Each guard was mutated alone in the candidate, and the new test was run against each mutant:
+
+- comparison-identity check removed: the comparison-ID variant fails;
+- plan conjunct removed: the plan variant fails;
+- exclusion and verification derivation removed, with inclusion taken from the entry as
+  before: the exclusion variant fails.
+
+Each mutant failed with `('incomplete', 'verified', 'failed', 'complete', 'complete') !=
+('incomplete', 'refused', 'failed', 'failed', 'failed')`. Those runs took 12.4 s, 23.5 s and
+40.3 s. The candidate was restored byte for byte, and its digest was checked.
+
+**Focused validation of this candidate.** Run by this Task's implementer at the repository
+root, offline, with Python 3.14.7, no benchmark, Docker, perf or network, on 2026-10-30 from
+17:09:40 to 17:14:56 UTC:
+
+```sh
+python3.14 -I -B -c 'import sys,unittest; sys.path.insert(0,"scripts/performance"); suite=unittest.defaultTestLoader.loadTestsFromNames(["tests.test_comparison","tests.test_report_diagnostics"]); result=unittest.TextTestRunner(verbosity=1).run(suite); raise SystemExit(not result.wasSuccessful())'
+```
+
+`tests.test_comparison` and `tests.test_report_diagnostics`: 50 tests, `OK`, 315.765 seconds
+on a shared host, exit 0. That is 49 tests before this change plus the new one. Alone, the new
+test took 36.7 s. `python3.14 -I -B scripts/performance/cli.py harness-digest --write`
+re-pinned the protected harness after the last protected edit, to
+`sha256:1e472f28ae1edece3a9fec7bd899579683aca2b3524f688dbb2ed690ea6f510e`, and `--check`
+exits 0. No commit SHA, CI run or VM execution of this candidate exists, and none is claimed.
+The full 33-case `6d8208d` comparison and the cancelled `4caf525f` integration keep their
+recorded status. This change produces no new comparison evidence.

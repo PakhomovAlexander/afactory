@@ -1366,32 +1366,58 @@ def _admit(view, ident, installed):
 
 
 def aggregate_claims(view, doc, agg, admitted):
-    """The aggregate's claims derived again, in a journal or a copied bundle (`Bundled`): each
-    partition entry is its original's state and sealed result, included exactly when that
-    original is this comparison's member and among the `admitted` originals; the family's run
-    holds exactly the included partitions' shards, byte for byte, on the first partition's
-    build, and evaluated again reproduces its verdict (`_same_verdict`); and its result,
-    coverage and regressions are that verdict's. An aggregate that judged nothing claims
-    nothing. Raises naming the first claim that is not derived."""
+    """The aggregate's claims derived again, in a journal or a copied bundle (`Bundled`): it
+    names exactly the declaration's comparison and frozen plan; each partition entry is its
+    original's terminal state and sealed result, included and `verified` exactly when that
+    original is this comparison's complete member, among the `admitted` originals and, for a
+    later partition, carries its declared execution window (`_window`), as `aggregate`
+    writes it; otherwise `refused` when complete and `not_complete` when not, never included;
+    the family's run holds exactly the included partitions' shards, byte for byte, on the
+    first partition's build, and evaluated again reproduces its verdict (`_same_verdict`);
+    and its result, coverage and regressions are that verdict's. An aggregate that judged
+    nothing claims nothing. Raises naming the first claim that is not derived."""
     if agg is None:
         return
     where = "the aggregate"
+    require(agg["comparison_id"] == doc["comparison_id"]
+            and agg["plan_sha256"] == doc["plan_sha256"],
+            "%s names comparison %s and plan %s, not its declaration's %s and %s"
+            % (where, agg["comparison_id"], agg["plan_sha256"], doc["comparison_id"],
+               doc["plan_sha256"]))
     require([p["index"] for p in agg["partitions"]] == [p["index"] for p in doc["partitions"]],
             "%s does not state every declared partition" % where)
     included = []
     for item, entry in zip(doc["partitions"], agg["partitions"]):
         state = _state(view, item["request_id"])
-        require(state is not None and entry["request_id"] == item["request_id"]
+        require(state is not None and state["state"] in executor.TERMINAL
+                and entry["request_id"] == item["request_id"]
                 and entry["shards"] == item["shards"] and entry["state"] == state["state"]
                 and entry["result_sha256"] == state["result_sha256"],
                 "%s's partition %d is not its original" % (where, item["index"]))
-        if entry["included"]:
-            why = _binding(view, doc, view.request(item["request_id"]), "core", item["key"],
-                           _partition(doc, item))
-            require(why is None, "%s includes partition %d, which is not this comparison's "
-                    "member: %s" % (where, item["index"], why))
-            require(item["request_id"] in admitted, "%s includes partition %d, whose original "
-                    "%s is not admitted" % (where, item["index"], item["request_id"]))
+        why = _binding(view, doc, view.request(item["request_id"]), "core", item["key"],
+                       _partition(doc, item))
+        complete = state["state"] == "complete"
+        if why is not None:
+            why = "which is not this comparison's member: %s" % why
+        elif not complete:
+            why = "whose original is %s" % state["state"]
+        elif item["request_id"] not in admitted:
+            why = "whose original %s is not admitted" % item["request_id"]
+        else:
+            try:
+                _window(view, doc, item)
+            except (ContractError, OSError) as error:
+                why = "whose execution window is refused: %s" % str(error)[:512]
+        require(not entry["included"] or why is None, "%s includes partition %d, %s"
+                % (where, item["index"], why))
+        require(entry["included"] or why is not None, "%s excludes partition %d, whose "
+                "original %s is this comparison's admitted complete member" % (
+                    where, item["index"], item["request_id"]))
+        verification = ("verified" if why is None else "refused" if complete
+                        else "not_complete")
+        require(entry["verification"] == verification, "%s states partition %d %s, not its "
+                "derived %s" % (where, item["index"], entry["verification"], verification))
+        if why is None:
             included.append(item)
     if agg["verdict_sha256"] is None:
         require(not agg["partitions"][0]["included"], "%s judged nothing over a verified "

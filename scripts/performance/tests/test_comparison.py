@@ -802,6 +802,132 @@ class Comparison(ExecutorFixture):
         # The copied bundle derives exactly the journal's report.
         self.assertEqual(offline, local)
 
+    def test_an_aggregate_of_another_identity_or_excluding_an_admitted_partition_is_refused(self):
+        """In a fresh journal each, the real aggregate rewritten before `advance` submits the
+        lanes, so both profiles' parent receipts name the rewritten bytes: its comparison ID or
+        frozen plan digest alone changed, or the writer run again with the admitted later
+        partition reported refused, which drops its shards and re-evaluates the family's
+        verdict, coverage and regressions over the first partition alone. `comparison-report`
+        and `comparison-export` exit 4 with the aggregate refused, and the bundle's offline
+        derivation, through `comparison-verify`, is that same report. The excluded partition
+        made genuinely unadmitted (its sealed evidence changed) turns the same aggregate bytes
+        honest: incomplete with that partition's own refusal, never an aggregate refusal."""
+        real = executor.verify_original
+
+        def admitted(journal, ident, installed=executor.ROOT):
+            if journal.request(ident)["work"] == "core":
+                return real(journal, ident, installed)
+            return self.verify(journal, ident, installed)
+
+        def other_comparison(j, doc, agg):
+            return dict(agg, comparison_id=doc["comparison_id"][:-1] + (
+                "0" if doc["comparison_id"][-1] != "0" else "1"))
+
+        def other_plan(j, doc, agg):
+            return dict(agg, plan_sha256="sha256:" + "0" * 64)
+
+        def excluded(j, doc, agg):
+            later = doc["partitions"][1]["request_id"]
+
+            def refuse(journal, ident, installed=executor.ROOT):
+                if ident == later:
+                    raise ContractError("a forged refusal of an admitted partition")
+                return real(journal, ident, installed)
+            shutil.rmtree(os.path.join(comparison.directory(j, doc["comparison_id"]),
+                                       "aggregate"))
+            with mock.patch.object(executor, "verify_original", refuse):
+                forged = comparison.aggregate(j, doc, *comparison.load(j, doc["comparison_id"])[1:])
+            self.assertEqual([(p["verification"], p["included"]) for p in forged["partitions"]],
+                             [("verified", True), ("refused", False)])
+            # The partition's shards left the family's run, re-evaluated to another verdict.
+            self.assertEqual(os.listdir(os.path.join(comparison.directory(
+                j, doc["comparison_id"]), "aggregate", "run", "shards")), ["0"])
+            self.assertNotEqual(forged["verdict_sha256"], agg["verdict_sha256"])
+            return None
+        import cli
+        variants = (
+            (other_comparison, "the aggregate names comparison cmp_"),
+            (other_plan, "the aggregate names comparison %s and plan sha256:" + "0" * 64),
+            (excluded, "the aggregate excludes partition 1, whose original %s is this "
+             "comparison's admitted complete member"))
+        telemetry = self.telemetry_stand_in()
+        for index, (edit, needle) in enumerate(variants):
+            self.c = dict(self.c, root=self.path("journal-%d" % index))
+            shutil.rmtree(self.path("synthetic"), ignore_errors=True)
+            with executor.Journal(self.c) as j:
+                launched = self.launch(j)
+                self.assertEqual(launched["status"], "launched", launched["detail"])
+                doc = launched["comparison"]
+                ident = doc["comparison_id"]
+                needle = needle.replace("%s", doc["partitions"][1]["request_id"]
+                                        if edit is excluded else ident)
+                staged, calls = self.staged(j, ident), []
+                for _ in range(2):
+                    self.assertEqual(self.run_partition(j, staged, calls), "complete")
+                self.assertEqual(j.cycle(lock_directory=self.locks, execute=telemetry),
+                                 "complete")
+                agg = comparison.aggregate(j, doc, *comparison.load(j, ident)[1:])
+                self.assertTrue(all(p["included"] for p in agg["partitions"]))
+                changed = edit(j, doc, agg)
+                if changed is not None:
+                    write_json(os.path.join(comparison.directory(j, ident), "aggregate",
+                                            "aggregate.json"), changed, "comparison-aggregate")
+                comparison.advance(j, ident)
+                _, altered = comparison.read_aggregate(j, doc)
+                for lane in doc["diagnostics"]:
+                    self.assertEqual(j.request(lane["request_id"])["parent"]["result_sha256"],
+                                     sha256_bytes(altered))
+                self.run_profiles(j)
+            output, bundle = self.path("report-%d" % index), self.path("bundle-%d" % index)
+            with mock.patch.object(overview, "_telemetry", lambda path: (
+                    {"required": 3, "observed": 3, "failed": 0, "missing": 0},
+                    {"verdict": "pass", "regressions": []}, "complete")), \
+                    mock.patch.object(executor, "verify_original", admitted), \
+                    mock.patch.object(executor, "load_config", return_value=self.c), \
+                    mock.patch.object(comparison.report, "admit_children", lambda *a: None):
+                with mock.patch("sys.stdout", new=SimpleNamespace(buffer=io.BytesIO(),
+                                                                  flush=lambda: None)):
+                    for argv in (["comparison-report", "--output", output],
+                                 ["comparison-export", "--output", bundle]):
+                        self.assertEqual(cli.main(["executor", "--config", "operator.toml"]
+                                                  + argv + ["--comparison", ident]),
+                                         cli.EXIT_UNAVAILABLE, argv[0])
+                with mock.patch("sys.stdout", new=io.StringIO()) as printed:
+                    self.assertEqual(cli.main(["executor", "comparison-verify", "--bundle",
+                                               bundle]), 0)
+                _, offline = comparison.verify_export(bundle)
+                local = contracts.read_file(os.path.join(output, "report.json"),
+                                            "comparison-report")
+                lanes = dict((lane["lane"], lane["state"]) for lane in local["lanes"])
+                self.assertEqual((local["status"], local["verification"], lanes["core"],
+                                  lanes["trace"], lanes["cpu_profile"]),
+                                 ("incomplete", "refused", "failed", "failed", "failed"), needle)
+                self.assertTrue(any(reason.startswith("core aggregate refused: " + needle)
+                                    for reason in local["reasons"]), local["reasons"])
+                self.assertIn('"comparison": "incomplete"', printed.getvalue())
+                self.assertEqual(offline, local)
+                if edit is not excluded:
+                    continue
+                # The same aggregate bytes once the partition is genuinely not admitted.
+                with executor.Journal(self.c, readonly=True) as j:
+                    target = os.path.join(j.path(doc["partitions"][1]["request_id"]),
+                                          "report", "verdict.json")
+                with open(target, "ab") as f:
+                    f.write(b" ")
+                honest = self.path("honest-report")
+                with mock.patch("sys.stdout", new=SimpleNamespace(buffer=io.BytesIO(),
+                                                                  flush=lambda: None)):
+                    self.assertEqual(cli.main(["executor", "--config", "operator.toml",
+                                               "comparison-report", "--output", honest,
+                                               "--comparison", ident]), cli.EXIT_UNAVAILABLE)
+            shown = contracts.read_file(os.path.join(honest, "report.json"), "comparison-report")
+            self.assertFalse([reason for reason in shown["reasons"]
+                              if reason.startswith("core aggregate refused")], shown["reasons"])
+            self.assertIn("core partition 1 (%s) is complete, refused: its shards [1] are "
+                          "missing records, not passed" % doc["partitions"][1]["request_id"],
+                          shown["reasons"])
+            self.assertEqual(shown["performance"]["core_verdict"], "incomplete")
+
     def assert_trace_lane_needs_both_complete_sides(self, ident, doc, plan, bundle, complete,
                                                     forge):
         """A missing side, a side's omission, a partial and a setup-only (`region_missing`)
@@ -1087,6 +1213,16 @@ class Comparison(ExecutorFixture):
             self.assertEqual(sorted(j.names()), sorted(
                 [p["request_id"] for p in doc["partitions"]] + [doc["telemetry"]["request_id"]]),
                 "no profile is submitted without a verified aggregate")
+            # Neither partition complete, so neither is included: the verified report
+            # derives this aggregate's claims and keeps it honestly incomplete.
+            with mock.patch.object(overview, "_telemetry", lambda path: (
+                    {"required": 3, "observed": 3, "failed": 0, "missing": 0},
+                    {"verdict": "pass", "regressions": []}, "complete")):
+                verified = comparison.status(j, ident, verify=self.verify)
+        self.assertEqual((verified["status"], verified["verification"]),
+                         ("incomplete", "verified"), verified["reasons"])
+        self.assertFalse([reason for reason in verified["reasons"]
+                          if reason.startswith("core aggregate refused")])
         self.assertEqual(advanced["status"], "incomplete")
         lanes = dict((lane["lane"], lane["state"]) for lane in advanced["lanes"])
         self.assertEqual((lanes["core"], lanes["trace"], lanes["cpu_profile"]),
