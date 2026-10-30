@@ -300,6 +300,36 @@ def refuse_implicit_volumes(docker, reference, budget=None):
     require(volumes in (None, {}), "bounded build image declares implicit writable volumes")
 
 
+def image_identity(stdout, reference, role):
+    """The five fields of a build image's `docker image inspect` identity, each of its shape:
+    the ID, OS and architecture as strings and the repository digests and environment as lists
+    of strings or null. Anything else is a typed `build_image_malformed` refusal, raised before
+    the caller creates any resource."""
+    def malformed(why):
+        return Unavailable("build_image_malformed", "docker image inspect gave a malformed "
+                           "identity for the %s %s: %s" % (role, reference, why))
+    if len(stdout) > limits.RECORD_BYTES_MAX:
+        raise malformed("it exceeds its byte bound")
+    fields = stdout.decode("utf-8", "replace").strip().split("\t")
+    if len(fields) != 5:
+        raise malformed("%d fields, not 5" % len(fields))
+    values = []
+    for name, field in zip(("ID", "OS", "architecture", "repository digests", "environment"),
+                           fields):
+        try:
+            values.append(json.loads(field))
+        except ValueError:
+            raise malformed("its %s is not JSON" % name)
+    for name, value in zip(("ID", "OS", "architecture"), values[:3]):
+        if not isinstance(value, str) or not value:
+            raise malformed("its %s is not a non-empty string" % name)
+    for name, value in zip(("repository digests", "environment"), values[3:]):
+        if value is not None and not (isinstance(value, list)
+                                      and all(isinstance(item, str) for item in value)):
+            raise malformed("its %s is not a list of strings" % name)
+    return values
+
+
 class BuildImage:
     """A build image pinned by digest and present locally, run as this user."""
 
@@ -328,9 +358,8 @@ class BuildImage:
             raise Unavailable("build_image_unavailable", "the %s %s is not present "
                               "on this host (builds never pull): %s" % (
                                   role, reference, _first_line(result.stderr)))
-        fields = result.stdout.decode("utf-8", "replace").strip().split("\t")
-        require(len(fields) == 5, "docker image inspect gave no identity for %s" % reference)
-        self.id, image_os, arch, repo_digests, image_env = [json.loads(f) for f in fields]
+        self.id, image_os, arch, repo_digests, image_env = image_identity(
+            result.stdout, reference, role)
         if reference.startswith("sha256:"):
             require(self.id == reference, "the %s ID is %s, not %s" % (role, self.id,
                                                                        reference))

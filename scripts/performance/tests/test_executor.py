@@ -1107,13 +1107,13 @@ class ImageAdmission(ExecutorFixture):
             patcher.start()
             self.addCleanup(patcher.stop)
 
-    def docker(self, *present, lingering=None, volumes=None):
+    def docker(self, *present, lingering=None, volumes=None, identity=None):
         """Route every image admission to a stand-in docker client holding `present`."""
         self.docker_dirs += 1
         directory = self.path("docker-%d" % self.docker_dirs)
         images = {reference: ("sha256:" + "%d" % index * 64, self.env, [reference])
                   for index, reference in enumerate(present, 3)}
-        docker = build_fixtures.fake_docker(directory, images, lingering, volumes)
+        docker = build_fixtures.fake_docker(directory, images, lingering, volumes, identity)
         patcher = mock.patch.object(executor, "image_admission", lambda config, recipes:
                                     REAL_IMAGE_ADMISSION(config, recipes, docker=docker))
         patcher.start()
@@ -1203,6 +1203,31 @@ class ImageAdmission(ExecutorFixture):
                     with self.assertRaisesRegex(ContractError, "image volume declaration|"
                                                 "declares implicit writable volumes"):
                         self.submit(j, "core", "volumes_%d" % index)
+                    self.assertEqual(j.names(), [], "a refusal reserves nothing")
+                calls = build_fixtures.docker_calls(directory)
+                self.assertTrue(calls)
+                self.assertTrue(all(call[:2] == ["image", "inspect"] for call in calls), calls)
+                self.assertFalse(self.fence(), "a read-only refusal is settled clean")
+
+    def test_a_malformed_image_identity_refuses_typed_and_keeps_no_fence(self):
+        # A successful `docker image inspect` whose five identity fields are not JSON, or not
+        # of their shape, is a typed refusal: nothing claimed, built, probed or fenced.
+        good = ['"sha256:%s"' % ("3" * 64), '"linux"', '"arm64"', '["%s"]' % IMAGE, '[]']
+        # Every field and shape is covered by `test_builds.ImageIdentity`; here, one five-field
+        # output with every field not JSON and one with a misshapen environment.
+        bad = (["{"] * 5, good[:4] + ["[1]"])
+        for index, fields in enumerate(bad):
+            with self.subTest(fields=fields):
+                directory = self.docker(IMAGE, self.SAMPLE, identity="\t".join(fields) + "\n")
+                with executor.Journal(self.c) as j:
+                    refused = j.preflight("core", self.base, self.head, "identity_%d" % index)
+                    contracts.write_bytes(refused, "executor-preflight")
+                    self.assertEqual(refused["status"], "refused")
+                    self.assertIn("refused before any claim or build", refused["detail"])
+                    self.assertIn("build_image_malformed: docker image inspect gave a "
+                                  "malformed identity for the build image", refused["detail"])
+                    with self.assertRaisesRegex(ContractError, "build_image_malformed"):
+                        self.submit(j, "core", "identity_%d" % index)
                     self.assertEqual(j.names(), [], "a refusal reserves nothing")
                 calls = build_fixtures.docker_calls(directory)
                 self.assertTrue(calls)

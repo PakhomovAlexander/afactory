@@ -640,6 +640,47 @@ NAMED_ID = "sha256:" + "f" * 64
 RENAMED = "registry.example/other@sha256:" + "e" * 64
 
 
+class ImageIdentity(unittest.TestCase):
+    """`builds.image_identity` reads the five `docker image inspect` identity fields, each of
+    its shape, or refuses them as `build_image_malformed`: never a JSON or type error."""
+
+    GOOD = ['"%s"' % IMAGE, '"linux"', '"arm64"', '["%s"]' % NAMED, '["A=1", "B"]']
+
+    def identity(self, fields):
+        return builds.image_identity(("\t".join(fields) + "\n").encode(), IMAGE, "build image")
+
+    def test_well_formed_identity_fields_are_returned_with_their_shapes(self):
+        self.assertEqual(self.identity(self.GOOD),
+                         [IMAGE, "linux", "arm64", [NAMED], ["A=1", "B"]])
+        self.assertEqual(self.identity(self.GOOD[:3] + ["null", "null"])[3:], [None, None])
+
+    def test_malformed_or_misshapen_identity_fields_are_a_typed_refusal(self):
+        good = self.GOOD
+        bad = [(good[:field] + ['"unterminated'] + good[field + 1:], "is not JSON")
+               for field in range(5)]
+        bad += [(["null"] + good[1:], "ID is not a non-empty string"),
+                (good[:1] + ['""'] + good[2:], "OS is not a non-empty string"),
+                (good[:2] + ["7"] + good[3:], "architecture is not a non-empty string"),
+                (good[:3] + ['"%s"' % NAMED, good[4]], "repository digests is not a list"),
+                (good[:3] + ['[1]', good[4]], "repository digests is not a list"),
+                (good[:4] + ['{"A": "1"}'], "environment is not a list"),
+                (good[:4] + ['["A=1", null]'], "environment is not a list"),
+                (good[:4], "4 fields, not 5"), (good + ["null"], "6 fields, not 5"),
+                ([], "1 fields, not 5")]
+        for fields, why in bad:
+            with self.subTest(fields=fields):
+                with self.assertRaises(builds.Unavailable) as caught:
+                    self.identity(fields)
+                self.assertEqual(caught.exception.reason, "build_image_malformed")
+                self.assertIn("malformed identity for the build image %s" % IMAGE,
+                              str(caught.exception))
+                self.assertIn(why, str(caught.exception))
+        with self.assertRaises(builds.Unavailable) as caught:
+            builds.image_identity(b"x" * (builds.limits.RECORD_BYTES_MAX + 1), IMAGE,
+                                  "build image")
+        self.assertIn("exceeds its byte bound", str(caught.exception))
+
+
 class ContainerBuild(TempDir):
     """A Linux recipe builds in its pinned build image (ADR-0169). The stand-in docker client
     of `tests.build_fixtures` executes each container's entrypoint on this host with exactly
