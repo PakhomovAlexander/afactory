@@ -19,7 +19,6 @@ night, 1 refused with the reason on stderr. docs/nightly.md is the operator page
 import argparse
 import hashlib
 import http.client
-import io
 import json
 import os
 import platform
@@ -210,16 +209,12 @@ class Mirror(gitrefs.Git):
         return int(self._run(["log", "-1", "--format=%ct", sha, "--"]).stdout.strip())
 
     def export(self, sha, destination):
-        """Write the tree of `sha` into the empty directory `destination`."""
-        archive = self._run(["archive", "--format=tar", sha]).stdout
-        with tarfile.open(fileobj=io.BytesIO(archive), mode="r:") as tar:
-            for member in tar.getmembers():
-                require(not os.path.isabs(member.name) and ".." not in member.name.split("/"),
-                        "git archive of %s holds the path %r" % (sha, member.name))
-            if hasattr(tarfile, "data_filter"):
-                tar.extractall(destination, filter="data")
-            else:
-                tar.extractall(destination)
+        """A detached checkout of `sha` in the empty directory `destination`: a clone of the
+        mirror (its objects hardlinked, nothing fetched), so `crates/af/build.rs` finds the
+        commit and the built af reports it as its own."""
+        self._run(["clone", "--quiet", "--no-checkout", self.repo, destination])
+        checkout = gitrefs.Git(destination, trusted_repository=True)
+        checkout._run(["checkout", "--quiet", "--detach", sha, "--"])
 
 
 def choose(git, github, required_checks, max_walk, previous_head):
@@ -623,11 +618,15 @@ class Night:
         with open(os.path.join(self.root, version_json), "wb") as stream:
             stream.write(report)
         try:
-            embedded = loads_strict(report, version_json, RESPONSE_BYTES_MAX).get("release_key")
+            identity = loads_strict(report, version_json, RESPONSE_BYTES_MAX)
+            embedded, commit = identity.get("release_key"), identity.get("commit")
         except (ContractError, AttributeError):
-            embedded = None
+            embedded = commit = None
         require(embedded == "embedded", "the %s binary embeds no release key "
                 "(crates/af/keys/release.pub)" % target)
+        chosen = self.plan["head_sha"][:12]
+        require(commit == chosen, "the %s binary reports commit %r, not the chosen %s: the "
+                "source is no checkout of it" % (target, commit, chosen))
         smoke = os.path.join(self.source, "scripts", "release-smoke.sh")
         self.check(self.host.run(["bash", smoke, run, os.path.join(self.work, "smoke-" + target)],
                                  cwd=self.work, env=env, timeout=SMOKE_SECONDS),
@@ -691,6 +690,27 @@ class Night:
             os.fsync(stream.fileno())
         os.replace(path + ".tmp", path)
         return record
+
+    def reserve(self):
+        """Claim the night for this process: `builds_root/<date>.active`, created exclusively
+        with the pid inside, beside the night's directory so clearing that directory never
+        clears the claim. A second build of the night refuses while it exists; a claim a dead
+        build left is removed by hand."""
+        self.active = self.root + ".active"
+        os.makedirs(os.path.dirname(self.active), exist_ok=True)
+        try:
+            fd = os.open(self.active, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o644)
+        except FileExistsError:
+            raise Refused("another build of the night %s is active: %s exists (remove it only "
+                          "when no build of that night runs)" % (self.plan["date"], self.active))
+        with os.fdopen(fd, "w") as stream:
+            stream.write("%d\n" % os.getpid())
+
+    def release(self):
+        try:
+            os.remove(self.active)
+        except FileNotFoundError:
+            pass
 
     def refuse_recorded(self):
         path = os.path.join(self.root, "nightly.json")
@@ -785,12 +805,16 @@ def main(argv=None, github=None, host=None, clock=now_ms, environ=None):
                                    if key not in ("schema", "status")),
                       host or Host(), clock, environ)
         night.timings["plan"] = {"started_unix_ms": started, "ended_unix_ms": clock()}
-        if skipped:
-            emit(night.skip())
-            sys.stderr.write("nightly: skipped: %s\n" % plan["skip_reason"])
-            return EXIT_SKIPPED
-        emit(night.run_build(git))
-        return EXIT_BUILT
+        night.reserve()
+        try:
+            if skipped:
+                emit(night.skip())
+                sys.stderr.write("nightly: skipped: %s\n" % plan["skip_reason"])
+                return EXIT_SKIPPED
+            emit(night.run_build(git))
+            return EXIT_BUILT
+        finally:
+            night.release()
     except (Refused, ContractError) as error:
         sys.stderr.write("nightly: refused: %s\n" % error)
         return EXIT_REFUSED

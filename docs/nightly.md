@@ -78,9 +78,13 @@ The key's passphrase, if it has one, is read from `AF_NIGHTLY_SIGN_PASSWORD` and
 4. When the chosen commit is the previous night's head, the plan is `skipped` with a
    `skip_reason` naming the last built night's tag and the commit.
 
-`build` then, unless the plan is skipped:
+`build` first claims the night, `builds_root/<date>.active` with its pid, created exclusively,
+and refuses while another build holds it (a claim a dead build left is removed by hand); the
+claim goes when the record is written. Then, unless the plan is skipped, it:
 
-1. exports the commit into `source/` and sets `[workspace.package] version` in `Cargo.toml`
+1. checks the commit out into `source/` (a clone of the mirror, objects hardlinked, so the
+   built `af --version --json` reports that commit, which `build` requires) and sets
+   `[workspace.package] version` in `Cargo.toml`
    and every workspace member's version in `Cargo.lock` to the nightly version;
 2. fetches the locked dependencies into `builds_root/cache/cargo` (the only step with network),
    then runs `cargo zigbuild --release --locked --bin af --target <target>` for both targets in
@@ -103,9 +107,10 @@ A skipped night writes only its `nightly.json`, with status `skipped`, and build
 ```text
 builds_root/
   cache/cargo/                 the Cargo home every night reuses (registry and git sources)
+  2026-10-29.active            the pid of the build that holds the night, while it runs
   2026-10-29/
     nightly.json               af.nightly-build/1, written last
-    source/                    the exported, version-rewritten tree, with its target/
+    source/                    the checked-out, version-rewritten tree, with its target/
     dist/
       af-nightly-2026.10.29-x86_64-unknown-linux-musl.tar.gz
       af-nightly-2026.10.29-aarch64-unknown-linux-musl.tar.gz

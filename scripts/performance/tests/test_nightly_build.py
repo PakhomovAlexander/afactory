@@ -553,8 +553,9 @@ class FakeHost:
 
     system, machine = "Linux", "x86_64"
 
-    def __init__(self, test, verifies=True, reports=None, qemu=True):
+    def __init__(self, test, verifies=True, reports=None, qemu=True, commit=None):
         self.test = test
+        self.commit = commit
         self.calls = []
         self.verifies = verifies
         self.reports = reports
@@ -620,7 +621,10 @@ class FakeHost:
         if args == ["--version"]:
             return (self.reports or "af 0.14.0-nightly.20261029").encode() + b"\n"
         if args == ["--version", "--json"]:
-            return b'{\n  "release_key": "embedded",\n  "version": "0.14.0-nightly.20261029"\n}\n'
+            # The commit build.rs embeds from the checkout: the chosen head's, unless told otherwise.
+            commit = self.commit or self.test.parent[:12]
+            return ('{\n  "commit": "%s",\n  "release_key": "embedded",\n'
+                    '  "version": "0.14.0-nightly.20261029"\n}\n' % commit).encode()
         if args[0] == "completions":
             return ("# completions for %s\n" % args[1]).encode()
         if args[:2] == ["self", "man"]:
@@ -642,6 +646,11 @@ class Build(History):
         code, out, err = self.build(host)
         self.assertEqual(code, 0, err)
         night = os.path.join(self.builds, "2026-10-29")
+        # The source is a detached checkout of the chosen commit, so build.rs finds it; the
+        # claim the build held is gone.
+        self.assertEqual(Repo.existing(os.path.join(night, "source")).git("rev-parse", "HEAD"),
+                         self.parent)
+        self.assertFalse(os.path.exists(night + ".active"))
         record = contracts.read_file(os.path.join(night, "nightly.json"), "nightly-build")
         self.assertEqual(json.loads(out), record)
         self.assertEqual((record["status"], record["head_sha"], record["build_image"]),
@@ -754,6 +763,37 @@ def shell_functions(path, names):
     return "".join(out)
 
 
+    def test_a_binary_that_reports_another_commit_is_refused(self):
+        host = FakeHost(self, commit="0123456789ab")
+        code, _, err = self.build(host)
+        self.assertEqual(code, 1)
+        self.assertIn("reports commit '0123456789ab', not the chosen %s: the source is no "
+                      "checkout of it" % self.parent[:12], err)
+        self.assertFalse(os.path.exists(os.path.join(self.builds, "2026-10-29", "nightly.json")))
+
+    def test_a_second_build_of_an_active_night_is_refused_and_clears_nothing(self):
+        night = os.path.join(self.builds, "2026-10-29")
+        os.makedirs(os.path.join(night, "dist"))
+        kept = os.path.join(night, "dist", "in-progress")
+        with open(kept, "w") as stream:
+            stream.write("the first build's partial asset\n")
+        with open(night + ".active", "w") as stream:
+            stream.write("12345\n")
+        host = FakeHost(self)
+        code, _, err = self.build(host)
+        self.assertEqual(code, 1)
+        self.assertIn("another build of the night 2026-10-29 is active: %s exists (remove it "
+                      "only when no build of that night runs)" % (night + ".active"), err)
+        self.assertEqual(host.calls, [])
+        self.assertTrue(os.path.isfile(kept))
+        self.assertTrue(os.path.isfile(night + ".active"))
+        # Without the claim the night builds, replacing the partial directory.
+        os.remove(night + ".active")
+        code, _, err = self.build(FakeHost(self))
+        self.assertEqual(code, 0, err)
+        self.assertFalse(os.path.exists(kept))
+        self.assertFalse(os.path.exists(night + ".active"))
+
 class ReleaseToolsIgnoreNightlies(TempDir):
     TAGS = ["v0.13.0", "nightly-2026.10.29", "v0.14.0-rc.3", "nightly-2026.10.30"]
 
@@ -775,15 +815,8 @@ class ReleaseToolsIgnoreNightlies(TempDir):
         self.assertEqual(self.rank("stable", ["nightly-2026.10.29"]), "")
         self.assertEqual(self.rank("rc", ["nightly-2026.10.29"]), "")
 
-    def test_af_self_newest_never_chooses_a_nightly_tag(self):
-        # `newest` keeps only tags that parse as SemVer after one leading `v`
-        # (`parse_tag`); the Rust unit test proves it on the same tags.
-        source = read(os.path.join(ROOT, "crates/af/src/selfmgmt.rs")).decode("utf-8")
-        self.assertIn("fn parse_tag(tag: &str) -> Option<Version> {\n"
-                      "    Version::parse(tag.strip_prefix('v').unwrap_or(tag)).ok()\n}", source)
-        self.assertIn(".filter_map(|tag| parse_tag(tag))", source)
-        self.assertIn("fn newest_never_chooses_a_nightly_tag()", source)
-        self.assertIn('"nightly-2026.10.29".into()', source)
+    def test_the_lab_never_parses_a_nightly_tag_as_a_release(self):
+        # `af self`'s own proof is the Rust test `newest_never_chooses_a_nightly_tag`.
         self.assertIsNone(gitrefs.parse_version("nightly-2026.10.29"))
         self.assertIsNotNone(gitrefs.parse_version("0.15.0-nightly.20261029"))
 

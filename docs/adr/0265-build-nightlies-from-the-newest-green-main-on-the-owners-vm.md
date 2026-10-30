@@ -71,8 +71,10 @@ with Docker, `git`, `minisign` and `qemu-aarch64-static`, reading one `af.nightl
    main last shipped. The baseline is the highest stable `vX.Y.Z` tag reachable from the chosen
    commit, exactly `nightly_baseline` of `scripts/performance/perflab/gitrefs.py`, which the
    build imports.
-4. **The build is the release's.** `build` exports the chosen commit into
-   `builds_root/<date>/source/`, rewrites `[workspace.package] version` in `Cargo.toml` and
+4. **The build is the release's.** `build` claims the night (`builds_root/<date>.active`,
+   created exclusively, so two builds of one night never clear or sign each other's files),
+   checks the chosen commit out into `builds_root/<date>/source/` as a clone of the mirror
+   (so the built binary reports that commit, which `build` requires of it), rewrites `[workspace.package] version` in `Cargo.toml` and
    every workspace member's version in `Cargo.lock` to the nightly version, fetches the locked
    dependencies into the persistent `builds_root/cache/cargo`, then runs `cargo zigbuild
    --release --locked --bin af --target <target>` for `x86_64-unknown-linux-musl` and
