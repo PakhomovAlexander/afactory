@@ -56,6 +56,52 @@ class ExecutorFixture(TempDir):
     def submit(self, journal, work="core", key="manual_1"):
         return journal.submit(work, self.base, self.head, key)
 
+    def complete_core(self, j, request, calls, on_build=None, on_shard=None):
+        """Run one queued core original through the real local path with synthetic builder,
+        shards and filesystem stand-ins; `on_build(builder)` and `on_shard(options)` run first
+        in each stand-in."""
+        path = j.path(request["request_id"])
+        plan = contracts.read_json(read(os.path.join(path, "plan.json")), "run")
+        staged = synthetic.write_run(plan, self.path("synthetic_" + request["request_id"]),
+            lambda slot, case: 200 if slot["side"] == "candidate" else 100)
+        class Builder:
+            def __init__(self, owner, plan, toolchain, **kw):
+                self.layout = SimpleNamespace(build=os.path.join(owner, "target/performance/test/build"))
+                self.plan = plan
+                self.deadline_unix_ms = kw["deadline_unix_ms"]
+            def build(self):
+                calls.append("build")
+                if on_build is not None:
+                    on_build(self)
+                os.makedirs(self.layout.build)
+                return synthetic.builds(self.plan)
+        def prepare(image, mount, size_bytes, **kwargs):
+            calls.append("prepare")
+            with open(image, "xb") as f:
+                f.write(b"x")
+            os.mkdir(mount)
+        def shard(options, machine_lease=None):
+            machine_lease.check()
+            if on_shard is not None:
+                on_shard(options)
+            calls.append("shard_%d" % options.shard)
+            shutil.copytree(os.path.join(staged, "shards", str(options.shard)),
+                            os.path.join(options.run_dir, "shards", str(options.shard)))
+            return contracts.read_file(os.path.join(options.run_dir, "shards", str(options.shard), "shard.json"), "shard")
+        def cleanup(image, mount, **kwargs):
+            calls.append("cleanup")
+            os.rmdir(mount)
+            os.unlink(image)
+            return []
+        with mock.patch.object(executor.builds, "Builder", Builder), \
+                mock.patch.object(executor.hostprep, "prepare", prepare), \
+                mock.patch.object(executor.hostprep, "cleanup", cleanup), \
+                mock.patch.object(executor.runner, "run_shard", shard), \
+                mock.patch.object(executor, "dispatch_actions", side_effect=AssertionError("network transport")), \
+                mock.patch.dict(os.environ, {"HOME": self.path("private-home"), "TMPDIR": self.tmp}, clear=True):
+            self.assertEqual(j.cycle(lock_directory=self.locks), "complete")
+        return path, plan
+
 
 class Journal(ExecutorFixture):
     def test_original_identity_and_frozen_backend_survive_switch_and_repeat(self):
@@ -300,46 +346,6 @@ class Journal(ExecutorFixture):
                 self.submit(j)
             with self.assertRaisesRegex(ContractError, "membership changed"):
                 j.cycle(execute=lambda *a: self.fail("replacement original"), lock_directory=self.locks)
-
-    def complete_core(self, j, request, calls):
-        """Run one queued core original through the real local path with synthetic builder,
-        shards and filesystem stand-ins."""
-        path = j.path(request["request_id"])
-        plan = contracts.read_json(read(os.path.join(path, "plan.json")), "run")
-        staged = synthetic.write_run(plan, self.path("synthetic_" + request["request_id"]),
-            lambda slot, case: 200 if slot["side"] == "candidate" else 100)
-        class Builder:
-            def __init__(self, owner, plan, toolchain, **kw):
-                self.layout = SimpleNamespace(build=os.path.join(owner, "target/performance/test/build"))
-                self.plan = plan
-            def build(self):
-                calls.append("build")
-                os.makedirs(self.layout.build)
-                return synthetic.builds(self.plan)
-        def prepare(image, mount, size_bytes, **kwargs):
-            calls.append("prepare")
-            with open(image, "xb") as f:
-                f.write(b"x")
-            os.mkdir(mount)
-        def shard(options, machine_lease=None):
-            machine_lease.check()
-            calls.append("shard_%d" % options.shard)
-            shutil.copytree(os.path.join(staged, "shards", str(options.shard)),
-                            os.path.join(options.run_dir, "shards", str(options.shard)))
-            return contracts.read_file(os.path.join(options.run_dir, "shards", str(options.shard), "shard.json"), "shard")
-        def cleanup(image, mount, **kwargs):
-            calls.append("cleanup")
-            os.rmdir(mount)
-            os.unlink(image)
-            return []
-        with mock.patch.object(executor.builds, "Builder", Builder), \
-                mock.patch.object(executor.hostprep, "prepare", prepare), \
-                mock.patch.object(executor.hostprep, "cleanup", cleanup), \
-                mock.patch.object(executor.runner, "run_shard", shard), \
-                mock.patch.object(executor, "dispatch_actions", side_effect=AssertionError("network transport")), \
-                mock.patch.dict(os.environ, {"HOME": self.path("private-home"), "TMPDIR": self.tmp}, clear=True):
-            self.assertEqual(j.cycle(lock_directory=self.locks), "complete")
-        return path, plan
 
     def test_core_path_uses_retained_git_native_archive_and_reports_failed_verdict(self):
         """Real local orchestration; synthetic builder/shards and filesystem stand-ins."""
@@ -785,6 +791,69 @@ class Nightly(ExecutorFixture):
         self.assertEqual((request["sources"]["baseline_sha"], request["sources"]["candidate_sha"]),
                          (self.base, self.head))
         self.assertEqual(request["submission"]["baseline"], {"tag": "v0.12.0", "sha": self.base})
+
+    def test_nightly_tier_admits_two_builds_and_four_serial_30_minute_shards_within_180_minutes(self):
+        """ADR-0266's budget on a plan frozen from the suite's nightly tier, through the real
+        local path on a stepped clock: the build starts the run's deadline (ADR-0170), the
+        baseline and candidate builds take their declared build_minutes, and each serial shard
+        passes the shard runner's own admission with its whole sampling window before that
+        deadline. A fifth shard's window does not fit, and the deadline then refuses it."""
+        self.release_history()
+        self.c["core"].update(shards=4, cases=["cli_discovery__command_" + command for command in
+                                               ("version", "help", "task_help", "review_run_help")])
+        clock = [synthetic.RUN_STARTED_MS / 1000.0]
+        wall = lambda: clock[0]
+        preflight, reserve = 90, runner.FINISH_RESERVE_SECONDS
+        windows = []
+        start_execution = builds.Builder.start  # the real builder's, before its stand-in replaces it
+
+        def build(builder):
+            started = SimpleNamespace(wall=wall, plan=builder.plan, budget=SimpleNamespace(),
+                                      deadline_unix_ms=builder.deadline_unix_ms)
+            start_execution(started)
+            # The stand-in's builds record holds the execution the real start fixes at this instant.
+            self.assertEqual(started.execution["run"], synthetic.builds(builder.plan)["execution"]["run"])
+            clock[0] += 2 * builder.plan["limits"]["build_minutes"] * 60
+
+        def admit(run_dir, caller):
+            """The shard runner's admission against the run's recorded deadline; the remaining
+            seconds it leaves."""
+            built = contracts.read_file(os.path.join(run_dir, "builds.json"), "builds")
+            shard = SimpleNamespace(manifest=[built], plan=plan, options=SimpleNamespace(
+                wall=wall, clock=wall, deadline_unix_ms=caller))
+            runner.Shard.check_run_deadline(shard)
+            return shard.run_deadline - clock[0]
+
+        def shard(options):
+            left = admit(options.run_dir, options.deadline_unix_ms)
+            sampling = plan["limits"]["shard_sampling_minutes"] * 60
+            self.assertLessEqual(preflight + sampling + reserve, left)
+            windows.append(clock[0] + preflight)
+            clock[0] += preflight + sampling + reserve
+
+        with executor.Journal(self.c) as j:
+            request = j.submit_nightly("core", self.TAG, self.head)
+            plan = contracts.read_json(read(os.path.join(j.path(request["request_id"]), "plan.json")), "run")
+            limits = plan["limits"]
+            self.assertEqual((plan["tier"], len(plan["shards"]), limits["build_minutes"],
+                              limits["shard_sampling_minutes"], limits["run_total_minutes"]),
+                             ("nightly", 4, 20, 30, 180))
+            self.assertNotEqual(plan["resolved"]["baseline_sha"], plan["resolved"]["candidate_sha"])
+            calls = []
+            path, _ = self.complete_core(j, request, calls, on_build=build, on_shard=shard)
+        self.assertEqual(calls, ["build", "prepare", "shard_0", "shard_1", "shard_2", "shard_3", "cleanup"])
+        start = synthetic.RUN_STARTED_MS / 1000.0
+        # 40 build minutes, then four shards of 90 s preflight, 30 sampling minutes and the
+        # finish reserve: 168 of 180 minutes, the last window closing 12.5 minutes early.
+        self.assertEqual([(w - start) / 60 for w in windows], [41.5, 73.5, 105.5, 137.5])
+        self.assertEqual((clock[0] - start) / 60, 168)
+        left = admit(os.path.join(path, "run"), None)
+        self.assertEqual(left, 12 * 60)
+        self.assertGreater(preflight + limits["shard_sampling_minutes"] * 60 + reserve, left)
+        clock[0] += left
+        with self.assertRaises(runner.Unavailable) as refused:
+            admit(os.path.join(path, "run"), None)
+        self.assertEqual(refused.exception.reason, "run_deadline")
 
 
 class ToolImage(TempDir):

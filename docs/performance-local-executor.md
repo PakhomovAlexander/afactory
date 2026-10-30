@@ -298,10 +298,15 @@ unless the configuration's `core.tier` is `nightly`, naming the tier it found, s
 configuration cannot take one by mistake.
 
 Shards still run one after another. A core nightly is one build, then four shards of at most
-45 sampling minutes each. The plan freezes the tier's 120-minute run deadline, counted from the
-start of the build, so all four shards fit only when they finish early. A shard cut by that
-deadline, or not started, stays incomplete, and its missing slots stay visible. Expect about
-two hours plus source retention and the report; `run_seconds = 28800` bounds the whole original.
+30 sampling minutes each. The plan freezes the tier's 180-minute run deadline, counted from the
+start of the build. The build compiles the baseline and the candidate, each step within the
+suite's 20 build minutes: 2 × 20 build minutes and 4 × 30 sampling minutes make 160 minutes,
+and the other 20 cover each shard's preflight and finish reserve, the supervisor and the
+dependency fetch. 180 minutes is the hard maximum of a nightly's run deadline; the hard maxima
+in `scripts/performance/perflab/limits.py` are unchanged. A build that runs long leaves the last
+shard less time: a shard cut by the deadline, or not started, stays incomplete, and its missing
+slots stay visible. Expect about three hours plus source retention and the report;
+`run_seconds = 28800` bounds the whole original.
 
 `verify --request-id` prints the result. For a core original, `binaries.baseline` and
 `binaries.candidate` hold the `sha256` and `bytes` of each side's built `af`, as the run's

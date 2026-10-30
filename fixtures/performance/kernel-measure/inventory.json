@@ -2432,8 +2432,8 @@
   },
   {
    "path": "fixtures/performance/suite.toml",
-   "sha256": "sha256:215f7814de5399fa819df55bc6ff4a20acb5fde5628c46cba54484b83b65284f",
-   "size": 37446
+   "sha256": "sha256:3843a636259c253ce0611b0db69b04e9bf16774e2d01140ccc3ed8efa5302baa",
+   "size": 37692
   },
   {
    "path": "fixtures/performance/synthetic/suite.toml",
@@ -2647,8 +2647,8 @@
   },
   {
    "path": "scripts/performance/perflab/executor.py",
-   "sha256": "sha256:4ecceda5042c4439944e58ab351b04a7841870d2f5f0934d9e4a4a8db8cc6230",
-   "size": 52210
+   "sha256": "sha256:45c4a8a1091ad286066f10fef68e880708416d4e352bc80c52f4bb48d89d80b8",
+   "size": 52360
   },
   {
    "path": "scripts/performance/perflab/executorcontracts.py",
@@ -3012,8 +3012,8 @@
   },
   {
    "path": "scripts/performance/tests/test_builds.py",
-   "sha256": "sha256:17ac91fe63201b05edf71016580036809f27b53565e69b283172a22f80159ab8",
-   "size": 59826
+   "sha256": "sha256:b751829f793bf63849bbec14815867fba26bba48dc8be705c0f17ef410991053",
+   "size": 59893
   },
   {
    "path": "scripts/performance/tests/test_calibration.py",
@@ -3062,8 +3062,8 @@
   },
   {
    "path": "scripts/performance/tests/test_executor.py",
-   "sha256": "sha256:ed74d0c92799f7a0b4abcff67685f0a2eeeccfed742ea8fd88d0a3fbef624a1c",
-   "size": 63570
+   "sha256": "sha256:e62ba51b2180b333e699a3085c86f4da134973189c078a1ad5f728e0f6286a7a",
+   "size": 69095
   },
   {
    "path": "scripts/performance/tests/test_fixtures.py",
@@ -3271,7 +3271,7 @@
    "size": 6777
   }
  ],
- "harness_digest": "sha256:ce202c2c25fc195de9edbe7a1745b474e00b9801bf40b69ba82ce9fb3544b97d",
+ "harness_digest": "sha256:3f5480f305207827c7c7f842fd8763fbf230255c620b7bad2d82879a9007a206",
  "inner_metric": "pending",
  "inner_metric_reason": "the inner wall_ms metric is recorded in every Measurement but no staged objective selects it until the guard's real kernel integration and tampered-candidate tests are accepted on the sealed source and a reviewed human change installs and selects it",
  "objective_metric": "elapsed_ms",

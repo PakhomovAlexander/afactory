@@ -22,8 +22,11 @@ measured. The musl build image also kept cargo-zigbuild in cargo's bin directory
    same night twice.
 2. Run nightly shards concurrently to fit the tier's budget. Rejected: the lab's machine lock
    refuses concurrent shards on purpose (ADR-0240).
-3. Add a nightly kind with its own rules to the executor, and name the measured binaries in
-   the result. Chosen.
+3. Raise the nightly run deadline above 180 minutes so that longer serial shards fit after the
+   build. Rejected: 180 minutes is the hard maximum of a non-quick tier's run deadline, and the
+   hard maxima stay as they are.
+4. Add a nightly kind with its own rules to the executor, cut the nightly tier to fit serial
+   shards inside the hard maxima, and name the measured binaries in the result. Chosen.
 
 ## Decision
 
@@ -38,6 +41,23 @@ configuration's `core.tier` is `nightly`, with a message naming the tier found. 
 runs under a second configuration with its own root and `journal_id`, tier `nightly`,
 `environment = "linux_x86_64_musl_claw"`, `shards = 4` and `zigbuild_bin`, under the same
 machine lock. Shards stay serial and the shard runner is unchanged.
+
+The nightly tier (`[tiers.nightly]` in `fixtures/performance/suite.toml`) is cut to fit those
+serial shards inside the hard maxima: `shards = 4`, `shard_sampling_minutes = 30`,
+`run_total_minutes = 180`, `concurrent_jobs` unchanged. The run deadline starts with the build
+(ADR-0170), so it holds the build as well as the shards. A core nightly performs one build
+before its shards, which compiles the authority's small supervisor and two sides: the stable
+baseline and the frozen candidate, whose commits differ, so the candidate never shares the
+baseline's build. Each build step is bounded by the suite's `build_minutes = 20`. Counting each
+side's build at that bound, 2 × 20 build minutes and 4 × 30 sampling minutes make 160 minutes,
+which leaves 20 of the 180 for each shard's preflight and 30-second finish reserve, the
+supervisor compile and the dependency fetch. A build that runs longer leaves the last shard
+less time: the shard runner stops a shard at the run deadline and starts none after it, and
+the missing slots stay incomplete, never a pass. The hard maxima in
+`scripts/performance/perflab/limits.py` are unchanged: 180 minutes is
+`LONG_RUN_TOTAL_MINUTES_MAX`, 30 sampling minutes is below `LONG_SHARD_SAMPLING_MINUTES_MAX`
+(90), and the committed suite/4, run/7, shard/4 and builds/6 schemas already admit both. The
+release tier and every other tier keep their numbers.
 
 The submission is `{"kind": "nightly", "key": "nightly:<tag>:<work>", "tag": …,
 "baseline": {"tag": …, "sha": …} | null}`, `null` when the operator gave `--base`. An original's
@@ -74,26 +94,27 @@ re-pins the image digest by hand; no committed configuration's digest changes.
 
 The [operator guide](../performance-local-executor.md#nightly-originals) gains the second
 configuration, the submit lines, the derived baseline, the duration and how to read
-`binaries`. A core nightly is one build, then four serial shards of at most 45 sampling minutes
-each, all inside the tier's frozen 120-minute run deadline counted from the build's start; a
-shard that deadline cuts stays incomplete and visible as missing slots, and `run_seconds`
-(28800 in the installed configuration) bounds the whole original. This change enlarges no
-budget. A nightly deadline that holds one build and four full 45-minute shards needs more than
-180 minutes, the hard maximum of a non-quick tier's run deadline
-(`LONG_RUN_TOTAL_MINUTES_MAX` in `scripts/performance/perflab/limits.py`, repeated by the
-committed suite/4, run/7, shard/4 and builds/6 schemas), so the tier keeps its 120 minutes
-until that maximum is decided separately. Like PR and release originals, a nightly plan is frozen with the planner's manual
-trigger; the request's submission carries what makes it a nightly.
+`binaries`. A core nightly takes at most the tier's 180 minutes from the start of its build,
+plus source retention before it and the report and archive after it; a shard the deadline cuts
+stays incomplete and visible as missing slots, and `run_seconds` (28800 in the installed
+configuration) bounds the whole original. Each nightly shard samples for at most 30 minutes,
+so pairs that do not fit in that window stay unstarted and the shard incomplete. Like PR and
+release originals, a nightly plan is frozen with the planner's manual trigger; the request's
+submission carries what makes it a nightly.
 
 Existing manual, main, PR, release and calibration submissions keep their key, identity and
 rules; only the version of the request document they are written as changes. The nightly
 build, the daily report, publishing, systemd units for the second configuration, the suite's
-budgets and the hosted nightly workflows are unchanged.
+other budgets and the hosted nightly workflows are unchanged.
 
 Lab tests (`scripts/performance/tests/test_executor.py`, `test_contracts.py`) prove the
 submission rules through the real CLI, journal and a Git history with `v0.13.0`, `v0.14.0-rc.3`,
 an unreachable `v0.14.0` and a nightly tag; one head when `--head` names a ref that moves after
-the baseline is derived; the request and result fixtures; `verify` and `status` on a request/1
-and result/2 original under the same installed control; and the Dockerfile's tool directory,
-read as text.
+the baseline is derived; the tier's budget on a plan frozen from it, run through the real local
+path with synthetic builds and shards on a stepped clock: the build fixes the 180-minute
+deadline, and after two 20-minute builds the shard runner's own deadline check admits four
+shards with their whole 30 sampling minutes, ending at 168 minutes, while a fifth does not fit
+and is refused at the deadline; the request and result fixtures; `verify` and `status` on a
+request/1 and result/2 original under the same installed control; and the Dockerfile's tool
+directory, read as text.
 They run no Docker, network or benchmark.
