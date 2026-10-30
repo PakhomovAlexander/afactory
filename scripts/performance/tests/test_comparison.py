@@ -19,7 +19,7 @@ from unittest import mock
 
 from perflab import comparison, contracts, diagnostics, executor, hostobserver, overview, synthetic
 from perflab import telemetrylab
-from perflab.values import ContractError, canonical_digest, sha256_bytes
+from perflab.values import ContractError, canonical_digest, document_bytes, sha256_bytes
 from tests import telemetry_fixtures as fx
 from tests.support import ROOT, TempDir, read
 from tests.test_executor import ExecutorFixture, IMAGE
@@ -250,7 +250,7 @@ class Comparison(ExecutorFixture):
     def run_partition(self, j, staged, calls):
         return self.run_partition_with(staged, calls, lambda: j.cycle(lock_directory=self.locks))
 
-    def run_partition_with(self, staged, calls, operation):
+    def run_partition_with(self, staged, calls, operation, on_shard=None):
         class Builder:
             def __init__(self, owner, plan, toolchain, **kw):
                 self.layout = SimpleNamespace(build=os.path.join(
@@ -274,6 +274,8 @@ class Comparison(ExecutorFixture):
             calls.append("shard_%d" % options.shard)
             target = os.path.join(options.run_dir, "shards", str(options.shard))
             shutil.copytree(os.path.join(staged, "shards", str(options.shard)), target)
+            if on_shard is not None:
+                on_shard(options, target)
             return contracts.read_file(os.path.join(target, "shard.json"), "shard")
 
         def cleanup(image, mount, **kwargs):
@@ -451,6 +453,137 @@ class Comparison(ExecutorFixture):
             self.assertEqual(report_doc["lanes"][1]["state"], "failed")
             self.assertTrue(any("is not this comparison's member" in reason
                                 for reason in report_doc["reasons"]))
+
+    def test_complete_seed_free_comparison_reports_exports_and_verifies_copied_natively(self):
+        """Two seed-free cases form the fixture's entire declared family, with real frozen
+        plans, synthetic shards/build receipts and the later partition's execution window.
+        Core admission, aggregate writing/reading/claims and verdict evaluation stay native.
+        Only build/shard execution, telemetry admission and diagnostic children use
+        the established stand-ins: deterministic acceptance evidence, never product speed.
+        """
+        cases = ("canonical_serialize_small", "canonical_validate_small")
+        suite_path = "fixtures/performance/suite.toml"
+        # Commit a small authority in the private fixture repository, rather than selecting
+        # partial scope or changing a frozen plan/verdict after declaration. Keep the cases'
+        # policies, pairs, sentinels and all execution bounds exactly as shipped.
+        sections = re.split(r"(?=^\[cases\.)", read(os.path.join(ROOT, suite_path)).decode(),
+                            flags=re.MULTILINE)
+        small = sections[0] + "".join(section for section in sections[1:]
+                                       if section.split("]", 1)[0][7:] in cases)
+        # Only quick/nightly contain these cases; omit the unused release tier.
+        small = re.sub(r"(?ms)^\[tiers\.release\].*?(?=^\[cases\.)", "", small)
+        adapter_path = "fixtures/performance/adapters.toml"
+        adapters = re.sub(r"(?ms)^contracts = \[.*?^\]",
+                          'contracts = ["canonical_serialize_v1", "canonical_validate_v1", '
+                          '"sentinel_canonical_v1"]', read(os.path.join(ROOT, adapter_path)).decode())
+        self.base = self.head = self.repo.commit("seed-free synthetic comparison authority",
+                                               {suite_path: small, adapter_path: adapters})
+        self.c["control_sha"] = self.base
+        with executor.Journal(self.c) as j:
+            launched = self.launch(j)
+            self.assertEqual(launched["status"], "launched", launched["detail"])
+            doc, plan, _ = comparison.load(j, launched["comparison"]["comparison_id"])
+            ident = doc["comparison_id"]
+            self.assertEqual(sorted(case["case_id"] for case in plan["cases"]), sorted(cases))
+            self.assertTrue(all(case["seed"] is None
+                                for case in plan["cases"]))
+            self.assertEqual([p["shards"] for p in doc["partitions"]], [[0], [1]])
+            staged, calls = self.staged(j, ident), []
+
+            def in_partition_window(options, target):
+                # The synthetic runner observes the real executor's sealed later window,
+                # just as the actual runner does; write its samples inside that window
+                # before the executor evaluates or seals this original. Never alter a
+                # retained verdict, aggregate claim, build receipt or window authority.
+                authority = os.path.join(options.run_dir, "partitions.json")
+                if not os.path.exists(authority):
+                    return
+                window = contracts.read_file(authority, "partition-execution")[
+                    "partitions"][0]["run"]
+                samples = os.path.join(target, "samples.jsonl")
+                records = contracts.read_samples(read(samples))
+                shard = contracts.read_file(os.path.join(target, "shard.json"), "shard")
+                shift = window["started_unix_ms"] - shard["started_unix_ms"]
+                with open(samples, "wb") as stream:
+                    stream.write(b"".join(document_bytes(dict(record, started_unix_ms=
+                        record["started_unix_ms"] + shift)) for record in records))
+
+                def execution(doc):
+                    doc["started_unix_ms"] += shift
+                    doc["ended_unix_ms"] += shift
+                    doc["execution"]["run"] = window
+                    doc["execution"]["deadline_unix_ms"] = min(window["deadline_unix_ms"],
+                        doc["started_unix_ms"] + doc["execution"]["sampling_deadline_ms"])
+                synthetic.reseal_shard(target, execution)
+
+            for item in doc["partitions"]:
+                self.assertEqual(self.run_partition_with(staged, calls,
+                    lambda: j.cycle(lock_directory=self.locks), on_shard=in_partition_window),
+                    "complete")
+                executor.verify_original(j, item["request_id"])
+            self.assertEqual(calls, ["build", "shard_0", "shard_1"])
+            self.assertEqual(j.cycle(lock_directory=self.locks,
+                                     execute=self.telemetry_stand_in()), "complete")
+            comparison.advance(j, ident)
+            agg, _ = comparison.read_aggregate(j, doc)
+            required = sum(len(executor.runner.schedule.expected_slots(plan, s["index"]))
+                           for s in plan["shards"])
+            expected_coverage = {"required": required, "observed": required,
+                                 "failed": 0, "missing": 0}
+            self.assertGreater(required, 0)
+            self.assertEqual(agg["coverage"], expected_coverage)
+            self.assertEqual(agg["result"], "fail", "complete evidence can prove a regression")
+            self.assertEqual([(p["index"], p["included"], p["verification"])
+                              for p in agg["partitions"]],
+                             [(0, True, "verified"), (1, True, "verified")])
+            later = read(os.path.join(j.path(doc["partitions"][1]["request_id"]),
+                                      "run", "partitions.json"))
+            self.assertEqual(read(os.path.join(comparison.directory(j, ident), "aggregate",
+                                               "run", "partitions.json")), later)
+            self.assertEqual(self.run_profiles(j), [("linux_gnu_trace", None),
+                                                    ("linux_gnu_cpu_profile", "host_perf")])
+
+        # Telemetry/profile stand-ins have no retained Git or native diagnostic child runs.
+        # Forward every core admission to the real verifier, including public commands.
+        real_verify = executor.verify_original
+
+        def admitted(journal, request_id, installed=executor.ROOT):
+            if journal.request(request_id)["work"] == "core":
+                return real_verify(journal, request_id, installed)
+            return self.verify(journal, request_id, installed)
+
+        import cli
+        output, bundle = self.path("native-complete-report"), self.path("native-complete-bundle")
+        with mock.patch.object(executor, "verify_original", admitted), \
+                mock.patch.object(executor, "load_config", return_value=self.c), \
+                mock.patch.object(comparison.report, "admit_children", lambda *a: None):
+            with mock.patch("sys.stdout", new=SimpleNamespace(buffer=io.BytesIO(),
+                                                              flush=lambda: None)):
+                for argv in (["comparison-report", "--output", output],
+                             ["comparison-export", "--output", bundle]):
+                    self.assertEqual(cli.main(["executor", "--config", "operator.toml"]
+                                              + argv + ["--comparison", ident]), 0, argv[0])
+            local = contracts.read_file(os.path.join(output, "report.json"), "comparison-report")
+            self.assertEqual((local["status"], local["verification"]), ("complete", "verified"),
+                             local["reasons"])
+            self.assertEqual(local["lanes"][0]["coverage"], expected_coverage)
+            self.assertEqual(local["reasons"], [])
+            self.assertTrue(all(lane["state"] == "complete" for lane in local["lanes"]))
+            self.assertEqual([(m["state"], m["verification"]) for m in local["members"]
+                              if m["work"] == "core"], [("complete", "verified")] * 2)
+            self.assertEqual(local["performance"]["core_verdict"], "fail")
+            self.assertFalse(local["calibration"]["eligible"])
+            moved = self.path("copied-native-complete")
+            shutil.copytree(bundle, moved)
+            shutil.rmtree(bundle)
+            # Remove the original journal too: offline derivation has only copied evidence.
+            shutil.rmtree(self.c["root"])
+            with mock.patch("sys.stdout", new=io.StringIO()) as printed:
+                self.assertEqual(cli.main(["executor", "comparison-verify", "--bundle", moved]), 0)
+            self.assertIn('"comparison": "complete"', printed.getvalue())
+            self.assertIn('"status": "verified"', printed.getvalue())
+            _, offline = comparison.verify_export(moved)
+            self.assertEqual(offline, local)
 
     def test_full_comparison_partitions_aggregates_diagnoses_reports_and_exports(self):
         with executor.Journal(self.c) as j:

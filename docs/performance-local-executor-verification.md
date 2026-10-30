@@ -1835,19 +1835,104 @@ Each mutant failed with `('incomplete', 'verified', 'failed', 'complete', 'compl
 ('incomplete', 'refused', 'failed', 'failed', 'failed')`. Those runs took 12.4 s, 23.5 s and
 40.3 s. The candidate was restored byte for byte, and its digest was checked.
 
-**Focused validation of this candidate.** Run by this Task's implementer at the repository
-root, offline, with Python 3.14.7, no benchmark, Docker, perf or network, on 2026-10-30 from
-17:09:40 to 17:14:56 UTC:
+**Historical focused validation of the identity/inclusion repair.** Run by that Task's
+implementer at the repository root, offline, with Python 3.14.7, no benchmark, Docker, perf or
+network, on 2026-10-30 from 17:09:40 to 17:14:56 UTC:
 
 ```sh
 python3.14 -I -B -c 'import sys,unittest; sys.path.insert(0,"scripts/performance"); suite=unittest.defaultTestLoader.loadTestsFromNames(["tests.test_comparison","tests.test_report_diagnostics"]); result=unittest.TextTestRunner(verbosity=1).run(suite); raise SystemExit(not result.wasSuccessful())'
 ```
 
 `tests.test_comparison` and `tests.test_report_diagnostics`: 50 tests, `OK`, 315.765 seconds
-on a shared host, exit 0. That is 49 tests before this change plus the new one. Alone, the new
+on a shared host, exit 0. That is 49 tests before that repair plus its new one. Alone, the new
 test took 36.7 s. `python3.14 -I -B scripts/performance/cli.py harness-digest --write`
 re-pinned the protected harness after the last protected edit, to
 `sha256:1e472f28ae1edece3a9fec7bd899579683aca2b3524f688dbb2ed690ea6f510e`, and `--check`
-exits 0. No commit SHA, CI run or VM execution of this candidate exists, and none is claimed.
+exits 0. At that point, no commit SHA, CI run or VM execution of that candidate was claimed.
 The full 33-case `6d8208d` comparison and the cancelled `4caf525f` integration keep their
 recorded status. This change produces no new comparison evidence.
+
+## Native complete positive control (evaluator10 item 2, 2026-10-30)
+
+`Comparison.test_complete_seed_free_comparison_reports_exports_and_verifies_copied_natively`
+adds the missing positive control. Its private fixture Git authority declares only
+`canonical_serialize_small` and `canonical_validate_small`, with the shipped pair counts,
+sentinels, policies and execution bounds. The unused release tier is omitted and the private
+adapter registry names just those two contracts and the sentinel. No shipped registry changes.
+The real planner freezes that entire fixture family into two serial partitions, `[[0], [1]]`.
+The synthetic runner writes the later shard's samples inside the executor's actual sealed
+partition window before evaluation and original sealing; it changes no retained verdict,
+aggregate, build receipt or window. This fills the old synthetic runner's window gap as well
+as avoiding its deliberately absent seed evidence.
+
+Both core originals pass the real `executor.verify_original`. The real aggregate writer,
+`read_aggregate`, `aggregate_claims`, `overview._core`, verdict evaluation and offline core
+admission remain active. Coverage is exactly 208 required and 208 observed, zero failed and
+zero missing; both partitions are included and verified, and the assembled run carries the
+later original's execution authority byte for byte. The public `comparison-report` and
+`comparison-export` commands exit 0 with `complete`/`verified`. After copying the export and
+removing both the export's original directory and the journal, public `comparison-verify`
+exits 0 with `complete`/`verified`, and native offline derivation equals the local report.
+Every lane is complete, reasons are empty, but the core performance verdict is `fail` and
+calibration eligibility is false: complete evidence can prove a regression.
+
+Build/shard execution and diagnostic children retain the established synthetic seams. The
+local admission adapter forwards every core request to the real verifier and substitutes only
+telemetry/profile admission; profile usability still checks the stand-in trace/CPU evidence.
+Telemetry coverage is read natively from the retained synthetic telemetry bundle, whose copied
+admission also remains native. Diagnostic child admission is the existing stand-in, independently
+covered by `tests.test_report_diagnostics`. No aggregate claims, core derivation or verdict is
+injected. This is deterministic test evidence, never a new comparison, benchmark or product
+performance claim. The existing forged-complete refusal, identity/inclusion negatives and
+honest-incomplete assertions are preserved.
+
+The full 33-case `6d8208d` report remains complete and the cancelled `4caf525f` integration
+remains incomplete. Historical Claw and CI receipts, including CI717 on the earlier source,
+are not validation of this test-only candidate. The independent verification Task and operator
+own final-source gate/CI acceptance; no fresh VM, complete comparison or manual benchmark was
+run here. No production Python, Rust, schema, runner, gate, budget or quarantine changes.
+
+**Native harness validation.** After the final protected test edit, using
+`/opt/homebrew/bin/python3.14` (Python 3.14.7):
+
+```sh
+python3.14 -I -B scripts/performance/cli.py harness-digest --write
+python3.14 -I -B scripts/performance/cli.py harness-digest --check
+```
+
+On 2026-10-30, `--write` ran from 18:31:41.434035 to 18:31:43.739077 UTC (2.305 s),
+and `--check` from 18:31:43.739142 to 18:31:45.801737 UTC (2.063 s), both exit 0.
+Both generated native fixtures agree on 722 protected files and
+`sha256:db4485669fd3781a761369575c4ed85b185db19ca5e4589fcde31fefbcacc4ee`.
+
+`python3.14 -I scripts/test-classes.py audit` and
+`python3.14 -I -B scripts/changelog-notes.py --check` pass. The gate gains exactly one perf
+unittest in its existing module, measured alone at 20.958 s on this shared host; no new fast
+validation test, process wait or production startup/replay work is added.
+`cargo fmt --all` and `cargo clippy --workspace --all-targets -- -D warnings` could not run:
+Rustup could not create the supplied private HOME's `.rustup` directory (`Operation not
+permitted`). No Rust source changed and no full Cargo gate was duplicated. `markdownlint:
+not run`: the offline `npx --offline --yes markdownlint-cli2@0.22.1` invocation for the two
+changed Markdown files returned `ENOTCACHED`; no network fallback was attempted. No flake was
+rerun. Development-only fixture construction failures were fixed before the stable focused run.
+
+**Focused validation of the positive-control candidate.** The two modules were run once on
+stable test source with `/opt/homebrew/bin/python3.14`, Python 3.14.7 (Clang 21.0.0), from
+the repository root, offline:
+
+```sh
+python3.14 -I -B -c 'import datetime,sys,unittest; print("START UTC",datetime.datetime.now(datetime.timezone.utc).isoformat(),flush=True); print(sys.version,flush=True); sys.path.insert(0,"scripts/performance"); suite=unittest.defaultTestLoader.loadTestsFromNames(["tests.test_comparison","tests.test_report_diagnostics"]); result=unittest.TextTestRunner(verbosity=1).run(suite); print("END UTC",datetime.datetime.now(datetime.timezone.utc).isoformat(),flush=True); raise SystemExit(not result.wasSuccessful())'
+```
+
+2026-10-30 18:27:17.389419–18:36:59.980194 UTC: **51 tests, OK, 581.287 seconds**, exit 0.
+This is the previous 50 tests plus the new positive control. In particular, the existing
+`test_full_comparison_partitions_aggregates_diagnoses_reports_and_exports` still refuses its
+forged-complete bundle without its explicit injections;
+`test_an_aggregate_of_another_identity_or_excluding_an_admitted_partition_is_refused`,
+`test_failed_partition_and_lost_controller_leave_the_family_incomplete` and
+`test_a_failed_telemetry_export_verifies_incomplete_and_never_relabelled_complete` all pass.
+The new test had already passed alone before this run (1 test, OK, 20.958 seconds):
+
+```sh
+python3.14 -I -B -c 'import sys,unittest; sys.path.insert(0,"scripts/performance"); suite=unittest.defaultTestLoader.loadTestsFromName("tests.test_comparison.Comparison.test_complete_seed_free_comparison_reports_exports_and_verifies_copied_natively"); result=unittest.TextTestRunner(verbosity=2).run(suite); raise SystemExit(not result.wasSuccessful())'
+```
