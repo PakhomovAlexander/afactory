@@ -179,6 +179,20 @@
       "shape": false
     },
     {
+      "path": "adapters/invalid-missing-min-version.toml",
+      "contract": "adapters",
+      "valid": false,
+      "error": "missing field min_version",
+      "shape": true
+    },
+    {
+      "path": "adapters/invalid-previous-version.toml",
+      "contract": "adapters",
+      "valid": false,
+      "error": "expected af.perf-adapters/2",
+      "shape": true
+    },
+    {
       "path": "adapters/invalid-product-path.toml",
       "contract": "adapters",
       "valid": false,

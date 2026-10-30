@@ -18,6 +18,7 @@ from . import (admission, archive, budget, builds, calibration, clicases, compar
                diagnostics,
                gitrefs, history, host, hostlock, hostobserver, hostprep, planning, report, runner,
                telemetrybuild, telemetrylab, tomlfile)
+from . import adapters as adapters_module
 from .values import ContractError, add_note, canonical_digest, require, sha256_bytes
 
 ROOT = telemetrylab.ROOT
@@ -232,21 +233,72 @@ def cli_workload(git, plan, control, suite_doc):
     """Each side's declared CLI workload, before any claim or build: a plan (a core original's,
     or the parent plan a profile diagnoses) with process cases
     needs the authority's CLI registry and, for the release each side's retained source
-    declares, an adapter of it (`clicases.choose_adapter`), as its shards choose. Returns the
+    declares, an adapter of it (`clicases.choose_adapter`), as its shards choose, with a
+    runnable command for every selected process case and its parameters: a command the
+    adapter does not declare, or declares pending, refuses with its reason. Returns the
     admission's detail; raises ContractError."""
-    if not any(case["kind"] == "process" for case in plan["cases"]):
+    selected = [case for case in plan["cases"] if case["kind"] == "process"]
+    if not selected:
         return ""
     raw = git.read_file(control, clicases.CLI_PATH)
     require(raw is not None, "refused before any claim or build: the authority %s has no %s; "
             "its process cases have no CLI workload" % (control[:12], clicases.CLI_PATH))
-    registry = clicases.check_registry(clicases.load_bytes(raw), suite_doc)
+    try:
+        registry = clicases.check_registry(clicases.load_bytes(raw), suite_doc)
+    except ContractError as error:
+        raise ContractError("refused before any claim or build: the authority %s's CLI "
+                            "registry declares no admissible workload: %s" % (control[:12], error))
     named = []
     for side, version in sorted(clicases.side_versions(git, plan).items()):
         adapter_id, adapter = clicases.choose_adapter(registry, version)
         require(adapter_id is not None, "refused before any claim or build: the %s source is "
                 "af %s: %s" % (side, version, adapter))
+        for case in selected:
+            entry = clicases.command(adapter, case["case_id"], case["parameters"])
+            if entry is None or "pending" in entry:
+                raise ContractError(
+                    "refused before any claim or build: the %s source is af %s, whose CLI "
+                    "adapter %s has no runnable command for %s: %s" % (
+                        side, version, adapter_id, case["instance_id"],
+                        entry["pending"] if entry is not None else "not declared"))
         named.append("%s af %s with %s" % (side, version, adapter_id))
     return "CLI workload: " + ", ".join(named)
+
+
+def library_workload(git, plan, control, suite_doc):
+    """Each side's declared native workload, before any claim or build: every plan runs the
+    health sentinel through the probe, and each selected library case (with the seed it copies)
+    through its native contract. For the release each side's retained source declares, an
+    adapter of the authority's registry (`adapters.toml`) must declare that release
+    (`min_version`) and serve every such contract (`adapters.coverage`); a compile at the
+    build never stands in for that declaration. Returns the admission's detail; raises
+    ContractError."""
+    raw = git.read_file(control, adapters_module.ADAPTERS_PATH)
+    require(raw is not None, "refused before any claim or build: the authority %s has no %s; "
+            "its library workload has no declared coverage"
+            % (control[:12], adapters_module.ADAPTERS_PATH))
+    try:
+        registry = adapters_module.check_registry(adapters_module.load_bytes(
+            raw, "%s@%s" % (adapters_module.ADAPTERS_PATH, control[:12])), suite_doc)
+    except ContractError as error:
+        raise ContractError("refused before any claim or build: the authority %s's adapter "
+                            "registry declares no admissible library workload: %s"
+                            % (control[:12], error))
+    needed = {suite_doc["probe"]["sentinel_contract"]: "the health sentinel"}
+    for case in plan["cases"]:
+        if case["kind"] != "library":
+            continue
+        probe = suite_doc["cases"][case["case_id"]]["probe"]
+        needed.setdefault(probe["contract_id"], case["instance_id"])
+        if "seed" in probe:
+            needed.setdefault(probe["seed"]["contract_id"], case["instance_id"] + "'s seed")
+    named = []
+    for side, version in sorted(clicases.side_versions(git, plan).items()):
+        adapter_id, why = adapters_module.coverage(registry, version, needed)
+        require(adapter_id is not None, "refused before any claim or build: the %s source is "
+                "af %s: %s" % (side, version, why))
+        named.append("%s af %s with %s" % (side, version, adapter_id))
+    return "native workload: " + ", ".join(named)
 
 
 def build_recipes(config, work, plan=None, partition=None, installed=ROOT, suite=None,
@@ -930,15 +982,17 @@ class Journal:
         if c["backend"] == "local":
             # The selected releases' declared workloads, from their retained sources under
             # this authority, before anything is claimed or built: a release no contract or
-            # adapter names is refused, never measured under the current fixture.
+            # adapter names, or a selected case its adapter leaves pending, is refused, never
+            # measured under the current fixture or left to a compile.
             if work == "telemetry":
-                workload = telemetry_workload(git, sources, chosen["experiments"], installed)
+                workloads = [telemetry_workload(git, sources, chosen["experiments"], installed)]
             else:
-                workload = cli_workload(git, plan, control,
-                                        (suite or planning.read_suite(git, control)).doc)
+                suite_doc = (suite or planning.read_suite(git, control)).doc
+                workloads = [cli_workload(git, plan, control, suite_doc),
+                             library_workload(git, plan, control, suite_doc)]
             # The same time and storage admission execution applies, before anything is
             # reserved, claimed or built (`time_bounds`, `native_reserve`).
-            admitted = [workload, require_time(c, work, plan, installed),
+            admitted = workloads + [require_time(c, work, plan, installed),
                         self.capacity(native_reserve(c, work, plan, installed),
                                       "native reserve", c["max_bytes"])]
             if checked is not None:

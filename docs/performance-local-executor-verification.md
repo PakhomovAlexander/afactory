@@ -1028,7 +1028,9 @@ this host and run in the outer operator's Linux validation and CI.
   build. `image_admission` runs the sample image's own `/usr/bin/python3` once in a probe
   container (`sample_admission`: this account, no network, read-only root, no capability, no
   new privileges, removal confirmed) and refuses a missing interpreter, shell or driver module,
-  or missing containment or cgroup v2. Library cases keep their compile-time probe adapters.
+  or missing containment or cgroup v2. Library cases then kept their compile-time probe
+  adapters; the final-slot cancellation and selected-workload section below admits them
+  before any claim or build.
   Tests: `WorkloadAdmission` (0.11.9 refused for telemetry and CLI with nothing reserved;
   v0.13.0 against v0.14.0-rc.1 admitted with `check-receipt@1`/`@2` and `af_cli_v2`/`af_cli_v3`),
   `test_an_unusable_sample_runtime_tool_or_containment_refuses_before_any_claim` (ten probe
@@ -1147,3 +1149,91 @@ last edit with `python3 -I scripts/performance/cli.py harness-digest --write` to
 `sha256:52d8516373e80469b112a033166b68f66b63436428faec212d96193a57799b4f` (682 files), and
 `--check` passes. Not established here: the Linux-only tests above, the actual Claw full
 comparison and the final head's CI, which the outer operator runs.
+
+### Final-slot cancellation and selected-workload admission (2026-10-30)
+
+A narrow repair on the combined candidate; every earlier repair above is unchanged. Nothing
+here ran Docker, Claw, GitHub Actions or a measurement, and no signal was sent to any process.
+
+- **A signal in the final slot interrupts the shard** (`perflab/runner.py`, `Shard.run`). The
+  shard's handler latches the signal, and the loop checked it only before a slot. A SIGTERM
+  during the final sample that then returned normally left no later check: the shard sealed
+  `complete`, and under a lease `run_shard` raised `Cancelled` with that complete record inside
+  an `interrupted` original. Now, after the handlers are restored and before the seeds are
+  cleaned up, a latched signal with no stop already made becomes the `cancelled` stop. The
+  shard seals `interrupted` and every completed record is kept: `record_count` equals
+  `expected_records`, no slot is failed or unstarted, and the comparator still reads the run as
+  `incomplete` (`shard_not_complete`). A stop a slot already made keeps its status, failure and
+  retained scratch, such as an uncertain cleanup that keeps the fence. Seed cleanup and lease
+  marking run as before.
+  `test_runner.ControllerCancellation` invokes the handler the real shard installed from
+  inside its final slot, after the stand-in sample returned:
+  `test_a_signal_in_the_final_slot_under_a_lease_seals_interrupted_then_cancels`,
+  `test_a_standalone_shard_a_signal_ends_in_its_final_slot_returns_interrupted` and
+  `test_an_uncertain_final_slot_keeps_its_stop_and_fence_when_a_signal_follows`. Before the
+  fix, the first two failed: their sealed shard had no failure. The executor's cancellation
+  stand-in now seals what the fixed runner seals: every record kept, status `interrupted`.
+  `test_a_cancelled_shard_settles_confirmed_cleanup_interrupted_and_never_replays` asserts that
+  the original's kept `shard.json` and its result both say `interrupted`.
+- **Library workload admission before any claim or build** (`perflab/executor.py`
+  `library_workload`, `perflab/adapters.py` `coverage`). The native adapter registry is
+  `af.perf-adapters/2` (`schemas/performance-adapters-v2.json`; v1 removed and refused,
+  `invalid-previous-version.toml`, `invalid-missing-min-version.toml`). Each adapter declares
+  `min_version`; `native_probe_public_api_v1` declares 0.12.0-rc.3, the release whose real
+  builds compiled it (ADR-0168, ADR-0169). For every core original, both sides need an
+  adapter that declares their release and serves the sentinel's contract and every selected
+  library case's contract, its seed's included. An authority without the registry, an
+  undeclared release (0.11.9) or an unserved contract refuses with side, release and reason,
+  even for a library-only plan. The build still chooses by compile, but only after this
+  admission. Tests:
+  `test_unknown_or_absent_library_coverage_refuses_before_any_claim_or_build` and
+  `test_declared_library_coverage_is_admitted_for_each_side` (0.13.0/0.14.0-rc.1 and
+  0.12.0-rc.3).
+- **Per-case CLI admission** (`cli_workload`). Every selected process case and its parameters
+  needs a declared, runnable command in the chosen adapter of each side. `af_cli_v1`'s pending
+  `tui_open` refuses 0.12.0-rc.3 with its exact reason, and its discovery commands stay
+  admitted, as do the 0.13/0.14 browser cases. An authority whose registry omits a command is
+  refused as before. Tests: `test_a_pending_cli_command_refuses_before_any_claim_or_build`,
+  `test_runnable_cli_commands_of_each_adapter_stay_admitted` and
+  `test_a_cli_command_the_authority_does_not_declare_refuses_before_any_claim`. Each refusal
+  test also asserts that no original exists and that no build or scratch preparation ran.
+  Before the change, the library and pending tests failed.
+
+The focused run started at 09:39:45 MSK from the repository root, with `HOME` and `TMPDIR` set
+to a fresh owned directory, under Python 3.14.7 on macOS:
+
+```sh
+python3.14 -I -B -c 'import sys,unittest; sys.path.insert(0,"scripts/performance"); unittest.main(module=None,argv=["unittest","tests.test_runner.ControllerCancellation","tests.test_executor.Journal.test_a_cancelled_shard_settles_confirmed_cleanup_interrupted_and_never_replays","tests.test_executor.Journal.test_a_cancelled_shard_with_unconfirmed_cleanup_is_uncertain_and_keeps_the_fence","tests.test_comparison.Comparison.test_a_controller_cancelled_in_a_shard_runs_no_later_shard_or_original","tests.test_executor.Journal.test_local_telemetry_publishes_and_verifies_an_actual_local_image_id","tests.test_executor.Journal.test_telemetry_build_records_refuse_previous_versions_and_mutable_references","tests.test_executor.WorkloadAdmission","tests.test_contracts.Parity"],verbosity=2)'
+```
+
+**PASS: 25 tests, 44.7 seconds, exit 0.** The run covered the 5 runner cancellation tests, both
+executor cancellation outcomes, the comparison's whole-controller propagation (no later shard
+or original, no replay), the two Task14 image-provenance tests, the 7 `WorkloadAdmission`
+tests and the 8 schema parity tests.
+
+Two wider runs used the same environment:
+
+- `tests.test_comparison`, `tests.test_localcalibration`, `tests.test_contracts`,
+  `tests.test_builds` and `tests.test_planning`: 94 tests, OK.
+- `tests.test_activation`, `tests.test_calibration` and `tests.test_diagnostics`: 161 tests,
+  OK.
+- `tests.test_runner`: 65 tests, OK.
+- `tests.test_executor`: 57 tests, 1 failure and 5 errors.
+  - Four of these are this macOS host's, as recorded above: three profile cases with `this
+    host is macos`, and `host_mismatch` in the diagnostic-build removal test.
+  - Two `AuthorityAndShapes` cases refused a bytecode cache. An earlier inspection command,
+    run without `-B`, left it in the tree. After the cache was removed,
+    `tests.test_executor.AuthorityAndShapes` ran again: 9 tests, OK.
+
+The protected harness was re-pinned after the last protected edit with `python3 -I -B
+scripts/performance/cli.py harness-digest --write`, to
+`sha256:e905d33fe5473c9ff117e637f957057bc787676df73d5afd8a776aeb3bd974bb` (684 files), and
+`--check` passes.
+
+Not established here, and owned by the outer operator:
+
+- the exact final Claw regression tests;
+- the pinned Rust 1.88 manual harness;
+- the full 33-case release comparison;
+- the portable export;
+- the final head's CI.

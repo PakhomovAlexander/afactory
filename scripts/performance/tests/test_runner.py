@@ -1197,6 +1197,94 @@ class ControllerCancellation(ShardHarness):
         # Its own confirmed cleanup settled its own lock: the next shard may run.
         hostlock.MachineLock(self.path("locks")).release()
 
+    def final_slot_signal(self, fired):
+        """The shard's own installed handler, invoked from inside its final slot once that
+        slot's sample has returned normally: no later slot's check is left to see it."""
+        actual = runner.Shard.sample
+
+        def sample(shard, slot):
+            record = None
+            try:
+                record = actual(shard, slot)
+                return record
+            finally:
+                if slot is shard.slots[-1]:
+                    handler = signal.getsignal(signal.SIGTERM)
+                    self.assertIn("Shard.run", getattr(handler, "__qualname__", ""),
+                                  "only the shard's own installed handler is invoked")
+                    fired.append(signal.SIGTERM)
+                    handler(signal.SIGTERM, None)
+        return mock.patch.object(runner.Shard, "sample", sample)
+
+    def assert_every_slot_recorded_yet_interrupted(self, plan, doc, fired):
+        expected = len(schedule.expected_slots(plan, 0))
+        self.assertEqual(fired, [signal.SIGTERM])
+        self.assertEqual((doc["status"], doc["failure"]["reason"]), ("interrupted", "cancelled"))
+        self.assertIn("after its last slot ran; %d of %d slots recorded" % (expected, expected),
+                      doc["failure"]["detail"])
+        # The final sample completed: its evidence is kept and nothing is counted missing.
+        self.assertEqual((doc["expected_records"], doc["record_count"]), (expected, expected))
+        self.assertEqual(doc["slots"], {"failed": 0, "unstarted": 0})
+        records = self.records()
+        self.assertEqual([r["sequence"] for r in records], list(range(expected)))
+        self.assertEqual(records[-1]["status"], "ok")
+        self.assertEqual(contracts.read_file(self.path("run", "shards", "0", runner.SHARD_FILE),
+                                             "shard"), doc, "the interrupted record is sealed")
+        self.assertEqual(os.listdir(self.path("scratch")), [], "confirmed scratch is removed")
+        verdict = compare.compare(self.path("run"))
+        self.assertEqual(verdict["aggregate"]["result"], "incomplete")
+        self.assertIn("shard_not_complete",
+                      [reason["code"] for reason in verdict["aggregate"]["reasons"]])
+
+    def test_a_signal_in_the_final_slot_under_a_lease_seals_interrupted_then_cancels(self):
+        plan, plan_path, build = self.prepare([DISCOVERY], run_id="final_lease")
+        before = signal.getsignal(signal.SIGTERM)
+        lease = hostlock.MachineLock(self.path("locks"))
+        try:
+            lease.guard()
+            fired = []
+            with self.final_slot_signal(fired), self.assertRaises(runner.Cancelled) as raised:
+                runner.run_shard(self.options(plan_path, build), machine_lease=lease)
+            self.assertEqual(raised.exception.signum, signal.SIGTERM)
+            self.assertIsNone(raised.exception.result, "the owner settles its own outcome")
+            self.assert_every_slot_recorded_yet_interrupted(plan, raised.exception.doc, fired)
+            self.assertFalse(lease.uncertain, "a confirmed sample end leaves no uncertainty")
+            self.assertIs(signal.getsignal(signal.SIGTERM), before)
+            lease.confirm_clean()
+        finally:
+            lease.release()
+
+    def test_a_standalone_shard_a_signal_ends_in_its_final_slot_returns_interrupted(self):
+        plan, plan_path, build = self.prepare([DISCOVERY], run_id="final_alone")
+        fired = []
+        with self.final_slot_signal(fired):
+            doc = runner.run_shard(self.options(plan_path, build))
+        self.assert_every_slot_recorded_yet_interrupted(plan, doc, fired)
+        hostlock.MachineLock(self.path("locks")).release()
+
+    def test_an_uncertain_final_slot_keeps_its_stop_and_fence_when_a_signal_follows(self):
+        # The final sample's cleanup is unconfirmed and a signal lands in the same slot: the
+        # meaningful stop and the scratch it keeps stay; the controller is still cancelled.
+        plan, plan_path, build = self.prepare([DISCOVERY], run_id="final_uncertain")
+        last = len(schedule.expected_slots(plan, 0)) - 1
+        with open(os.path.join(build, "control", "overrides.json"), "w") as stream:
+            json.dump({str(last): "uncertain"}, stream)
+        lease = hostlock.MachineLock(self.path("locks"))
+        try:
+            lease.guard()
+            fired = []
+            with self.final_slot_signal(fired), self.assertRaises(runner.Cancelled) as raised:
+                runner.run_shard(self.options(plan_path, build), machine_lease=lease)
+            doc = raised.exception.doc
+            self.assertEqual(fired, [signal.SIGTERM])
+            self.assertEqual((doc["status"], doc["failure"]["reason"]),
+                             ("failed", "cleanup_uncertain"))
+            self.assertEqual((doc["record_count"], doc["slots"]["unstarted"]), (last + 1, 0))
+            self.assert_kept_one_namespace(doc)
+            self.assertTrue(lease.uncertain, "the retained scratch keeps the fence")
+        finally:
+            lease.release()
+
 
 class RunDeadline(ShardHarness):
     """The run's one execution start and total deadline come from its build (ADR-0170): a

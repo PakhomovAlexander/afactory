@@ -589,7 +589,9 @@ leaves those lanes `not_applicable`, named in the report. Every original keeps i
 a failed or uncertain one is never retried, and a lost controller makes a claimed original
 `uncertain` with the fence kept. A termination signal (SIGTERM, SIGINT) to the controller during
 a shard cancels the whole controller, not only that shard: the shard seals its `interrupted`
-record, no later shard of the original and no later original starts, and the executor removes
+record (even when the signal lands in its final slot and every slot was recorded: the completed
+samples are kept, never counted missing, yet the shard is not complete), no later shard of the
+original and no later original starts, and the executor removes
 the original's scratch. With that cleanup and every owned descendant confirmed, the original
 ends `interrupted` with its partial evidence and the fence settles; otherwise it is `uncertain`
 and the fence stays. Either way the original is never replayed. A shard run alone, outside a
@@ -643,14 +645,22 @@ A submission admits the selected releases' declared workloads before anything is
 claimed or built, from the release each side's retained source declares in its Cargo.lock: a
 telemetry original needs a fixture contract of the installed bench script for both sides, and a
 core original with CLI cases needs the authority's CLI registry and an adapter of it for both
-sides (`af_cli_v1` from 0.12.0-rc.3 on). A pair either refuses is refused at `preflight`,
+sides (`af_cli_v1` from 0.12.0-rc.3 on) whose command for every selected case and parameters is
+declared and runnable: `af_cli_v1` declares both `tui_open` fixtures pending, so a 0.12 side
+with a browser case is refused with that reason while its discovery commands stay admitted. Every
+core original also needs, for both sides, a native probe adapter of the authority's
+`fixtures/performance/adapters.toml` (`af.perf-adapters/2`) that declares the side's release
+(`min_version`, 0.12.0-rc.3 for `native_probe_public_api_v1`) and serves the health
+sentinel's contract and every selected library case's (and its seed's): a release no adapter
+declares (0.11.9, say) is refused even with library cases only. A pair either refuses is refused at `preflight`,
 `submit` and `comparison-preflight`, never at its build. The same admission runs the configured
 sample image's own `/usr/bin/python3` once, in a probe container started as every bounded
 container is (this account, no network, a read-only root, every capability dropped, no new
 privileges, its removal confirmed) under the machine's one exclusion: a sample image without
 `/bin/sh`, that interpreter or the PTY driver's modules, or a container that is not so contained
-or has no cgroup v2 namespace, refuses before any claim or build. Library cases keep their
-reviewed probe adapters, chosen by the first that compiles at the build. A comparison member
+or has no cgroup v2 namespace, refuses before any claim or build. The build still chooses a
+side's probe adapter by the first that compiles, but only after the admission above has
+established its declared coverage: a compile never stands in for it. A comparison member
 already in the journal under its key must have frozen the comparison's very configuration and,
 for a core partition, its frozen plan: a narrower same-key original (another telemetry profile
 or experiment set, partial core cases) refuses the comparison before any new claim, and

@@ -2385,18 +2385,22 @@ def validate_golden(doc, where="golden"):
     return doc
 
 
-# af.perf-adapters/1 ------------------------------------------------------------------------
+# af.perf-adapters/2 ------------------------------------------------------------------------
 
-ADAPTERS_SCHEMA = "af.perf-adapters/1"
+ADAPTERS_SCHEMA = "af.perf-adapters/2"
 ADAPTERS_PER_CONTRACT_MAX = 4
 # An adapter overlays only example sources of an existing package: it never replaces a product
 # manifest, a crate's own sources or its dependency lock.
 ADAPTER_PATH = r"^crates/[a-z0-9-]+/examples/[A-Za-z0-9._/-]+\.rs$"
+SEMVER_TEXT = Str(pattern=r"^[0-9]+\.[0-9]+\.[0-9]+(?:-[0-9A-Za-z.-]+)?$", max_len=64)
 ADAPTER = Obj(
     Field("kind", Const("native_probe")),
     Field("description", TEXT),
     Field("priority", Int(1, ADAPTERS_PER_CONTRACT_MAX)),
     Field("equivalence_group", ID),
+    # The first AF release whose public API the adapter is declared to cover; a release
+    # before it has no declared native coverage and is refused before any build.
+    Field("min_version", SEMVER_TEXT),
     Field("package", Str(pattern=r"^[a-z0-9-]{1,64}$", max_len=64)),
     Field("example", Str(pattern=r"^[a-z0-9-]{1,64}$", max_len=64)),
     Field("contracts", Arr(ID, 1, 64, unique=True)),
@@ -2540,7 +2544,6 @@ CLI_COMMAND = Obj(
     Field("pending", Str(min_len=1, max_len=512), required=False),
     Field("description", TEXT),
 )
-SEMVER_TEXT = Str(pattern=r"^[0-9]+\.[0-9]+\.[0-9]+(?:-[0-9A-Za-z.-]+)?$", max_len=64)
 CLI_ADAPTER = Obj(
     Field("description", TEXT), Field("priority", Int(1, 4)),
     Field("min_version", SEMVER_TEXT),

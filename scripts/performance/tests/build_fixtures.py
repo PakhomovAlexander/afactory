@@ -161,7 +161,7 @@ PROBE_V2 = ('// authority probe v2\n// requires: answer_v2\n'
 HELPER = '// authority helper module\n'
 PROBE_V1 = '// authority probe v1, the older public API\n// requires: answer\n'
 
-ADAPTERS = '''schema = "af.perf-adapters/1"
+ADAPTERS = '''schema = "af.perf-adapters/2"
 description = "Fixture adapters."
 
 [adapters.fixture_probe_v2]
@@ -169,6 +169,7 @@ kind = "native_probe"
 description = "The current public API."
 priority = 1
 equivalence_group = "fixture_group_v2"
+min_version = "0.12.0-rc.3"
 package = "review-pipeline"
 example = "perf-probe"
 contracts = ["sentinel_canonical_v1"]
@@ -179,6 +180,7 @@ kind = "native_probe"
 description = "An older public API bridge."
 priority = 2
 equivalence_group = "fixture_group_v1"
+min_version = "0.12.0-rc.3"
 package = "review-pipeline"
 example = "perf-probe-v1"
 contracts = ["sentinel_canonical_v1"]

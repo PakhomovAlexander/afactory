@@ -183,9 +183,12 @@ def lab_repo(path, suite_bytes=None):
              "Cargo.lock": LOCK,
              "README": b"product\n"}
     if suite_bytes is None:
-        # The CLI registry of the committed suite, which its process cases' admission reads.
+        # The CLI and native adapter registries of the committed suite, which the admission of
+        # its process and library workloads reads.
         files["fixtures/performance/cli.toml"] = read(os.path.join(ROOT,
                                                                    "fixtures/performance/cli.toml"))
+        files["fixtures/performance/adapters.toml"] = read(
+            os.path.join(ROOT, "fixtures/performance/adapters.toml"))
     root = repo.commit("lab", files)
     return repo, root
 

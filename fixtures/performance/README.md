@@ -41,10 +41,12 @@ The data of the continuous performance laboratory
   confirmed. Its private registry setup registers all 20 copied Stores through each
   side's own `af task gc --state` preview, which records the Store it names and writes nothing
   else (ADR-0263).
-- `adapters.toml` — the reviewed native probe adapters (`af.perf-adapters/1`): each a fixed
-  priority, an equivalence group, the contracts it serves and the exact closure of authority
-  example files a build copies into a measured source before compiling it. A test requires each
-  closure to be exactly its example's files.
+- `adapters.toml` — the reviewed native probe adapters (`af.perf-adapters/2`): each a fixed
+  priority, an equivalence group, the first AF release it covers (`min_version`), the contracts
+  it serves and the exact closure of authority example files a build copies into a measured
+  source before compiling it. A test requires each closure to be exactly its example's files. A
+  local submission refuses, before any claim or build, a side whose release no adapter declares
+  or whose plan runs a native contract no declared adapter serves.
 - `diagnostic/real-tool-synthetic/` — retained real perf 6.1 output over an owned synthetic C
   workload, its DSO prefix normalized, for the parser and stack-quality tests; not an AF capture
   (its README).

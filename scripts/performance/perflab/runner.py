@@ -725,6 +725,14 @@ class Shard(object):
         finally:
             for signum, handler in handlers.items():
                 signal.signal(signum, handler)
+            if stop is None and self.interrupted is not None:
+                # A signal latched during the final slot, or after it, has no later slot to
+                # stop: the shard still ends `interrupted`, never complete, and every record
+                # the slots wrote is kept as it is (ADR-0168). A stop the slots already made
+                # (an uncertain cleanup, a deadline) is the shard's and stays.
+                stop = Stop("cancelled", "signal %d ended the shard after its last slot ran; "
+                            "%d of %d slots recorded" % (self.interrupted, self.records,
+                                                         len(self.slots)), "interrupted")
             if stop is not None and stop.retain:
                 # A process that may still be live could read or write the shard's seeds.
                 if self.seed_namespace is not None:

@@ -396,6 +396,16 @@ class Journal(ExecutorFixture):
             shutil.copytree(os.path.join(staged, "shards", str(options.shard)), target)
             doc = contracts.read_file(os.path.join(target, "shard.json"), "shard")
             if options.shard == cancel_at:
+                # What `runner.run_shard` seals when the signal lands in the final slot
+                # (`test_runner.ControllerCancellation`): every record kept, yet interrupted.
+                doc.update(status="interrupted", failure={
+                    "reason": "cancelled", "detail": "signal %d ended the shard after its last "
+                    "slot ran; %d of %d slots recorded" % (signal.SIGTERM, doc["record_count"],
+                                                           doc["expected_records"])})
+                with open(os.path.join(target, "shard.json"), "wb") as stream:
+                    stream.write(contracts.write_bytes(doc, "shard"))
+                os.unlink(os.path.join(target, bundle.MANIFEST))
+                bundle.write_manifest(target, plan["limits"]["shard_bundle_bytes"])
                 raise runner.Cancelled(signal.SIGTERM, doc)
             return doc
         def cleanup(image, mount, **kwargs):
@@ -432,6 +442,11 @@ class Journal(ExecutorFixture):
             self.assertIn("shards none and every later original were not started", result["detail"])
             paths = [item["path"] for item in result["evidence"]]
             self.assertIn("run/shards/0/shard.json", paths, "the sealed partial record is kept")
+            sealed = contracts.read_file(os.path.join(j.path(ident), "run/shards/0/shard.json"),
+                                         "shard")
+            self.assertEqual((sealed["status"], sealed["record_count"], sealed["slots"]["unstarted"]),
+                             ("interrupted", sealed["expected_records"], 0),
+                             "every slot recorded, and the shard and original both interrupted")
             self.assertNotIn("report/report.html", paths, "a cancelled original has no verdict")
             self.assertEqual(cancelled.result["status"], "interrupted")
             # The confirmed cleanup settled the fence; the original never replays.
@@ -1277,6 +1292,92 @@ class WorkloadAdmission(ExecutorFixture):
             self.assertEqual(j.names(), [])
             self.submit(j, "telemetry", "pair_telemetry")
             self.assertEqual(len(j.names()), 1)
+
+    def assert_refused(self, work, key, why):
+        """`preflight`, then `submit`, refuse with `why` and reserve, build or prepare nothing."""
+        with mock.patch.object(executor.builds, "Builder", side_effect=AssertionError("built")), \
+                mock.patch.object(executor.hostprep, "prepare",
+                                  side_effect=AssertionError("prepared")), \
+                executor.Journal(self.c) as j:
+            refused = j.preflight(work, self.base, self.head, key)
+            contracts.write_bytes(refused, "executor-preflight")
+            self.assertEqual(refused["status"], "refused")
+            self.assertIn("refused before any claim or build", refused["detail"])
+            self.assertIn(why, refused["detail"])
+            with self.assertRaisesRegex(ContractError, "refused before any claim or build"):
+                self.submit(j, work, key)
+            self.assertEqual(j.names(), [], "a refusal reserves nothing")
+
+    def admitted(self, key):
+        """The admission detail a ready core preflight checked; nothing is reserved."""
+        with executor.Journal(self.c) as j:
+            ready = j.preflight("core", self.base, self.head, key)
+            self.assertEqual(ready["status"], "ready", ready["detail"])
+            checked = {"serial": None, "tools": []}
+            j._submit("core", self.base, self.head, key, checked=checked)
+            self.assertEqual(j.names(), [])
+            return checked["admission"]
+
+    def test_unknown_or_absent_library_coverage_refuses_before_any_claim_or_build(self):
+        # Library cases only: no CLI adapter is consulted, and a compile is never the proof.
+        self.c["core"]["cases"] = ["canonical_serialize_small"]
+        self.release("0.13.0", "0.11.9")
+        self.assert_refused("core", "old_library", "the candidate source is af 0.11.9: no "
+                            "declared native probe adapter covers AF 0.11.9")
+        # An authority that declares no adapter registry has no library coverage at all.
+        os.unlink(os.path.join(self.repo.path, "fixtures/performance/adapters.toml"))
+        self.c["control_sha"] = self.repo.commit("authority without adapters")
+        self.release("0.13.0", "0.14.0-rc.1")
+        self.assert_refused("core", "no_registry", "has no fixtures/performance/adapters.toml; "
+                            "its library workload has no declared coverage")
+
+    def test_declared_library_coverage_is_admitted_for_each_side(self):
+        self.c["core"]["cases"] = ["canonical_serialize_small", "state_projection"]
+        for base, head in (("0.13.0", "0.14.0-rc.1"), ("0.12.0-rc.3", "0.12.0-rc.3")):
+            with self.subTest(base=base, head=head):
+                self.release(base, head)
+                admission = self.admitted("library_" + head)
+                self.assertIn("native workload: baseline af %s with native_probe_public_api_v1, "
+                              "candidate af %s with native_probe_public_api_v1" % (base, head),
+                              admission)
+
+    def test_a_pending_cli_command_refuses_before_any_claim_or_build(self):
+        # af_cli_v1 covers 0.12.0-rc.3 but declares both browser fixtures pending.
+        self.c["core"]["cases"] = ["tui_open__registry_empty"]
+        self.release("0.13.0", "0.12.0-rc.3")
+        self.assert_refused("core", "pending_tui", "the candidate source is af 0.12.0-rc.3, "
+                            "whose CLI adapter af_cli_v1 has no runnable command for "
+                            "tui_open__registry_empty: The older command surface has no "
+                            "reviewed browser registry setup.")
+
+    def test_runnable_cli_commands_of_each_adapter_stay_admitted(self):
+        # The same older adapter's discovery commands, and the browser cases of 0.13/0.14.
+        for cases, base, head, named in (
+                (["cli_discovery__command_version"], "0.12.0-rc.3", "0.12.0-rc.3",
+                 "baseline af 0.12.0-rc.3 with af_cli_v1, candidate af 0.12.0-rc.3 with af_cli_v1"),
+                (["tui_open__registry_empty", "tui_open__registry_stores_20x10000"], "0.13.0",
+                 "0.14.0-rc.1", "baseline af 0.13.0 with af_cli_v2, candidate af 0.14.0-rc.1 "
+                 "with af_cli_v3")):
+            with self.subTest(cases=cases):
+                self.c["core"]["cases"] = cases
+                self.release(base, head)
+                self.assertIn("CLI workload: " + named, self.admitted("cli_" + head))
+
+    def test_a_cli_command_the_authority_does_not_declare_refuses_before_any_claim(self):
+        # An authority whose older adapter omits the browser command has no CLI workload for
+        # it: its registry is refused, never read as runnable.
+        path = os.path.join(self.repo.path, "fixtures/performance/cli.toml")
+        with open(path) as stream:
+            text = stream.read()
+        start = text.index("[[adapters.af_cli_v1.commands]]\ncase_id = \"tui_open\"")
+        end = text.index("[adapters.af_cli_v2]")
+        with open(path, "w") as stream:
+            stream.write(text[:start] + text[end:])
+        self.c["control_sha"] = self.repo.commit("authority without the older browser commands")
+        self.c["core"]["cases"] = ["tui_open__registry_empty"]
+        self.release("0.13.0", "0.12.0-rc.3")
+        self.assert_refused("core", "missing_tui", "adapters.af_cli_v1: no command for "
+                            "tui_open__registry_empty")
 
 
 class ImageAdmission(ExecutorFixture):

@@ -9,7 +9,7 @@
 # is incompatible build evidence. A source no adapter compiles against has unavailable native
 # coverage.
 
-schema = "af.perf-adapters/1"
+schema = "af.perf-adapters/2"
 description = "Native public-API probe adapters, by fixed priority."
 
 [adapters.native_probe_public_api_v1]
@@ -17,6 +17,7 @@ kind = "native_probe"
 description = "The authority's perf-probe example and its complete helper-module closure, built in the measured source's review-pipeline package."
 priority = 1
 equivalence_group = "native_probe_public_api_v1"
+min_version = "0.12.0-rc.3"
 package = "review-pipeline"
 example = "perf-probe"
 contracts = [
@@ -44,6 +45,7 @@ kind = "native_probe"
 description = "A schema fixture second adapter: an older public API bridge, tried after the first."
 priority = 1
 equivalence_group = "native_probe_bridge_v0"
+min_version = "0.12.0-rc.3"
 package = "review-pipeline"
 example = "perf-probe-v0"
 contracts = ["sentinel_canonical_v1"]
