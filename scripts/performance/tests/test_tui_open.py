@@ -254,23 +254,27 @@ class TuiOpen(unittest.TestCase):
         return process.returncode, stdout, stderr
 
     def pids(self, process):
-        """The pids the browser wrote to the readiness FIFO, within 10 s and while the driver
-        runs; each is killed at cleanup if it is still there."""
+        """The pids the browser wrote to the readiness FIFO, within 10 s; each is killed at
+        cleanup if it is still there. A driver that exited fails the wait only when a read of
+        the FIFO made after its exit still holds no complete line: the browser may have written
+        its pids just before the driver ended."""
         fifo = os.open(self.fifo, os.O_RDONLY | os.O_NONBLOCK)
         line = b""
         deadline = time.monotonic() + 10
         try:
-            while b"\n" not in line:
-                if process.poll() is not None:
+            while True:
+                exited = process.poll() is not None
+                ready, _, _ = select.select([fifo], [], [], 0 if exited else 0.05)
+                data = os.read(fifo, 4096) if ready else b""
+                line += data
+                if b"\n" in line:
+                    break
+                if exited:
                     self.fail("the driver exited %d before the browser was ready: %s"
                               % (process.returncode, self.stderr_so_far(process)))
                 if time.monotonic() >= deadline:
                     self.fail("the browser was not ready within 10 s")
-                ready, _, _ = select.select([fifo], [], [], 0.05)
-                data = os.read(fifo, 4096) if ready else b""
-                if data:
-                    line += data
-                else:
+                if not data:
                     time.sleep(0.02)  # no writer has opened the FIFO yet
         finally:
             os.close(fifo)
@@ -427,6 +431,61 @@ class TuiOpen(unittest.TestCase):
         # descendant that left its session exists when the cleanup begins; the browser paints
         # nothing before it (`escape-first`), since `tcdrain` on this platform's terminal
         # waits for a read of the driver's that comes after the watcher.
+        self.assert_refused_watcher_fails_and_clears()
+
+    @unittest.skipUnless(os.path.isdir("/proc/self/task"),
+                         "an undumpable process keeps its environment from its user on Linux")
+    def test_a_refused_watcher_still_knows_the_browsers_start_for_its_cleanup(self):
+        # A process of this user's that started before the browser and made itself undumpable,
+        # so that its environment cannot be read: the browser's start, recorded before the
+        # exit watcher, tells the cleanup it is not the browser's doing, so the refused watcher
+        # ends in the ordinary failure, not an unconfirmed cleanup (issue #477).
+        if os.geteuid() == 0:
+            self.skipTest("root reads every environment")
+        older = subprocess.Popen(
+            [sys.executable, "-I", "-c",
+             "import ctypes, sys, time\n"
+             "assert ctypes.CDLL(None).prctl(4, 0, 0, 0, 0) == 0\n"
+             "sys.stdout.write('x\\n')\n"
+             "sys.stdout.flush()\n"
+             "time.sleep(60)\n"],
+            stdout=subprocess.PIPE)
+        self.addCleanup(older.stdout.close)
+        self.addCleanup(self.reap_within, older.pid, 10)
+        self.addCleanup(self.release, older.pid)
+        self.assertEqual(self.read_line(older.stdout.fileno(), 10), b"x\n")
+        with self.assertRaises(PermissionError):
+            open("/proc/%d/environ" % older.pid, "rb").close()
+        # The browser's start must fall on a later clock tick than this process's.
+        with open("/proc/%d/stat" % older.pid, "rb") as source:
+            stat = source.read()
+        start = int(stat[stat.rindex(b")") + 2:].split()[19])
+        ticks = os.sysconf("SC_CLK_TCK")
+        deadline = time.monotonic() + 10
+        while time.clock_gettime(time.CLOCK_BOOTTIME) * ticks < start + 1:
+            self.assertLess(time.monotonic(), deadline, "the clock did not pass a tick")
+            time.sleep(0.001)
+        self.assert_refused_watcher_fails_and_clears()
+
+    def read_line(self, source, seconds):
+        """One line from descriptor `source`, which must come within `seconds`."""
+        line = b""
+        deadline = time.monotonic() + seconds
+        while b"\n" not in line:
+            remaining = deadline - time.monotonic()
+            ready, _, _ = select.select([source], [], [], max(remaining, 0))
+            if not ready or remaining <= 0:
+                self.fail("no line within %s s" % seconds)
+            data = os.read(source, 4096)
+            if not data:
+                self.fail("the pipe ended before a line")
+            line += data
+        return line
+
+    def assert_refused_watcher_fails_and_clears(self):
+        """The browser in `escape-first` mode under an `Exit` that is refused once the browser
+        is ready: the ordinary failure, no document, and neither the browser nor the process
+        that left its session left running."""
         driver = self.loaded()
         pids = []
         fifo = os.open(self.fifo, os.O_RDONLY | os.O_NONBLOCK)

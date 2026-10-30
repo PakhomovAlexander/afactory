@@ -420,21 +420,23 @@ def measure(argv):
             signal.pthread_sigmask(signal.SIG_UNBLOCK, SIGNALS)
             fcntl.ioctl(slave, termios.TIOCSCTTY, 0)
 
-        # No cancellation lands between the spawn and the record of its pid.
+        # No cancellation lands between the spawn and the record of its pid and its start. The
+        # start (`born`, Linux's clock ticks) is read before the exit watcher, so every cleanup,
+        # a refused watcher's included, has it; a child whose `stat` is gone leaves it None.
         signal.pthread_sigmask(signal.SIG_BLOCK, SIGNALS)
         try:
             started = time.monotonic_ns()
             child = subprocess.Popen(argv, stdin=slave, stdout=slave, stderr=slave,
                                      env=environment, start_new_session=True, close_fds=True,
                                      pass_fds=(witness,), preexec_fn=enter_session)
+            if os.path.isdir(PROC + "/self/task"):
+                fields = proc_stat(child.pid, PROC)
+                born = None if fields is None else int(fields[19])
             watch = Exit(child.pid)
         finally:
             signal.pthread_sigmask(signal.SIG_SETMASK, mask)
         os.close(slave)
         slave = -1
-        if os.path.isdir(PROC + "/self/task"):
-            fields = proc_stat(child.pid, PROC)
-            born = None if fields is None else int(fields[19])
         deadline = started + DEADLINE_SECONDS * 1000000000
         while screen.browser is None:
             remaining = (deadline - time.monotonic_ns()) / 1000000000
