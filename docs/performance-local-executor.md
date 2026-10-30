@@ -61,8 +61,10 @@ Changing the directory changes the frozen configuration and environment identity
 Finish or discard prior-version journals with their original control before upgrading;
 state/result v1 receipts are also refused rather than migrated. New originals are written as
 `af.perf-executor-request/2` and `af.perf-executor-result/3`; request/1 and result/2 originals
-already in a journal stay readable, so `status` and `verify` keep working on them
-([ADR-0266](adr/0266-measure-nightlies-as-originals-of-the-independent-executor.md)). Profile limits, oracles, N/K, tolerances,
+already in a journal stay readable by `status` and `verify`
+([ADR-0266](adr/0266-measure-nightlies-as-originals-of-the-independent-executor.md)). The
+producer check is ADR-0240's and unchanged: `verify` still refuses an original written under
+another installed control. Profile limits, oracles, N/K, tolerances,
 sentinel rules and the free-disk floor are unchanged. The example reserves 256 GiB overall,
 32 GiB each for native core archive and local telemetry history; capacity exhaustion stops
 new work, never deletes original receipts. Provision a filesystem/quota at that overall bound
@@ -286,9 +288,10 @@ python3 -I -B /opt/af-perf/control/scripts/performance/cli.py executor \
 ```
 
 `--tag` must be `nightly-YYYY.MM.DD`, a real calendar date, and there is no `--key`: the key is
-`nightly:<tag>:<work>`. Without `--base` the baseline is derived as above, and the request's
-`submission.baseline` records the derived tag and commit; an explicit `--base` is used as given
-and recorded as `null`. No reachable stable tag refuses the submission. Submitting the same
+`nightly:<tag>:<work>`. `--head` is resolved to one commit once, and both the derived baseline
+and the request use that commit. Without `--base` the baseline is derived as above, and the
+request's `submission.baseline` records the derived tag and commit; an explicit `--base` is used
+as given and recorded as `null`. No reachable stable tag refuses the submission. Submitting the same
 night again with the same arguments prints the existing original; another `--head` under the
 same tag is refused as a reused key. `--work profile` is refused. A core nightly is refused
 unless the configuration's `core.tier` is `nightly`, naming the tier it found, so the quick

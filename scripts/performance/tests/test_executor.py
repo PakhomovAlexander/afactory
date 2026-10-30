@@ -428,6 +428,13 @@ class Journal(ExecutorFixture):
         self.assertEqual([item["state"] for item in json.loads(status)], ["complete"])
         self.assertEqual(json.loads(printed)["schema"], "af.perf-executor-result/2")
 
+    def test_existing_kinds_keep_their_submission_and_identity(self):
+        with executor.Journal(self.c) as j:
+            manual = self.submit(j)
+        self.assertEqual(manual["submission"], {"kind": "manual", "key": "manual_1"})
+        self.assertEqual(manual["request_id"], "exp_" + canonical_digest(
+            {"submission": {"kind": "manual", "key": "manual_1"}, "work": "core"})[7:55])
+
     def test_local_diagnostic_uses_native_child_planner_report_and_admission(self):
         control = self.repo.commit("diagnostic authority", {diagnostics.REGISTRY_PATH:
             read(os.path.join(ROOT, diagnostics.REGISTRY_PATH))})
@@ -664,8 +671,13 @@ class Nightly(ExecutorFixture):
 
     def setUp(self):
         super().setUp()
-        # lab (v0.12.0) - v0.13.0 - v0.14.0-rc.3 - main tip (the nightly's frozen commit), and
-        # a later stable v0.14.0 on a side branch, which the tip cannot reach.
+        self.c["core"].update(tier="nightly", environment="linux_x86_64_musl_claw",
+                              cases=["cli_discovery__command_version"])
+        self.c["zigbuild_bin"] = "/opt/af-perf-tools/bin"
+
+    def release_history(self):
+        """lab (v0.12.0) - v0.13.0 - v0.14.0-rc.3 - main tip (the nightly's frozen commit), and
+        a later stable v0.14.0 on a side branch, which the tip cannot reach."""
         self.repo.tag("v0.12.0", self.base)
         self.stable = self.repo.commit("release 0.13.0", {"README": "0.13.0"})
         self.repo.tag("v0.13.0", self.stable, annotated=True)
@@ -676,9 +688,6 @@ class Nightly(ExecutorFixture):
         self.repo.git("checkout", "-q", "main")
         self.head = self.repo.commit("frozen main", {"README": "nightly"})
         self.repo.tag(self.TAG, self.head)
-        self.c["core"].update(tier="nightly", environment="linux_x86_64_musl_claw",
-                              cases=["cli_discovery__command_version"])
-        self.c["zigbuild_bin"] = "/opt/af-perf-tools/bin"
 
     def cli(self, *argv):
         """(exit status, stdout, stderr) of `cli.py executor ... submit --kind nightly`."""
@@ -697,6 +706,7 @@ class Nightly(ExecutorFixture):
             return [j.request(ident) for ident in j.names()]
 
     def test_nightly_core_derives_the_highest_reachable_stable_release_and_is_idempotent(self):
+        self.release_history()
         code, out, _ = self.cli("--work", "core", "--tag", self.TAG, "--head", self.head)
         self.assertEqual(code, 0)
         request = json.loads(out)
@@ -755,13 +765,26 @@ class Nightly(ExecutorFixture):
         self.assertIn("no stable release tag is reachable", errors)
         self.assertEqual(self.originals(), [])
 
-    def test_existing_kinds_keep_their_submission_and_identity(self):
-        self.c = config(self.path("manual-journal"), self.repo.path, self.base)
-        with executor.Journal(self.c) as j:
-            manual = self.submit(j)
-        self.assertEqual(manual["submission"], {"kind": "manual", "key": "manual_1"})
-        self.assertEqual(manual["request_id"], "exp_" + canonical_digest(
-            {"submission": {"kind": "manual", "key": "manual_1"}, "work": "core"})[7:55])
+    def test_nightly_freezes_the_head_its_baseline_was_derived_from_when_the_ref_moves(self):
+        self.repo.tag("v0.12.0", self.base)
+        derive = gitrefs.nightly_baseline
+
+        def derive_then_advance(git, head):
+            chosen = derive(git, head)
+            # main moves to a commit with another reachable stable release before the request
+            # is frozen; the submission must not see it.
+            self.repo.tag("v0.13.0", self.repo.commit("advanced main", {"README": "moved"}))
+            return chosen
+
+        with mock.patch.object(gitrefs, "nightly_baseline", side_effect=derive_then_advance) as seen:
+            code, out, _ = self.cli("--work", "telemetry", "--tag", self.TAG, "--head", "main")
+        self.assertEqual(code, 0)
+        self.assertEqual(seen.call_args.args[1], self.head)
+        self.assertNotEqual(self.repo.git("rev-parse", "main"), self.head)
+        request = json.loads(out)
+        self.assertEqual((request["sources"]["baseline_sha"], request["sources"]["candidate_sha"]),
+                         (self.base, self.head))
+        self.assertEqual(request["submission"]["baseline"], {"tag": "v0.12.0", "sha": self.base})
 
 
 class ToolImage(TempDir):

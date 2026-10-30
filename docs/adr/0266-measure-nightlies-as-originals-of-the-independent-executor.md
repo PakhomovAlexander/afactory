@@ -29,7 +29,9 @@ measured. The musl build image also kept cargo-zigbuild in cargo's bin directory
 
 `cli.py executor … submit --kind nightly --tag nightly-YYYY.MM.DD --head SHA [--base SHA]`
 accepts `--work core` and `--work telemetry` and refuses `--work profile`, a tag that is not
-`nightly-` and a calendar date, and an explicit `--key`. Without `--base` the baseline is
+`nightly-` and a calendar date, and an explicit `--key`. `--head` is resolved to one commit
+once; the baseline is derived from that commit and the request freezes the same one, so a ref
+that moves during the submission cannot split them. Without `--base` the baseline is
 `gitrefs.nightly_baseline(git, head)`: the highest stable `vX.Y.Z` tag reachable from `head`,
 release candidates excluded; no such tag refuses. A core nightly is refused unless the
 configuration's `core.tier` is `nightly`, with a message naming the tier found. The nightly
@@ -56,9 +58,12 @@ to say whether the measured candidate is that archive's binary.
 New originals are written as request/2 and result/3 only. The previous request/1 and result/2
 stay readable, with their committed schemas, because an executor journal is append-only: its
 index, state and result receipts bind each original by digest, an original is never rewritten,
-and refusing them would make `status` and `verify` fail on every journal the VM already holds.
-Request/1 originals keep their identities, so their keys still deduplicate. Every older version,
-and every newer one, still fails closed (ADR-0145); nothing writes an earlier version.
+and refusing them would make `status` and `verify` fail on every original the VM already holds.
+The producer check is ADR-0240's and unchanged: `verify` still refuses an original written under
+another installed control, so a journal is finished or discarded with its own control before an
+upgrade, as before. Request/1 originals keep their identities, so their keys still deduplicate.
+Every older version, and every newer one, still fails closed (ADR-0145); nothing writes an
+earlier version.
 
 The musl stage of `scripts/performance/images/Dockerfile` adds `/opt/af-perf-tools/bin` holding
 `cargo-zigbuild` and `zig` as symbolic links and checks both versions through it, so
@@ -73,7 +78,11 @@ configuration, the submit lines, the derived baseline, the duration and how to r
 each, all inside the tier's frozen 120-minute run deadline counted from the build's start; a
 shard that deadline cuts stays incomplete and visible as missing slots, and `run_seconds`
 (28800 in the installed configuration) bounds the whole original. This change enlarges no
-budget. Like PR and release originals, a nightly plan is frozen with the planner's manual
+budget. A nightly deadline that holds one build and four full 45-minute shards needs more than
+180 minutes, the hard maximum of a non-quick tier's run deadline
+(`LONG_RUN_TOTAL_MINUTES_MAX` in `scripts/performance/perflab/limits.py`, repeated by the
+committed suite/4, run/7, shard/4 and builds/6 schemas), so the tier keeps its 120 minutes
+until that maximum is decided separately. Like PR and release originals, a nightly plan is frozen with the planner's manual
 trigger; the request's submission carries what makes it a nightly.
 
 Existing manual, main, PR, release and calibration submissions keep their key, identity and
@@ -83,6 +92,8 @@ budgets and the hosted nightly workflows are unchanged.
 
 Lab tests (`scripts/performance/tests/test_executor.py`, `test_contracts.py`) prove the
 submission rules through the real CLI, journal and a Git history with `v0.13.0`, `v0.14.0-rc.3`,
-an unreachable `v0.14.0` and a nightly tag; the request and result fixtures; `verify` and
-`status` on a request/1 and result/2 original; and the Dockerfile's tool directory, read as text.
+an unreachable `v0.14.0` and a nightly tag; one head when `--head` names a ref that moves after
+the baseline is derived; the request and result fixtures; `verify` and `status` on a request/1
+and result/2 original under the same installed control; and the Dockerfile's tool directory,
+read as text.
 They run no Docker, network or benchmark.

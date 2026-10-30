@@ -267,9 +267,12 @@ class Journal:
                 "a nightly core original needs core.tier = \"nightly\"; this configuration's tier is "
                 "\"%s\": submit to the nightly executor configuration" % tier)
         git = git or source_repository(self.config)
+        # One resolution: a ref that moves later can never split the derived baseline's head
+        # from the frozen candidate.
+        head = git.resolve(head, "nightly")
         derived = None
         if base is None:
-            name, sha = gitrefs.nightly_baseline(git, git.resolve(head, "nightly"))
+            name, sha = gitrefs.nightly_baseline(git, head)
             base, derived = sha, {"tag": name, "sha": sha}
         key = "nightly:%s:%s" % (tag, work)
         return self.submit(work, base, head, key, "nightly", git=git,
