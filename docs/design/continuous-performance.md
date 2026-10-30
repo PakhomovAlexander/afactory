@@ -902,8 +902,8 @@ copied, and states each trace's region coverage (`af.perf-profiles/4`). A qualif
 capture remains operational evidence of package p8. A capture of fresh processes lists each
 repetition's recording and host-observer record in its own hash-bound index
 (`af.perf-repetitions/1`, named by `af.perf-profiles/7`), decodes each recording by its own
-bounded `perf script` in order, and bounds a host-observed command by its exec and exit in the
-trusted recording, so a capture of thousands of CLI processes still serializes and verifies.
+bounded function-level `perf script --no-inline` in order, and bounds a host-observed command
+by its exec and exit in the trusted recording, so a capture of thousands of CLI processes still serializes and verifies.
 p6a (ADR-0177) adds `.github/workflows/performance.yml` and the `ci-*` commands. Each event is
 resolved once from the trusted control revision's own worktree (`af.perf-schedule/1`). Gate
 branches are skipped, and a pull request is never trusted. The primary comparison is full

@@ -973,6 +973,11 @@ class RepeatedCaptures(diag.ChildRunBase):
         return contracts.read_file(os.path.join(child, capture["repetitions"]["path"]),
                                    "repetitions")
 
+    def decodings(self):
+        """The argv after `perf` of every `perf script` the fake perf ran, in order."""
+        return [json.loads(line) for line in
+                read(self.path("perf", "script-argv.jsonl")).decode().splitlines()]
+
     def test_many_observed_repetitions_are_indexed_serialized_and_admitted_offline(self):
         doc, child, runs = self.observed_child()
         self.assertEqual(len(doc["captures"]), 2, "both sides")
@@ -1004,6 +1009,12 @@ class RepeatedCaptures(diag.ChildRunBase):
             self.assertEqual(capture["samples"], 2 * self.REPETITIONS)
             script = read(os.path.join(directory, "capture.script")).decode()
             self.assertEqual(script.count("task-clock"), 2 * self.REPETITIONS)
+            # Every listed recording, in its index's order, by its own function-level decoding.
+            listed = [os.path.join(child, item["recording"]["path"])
+                      for item in index["repetitions"]]
+            self.assertEqual([argv for argv in self.decodings()
+                              if os.path.dirname(argv[argv.index("-i") + 1]) == directory],
+                             [perfcapture.script_argv("perf", path)[1:] for path in listed])
         self.assertEqual(sorted(item["kind"] for item in doc["renders"]),
                          ["baseline", "candidate", "difference_forward", "difference_reverse"])
         report.admit_child(child, self.parent)
@@ -1094,11 +1105,30 @@ class RepeatedCaptures(diag.ChildRunBase):
             self.assertIn("recording 5 of %d" % self.REPETITIONS, detail)
             self.assertIn("rep-0005.data", detail)
             self.assertIn("keeps the 4 recordings decoded before it", detail)
+            directory = os.path.join(child, diagnostics.diagcontracts.capture_directory(
+                capture))
+            # Decoding stopped at the failed recording: no later one, and no retry of it.
+            self.assertEqual([os.path.basename(argv[argv.index("-i") + 1])
+                              for argv in self.decodings()
+                              if os.path.dirname(argv[argv.index("-i") + 1]) == directory],
+                             ["rep-%04d.data" % number for number in range(1, 6)])
             self.assertEqual(sorted(item["path"].rsplit("/", 1)[1]
                                     for item in capture["artifacts"]),
                              ["capture.script", "capture.script.part"])
             index = self.index_of(child, capture)
             self.assertEqual(len(index["repetitions"]), self.REPETITIONS)
+        self.assertEqual(doc["renders"], [])
+        report.admit_child(child, self.parent)
+
+    def test_a_perf_refusing_function_level_decoding_leaves_every_recording_unrendered(self):
+        self.REPETITIONS = 3
+        doc, child, _ = self.observed_child(reject_no_inline=True)
+        for capture in doc["captures"]:
+            self.assertEqual(capture["omission"]["reason"], "tool_failed")
+            self.assertIn("recording 1 of 3", capture["omission"]["detail"])
+            self.assertIsNone(capture["samples"])
+            self.assertEqual(len(self.index_of(child, capture)["repetitions"]), 3)
+        self.assertTrue(all("--no-inline" in argv for argv in self.decodings()))
         self.assertEqual(doc["renders"], [])
         report.admit_child(child, self.parent)
 

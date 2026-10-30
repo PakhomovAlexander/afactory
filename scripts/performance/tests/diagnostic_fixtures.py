@@ -244,6 +244,17 @@ if args[0] == "record":
         with open(output, "ab") as stream:
             stream.write(b"\0" * config["pad_bytes"])
     sys.exit(child.returncode if child.returncode >= 0 else 128 - child.returncode)
+if args[0] == "script":
+    with open(os.path.join(here, "script-argv.jsonl"), "a") as stream:
+        stream.write(json.dumps(args) + "\n")
+    if config.get("reject_no_inline") and "--no-inline" in args:
+        # A perf without the option refuses it, as perf's option parser does.
+        sys.stderr.write("  Error: unknown option `no-inline'\n")
+        sys.exit(129)
+    if "--no-inline" not in args:
+        # Inline expansion is what a capture never asks for: refused, not decoded.
+        sys.stderr.write("fake perf: script without --no-inline\n")
+        sys.exit(65)
 data = read_data(option("-i"))
 def option_event(data):
     return data["event"]

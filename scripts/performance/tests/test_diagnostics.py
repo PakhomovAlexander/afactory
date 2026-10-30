@@ -10,6 +10,7 @@ the real supervisor's bounds over diagnostic tools are exercised by
 `crates/review-process/tests/diagnostic_tools.rs`.
 """
 import struct
+import html
 import lzma
 import json
 import os
@@ -1383,6 +1384,71 @@ class ChildRun(ChildRunBase):
         paths = [entry["path"] for entry in manifest["entries"]]
         self.assertIn(diagnostics.PROFILES_FILE, paths)
         self.assertTrue(any(path.endswith(".data") for path in paths), "raw captures kept")
+        self.assertIn("Stacks are function-level: each recording is decoded by perf script "
+                      "--no-inline", html.unescape(page))
+
+    def test_every_capture_is_decoded_function_level_with_its_sampling_unchanged(self):
+        perf = fakes.perf(self.path("perf"), phase_file=self.path("probe-bin", "phase"),
+                          unknown_with_frame_pointers=2)
+        tools = diagnostics.configured_tools(perf=perf, inferno_bin=fakes.inferno(
+            self.path("inferno")))
+        registry = json.loads(json.dumps(self.registry))
+        registry["capture"].update(max_repetitions=2, minimum_samples=20)
+        doc, output = self.profile("linux_gnu_cpu_profile", [SMALL], tools,
+                                   {"setup_seconds": 0.05, "region_seconds": 0.12},
+                                   duration_ms=20000, registry=registry)
+        self.assertEqual(len(doc["captures"]), 4)
+        scripts = [json.loads(line) for line in
+                   read(self.path("perf", "script-argv.jsonl")).decode().splitlines()]
+        # One decoding per recording, each of its own capture.data, without inline expansion.
+        self.assertEqual(len(scripts), len(doc["captures"]))
+        data = [argv[argv.index("-i") + 1] for argv in scripts]
+        self.assertEqual(len(set(data)), len(data))
+        for argv, path in zip(scripts, data):
+            self.assertEqual(argv, perfcapture.script_argv(perf, path)[1:])
+            self.assertEqual(argv[argv.index("-F") + 1], "comm,pid,tid,time,event,ip,sym,dso")
+            self.assertEqual(os.path.basename(path), "capture.data")
+            self.assertTrue(os.path.isfile(path), "the raw recording is kept")
+        # The recording itself is unchanged: the declared event and frequency, frame pointers
+        # then DWARF, and the decoded samples, losses and unknown frames are its own.
+        records = [json.loads(line) for line in
+                   read(self.path("perf", "record-argv.jsonl")).decode().splitlines()]
+        self.assertEqual(sorted(argv[argv.index("--call-graph") + 1] for argv in records),
+                         ["dwarf,32768", "dwarf,32768", "fp", "fp"])
+        for argv in records:
+            self.assertEqual(argv[argv.index("-e") + 1], self.registry["capture"]["event"])
+            self.assertEqual(argv[argv.index("-F") + 1],
+                             str(self.registry["capture"]["frequency_hz"]))
+            self.assertNotIn("--no-inline", argv)
+        for item in doc["captures"]:
+            self.assertIsNone(item["omission"], item["omission"])
+            self.assertEqual(item["frames"], 5 * item["samples"]
+                             if item["unwind"] == "frame_pointer" else 3 * item["samples"])
+            self.assertEqual(item["unknown_frames"], 2 * item["samples"]
+                             if item["unwind"] == "frame_pointer" else 0)
+        self.assertEqual(len(doc["renders"]), 4)
+
+    def test_a_perf_that_cannot_decode_function_level_is_refused_never_expanded(self):
+        perf = fakes.perf(self.path("perf"), phase_file=self.path("probe-bin", "phase"),
+                          reject_no_inline=True)
+        tools = diagnostics.configured_tools(perf=perf, inferno_bin=fakes.inferno(
+            self.path("inferno")))
+        registry = json.loads(json.dumps(self.registry))
+        registry["capture"].update(max_repetitions=2, minimum_samples=20)
+        doc, output = self.profile("linux_gnu_cpu_profile", [SMALL], tools,
+                                   {"setup_seconds": 0.05, "region_seconds": 0.12},
+                                   duration_ms=20000, registry=registry)
+        self.assertTrue(doc["captures"])
+        for item in doc["captures"]:
+            self.assertEqual(item["omission"]["reason"], "tool_failed", item["omission"])
+            self.assertIn("perf script", item["omission"]["detail"])
+            self.assertIsNone(item["samples"])
+        scripts = [json.loads(line) for line in
+                   read(self.path("perf", "script-argv.jsonl")).decode().splitlines()]
+        # No second decoding with inline expansion stands in for the refused one.
+        self.assertTrue(scripts)
+        self.assertTrue(all("--no-inline" in argv for argv in scripts), scripts)
+        self.assertEqual(doc["renders"], [])
 
     def test_a_seeded_case_copies_its_sides_written_seed_fresh_for_every_repetition(self):
         # The side's own writer writes the seed once (the stand-in writes probe-work/), and each
@@ -2661,3 +2727,8 @@ class PerfCache(ChildRunBase):
         argv = json.loads(read(self.path("perf", "record-argv.jsonl")))
         self.assertIn("--no-buildid-cache", argv)
         self.assertNotIn("--no-buildid", argv)
+        # Its proof decodes as an accepted capture does: function-level, the same fields.
+        script = json.loads(read(self.path("perf", "script-argv.jsonl")))
+        data = script[script.index("-i") + 1]
+        self.assertEqual(script, perfcapture.script_argv(perf, data)[1:])
+        self.assertIn("--no-inline", script)

@@ -501,7 +501,7 @@ def probe(start, perf, event, frequency, workdir, deadline, clock=time.monotonic
         return (False,) + refusal
     if observer.failure() is not None:
         return False, "perf_refused", "host perf record -p: " + observer.failure()
-    script = start([perf, "script", "-i", data, "-F", perfcapture.SCRIPT_FIELDS],
+    script = start(perfcapture.script_argv(perf, data),
                    max(0.0, deadline - clock()), deadline, None,
                    perfcapture.CAPABILITY_SCRIPT_BYTES)
     result = script if isinstance(script, toolrun.Result) else script.wait()

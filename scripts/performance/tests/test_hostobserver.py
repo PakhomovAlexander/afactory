@@ -27,6 +27,9 @@ def note(text):
     os.write(fd, (text + "\n").encode())
     os.close(fd)
 if args[0] == "script":
+    note("script " + " ".join(args[1:]))
+    if "--no-inline" not in args:
+        sys.exit(65)
     data = open(args[args.index("-i") + 1]).read()
     sys.stdout.write("sh 7/7 1.0: %s: \n\t    1000 loop (/bin/sh)\n\n" % data.strip())
     sys.exit(0)
@@ -199,6 +202,11 @@ class HostObserver(TempDir):
             hostobserver.time.monotonic() + 30, proc=self.proc)
         self.assertEqual((available, reason), (True, None), detail)
         self.assertIn("1 task-clock:u samples", detail)
+        # The proof decodes as an accepted capture does: function-level, the same fields.
+        scripts = [line for line in self.lines() if line.startswith("script ")]
+        self.assertEqual(len(scripts), 1, scripts)
+        self.assertEqual(scripts[0].split()[1:], perfcapture.script_argv(
+            "perf", os.path.join(self.tmp, "observer.data"))[2:])
         # A perf that cannot record is the refusal, never a guess from a path or sysctl.
         with open(self.perf, "w") as stream:
             stream.write("#!/bin/sh\necho 'perf_event_open: Operation not permitted' >&2\nexit 1\n")

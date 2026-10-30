@@ -26,10 +26,16 @@ deadline, or when the supervised window could not hold another repetition; the c
 region is disabled on time.
 
 **The evidence.** The raw `perf.data` is kept. `perf script` with explicit fields (no period, so
-a collapsed weight is one sample) yields the samples, frames and unknown frames (`[unknown]`
+a collapsed weight is one sample), decoded at function level by `script_argv` (`--no-inline`),
+yields the samples, frames and unknown frames (`[unknown]`
 symbols, which inferno shows as DSO placeholders, are counted from the script, not guessed from
 folded names); the loss records are decoded from the file itself (`decode_losses`), and `perf
 buildid-list --with-hits` the build IDs. The effective frequency is samples over the region.
+Function level is a presentation choice, not a sampling one: the samples, their physically
+unwound frames and the recording are the same, but no inlined callee is expanded into frames of
+its own, which on a real Claw recording cost 4.7 s per fresh-process record against 0.09 s and so
+could not be repeated over the hundreds of records a CLI capture holds within its budget. The
+retained recordings and symbols can be decoded again with inline expansion outside the capture.
 A host-observed command's own time is its exec to its exit in its recording
 (`decode_lifetime`), never the wall of the shell that waited at the observer's gate.
 
@@ -51,6 +57,8 @@ from .values import sha256_bytes
 
 ACK = b"ack\n"
 SCRIPT_FIELDS = "comm,pid,tid,time,event,ip,sym,dso"
+# Function-level stacks: the one decoding every capture and capability proof uses.
+SCRIPT_OPTIONS = ("--no-inline", "-F", SCRIPT_FIELDS)
 CONTROL_COMMANDS = (b"enable\n", b"disable\n")
 READY_ENV = "AF_PERF_REGION_READY"
 GO_ENV = "AF_PERF_REGION_GO"
@@ -61,6 +69,11 @@ _RECORD = re.compile(rb"^record (0|[1-9][0-9]{0,9})\n")
 _PARTIAL_RECORD = re.compile(rb"^(?:r|re|rec|reco|recor|record|record |record [0-9]{1,10})$")
 # perf 6.1 pads a DSO without a build ID with blanks where its ID would be.
 _BUILD_ID = re.compile(r"^([0-9a-f]{16,64})?\s+(\S.*)$")
+
+
+def script_argv(perf, data):
+    """The `perf script` of the recording `data`: explicit fields, function-level frames."""
+    return [perf, "script", "-i", data] + list(SCRIPT_OPTIONS)
 
 
 class CaptureError(Exception):
@@ -804,7 +817,7 @@ def probe_capability(supervisor, perf, event, frequency, workdir, env, seconds, 
             running.cancel()
             running.wait()
         control.close()
-    script = toolrun.run(supervisor, [perf, "script", "-i", data, "-F", SCRIPT_FIELDS], env,
+    script = toolrun.run(supervisor, script_argv(perf, data), env,
                          seconds, CAPABILITY_SCRIPT_BYTES, cwd=workdir, deadline=deadline,
                          clock=clock, binds=binds)
     if script.failure() is not None:

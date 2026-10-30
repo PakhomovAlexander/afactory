@@ -1408,8 +1408,8 @@ class Profile(object):
         self.budget.check("perf script of " + name)
         data = os.path.join(self.output, name)
         if len(names) == 1:
-            argv = [perf, "script", "-i", data, "-F", perfcapture.SCRIPT_FIELDS]
-            script = self.tool_output(relative + "/capture.script", argv,
+            script = self.tool_output(relative + "/capture.script",
+                                      perfcapture.script_argv(perf, data),
                                       "perf script of " + relative)
         else:
             script = self.scripts(relative, names)
@@ -1455,8 +1455,8 @@ class Profile(object):
                 try:
                     self.budget.check(what)
                     data = self.tool_output(
-                        part, [perf, "script", "-i", os.path.join(self.output, relative, name),
-                               "-F", perfcapture.SCRIPT_FIELDS], what,
+                        part, perfcapture.script_argv(
+                            perf, os.path.join(self.output, relative, name)), what,
                         limit=SCRIPT_BYTES_MAX - total)
                 except (perfcapture.CaptureError, Exhausted) as error:
                     if error.reason != "cleanup_uncertain" and not self.retained:
@@ -2541,7 +2541,12 @@ def page(doc, traces):
         [(tool["name"], tool["state"], tool["reported_version"] or tool["declared_version"]
           or "", tool["version_provenance"], tool["executable_sha256"] or "",
           tool["detail"] or tool["provisioning"]) for tool in doc["tools"]], searchable=True)))
-    sections.append(render.section("CPU captures", render.table(
+    sections.append(render.section("CPU captures", render.paragraph(
+        "Stacks are function-level: each recording is decoded by perf script --no-inline, so "
+        "an inlined callee is counted in the function it was inlined into and has no frame of "
+        "its own. Samples, losses and unknown frames are those of the unchanged recordings, "
+        "which are kept with their symbols and can be decoded again with inline expansion."),
+        render.table(
         ("case", "side", "attempt", "unwind", "region", "samples", "lost", "unknown frames",
          "effective Hz", "symbols", "omission"),
         [(item["instance_id"], item["side"], item["attempt"], item["unwind"],

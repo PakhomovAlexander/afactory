@@ -275,8 +275,15 @@ lists every repetition's recording and observer record, in order with the region
 contributed, in its `af.perf-repetitions/1` index (`repetitions.json`), which `profiles.json`
 binds by size and SHA-256; admission refuses a missing, changed or unlisted repetition, and
 decodes each host-observed recording again to check its region time. Each recording is decoded
-by its own `perf script`, in that order, under the tool's own time bound and the diagnostic
+by its own `perf script --no-inline`, in that order, under the tool's own time bound and the diagnostic
 deadline, and a decoding that fails names its recording and keeps the earlier ones' output.
+Every capture, and every capability proof, decodes the same way: function-level stacks, with
+the same fields, samples, losses and unknown frames, where an inlined callee is counted in the
+function it was inlined into and has no frame of its own. Expanding inline frames cost 4.7
+seconds per real fresh-process recording against 0.09 seconds without, which the hundreds of
+recordings a CLI capture needs cannot afford within the diagnostic budget. The report says the
+stacks are function-level and never shows inline attribution; the retained recordings and
+symbols keep it available, by decoding them again with plain `perf script` outside the capture.
 The build IDs with hits come the same way from every recording, each listed by its own
 `perf buildid-list --with-hits` in that order under the same bounds, so a short first execution
 with no AF sample never hides a later one's hit; a listing that fails or is malformed names its
