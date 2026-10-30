@@ -668,7 +668,7 @@ fn a_report_author_that_writes_source_is_refused_at_planning() {
     );
 }
 
-fn workspace() -> PathBuf {
+pub(crate) fn workspace() -> PathBuf {
     std::env::var_os("AF_WORKSPACE_ROOT")
         .map(PathBuf::from)
         .unwrap_or_else(|| PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../.."))

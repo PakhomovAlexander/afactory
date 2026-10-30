@@ -67,4 +67,7 @@ and an ADR disagree, the ADR wins. Shared vocabulary is defined in
   namespaced `class/`, `size/`, `pipeline/` and `triage/` labels and an `af/issue-triage@1`
   document. Accepted 2026-10-30; rollout step 1, the raw issue template, the loosened bug
   template, `scripts/backlog-labels.py` and the filing rule in [`AGENTS.md`](../../AGENTS.md),
-  ships; steps 2 to 5 (the kind and schema, the runner, the backfill, the plugin) follow.
+  ships; step 2, the `triage` kind, the triager packages, the `af/issue-triage@1` schemas and
+  `scripts/backlog-check-triage.py`, is staged under
+  [`fixtures/issue-triage/`](../../fixtures/issue-triage/README.md) for the owner to install;
+  steps 3 to 5 (the runner, the backfill, the plugin) follow.

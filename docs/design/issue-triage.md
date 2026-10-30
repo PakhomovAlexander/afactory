@@ -185,8 +185,9 @@ check, and one independent verifier reading the same Snapshot (ADR-0133, decisio
 - The **author** slot is the first triager: Codex `gpt-6-astra`, `model_reasoning_effort =
   "medium"`, Provider `codex-personal`, `read-source` only (no `execute-checks`, so no shell).
   It returns an `af/DocumentDraft@2` with two required sections, `Triage` (the
-  `af/issue-triage@1` document in one fenced `json` block, §6.3) and `Rationale`, and
-  `repository_citations` for every file it relied on.
+  `af/issue-triage@1` document in one fenced `json` block, §6.3) and `Rationale`, beside the
+  sections the installed report policy requires of every report (`Findings` and
+  `Recommendation` in this repository), and `repository_citations` for every file it relied on.
 - `report_seal` and `report_check` are the kernel's: the Document is bound to the exact source
   Snapshot of `main`, and every citation is resolved against that Manifest, so a path the issue
   invented, a symlink or a binary fails the check and suppresses the verifier (ADR-0133,
@@ -200,13 +201,16 @@ check, and one independent verifier reading the same Snapshot (ADR-0133, decisio
   whose evaluation names a different class or size is a dispute; a failed check is a failed
   Attempt, never a guessed label.
 - The runner reads `af task output --port report` and `af task show --json` after the Task
-  finishes and runs `scripts/backlog/check-triage.py` on both (§6.3) before any write to GitHub.
+  finishes and runs `scripts/backlog-check-triage.py` on both (§6.3) before any write to GitHub.
 
 Both replies go through the typed paths (ADR-0103 for Claude, ADR-0208 for Codex): a reply that
 does not parse is a failed Attempt. Budget per Task: 150k chargeable tokens, `max_attempts`
 as the report pipeline's 8 (two model Attempts, two admissions, room for one retry each),
 `wall_ms` 20 minutes. A Task that exhausts its budget leaves the issue `triage/pending` for the
-next run, at most three times, then `triage/needs-info` with the reason.
+next run, at most three times, then `triage/needs-info` with the reason. (The packages staged in
+step 2 give each triager 60,000 tokens and 10 minutes per Attempt; with both Provider admissions
+and the report check the planner admits a Task only from 185,536 tokens and 1,355,000 ms, so
+the example plan uses those limits; §8 step 2.)
 
 The rollout (§8) proves this shape with a compiling example plan before any runner code.
 
@@ -264,7 +268,7 @@ proves neither full nor partial completion: the check verifies that each referen
 is reachable from the captured `main`, and both triagers must support the claimed state before
 the runner acts on it. `adr` names a new or amended ADR the change needs, or is null.
 
-`scripts/backlog/check-triage.py` validates the author's JSON against
+`scripts/backlog-check-triage.py` validates the author's JSON against
 `schemas/issue-triage-v1.json` and the verifier's evaluation against the kernel's
 `af/ReportEvaluation@1`, then applies the hard rules: a contract, schema-version, budget or
 sandbox change in the rationale with a size below `L`; `adr` set with size `S`; a
@@ -394,21 +398,33 @@ sweep would have written.
 2. **Kind, packages and schema** (`size/M`, `default`): an af Task builds and tests, in a
    writable staging directory outside `.af/`, the `triage` kind package, the author and
    verifier Worker packages, their requirements text, `schemas/issue-triage-v1.json` and
-   `scripts/backlog/check-triage.py` with tests (a Task Worker may not edit `.af/`, ADR-0133).
+   `scripts/backlog-check-triage.py` with tests (a Task Worker may not edit `.af/`, ADR-0133).
    The owner then installs the reviewed packages under `.af/task-packages/`, pins them in the
    catalog with their digests, and commits the authority. Acceptance includes one compiling
    example plan, `af task plan` on a real issue's sources file, before any runner code.
    The check's fixtures are the six issues verified by hand on 2026-10-30: #196, #357 and #436
    must come out `fixed_candidate`, #425, #393 and #284 `partial` with the remaining work as
    recorded in `hand-triage-2026-10-30.json`.
-3. **Runner** (`size/M`, `default`): `scripts/backlog/triage.py`: sources assembly, the
+   **Shipped on 2026-10-30**, staged under
+   [`fixtures/issue-triage/`](../../fixtures/issue-triage/README.md): the four packages
+   `backlog/triage-kind`, `backlog/triage`, `backlog/triage-author` and
+   `backlog/triage-verifier` under `task-packages/backlog/`, their shared catalog and contract
+   fixtures, the install steps, and an example Task for #432 with its hand-built sources;
+   `schemas/issue-triage-v1.json`, `schemas/issue-triage-merged-v1.json`,
+   `scripts/backlog-check-triage.py` and `scripts/test-backlog-check-triage.py`. The Rust test
+   `task_triage` installs the packages on a copy of `.af/` and plans the example with zero
+   Attempts. Two departures from the text above: the example plans with 185,536 tokens and
+   1,355,000 ms, not 150k and 20 minutes (§6.1), and the author's draft also carries the
+   installed report policy's `Findings` and `Recommendation` sections. Installing is the
+   owner's hand step.
+3. **Runner** (`size/M`, `default`): `scripts/backlog-triage.py`: sources assembly, the
    journal, the generation key, the lease and ledger, write-back, the sweep, and the cron unit
    on `claw-3`. Dry-run mode prints the labels and comment and writes nothing; the first week
    runs dry.
 4. **Backfill**: run the triager over the 54 open issues in dry-run, compare with the hand
    triage of 2026-10-30, adjust the rubric wording where the two disagree, then apply.
-5. **Plugin**: when the plugin architecture (#316) lands, `scripts/backlog/` becomes
-   `af backlog triage` with no change to the documents, labels or comment format.
+5. **Plugin**: when the plugin architecture (#316) lands, the `scripts/backlog-*.py` scripts
+   become `af backlog triage` with no change to the documents, labels or comment format.
 
 ## 9. Resolved questions
 
@@ -416,4 +432,4 @@ sweep would have written.
    `/triage size-wrong <why>` on the issue. The runner re-triages with that comment as
    evidence; the implementer never edits labels (decision 7).
 2. The verifier's class and size: a second `Triage` block in the evaluation's text, parsed by
-   `scripts/backlog/check-triage.py`; no typed kernel field (decision 8).
+   `scripts/backlog-check-triage.py`; no typed kernel field (decision 8).
