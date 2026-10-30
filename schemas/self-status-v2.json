@@ -2,7 +2,7 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "urn:af:schema:self-status:2",
   "title": "af/self-status@2",
-  "description": "`af self status --json`: the running binary, its receipt, the default and every installed version, the pin that applies in the current directory and the pinned projects this machine has seen, the last release check and the `[self]` policy. `last_check` is when a release check last answered and `last_attempt` when one was last attempted, `last_error` why that attempt failed (null once one succeeds); `latest` is the newest release on the configured channel and `latest_prerelease` the newest pre-release, asked for while the running af is a pre-release or the channel is `rc`. `check_stalled_since` is set when a release check has held the check lock for more than an hour: it is no check, and `rm` of the lock file clears it; `check_lock` is then that file. `next_action` is the one command the text status names: `rm <check_lock>` for a stalled check, else `af self update --rc` while a pre-release newer than the running af is known, else null. Times are UTC, `YYYY-MM-DDTHH:MM:SSZ`. Version 2 adds `check_lock` and `next_action` to version 1, which is neither printed nor read.",
+  "description": "`af self status --json`: the running binary, its receipt, the default and every installed version, the pin that applies in the current directory and the pinned projects this machine has seen, the last release check and the `[self]` policy. `last_check` is when a release check last answered and `last_attempt` when one was last attempted, `last_error` why that attempt failed (null once one succeeds); `latest` is the newest release on the configured channel, on the `nightly` channel the newest nightly's tag (`nightly-YYYY.MM.DD`, ADR-0267), and `latest_prerelease` the newest pre-release, never a nightly, asked for while the running af is a pre-release or the channel is `rc`. A nightly's `receipt` shows the fields every receipt has; its tag follows from its version (`<core>-nightly.<YYYYMMDD>`) and its commit is `commit`. `check_stalled_since` is set when a release check has held the check lock for more than an hour: it is no check, and `rm` of the lock file clears it; `check_lock` is then that file. `next_action` is the one command the text status names: `rm <check_lock>` for a stalled check, else `af self update --rc` while a pre-release newer than the running af is known, else null. Times are UTC, `YYYY-MM-DDTHH:MM:SSZ`. Version 2 adds `check_lock` and `next_action` to version 1, which is neither printed nor read.",
   "type": "object",
   "additionalProperties": false,
   "required": [
@@ -250,7 +250,8 @@
         "channel": {
           "enum": [
             "stable",
-            "rc"
+            "rc",
+            "nightly"
           ]
         },
         "install_pins": {
