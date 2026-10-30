@@ -16,7 +16,7 @@ from unittest import mock
 
 from perflab import contracts, hostobserver, perfcapture, toolrun
 from perflab.perfcapture import CaptureError
-from tests.support import TempDir
+from tests.support import TempDir, writable_copy
 
 CONTAINER = "c" * 64
 # perf's control protocol, `record -p` ending with its target, and a `script` of one sample.
@@ -76,7 +76,10 @@ def stat_entry(root, pid, state, pgrp, threads=1):
 # bounded runner returned (as a CI runner's init can), so the runner's killed descendants stay
 # exited, unreaped members of its group; then report and reap every adopted child.
 SUBREAPER = r"""
-import ctypes, json, os, sys, time
+import sys
+# -I ignores PYTHONDONTWRITEBYTECODE and a parent's -B is not inherited: keep the source clean.
+sys.dont_write_bytecode = True
+import ctypes, json, os, time
 sys.path.insert(0, sys.argv[1])
 from perflab import hostobserver
 if ctypes.CDLL(None, use_errno=True).prctl(36, 1, 0, 0, 0) != 0:
@@ -84,7 +87,8 @@ if ctypes.CDLL(None, use_errno=True).prctl(36, 1, 0, 0, 0) != 0:
 running = hostobserver.Bounded(["/bin/sh", "-c", "sleep 30 & sleep 30 & wait"],
                                {"PATH": "/usr/bin:/bin"}, sys.argv[2], 0.2, 4096)
 result = running.wait()
-print(json.dumps({"timed_out": result.timed_out, "uncertain": result.uncertain}))
+print(json.dumps({"timed_out": result.timed_out, "uncertain": result.uncertain,
+                  "source": os.path.realpath(hostobserver.__file__)}))
 sys.stdout.flush()
 while True:
     try:
@@ -92,6 +96,12 @@ while True:
     except ChildProcessError:
         break
 """
+
+
+def bytecode_in(root):
+    return sorted(os.path.relpath(os.path.join(current, name), root)
+                  for current, dirs, files in os.walk(root) for name in dirs + files
+                  if name == "__pycache__" or name.endswith((".pyc", ".pyo")))
 
 
 def proc_entry(root, pid, argv, ppid, ticks=4242, uid=None, cgroup=CONTAINER):
@@ -374,13 +384,26 @@ class HostObserver(TempDir):
 
     @unittest.skipUnless(sys.platform == "linux", "a child subreaper is a Linux facility")
     def test_killed_descendants_an_adopting_subreaper_keeps_unreaped_are_confirmed_ended(self):
+        # The child imports a disposable writable copy, never the checkout, so even a failure
+        # here cannot leave bytecode in the real source; and it may rely on no parent flag or
+        # PYTHON* variable to keep that copy bytecode-free.
+        lab = self.path("lab")
+        writable_copy(os.path.dirname(os.path.abspath(hostobserver.__file__)),
+                      os.path.join(lab, "perflab"))
+        self.assertEqual(bytecode_in(lab), [])
+        env = {key: value for key, value in os.environ.items() if not key.startswith("PYTHON")}
+        env.update(HOME=self.tmp, TMPDIR=self.tmp)
         completed = subprocess.run(
-            [sys.executable, "-I", "-c", SUBREAPER,
-             os.path.dirname(os.path.dirname(os.path.abspath(__file__))), self.tmp],
+            [sys.executable, "-I", "-B", "-c", SUBREAPER, lab, self.tmp],
             stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
-            timeout=60)
+            env=env, cwd=self.tmp, timeout=60)
         self.assertEqual(completed.returncode, 0, completed.stderr)
-        self.assertEqual(json.loads(completed.stdout), {"timed_out": True, "uncertain": False})
+        evidence = json.loads(completed.stdout)
+        self.assertEqual(evidence["source"],
+                         os.path.realpath(os.path.join(lab, "perflab", "hostobserver.py")))
+        self.assertEqual({key: evidence[key] for key in ("timed_out", "uncertain")},
+                         {"timed_out": True, "uncertain": False})
+        self.assertEqual(bytecode_in(lab), [], "the child must leave writable source bytecode-free")
 
     def control_dir(self, tag):
         path = self.path("control-%s" % tag)

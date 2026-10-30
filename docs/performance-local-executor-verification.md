@@ -1237,3 +1237,51 @@ Not established here, and owned by the outer operator:
 - the full 33-case release comparison;
 - the portable export;
 - the final head's CI.
+
+### Bytecode-free Linux subreaper regression in writable checkouts (2026-10-30)
+
+A narrow CI repair to a test; no product code changed. Every earlier repair above, the
+production refusal of bytecode caches, the schema versions and the suite samples and bounds
+are unchanged. Nothing here ran Docker, Claw, GitHub Actions or a measurement.
+
+- **The defect.** GitHub run 41012988068 on `e67f8bd` (CI 695, Python 3.15.2) failed the
+  classperf job: 1209 tests, 72 failures, 121 errors. The Linux-only
+  `test_hostobserver.HostObserver.test_killed_descendants_an_adopting_subreaper_keeps_unreaped_are_confirmed_ended`
+  passed, but its child ran `[sys.executable, "-I", "-c", SUBREAPER, ...]` and imported
+  `perflab.hostobserver` from the writable checkout. `-I` ignores `PYTHONDONTWRITEBYTECODE`,
+  and the child does not inherit the parent's `-B`, so the child wrote
+  `scripts/performance/perflab/__pycache__`. Every later test and CLI run then refused that
+  source ("measurement library bytecode cache refused"), as the authority must. The outer
+  operator reproduced this on Claw in a writable copy of the `e67` source. Earlier Claw checks
+  ran on read-only source, and macOS skips the test, so neither saw it.
+- **The repair** (`tests/test_hostobserver.py`). The child sets `sys.dont_write_bytecode`
+  before any import and runs with `-I -B`. The test no longer imports the checkout: it copies
+  `perflab` with `tests.support.writable_copy` into its own temporary directory and runs the
+  child there, with every `PYTHON*` variable removed and with private `HOME`, `TMPDIR` and
+  working directory. A failure therefore cannot write into the checkout. The test asserts that
+  the copy is bytecode-free before and after the run. It also asserts that the child imported
+  `hostobserver.py` from the copy and that the real subreaper outcome is unchanged
+  (`timed_out` true, `uncertain` false). `tests.test_telemetry_exec.AncestorSubreaper` covers
+  the telemetry executor the same way. A scratch check on macOS ran the child against such a
+  copy without any suppression: the child stops at `prctl`, after its import, and had written
+  25 bytecode files. With the source line alone, or `-B` alone, it wrote none.
+
+The focused run started at 09:59 MSK from the repository root, with `HOME` and `TMPDIR` set to
+a fresh owned directory and `PYTHONDONTWRITEBYTECODE` unset, under Python 3.14.7 on macOS:
+
+```sh
+python3.14 -I -B -c 'import sys,unittest; sys.path.insert(0,"scripts/performance"); unittest.main(module=None,argv=["unittest","tests.test_hostobserver","tests.test_kernelguard","tests.test_telemetry_exec.AncestorSubreaper","tests.test_whole_source_repairs"],verbosity=1)'
+```
+
+**PASS: 72 tests, 99.0 seconds, 8 skipped, exit 0.** All eight skips are Linux-only: the
+repaired subreaper test and the seven `AncestorSubreaper` cases. Afterwards
+`python3.14 -I scripts/performance/cli.py --help` exited 0 on the checkout, and the tree held
+no `__pycache__` or `.pyc` file. The protected harness was re-pinned after the last protected
+edit with `python3 -I -B scripts/performance/cli.py harness-digest --write`, to
+`sha256:8733e772805cdfc71296593f950a85fca19d3151f38bef018e1e3f6061eacc75` (684 files), and
+`--check` passes.
+
+The repaired Linux test did not run on this host. The outer operator owns:
+
+- the repaired test on Claw in a writable copy, followed by the copied CLI and bytecode checks;
+- the final head's CI.
