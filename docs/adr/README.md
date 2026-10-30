@@ -500,5 +500,7 @@ future readers need.
   frame](0263-bound-bare-afs-first-browser-frame.md)
 - [0264 — Own Codex session records and quarantine after a foreign
   one](0264-own-codex-session-records-and-quarantine-after-a-foreign-one.md)
+- [0267 — Offer a nightly channel in af
+  self](0267-offer-a-nightly-channel-in-af-self.md)
 - [0268 — Quarantine flaky tests on gate evidence and confirm them on
   Claw](0268-quarantine-flaky-tests-on-gate-evidence-and-confirm-them-on-claw.md)
