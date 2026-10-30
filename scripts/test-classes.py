@@ -202,12 +202,28 @@ def schema_documents():
                        'tests': {'type': 'object', 'maxProperties': QUARANTINE_LIMIT,
                                  'propertyNames': {'pattern': '^[A-Za-z0-9_:./-]+ [A-Za-z0-9_:]+$'},
                                  'additionalProperties': held}})
+    # scripts/test-quarantine.py confirm writes it and its apply reads it.
+    count = {'type': 'integer', 'minimum': 0}
+    positive = {'type': 'integer', 'minimum': 1}
+    result = obj({'failures': count, 'failed_runs': {'type': 'array', 'items': positive, 'uniqueItems': True},
+                  'classification': {'enum': ['flaky', 'always_fails', 'clean']},
+                  'first_failure': {'anyOf': [{'type': 'null'}, obj({
+                      'run': positive, 'output': text, 'truncated': {'type': 'boolean'}})]}})
+    confirmed = obj({'schema': {'const': 'af.test-quarantine-confirm/1'}, 'commit': text, 'today': day,
+                     'host': obj({'system': text, 'machine': text, 'cpus': positive,
+                                  'test_threads': positive}),
+                     'load': obj({'selection': {'enum': ['functional', 'none']}, 'runs': count}),
+                     'runs': positive,
+                     'tests': {'type': 'object', 'minProperties': 1, 'maxProperties': QUARANTINE_LIMIT,
+                               'propertyNames': {'pattern': '^[A-Za-z0-9_:./-]+ [A-Za-z0-9_:]+$'},
+                               'additionalProperties': result}})
     return {f'{name}-v{version}.json': {'$schema': 'https://json-schema.org/draft/2020-12/schema',
                                       '$id': f'urn:af:schema:{name}:{version}', **document}
             for name, version, document in [('test-class-catalog', 1, cat), ('test-class-plan', 2, plan),
                                             ('release-test-binding', 2, binding),
                                             ('test-class-receipt', 2, receipt),
-                                            ('test-quarantine', 1, quarantined)]}
+                                            ('test-quarantine', 1, quarantined),
+                                            ('test-quarantine-confirm', 1, confirmed)]}
 
 
 def schema_parity(rewrite=False):

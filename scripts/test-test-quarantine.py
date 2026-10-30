@@ -314,5 +314,365 @@ class Resolution(unittest.TestCase):
                 self.assertEqual(self.resolve(name), (None, 'not a test'))
 
 
+COMMIT = 'c0ffee' * 6 + 'c0ff'
+CONFIRMED = (MANY[0], HEAVY, CAPTURE)
+# A fake cargo: each confirmation run writes the JUnit its plan entry names (identity -> 'pass',
+# 'fail' or 'absent'; null writes none), and every load run writes a failing JUnit of its own.
+FAKE_CARGO = r'''
+import json, os, sys
+from pathlib import Path
+import xml.etree.ElementTree as ET
+args = sys.argv[1:]
+logs = Path(os.environ['FAKE_CARGO_LOGS'])
+expression = args[args.index('-E') + 1]
+config = Path(args[args.index('--tool-config-file') + 1].split(':', 1)[1]).read_text()
+store = Path(json.loads(config.split('dir = ', 1)[1]))
+kind = 'load' if 'test(/^' in expression else 'confirm'
+with (logs / f'{kind}.log').open('a') as stream:
+    stream.write(json.dumps(args) + '\n')
+if kind == 'load':
+    cases = {'review-graph many::case_01': 'fail'}
+else:
+    index = len((logs / 'confirm.log').read_text().splitlines())
+    cases = json.loads(Path(os.environ['FAKE_CARGO_PLAN']).read_text())[index - 1]
+    if cases is None:
+        sys.exit(101)
+root = ET.Element('testsuites')
+for identity, outcome in cases.items():
+    if outcome == 'absent':
+        continue
+    binary, name = identity.split(' ')
+    suite = ET.SubElement(root, 'testsuite', name=binary)
+    case = ET.SubElement(suite, 'testcase', name=name, classname=binary)
+    if outcome == 'fail':
+        failure = ET.SubElement(case, 'failure', message='test failed', type='test failure')
+        failure.text = f'thread panicked at {name}: run {index if kind == "confirm" else 0}'
+        ET.SubElement(case, 'system-err').text = 'stderr of ' + name
+(store / 'ci').mkdir(parents=True, exist_ok=True)
+ET.ElementTree(root).write(store / 'ci' / 'junit.xml')
+sys.exit(100 if 'fail' in cases.values() else 0)
+'''
+
+
+def report(tests, system='Darwin', runs=50, today=TODAY):
+    """An af.test-quarantine-confirm/1 report: identity -> its failed runs."""
+    def result(failed):
+        kind = 'clean' if not failed else 'always_fails' if len(failed) == runs else 'flaky'
+        first = {'run': failed[0], 'output': f'thread panicked: ``` run {failed[0]}',
+                 'truncated': False} if failed else None
+        return {'failures': len(failed), 'failed_runs': list(failed), 'classification': kind,
+                'first_failure': first}
+    return {'schema': 'af.test-quarantine-confirm/1', 'commit': COMMIT, 'today': today,
+            'host': {'system': system, 'machine': 'x86_64', 'cpus': 12, 'test_threads': 12},
+            'load': {'selection': 'functional', 'runs': 7}, 'runs': runs,
+            'tests': {identity: result(failed) for identity, failed in tests.items()}}
+
+
+class QuarantineFiles(unittest.TestCase):
+    def setUp(self):
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        self.dir = Path(tmp.name)
+        self.inventory = self.dir / 'nextest-list.json'
+        self.inventory.write_text(json.dumps(inventory()))
+        self.file = self.dir / 'test-quarantine.json'
+        tc.write(self.file, {'schema': 'af.test-quarantine/1',
+                             'tests': {identity: held(identity) for identity in CONFIRMED}})
+
+    def environment(self, **extra):
+        environment = {k: v for k, v in os.environ.items() if not k.startswith(('AF_', 'FAKE_'))}
+        environment.update(extra)
+        return environment
+
+
+class Confirm(QuarantineFiles):
+    def setUp(self):
+        super().setUp()
+        self.bin = self.dir / 'bin'
+        self.bin.mkdir()
+        self.cargo = self.bin / 'cargo'
+        self.cargo.write_text(f'#!{sys.executable} -I\n{FAKE_CARGO}')
+        git = self.bin / 'git'
+        git.write_text(f'#!{sys.executable} -I\nimport sys\n'
+                       "assert sys.argv[1:] == ['rev-parse', 'HEAD']\n"
+                       f'print({COMMIT!r})\n')
+        for path in (self.cargo, git):
+            path.chmod(0o755)
+        self.logs = self.dir / 'logs'
+        self.logs.mkdir()
+        self.report = self.dir / 'report.json'
+
+    def confirm(self, plan, *extra, load='none'):
+        (self.dir / 'plan.json').write_text(json.dumps(plan))
+        for log in self.logs.iterdir():
+            log.unlink()
+        self.report.unlink(missing_ok=True)
+        command = [sys.executable, '-I', str(SCRIPT), 'confirm', '--report', str(self.report),
+                   '--runs', str(len(plan)), '--test-threads', '3', '--load', load,
+                   '--cargo', str(self.cargo), '--inventory', str(self.inventory),
+                   '--quarantine', str(self.file), '--today', TODAY, *extra]
+        return subprocess.run(command, capture_output=True, text=True, env=self.environment(
+            PATH=f'{self.bin}{os.pathsep}{os.environ.get("PATH", "")}',
+            FAKE_CARGO_LOGS=str(self.logs), FAKE_CARGO_PLAN=str(self.dir / 'plan.json')))
+
+    def runs(self, kind='confirm'):
+        log = self.logs / f'{kind}.log'
+        return [json.loads(line) for line in log.read_text().splitlines()] if log.exists() else []
+
+    @staticmethod
+    def plan(runs=5):
+        """Run by run: MANY[0] fails in runs 2 and 4, HEAVY in all, CAPTURE in none."""
+        return [{MANY[0]: 'fail' if index in (2, 4) else 'pass', HEAVY: 'fail', CAPTURE: 'pass'}
+                for index in range(1, runs + 1)]
+
+    def test_every_run_runs_and_each_identity_is_classified(self):
+        result = self.confirm(self.plan())
+        self.assertEqual(result.returncode, 0, result.stderr)
+        value = tc.read(self.report)
+        self.assertEqual(value['tests'][MANY[0]], {
+            'failures': 2, 'failed_runs': [2, 4], 'classification': 'flaky',
+            'first_failure': {'run': 2, 'output': 'thread panicked at many::case_00: run 2\n'
+                                                  '--- system-err ---\nstderr of many::case_00',
+                              'truncated': False}})
+        self.assertEqual({i: (r['classification'], r['failed_runs']) for i, r in value['tests'].items()
+                          if i != MANY[0]},
+                         {HEAVY: ('always_fails', [1, 2, 3, 4, 5]), CAPTURE: ('clean', [])})
+        self.assertIsNone(value['tests'][CAPTURE]['first_failure'])
+        self.assertEqual((value['schema'], value['commit'], value['today'], value['runs'], value['load']),
+                         ('af.test-quarantine-confirm/1', COMMIT, TODAY, 5,
+                          {'selection': 'none', 'runs': 0}))
+        self.assertEqual(value['host'], {'system': tq.platform.system(), 'machine': tq.platform.machine(),
+                                         'cpus': os.cpu_count(), 'test_threads': 3})
+        # The report has the shape its generated schema names.
+        schema = tc.schema_documents()['test-quarantine-confirm-v1.json']
+        self.assertEqual(set(value), set(schema['required']))
+        self.assertEqual(set(value['tests'][HEAVY]),
+                         set(schema['properties']['tests']['additionalProperties']['required']))
+        # Five whole runs of exactly the held identities: no early stop, no retry, no rerun alone.
+        runs = self.runs()
+        self.assertEqual(len(runs), 5)
+        exact = ('(binary_id(=af::it) & test(=task_heavy::loaded)) | (binary_id(=review-graph) & '
+                 'test(=many::case_00)) | (binary_id(=review-source-git::it) & '
+                 'test(=capture::a_settled_worktree_is_admitted_on_retry))')
+        for args in runs:
+            self.assertEqual(args[:13], ['nextest', 'run', '--workspace', '--locked', '--profile', 'ci',
+                                         '--no-fail-fast', '--retries', '0', '--test-threads', '3',
+                                         '-E', exact])
+        self.assertEqual(self.runs('load'), [])
+        self.assertIn(f'flaky: {MANY[0]} (failed in 2 of 5 runs)', result.stdout)
+        # The report is never overwritten.
+        before = self.report.read_bytes()
+        again = subprocess.run([sys.executable, '-I', str(SCRIPT), 'confirm', '--report',
+                                str(self.report), '--quarantine', str(self.file), '--today', TODAY,
+                                '--cargo', str(self.cargo)], capture_output=True, text=True,
+                               env=self.environment())
+        self.assertEqual(again.returncode, 1)
+        self.assertIn('exists; fix: name a new report file', again.stderr)
+        self.assertEqual(self.report.read_bytes(), before)
+
+    def test_only_restricts_the_runs_to_the_named_entries(self):
+        plan = [{HEAVY: 'pass'}, {HEAVY: 'fail'}]
+        result = self.confirm(plan, '--only', HEAVY)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(list(tc.read(self.report)['tests']), [HEAVY])
+        self.assertEqual({args[12] for args in self.runs()},
+                         {'(binary_id(=af::it) & test(=task_heavy::loaded))'})
+        absent = self.confirm(plan, '--only', 'af::it absent::test')
+        self.assertEqual(absent.returncode, 1)
+        self.assertIn('--only af::it absent::test is not in', absent.stderr)
+        self.assertFalse(self.report.exists())
+
+    def test_a_run_without_a_junit_or_without_an_identity_writes_no_report(self):
+        cases = [(3, None, 'run 3 of 5 ended without a JUnit (nextest exit 101)'),
+                 (2, {MANY[0]: 'pass', HEAVY: 'fail', CAPTURE: 'absent'},
+                  f'run 2 of 5: its JUnit has no result for {CAPTURE}')]
+        for index, run, needle in cases:
+            with self.subTest(needle=needle):
+                plan = self.plan()
+                plan[index - 1] = run
+                result = self.confirm(plan)
+                self.assertEqual(result.returncode, 1, result.stdout)
+                self.assertIn(needle, result.stderr)
+                self.assertIn('no report written: a missing result is not a pass', result.stderr)
+                self.assertFalse(self.report.exists())
+                self.assertEqual(len(self.runs()), index)
+
+    def test_the_load_runs_the_functional_class_without_the_held_tests_and_never_counts(self):
+        result = self.confirm(self.plan(3), load='functional')
+        self.assertEqual(result.returncode, 0, result.stderr)
+        value = tc.read(self.report)
+        loads = self.runs('load')
+        self.assertGreaterEqual(len(loads), 1)
+        # The report counts the load runs started; the last may end before its fake logs.
+        self.assertEqual(value['load']['selection'], 'functional')
+        self.assertIn(value['load']['runs'], (len(loads), len(loads) + 1))
+        expected = tc.filterset(tc.partition(inventory(), tc.catalog(),
+                                             {i: held(i) for i in CONFIRMED}), ['functional'])
+        for args in loads:
+            self.assertEqual(args[:11], ['nextest', 'run', '--workspace', '--locked', '--profile',
+                                         'ci', '--no-fail-fast', '--retries', '0', '--test-threads', '3'])
+            self.assertEqual(args[11:13], ['-E', expected])
+        # The functional siblings run; no held identity does, the functional MANY[0] included.
+        self.assertIn('many::case_01$', expected)
+        for identity in CONFIRMED:
+            self.assertNotIn(identity.split(' ')[1], expected)
+        # Every load run failed, and the classifications are those of a run without load.
+        with_load = {i: (r['classification'], r['failed_runs']) for i, r in value['tests'].items()}
+        self.assertEqual(self.confirm(self.plan(3)).returncode, 0)
+        without = {i: (r['classification'], r['failed_runs'])
+                   for i, r in tc.read(self.report)['tests'].items()}
+        self.assertEqual(with_load, without)
+        self.assertEqual(self.runs('load'), [])
+
+
+class Apply(QuarantineFiles):
+    def setUp(self):
+        super().setUp()
+        self.issues = self.dir / 'issues'
+
+    def apply(self, value, *extra, write=True, issues=True, today=TODAY, env=None):
+        path = self.dir / 'report.json'
+        path.write_text(json.dumps(value))
+        command = [sys.executable, '-I', str(SCRIPT), 'apply', str(path), '--inventory',
+                   str(self.inventory), '--quarantine', str(self.file), *extra]
+        command += ['--today', today] if today else []
+        command += ['--write'] if write else []
+        command += ['--issues', str(self.issues)] if issues else []
+        return subprocess.run(command, capture_output=True, text=True, env=self.environment(**(env or {})))
+
+    def entries(self):
+        return tc.read(self.file)['tests']
+
+    def test_flaky_always_fails_and_clean_outcomes(self):
+        value = report({MANY[0]: [2, 4], HEAVY: list(range(1, 51)), CAPTURE: []})
+        result = self.apply(value)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(self.entries(), {MANY[0]: {'state': 'flaky', 'since': TODAY,
+                                                    'expires': '2026-11-12', 'evidence': ['T_OLD']}})
+        self.assertEqual(sorted(p.name for p in self.issues.iterdir()),
+                         ['flaky-review-graph-many-case_00.md', 'p0-af-it-task_heavy-loaded.md'])
+        self.assertIn(f'flaky: {MANY[0]} (failed in 2 of 50 runs): set state flaky, since {TODAY}, '
+                      'expires 2026-11-12', result.stdout)
+        self.assertIn(f'always_fails: {HEAVY} (failed in 50 of 50 runs): removed the entry', result.stdout)
+        self.assertIn(f'clean: {CAPTURE} (failed in 0 of 50 runs): removed the entry', result.stdout)
+        self.assertIn(f"gh issue create --title 'flaky: {MANY[0]}' --label flaky --body-file "
+                      f"'{self.issues / 'flaky-review-graph-many-case_00.md'}'", result.stdout)
+        self.assertIn(f"gh issue create --title 'P0: {HEAVY} fails in every run' --label P0",
+                      result.stdout)
+
+    def test_an_entry_already_flaky_keeps_its_issue_and_evidence(self):
+        tc.write(self.file, {'schema': 'af.test-quarantine/1', 'tests': {HEAVY: {
+            **held(HEAVY), 'state': 'flaky', 'evidence': ['T_A', 'T_B'], 'issue': 470}}})
+        self.assertEqual(self.apply(report({HEAVY: [9]})).returncode, 0)
+        self.assertEqual(self.entries(), {HEAVY: {'state': 'flaky', 'since': TODAY, 'expires': '2026-11-12',
+                                                  'evidence': ['T_A', 'T_B'], 'issue': 470}})
+
+    def test_the_issue_bodies_hold_the_output_the_runs_the_host_and_the_evidence(self):
+        tc.write(self.file, {'schema': 'af.test-quarantine/1', 'tests': {
+            MANY[0]: {**held(MANY[0]), 'evidence': ['T_A', 'T_B']}, HEAVY: held(HEAVY)}})
+        self.assertEqual(self.apply(report({MANY[0]: [2, 4], HEAVY: list(range(1, 51))},
+                                           system='Linux')).returncode, 0)
+        flaky = (self.issues / 'flaky-review-graph-many-case_00.md').read_text()
+        self.assertIn(f'`{MANY[0]}` failed in 2 of 50 runs', flaky)
+        self.assertIn('- Failing runs: 2 of 50 (runs 2, 4).', flaky)
+        self.assertIn(f'- Commit: `{COMMIT}`, confirmed on {TODAY}.', flaky)
+        self.assertIn('- Host: Linux x86_64, 12 CPUs, 12 test threads; load: functional (7 runs', flaky)
+        self.assertIn('- Evidence Tasks (their gates listed it flaky): `T_A`, `T_B`.', flaky)
+        # The output sits in a fence longer than the backticks inside it.
+        self.assertIn('First failure, run 2:\n\n````text\nthread panicked: ``` run 2\n````\n', flaky)
+        self.assertIn('until 2026-11-12', flaky)
+        p0 = (self.issues / 'p0-af-it-task_heavy-loaded.md').read_text()
+        self.assertTrue(p0.startswith(f'P0: main is broken. `{HEAVY}` failed in every one of 50 runs'))
+        self.assertIn('- Failing runs: 50 of 50 (runs 1, 2, 3', p0)
+        self.assertIn('- Evidence Tasks (their gates listed it flaky): `T_OLD`.', p0)
+        self.assertIn('````text\nthread panicked: ``` run 1\n````', p0)
+
+    def test_a_clean_report_releases_an_entry_only_from_the_evidence_platform(self):
+        cases = [('Darwin', (), True), ('Linux', (), False),
+                 ('Linux', ('--evidence-platform', 'linux'), True),
+                 ('Darwin', ('--evidence-platform', 'linux'), False)]
+        for system, extra, released in cases:
+            with self.subTest(system=system, extra=extra):
+                tc.write(self.file, {'schema': 'af.test-quarantine/1', 'tests': {
+                    CAPTURE: held(CAPTURE), HEAVY: held(HEAVY)}})
+                before = self.file.read_bytes()
+                result = self.apply(report({CAPTURE: []}, system=system), *extra)
+                self.assertEqual(result.returncode, 0, result.stderr)
+                if released:
+                    self.assertEqual(self.entries(), {HEAVY: held(HEAVY)})
+                    self.assertIn(f'clean: {CAPTURE} (failed in 0 of 50 runs): removed the entry',
+                                  result.stdout)
+                else:
+                    self.assertEqual(self.file.read_bytes(), before)
+                    evidence = 'Linux' if extra else 'Darwin'
+                    self.assertIn(f'clean: {CAPTURE} (failed in 0 of 50 runs): keeps the entry '
+                                  f'quarantined, its dates unchanged: the report is from {system} and '
+                                  f'its evidence from {evidence} gates', result.stdout)
+                self.assertFalse(self.issues.exists())
+
+    def test_without_write_nothing_changes(self):
+        before = self.file.read_bytes()
+        files = set(self.dir.iterdir())
+        result = self.apply(report({MANY[0]: [2, 4], HEAVY: list(range(1, 51)), CAPTURE: []}),
+                            write=False)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(self.file.read_bytes(), before)
+        self.assertEqual(set(self.dir.iterdir()) - files, {self.dir / 'report.json'})
+        self.assertIn(f'flaky: {MANY[0]} (failed in 2 of 50 runs): would set state flaky', result.stdout)
+        self.assertIn(f'would write the flaky issue body {self.issues / "flaky-review-graph-many-case_00.md"}',
+                      result.stdout)
+        self.assertIn('nothing written; rerun with --write --issues DIR to apply it', result.stdout)
+        self.assertNotIn('gh issue create', result.stdout)
+
+    def test_refusals_write_nothing(self):
+        later = report({HEAVY: [3]}, today='2026-10-30')
+        broken = report({HEAVY: [3]})
+        broken['tests'][HEAVY]['classification'] = 'clean'
+        cases = [
+            # A report from a later day than apply's today.
+            (later, {}, 'the report is from 2026-10-30, later than today (2026-10-29)'),
+            # An identity no longer in the file.
+            (report({'af::it absent::test': []}), {},
+             'apply: af::it absent::test is in the report but not in the quarantine file'),
+            # Not a confirm report, or one whose classification does not follow from its runs.
+            ({**broken, 'schema': 'af.test-quarantine-confirm/2'}, {},
+             "not an af.test-quarantine-confirm/1 report (schema 'af.test-quarantine-confirm/2')"),
+            (broken, {}, "classification 'clean' for 1 of 50 failed runs, expected 'flaky'"),
+            # Issues to file but no directory for their bodies.
+            (report({HEAVY: [3]}), {'issues': False}, 'name the directory for their bodies with --issues'),
+            # A guard refusal: the result fails the partition-time inventory guard.
+            (report({HEAVY: [3], CAPTURE: []}), {'absent': True}, 'not in the test inventory'),
+        ]
+        for value, options, needle in cases:
+            with self.subTest(needle=needle):
+                tests = {identity: held(identity) for identity in CONFIRMED}
+                if options.get('absent'):
+                    tests['af::it absent::test'] = held('af::it absent::test')
+                tc.write(self.file, {'schema': 'af.test-quarantine/1', 'tests': tests})
+                before = self.file.read_bytes()
+                result = self.apply(value, issues=options.get('issues', True))
+                self.assertEqual(result.returncode, 1, result.stdout)
+                self.assertIn(needle, result.stderr)
+                self.assertEqual(result.stdout, '')
+                self.assertEqual(self.file.read_bytes(), before)
+                self.assertFalse(self.issues.exists())
+        # An issue body already there is never overwritten.
+        self.issues.mkdir()
+        (self.issues / 'flaky-af-it-task_heavy-loaded.md').write_text('mine')
+        before = self.file.read_bytes()
+        result = self.apply(report({HEAVY: [3]}))
+        self.assertEqual(result.returncode, 1)
+        self.assertIn('flaky-af-it-task_heavy-loaded.md exists', result.stderr)
+        self.assertEqual(((self.issues / 'flaky-af-it-task_heavy-loaded.md').read_text(),
+                          self.file.read_bytes()), ('mine', before))
+
+    def test_today_comes_from_the_flag_else_the_environment(self):
+        result = self.apply(report({HEAVY: [3]}), today=None,
+                            env={'AF_TEST_QUARANTINE_TODAY': '2026-10-31'})
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(self.entries()[HEAVY]['since'], '2026-10-31')
+        self.assertEqual(self.entries()[HEAVY]['expires'], '2026-11-14')
+
+
 if __name__ == '__main__':
     unittest.main()
