@@ -410,10 +410,14 @@ profiles = [
   { environment = "macos_arm64_local", recipe = "macos_arm64_native_release" },
   { environment = "linux_x86_64_musl_claw", recipe = "linux_musl_shipping" },
 ]
+# The executor runs a nightly's shards one after another (ADR-0266). The deadline counts from
+# the build's start and holds its five bounded steps (supervisor, each side's af and probe) at
+# build_minutes each, 100 minutes at worst, then four shards of 15 sampling minutes with their
+# preflight and finish reserve, 68 minutes: 168 of the long tier's hard maximum of 180.
 shards = 4
 concurrent_jobs = 4
-shard_sampling_minutes = 45
-run_total_minutes = 120
+shard_sampling_minutes = 15
+run_total_minutes = 180
 
 [tiers.release]
 description = "A published release against its predecessor; advisory for publication."

@@ -37,13 +37,23 @@ pull request's commits — the event's `base.sha` and `head.sha`, which the work
 `--diff BASE HEAD` — the block is rendered again and one that differs is refused, with the block
 to paste; without them the shape alone is checked, and the check says so.
 
+A pull request whose commits add quarantined tests (ADR-0268, amended 2026-10-30) carries one
+more block, between `<!-- af-pr-quarantine:v1 -->` and `<!-- /af-pr-quarantine -->`: the title
+`**Quarantined tests added: N**` and the table of tests, states, expiry dates and reasons that
+`scripts/pr-quarantine.py` prints. Its markers count by the same rules, and not inside an HTML
+comment either. Given the commits, the block is rendered again from `.config/test-quarantine.json`
+at their fork point and at the head: when they add a quarantined test, a missing block or one
+that differs is refused, with the block to paste; when they add none, a block is refused as
+stale and no block passes. Without the commits only a block present is checked, for its shape,
+and the check says so.
+
 With `--refresh-into FILE` (ADR-0269) a lines block that differs from the rendered one, or is
 absent, is not refused: when the Task report block is well formed, the description is written to
 FILE with the text between the lines markers replaced by the rendered block (the markers and every
 other byte kept), or, without the markers, with the block inserted after a blank line right after
 the report's end marker (at the end of a description without one), and the check passes. A block
-that matches writes nothing. A bad Task report block, more than one lines block, or a marker
-without its pair still fails as without the flag, and writes nothing. The workflow writes FILE
+that matches writes nothing. A bad Task report block or quarantine block, more than one lines
+block, or a marker without its pair still fails as without the flag, and writes nothing. The workflow writes FILE
 back as the description; this script calls no API itself.
 
 The workflow runs this script as the base branch holds it, on `pull_request_target`, so a pull
@@ -51,8 +61,9 @@ request can change neither the check nor the workflow that runs it (ADR-0142).
 
     check-pr-report.py [--event PATH]      the event payload (default: $GITHUB_EVENT_PATH)
     check-pr-report.py --body FILE         a description on its own, as a local check
-    ... [--repo DIR] [--diff BASE HEAD]    where and what to count the lines added from
-    ... --no-diff                          check the lines block's shape only
+    ... [--repo DIR] [--diff BASE HEAD]    the commits the lines and quarantine blocks are
+                                           rendered from
+    ... --no-diff                          check the blocks' shape only
     ... --refresh-into FILE                write the description with a stale block refreshed
 """
 import argparse
@@ -123,6 +134,8 @@ AUTOLINK = re.compile(r'<[A-Za-z][A-Za-z0-9+.-]{1,31}:[^\s<>]*>|<[^\s<>@\\]+@[A-
 PUNCTUATION = set('!"#$%&\'()*+,-./:;<=>?@[\\]^_`{|}~')
 LINES_BEGIN = '<!-- af-pr-lines:v1 -->'
 LINES_END = '<!-- /af-pr-lines -->'
+QUARANTINE_BEGIN = '<!-- af-pr-quarantine:v1 -->'
+QUARANTINE_END = '<!-- /af-pr-quarantine -->'
 EXEMPT_AUTHORS = {'dependabot[bot]'}
 EXEMPT_BRANCH_PREFIX = 'release/'
 HOW = ('Run `af task report TASK_ID...` for the af Tasks that made this change (from the '
@@ -319,9 +332,10 @@ def inline(text):
             n += 1
 
 
-def unrendered(lines):
+def unrendered(lines, commented=None):
     """Which lines GitHub does not render as Markdown, and what it shows of the others, as
-    (code, raw, spanned, shown).
+    (code, raw, spanned, shown). A set given as `commented` gets the indexes of the HTML block
+    lines that start inside an HTML comment or a tag's quoted attribute value (see Comments).
 
     `code` holds the indexes of the lines rendered as code: inside a fenced code block, its
     fences included, or in an indented code block (four columns of indent, not continuing a
@@ -401,6 +415,8 @@ def unrendered(lines):
         if end == RAW_ENDS:
             raw.add(n)
         shown[n] = ''
+        if commented is not None and comments.hides():
+            commented.add(n)
         comments.feed(line)
         if closes(end, line):
             comments.tag = carried
@@ -459,6 +475,8 @@ def unrendered(lines):
             if end == RAW_ENDS:
                 raw.add(n)
             shown[n], table, carried = '', False, comments.tag
+            if commented is not None and comments.hides():
+                commented.add(n)
             comments.feed(line)
             if end == BLANK or not closes(end, text[opener:]):
                 html = end
@@ -633,44 +651,59 @@ def pr_lines():
     return module
 
 
+def marked(body, begin, end, name, commented=False):
+    """The one block of `body` between the markers `begin` and `end`, as (content, problems,
+    absent): `content` the non-blank lines GitHub shows between the markers, `problems` what is
+    wrong with the markers or what they hold, and `absent` why no marker counts (None when one
+    does). A marker counts only as text GitHub renders as Markdown: not in a code block or a raw
+    HTML block, and with `commented`, not inside an HTML comment or a tag's quoted attribute
+    value either. `name` names the block in the messages."""
+    lines = (body or '').splitlines()
+    hidden_markers = set() if commented else None
+    code, raw, spanned, shown = unrendered(lines, hidden_markers)
+    marker = {n: line.strip() for n, line in enumerate(lines) if line.strip() in (begin, end)}
+    uncounted = code | raw | (hidden_markers or set())
+    begins = [n for n, text in marker.items() if text == begin and n not in uncounted]
+    ends = [n for n, text in marker.items() if text == end and n not in uncounted]
+    if not begins and not ends:
+        if any(n in raw for n in marker):
+            return None, [], (f'the {name} block is inside a raw HTML block (<pre>, <script>, '
+                              '<style> or <textarea>): GitHub shows it as literal text, or hides '
+                              'it. Paste it as plain text, outside any such element')
+        if any(n in code for n in marker):
+            return None, [], (f'the {name} block is inside a code block (a ``` or ~~~ fence, or '
+                              'indented four spaces): GitHub shows it as code. Paste it as plain '
+                              'text, outside any fence and without indenting it')
+        if marker:
+            return None, [], (f'the {name} block is inside an HTML comment: GitHub hides it. '
+                              'Paste it as plain text, outside any comment')
+        return None, [], f'no {name} block: the description has neither `{begin}` nor `{end}`'
+    if len(begins) > 1 or len(ends) > 1:
+        return None, [f'{max(len(begins), len(ends))} {name} blocks: keep exactly one'], None
+    if not begins:
+        return None, [f'the {name} block has no begin marker `{begin}`'], None
+    if not ends:
+        return None, [f'the {name} block has no end marker `{end}`'], None
+    if ends[0] < begins[0]:
+        return None, [f'the end marker `{end}` comes before the begin marker `{begin}`'], None
+    inside = range(begins[0] + 1, ends[0])
+    if any(lines[n].strip() and not shown[n].strip() for n in inside):
+        return None, [f'part of the {name} block is inside a code block, an HTML block or an '
+                      'HTML comment: GitHub does not show it as text. Paste the block as plain '
+                      'text, outside any fence, element or comment'], None
+    return [shown[n] for n in inside if shown[n].strip()], [], None
+
+
 def lines_problems(body, expected=None):
     """What is wrong with the lines added block of `body`, as messages; an empty list passes.
     `expected` is the block's body the pull request's commits give (`pr-lines.render`), or None
     to check the block's shape alone."""
     tool = pr_lines()
-    lines = (body or '').splitlines()
-    code, raw, spanned, shown = unrendered(lines)
-    marker = {n: line.strip() for n, line in enumerate(lines)
-              if line.strip() in (LINES_BEGIN, LINES_END)}
-    begins = [n for n, text in marker.items() if text == LINES_BEGIN and n not in code | raw]
-    ends = [n for n, text in marker.items() if text == LINES_END and n not in code | raw]
-    if not begins and not ends:
-        if any(n in raw for n in marker):
-            return ['the lines added block is inside a raw HTML block (<pre>, <script>, '
-                    '<style> or <textarea>): GitHub shows it as literal text, or hides it. '
-                    'Paste it as plain text, outside any such element']
-        if any(n in code for n in marker):
-            return ['the lines added block is inside a code block (a ``` or ~~~ fence, or '
-                    'indented four spaces): GitHub shows it as code. Paste it as plain text, '
-                    'outside any fence and without indenting it']
-        return [f'no lines added block: the description has neither `{LINES_BEGIN}` nor '
-                f'`{LINES_END}`']
-    if len(begins) > 1 or len(ends) > 1:
-        return [f'{max(len(begins), len(ends))} lines added blocks: keep exactly one']
-    if not begins:
-        return [f'the lines added block has no begin marker `{LINES_BEGIN}`']
-    if not ends:
-        return [f'the lines added block has no end marker `{LINES_END}`']
-    if ends[0] < begins[0]:
-        return [f'the end marker `{LINES_END}` comes before the begin marker `{LINES_BEGIN}`']
-    inside = range(begins[0] + 1, ends[0])
-    content = [shown[n] for n in inside if shown[n].strip()]
-    hidden = [n for n in inside if lines[n].strip() and not shown[n].strip()]
-    not_shown = ('part of the lines added block is inside a code block, an HTML block or an '
-                 'HTML comment: GitHub does not show it as text. Paste the block as plain text, '
-                 'outside any fence, element or comment')
-    if hidden:
-        return [not_shown]
+    content, found, absent = marked(body, LINES_BEGIN, LINES_END, 'lines added')
+    if absent:
+        return [absent]
+    if found:
+        return found
     if not content:
         return ['the lines added block is empty: it holds the title `**Lines added: '
                 '<figure>**` and the table that `scripts/pr-lines.py` prints']
@@ -734,6 +767,46 @@ def refresh(body, expected):
     return ''.join(head + block + rest)
 
 
+def pr_quarantine():
+    """The `pr-quarantine.py` module beside this script: the block's renderer and parser."""
+    spec = importlib.util.spec_from_file_location(
+        'pr_quarantine', Path(__file__).with_name('pr-quarantine.py'))
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+def quarantine_problems(body, compared=False, expected=None):
+    """What is wrong with the quarantine block of `body`, as messages; an empty list passes.
+    With `compared`, `expected` is the block's body the pull request's commits give
+    (`pr-quarantine.render`), None when they add no quarantined test; without it, a block
+    present is checked for its shape alone."""
+    tool = pr_quarantine()
+    content, found, absent = marked(body, QUARANTINE_BEGIN, QUARANTINE_END, 'quarantine',
+                                    commented=True)
+    paste = ('; this pull request\'s commits add quarantined tests, so paste this block, both '
+             'markers included, into the `Test quarantine` section:\n' + tool.block(expected)
+             if compared and expected is not None else '')
+    if compared and expected is None:
+        if absent:
+            return []
+        return ['no quarantined tests are added: remove the af-pr-quarantine block']
+    if absent:
+        return [absent + paste] if paste else []
+    if found:
+        return [found[0] + paste]
+    if not content:
+        return ['the quarantine block is empty: it holds the title `**Quarantined tests added: '
+                'N**` and the table that `scripts/pr-quarantine.py` prints' + paste]
+    parsed, problem = tool.parse(content)
+    if parsed is None:
+        return ['the quarantine block is not what `scripts/pr-quarantine.py` prints: '
+                + problem + paste]
+    if compared and tool.parse(expected.splitlines())[0] != parsed:
+        return ['the quarantine block is not that of this pull request\'s commits' + paste]
+    return []
+
+
 def exemption(event):
     """Why `event`'s pull request needs no block, or None."""
     pull = (event or {}).get('pull_request') or {}
@@ -761,7 +834,8 @@ def main(argv=None):
                         help='count the lines added from BASE...HEAD (with --body; an event '
                              'names its own commits)')
     parser.add_argument('--no-diff', action='store_true',
-                        help='check the lines added block\'s shape only')
+                        help='check the shape of the lines added block, and of a quarantine '
+                             'block present, only')
     parser.add_argument('--refresh-into', type=Path, metavar='FILE',
                         help='when the lines added block is stale or absent, write the '
                              'description with the block of the commits to FILE and pass')
@@ -807,7 +881,19 @@ def main(argv=None):
                                f'{error.stderr.decode("utf-8", "replace").strip()}')
     if not lines_found:
         lines_found = lines_problems(body, expected)
-    if args.refresh_into and lines_found and expected is not None and not found:
+    # The quarantine block is judged before a refresh: a description that fails it is not
+    # written back, whatever its lines block.
+    quarantine = pr_quarantine()
+    compared, wanted, quarantine_found = False, None, []
+    if base and head and not args.no_diff:
+        try:
+            wanted, compared = quarantine.render(base, head, args.repo), True
+        except quarantine.QuarantineError as error:
+            quarantine_found.append(f'could not read the quarantined tests added: {error}')
+    if not quarantine_found:
+        quarantine_found = quarantine_problems(body, compared, wanted)
+    if args.refresh_into and lines_found and expected is not None and not found \
+            and not quarantine_found:
         refreshed = refresh(body, expected)
         # The refreshed description passes both checks before it is written, or it is not.
         if refreshed is not None and not problems(refreshed) \
@@ -839,7 +925,25 @@ def main(argv=None):
               f'{LINES_BEGIN}\n{expected}\n{LINES_END}', file=sys.stderr)
     if lines_found:
         print(f'lines added: {pr_lines().HOW}', file=sys.stderr)
-    return 1 if found or lines_found else 0
+    if not quarantine_found:
+        if not compared:
+            present = marked(body, QUARANTINE_BEGIN, QUARANTINE_END, 'quarantine',
+                             commented=True)[2] is None
+            print('test quarantine: ' + ('the description carries one well-formed block'
+                                         if present else 'the description carries no block')
+                  + '; it was not compared with any commits, so whether one is needed was not '
+                  'checked')
+        elif wanted is None:
+            print('test quarantine: the pull request\'s commits add no quarantined test, and the '
+                  'description carries no block')
+        else:
+            print('test quarantine: the description carries one well-formed block; it matches '
+                  'the pull request\'s commits')
+    for problem in quarantine_found:
+        print(f'test quarantine: {problem}', file=sys.stderr)
+    if quarantine_found:
+        print(f'test quarantine: {quarantine.HOW}', file=sys.stderr)
+    return 1 if found or lines_found or quarantine_found else 0
 
 
 if __name__ == '__main__':

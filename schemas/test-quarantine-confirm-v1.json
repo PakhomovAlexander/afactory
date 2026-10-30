@@ -1,0 +1,144 @@
+{
+  "$id": "urn:af:schema:test-quarantine-confirm:1",
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": false,
+  "properties": {
+    "commit": {
+      "type": "string"
+    },
+    "host": {
+      "additionalProperties": false,
+      "properties": {
+        "cpus": {
+          "minimum": 1,
+          "type": "integer"
+        },
+        "machine": {
+          "type": "string"
+        },
+        "system": {
+          "type": "string"
+        },
+        "test_threads": {
+          "minimum": 1,
+          "type": "integer"
+        }
+      },
+      "required": [
+        "system",
+        "machine",
+        "cpus",
+        "test_threads"
+      ],
+      "type": "object"
+    },
+    "load": {
+      "additionalProperties": false,
+      "properties": {
+        "runs": {
+          "minimum": 0,
+          "type": "integer"
+        },
+        "selection": {
+          "enum": [
+            "functional",
+            "none"
+          ]
+        }
+      },
+      "required": [
+        "selection",
+        "runs"
+      ],
+      "type": "object"
+    },
+    "runs": {
+      "minimum": 1,
+      "type": "integer"
+    },
+    "schema": {
+      "const": "af.test-quarantine-confirm/1"
+    },
+    "tests": {
+      "additionalProperties": {
+        "additionalProperties": false,
+        "properties": {
+          "classification": {
+            "enum": [
+              "flaky",
+              "always_fails",
+              "clean"
+            ]
+          },
+          "failed_runs": {
+            "items": {
+              "minimum": 1,
+              "type": "integer"
+            },
+            "type": "array",
+            "uniqueItems": true
+          },
+          "failures": {
+            "minimum": 0,
+            "type": "integer"
+          },
+          "first_failure": {
+            "anyOf": [
+              {
+                "type": "null"
+              },
+              {
+                "additionalProperties": false,
+                "properties": {
+                  "output": {
+                    "type": "string"
+                  },
+                  "run": {
+                    "minimum": 1,
+                    "type": "integer"
+                  },
+                  "truncated": {
+                    "type": "boolean"
+                  }
+                },
+                "required": [
+                  "run",
+                  "output",
+                  "truncated"
+                ],
+                "type": "object"
+              }
+            ]
+          }
+        },
+        "required": [
+          "failures",
+          "failed_runs",
+          "classification",
+          "first_failure"
+        ],
+        "type": "object"
+      },
+      "maxProperties": 20,
+      "minProperties": 1,
+      "propertyNames": {
+        "pattern": "^[A-Za-z0-9_:./-]+ [A-Za-z0-9_:]+$"
+      },
+      "type": "object"
+    },
+    "today": {
+      "pattern": "^\\d{4}-\\d{2}-\\d{2}$",
+      "type": "string"
+    }
+  },
+  "required": [
+    "schema",
+    "commit",
+    "today",
+    "host",
+    "load",
+    "runs",
+    "tests"
+  ],
+  "type": "object"
+}

@@ -1,0 +1,248 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:af:schema:performance-nightly-build:1",
+  "title": "af.nightly-build/1",
+  "description": "One night's nightly build record, builds_root/<date>/nightly.json (ADR-0265): the plan it built, the build image, each Linux target's archive with its digest, size, smoke and version report, the signed SHA256SUMS and every phase's timing, or why the night was skipped.",
+  "type": "object",
+  "additionalProperties": false,
+  "properties": {
+    "schema": {
+      "const": "af.nightly-build/1"
+    },
+    "status": {
+      "type": "string",
+      "enum": [
+        "built",
+        "skipped"
+      ]
+    },
+    "date": {
+      "type": "string",
+      "maxLength": 10,
+      "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}$"
+    },
+    "tag": {
+      "type": "string",
+      "maxLength": 19,
+      "pattern": "^nightly-[0-9]{4}\\.[0-9]{2}\\.[0-9]{2}$"
+    },
+    "version": {
+      "type": "string",
+      "maxLength": 96,
+      "pattern": "^(0|[1-9][0-9]*)\\.(0|[1-9][0-9]*)\\.(0|[1-9][0-9]*)-nightly\\.[0-9]{8}$"
+    },
+    "head_sha": {
+      "$ref": "#/$defs/git_sha"
+    },
+    "head_committed_unix": {
+      "type": "integer",
+      "minimum": 0,
+      "maximum": 9007199254740992
+    },
+    "rejected": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "sha": {
+            "$ref": "#/$defs/git_sha"
+          },
+          "reason": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 2048
+          }
+        },
+        "required": [
+          "sha",
+          "reason"
+        ]
+      },
+      "minItems": 0,
+      "maxItems": 200
+    },
+    "previous_head_sha": {
+      "anyOf": [
+        {
+          "type": "null"
+        },
+        {
+          "$ref": "#/$defs/git_sha"
+        }
+      ]
+    },
+    "previous_tag": {
+      "anyOf": [
+        {
+          "type": "null"
+        },
+        {
+          "type": "string",
+          "maxLength": 19,
+          "pattern": "^nightly-[0-9]{4}\\.[0-9]{2}\\.[0-9]{2}$"
+        }
+      ]
+    },
+    "baseline_tag": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 256
+    },
+    "baseline_sha": {
+      "$ref": "#/$defs/git_sha"
+    },
+    "cargo_version_on_main": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 80
+    },
+    "skip_reason": {
+      "anyOf": [
+        {
+          "type": "null"
+        },
+        {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 1024
+        }
+      ]
+    },
+    "build_image": {
+      "type": "string",
+      "maxLength": 330,
+      "pattern": "^(?:(?:[a-z0-9]+(?:(?:[._]|__|-+)[a-z0-9]+)*(?::[0-9]{1,5})?/)*[a-z0-9]+(?:(?:[._]|__|-+)[a-z0-9]+)*@)?sha256:[0-9a-f]{64}$"
+    },
+    "targets": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "target": {
+            "type": "string",
+            "enum": [
+              "x86_64-unknown-linux-musl",
+              "aarch64-unknown-linux-musl"
+            ]
+          },
+          "asset": {
+            "type": "string",
+            "maxLength": 128,
+            "pattern": "^dist/af-nightly-[0-9.]{10}-[a-z0-9_-]+\\.tar\\.gz$"
+          },
+          "sha256": {
+            "$ref": "#/$defs/digest"
+          },
+          "bytes": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 1099511627776
+          },
+          "smoke": {
+            "const": "passed"
+          },
+          "version_json": {
+            "type": "string",
+            "maxLength": 96,
+            "pattern": "^version-[a-z0-9_-]+\\.json$"
+          }
+        },
+        "required": [
+          "target",
+          "asset",
+          "sha256",
+          "bytes",
+          "smoke",
+          "version_json"
+        ]
+      },
+      "minItems": 0,
+      "maxItems": 2
+    },
+    "sha256sums": {
+      "anyOf": [
+        {
+          "type": "null"
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "path": {
+              "const": "dist/SHA256SUMS"
+            },
+            "signature_path": {
+              "const": "dist/SHA256SUMS.minisig"
+            }
+          },
+          "required": [
+            "path",
+            "signature_path"
+          ]
+        }
+      ]
+    },
+    "timings": {
+      "type": "object",
+      "minProperties": 1,
+      "maxProperties": 32,
+      "patternProperties": {
+        "^[a-z0-9][a-z0-9_.-]{0,63}$": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "started_unix_ms": {
+              "type": "integer",
+              "minimum": 0,
+              "maximum": 9007199254740992
+            },
+            "ended_unix_ms": {
+              "type": "integer",
+              "minimum": 0,
+              "maximum": 9007199254740992
+            }
+          },
+          "required": [
+            "started_unix_ms",
+            "ended_unix_ms"
+          ]
+        }
+      },
+      "additionalProperties": false
+    }
+  },
+  "required": [
+    "schema",
+    "status",
+    "date",
+    "tag",
+    "version",
+    "head_sha",
+    "head_committed_unix",
+    "rejected",
+    "previous_head_sha",
+    "previous_tag",
+    "baseline_tag",
+    "baseline_sha",
+    "cargo_version_on_main",
+    "skip_reason",
+    "build_image",
+    "targets",
+    "sha256sums",
+    "timings"
+  ],
+  "$defs": {
+    "digest": {
+      "type": "string",
+      "maxLength": 71,
+      "pattern": "^sha256:[0-9a-f]{64}$"
+    },
+    "git_sha": {
+      "type": "string",
+      "maxLength": 64,
+      "pattern": "^(?:[0-9a-f]{40}|[0-9a-f]{64})$"
+    }
+  }
+}

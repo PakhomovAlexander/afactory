@@ -4,6 +4,9 @@
 The valid block is `fixtures/task-report/report.md`: the `af task report` renderer's output for
 a test Store, which `crates/af` checks it still prints. So the checker and the renderer cannot
 drift apart: a renderer change fails there, a checker change that refuses the block fails here.
+
+The quarantine block (ADR-0268, amended 2026-10-30) is proven on temporary git repositories:
+`scripts/pr-quarantine.py` renders it and the check compares it with the commits it names.
 """
 import importlib.util
 import json
@@ -15,6 +18,7 @@ import tempfile
 
 ROOT = Path(__file__).resolve().parent.parent
 SCRIPT = ROOT / 'scripts' / 'check-pr-report.py'
+QUARANTINE = ROOT / 'scripts' / 'pr-quarantine.py'
 BLOCK = (ROOT / 'fixtures' / 'task-report' / 'report.md').read_text(encoding='utf-8')
 TEMPLATE = (ROOT / '.github' / 'PULL_REQUEST_TEMPLATE.md').read_text(encoding='utf-8')
 HOW = 'af task report TASK_ID'
@@ -619,17 +623,258 @@ def main():
         assert result.returncode == 0, result.stdout + result.stderr
         assert 'the figures were not compared' in result.stdout, result.stdout
     refreshes = refreshing(pipeline)
+    quarantine_cases = quarantine()
     print(f'check-pr-report: {len(passing) + 1} passing and {len(failing)} failing cases, '
           f'{len(TYPE6_AUDIT)} type 6 names; lines added: {len(lines_passing)} passing and '
-          f'{len(lines_failing)} failing cases; {refreshes} refresh cases')
+          f'{len(lines_failing)} failing cases; {refreshes} refresh cases; test quarantine: '
+          f'{quarantine_cases} cases')
 
 
 GIT_ENV = {
-    'PATH': os.environ.get('PATH', os.defpath), 'GIT_CONFIG_GLOBAL': '/dev/null',
-    'GIT_CONFIG_NOSYSTEM': '1', 'GIT_AUTHOR_NAME': 'Fixture',
-    'GIT_AUTHOR_EMAIL': 'fixture@example.invalid', 'GIT_COMMITTER_NAME': 'Fixture',
-    'GIT_COMMITTER_EMAIL': 'fixture@example.invalid',
+    **os.environ, 'GIT_CONFIG_GLOBAL': '/dev/null', 'GIT_CONFIG_NOSYSTEM': '1',
+    'GIT_AUTHOR_NAME': 'Fixture', 'GIT_AUTHOR_EMAIL': 'fixture@example.invalid',
+    'GIT_COMMITTER_NAME': 'Fixture', 'GIT_COMMITTER_EMAIL': 'fixture@example.invalid',
 }
+QBEGIN, QEND = '<!-- af-pr-quarantine:v1 -->', '<!-- /af-pr-quarantine -->'
+
+
+def load(name, path):
+    spec = importlib.util.spec_from_file_location(name, path)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+def git(repo, *args):
+    return subprocess.run(['git', '-C', str(repo), *args], check=True, capture_output=True,
+                          text=True, env=GIT_ENV).stdout.strip()
+
+
+def entry(evidence, issue=None, state='quarantined', expires='2026-11-12'):
+    found = {'state': state, 'since': '2026-10-29', 'expires': expires, 'evidence': evidence}
+    return found if issue is None else {**found, 'issue': issue}
+
+
+def commit(repo, tests, message):
+    """Commit `tests` as the quarantine file (None: no file; a str: those bytes)."""
+    path = repo / '.config' / 'test-quarantine.json'
+    if tests is None:
+        path.unlink(missing_ok=True)
+    else:
+        path.parent.mkdir(exist_ok=True)
+        path.write_text(tests if isinstance(tests, str) else json.dumps(
+            {'schema': 'af.test-quarantine/1', 'tests': tests}, indent=2), encoding='utf-8')
+    git(repo, 'add', '-A')
+    git(repo, 'commit', '-qm', message, '--allow-empty')
+    return git(repo, 'rev-parse', 'HEAD')
+
+
+def quarantine():
+    """The quarantine block: the renderer on its own, and the check given the commits; returns
+    the number of cases."""
+    tool = load('pr_quarantine', QUARANTINE)
+    lines = load('pr_lines', ROOT / 'scripts' / 'pr-lines.py')
+    cases = 0
+    old = 'af::it old::kept'
+    one = 'af::it capture::a_settled_worktree_is_admitted_on_retry'
+    two = 'af::it alpha::case'
+    with tempfile.TemporaryDirectory() as tmp:
+        repo = Path(tmp) / 'repo'
+        repo.mkdir()
+        git(repo, 'init', '-q', '-b', 'main')
+        fork = commit(repo, {old: entry(['T0', 'T9'])}, 'base')
+        branches = {
+            'one': {old: entry(['T0', 'T9']), one: entry(['T1', 'T2'], 466)},
+            'two': {old: entry(['T0', 'T9']), one: entry(['T1', 'T2'], 466),
+                    two: entry(['T3'], state='flaky')},
+            'change': {old: entry(['T0', 'T9', 'T5'], 12, expires='2026-11-10')},
+            'remove': {},
+            'malformed': '{"schema": "af.test-quarantine/1", "tests": [',
+            'bad-entry': {old: entry(['T0', 'T9']), one: {'state': 'gone'}},
+            'no-since': {one: {'state': 'quarantined', 'expires': '2026-11-12', 'evidence': ['T1']}},
+            'bad-date': {one: entry(['T1'], expires='soon')},
+            'long-window': {one: entry(['T1'], expires='2026-11-30')},
+            'bad-identity': {'not-an-identity': entry(['T1'])},
+            'bad-evidence': {one: entry(['T 1'])},
+            'unknown-field': {one: {**entry(['T1']), 'owner': 'me'}},
+        }
+        heads = {}
+        for name, tests in branches.items():
+            git(repo, 'checkout', '-q', '-b', name, fork)
+            heads[name] = commit(repo, tests, name)
+        # Main moves on after the fork and quarantines `one` too: the fork point, not main's
+        # tip, is what the head is compared with, so `one` still counts as added.
+        git(repo, 'checkout', '-q', 'main')
+        commit(repo, {old: entry(['T0', 'T9']), one: entry(['T1', 'T2'], 466)}, 'later on main')
+        # A repository whose fork point has no quarantine file at all.
+        git(repo, 'checkout', '-q', '--orphan', 'bare')
+        git(repo, 'rm', '-rqf', '.')
+        bare = commit(repo, None, 'no file')
+        git(repo, 'checkout', '-q', '-b', 'absent', bare)
+        heads['absent'] = commit(repo, {one: entry(['T1', 'T2'], 466)}, 'first entry')
+
+        def render(base, head):
+            done = subprocess.run([sys.executable, '-I', str(QUARANTINE), '--repo', str(repo),
+                                   '--base', base, '--head', head], capture_output=True,
+                                  text=True, env=GIT_ENV)
+            return done.returncode, done.stdout, done.stderr
+
+        row_one = (f"| `{one}` | quarantined | 2026-11-12 | quarantined; flaky in 2 Tasks' "
+                   'gates: T1, T2; #466 |')
+        row_two = ("| `af::it alpha::case` | flaky | 2026-11-12 | flaky; flaky in 1 Task's "
+                   'gates: T3 |')
+        table = ['', '| Test | State | Expires | Why |', '|---|---|---|---|']
+        expected = {
+            'one': '\n'.join([QBEGIN, '**Quarantined tests added: 1**', *table, row_one, QEND, '']),
+            'two': '\n'.join([QBEGIN, '**Quarantined tests added: 2**', *table, row_two, row_one,
+                              QEND, '']),
+            'absent': '\n'.join([QBEGIN, '**Quarantined tests added: 1**', *table, row_one, QEND,
+                                 '']),
+        }
+        base = {'absent': 'bare'}
+        for name, block in expected.items():
+            code, out, err = render(base.get(name, 'main'), name)
+            assert (code, out, err) == (0, block, ''), (name, code, out, err)
+            cases += 1
+        for name in ('change', 'remove'):
+            code, out, err = render('main', name)
+            assert (code, out) == (0, ''), (name, code, out, err)
+            assert err == 'no quarantined tests added: no block needed\n', (name, err)
+            cases += 1
+        for name, why in (('malformed', 'is not JSON'), ('bad-entry', 'is malformed'),
+                          ('no-since', "missing field ['since']"),
+                          ('bad-date', 'not both YYYY-MM-DD dates'),
+                          ('long-window', 'at most 14 days after it'),
+                          ('bad-identity', 'not a `<binary_id> <test name>` nextest identity'),
+                          ('bad-evidence', 'not a non-empty list of af Task IDs'),
+                          ('unknown-field', "unknown field ['owner']")):
+            code, out, err = render('main', name)
+            assert code == 1 and out == '', (name, code, out, err)
+            assert f'.config/test-quarantine.json at {name}' in err and why in err, (name, err)
+            cases += 1
+        # A malformed file at the fork point is named as the fork point.
+        git(repo, 'checkout', '-q', '-b', 'bad-fork', fork)
+        bad_fork = commit(repo, {old: entry(['T0'], expires='soon')}, 'bad fork')
+        git(repo, 'checkout', '-q', '-b', 'on-bad-fork', bad_fork)
+        commit(repo, {old: entry(['T0'], expires='soon'), one: entry(['T1', 'T2'])}, 'on it')
+        code, out, err = render('bad-fork', 'on-bad-fork')
+        assert code == 1 and out == '' and f'at the fork point {bad_fork}' in err \
+            and 'is malformed' in err, (code, out, err)
+        cases += 1
+        # A `|` in a cell is escaped and read back; a valid entry never holds one.
+        assert tool.escape('a|b') == 'a\\|b' and tool.row_cells('| `a\\|b` | x |') == ['`a|b`', 'x']
+        cases += 1
+        for ref, why in (('no-such-ref', 'no-such-ref'), ('bare', 'no common ancestor')):
+            code, out, err = render(ref, 'two')
+            assert code == 1 and out == '' and why in err, err
+            cases += 1
+        # The parser reads a rendered block back, its rows in order, and refuses a block whose
+        # title, rows or reasons disagree.
+        body = tool.render('main', 'two', repo)
+        rows = body.splitlines()
+        parsed = tool.parse(rows)[0]
+        assert parsed['count'] == 2 and {row[0] for row in parsed['rows']} == {one, two}, parsed
+        assert tool.parse(rows[:4] + rows[4:][::-1])[0] != parsed
+        for bad, why in [
+                (rows[:-1], 'the title says 2 quarantined tests added, but the table has 1 rows'),
+                (rows[:4] + [rows[4], rows[4]], 'has two rows'),
+                (rows[:4] + [rows[4].replace('flaky;', 'quarantined;')], 'not a row'),
+                (rows[:4] + [rows[5].replace('2 Tasks', '3 Tasks')], 'not a row'),
+                (rows[:4] + [rows[5].replace('2026-11-12', 'soon')], 'not a row'),
+                (['**Quarantined tests added: 0**'], 'the first line is not the title')]:
+            assert tool.parse(bad) == (None, tool.parse(bad)[1]) and why in tool.parse(bad)[1], \
+                (bad, tool.parse(bad))
+            cases += 1
+
+        def described(branch, quarantine_block=''):
+            lines_block = lines.block(lines.counts(lines.numstat(repo, base.get(branch, 'main'),
+                                                                 branch)))
+            return (description(BLOCK, lines_block) + ('\n## Test quarantine\n\n' + quarantine_block
+                                                      if quarantine_block else ''))
+
+        def checked(text, *args):
+            with tempfile.TemporaryDirectory() as scratch:
+                path = Path(scratch) / 'body.md'
+                path.write_text(text, encoding='utf-8')
+                done = subprocess.run([sys.executable, '-I', str(SCRIPT), '--body', str(path),
+                                       '--repo', str(repo), *args], capture_output=True,
+                                      text=True, env=GIT_ENV)
+                return done.returncode, done.stdout + done.stderr
+
+        paste = 'paste this block, both markers included'
+        differing = expected['two'].replace('2026-11-12 | quarantined', '2026-11-13 | quarantined')
+        reordered = expected['two'].replace(row_two + '\n' + row_one, row_one + '\n' + row_two)
+        fenced = '```markdown\n' + expected['two'] + '```\n'
+        # Each marker sits in a comment left open on the line above it, as a template's
+        # guidance might quote them: GitHub hides both.
+        commented = ('<!-- The block starts with\n' + QBEGIN + '\n<!-- and ends with\n' + QEND
+                     + '\n')
+        for name, (branch, block, args, code, said) in {
+                'the exact block': ('two', expected['two'], (), 0, 'it matches the pull request'),
+                'the exact block, rows reordered': ('two', reordered, (), 1,
+                                                    'is not that of this pull request'),
+                'a block from a fork point with no file': ('absent', expected['absent'], (), 0,
+                                                           'it matches'),
+                'a missing block': ('two', '', (), 1, 'no quarantine block'),
+                'a differing block': ('two', differing, (), 1, 'is not that of this pull request'),
+                'a block for the tests main added since the fork': (
+                    'one', expected['one'], (), 0, 'it matches'),
+                'a stale block when a change adds none': (
+                    'change', expected['one'], (), 1,
+                    'no quarantined tests are added: remove the af-pr-quarantine block'),
+                'a stale block when a removal adds none': (
+                    'remove', expected['one'], (), 1, 'remove the af-pr-quarantine block'),
+                'no block when none is added': ('change', '', (), 0, 'add no quarantined test'),
+                'a fenced block when none is added': ('remove', fenced, (), 0,
+                                                     'add no quarantined test'),
+                'a fenced block when one is required': ('two', fenced, (), 1,
+                                                        'inside a code block'),
+                'commented markers when none is added': ('change', commented, (), 0,
+                                                         'add no quarantined test'),
+                'commented markers when one is required': ('two', commented, (), 1,
+                                                           'inside an HTML comment'),
+                'an unreadable file at the head': ('malformed', '', (), 1,
+                                                   'could not read the quarantined tests added'),
+                # Without the commits only a block present is checked, for its shape.
+                'shape only: a well-formed block': ('two', expected['one'], ('--no-diff',), 0,
+                                                    'one well-formed block; it was not compared'),
+                'shape only: no block': ('two', '', ('--no-diff',), 0,
+                                         'carries no block; it was not compared'),
+                'shape only: a malformed block': (
+                    'two', expected['one'].replace(' | quarantined |', ' | gone |'),
+                    ('--no-diff',), 1, 'is not what `scripts/pr-quarantine.py` prints'),
+                'shape only: an empty block': ('two', QBEGIN + '\n' + QEND + '\n', ('--no-diff',), 1,
+                                               'the quarantine block is empty'),
+        }.items():
+            diff = () if args else ('--diff', base.get(branch, 'main'), heads[branch])
+            exit_code, out = checked(described(branch, block), *diff, *args)
+            assert exit_code == code, f'{name}: exit {exit_code}:\n{out}'
+            assert said in out, f'{name}: expected {said!r} in:\n{out}'
+            if code:
+                assert 'scripts/pr-quarantine.py' in out, f'{name}: no how:\n{out}'
+                assert 'af task report: the description carries one well-formed block' in out \
+                    and 'lines added: the description carries one well-formed block' in out, \
+                    f'{name}: the other blocks are judged on their own:\n{out}'
+            if code and branch == 'two' and not args and 'unreadable' not in name:
+                assert paste in out and expected['two'] in out, f'{name}: no block to paste:\n{out}'
+            cases += 1
+        # The event names the commits; an exempt pull request needs no block at all.
+        for author, block, code in (('contributor', expected['two'], 0), ('contributor', '', 1),
+                                    ('dependabot[bot]', '', 0)):
+            payload = event(described('two', block), author)
+            payload['pull_request']['base']['sha'] = fork
+            payload['pull_request']['head']['sha'] = heads['two']
+            with tempfile.TemporaryDirectory() as scratch:
+                path = Path(scratch) / 'event.json'
+                path.write_text(json.dumps(payload), encoding='utf-8')
+                done = subprocess.run([sys.executable, '-I', str(SCRIPT), '--event', str(path),
+                                       '--repo', str(repo)], capture_output=True, text=True,
+                                      env=GIT_ENV)
+            assert done.returncode == code, (author, block, done.stdout + done.stderr)
+            cases += 1
+    return cases
+
+
 # What `scripts/pr-lines.py` renders for the fixture repository's commits: twelve lines of docs.
 RENDERED = ('**Lines added: 12**\n\n| Directory | Added | Share |\n|:--|--:|:--|\n'
             '| docs | 12 | ████████████ 100% |')
@@ -781,6 +1026,10 @@ def refreshing(pipeline):
         payload['pull_request']['user']['login'] = 'dependabot[bot]'
         code, said, wrote = run(None, event_payload=payload)
         assert code == 0 and wrote is None and 'not required' in said, said
+        # A bad quarantine block is judged first: nothing is written, whatever the lines block.
+        code, said, wrote = run(description(BLOCK, STALE) + QBEGIN + '\n**Quarantined tests '
+                                'added: 1**\n' + QEND + '\n')
+        assert code == 1 and wrote is None and 'remove the af-pr-quarantine block' in said, said
         # The refresh renders from commits: without them it is refused before anything runs.
         code, said, wrote = run(description(BLOCK, STALE), '--no-diff')
         assert code == 2 and wrote is None and 'drop --no-diff' in said, said

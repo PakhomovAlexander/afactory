@@ -7,6 +7,7 @@ import contextlib
 import fcntl
 import json
 import os
+import re
 import signal
 import stat
 import subprocess
@@ -15,7 +16,7 @@ import time
 from . import (admission, archive, budget, builds, calibration, compare, contracts, diagnostics,
                gitrefs, history, host, hostlock, hostprep, planning, report, runner,
                telemetrybuild, telemetrylab, tomlfile)
-from .values import ContractError, add_note, canonical_digest, require, sha256_bytes
+from .values import ContractError, add_note, canonical_digest, document_bytes, require, sha256_bytes
 
 ROOT = telemetrylab.ROOT
 TERMINAL = ("complete", "failed", "interrupted", "uncertain", "submitted", "expired")
@@ -253,9 +254,36 @@ class Journal:
         with timing.enforce("freezing original request"):
             return self._submit(*args, **kwargs)
 
+    def submit_nightly(self, work, tag, head, base=None, *, git=None, **kwargs):
+        """One nightly original per tag and work: frozen main `head` against `base`, or else the
+        highest stable release tag reachable from it (ADR-0266)."""
+        require(isinstance(tag, str) and re.match(contracts.NIGHTLY_TAG, tag) is not None,
+                "a nightly submission needs --tag nightly-YYYY.MM.DD, not %r" % (tag,))
+        contracts.check_nightly_tag(tag, "nightly tag")
+        require(work in ("core", "telemetry"), "a nightly measures core or telemetry work, never "
+                "--work %s; profile a nightly through a manual submission" % work)
+        tier = self.config["core"]["tier"]
+        require(work != "core" or tier == "nightly",
+                "a nightly core original needs core.tier = \"nightly\"; this configuration's tier is "
+                "\"%s\": submit to the nightly executor configuration" % tier)
+        git = git or source_repository(self.config)
+        # One resolution: a ref that moves later can never split the derived baseline's head
+        # from the frozen candidate.
+        head = git.resolve(head, "nightly")
+        derived = None
+        if base is None:
+            name, sha = gitrefs.nightly_baseline(git, head)
+            base, derived = sha, {"tag": name, "sha": sha}
+        key = "nightly:%s:%s" % (tag, work)
+        return self.submit(work, base, head, key, "nightly", git=git,
+                           submission={"kind": "nightly", "key": key, "tag": tag, "baseline": derived},
+                           **kwargs)
+
     def _submit(self, work, base, head, key, kind="manual", *, git=None, installed=ROOT,
-               cohort=None, member=None, parameters=None):
+               cohort=None, member=None, parameters=None, submission=None):
         require(work in ("core", "telemetry", "profile"), "unknown experiment kind")
+        require((kind == "nightly") == (submission is not None),
+                "only a nightly submission records its tag and derived baseline")
         timing = budget.Budget(time.monotonic() + self.config["cycle_seconds"], time.monotonic, 0)
         git = git or source_repository(self.config, timing)
         c = self.config
@@ -265,8 +293,10 @@ class Journal:
         require(trusted is not None and git.is_ancestor(control, trusted), "control is not reviewed main authority")
         sources = {"baseline_sha": git.resolve(base, "baseline"), "candidate_sha": git.resolve(head, "candidate"),
                    "control_sha": control, "authority_sha": control}
-        submission = {"kind": kind, "key": key}
-        ident = "exp_" + canonical_digest({"submission": submission, "work": work})[7:55]
+        # The identity is the kind, key and work alone, so a nightly whose head or derived
+        # baseline differs under the same tag is a reused key, never a second original.
+        ident = "exp_" + canonical_digest({"submission": {"kind": kind, "key": key}, "work": work})[7:55]
+        submission = submission or {"kind": kind, "key": key}
         if ident in self.names():
             original = self.request(ident)
             require(original["sources"] == sources and original["submission"] == submission
@@ -319,7 +349,7 @@ class Journal:
             t = c["telemetry"]
             telemetrylab.configuration(registry, t["profile"], t["experiments"], t["rounds"],
                                        t["pairs"], t["scale"], t["corpus_runs"])
-        request = {"schema": "af.perf-executor-request/1", "request_id": ident,
+        request = {"schema": contracts.EXECUTOR_REQUEST_SCHEMA, "request_id": ident,
             "backend": c["backend"], "journal_id": c["journal_id"], "machine_id": c["machine_id"],
             "configuration_digest": canonical_digest(c), "sources": sources, "submission": submission,
             "work": work, "created_unix_ms": int(time.time() * 1000), "environment_digest": env,
@@ -407,7 +437,8 @@ class Journal:
                 else:
                     result = dispatch_actions(frozen_config, request, self.path(ident), transport)
                 with terminal.enforce("publishing executor terminal evidence"):
-                    result.update(schema="af.perf-executor-result/2", request_id=ident,
+                    result.setdefault("binaries", None)
+                    result.update(schema=contracts.EXECUTOR_RESULT_SCHEMA, request_id=ident,
                         request_digest=canonical_digest(request), backend=request["backend"],
                         machine_id=request["machine_id"], environment_digest=request["environment_digest"],
                         producer_digest=request["producer_digest"], sources=request["sources"],
@@ -531,6 +562,7 @@ def file_manifest(root, prefixes, timing=None):
 
 def execute_local(config, request, path, lease, installed=ROOT):
     lease.check()
+    binaries = None
     start = time.monotonic()
     deadline = start + config["run_seconds"] - RESERVE
     timing = budget.Budget(deadline, time.monotonic, RESERVE)
@@ -565,6 +597,8 @@ def execute_local(config, request, path, lease, installed=ROOT):
                                zigbuild_bin=config["zigbuild_bin"], deadline_unix_ms=deadline_ms)
         built = build.build()
         require(built["cleanup"]["status"] == "removed", "core build cleanup unconfirmed")
+        if work == "core":
+            binaries = built_binaries(built)
         with timing.enforce("preparing local sample scratch"):
             hostprep.prepare(scratch_image, scratch, plan["profile"]["environment"]["scratch_limit_bytes"],
                              host=preparation_host)
@@ -627,7 +661,7 @@ def execute_local(config, request, path, lease, installed=ROOT):
             problems = hostprep.cleanup(scratch_image, scratch, host=preparation_host)
             require(not problems, "; ".join(problems))
     else:
-        binaries, records = {}, {}
+        built_af, records = {}, {}
         for side in contracts.SIDES:
             sha = request["sources"][side + "_sha"]
             source = os.path.join(path, side + "-source")
@@ -635,9 +669,9 @@ def execute_local(config, request, path, lease, installed=ROOT):
             output = os.path.join(path, side + "-build")
             telemetrybuild.run(source, output, config["build_image"], os.path.join(path, side + "-scratch"),
                                sha, seconds=min(4800, int(timing.seconds("contained telemetry build"))))
-            binaries[side] = os.path.join(output, "af")
+            built_af[side] = os.path.join(output, "af")
             record = {"schema": contracts.TELEMETRY_BUILD_SCHEMA, "side": side, "source_sha": sha,
-                "binary_sha256": telemetrylab._binary(binaries[side], side)[1], "image": config["build_image"],
+                "binary_sha256": telemetrylab._binary(built_af[side], side)[1], "image": config["build_image"],
                 "rustc": read(os.path.join(output, "af-rustc")).decode().strip()[:512],
                 "cargo": read(os.path.join(output, "af-cargo")).decode().strip()[:512],
                 "command": "cargo build --release --locked --offline --bin af --target-dir /state/target"}
@@ -653,7 +687,7 @@ def execute_local(config, request, path, lease, installed=ROOT):
         owner_path = os.path.join(path, "telemetry-owner.json")
         with hostprep.TelemetryOwner(owner_path, scratch, create=True, image=scratch_image) as owner_fence:
             result = telemetrylab.run(telemetrylab.Settings(profile=t["profile"], trigger="manual",
-                baseline_af=binaries["baseline"], candidate_af=binaries["candidate"],
+                baseline_af=built_af["baseline"], candidate_af=built_af["candidate"],
                 baseline_sha=request["sources"]["baseline_sha"], candidate_sha=request["sources"]["candidate_sha"],
                 authority_sha=request["sources"]["authority_sha"], builds=records, output=run,
                 result_id="local_" + request["request_id"][4:], mode="linux_container", root=installed,
@@ -670,7 +704,17 @@ def execute_local(config, request, path, lease, installed=ROOT):
     with terminal.enforce("sealing original local evidence"):
         evidence = file_manifest(path, EVIDENCE_PREFIXES, terminal)
     return {"status": "complete", "measurement_status": measurement, "evidence": evidence,
-            "actions": None, "detail": "Advisory local measurement; original evidence retained. No required-check claim."}
+            "binaries": binaries, "actions": None,
+            "detail": "Advisory local measurement; original evidence retained. No required-check claim."}
+
+
+def built_binaries(built):
+    """Each side's measured af as its builds record names it, or null for a side without one."""
+    out = {}
+    for side in contracts.SIDES:
+        artifact = built["sides"][side]["artifacts"]["af"]
+        out[side] = None if artifact is None else {"sha256": artifact["sha256"], "bytes": artifact["size"]}
+    return out
 
 
 def dispatch_actions(config, request, path, transport=None):
@@ -732,7 +776,8 @@ def verify_original(journal, ident, installed=ROOT):
             and environment(config) == request["environment_digest"] and config["backend"] == "local",
             "original frozen local configuration changed")
     result = contracts.read_json(read(os.path.join(path, "result.json")), "executor-result")
-    require(sha256_bytes(contracts.write_bytes(result, "executor-result")) == state["result_sha256"], "result receipt changed")
+    # An earlier result version is read but never written again: hash its admitted bytes.
+    require(sha256_bytes(document_bytes(result)) == state["result_sha256"], "result receipt changed")
     require(result["request_digest"] == canonical_digest(request) and result["sources"] == request["sources"]
             and result["backend"] == "local" and result["environment_digest"] == request["environment_digest"]
             and result["producer_digest"] == request["producer_digest"] and result["actions"] is None,
@@ -775,6 +820,10 @@ def verify_original(journal, ident, installed=ROOT):
         require(expected == plan, "original plan is not what its retained source authority freezes")
         evaluation = compare.evaluate(os.path.join(path, "run"))
         require(evaluation.plan == plan, "measurement changed original plan")
+        if result["schema"] == contracts.EXECUTOR_RESULT_SCHEMA:
+            measured = contracts.read_json(read(os.path.join(path, "run", "builds.json")), "builds")
+            require(result["binaries"] == built_binaries(measured),
+                    "result binaries are not the ones the original's builds record names")
         for role, source in contracts.BUILD_ROLES:
             require(sha256_bytes(git.read_file(request["sources"][source], "Cargo.lock")) ==
                     plan["build_inputs"][role]["cargo_lock_sha256"], "original Cargo.lock changed")

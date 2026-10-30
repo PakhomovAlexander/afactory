@@ -43,7 +43,8 @@ make check
 ```
 
 That is `cargo fmt --all -- --check`, `cargo clippy --all-targets --locked -- -D warnings`,
-`cargo nextest run --profile ci` over every test binary, and the release-selection check
+`cargo nextest run --profile ci` over every test binary except the tests
+`.config/test-quarantine.json` lists (ADR-0268), and the release-selection check
 (`scripts/test-release-resolve.py`), plus preflight and feature-on perf checks.
 This repository's Task gate runs `scripts/verify.sh --profile fast` (functional, e2e, uix).
 CI uses the selected classes described below; the default PR omits perf. A local pass alone
@@ -335,6 +336,16 @@ Either is fine; the prefixes are used but not required. Domain terms keep their 
   `python3 scripts/check-pr-report.py --body FILE --diff origin/main HEAD` runs the same
   comparison locally; with `--refresh-into OUT` it writes the description with the block
   refreshed to `OUT`.
+- A pull request that adds entries to `.config/test-quarantine.json` also names the tests it
+  quarantines
+  ([ADR-0268](docs/adr/0268-quarantine-flaky-tests-on-gate-evidence-and-confirm-them-on-claw.md)):
+  run `python3 scripts/pr-quarantine.py` (`--base REF` as above) and paste its whole output, both
+  markers included, into the template's `Test quarantine` section: the title
+  `**Quarantined tests added: N**` and a table of each test, its state, its expiry and why.
+  When the script says no block is needed, delete that section. The `PR report` workflow renders
+  the block again from the pull request's commits and refuses a description whose block is
+  missing or differs, printing the block to paste, and one that holds a block when no
+  quarantined test is added; the same `--diff` run checks it locally.
 - One topic per PR. Split unrelated fixes even when they are small.
 - Run full `make check` before the PR and say so in the PR template checklist. The local Task
   gate and every pull request run the fast profile; `make check`, main validation and unbound
@@ -390,6 +401,12 @@ Every integration module/binary and Python test script needs a reviewed entry in
 `.config/test-classes.json`; new internal modules of registered unit binaries follow their documented
 component default unless overridden. Tests of help/errors/navigation belong to uix; complete workflows
 belong to e2e even if they assert output. Keep nextest exclusive scheduling independent of class.
+A test listed in `.config/test-quarantine.json` classifies as `quarantine`, which no plan selects,
+until a fix removes its entry or the entry expires
+([ADR-0268](docs/adr/0268-quarantine-flaky-tests-on-gate-evidence-and-confirm-them-on-claw.md)).
+`scripts/test-quarantine.py scan` proposes those entries from af Tasks' gate flaky lists and adds
+them only with `--write` (`docs/test-classes.md`, "Quarantine"); its `confirm` and `apply` settle
+them after 50 runs under load (`docs/test-quarantine-claw.md`).
 
 The guarded kernel perf-class test refuses every tampered harness as a baseline with no build.
 Its judged comparison and tampered-candidate refusals after a measured baseline are an ignored

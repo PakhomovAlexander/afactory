@@ -21,6 +21,11 @@ review corpora belong in consuming repositories, not here.
   refuses a description without exactly one well-formed block, apart from Dependabot and
   `release/` pull requests
   ([ADR-0142](docs/adr/0142-carry-the-af-task-report-in-every-pull-request.md)).
+- When you meet a defect or a gap during work, file it raw with the evidence you have and
+  continue: `gh issue create -l triage/pending -t "<one sentence>" -F body.md`, where `body.md`
+  has the raw template's three headings, `What I saw`, `Evidence` and `Repro`. Never classify,
+  estimate or search for duplicates yourself; the triage process does that, and it is the only
+  process that does ([`docs/design/issue-triage.md`](docs/design/issue-triage.md)).
 - The description also states the lines the pull request adds per directory: the block
   between `<!-- af-pr-lines:v1 -->` and `<!-- /af-pr-lines -->` that
   `python3 scripts/pr-lines.py` prints — a title with the total and a table with each
@@ -31,6 +36,11 @@ review corpora belong in consuming repositories, not here.
   marker without its pair, or a refused write. The `af task report` block stays the author's
   ([ADR-0195](docs/adr/0195-state-the-lines-a-pull-request-adds-per-directory-and-check-them.md),
   [ADR-0269](docs/adr/0269-let-ci-maintain-the-lines-added-block.md)).
+  A pull request that adds quarantined tests also carries the block between
+  `<!-- af-pr-quarantine:v1 -->` and `<!-- /af-pr-quarantine -->` that
+  `python3 scripts/pr-quarantine.py` prints, checked the same way; one that adds none carries
+  no such block
+  ([ADR-0268](docs/adr/0268-quarantine-flaky-tests-on-gate-evidence-and-confirm-them-on-claw.md)).
 - Every PR defaults to fast validation (functional, e2e and uix), including AF gate and release
   PRs. PR validation uses the reviewed functional/e2e/uix/perf catalog and label selection in
   [the test-class design](docs/test-classes.md). `no-perf` excludes both perf validation and

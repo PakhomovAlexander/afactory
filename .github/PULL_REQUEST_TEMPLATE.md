@@ -37,6 +37,19 @@
 <!-- af-pr-lines:v1 -->
 <!-- /af-pr-lines -->
 
+## Test quarantine
+
+<!-- Run, from this repository on this branch, with its base fetched:
+
+       python3 scripts/pr-quarantine.py
+
+     (`--base REF` for a base other than origin/main) and paste its output here, both markers
+     included: the tests this pull request adds to `.config/test-quarantine.json`, with their
+     state, expiry and why (ADR-0268). When the script says no block is needed, delete this
+     section. The `PR report` check renders the block again from the pull request's commits and
+     refuses a description whose block is missing, differs, or is there when no quarantined
+     test is added. -->
+
 ## Checklist
 
 - [ ] `make check` passes locally (fmt, clippy `-D warnings`, `cargo test --locked`, release check).

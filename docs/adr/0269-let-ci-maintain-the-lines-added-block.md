@@ -57,7 +57,9 @@ check for that reason, while a figure nobody verified must still never stand.
    without exactly one report block). Markers inside a code block or a raw HTML block are text, as
    the check reads them: they stay, and the real block is inserted. Every other byte of the
    description is kept, its line endings included; the inserted lines end as the line they follow.
-   The refreshed description must pass both checks before it is written. Two lines blocks, or a
+   The refreshed description must pass both checks before it is written, and the test quarantine
+   block of [ADR-0268](0268-quarantine-flaky-tests-on-gate-evidence-and-confirm-them-on-claw.md)
+   is judged first: a description that fails it is not written back. Two lines blocks, or a
    marker without its pair, have no one place for the block: the check refuses them as before.
 3. **A refused write fails as before.** When `gh` exits non-zero — the token cannot write that
    pull request's description, or the API fails — the job runs the check on the event payload
