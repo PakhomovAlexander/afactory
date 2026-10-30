@@ -1,14 +1,18 @@
 # Nightly builds
 
 The owner's Linux VM builds a signed nightly af from the newest green commit of main
-([ADR-0265](adr/0265-build-nightlies-from-the-newest-green-main-on-the-owners-vm.md)). This page
-covers the build step, `scripts/nightly/build.py`, and the [daily report](#the-daily-report),
-`scripts/nightly/report.py`
-([ADR-0269](adr/0269-compose-the-nightly-report-from-the-nights-record-and-the-executor-journal.md));
-the measurement is the [nightly executor's](performance-local-executor.md#nightly-originals) and
-publication comes later. Nothing here runs on GitHub Actions. The build never pushes,
-publishes, posts or deletes anything outside `builds_root/<date>/` and its own claim
-`builds_root/<date>.active`; the report writes only its new `--output` directory.
+([ADR-0265](adr/0265-build-nightlies-from-the-newest-green-main-on-the-owners-vm.md)),
+composes its [daily report](#the-daily-report)
+([ADR-0269](adr/0269-compose-the-nightly-report-from-the-nights-record-and-the-executor-journal.md))
+and publishes it as a GitHub pre-release
+([ADR-0270](adr/0270-publish-nightlies-as-pre-releases-and-prune-them.md)). This page covers the
+build step, `scripts/nightly/build.py`, the report step, `scripts/nightly/report.py`, and the
+publish step, `scripts/nightly/publish.py`; the measurement is the
+[nightly executor's](performance-local-executor.md#nightly-originals), and the systemd chain
+that runs them in turn comes later. Nothing here runs on GitHub Actions. The build never
+pushes, publishes, posts or deletes anything outside `builds_root/<date>/` and its own claim
+`builds_root/<date>.active`; the report writes only its new `--output` directory; only
+`publish` writes to GitHub and Telegram ([Publishing](#publishing)).
 
 A nightly is tagged `nightly-YYYY.MM.DD` and versioned `<core>-nightly.<YYYYMMDD>`: the workspace
 version of the chosen commit without its pre-release part (`0.14.0-rc.3` → `0.14.0`), or with its
@@ -55,6 +59,18 @@ is a commented copy to start from. Unknown keys refuse the file.
 | `report.executor_config` | Absolute path of the nightly executor's configuration (`/etc/af-nightly/executor.toml`); its `root` is the journal the report reads and its `machine_id` names the host. |
 | `report.history_nights` | How many earlier nights the trend shows beside this one: the last that many the journal holds a core original of, by tag date (1 to 60, default 14). |
 | `report.headline_instances` | One to four instance IDs, as the suite names them, whose candidate medians the trend plots. |
+| `[publish]` | The table only `publish` reads, below; `build` ignores it, and `publish` refuses a file without it. |
+
+The `[publish]` table:
+
+| Key | Meaning |
+|---|---|
+| `telegram_token_file` | Optional file holding the Telegram bot token; set together with `telegram_chat_id` or not at all. |
+| `telegram_chat_id` | Optional chat the message goes to: a numeric chat id or `@channel`. Without the two keys nothing is sent and the receipt says so. |
+| `keep_nights` | How many nightly pre-releases stay on GitHub (3 to 60, default 14). |
+
+A token file holds the token alone on its first line. Neither token is ever printed, logged,
+written to the receipt or passed as an argument.
 
 The key's passphrase, if it has one, is read from `AF_NIGHTLY_SIGN_PASSWORD` and given to
 `minisign` on its standard input, never as a flag; without it the key is used with `minisign -W`
@@ -125,6 +141,7 @@ builds_root/
       SHA256SUMS
       SHA256SUMS.minisig
     version-<target>.json      `af --version --json` of each binary
+    publish.json               af.nightly-publish/1, written by each `publish` of the night
     logs/                      each container step's and smoke's output
     work/                      wrappers, staging, the smoke scratch and private homes
 ```
@@ -140,15 +157,87 @@ asset names from the date and `cargo_version_on_main`.
 A directory without `nightly.json` is an attempt that was refused; the next `build` of that date
 replaces it. A night that already has `nightly.json` is never built again.
 
+## Publishing
+
+```sh
+python3 -I scripts/nightly/publish.py publish --config nightly.toml --date 2026-10-29 \
+    --report /var/lib/af-nightly/reports/2026-10-29 [--notify-again]
+```
+
+`--report DIR` is the daily report's directory: `daily.json` must parse as JSON whose `schema`
+starts with `af.nightly-daily/`, `report.html` is at most 4 MiB, and `digest.md` is UTF-8 text
+of at most 3500 bytes; a missing, empty or oversized file refuses. A skipped night reads none of
+them.
+
+For a `built` night, `publish`:
+
+1. verifies the night as `build` left it: each archive has the digest and size `nightly.json`
+   records, `dist/SHA256SUMS` lists exactly those archives in the release's format, and
+   `minisign -V -q -m SHA256SUMS -x SHA256SUMS.minisig -p <public_key>` verifies, with the
+   trusted comment `af nightly-YYYY.MM.DD`. Any difference refuses before a request is sent;
+2. creates the GitHub release of tag `nightly-YYYY.MM.DD` at the night's `head_sha`: a
+   pre-release named `Nightly YYYY-MM-DD`, never marked latest, with `digest.md` as its notes.
+   A tag that already names another commit refuses;
+3. uploads, in this order, the two archives, `SHA256SUMS`, `SHA256SUMS.minisig`,
+   `nightly.json`, `daily.json` and `report.html`. Each asset's size and digest as GitHub
+   reports them must equal the file's;
+4. sends `digest.md` as one plain-text Telegram message (no parse mode, link preview off) when
+   `[publish]` names the bot and chat;
+5. prunes: of the repository's releases whose tag matches
+   `^nightly-[0-9]{4}\.[0-9]{2}\.[0-9]{2}$` and that are published pre-releases (not drafts),
+   the ones beyond the newest `keep_nights` by tag date are deleted, oldest first, the release
+   and then its tag. The night just published has no exemption: publishing a night older than
+   the newest `keep_nights` deletes its release again, the receipt lists its tag as pruned and
+   stderr says so. A nightly-named release that is a draft or not a pre-release is foreign: it
+   is never deleted and is named on stderr and in the receipt. A tag counts as pruned only once
+   its tag ref is deleted too; when the release went but the tag deletion failed, pruning stops
+   there, the tag and the reason go to the receipt's `prune_failures`, and the tag is left for
+   you to delete by hand. No other release or tag is ever touched;
+6. writes the receipt `publish.json` and prints the release URL.
+
+Every request goes to `api.github.com`, or for an upload to the release's `upload_url` on
+`uploads.github.com`; each is bounded to 60 s and a bounded response, no redirect is followed,
+and only reads are retried, once.
+
+**Amending.** Publishing a night again (a late measurement, a recomposed report) finds the
+release by its tag. It must be a pre-release whose target commit is `head_sha`, and the
+archives, sums, signature and `nightly.json` already on it must carry the night's sizes and
+digests: a difference refuses before any request that writes, because shipped bytes never
+change. Then the notes, `daily.json` and `report.html` are replaced (each asset is deleted and
+uploaded again), any of the seven assets an interrupted publish left out is uploaded, and the
+receipt is rewritten with `amendments` counted. An amendment sends no Telegram message unless
+`--notify-again` is given; the receipt keeps the earlier message id, or the earlier reason
+there is none. After a failed message, publish again with `--notify-again` to send it. A
+publish that died before writing its receipt is completed by running it again, which sends
+the digest: once when the first run died during an upload, before the message; a second time
+when it died after the message, while pruning or writing the receipt, since the receipt is the
+only memory of a message.
+
+**A skipped night** publishes no release and uploads nothing. It sends the one line
+`nightly-YYYY.MM.DD: no new commits on main since <previous_tag>` and writes a receipt saying
+so; publishing it again sends nothing, `--notify-again` included. A night without
+`nightly.json` refuses.
+
+**The receipt**, `builds_root/<date>/publish.json`, is `af.nightly-publish/1`
+(`schemas/performance-nightly-publish-v1.json`): `status` (`published` or `skipped`), `date`,
+`tag`, `head_sha`, `repository`, `release` (`id` and `url`, or `null`), `assets` (each one's
+`name`, `size` and `digest` as GitHub reports them, in upload order), `telegram` (the
+`message_id`, or `null`) and `telegram_reason` (why there is no message, or `null`), `pruned`
+(tags whose release and tag ref are both deleted), `prune_failures` (each `tag` whose release
+was deleted but whose tag deletion failed, with its `reason`), `foreign` (tags),
+`amendments` (0 on the first publish) and `published_unix_ms`. The reader recomputes the tag,
+the release URL and the asset names. A Telegram failure, a failed pruning request or a foreign
+release after the release is published still writes the receipt.
+
 ## Exit codes
 
 These are `build.py`'s; `report.py`'s are under [Composing again](#composing-again).
 
 | Exit | Meaning |
 |---|---|
-| 0 | Built (`build`), or planned (`plan`, `build --only-plan` of a night that would build). |
+| 0 | Built (`build`), or planned (`plan`, `build --only-plan` of a night that would build), or published with every step done (`publish`, a skipped night's line included). |
 | 3 | Skipped: main's newest green commit is the previous night's (`build`, `build --only-plan`). |
-| 1 | Refused, with the reason on stderr as `nightly: refused: …`; a malformed command line too. |
+| 1 | Refused, with the reason on stderr as `nightly: refused: …`; a malformed command line too. From `publish` also: published, with the receipt written, but the Telegram message or a pruning request failed (`nightly: failed: …`) or a foreign nightly-named release was left alone (`nightly: refused: …`). |
 
 ## Running one night by hand
 
@@ -156,12 +245,16 @@ These are `build.py`'s; `report.py`'s are under [Composing again](#composing-aga
 git -C /var/lib/af-nightly/afactory.git fetch --prune origin
 python3 -I scripts/nightly/build.py plan --config nightly.toml --date 2026-10-29
 python3 -I scripts/nightly/build.py build --config nightly.toml --date 2026-10-29
+python3 -I scripts/nightly/publish.py publish --config nightly.toml --date 2026-10-29 \
+    --report /var/lib/af-nightly/reports/2026-10-29
 ```
 
 Run it from a checkout of the trusted repository, not from the night's `source/`. `plan` prints
 the commit it would build and every red commit it walked over; `build --only-plan` prints the
 same plan and exits as `build` would (0 or 3) without writing anything. `--previous PATH`
-compares with a built or skipped record other than the newest one.
+compares with a built or skipped record other than the newest one. `publish` prints the
+release URL; running it again amends the night.
+
 
 ## The daily report
 

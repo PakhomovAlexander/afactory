@@ -510,3 +510,5 @@ future readers need.
   Claw](0268-quarantine-flaky-tests-on-gate-evidence-and-confirm-them-on-claw.md)
 - [0269 — Compose the nightly report from the night's record and the executor
   journal](0269-compose-the-nightly-report-from-the-nights-record-and-the-executor-journal.md)
+- [0270 — Publish nightlies as pre-releases and prune
+  them](0270-publish-nightlies-as-pre-releases-and-prune-them.md)

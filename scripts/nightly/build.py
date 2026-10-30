@@ -55,10 +55,6 @@ SMOKE_SECONDS, AF_SECONDS, SIGN_SECONDS = 900, 120, 120
 CONTAINER_HOME = "/home/nightly"
 
 
-class Refused(Exception):
-    """The night cannot be planned or built; the message says why."""
-
-
 # Configuration ------------------------------------------------------------------------------
 
 def load_config(path):
@@ -70,6 +66,10 @@ def load_config(path):
         raise Refused("--config %s: %s" % (path, error))
     doc = contracts.validate_nightly_config(tomlfile.loads(data, path), path)
     return dict(doc, max_walk=doc.get("max_walk", MAX_WALK_DEFAULT))
+
+
+class Refused(Exception):
+    """The night cannot be planned or built; the message says why."""
 
 
 def read_token(config):

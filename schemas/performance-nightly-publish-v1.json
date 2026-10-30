@@ -1,0 +1,213 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:af:schema:performance-nightly-publish:1",
+  "title": "af.nightly-publish/1",
+  "description": "What publishing one night did, builds_root/<date>/publish.json (ADR-0270): the pre-release of its tag with each asset's name, size and digest as GitHub reports them, or nothing for a skipped night; the Telegram message id or why there is none; the nightly pre-releases pruned, each whose release went but whose tag deletion failed, and the nightly-named releases refused as foreign; how many times the night was amended and when.",
+  "type": "object",
+  "additionalProperties": false,
+  "properties": {
+    "schema": {
+      "const": "af.nightly-publish/1"
+    },
+    "status": {
+      "type": "string",
+      "enum": [
+        "published",
+        "skipped"
+      ]
+    },
+    "date": {
+      "type": "string",
+      "maxLength": 10,
+      "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}$"
+    },
+    "tag": {
+      "type": "string",
+      "maxLength": 19,
+      "pattern": "^nightly-[0-9]{4}\\.[0-9]{2}\\.[0-9]{2}$"
+    },
+    "head_sha": {
+      "$ref": "#/$defs/git_sha"
+    },
+    "repository": {
+      "type": "string",
+      "maxLength": 201,
+      "pattern": "^[A-Za-z0-9_.-]{1,100}/[A-Za-z0-9_.-]{1,100}$"
+    },
+    "release": {
+      "anyOf": [
+        {
+          "type": "null"
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "id": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 9007199254740992
+            },
+            "url": {
+              "type": "string",
+              "maxLength": 512,
+              "pattern": "^https://github\\.com/"
+            }
+          },
+          "required": [
+            "id",
+            "url"
+          ]
+        }
+      ]
+    },
+    "assets": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "name": {
+            "type": "string",
+            "maxLength": 128,
+            "pattern": "^[A-Za-z0-9._-]+$"
+          },
+          "size": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 1099511627776
+          },
+          "digest": {
+            "$ref": "#/$defs/digest"
+          }
+        },
+        "required": [
+          "name",
+          "size",
+          "digest"
+        ]
+      },
+      "minItems": 0,
+      "maxItems": 7
+    },
+    "telegram": {
+      "anyOf": [
+        {
+          "type": "null"
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "message_id": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 9007199254740992
+            }
+          },
+          "required": [
+            "message_id"
+          ]
+        }
+      ]
+    },
+    "telegram_reason": {
+      "anyOf": [
+        {
+          "type": "null"
+        },
+        {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 1024
+        }
+      ]
+    },
+    "pruned": {
+      "type": "array",
+      "items": {
+        "type": "string",
+        "maxLength": 19,
+        "pattern": "^nightly-[0-9]{4}\\.[0-9]{2}\\.[0-9]{2}$"
+      },
+      "minItems": 0,
+      "maxItems": 1024,
+      "uniqueItems": true
+    },
+    "prune_failures": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "tag": {
+            "type": "string",
+            "maxLength": 19,
+            "pattern": "^nightly-[0-9]{4}\\.[0-9]{2}\\.[0-9]{2}$"
+          },
+          "reason": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 1024
+          }
+        },
+        "required": [
+          "tag",
+          "reason"
+        ]
+      },
+      "minItems": 0,
+      "maxItems": 1024
+    },
+    "foreign": {
+      "type": "array",
+      "items": {
+        "type": "string",
+        "maxLength": 19,
+        "pattern": "^nightly-[0-9]{4}\\.[0-9]{2}\\.[0-9]{2}$"
+      },
+      "minItems": 0,
+      "maxItems": 1024,
+      "uniqueItems": true
+    },
+    "amendments": {
+      "type": "integer",
+      "minimum": 0,
+      "maximum": 10000
+    },
+    "published_unix_ms": {
+      "type": "integer",
+      "minimum": 0,
+      "maximum": 9007199254740992
+    }
+  },
+  "required": [
+    "schema",
+    "status",
+    "date",
+    "tag",
+    "head_sha",
+    "repository",
+    "release",
+    "assets",
+    "telegram",
+    "telegram_reason",
+    "pruned",
+    "prune_failures",
+    "foreign",
+    "amendments",
+    "published_unix_ms"
+  ],
+  "$defs": {
+    "digest": {
+      "type": "string",
+      "maxLength": 71,
+      "pattern": "^sha256:[0-9a-f]{64}$"
+    },
+    "git_sha": {
+      "type": "string",
+      "maxLength": 64,
+      "pattern": "^(?:[0-9a-f]{40}|[0-9a-f]{64})$"
+    }
+  }
+}

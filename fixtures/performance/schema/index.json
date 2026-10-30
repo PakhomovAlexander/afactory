@@ -1180,6 +1180,65 @@
       "shape": true
     },
     {
+      "path": "nightly-publish/valid-published.json",
+      "contract": "nightly-publish",
+      "valid": true
+    },
+    {
+      "path": "nightly-publish/valid-skipped.json",
+      "contract": "nightly-publish",
+      "valid": true
+    },
+    {
+      "path": "nightly-publish/invalid-assets-out-of-order.json",
+      "contract": "nightly-publish",
+      "valid": false,
+      "error": "every asset of the night, in order",
+      "shape": false
+    },
+    {
+      "path": "nightly-publish/invalid-telegram-without-a-reason.json",
+      "contract": "nightly-publish",
+      "valid": false,
+      "error": "a Telegram message id, or the reason there is none",
+      "shape": false
+    },
+    {
+      "path": "nightly-publish/invalid-skipped-with-a-release.json",
+      "contract": "nightly-publish",
+      "valid": false,
+      "error": "a skipped night publishes, uploads and prunes nothing",
+      "shape": false
+    },
+    {
+      "path": "nightly-publish/invalid-release-of-another-night.json",
+      "contract": "nightly-publish",
+      "valid": false,
+      "error": "release.url: expected https://github.com/PakhomovAlexander/afactory/releases/tag/nightly-2026.10.29",
+      "shape": false
+    },
+    {
+      "path": "nightly-publish/invalid-prune-failure-of-a-pruned-tag.json",
+      "contract": "nightly-publish",
+      "valid": false,
+      "error": "prune_failures: each tag once, never one pruned",
+      "shape": false
+    },
+    {
+      "path": "nightly-publish/invalid-asset-digest-without-algorithm.json",
+      "contract": "nightly-publish",
+      "valid": false,
+      "error": "does not match",
+      "shape": true
+    },
+    {
+      "path": "nightly-config/invalid-telegram-chat-without-a-token.toml",
+      "contract": "nightly-config",
+      "valid": false,
+      "error": "telegram_token_file and telegram_chat_id are set together or not at all",
+      "shape": false
+    },
+    {
       "path": "plan-refusal/invalid-status.json",
       "contract": "plan-refusal",
       "valid": false,
