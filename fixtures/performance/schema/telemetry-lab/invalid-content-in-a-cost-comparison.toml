@@ -12,7 +12,7 @@
 # measured and compared separately, finalization included in every wall time; `content` is
 # never measured here (it is diagnostic only and perturbing: cli.py profile --telemetry content).
 
-schema = "af.perf-telemetry-lab/2"
+schema = "af.perf-telemetry-lab/3"
 description = "Telemetry's own cost and read latency, measured beside the comparison, advisory."
 seed = 20261021
 

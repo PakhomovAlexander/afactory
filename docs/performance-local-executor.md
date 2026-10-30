@@ -180,14 +180,16 @@ refusal: an unreachable root or mirror through any ancestor, a source that does 
 reused key, a full queue or journal, missing capacity, the serial bounds above (`serial`), a
 profile's diagnostic tools (`tools`, with the host observer's actual capability as
 `host_observer`, checked under the machine exclusion) or the configured images (`tools`:
-`build_image`, `sample_image`, `image_toolchain`, or `image_admission` with the refusal). A
+`build_image`, `sample_image`, `image_toolchain`, `sample_runtime`, or `image_admission` with the
+refusal). A
 ready preflight is not a reservation: submit next.
 
 Preflight, submission and the claim each check the configured `build_image` and
 `sample_image` as the compute account: pinned by digest, present on this host (nothing pulls),
 Linux and declaring no implicit writable volume. In the build image they run the recipe's own
 probes: its exact Rust toolchain and target and, for the musl shipping recipe, the
-`zigbuild_bin` directory's cargo-zigbuild and Zig at their pinned versions. These probes start
+`zigbuild_bin` directory's cargo-zigbuild and Zig at their pinned versions; in the sample image,
+one probe of its own interpreter, tools and containment (`sample_runtime`). These probes start
 containers, so preflight and submission take the machine exclusion for them (a busy machine
 refuses the check) and the claim runs them under its own. A missing image or tool refuses
 before any original, claim or build, naming the image or tool. One that disappears after
@@ -415,6 +417,113 @@ candidate permissions automatically or rerun the original. A new experiment need
 a calibration original is never backfilled. This implementation supplies no unsafe automatic
 fence-reset command.
 
+## Validate an exact candidate producer
+
+A producer that is not yet accepted main is validated beside production, never in place of it:
+its own frozen checkout, its own source mirror and trusted ref, its own configuration and
+journal, the machine's one shared lock, and the ordinary schedules paused for the duration.
+Production's `/opt/af-perf/control`, `/etc/af-perf/executor.toml`, mirror and journal (and
+every original in it) are not touched. The operator's layout: the candidate producer at
+`/opt/af-perf/candidates/$SHA`, a separate bare mirror whose
+`refs/heads/perf-lab-stability-20261029` admits that SHA, and a candidate data root. `SHA` is
+the full 40-hexadecimal producer commit; the paths below are that layout, and the commands are
+the operator's to run, not something this change ran.
+
+1. Freeze the candidate checkout, as root, from the exact commit (never a moving branch), with
+   no bytecode caches, root-owned and not writable by compute:
+
+   ```sh
+   SHA=0123456789abcdef0123456789abcdef01234567   # the full producer SHA, replaced
+   install -d -o root -g root -m 0755 /opt/af-perf/candidates
+   git -C /var/lib/af-perf-executor/source.git cat-file -e "$SHA^{commit}"
+   git -C /var/lib/af-perf-executor/source.git archive --format=tar "$SHA" \
+     | (install -d -o root -g root -m 0755 "/opt/af-perf/candidates/$SHA" \
+        && tar -x -C "/opt/af-perf/candidates/$SHA" --no-same-owner)
+   chmod -R go-w "/opt/af-perf/candidates/$SHA"
+   find "/opt/af-perf/candidates/$SHA" -name __pycache__ -prune -print   # must print nothing
+   ```
+
+2. Give the candidate its own bare mirror, owned by `af-perf-source` and readable by
+   `af-perf-readers`, credential-free like production's, with exactly one trusted ref whose
+   ancestry admits the SHA (the controller requires `control_sha` to be an ancestor of
+   `trusted_ref`), plus the release objects the comparison measures:
+
+   ```sh
+   sudo -u af-perf-source git init --bare /var/lib/af-perf-candidate/source.git
+   sudo -u af-perf-source git -C /var/lib/af-perf-candidate/source.git fetch --no-tags \
+     /var/lib/af-perf-executor/source.git \
+     "$SHA:refs/heads/perf-lab-stability-20261029" \
+     "refs/tags/v0.13.0:refs/tags/v0.13.0" "refs/tags/v0.14.0-rc.1:refs/tags/v0.14.0-rc.1"
+   sudo -u af-perf-source git -C /var/lib/af-perf-candidate/source.git merge-base --is-ancestor \
+     "$SHA" refs/heads/perf-lab-stability-20261029 && echo admitted
+   ```
+
+   The controller trusts exactly the configured `repository_path` (`source_repository`'s exact
+   `safe.directory` for that one mirror): add no wildcard or global Git trust, and keep every
+   credential with the source account, none in compute's environment or the mirror.
+
+3. Write a private configuration, `/etc/af-perf/candidate-$SHA.toml` (root-owned, 0644, no
+   group or other write), from production's: the same images, machine ID, tier, shards and
+   caps, but its own data root and journal, the candidate mirror and ref and the candidate SHA:
+
+   ```toml
+   root = "/var/lib/af-perf-candidate/journal"
+   repository_path = "/var/lib/af-perf-candidate/source.git"
+   control_sha = "<the full SHA>"
+   trusted_ref = "refs/heads/perf-lab-stability-20261029"
+   journal_id = "claw_candidate_<first 12 of the SHA>"
+   poll_main = false
+   ```
+
+   Create the journal's parent as compute's own, 0700, under the candidate data root:
+   `install -d -o af-perf-exec -g af-perf-exec -m 0700 /var/lib/af-perf-candidate`. Scope the
+   reviewed `hostprep` sudo policy for loop images and mounts to that root only (a copy of
+   production's rule naming `/var/lib/af-perf-candidate/journal`), and remove that rule when the
+   validation ends.
+
+4. Keep one exclusion and pause the ordinary schedules. The candidate uses the same
+   `/tmp/af-perf-machine.lock` and `/etc/af-perf-machine-lock.json`: provision nothing new.
+   Stop the timers and let an executing invocation finish, then confirm nothing holds the lock
+   and no fence is present:
+
+   ```sh
+   systemctl stop af-perf-executor@core.timer af-perf-executor@telemetry.timer \
+     af-perf-source-refresh.timer af-perf-telemetry-collect.timer
+   systemctl is-active af-perf-executor@core.service af-perf-executor@telemetry.service
+   test ! -e /tmp/af-perf-machine.lock.fence && echo no-fence
+   ```
+
+5. Run the validation as the compute account from the candidate checkout, so its installed
+   authority is the checkout `control_sha` names. Every command is bounded by the
+   configuration's `cycle_seconds` and `run_seconds`, and the comparison by its partitions:
+
+   ```sh
+   CAND="python3 -I -B /opt/af-perf/candidates/$SHA/scripts/performance/cli.py executor \
+     --config /etc/af-perf/candidate-$SHA.toml"
+   $CAND comparison-preflight --kind release --tag "$TAG" --base "$BASE" --head "$HEAD" --key rel_1
+   $CAND comparison-launch --kind release --tag "$TAG" --base "$BASE" --head "$HEAD" --key rel_1
+   $CAND comparison-run --comparison "$CMP_ID"     # repeat until it exits 0
+   $CAND comparison-status --comparison "$CMP_ID"
+   $CAND comparison-export --comparison "$CMP_ID" --output "$BUNDLE_DIR"
+   python3 -I -B "/opt/af-perf/candidates/$SHA/scripts/performance/cli.py" executor \
+     comparison-verify --bundle "$BUNDLE_DIR"
+   ```
+
+6. Restore the ordinary services only after the candidate's cleanup is confirmed: every
+   original terminal and none `uncertain` in `comparison-status`, no
+   `/tmp/af-perf-machine.lock.fence`, and no owned container, mount or loop device of the
+   candidate root left (`docker ps --all`, `findmnt`, `losetup --list`). An uncertain cleanup is
+   recovered as above before anything else runs. Then remove the candidate's sudo rule and
+   start the timers again:
+
+   ```sh
+   systemctl start af-perf-source-refresh.timer af-perf-executor@core.timer \
+     af-perf-executor@telemetry.timer af-perf-telemetry-collect.timer
+   ```
+
+   Keep the candidate journal and bundle as evidence beside production's; neither is imported
+   into production's journal, history or cohort.
+
 ## Validate a release comparison
 
 The operator runs these on the VM as the compute account after installing a candidate control;
@@ -525,9 +634,28 @@ profile's timeout. Keep the historical failed report unchanged beside new eviden
 Telemetry overhead and invocation-cost runs select each side's fixture contract from the
 version its `af --version` prints: v0.13.0 measures under `check-receipt@1` (the same packages
 declaring `af/TaskCheckReceipt@1`, re-pinned to the digests the contract declares and its own
-`af catalog digest` prints), v0.14.0-rc.1 under the committed `check-receipt@2`; the documents
-(`af/telemetry-overhead@2`, `af/telemetry-invocation-cost@2`) record the contract and every
-package pin. Their drain latency runs from the harness's last write to the command's observed
+`af catalog digest` prints), v0.14.0-rc.1 through v0.14.0-rc.3 under the committed
+`check-receipt@2`; a release no contract names (v0.11.9, say) is refused, never measured under
+the committed contract. The documents (`af/telemetry-overhead@2`,
+`af/telemetry-invocation-cost@2`) record the contract and every package pin.
+
+A submission admits the selected releases' declared workloads before anything is reserved,
+claimed or built, from the release each side's retained source declares in its Cargo.lock: a
+telemetry original needs a fixture contract of the installed bench script for both sides, and a
+core original with CLI cases needs the authority's CLI registry and an adapter of it for both
+sides (`af_cli_v1` from 0.12.0-rc.3 on). A pair either refuses is refused at `preflight`,
+`submit` and `comparison-preflight`, never at its build. The same admission runs the configured
+sample image's own `/usr/bin/python3` once, in a probe container started as every bounded
+container is (this account, no network, a read-only root, every capability dropped, no new
+privileges, its removal confirmed) under the machine's one exclusion: a sample image without
+`/bin/sh`, that interpreter or the PTY driver's modules, or a container that is not so contained
+or has no cgroup v2 namespace, refuses before any claim or build. Library cases keep their
+reviewed probe adapters, chosen by the first that compiles at the build. A comparison member
+already in the journal under its key must have frozen the comparison's very configuration and,
+for a core partition, its frozen plan: a narrower same-key original (another telemetry profile
+or experiment set, partial core cases) refuses the comparison before any new claim, and
+`comparison-status`, `comparison-report` and `comparison-export` mark such an original refused
+and the comparison incomplete, never complete over its own run list. Their drain latency runs from the harness's last write to the command's observed
 exit on `CLOCK_MONOTONIC` (`harness_last_write_to_command_exit`), never from file timestamps.
 
 The CLI oracle declares each release's own contract from its version (`fixtures/performance/cli.toml`):

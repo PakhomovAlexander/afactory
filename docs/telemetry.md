@@ -1193,9 +1193,11 @@ Each release is measured on the workload it accepts (`fixture_contract`, ADR-024
 committed fixtures declare `af/TaskCheckReceipt@2`; a release a contract of
 `FIXTURE_CONTRACTS` names (`check-receipt@1`: af 0.13.0) gets the same packages with only that
 artifact type renamed and each re-pinned with the digest the contract declares, which the
-measured binary's own `af catalog digest` must print, and every other release the committed
-one. The contract is selected by the version `af --version` prints; `--fixture-contract NAME`
-only asserts it and is refused when the version selects another. It is benchmark fixture
+measured binary's own `af catalog digest` must print; `check-receipt@2` names the releases
+that write the committed `@2` (af 0.14.0-rc.1 through this tree's 0.14.0-rc.3), and a release
+no contract names is refused, never measured under the committed contract. The contract is
+selected by the version `af --version` prints; `--fixture-contract NAME` only asserts it and is
+refused when the version selects another. It is benchmark fixture
 production, never a reader of state an earlier release wrote.
 
 `make telemetry-gate` prints the table, fails when the script exits 3 (the gate failed), and

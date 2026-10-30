@@ -14,7 +14,8 @@ import subprocess
 import time
 import types
 
-from . import (admission, archive, budget, builds, calibration, compare, contracts, diagnostics,
+from . import (admission, archive, budget, builds, calibration, clicases, compare, contracts,
+               diagnostics,
                gitrefs, history, host, hostlock, hostobserver, hostprep, planning, report, runner,
                telemetrybuild, telemetrylab, tomlfile)
 from .values import ContractError, add_note, canonical_digest, require, sha256_bytes
@@ -198,6 +199,56 @@ def diagnostic_tools(config, registry, recipe, mode, paranoid_path=None):
     return records, None
 
 
+def source_release(git, sha, side):
+    """The `af` release the retained source `sha` declares, from its Cargo.lock."""
+    lock = git.read_file(sha, "Cargo.lock")
+    require(lock is not None, "the %s source %s has no Cargo.lock: its release, and so its "
+            "workload, is unknown" % (side, sha[:12]))
+    return clicases.package_version(lock, "%s:Cargo.lock" % sha[:12])
+
+
+def telemetry_workload(git, sources, experiments, installed=ROOT):
+    """Each side's declared telemetry workload, before any claim or build: the overhead and
+    invocation-cost bench scripts of the installed authority measure a release only under the
+    fixture contract that names the release its retained source declares (`select_contract`),
+    never the current contract by default. The read-latency corpus is one for every release.
+    Returns the admission's detail; raises ContractError."""
+    if not set(experiments) & {"overhead", "invocation_cost"}:
+        return ""
+    module = telemetrylab.script_module("scripts/telemetry-overhead.py", installed)
+    named = []
+    for side, key in (("baseline", "baseline_sha"), ("candidate", "candidate_sha")):
+        version = source_release(git, sources[key], side)
+        try:
+            contract = module.select_contract(version)
+        except module.BenchError as error:
+            raise ContractError("telemetry refused before any claim or build: the %s source "
+                                "%s is af %s: %s" % (side, sources[key][:12], version, error))
+        named.append("%s af %s under %s" % (side, version, contract))
+    return "telemetry workload: " + ", ".join(named)
+
+
+def cli_workload(git, plan, control, suite_doc):
+    """Each side's declared CLI workload, before any claim or build: a plan (a core original's,
+    or the parent plan a profile diagnoses) with process cases
+    needs the authority's CLI registry and, for the release each side's retained source
+    declares, an adapter of it (`clicases.choose_adapter`), as its shards choose. Returns the
+    admission's detail; raises ContractError."""
+    if not any(case["kind"] == "process" for case in plan["cases"]):
+        return ""
+    raw = git.read_file(control, clicases.CLI_PATH)
+    require(raw is not None, "refused before any claim or build: the authority %s has no %s; "
+            "its process cases have no CLI workload" % (control[:12], clicases.CLI_PATH))
+    registry = clicases.check_registry(clicases.load_bytes(raw), suite_doc)
+    named = []
+    for side, version in sorted(clicases.side_versions(git, plan).items()):
+        adapter_id, adapter = clicases.choose_adapter(registry, version)
+        require(adapter_id is not None, "refused before any claim or build: the %s source is "
+                "af %s: %s" % (side, version, adapter))
+        named.append("%s af %s with %s" % (side, version, adapter_id))
+    return "CLI workload: " + ", ".join(named)
+
+
 def build_recipes(config, work, plan=None, partition=None, installed=ROOT, suite=None,
                   registry=None):
     """The build recipes whose image-local tools one local original runs: the plan's (none for
@@ -217,13 +268,101 @@ def build_recipes(config, work, plan=None, partition=None, installed=ROOT, suite
     return recipes
 
 
+# The sample image's own interpreter, which runs every contained driver (the PTY driver, the
+# telemetry bench scripts), and the probe it runs there, in one bounded container of exactly
+# the containment every sample gets: it names its account, effective capabilities, no-new-
+# privileges flag, network interfaces, cgroup v2 namespace, whether its root is writable, and
+# whether the standard modules the drivers import load. Nothing of a candidate is in it.
+SAMPLE_PYTHON = "/usr/bin/python3"
+SAMPLE_SHELL = "/bin/sh"
+SAMPLE_PROBE = r"""import json, os, sys
+status = dict(line.split(":", 1) for line in open("/proc/self/status") if ":" in line)
+try:
+    import fcntl, pty, select, signal, termios
+    modules = True
+except ImportError:
+    modules = False
+try:
+    open("/.af-perf-root-write", "w").close()
+    writable = True
+except OSError:
+    writable = False
+nets = sorted(os.listdir("/sys/class/net")) if os.path.isdir("/sys/class/net") else []
+print(json.dumps({"uid": os.getuid(), "gid": os.getgid(),
+                  "cap_eff": status.get("CapEff", "").strip(),
+                  "no_new_privs": status.get("NoNewPrivs", "").strip(), "networks": nets,
+                  "cgroup2": os.path.exists("/sys/fs/cgroup/cgroup.controllers"),
+                  "root_writable": writable, "modules": modules,
+                  "shell": os.access("/bin/sh", os.X_OK),
+                  "python": "%d.%d.%d" % sys.version_info[:3]}))
+"""
+SAMPLE_PROBE_BYTES = 4096
+
+
+def sample_admission(image):
+    """The sample image's actual runtime, required tools and containment, before any build:
+    one probe of `SAMPLE_PROBE` by the image's own `SAMPLE_PYTHON`, in a container started as
+    every bounded container is (`builds.BuildImage.run_once`: its own name, this account, no
+    network, a read-only root, every capability dropped, no new privileges, its removal
+    confirmed). A runtime that cannot run it, a missing interpreter, shell or driver module, or
+    any containment the container does not have refuses (`builds.Unavailable`); an unconfirmed
+    removal is `build_container_unconfirmed`. Returns the record's detail."""
+    result = image.run_once([SAMPLE_PYTHON, "-I", "-B", "-c", SAMPLE_PROBE],
+                            {"PATH": builds.SYSTEM_PATH, "LC_ALL": "C",
+                             "AF_PERF_SAMPLE_PROBE": "1"})
+    where = "the sample image %s" % image.reference
+    if result.returncode != 0:
+        raise builds.Unavailable("sample_tools_unavailable", "%s cannot run %s: exit %d: %s" % (
+            where, SAMPLE_PYTHON, result.returncode,
+            result.stderr.decode("utf-8", "replace").strip()[-512:]))
+    try:
+        require(len(result.stdout) <= SAMPLE_PROBE_BYTES, "over its bound")
+        facts = json.loads(result.stdout.decode("utf-8"))
+        require(isinstance(facts, dict), "not an object")
+        found = dict((key, facts[key]) for key in (
+            "uid", "gid", "cap_eff", "no_new_privs", "networks", "cgroup2", "root_writable",
+            "modules", "shell", "python"))
+    except (ContractError, UnicodeError, ValueError, KeyError) as error:
+        raise builds.Unavailable("sample_tools_unavailable", "%s answered no probe record: %s"
+                                 % (where, error))
+    missing = [name for name, present in ((SAMPLE_SHELL, found["shell"]),
+                                          ("the driver modules", found["modules"]))
+               if present is not True]
+    if missing:
+        raise builds.Unavailable("sample_tools_unavailable", "%s lacks %s" % (
+            where, " and ".join(missing)))
+    problems = []
+    if (found["uid"], found["gid"]) != (image.uid, image.gid):
+        problems.append("it runs as %r:%r, not %d:%d" % (found["uid"], found["gid"],
+                                                         image.uid, image.gid))
+    if not isinstance(found["cap_eff"], str) or not found["cap_eff"] or set(
+            found["cap_eff"]) != {"0"}:
+        problems.append("its effective capabilities are %r" % found["cap_eff"])
+    if found["no_new_privs"] != "1":
+        problems.append("no_new_privs is %r" % found["no_new_privs"])
+    if not isinstance(found["networks"], list) or set(found["networks"]) - {"lo"}:
+        problems.append("it has the networks %r" % found["networks"])
+    if found["cgroup2"] is not True:
+        problems.append("it has no cgroup v2 namespace")
+    if found["root_writable"] is not False:
+        problems.append("its root filesystem is writable")
+    if problems:
+        raise builds.Unavailable("sample_containment_unavailable", "%s: a probe container "
+                                 "lacks the samples' containment: %s" % (
+                                     where, "; ".join(problems)))
+    return ("%s Python %s and %s run as %d:%d with no network, no capability, no new "
+            "privileges, cgroup v2 and a read-only root" % (
+                where, str(found["python"])[:32], SAMPLE_SHELL, image.uid, image.gid))
+
+
 def image_admission(config, recipes, docker="docker"):
     """The configured build and sample images as this account finds them, before any claim or
     build: each pinned by digest, present locally (nothing pulls), Linux and declaring no
-    implicit writable volume; and, in the build image, each recipe's exact toolchain, its
+    implicit writable volume; in the build image, each recipe's exact toolchain, its
     target and, for a cargo-zigbuild recipe, the configured image-local cargo-zigbuild and Zig
     at their pinned versions: the probes `builds.Builder.check_host` runs, in containers of the
-    build image, so the caller holds the machine's one exclusion. Returns (records, refusal or
+    build image; and in the sample image its actual runtime, tools and containment
+    (`sample_admission`). The caller holds the machine's one exclusion. Returns (records, refusal or
     None, uncertain): a probe container whose removal is unconfirmed is uncertain."""
     records = []
     images = []
@@ -272,6 +411,8 @@ def image_admission(config, recipes, docker="docker"):
                 detail += "; " + zigbuild.identity
             records.append({"name": "image_toolchain", "state": "available",
                             "detail": ("%s in %s" % (detail, build.reference))[:4096]})
+        records.append({"name": "sample_runtime", "state": "available",
+                        "detail": sample_admission(images[1])[:4096]})
     except builds.Unavailable as error:
         detail = "%s: %s" % (error.reason, error)
         records.append({"name": "image_admission", "state": "unavailable",
@@ -635,11 +776,13 @@ class Journal:
 
     def _submit(self, work, base, head, key, kind="manual", *, git=None, installed=ROOT,
                cohort=None, member=None, parameters=None, parent=None, checked=None,
-               config=None, frozen_parent=None, frozen_plan=None, partition=None):
+               config=None, frozen_parent=None, frozen_plan=None, partition=None,
+               bind_configuration=False):
         """`config` is a comparison lane's derived configuration (its diagnostic recipe);
         `frozen_parent` is (parent record, plan, verdict bytes) of a comparison's verified
         aggregate; `frozen_plan` and `partition` make a core original one partition of a
-        comparison's frozen plan."""
+        comparison's frozen plan. With `bind_configuration` (a comparison's member) an existing
+        original of the key is returned only when it froze this very configuration."""
         require(work in ("core", "telemetry", "profile"), "unknown experiment kind")
         require(parent is None or work == "profile", "only a profile names a parent comparison")
         require(frozen_parent is None or (work == "profile" and parent is None),
@@ -667,6 +810,16 @@ class Journal:
                     "original submission key was reused for another parent comparison")
             require(original["partition"] == partition,
                     "original submission key was reused for another comparison partition")
+            # A comparison member's key under another frozen configuration or plan is another
+            # workload (a narrower telemetry profile, partial core cases), never its original.
+            # A plain resubmission keeps the original it froze, whatever the journal says now.
+            require(not bind_configuration
+                    or original["configuration_digest"] == canonical_digest(c),
+                    "original submission key was reused for another frozen configuration or "
+                    "declared workload")
+            require(frozen_plan is None or original["plan_sha256"] == sha256_bytes(
+                contracts.write_bytes(frozen_plan, "run")),
+                    "original submission key was reused for another frozen plan")
             return original
         require(ident not in self.names(), "the submission key already names an original")
         require(len(self.names()) < c["max_requests"], "original journal is full")
@@ -771,12 +924,21 @@ class Journal:
         elif work == "telemetry":
             registry = telemetrylab.load_registry(installed)[0]
             t = c["telemetry"]
-            telemetrylab.configuration(registry, t["profile"], t["experiments"], t["rounds"],
-                                       t["pairs"], t["scale"], t["corpus_runs"])
+            chosen = telemetrylab.configuration(registry, t["profile"], t["experiments"],
+                                                t["rounds"], t["pairs"], t["scale"],
+                                                t["corpus_runs"])
         if c["backend"] == "local":
+            # The selected releases' declared workloads, from their retained sources under
+            # this authority, before anything is claimed or built: a release no contract or
+            # adapter names is refused, never measured under the current fixture.
+            if work == "telemetry":
+                workload = telemetry_workload(git, sources, chosen["experiments"], installed)
+            else:
+                workload = cli_workload(git, plan, control,
+                                        (suite or planning.read_suite(git, control)).doc)
             # The same time and storage admission execution applies, before anything is
             # reserved, claimed or built (`time_bounds`, `native_reserve`).
-            admitted = [require_time(c, work, plan, installed),
+            admitted = [workload, require_time(c, work, plan, installed),
                         self.capacity(native_reserve(c, work, plan, installed),
                                       "native reserve", c["max_bytes"])]
             if checked is not None:

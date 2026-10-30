@@ -958,3 +958,192 @@ The protected harness was re-pinned from this final tree with
 `--check` passes. Not established here: the actual Claw full comparison and its cancellation,
 a telemetry build in the real local image, or the final head's CI. The outer operator runs
 those.
+
+## Final release-comparison validation repairs (2026-10-30)
+
+Recorded in the AF implementation sandbox on macOS with Python 3.14.7, each suite in its own
+owned writable temporary directory (`HOME` and `TMPDIR` set to a fresh `mktemp -d`). Nothing
+here is a Claw measurement or a Linux run; the Linux-only tests named below were skipped on
+this host and run in the outer operator's Linux validation and CI.
+
+- **Bounded host-tool cleanup** (`perflab/hostobserver.py`). GitHub run 40998521481, job
+  123877732296: `test_bounded_runner_ends_its_whole_group_at_its_deadline` reported
+  `uncertain=True` because `Bounded.wait` reaped the leader and then read `killpg(group, 0)`
+  success as a live descendant, although killed descendants a subreaper keeps unreaped still
+  hold the group. `Bounded` now observes its leader's exit without reaping it (kqueue
+  `NOTE_EXIT` on XNU, `waitid(WNOWAIT)` on Linux), so the group ID stays reserved; it kills and
+  scans the group (`group_alive`) until no member executes, within `SETTLE_SECONDS`, and only
+  then reaps the leader, signalling nothing after. A member in `Z`/`X` state counts as exited (a
+  zombie leader thread beside live threads does not); a `stat` that cannot be read or parsed, a
+  leader absent from the table or no longer leading its group, or a scan over its bound leaves
+  the end `uncertain`, and so does a member that outlived a leader that exited of its own
+  accord. XNU keeps its EPERM-for-zombies reading. Captures still run under the authority
+  supervisor. Tests: `test_group_alive_tells_exited_members_from_executing_and_unestablished_ones`
+  (fixture table: exited, live, zombie-with-threads, unreadable, unparsable, recycled leader),
+  `test_a_group_of_exited_members_settles_and_no_other_group_is_signalled`,
+  `test_an_executing_or_unestablished_survivor_leaves_the_end_unconfirmed` (only the reserved
+  group is ever signalled; an unreadable member or absent leader signals nothing),
+  `test_a_member_that_outlives_its_leader_is_killed_and_unconfirmed` (real processes), the
+  unchanged CI test, and, Linux only,
+  `test_killed_descendants_an_adopting_subreaper_keeps_unreaped_are_confirmed_ended`: a child
+  subreaper in its own interpreter keeps the killed descendants unreaped while the runner
+  settles, the condition reproduced on Claw at `be37` (the first assertion then failed in
+  0.202 s), and reaps them afterwards.
+- **TUI cleanup after a refused exit watcher** (`fixtures/performance/cli/tui-open.py`). The
+  same CI job: `test_a_session_whose_exit_cannot_be_watched_is_still_ended_and_cleared` exited
+  3 instead of 1 because the driver built `Exit` before reading the browser's start, so an
+  EMFILE left `born` unset and an older same-user process with an unreadable environment (pid
+  1165 on the runner) was not excluded. The browser's start is now read (`birth`) right after
+  the spawn, before the watcher, and is kept through the watcher's refusal. Tests:
+  `test_a_refused_watcher_keeps_the_browsers_birth_for_the_listing` (any platform: the listing
+  receives the birth read before the refusal), and, Linux only,
+  `test_a_refused_watcher_leaves_an_older_unreadable_process_untouched_and_certain` (an older
+  undumpable sentinel of this user's, the Claw reproduction's condition: exit 1, browser and
+  escaped descendant gone, sentinel still running and released by its own file, never
+  signalled) and `test_a_refused_watcher_still_fences_a_newer_unreadable_descendant` (exit 3).
+- **Comparison member binding** (`perflab/comparison.py`, `perflab/executor.py`). A member's
+  request ID depends only on its kind, key and work, so a narrower `K:telemetry` original was
+  accepted by full comparison `K`. Every reused member is now checked against the comparison's
+  sources, submission, partition, frozen configuration digest and, for a core partition, its
+  frozen plan (`_binding`): `comparison-preflight`/`comparison-launch` refuse a mismatched
+  original before any new claim; the comparison's own submissions pass
+  `bind_configuration=True`, so `Journal._submit` returns an existing original only when it
+  froze that configuration (a plain resubmission keeps the original it froze, as before); the
+  aggregate excludes such a partition; `status`, `report` and `export` mark it `refused` with a
+  reason, so the comparison is never `complete` over its run list; `advance` derives no lane
+  from a journal configuration that is no longer the declared one. Test:
+  `test_a_narrower_same_key_original_refuses_the_full_comparison_and_never_completes` (real
+  Journal, a completed overhead-only telemetry original, then the full comparison; also the
+  same-configuration idempotent resubmission). The unchanged full-comparison test proves the
+  valid resumed launch and no replay.
+- **Telemetry registry version.** The registry is `af.perf-telemetry-lab/3`
+  (`schemas/performance-telemetry-lab-v3.json`, regenerated; v2 removed); the fixtures and docs
+  name `/3`, and `invalid-prior-version.toml` is the current registry under `/2`. Test:
+  `TelemetryLabVersion` and the parity suite. The Task14 `af.perf-telemetry-build/2` is
+  unchanged.
+- **Pre-build workload and sample admission.** `select_contract` refuses a release no fixture
+  contract names (`check-receipt@2` names 0.14.0-rc.1 to rc.3); `Journal._submit` admits, from
+  each side's retained Cargo.lock, the telemetry contract of both sides and, for a plan with
+  CLI cases, the authority's CLI registry and an adapter for both sides, before any claim or
+  build. `image_admission` runs the sample image's own `/usr/bin/python3` once in a probe
+  container (`sample_admission`: this account, no network, read-only root, no capability, no
+  new privileges, removal confirmed) and refuses a missing interpreter, shell or driver module,
+  or missing containment or cgroup v2. Library cases keep their compile-time probe adapters.
+  Tests: `WorkloadAdmission` (0.11.9 refused for telemetry and CLI with nothing reserved;
+  v0.13.0 against v0.14.0-rc.1 admitted with `check-receipt@1`/`@2` and `af_cli_v2`/`af_cli_v3`),
+  `test_an_unusable_sample_runtime_tool_or_containment_refuses_before_any_claim` (ten probe
+  answers, the fence settled clean), the ready-admission test's `sample_runtime` record, and
+  `test_a_release_no_contract_names_is_refused_never_given_the_current_contract`. The Rust
+  `telemetry_bench` judges' recorded documents now name 0.14.0-rc.1.
+
+### Historical TUI first-frame audit (operator evidence, Claw, 2026-10-30)
+
+Supplied by the outer operator; not run by this change. Unprivileged UID 991 containers
+(network none, read-only tools and fixtures, every capability dropped, private HOME/XDG) under
+the common machine lock ran each side's native `setup.sh` registry fixtures and the current
+`tui-open.py` driver against the manifest-verified musl release binaries. The loaded fixture
+was written by each side's own perf-probe public Store writer, exactly 10,000 events, in the
+native `AF_PERF_FIXTURE_PREP` 512 MiB tmpfs; `setup.sh` copied and registered 20 Stores and
+checked the registry count. Each first-frame document passed its schema, exit and numeric
+interval checks, and every owned container was removed with cleanup confirmed. One observation
+per side and fixture: workload and frame compatibility only, no statistical or performance
+claim; the full 40-pair experiment gives the verdict. A first attempt without the native
+preparation environment hit its 120-second seed bound and is retained as an operator setup
+error, not evidence. Per side and fixture, the procedure uses the laboratory's own entry points
+and the `tui_open` cases of `fixtures/performance/cli.toml` (the operator's literal scripts are
+the receipt's logs, identified by their digests below):
+
+```sh
+# In a container of the audit image as UID 991 (--network none --read-only --cap-drop ALL),
+# private HOME/XDG, the side's verified binaries and the fixtures mounted read-only.
+# The loaded registry's Task seed, written by the side's own probe in the 512 MiB tmpfs:
+AF_PERF_FIXTURE_PREP=/perf/prep sh "$FIXTURES/setup.sh" seed_task_state "$SEED_WORK" \
+  "$SIDE/af" "$SIDE/perf-probe" "$TASK_SEED_REQUEST"
+sh "$FIXTURES/setup.sh" seed_publish "$SEED_WORK" "$SIDE/af" "$SIDE/perf-probe" "$SEED"
+# Each fixture in its own scratch, then the driver, which prints one af.perf-tui-open/1 line:
+sh "$FIXTURES/setup.sh" registry_empty "$SCRATCH" "$SIDE/af" "$SIDE/perf-probe" -
+sh "$FIXTURES/setup.sh" registry_stores_20x10000 "$SCRATCH" "$SIDE/af" "$SIDE/perf-probe" "$SEED"
+(cd "$SCRATCH" && /usr/bin/python3 -I "$FIXTURES/tui-open.py" "$SIDE/af")
+```
+
+The receipt, as supplied:
+
+```json
+{
+  "kind": "operator_verified_historical_tui_contract_audit",
+  "producer": "be37b698ee8d66df00f340a50c04c5511b71007b",
+  "sources": {
+    "authority_sha": "be37b698ee8d66df00f340a50c04c5511b71007b",
+    "baseline_sha": "e638219ff4a2a65d5403288cb186c9d2b73ec5f4",
+    "candidate_sha": "e47741ac401754be822d92eca29b61f5afbe8418",
+    "control_sha": "be37b698ee8d66df00f340a50c04c5511b71007b"
+  },
+  "image": "sha256:4f5e1e215d31e1e7844332afa5c4585bc63cdad88ae6e0b9237ffdbdeefbc2e1",
+  "binary_manifest_entries": [
+    {"path": "baseline/af", "sha256": "sha256:040210ebf43a8422ecd92ddbd68fec8e578cc348a3952adb1e6f123f88d8b463", "size": 58050304},
+    {"path": "baseline/perf-probe", "sha256": "sha256:b64bb8562ffcf6b5f05262b66367902fd1332eaef7a3051b2913dbd250797041", "size": 23606816},
+    {"path": "candidate/af", "sha256": "sha256:42152ad11083d26bb1501c05c3bc45aaf04b230d41883be48df4c40a8ba15f58", "size": 60380208},
+    {"path": "candidate/perf-probe", "sha256": "sha256:c7c9a2eecbfcd168c1552d7aea6623888e9cd295703df79ccccf54f97e38ec78", "size": 23862992}
+  ],
+  "observations": [
+    {"side": "baseline", "version": "af 0.13.0", "registry": "empty", "browser_ms": "6.364553", "exit_code": 0, "schema": "af.perf-tui-open/1", "splash_ms": "5.075649"},
+    {"side": "baseline", "version": "af 0.13.0", "registry": "stores_20x10000", "browser_ms": "5730.15642", "exit_code": 0, "schema": "af.perf-tui-open/1", "splash_ms": "4.935427"},
+    {"side": "candidate", "version": "af 0.14.0-rc.1", "registry": "empty", "browser_ms": "7.555114", "exit_code": 0, "schema": "af.perf-tui-open/1", "splash_ms": "5.974847"},
+    {"side": "candidate", "version": "af 0.14.0-rc.1", "registry": "stores_20x10000", "browser_ms": "10.21211", "exit_code": 0, "schema": "af.perf-tui-open/1", "splash_ms": "4.998213"}
+  ],
+  "elapsed_seconds": 79.445,
+  "cleanup_confirmed": true,
+  "statistical_performance_claim": false,
+  "source_files_sha256": {
+    "candidate.log": "8f1dd786d665b4055f5a8b87cc1c38de1bf0c66cbaf34117d584e1afd29b74bf",
+    "baseline.log": "455075b19e54f947563950aff6172a1c4dc9a31a36156dc2363ed5c6e66ca82f",
+    "historical-tui-audit-02-20261030.json": "18bb8614ce6f7aae7b85960909cfbe8fb6a987863114b23beaf629700c22c970"
+  }
+}
+```
+
+### Image admission records (Task13) and this change's focused runs
+
+The outer operator ran `tests.test_builds.ImageIdentity` and `tests.test_executor.ImageAdmission`
+on combined `1cbe414667f2ebe337b80b16d13840ad21cf90aa` with Python 3.14.7 and private
+HOME/TMPDIR: 10/10 passed in 17.524 test seconds (18.178 s outer), exit 0, log SHA-256
+`bfbdf18a987a72f03d3f58eb74416ad798d59015b3d2c0df9108e78dcb5ee3e3`. This change reran them on
+its final source, with its own new sample-admission test, as below.
+
+Each command ran from the repository root with `HOME` and `TMPDIR` set to a fresh owned
+directory, Python 3.14.7, on macOS (the Linux-only tests skip here).
+
+```sh
+python3.14 -I -B -c 'import sys,unittest; sys.path.insert(0,"scripts/performance"); unittest.main(module=None,argv=["unittest","tests.test_hostobserver","tests.test_tui_open","tests.test_comparison","tests.test_executor","tests.test_contracts","tests.test_telemetry_lab","tests.test_telemetry_bench_contracts","tests.test_builds","tests.test_calibration","tests.test_localcalibration","tests.test_planning","tests.test_diagnostics","tests.test_telemetry_cleanup","tests.test_telemetry_collect","tests.test_telemetry_exec","tests.test_telemetry_lock_handoff","tests.test_telemetry_measurements","tests.test_telemetry_terminal","tests.test_telemetry_workflow","tests.test_whole_source_repairs"],verbosity=1)'
+```
+
+**526 tests, 1003.6 seconds: 1 failure, 4 errors, 21 skipped.** Four are this macOS host's, on
+paths this change does not touch: three `tests.test_executor.Journal` profile cases refuse
+with `environment linux_x86_64_*_claw is the contained Linux profile; this host is macos`, and
+`test_diagnostic_build_removal_uncertainty_keeps_borrowed_executor_fence` reads
+`host_mismatch` from the stand-in toolchain's macOS host; all four failed identically before
+the workload and sample admission existed. The fifth,
+`test_telemetry_lab.Runs.test_documents_unlike_their_planned_run_are_refused_even_when_both_sides_agree`,
+was this change's: its foreign stand-in document named af 9.9.9, which no fixture contract
+names any more; it now names another declared release (0.14.0-rc.1) and passes below. An
+earlier run of the same modules failed four `test_localcalibration.LocalOriginals` cases (their
+synthetic suite's process cases have no CLI registry; they run no shard, so they now stub the
+CLI admission `WorkloadAdmission` proves) and once
+`test_telemetry_collect.Collection.test_rotation_keeps_old_results_retries_and_higher_attempts_eligible`,
+which passed when rerun alone and in the run above.
+
+```sh
+python3.14 -I -B -c 'import sys,unittest; sys.path.insert(0,"scripts/performance"); unittest.main(module=None,argv=["unittest","tests.test_hostobserver","tests.test_tui_open","tests.test_telemetry_lab","tests.test_telemetry_bench_contracts","tests.test_contracts","tests.test_comparison","tests.test_builds.ImageIdentity","tests.test_executor.ImageAdmission","tests.test_executor.WorkloadAdmission"],verbosity=1)'
+```
+
+**PASS: 109 tests, 122.6 seconds, 5 skipped (Linux only), exit 0.** It includes the Task13
+`ImageIdentity` and `ImageAdmission` suites (both malformed-identity cases and the unconfirmed
+probe container that keeps the fence) with the new sample-admission test.
+`cargo nextest run --workspace --locked --profile ci -E 'binary_id(af::it) &
+test(/^telemetry_bench::/)'`: 7 passed. `python3 -I scripts/performance/schemas.py`,
+`python3 -I scripts/test-classes.py audit`, `cargo fmt --all -- --check` and `cargo clippy
+--workspace --all-targets -- -D warnings` pass. The protected harness was re-pinned after the
+last edit with `python3 -I scripts/performance/cli.py harness-digest --write` to
+`sha256:52d8516373e80469b112a033166b68f66b63436428faec212d96193a57799b4f` (682 files), and
+`--check` passes. Not established here: the Linux-only tests above, the actual Claw full
+comparison and the final head's CI, which the outer operator runs.

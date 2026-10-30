@@ -26,7 +26,8 @@ rest of the command and its exit, never the Store's commit time alone. `spans` m
 pair in milliseconds, reported the same way. Each run's drain is a physical duration and the
 pair's difference a signed one: a negative duration is kept as measured and leaves the gate
 `not_judged`, never clamped or dropped. Each release is measured on the workload it accepts
-(`--fixture-contract`, selected by the version `af --version` prints; `FIXTURE_CONTRACTS`).
+(`--fixture-contract`, selected by the version `af --version` prints; `FIXTURE_CONTRACTS`); a
+version no contract names is refused, never measured under the current one.
 
 The gate passes when every fixture's median is at most 2% and its interval's upper bound at
 most 3%, and the drain latency's median difference is at most 10 ms. It is judged only over all
@@ -83,12 +84,15 @@ DRAIN_CLOCK = 'CLOCK_MONOTONIC'
 # tree's packages declare `af/TaskCheckReceipt@2`; a release named under another contract gets
 # the same packages with only that artifact type renamed, every package re-pinned with the
 # digest the contract declares, which the measured binary's own `af catalog digest` must print.
-# A release no contract names is measured under the current one. This is benchmark fixture
-# production, never a reader of state an earlier release wrote.
+# Every measured release is named by exactly one contract: a release no contract names is
+# refused, never assumed to accept the current tree's workload. The current contract names the
+# releases that write `@2`, this tree's own included. This is benchmark fixture production,
+# never a reader of state an earlier release wrote.
 CURRENT_CONTRACT = 'check-receipt@2'
 CHECK_RECEIPT_CURRENT = 'af/TaskCheckReceipt@2'
 FIXTURE_CONTRACTS = {
-    'check-receipt@2': {'check_receipt': CHECK_RECEIPT_CURRENT, 'versions': (), 'pins': None},
+    'check-receipt@2': {'check_receipt': CHECK_RECEIPT_CURRENT,
+                        'versions': ('0.14.0-rc.1', '0.14.0-rc.2', '0.14.0-rc.3'), 'pins': None},
     'check-receipt@1': {
         'check_receipt': 'af/TaskCheckReceipt@1',
         'versions': ('0.13.0',),
@@ -346,14 +350,19 @@ def release_version(version_line):
 
 
 def select_contract(version, requested=None):
-    """The fixture contract of the measured release `version`, and how it was chosen.
+    """The fixture contract of the measured release `version`.
 
-    A contract that names the version is that release's; every other version is measured under
-    the current tree's. `requested` (`--fixture-contract`) must be the one the version selects:
-    a contract is never fed to a release it does not describe."""
+    The one contract that names the version is that release's; a version no contract names is
+    refused, since nothing declares which workload it accepts. `requested`
+    (`--fixture-contract`) must be the one the version selects: a contract is never fed to a
+    release it does not describe."""
     named = sorted(name for name, contract in FIXTURE_CONTRACTS.items()
                    if version in contract['versions'])
-    selected = named[0] if named else CURRENT_CONTRACT
+    if len(named) != 1:
+        raise BenchError(f'af {version} is named by no fixture contract '
+                         f'({", ".join(sorted(FIXTURE_CONTRACTS))}): its bench workload is not '
+                         'declared, and the current contract is never assumed to describe it')
+    selected = named[0]
     if requested is not None and requested != selected:
         raise BenchError(f'af {version} measures under the fixture contract `{selected}`, '
                          f'not `{requested}`')

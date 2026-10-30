@@ -54,7 +54,7 @@ The data of the continuous performance laboratory
   target, the counter cases, the child run's limits, the diagnostic recipes (each a verdict
   recipe of `suite.toml` with only features, symbols and frame pointers added) and every external
   tool with its pin, how it reports its version and its provisioning instructions.
-- `telemetry.toml` — the telemetry experiments (`af.perf-telemetry-lab/2`, ADR-0214): each
+- `telemetry.toml` — the telemetry experiments (`af.perf-telemetry-lab/3`, ADR-0214): each
   exactly a bench script of the telemetry design's §12 with its document, the product schema it
   is read through, its levels and the inputs that identify its measurement authority, and one
   bounded profile per trigger (rounds, pairs, scale, corpus size, timeout, work bytes and

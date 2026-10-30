@@ -314,6 +314,19 @@ while index < len(args):
 image_env = dict(item.split("=", 1) for item in IMAGES[image][1])
 for key, value in image_env.items():
     env.setdefault(key, value)
+if "AF_PERF_SAMPLE_PROBE=1" in rest:
+    # The sample image's runtime and containment probe: what a contained probe of a usable
+    # image answers, or the answer (exit code, then stdout) the test wrote in `sample-probe`.
+    answer = os.path.join(here, "sample-probe")
+    if os.path.exists(answer):
+        code, _, text = open(answer).read().partition("\n")
+        sys.stdout.write(text)
+        sys.exit(int(code))
+    print(json.dumps({"uid": os.getuid(), "gid": os.getgid(), "cap_eff": "0000000000000000",
+                      "no_new_privs": "1", "networks": ["lo"], "cgroup2": True,
+                      "root_writable": False, "modules": True, "shell": True,
+                      "python": "3.12.3"}))
+    sys.exit(0)
 os.chdir(cwd)
 if "/" not in program:
     for directory in env.get("PATH", "").split(":"):
@@ -324,12 +337,17 @@ os.execve(program, [program] + rest, env)
 '''
 
 
-def fake_docker(directory, images, lingering=None, volumes=None, identity=None):
+def fake_docker(directory, images, lingering=None, volumes=None, identity=None,
+                sample_probe=None):
     """A bin directory whose `docker` answers for `images` ({reference: (id, [env]) or
     (id, [env], [repository digests])}); `volumes` is the stdout of every image's volume
     inspection (`null` when None) and `identity` (text, or bytes written exactly), when given,
-    of every image's identity inspection."""
+    of every image's identity inspection. `sample_probe` (exit code, stdout), when given, is
+    the sample image's runtime and containment probe's answer; a usable image's otherwise."""
     os.makedirs(directory)
+    if sample_probe is not None:
+        with open(os.path.join(directory, "sample-probe"), "w") as stream:
+            stream.write("%d\n%s" % sample_probe)
     path = os.path.join(directory, "docker")
     with open(path, "w") as stream:
         stream.write("#!%s -I\nIMAGES = %r\n%s" % (sys.executable, images, FAKE_DOCKER))

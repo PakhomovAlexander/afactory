@@ -125,7 +125,7 @@ views.
 
 ## Telemetry experiments
 
-`fixtures/performance/telemetry.toml` (`af.perf-telemetry-lab/2`) declares the experiments and
+`fixtures/performance/telemetry.toml` (`af.perf-telemetry-lab/3`) declares the experiments and
 one bounded profile per trigger:
 
 | Experiment | Script | Levels | Each side judged by |

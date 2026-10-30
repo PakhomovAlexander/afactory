@@ -11,6 +11,8 @@ import shutil
 import stat
 import subprocess
 import sys
+import unittest
+from unittest import mock
 
 from perflab import contracts, hostobserver, perfcapture, toolrun
 from perflab.perfcapture import CaptureError
@@ -58,6 +60,38 @@ with open(output, "w") as stream:
     stream.write(event)
 note("perf ended")
 '''
+
+
+def stat_entry(root, pid, state, pgrp, threads=1):
+    """A `stat` of `pid` in group `pgrp` with `threads` threads, as `/proc` shows it."""
+    path = os.path.join(root, str(pid))
+    os.makedirs(path, exist_ok=True)
+    with open(os.path.join(path, "stat"), "w") as stream:
+        stream.write("%d (sh) %s 1 %d %d 0 -1 0 0 0 0 0 0 0 0 0 20 0 %d 0 4242 4096 0\n"
+                     % (pid, state, pgrp, pgrp, threads))
+    return path
+
+
+# Run in its own interpreter: become a child subreaper that never reaps what it adopts until the
+# bounded runner returned (as a CI runner's init can), so the runner's killed descendants stay
+# exited, unreaped members of its group; then report and reap every adopted child.
+SUBREAPER = r"""
+import ctypes, json, os, sys, time
+sys.path.insert(0, sys.argv[1])
+from perflab import hostobserver
+if ctypes.CDLL(None, use_errno=True).prctl(36, 1, 0, 0, 0) != 0:
+    sys.exit(70)
+running = hostobserver.Bounded(["/bin/sh", "-c", "sleep 30 & sleep 30 & wait"],
+                               {"PATH": "/usr/bin:/bin"}, sys.argv[2], 0.2, 4096)
+result = running.wait()
+print(json.dumps({"timed_out": result.timed_out, "uncertain": result.uncertain}))
+sys.stdout.flush()
+while True:
+    try:
+        os.waitpid(-1, 0)
+    except ChildProcessError:
+        break
+"""
 
 
 def proc_entry(root, pid, argv, ppid, ticks=4242, uid=None, cgroup=CONTAINER):
@@ -228,6 +262,125 @@ class HostObserver(TempDir):
         late = hostobserver.bounded_start(self.env, self.tmp)(
             ["/bin/true"], 1, hostobserver.time.monotonic() - 1, None)
         self.assertIsInstance(late, toolrun.Result)
+
+    def test_group_alive_tells_exited_members_from_executing_and_unestablished_ones(self):
+        leader = 4000
+        stat_entry(self.proc, leader, "Z", leader)
+        stat_entry(self.proc, 4001, "Z", leader)
+        stat_entry(self.proc, 4002, "X", leader)
+        stat_entry(self.proc, 5000, "S", 5000)
+        # Exited, unreaped members (an adopting subreaper's zombies) and other groups: none runs.
+        self.assertFalse(hostobserver.group_alive(leader, self.proc))
+        stat_entry(self.proc, 4003, "S", leader)
+        self.assertTrue(hostobserver.group_alive(leader, self.proc))
+        shutil.rmtree(os.path.join(self.proc, "4003"))
+        # A zombie leader thread beside live threads still executes.
+        stat_entry(self.proc, 4001, "Z", leader, threads=2)
+        self.assertTrue(hostobserver.group_alive(leader, self.proc))
+        stat_entry(self.proc, 4001, "Z", leader)
+        # A state that cannot be read or parsed is not established: never "none runs".
+        os.mkdir(os.path.join(self.proc, "4004"))
+        os.mkdir(os.path.join(self.proc, "4004", "stat"))
+        with self.assertRaisesRegex(contracts.ContractError, "cannot be read"):
+            hostobserver.group_alive(leader, self.proc)
+        shutil.rmtree(os.path.join(self.proc, "4004"))
+        os.mkdir(os.path.join(self.proc, "4005"))
+        with open(os.path.join(self.proc, "4005", "stat"), "w") as stream:
+            stream.write("4005 (sh) S 1\n")
+        with self.assertRaisesRegex(contracts.ContractError, "cannot be parsed"):
+            hostobserver.group_alive(leader, self.proc)
+        shutil.rmtree(os.path.join(self.proc, "4005"))
+        # A leader absent from the table, or leading another group, no longer reserves the id.
+        stat_entry(self.proc, leader, "Z", 5000)
+        with self.assertRaisesRegex(contracts.ContractError, "left its process group"):
+            hostobserver.group_alive(leader, self.proc)
+        shutil.rmtree(os.path.join(self.proc, str(leader)))
+        with self.assertRaisesRegex(contracts.ContractError, "absent"):
+            hostobserver.group_alive(leader, self.proc)
+
+    def settled_fixture(self, members, settle_seconds=0.05):
+        """A real `sh -c "exit 0"` under `Bounded`, its group's members read from the fixture table
+        (`members(leader)` writes them once its pid is known): (result, signalled groups)."""
+        running = hostobserver.Bounded(["/bin/sh", "-c", "exit 0"], self.env, self.tmp, 10, 4096,
+                                       proc=self.proc)
+        self.addCleanup(lambda: running.settled or running.wait())
+        members(running.process.pid)
+        signalled = []
+        with mock.patch.object(hostobserver, "SETTLE_SECONDS", settle_seconds), \
+                mock.patch.object(hostobserver.os, "killpg",
+                                  side_effect=lambda group, number: signalled.append(
+                                      (group, number))):
+            result = running.wait()
+        self.assertEqual(result.code, 0)
+        return result, signalled
+
+    def test_a_group_of_exited_members_settles_and_no_other_group_is_signalled(self):
+        def members(leader):
+            stat_entry(self.proc, leader, "Z", leader)
+            stat_entry(self.proc, leader + 70001, "Z", leader)
+            stat_entry(self.proc, 1, "S", 1)
+            stat_entry(self.proc, leader + 70002, "S", leader + 70002)
+        result, signalled = self.settled_fixture(members)
+        self.assertFalse(result.uncertain)
+        self.assertIsNone(result.failure())
+        self.assertEqual(signalled, [])
+
+    def test_an_executing_or_unestablished_survivor_leaves_the_end_unconfirmed(self):
+        def live(leader):
+            stat_entry(self.proc, leader, "Z", leader)
+            stat_entry(self.proc, leader + 70001, "S", leader)
+        result, signalled = self.settled_fixture(live)
+        self.assertTrue(result.uncertain)
+        self.assertIn("not confirmed", result.failure())
+        # Only the reserved group is killed, and only while its leader was held unreaped.
+        self.assertTrue(signalled)
+        self.assertEqual({group for group, _ in signalled}, {result.process.pid})
+
+        def unreadable(leader):
+            stat_entry(self.proc, leader, "Z", leader)
+            os.makedirs(os.path.join(self.proc, str(leader + 70001), "stat"))
+        shutil.rmtree(self.proc)
+        os.mkdir(self.proc)
+        result, signalled = self.settled_fixture(unreadable)
+        self.assertTrue(result.uncertain)
+        self.assertEqual(signalled, [])
+
+        def recycled(leader):
+            stat_entry(self.proc, leader + 70001, "S", leader)
+        shutil.rmtree(self.proc)
+        os.mkdir(self.proc)
+        result, signalled = self.settled_fixture(recycled)
+        self.assertTrue(result.uncertain)
+        self.assertEqual(signalled, [])
+
+    def test_a_member_that_outlives_its_leader_is_killed_and_unconfirmed(self):
+        marker = self.path("survivor")
+        running = hostobserver.bounded_start(self.env, self.tmp)(
+            ["/bin/sh", "-c", 'sleep 30 & echo $! >"$0"', marker], 10,
+            hostobserver.time.monotonic() + 10, None)
+        result = running.wait()
+        self.assertFalse(result.timed_out)
+        self.assertTrue(result.uncertain)
+        self.assertIn("not confirmed", result.failure())
+        with open(marker) as stream:
+            survivor = int(stream.read())
+        if os.path.isdir("/proc/self/task"):
+            try:
+                with open("/proc/%d/stat" % survivor, "rb") as stream:
+                    raw = stream.read()
+                self.assertIn(raw[raw.rindex(b")") + 2:].split()[0], (b"Z", b"X"))
+            except FileNotFoundError:
+                pass
+
+    @unittest.skipUnless(sys.platform == "linux", "a child subreaper is a Linux facility")
+    def test_killed_descendants_an_adopting_subreaper_keeps_unreaped_are_confirmed_ended(self):
+        completed = subprocess.run(
+            [sys.executable, "-I", "-c", SUBREAPER,
+             os.path.dirname(os.path.dirname(os.path.abspath(__file__))), self.tmp],
+            stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+            timeout=60)
+        self.assertEqual(completed.returncode, 0, completed.stderr)
+        self.assertEqual(json.loads(completed.stdout), {"timed_out": True, "uncertain": False})
 
     def control_dir(self, tag):
         path = self.path("control-%s" % tag)

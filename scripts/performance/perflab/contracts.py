@@ -4235,12 +4235,12 @@ def validate_enforcement(doc, where="enforcement.toml"):
 
 
 # Telemetry experiments (ADR-0214) ----------------------------------------------------------
-# af.perf-telemetry-lab/2 is fixtures/performance/telemetry.toml; af.perf-telemetry-result/3 one
+# af.perf-telemetry-lab/3 is fixtures/performance/telemetry.toml; af.perf-telemetry-result/3 one
 # experiment run of a baseline and a candidate binary on one host with this checkout's scripts
 # and fixtures; af.perf-telemetry-history/2 the compatible series across results. Advisory: no
 # verdict, sample or required check reads any of them.
 
-TELEMETRY_LAB_SCHEMA = "af.perf-telemetry-lab/2"
+TELEMETRY_LAB_SCHEMA = "af.perf-telemetry-lab/3"
 TELEMETRY_RESULT_SCHEMA = "af.perf-telemetry-result/3"
 TELEMETRY_HISTORY_SCHEMA = "af.perf-telemetry-history/2"
 # A separate immutable Actions planning artifact, emitted before any candidate execution.

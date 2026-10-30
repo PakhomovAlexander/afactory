@@ -38,6 +38,11 @@ class LocalOriginals(TempDir):
         self.producer = mock.patch.object(executor, "producer", return_value=PRODUCER)
         self.producer.start()
         self.addCleanup(self.producer.stop)
+        # The synthetic suite's process cases have no CLI registry, and these originals run no
+        # shard: their pre-build CLI admission is `test_executor.WorkloadAdmission`'s.
+        workload = mock.patch.object(executor, "cli_workload", return_value="")
+        workload.start()
+        self.addCleanup(workload.stop)
         plenty_of_space(self)
         self.now = calibration.start_unix_ms(self.cohort) / 1000 + 3600
         self.clock = mock.patch.object(executor.time, "time", side_effect=lambda: self.now)

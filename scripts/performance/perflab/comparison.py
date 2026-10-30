@@ -204,6 +204,45 @@ def _same(declared, retained):
     return dict(declared, created_unix_ms=0) == dict(retained, created_unix_ms=0)
 
 
+def _partition(doc, item):
+    """The partition record a core member of `doc` carries."""
+    return {"comparison_id": doc["comparison_id"], "comparison_digest": canonical_digest(doc),
+            "index": item["index"], "shards": item["shards"], "build_from": item["build_from"]}
+
+
+def _configuration(journal, doc, lane=None):
+    """The digest of the frozen configuration a member of `doc` runs under: the declared one,
+    or for a diagnostic lane its derivation from it. A journal whose configuration is no longer
+    the declared one derives no lane: None."""
+    if lane is None:
+        return doc["configuration_digest"]
+    if canonical_digest(journal.config) != doc["configuration_digest"]:
+        return None
+    return canonical_digest(lane_config(journal.config, lane["recipe"]))
+
+
+def _binding(journal, doc, request, work, key, partition=None, lane=None):
+    """Why the retained original `request` is not the member `doc` declares, or None. A member
+    is bound to the comparison's sources, submission, partition, frozen configuration and
+    declared workload (the frozen plan of a core partition): a same-key original of a narrower
+    configuration (another telemetry profile or experiment set, partial core cases) answers
+    another question, and its own run list is never this comparison's coverage."""
+    if request["sources"] != doc["sources"] or request["work"] != work or request[
+            "submission"] != {"kind": doc["submission"]["kind"], "key": key}:
+        return "it was submitted for other sources, work or key"
+    if work != "profile" and request["partition"] != partition:
+        return "it is not this comparison's partition"
+    expected = _configuration(journal, doc, lane)
+    if expected is None or request["configuration_digest"] != expected:
+        return ("its frozen configuration %s is not the comparison's %s: another declared "
+                "workload" % (request["configuration_digest"], expected))
+    if work == "core" and request["plan_sha256"] != doc["plan_sha256"]:
+        return "it runs another plan than the comparison's frozen plan"
+    if work == "telemetry" and request["plan_sha256"] is not None:
+        return "a telemetry original carries no plan"
+    return None
+
+
 def _checks(journal, doc, plan, registry, git, installed):
     """Every member's submission check, as the executing account, reserving nothing; the
     host observer's actual capability for the CPU lane. Returns (checks, refusal or None)."""
@@ -236,11 +275,9 @@ def _checks(journal, doc, plan, registry, git, installed):
     def member(ident, work, key, partition=None, frozen_plan=None):
         if ident in names:
             # A resumed launch: the retained original must be exactly this member.
-            original = journal.request(ident)
-            require(original["sources"] == doc["sources"] and original["work"] == work
-                    and original["submission"] == {"kind": kind, "key": key}
-                    and original["partition"] == partition,
-                    "original %s is not this comparison's member" % ident)
+            why = _binding(journal, doc, journal.request(ident), work, key, partition)
+            require(why is None, "original %s is not this comparison's member: %s; nothing is "
+                    "claimed or built" % (ident, why))
             return "already submitted: " + journal.state(ident)["state"]
         checked = {"serial": None, "tools": []}
         journal._submit(work, base, head, key, kind, git=git, installed=installed,
@@ -251,9 +288,7 @@ def _checks(journal, doc, plan, registry, git, installed):
     steps = [("paths", lambda: [executor.reachable(c[k], k) for k in ("root", "repository_path")]
               and None), ("capacity", capacity)]
     for item in doc["partitions"]:
-        partition = {"comparison_id": doc["comparison_id"],
-                     "comparison_digest": canonical_digest(doc), "index": item["index"],
-                     "shards": item["shards"], "build_from": item["build_from"]}
+        partition = _partition(doc, item)
         steps.append(("core_%d" % item["index"], lambda partition=partition, item=item: (
             "; ".join(text for text in (
                 member(item["request_id"], "core", item["key"], partition, plan),
@@ -346,16 +381,14 @@ def _launch(journal, doc, plan, git, installed):
         executor.atomic(target, doc, "comparison")
     base, head = doc["sources"]["baseline_sha"], doc["sources"]["candidate_sha"]
     kind = doc["submission"]["kind"]
-    digest = canonical_digest(doc)
     for item in doc["partitions"]:
-        partition = {"comparison_id": doc["comparison_id"], "comparison_digest": digest,
-                     "index": item["index"], "shards": item["shards"],
-                     "build_from": item["build_from"]}
+        partition = _partition(doc, item)
         request = journal.submit("core", base, head, item["key"], kind, git=git,
-                                 installed=installed, frozen_plan=plan, partition=partition)
+                                 installed=installed, frozen_plan=plan, partition=partition,
+                                 bind_configuration=True)
         require(request["request_id"] == item["request_id"], "partition identity changed")
     request = journal.submit("telemetry", base, head, doc["telemetry"]["key"], kind, git=git,
-                             installed=installed)
+                             installed=installed, bind_configuration=True)
     require(request["request_id"] == doc["telemetry"]["request_id"], "telemetry identity changed")
 
 
@@ -405,7 +438,14 @@ def aggregate(journal, doc, plan, raw_plan, installed=executor.ROOT):
                  "state": state["state"], "verification": "not_complete",
                  "result_sha256": state["result_sha256"], "shards": item["shards"],
                  "included": False, "detail": state["detail"][:4096]}
-        if state["state"] == "complete":
+        why = _binding(journal, doc, journal.request(item["request_id"]), "core", item["key"],
+                       _partition(doc, item))
+        if why is not None:
+            # Another workload's original under the partition's key: its records are missing.
+            entry["detail"] = ("not this comparison's member: " + why)[:4096]
+            if state["state"] == "complete":
+                entry["verification"] = "refused"
+        elif state["state"] == "complete":
             try:
                 executor.verify_original(journal, item["request_id"], installed)
                 windows.append(_window(journal, doc, item))
@@ -520,6 +560,9 @@ def advance(journal, ident, installed=executor.ROOT, git=None):
         (record, cases), verdict_bytes = selection(journal, doc, plan, agg)
         _, agg_raw = read_aggregate(journal, doc)
         if cases:
+            require(canonical_digest(journal.config) == doc["configuration_digest"],
+                    "the journal's configuration is no longer the comparison's frozen "
+                    "configuration: no diagnostic lane is derived from another")
             base, head = doc["sources"]["baseline_sha"], doc["sources"]["candidate_sha"]
             for lane in doc["diagnostics"]:
                 if lane["request_id"] is None:
@@ -528,7 +571,7 @@ def advance(journal, ident, installed=executor.ROOT, git=None):
                     "profile", base, head, lane["key"], doc["submission"]["kind"], git=git,
                     installed=installed, config=lane_config(journal.config, lane["recipe"]),
                     frozen_parent=(_parent(doc, agg_raw, raw_plan, verdict_bytes), plan,
-                                   verdict_bytes))
+                                   verdict_bytes), bind_configuration=True)
                 require(request["request_id"] == lane["request_id"], "profile identity changed")
     return status(journal, ident, verify=None, installed=installed)
 
@@ -564,14 +607,21 @@ def status(journal, ident, verify=None, installed=executor.ROOT):
     members, reasons, lanes, picks, links = [], [], [], [], []
     verified = {}
 
-    def member(ident, lane, work, key):
+    def member(ident, lane, work, key, partition=None, declared=None):
         state = _state(journal, ident)
         record = {"request_id": ident, "lane": lane, "work": work, "key": key,
                   "state": "not_submitted" if state is None else state["state"],
                   "state_detail": "" if state is None else state["detail"],
                   "verification": "not_terminal", "result_sha256": None,
                   "measurement_status": None}
-        if state is not None and state["state"] == "complete":
+        why = None if state is None else _binding(journal, doc, journal.request(ident), work,
+                                                  key, partition, declared)
+        if why is not None:
+            # Another workload's original under this member's key: never its coverage.
+            record["verification"] = "refused"
+            reasons.append("%s original %s is not this comparison's member: %s"
+                           % (lane, ident, why))
+        elif state is not None and state["state"] == "complete":
             record["result_sha256"] = state["result_sha256"]
             if verify is None:
                 record["verification"] = "not_checked"
@@ -599,7 +649,8 @@ def status(journal, ident, verify=None, installed=executor.ROOT):
         return None
 
     # Core: the partitions, then the aggregate's whole-family judgment.
-    core = [member(item["request_id"], "core", "core", item["key"]) for item in doc["partitions"]]
+    core = [member(item["request_id"], "core", "core", item["key"], _partition(doc, item))
+            for item in doc["partitions"]]
     state = lane_state(core)
     coverage, detail, core_links = None, "", []
     if state is None:
@@ -693,7 +744,8 @@ def status(journal, ident, verify=None, installed=executor.ROOT):
             for case in chosen["not_selected"]:
                 picks.append({"lane": lane["lane"], "instance_id": case["instance_id"],
                               "selected": False, "reason": case["reason"]})
-            prof = member(lane["request_id"], lane["lane"], "profile", lane["key"])
+            prof = member(lane["request_id"], lane["lane"], "profile", lane["key"],
+                          declared=lane)
             entry["members"] = [prof["request_id"]]
             waiting = lane_state([prof])
             if waiting is not None:

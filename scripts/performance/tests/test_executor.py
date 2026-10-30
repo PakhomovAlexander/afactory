@@ -1231,6 +1231,54 @@ def profile_contender(locks, output):
         print(e.reason)
 
 
+class WorkloadAdmission(ExecutorFixture):
+    """The selected releases' declared workloads, read from their retained sources under the
+    installed authority, before any claim or build (the evaluator's `0.11.9` that the
+    telemetry bench silently measured under the current fixture contract)."""
+
+    def release(self, base, candidate):
+        """A source pair whose Cargo.locks declare `base` and `candidate`."""
+        lock = 'version = 4\n\n[[package]]\nname = "af"\nversion = "%s"\n'
+        self.base = self.repo.commit("baseline " + base, {"Cargo.lock": lock % base})
+        self.head = self.repo.commit("candidate " + candidate, {"Cargo.lock": lock % candidate})
+
+    def test_unsupported_selected_releases_refuse_before_any_claim_or_build(self):
+        self.c["core"]["cases"] = ["cli_discovery__command_version"]
+        self.release("0.13.0", "0.11.9")
+        for work, why in (("telemetry", "the candidate source %s is af 0.11.9: af 0.11.9 is "
+                                        "named by no fixture contract"),
+                          ("core", "the candidate source is af 0.11.9: no declared CLI "
+                                   "adapter covers AF 0.11.9")):
+            with self.subTest(work=work), executor.Journal(self.c) as j:
+                why = why % self.head[:12] if "%s" in why else why
+                refused = j.preflight(work, self.base, self.head, "old_" + work)
+                contracts.write_bytes(refused, "executor-preflight")
+                self.assertEqual(refused["status"], "refused")
+                self.assertIn("refused before any claim or build", refused["detail"])
+                self.assertIn(why, refused["detail"])
+                with self.assertRaisesRegex(ContractError, "refused before any claim or build"):
+                    self.submit(j, work, "old_" + work)
+                self.assertEqual(j.names(), [], "a refusal reserves nothing")
+
+    def test_the_supported_release_pair_is_admitted_with_each_sides_contract(self):
+        self.c["core"]["cases"] = ["cli_discovery__command_version"]
+        self.release("0.13.0", "0.14.0-rc.1")
+        with executor.Journal(self.c) as j:
+            for work, named in (("telemetry", "baseline af 0.13.0 under check-receipt@1, "
+                                              "candidate af 0.14.0-rc.1 under check-receipt@2"),
+                                ("core", "baseline af 0.13.0 with af_cli_v2, candidate af "
+                                         "0.14.0-rc.1 with af_cli_v3")):
+                ready = j.preflight(work, self.base, self.head, "pair_" + work)
+                self.assertEqual(ready["status"], "ready", ready["detail"])
+                # The admission's figures, as a comparison's member check records them.
+                checked = {"serial": None, "tools": []}
+                j._submit(work, self.base, self.head, "pair_" + work, checked=checked)
+                self.assertIn(named, checked["admission"])
+            self.assertEqual(j.names(), [])
+            self.submit(j, "telemetry", "pair_telemetry")
+            self.assertEqual(len(j.names()), 1)
+
+
 class ImageAdmission(ExecutorFixture):
     """The configured build and sample images and the shipping recipe's image-local tools,
     through a stand-in docker client, at preflight, submission and the claim (the Claw musl
@@ -1253,13 +1301,14 @@ class ImageAdmission(ExecutorFixture):
             patcher.start()
             self.addCleanup(patcher.stop)
 
-    def docker(self, *present, lingering=None, volumes=None, identity=None):
+    def docker(self, *present, lingering=None, volumes=None, identity=None, sample_probe=None):
         """Route every image admission to a stand-in docker client holding `present`."""
         self.docker_dirs += 1
         directory = self.path("docker-%d" % self.docker_dirs)
         images = {reference: ("sha256:" + "%d" % index * 64, self.env, [reference])
                   for index, reference in enumerate(present, 3)}
-        docker = build_fixtures.fake_docker(directory, images, lingering, volumes, identity)
+        docker = build_fixtures.fake_docker(directory, images, lingering, volumes, identity,
+                                            sample_probe)
         patcher = mock.patch.object(executor, "image_admission", lambda config, recipes:
                                     REAL_IMAGE_ADMISSION(config, recipes, docker=docker))
         patcher.start()
@@ -1298,6 +1347,50 @@ class ImageAdmission(ExecutorFixture):
                                     for call in runs), "only bounded probe containers ran")
                 self.assertFalse(self.fence())
 
+    def test_an_unusable_sample_runtime_tool_or_containment_refuses_before_any_claim(self):
+        # The sample image's actual probe container, not its metadata: a missing interpreter,
+        # shell or driver module, or a container without the samples' containment, refuses
+        # the submission before anything is reserved, claimed or built, and the probe's own
+        # container is removed (the fence settles clean).
+        usable = {"uid": os.getuid(), "gid": os.getgid(), "cap_eff": "0000000000000000",
+                  "no_new_privs": "1", "networks": ["lo"], "cgroup2": True,
+                  "root_writable": False, "modules": True, "shell": True, "python": "3.12.3"}
+        cases = (((127, ""), "cannot run /usr/bin/python3: exit 127"),
+                 ((0, "not a record"), "answered no probe record"),
+                 ((0, json.dumps(dict(usable, shell=False))), "lacks /bin/sh"),
+                 ((0, json.dumps(dict(usable, modules=False))), "lacks the driver modules"),
+                 ((0, json.dumps(dict(usable, networks=["eth0", "lo"]))), "the networks"),
+                 ((0, json.dumps(dict(usable, cap_eff="00000000a80425fb"))),
+                  "effective capabilities"),
+                 ((0, json.dumps(dict(usable, no_new_privs="0"))), "no_new_privs"),
+                 ((0, json.dumps(dict(usable, cgroup2=False))), "no cgroup v2"),
+                 ((0, json.dumps(dict(usable, root_writable=True))), "root filesystem is "
+                  "writable"),
+                 ((0, json.dumps(dict(usable, uid=0))), "runs as 0:"))
+        for index, (answer, why) in enumerate(cases):
+            with self.subTest(why=why):
+                directory = self.docker(IMAGE, self.SAMPLE, sample_probe=answer)
+                with executor.Journal(self.c) as j:
+                    refused = j.preflight("core", self.base, self.head, "sample_%d" % index)
+                    contracts.write_bytes(refused, "executor-preflight")
+                    self.assertEqual(refused["status"], "refused")
+                    self.assertIn("refused before any claim or build", refused["detail"])
+                    self.assertIn("the sample image %s" % self.SAMPLE, refused["detail"])
+                    self.assertIn(why, refused["detail"])
+                    with self.assertRaisesRegex(ContractError, why):
+                        self.submit(j, "core", "sample_%d" % index)
+                    self.assertEqual(j.names(), [], "a refusal reserves nothing")
+                runs = [call for call in build_fixtures.docker_calls(directory)
+                        if call[0] == "run"]
+                probes = [call for call in runs if "AF_PERF_SAMPLE_PROBE=1" in call]
+                self.assertTrue(probes, "the sample image ran its probe container")
+                self.assertTrue(all(call[call.index("--entrypoint") + 2] == self.SAMPLE
+                                    and "--read-only" in call and "none" in call
+                                    for call in probes))
+                self.assertTrue(all(call[call.index("--name") + 1].startswith("af-perf-probe-")
+                                    for call in runs), "only bounded probe containers ran")
+                self.assertFalse(self.fence())
+
     def test_ready_admission_is_rechecked_by_the_claim_before_any_build(self):
         self.docker(IMAGE, self.SAMPLE)
         with executor.Journal(self.c) as j:
@@ -1308,6 +1401,10 @@ class ImageAdmission(ExecutorFixture):
             self.assertIn(self.SAMPLE, tools["sample_image"]["detail"])
             self.assertIn("rustc 1.88.0", tools["image_toolchain"]["detail"])
             self.assertIn("cargo-zigbuild 0.23.4; zig 0.15.2", tools["image_toolchain"]["detail"])
+            self.assertIn("the sample image %s Python 3.12.3" % self.SAMPLE,
+                          tools["sample_runtime"]["detail"])
+            self.assertIn("no network, no capability, no new privileges, cgroup v2 and a "
+                          "read-only root", tools["sample_runtime"]["detail"])
             self.assertFalse(self.fence(), "the probes' exclusion settled clean")
             request = self.submit(j, "core", "rechecked")
             # The build image disappears after submission: the claim's own admission ends the

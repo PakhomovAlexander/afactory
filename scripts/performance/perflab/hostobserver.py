@@ -28,8 +28,10 @@ probe's region begins and is switched off when it ends, through the same control
 """
 import os
 import re
+import select
 import signal
 import subprocess
+import sys
 import tempfile
 import time
 
@@ -52,6 +54,12 @@ FIND_SECONDS = 30.0
 ACK_SECONDS = 10.0
 # Bounded wait for perf to end after its target exited, before it is cancelled.
 STOP_SECONDS = 30.0
+STAT_BYTES_MAX = 4096
+# The `stat` states of a process that has exited: a zombie awaiting a reap, or dead.
+EXITED_STATES = (b"Z", b"X", b"x")
+# Bounded wait for a killed leader's exit, and for its group's members to end after it.
+KILL_SECONDS = 5.0
+SETTLE_SECONDS = 5.0
 
 
 def lifetime(command_seconds):
@@ -193,18 +201,74 @@ def supervised_start(supervisor, env, cwd, clock=time.monotonic):
     return start
 
 
+def group_alive(group, proc=PROC, deadline=None, clock=time.monotonic):
+    """Whether a member of process group `group`, whose leader this account holds unreaped
+    (so the group's id names nothing else), still executes. A member that has exited (`Z`, `X`,
+    a zombie awaiting a reap its parent or an adopting subreaper may never do) runs nothing
+    and holds no file, unless its stat counts live threads beside an exited leader thread.
+    Linux reads every `stat` under `proc`; an entry that cannot be read or parsed, a leader
+    absent from the table or no longer leading the group, or a scan over its bounds raises
+    ContractError: the members' state is not established. XNU, without `/proc`, refuses a
+    signal to a group of zombies with EPERM and to no group with ESRCH."""
+    if not os.path.isdir(proc):
+        try:
+            os.killpg(group, 0)
+        except ProcessLookupError:
+            return False
+        except PermissionError:
+            if sys.platform == "darwin":
+                return False
+            raise ContractError("process group %d cannot be probed" % group)
+        return True
+    try:
+        names = [name for name in os.listdir(proc) if name.isdigit()]
+    except OSError as error:
+        raise ContractError("cannot list the process table %s: %s" % (proc, error))
+    require(len(names) <= PROC_ENTRIES_MAX, "process table exceeds its bound")
+    live = leader = False
+    for name in names:
+        if deadline is not None and clock() >= deadline:
+            raise ContractError("the process-group scan exceeded its deadline")
+        try:
+            raw = _read(os.path.join(proc, name, "stat"), STAT_BYTES_MAX)
+        except (FileNotFoundError, ProcessLookupError):
+            continue
+        except OSError as error:
+            raise ContractError("the state of process %s cannot be read: %s" % (name, error))
+        try:
+            fields = raw[raw.rindex(b")") + 2:].split()
+            state, pgrp, threads = fields[0], int(fields[2]), int(fields[17])
+            require(len(raw) <= STAT_BYTES_MAX and len(fields) > 19 and threads >= 1,
+                    "malformed")
+        except (ValueError, IndexError, ContractError):
+            raise ContractError("the state of process %s cannot be parsed" % name)
+        if int(name) == group:
+            require(pgrp == group, "the reserved leader %d left its process group" % group)
+            leader = True
+        if pgrp == group and (state not in EXITED_STATES or threads > 1):
+            live = True
+    require(leader, "the reserved group leader %d is absent from the process table" % group)
+    return live
+
+
 class Bounded(object):
     """One trusted operator-tool process of the pre-build capability check, which runs before
     any build exists and so before an authority-built supervisor exists: its own session,
     bounded by `seconds`, stdout and stderr in private files read within `cap`, and its whole
-    process group ended and reaped, its end confirmed by the group being gone. It runs only
-    the configured perf and the probe's own shell loop, never candidate code; every capture
-    runs under the authority supervisor (`supervised_start`)."""
+    process group ended. Its leader's exit is observed without reaping it (kqueue NOTE_EXIT on
+    XNU, waitid WNOWAIT elsewhere), so the group's id cannot be recycled while the group is
+    signalled and settled (`group_alive`); the leader is reaped once, after the settlement, and
+    nothing is signalled after it. A member that outlived a leader that exited of its own
+    accord, a member still executing at the settlement's bound, a leader whose exit is not
+    observed, or a members' state that cannot be established leaves the end unconfirmed
+    (`uncertain`). It runs only the configured perf and the probe's own shell loop, never
+    candidate code; every capture runs under the authority supervisor (`supervised_start`)."""
 
-    def __init__(self, argv, env, cwd, seconds, cap, clock=time.monotonic):
+    def __init__(self, argv, env, cwd, seconds, cap, clock=time.monotonic, proc=PROC):
         self.argv = list(argv)
         self.cap = cap
         self.clock = clock
+        self.proc = proc
         self.deadline = clock() + seconds
         self.code = None
         self.timed_out = False
@@ -214,54 +278,105 @@ class Bounded(object):
         self.stdout = self.stderr = b""
         self.supervised = None
         self.exceeded = None
+        self.settled = False
+        self._exited = False
+        self._reaped = False
+        self._queue = None
         self._out = tempfile.TemporaryFile()
         self._err = tempfile.TemporaryFile()
         self.process = subprocess.Popen(self.argv, env=env, cwd=cwd, stdin=subprocess.DEVNULL,
                                         stdout=self._out, stderr=self._err,
                                         start_new_session=True)
+        if hasattr(select, "kqueue"):
+            self._queue = select.kqueue()
+            try:
+                self._queue.control([select.kevent(self.process.pid, select.KQ_FILTER_PROC,
+                                                   select.KQ_EV_ADD, select.KQ_NOTE_EXIT)], 0)
+            except ProcessLookupError:
+                self._exited = True
+
+    def _observe(self, seconds=0.0):
+        """Whether the leader exited within `seconds`, observed without reaping it."""
+        until = self.clock() + seconds
+        while not self._exited:
+            if self._queue is not None:
+                self._exited = bool(self._queue.control(
+                    None, 1, max(0.0, min(POLL_SECONDS * 10, until - self.clock()))))
+            else:
+                self._exited = os.waitid(os.P_PID, self.process.pid,
+                                         os.WEXITED | os.WNOWAIT | os.WNOHANG) is not None
+            if self._exited or self.clock() >= until:
+                break
+            if self._queue is None:
+                time.sleep(min(POLL_SECONDS, max(0.0, until - self.clock())))
+        return self._exited
 
     def done(self):
-        return self.process.poll() is not None
+        return self._observe()
 
     def _end_group(self, signum):
+        """Signal the group, only while its leader is held unreaped."""
+        if self._reaped:
+            return
         try:
             os.killpg(self.process.pid, signum)
         except ProcessLookupError:
             pass
         except PermissionError:
-            # Some kernels refuse to signal a group whose only member is the exited, unreaped
-            # leader; a live member is still found by the survivor check after reaping.
-            if self.process.poll() is None:
+            # XNU refuses a signal to a group whose members have all exited; a live member
+            # is still found by the settlement.
+            if not self._exited:
                 raise
 
     def cancel(self):
         self.cancelled = True
         self._end_group(signal.SIGTERM)
 
+    def _settle(self):
+        """Kill the group's executing members until none is left, within SETTLE_SECONDS:
+        whether that was established, and whether a member executed at the first look."""
+        until = self.clock() + SETTLE_SECONDS
+        first = True
+        survived = False
+        while True:
+            try:
+                live = group_alive(self.process.pid, self.proc, until, self.clock)
+            except ContractError:
+                return False, survived
+            if not live:
+                return True, survived
+            survived = survived or first
+            first = False
+            if self.clock() >= until:
+                return False, survived
+            self._end_group(signal.SIGKILL)
+            time.sleep(POLL_SECONDS)
+
     def wait(self, timeout=None):
+        if self.settled:
+            return self
         limit = self.deadline - self.clock() if timeout is None else min(
             timeout, self.deadline - self.clock())
-        try:
-            self.process.wait(max(0.0, limit))
-        except subprocess.TimeoutExpired:
+        killed = self.cancelled
+        if not self._observe(max(0.0, limit)):
             if timeout is not None and self.clock() < self.deadline:
                 return None
-            self.timed_out = True
+            self.timed_out = killed = True
             self._end_group(signal.SIGKILL)
-            try:
-                self.process.wait(5)
-            except subprocess.TimeoutExpired:
+            if not self._observe(KILL_SECONDS):
                 self.uncertain = True
-        self.code = self.process.returncode
-        # Every descendant of its session must be gone too: a survivor is uncertain.
-        try:
-            os.killpg(self.process.pid, 0)
-            self._end_group(signal.SIGKILL)
-            self.uncertain = True
-        except ProcessLookupError:
-            pass
-        except PermissionError:
-            self.uncertain = True
+        if self._exited:
+            # Every member of its group must end too. A member that outlived a leader that
+            # left of its own accord is a survivor; one the group's kill is still ending is not.
+            confirmed, survived = self._settle()
+            if not confirmed or (survived and not killed):
+                self.uncertain = True
+            self.process.wait()
+            self._reaped = True
+            self.code = self.process.returncode
+        if self._queue is not None:
+            self._queue.close()
+        self.settled = True
         for stream, name in ((self._out, "stdout"), (self._err, "stderr")):
             stream.seek(0)
             setattr(self, name, stream.read(self.cap + 1))

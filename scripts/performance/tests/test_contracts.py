@@ -323,3 +323,17 @@ class Parity(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class TelemetryLabVersion(unittest.TestCase):
+    def test_the_registry_is_read_at_v3_and_its_previous_version_refused(self):
+        # The accepted document identities moved to @2, so the registry is af.perf-telemetry-lab/3;
+        # the /2 registry, which named other documents, is refused with no adapter.
+        path = os.path.join(ROOT, "fixtures/performance/telemetry.toml")
+        doc = tomlfile.loads(read(path), path)
+        self.assertEqual(doc["schema"], "af.perf-telemetry-lab/3")
+        contracts.validate_telemetry_lab(doc, path)
+        self.assertEqual(contracts.schema_file("telemetry-lab"), "performance-telemetry-lab-v3.json")
+        doc["schema"] = "af.perf-telemetry-lab/2"
+        with self.assertRaisesRegex(ContractError, "schema"):
+            contracts.validate_telemetry_lab(doc, path)

@@ -181,6 +181,53 @@ class Comparison(ExecutorFixture):
             self.assertEqual(j.names(), [])
         self.assertEqual(len(os.listdir(os.path.join(self.c["root"], comparison.REFUSALS))), 3)
 
+    def test_a_narrower_same_key_original_refuses_the_full_comparison_and_never_completes(self):
+        # A standalone telemetry original of only the overhead experiment under the key the
+        # full comparison's telemetry member derives (`rel_1:telemetry`): the same request ID,
+        # another frozen configuration and workload. It answers another question.
+        narrow = copy.deepcopy(self.c)
+        narrow["telemetry"]["experiments"] = ["overhead"]
+        narrow = contracts.validate_executor(narrow)
+        with executor.Journal(narrow) as j:
+            original = j.submit("telemetry", self.base, self.head, "rel_1:telemetry")
+            # The same configuration's resubmission stays idempotent.
+            self.assertEqual(j.submit("telemetry", self.base, self.head, "rel_1:telemetry"),
+                             original)
+            self.assertEqual(j.cycle(lock_directory=self.locks,
+                                     execute=self.telemetry_stand_in()), "complete")
+        with executor.Journal(self.c) as j:
+            refused = self.launch(j)
+            self.assertEqual(refused["status"], "refused")
+            self.assertIn("original %s is not this comparison's member" % original["request_id"],
+                          refused["detail"])
+            self.assertIn("frozen configuration", refused["detail"])
+            checks = dict((c["name"], c["state"]) for c in refused["checks"])
+            self.assertEqual(checks["telemetry"], "refused")
+            # Refused before any new claim or build: nothing submitted, nothing declared.
+            self.assertEqual(j.names(), [original["request_id"]])
+            self.assertEqual(j.state(original["request_id"])["state"], "complete")
+            self.assertFalse(os.path.lexists(os.path.join(self.c["root"], comparison.DIRECTORY)))
+            with self.assertRaisesRegex(ContractError, "another frozen configuration"):
+                j.submit("telemetry", self.base, self.head, "rel_1:telemetry",
+                         bind_configuration=True)
+            # A declaration that exists beside that original anyway (written by hand, or by a
+            # launch that raced the original) never reports complete by omission: the
+            # narrower run list is not the comparison's telemetry coverage.
+            doc, plan, _, _ = comparison.declare(j, self.base, self.head, "rel_1")
+            self.assertEqual(doc["telemetry"]["request_id"], original["request_id"])
+            path = comparison.directory(j, doc["comparison_id"])
+            os.makedirs(path, 0o700)
+            executor.atomic(os.path.join(path, "plan.json"), plan, "run")
+            executor.atomic(os.path.join(path, "comparison.json"), doc, "comparison")
+            report_doc = comparison.status(j, doc["comparison_id"], verify=self.verify)
+            self.assertNotEqual(report_doc["status"], "complete")
+            telemetry = [m for m in report_doc["members"] if m["work"] == "telemetry"][0]
+            self.assertEqual((telemetry["state"], telemetry["verification"]),
+                             ("complete", "refused"))
+            self.assertEqual(report_doc["lanes"][1]["state"], "failed")
+            self.assertTrue(any("is not this comparison's member" in reason
+                                for reason in report_doc["reasons"]))
+
     def test_full_comparison_partitions_aggregates_diagnoses_reports_and_exports(self):
         with executor.Journal(self.c) as j:
             ready = comparison.preflight(j, self.base, self.head, "rel_1")

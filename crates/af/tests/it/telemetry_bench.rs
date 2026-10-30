@@ -533,8 +533,8 @@ fn recorded(fixtures: &[(&str, &[(f64, f64)])], drain: &[(f64, f64)], scale: &st
         .collect();
     json!({
         "schema": "af/telemetry-overhead@2",
-        "af": {"path": "/recorded/af", "version": "af 0.12.0"},
-        "fixture_contract": {"name": "check-receipt@2", "release": "0.12.0",
+        "af": {"path": "/recorded/af", "version": "af 0.14.0-rc.1"},
+        "fixture_contract": {"name": "check-receipt@2", "release": "0.14.0-rc.1",
                              "check_receipt": "af/TaskCheckReceipt@2", "fixtures": []},
         "machine": {"os": "darwin", "arch": "arm64", "cpus": 14, "load1": 2.5},
         "protocol": {"pairs": 20, "scale": scale, "seed": 20261021, "resamples": 10000,
@@ -1063,8 +1063,8 @@ fn invocation_document(wall: f64, rss: u64) -> Value {
         }
     }
     json!({"schema": "af/telemetry-invocation-cost@2",
-           "af": {"path": "af", "version": "af 0.0.0"},
-           "fixture_contract": {"name": "check-receipt@2", "release": "0.0.0",
+           "af": {"path": "af", "version": "af 0.14.0-rc.1"},
+           "fixture_contract": {"name": "check-receipt@2", "release": "0.14.0-rc.1",
                                 "check_receipt": "af/TaskCheckReceipt@2", "fixtures": []},
            "drain": {"boundary": "harness_last_write_to_command_exit",
                      "clock": "CLOCK_MONOTONIC"},

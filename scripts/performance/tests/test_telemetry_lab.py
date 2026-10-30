@@ -147,7 +147,7 @@ class Runs(TempDir):
         self.assertTrue(all(item["state"] == "missing" for item in result["comparisons"]))
         # Another binary's document is never this side's.
         executor = fx.StandIn(self.binaries, {("overhead", "candidate"): {
-            "version": "af 9.9.9"}})
+            "version": "af 0.14.0-rc.1"}})
         result = self.run_lab(executor, output="foreign", experiments=["overhead"])
         foreign = [run for run in result["runs"] if run["side"] == "candidate"]
         self.assertTrue(all(run["status"] == "refused_document" for run in foreign))

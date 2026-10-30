@@ -16,7 +16,7 @@ FIXTURES = ("telemetry-bench-concurrent", "telemetry-bench-dense", "telemetry-be
 CASES = ("telemetry-bench-invocation-one 64 KiB", "telemetry-bench-invocation-four 64 KiB")
 SHA = {"baseline": "1" * 40, "candidate": "2" * 40, "authority": "3" * 40}
 HOST = dict((key, {"value": "stand-in %s" % key}) for key in contracts.HOST_KEYS)
-VERSION = "af 0.0.0"
+VERSION = "af 0.14.0-rc.3"
 
 
 def _contract(version):

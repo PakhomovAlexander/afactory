@@ -114,6 +114,19 @@ class FixtureContracts(TempDir):
         with self.assertRaisesRegex(overhead.BenchError, "not `af VERSION`"):
             overhead.release_version("0.13.0")
 
+    def test_a_release_no_contract_names_is_refused_never_given_the_current_contract(self):
+        # `0.11.9` (and a development `0.0.0`) declare no bench workload: refused, with or
+        # without a requested contract, rather than measured under check-receipt@2.
+        for release in ("0.11.9", "0.0.0", "0.14.0"):
+            with self.subTest(release=release):
+                with self.assertRaisesRegex(overhead.BenchError, "named by no fixture contract"):
+                    overhead.select_contract(release)
+                with self.assertRaisesRegex(overhead.BenchError, "named by no fixture contract"):
+                    overhead.select_contract(release, overhead.CURRENT_CONTRACT)
+        named = [version for contract in overhead.FIXTURE_CONTRACTS.values()
+                 for version in contract["versions"]]
+        self.assertEqual(len(named), len(set(named)), "a release is named by one contract")
+
     def test_check_receipt_1_renames_only_the_artifact_type_and_pins_the_declared_digests(self):
         fixture = "telemetry-bench-dense"
         pins = overhead.FIXTURE_CONTRACTS["check-receipt@1"]["pins"][fixture]
