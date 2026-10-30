@@ -435,12 +435,18 @@ fixtures must demonstrate usable unwinding for the supported recipe. This choice
 because perf documents invalid frame-pointer call graphs for code built without the
 necessary frame pointers. [perf record documentation](https://man7.org/linux/man-pages/man1/perf-record.1.html).
 
-GNU CPU diagnostic recipes freeze `-Cdebuginfo=line-tables-only` in the existing recipe
+Linux CPU diagnostic recipes, GNU and the musl shipping build (`linux_musl_cpu_profile`,
+built through cargo-zigbuild) alike, freeze `-Cdebuginfo=line-tables-only` in the existing recipe
 `rustflags` and build settings. This preserves function names, source lines, inlined call
 locations and unwind information while omitting local-variable and type debugging for compiled
 crates. `debug_symbols = true` means attribution information is retained; it does not promise
 full debugger information. The explicit rustflag overrides Cargo's full-debug default for a
 symbol-enabled recipe. Ordinary verdict recipes and release product settings stay unchanged.
+The musl recipe once kept Cargo's full debug information: on Claw its baseline AF alone was
+802,606,040 bytes, and with the supervisor it left too little of the unchanged 1-GiB
+build-artifact cap for the other artifacts, so no diagnostic build was admitted. The GNU
+line-tables-only AF was 285,890,672 bytes ([retained report](../performance-evidence/diagnostic-symbols-353.md)).
+Neither cap changes.
 
 Both region and whole-command `perf record` explicitly pass `--no-buildid-cache`, including
 the capability probe, avoiding private-HOME cache hard links while retaining build IDs in

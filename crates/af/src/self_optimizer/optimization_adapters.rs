@@ -29,12 +29,18 @@ pub(super) struct AdapterState {
     cutoff: u64,
     session_id: Option<String>,
     project_member: Option<bool>,
+    /// The range continues from a cursor without its retained prefix replayed: only then may a
+    /// Codex `token_usage_record` adopt the session no `session_meta` declared (ADR-0264).
+    continued: bool,
     model: Option<String>,
     effort: Option<String>,
     node: Option<String>,
     worker: Option<String>,
     sequence: u64,
     attempts: BTreeMap<String, AttemptState>,
+    /// Codex only: a refused foreign record was seen after the declared session, so unscoped
+    /// records cannot be attributed until a valid declared `token_usage_record` (ADR-0264).
+    quarantined: bool,
     seen_usage_keys: BTreeSet<String>,
     gaps: BTreeSet<String>,
     version: Option<AdapterVersion>,
@@ -61,12 +67,14 @@ impl AdapterState {
             // A nonzero range continues a source whose preceding prefix was already retained and
             // identity-checked. Any new native session metadata below can still reset this.
             project_member: trusted_continuation.then_some(true),
+            continued: trusted_continuation,
             model: None,
             effort: None,
             node: None,
             worker: None,
             sequence: 0,
             attempts: BTreeMap::new(),
+            quarantined: false,
             seen_usage_keys: BTreeSet::new(),
             gaps: BTreeSet::new(),
             version: None,
@@ -645,48 +653,83 @@ fn parse_af_inspection(
     Ok(observations)
 }
 
+/// Current Codex rollout JSONL (ADR-0264). `session_meta.payload.id` with its `cwd` or
+/// `project_id` declares the one session this source attributes; `response_item.payload.id` is
+/// only an item ID. `token_usage_record` names its session explicitly and carries whole-session
+/// cumulative `thread_token_usage`; its overlapping `usage` and `turn_token_usage` are not read.
+/// `token_count`, `turn_context` and the task lifecycle events name no session: they belong to
+/// the declared session only while no refused foreign record has quarantined the source.
 fn parse_codex(state: &mut AdapterState, value: &Value) -> Result<Vec<NormalizedRecord>, String> {
-    state.observe_identity(value);
     let kind = value.get("type").and_then(Value::as_str).unwrap_or("");
     let payload_kind = value
         .pointer("/payload/type")
         .and_then(Value::as_str)
         .unwrap_or("");
-    if matches!(kind, "session_meta" | "turn_context") || payload_kind == "turn_context" {
-        return Ok(Vec::new());
-    }
-    // Reasoning and visible message records are intentionally not inputs to economics.
+    // Items carry message, tool and reasoning content and only an item ID: never identity or
+    // economics input.
     if matches!(kind, "response_item" | "item.completed")
         || matches!(payload_kind, "reasoning" | "agent_reasoning" | "message")
     {
         return Ok(Vec::new());
     }
+    match kind {
+        "session_meta" => {
+            codex_session_meta(state, value);
+            return Ok(Vec::new());
+        }
+        "token_usage_record" => return codex_usage_record(state, value),
+        _ => {}
+    }
+    // Ownership first: a quarantined unscoped record is refused before membership is consulted.
+    if state.quarantined {
+        state.gaps.insert("quarantined_unscoped_record".into());
+        return Ok(Vec::new());
+    }
+    if kind == "turn_context" || payload_kind == "turn_context" {
+        codex_turn_context(state, value);
+        return Ok(Vec::new());
+    }
     if !state.project_member() {
         return Ok(Vec::new());
     }
-    let observed = state.observed_time(value);
+    // A range read from byte 0 attributes nothing before a project `session_meta` declares the
+    // session: a project `turn_context` is project evidence only, never a declaration.
+    if state.session_id.is_none() && !state.continued {
+        state.gaps.insert("session_identity_unknown".into());
+        return Ok(Vec::new());
+    }
     let session = state.declared_execution_id.clone();
     let turn = string_at(value, &["/turn_id", "/payload/turn_id"])
         .map(str::to_owned)
         .unwrap_or_else(|| format!("turn-{}", state.sequence));
-    if matches!(kind, "turn.started" | "turn_started") || payload_kind == "turn_started" {
-        state.attempts.entry(turn).or_default().started_unix_ms = Some(observed);
+    if matches!(kind, "turn.started" | "turn_started")
+        || matches!(payload_kind, "turn_started" | "task_started")
+    {
+        // An open span keeps its first start; a repeated start for the same turn ID is ignored.
+        let observed = state.observed_time(value);
+        state
+            .attempts
+            .entry(turn)
+            .or_default()
+            .started_unix_ms
+            .get_or_insert(observed);
         return Ok(Vec::new());
     }
     let usage = if kind == "turn.completed" {
         value.get("usage")
     } else if payload_kind == "token_count" {
-        value
-            .pointer("/payload/info/total_token_usage")
-            .or_else(|| value.pointer("/payload/info/last_token_usage"))
+        value.pointer("/payload/info/total_token_usage")
     } else {
         None
     };
     let failed =
         matches!(kind, "turn.failed" | "error") || matches!(payload_kind, "turn_failed" | "error");
-    if usage.is_none() && !failed && kind != "turn.completed" {
+    let aborted = payload_kind == "turn_aborted";
+    let ended = kind == "turn.completed" || payload_kind == "task_complete" || failed || aborted;
+    if usage.is_none() && !ended {
         return Ok(Vec::new());
     }
+    let observed = state.observed_time(value);
     let cumulative_key = if payload_kind == "token_count" {
         session.clone()
     } else {
@@ -694,32 +737,33 @@ fn parse_codex(state: &mut AdapterState, value: &Value) -> Result<Vec<Normalized
     };
     let tokens = usage.map(|usage| usage_from_codex(usage, &cumulative_key));
     let mut spans = Vec::new();
-    if kind == "turn.completed" || failed {
-        if let Some(start) = state
+    if ended
+        && let Some(start) = state
             .attempts
-            .get(&turn)
+            .remove(&turn)
             .and_then(|attempt| attempt.started_unix_ms)
-        {
-            spans.extend(runtime_spans("codex", &turn, start, observed));
-        }
+    {
+        spans.extend(runtime_spans("codex", &turn, start, observed));
     }
     let mut missing = missing_for_tokens(tokens.as_ref());
     if spans.is_empty() {
         missing.insert("elapsed_time".into());
     }
-    let outcome =
-        (kind == "turn.completed" || failed).then_some(OptimizationOutcomeObservationV1 {
-            outcome: if failed {
-                OptimizationOutcomeV1::Failed
-            } else {
-                OptimizationOutcomeV1::Incomplete
-            },
-            requirements_id: None,
-            verifier_id: None,
-            retries: 0,
-            repairs: 0,
-            later_defects: 0,
-        });
+    let outcome = ended.then_some(OptimizationOutcomeObservationV1 {
+        // A completed task is not verified acceptance: only its end is known.
+        outcome: if failed {
+            OptimizationOutcomeV1::Failed
+        } else if aborted {
+            OptimizationOutcomeV1::Abandoned
+        } else {
+            OptimizationOutcomeV1::Incomplete
+        },
+        requirements_id: None,
+        verifier_id: None,
+        retries: 0,
+        repairs: 0,
+        later_defects: 0,
+    });
     if outcome.is_some() {
         missing.insert("outcome_verification".into());
     }
@@ -734,6 +778,160 @@ fn parse_codex(state: &mut AdapterState, value: &Value) -> Result<Vec<Normalized
             .into_iter()
             .collect(),
         outcome,
+        missing_fields: missing,
+    }])
+}
+
+/// Project evidence a Codex record carries: every present `project_id` and `cwd` must match. A
+/// present field that is not a string (`null`, a number, an object) is evidence that matches no
+/// project, so a malformed record is as foreign as one naming another project.
+fn codex_membership(state: &AdapterState, payload: &Value) -> Option<bool> {
+    let mut member = None;
+    if let Some(project) = payload.get("project_id") {
+        member = Some(project.as_str() == Some(state.project_id.as_str()));
+    }
+    if let Some(cwd) = payload.get("cwd") {
+        let matches = cwd.as_str().is_some_and(|cwd| {
+            let path = Path::new(cwd);
+            std::fs::canonicalize(path).unwrap_or_else(|_| path.to_path_buf()) == state.project_root
+        });
+        member = Some(member.unwrap_or(true) && matches);
+    }
+    member
+}
+
+fn codex_labels(state: &mut AdapterState, payload: &Value) {
+    if let Some(model) = string_at(payload, &["/model"]) {
+        state.model = Some(bounded(model, "unknown-model"));
+    }
+    if let Some(effort) = string_at(payload, &["/effort", "/reasoning_effort"]) {
+        state.effort = Some(bounded(effort, "unknown-effort"));
+    }
+}
+
+/// The first project `session_meta` declares the session. Later metadata never redeclares it:
+/// another ID, or the declared ID with a foreign `cwd` or `project_id`, is a foreign record that
+/// quarantines the source, and the declared ID repeated in the project confirms nothing new and
+/// cannot clear a quarantine.
+fn codex_session_meta(state: &mut AdapterState, value: &Value) {
+    let payload = value.get("payload").unwrap_or(&Value::Null);
+    let Some(id) = payload.get("id").and_then(Value::as_str) else {
+        state.gaps.insert("session_identity_unknown".into());
+        return;
+    };
+    let member = codex_membership(state, payload);
+    match state.session_id.as_deref() {
+        Some(declared) if declared == id => {
+            // The declared ID with foreign project evidence is still a foreign record.
+            if member == Some(false) {
+                state.gaps.insert("foreign_session_record".into());
+                state.quarantined = true;
+            }
+        }
+        Some(_) => {
+            state.gaps.insert("foreign_session_record".into());
+            state.quarantined = true;
+        }
+        None if member == Some(false) => {
+            // Before any declaration a foreign session is excluded, as it always was.
+            state.project_member = Some(false);
+            state.gaps.insert("excluded_foreign_project".into());
+        }
+        None => {
+            state.session_id = Some(id.to_owned());
+            if member.is_some() {
+                state.project_member = member;
+            }
+            codex_labels(state, payload);
+        }
+    }
+}
+
+/// A project `turn_context` may supply model and effort labels and, for a declared session
+/// without project evidence, membership. A foreign `cwd` after the declaration is a project-cwd
+/// transition away: it changes nothing and quarantines the source.
+fn codex_turn_context(state: &mut AdapterState, value: &Value) {
+    let payload = value.get("payload").unwrap_or(value);
+    match codex_membership(state, payload) {
+        Some(false) if state.session_id.is_some() => {
+            state.gaps.insert("foreign_session_record".into());
+            state.quarantined = true;
+        }
+        Some(false) => {
+            if state.project_member.is_none() {
+                state.project_member = Some(false);
+            }
+            state.gaps.insert("excluded_foreign_project".into());
+        }
+        member => {
+            if member == Some(true) && state.project_member.is_none() {
+                state.project_member = Some(true);
+            }
+            if state.project_member == Some(true) {
+                codex_labels(state, payload);
+            }
+        }
+    }
+}
+
+/// A `token_usage_record` is validated against the declared session and its own `project_id`
+/// and `cwd` before project membership is consulted. A record of another session, one naming no
+/// session, or one with foreign project evidence is refused and quarantines the source; only a
+/// valid declared record with exact cumulative counters restores scope. Its counters share the
+/// session key with `token_count`, so economics keeps the maxima.
+fn codex_usage_record(
+    state: &mut AdapterState,
+    value: &Value,
+) -> Result<Vec<NormalizedRecord>, String> {
+    let payload = value.get("payload").unwrap_or(&Value::Null);
+    let named = payload.get("session_id").and_then(Value::as_str);
+    // Foreign project evidence refuses the record even when it names the declared session.
+    let foreign_project = codex_membership(state, payload) == Some(false);
+    let declared = match (state.session_id.as_deref(), named) {
+        _ if foreign_project => false,
+        (Some(declared), Some(named)) => declared == named,
+        // A continued range whose retained prefix could not be replayed begins after its
+        // `session_meta`: the first named session is adopted, and that unverified identity keeps
+        // coverage partial. A range read from byte 0 declares only through `session_meta`.
+        (None, Some(named)) if state.continued && state.project_member == Some(true) => {
+            state.session_id = Some(named.to_owned());
+            state.gaps.insert("session_identity_unverified".into());
+            true
+        }
+        _ => false,
+    };
+    if !declared {
+        state.gaps.insert("foreign_session_record".into());
+        // A continued range follows the retained prefix's declaration even before adoption.
+        if state.session_id.is_some() || state.continued {
+            state.quarantined = true;
+        }
+        return Ok(Vec::new());
+    }
+    let Some(usage) = payload
+        .get("thread_token_usage")
+        .filter(|usage| usage.is_object())
+    else {
+        state.gaps.insert("token_usage_unknown".into());
+        return Ok(Vec::new());
+    };
+    if !state.project_member() {
+        return Ok(Vec::new());
+    }
+    let tokens = usage_from_codex(usage, &state.declared_execution_id);
+    if tokens.status == MeasurementStatusV1::Exact {
+        state.quarantined = false;
+    }
+    let observed = state.observed_time(value);
+    let mut missing = missing_for_tokens(Some(&tokens));
+    missing.insert("elapsed_time".into());
+    Ok(vec![NormalizedRecord {
+        observed_unix_ms: observed.into(),
+        attribution: state.attribution("codex-session", None),
+        tokens: Some(tokens),
+        spans: Vec::new(),
+        caches: Vec::new(),
+        outcome: None,
         missing_fields: missing,
     }])
 }
@@ -1336,6 +1534,851 @@ mod tests {
                 .is_empty()
         );
         assert!(foreign.gaps.contains("excluded_foreign_project"));
+    }
+
+    // Current-format Codex sessions (ADR-0264). Every line carries content a parser must never
+    // copy; `codex_session` refuses any record that holds the sentinel.
+    const SENTINEL: &str = "CODEX-CONTENT-SENTINEL";
+
+    fn codex_meta(id: &str, cwd: &Path, at: u64) -> Value {
+        serde_json::json!({"timestamp_unix_ms":at.to_string(),"type":"session_meta","payload":{
+            "id":id,"cwd":cwd,"model":"gpt-meta","instructions":SENTINEL,
+            "git":{"branch":SENTINEL},"env":{"OPENAI_API_KEY":SENTINEL}}})
+    }
+
+    fn codex_context(cwd: &Path, model: &str, at: u64) -> Value {
+        serde_json::json!({"timestamp_unix_ms":at.to_string(),"type":"turn_context","payload":{
+            "cwd":cwd,"model":model,"effort":format!("{model}-effort"),"user_instructions":SENTINEL}})
+    }
+
+    fn codex_item(id: &str) -> Value {
+        serde_json::json!({"type":"response_item","payload":{"type":"function_call","id":id,
+            "name":"shell","arguments":SENTINEL,"content":[{"type":"output_text","text":SENTINEL}]}})
+    }
+
+    /// `thread_token_usage` is the session's cumulative total; `usage` and `turn_token_usage`
+    /// overlap it and are deliberately larger here, so reading either one breaks every total.
+    fn codex_usage(session: Option<&str>, counters: (u64, u64, u64), at: u64) -> Value {
+        let (input, cached, output) = counters;
+        let mut value = serde_json::json!({"timestamp_unix_ms":at.to_string(),"type":"token_usage_record",
+            "payload":{"turn_id":"turn-1","headers":{"authorization":SENTINEL},
+                "thread_token_usage":{"input_tokens":input,"cached_input_tokens":cached,
+                    "output_tokens":output,"reasoning_output_tokens":1},
+                "usage":{"input_tokens":1_000_000,"cached_input_tokens":0,"output_tokens":1_000_000},
+                "turn_token_usage":{"input_tokens":2_000_000,"cached_input_tokens":0,"output_tokens":7}}});
+        if let Some(session) = session {
+            value["payload"]["session_id"] = serde_json::json!(session);
+        }
+        value
+    }
+
+    fn codex_count(counters: (u64, u64, u64), at: u64) -> Value {
+        let (input, cached, output) = counters;
+        serde_json::json!({"timestamp_unix_ms":at.to_string(),"type":"event_msg","payload":{
+            "type":"token_count","info":{"total_token_usage":{"input_tokens":input,
+                "cached_input_tokens":cached,"output_tokens":output,"reasoning_output_tokens":1},
+                "last_token_usage":{"input_tokens":3_000_000,"cached_input_tokens":0,"output_tokens":1}}}})
+    }
+
+    fn codex_task(kind: &str, turn: &str, at: u64) -> Value {
+        serde_json::json!({"timestamp_unix_ms":at.to_string(),"type":"event_msg","payload":{
+            "type":kind,"turn_id":turn,"last_agent_message":SENTINEL}})
+    }
+
+    struct CodexSession {
+        records: Vec<NormalizedRecord>,
+        gaps: BTreeSet<String>,
+        partial: bool,
+    }
+
+    impl CodexSession {
+        fn charges(&self) -> Vec<u128> {
+            self.records
+                .iter()
+                .filter_map(|record| record.tokens.as_ref())
+                .map(|tokens| tokens.usage.chargeable_tokens.get())
+                .collect()
+        }
+
+        fn spans(&self) -> Vec<(u64, u64)> {
+            self.records
+                .iter()
+                .flat_map(|record| &record.spans)
+                .filter(|span| span.kind == OptimizationSpanKindV1::EndToEnd)
+                .map(|span| (span.start_unix_ms.get(), span.end_unix_ms.get()))
+                .collect()
+        }
+
+        fn labels(&self) -> BTreeSet<(Option<String>, Option<String>)> {
+            self.records
+                .iter()
+                .map(|record| {
+                    (
+                        record.attribution.model.clone(),
+                        record.attribution.effort.clone(),
+                    )
+                })
+                .collect()
+        }
+    }
+
+    fn codex_session(root: &Path, lines: &[Value]) -> CodexSession {
+        let mut adapter = state("codex", root);
+        let mut records = Vec::new();
+        for line in lines {
+            records
+                .extend(parse_adapter_record(&mut adapter, line.to_string().as_bytes()).unwrap());
+        }
+        assert!(!serde_json::to_string(&records).unwrap().contains(SENTINEL));
+        let partial = adapter.has_coverage_gap();
+        CodexSession {
+            records,
+            gaps: adapter.take_gaps(),
+            partial,
+        }
+    }
+
+    fn labelled(model: &str) -> BTreeSet<(Option<String>, Option<String>)> {
+        BTreeSet::from([(Some(model.into()), Some(format!("{model}-effort")))])
+    }
+
+    #[test]
+    fn codex_unrelated_response_item_ids_keep_the_declared_session() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        let session = codex_session(
+            root,
+            &[
+                codex_meta("session", root, 1),
+                codex_context(root, "gpt-a", 2),
+                codex_item("item-1"),
+                codex_item("item-2"),
+                codex_count((100, 20, 5), 3),
+            ],
+        );
+        assert_eq!(session.charges(), vec![85]);
+        assert_eq!(session.labels(), labelled("gpt-a"));
+        assert!(!session.partial, "{:?}", session.gaps);
+    }
+
+    #[test]
+    fn codex_cumulative_snapshots_report_exact_session_maxima_and_spans_without_content() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = std::fs::canonicalize(dir.path()).unwrap();
+        let lines = [
+            codex_meta("session", &root, 1),
+            codex_context(&root, "gpt-a", 2),
+            codex_task("task_started", "turn-1", 10),
+            codex_item("item-1"),
+            serde_json::json!({"type":"response_item","payload":{"type":"reasoning","id":"r",
+                "summary":[{"text":SENTINEL}],"encrypted_content":SENTINEL}}),
+            serde_json::json!({"type":"event_msg","payload":{"type":"agent_message","message":SENTINEL}}),
+            codex_usage(Some("session"), (100, 20, 5), 11),
+            codex_count((150, 30, 8), 12),
+            codex_usage(Some("session"), (300, 100, 20), 13),
+            codex_count((300, 100, 20), 14),
+            codex_task("task_complete", "turn-1", 20),
+        ];
+        let text = lines
+            .iter()
+            .map(|line| line.to_string() + "\n")
+            .collect::<String>();
+        std::fs::write(root.join("codex.jsonl"), text).unwrap();
+        let project = format!("sha256:{}", "1".repeat(64));
+        let config = serde_json::json!({
+            "schema":"af.optimization-sources/1","project_id":project,
+            "sources":[{"adapter":"codex","path":"codex.jsonl","source_id":"codex","execution_id":"declared-session"}]
+        });
+        std::fs::write(root.join("sources.json"), config.to_string()).unwrap();
+        let state = root.join("state");
+        let options = Options {
+            since: None,
+            all_history: false,
+            strategy: "light".into(),
+            history_config: PathBuf::from("sources.json"),
+            execute: false,
+            experiment: false,
+            candidate: None,
+            repo: root.clone(),
+            state: Some(state.clone()),
+            json: true,
+        };
+        let history = capture(&options, &root, &state, &mut Vec::new()).unwrap();
+        assert_eq!(
+            history.receipts[0].completeness,
+            SourceCompletenessV1::Complete
+        );
+        assert!(history.gaps.is_empty(), "{:?}", history.gaps);
+        let economics = review_store::optimization::project_economics(&[(
+            format!("sha256:{}", "8".repeat(64)),
+            history.clone(),
+        )])
+        .unwrap();
+        // Four overlapping snapshots of one session: the maxima, never 85 + 128 + 220 + 220.
+        let usage = &economics.outer_session_usage;
+        assert_eq!(usage.chargeable_tokens.get(), 220);
+        assert_eq!(usage.input_tokens.unwrap().get(), 300);
+        assert_eq!(usage.cache_read_tokens.unwrap().get(), 100);
+        assert_eq!(usage.output_tokens.unwrap().get(), 20);
+        assert_eq!(economics.af_usage.chargeable_tokens.get(), 0);
+        assert_eq!(economics.elapsed_ms.get(), 10);
+        assert_eq!(economics.verified, 0);
+        assert_eq!(economics.failed_or_incomplete, 1);
+        assert!(economics.missing_fields.contains("outcome_verification"));
+        assert!(
+            history
+                .observations
+                .iter()
+                .all(|observation| observation.attribution.model.as_deref() == Some("gpt-a"))
+        );
+        for document in [
+            serde_json::to_string(&history).unwrap(),
+            serde_json::to_string(&economics).unwrap(),
+        ] {
+            assert!(!document.contains(SENTINEL));
+            assert!(!document.contains("item-1"));
+        }
+    }
+
+    #[test]
+    fn codex_foreign_metadata_changes_no_declared_identity_labels_or_span() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        let session = codex_session(
+            root,
+            &[
+                codex_meta("session", root, 1),
+                codex_context(root, "gpt-a", 2),
+                codex_task("task_started", "turn-1", 10),
+                // Another session in the project directory and one outside it.
+                codex_meta("other", root, 11),
+                codex_meta("elsewhere", Path::new("/definitely/foreign"), 12),
+                codex_task("task_started", "turn-1", 13),
+                codex_count((9_000, 0, 900), 14),
+                codex_usage(Some("session"), (100, 20, 5), 15),
+                codex_task("task_complete", "turn-1", 50),
+            ],
+        );
+        assert_eq!(session.charges(), vec![85]);
+        assert_eq!(session.labels(), labelled("gpt-a"));
+        assert_eq!(session.spans(), vec![(10, 50)]);
+        assert!(session.partial);
+        assert!(session.gaps.contains("foreign_session_record"));
+        assert!(session.gaps.contains("quarantined_unscoped_record"));
+    }
+
+    #[test]
+    fn codex_foreign_usage_quarantines_a_following_unscoped_count() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        for foreign in [Some("other"), None] {
+            let session = codex_session(
+                root,
+                &[
+                    codex_meta("session", root, 1),
+                    codex_count((100, 20, 5), 2),
+                    codex_usage(foreign, (5_000, 0, 500), 3),
+                    codex_count((9_000, 0, 900), 4),
+                ],
+            );
+            assert_eq!(session.charges(), vec![85], "{foreign:?}");
+            assert!(session.partial);
+            assert!(session.gaps.contains("foreign_session_record"));
+            assert!(session.gaps.contains("quarantined_unscoped_record"));
+        }
+    }
+
+    #[test]
+    fn codex_foreign_cwd_context_then_restored_cwd_keeps_the_count_quarantined() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        let session = codex_session(
+            root,
+            &[
+                codex_meta("session", root, 1),
+                codex_context(root, "gpt-a", 2),
+                codex_context(Path::new("/definitely/foreign"), "gpt-foreign", 3),
+                codex_usage(Some("other"), (5_000, 0, 500), 4),
+                codex_context(root, "gpt-b", 5),
+                codex_count((9_000, 0, 900), 6),
+                // Explicit declared usage restores scope; the labels are still the declared ones.
+                codex_usage(Some("session"), (100, 20, 5), 7),
+                codex_count((120, 30, 10), 8),
+            ],
+        );
+        assert_eq!(session.charges(), vec![85, 100]);
+        assert_eq!(session.labels(), labelled("gpt-a"));
+        assert!(session.partial);
+        assert!(session.gaps.contains("quarantined_unscoped_record"));
+    }
+
+    #[test]
+    fn codex_foreign_context_and_overlapping_task_events_after_refused_usage_leave_the_open_span() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        let session = codex_session(
+            root,
+            &[
+                codex_meta("session", root, 1),
+                codex_task("task_started", "turn-1", 10),
+                codex_usage(Some("other"), (5_000, 0, 500), 15),
+                codex_context(Path::new("/definitely/foreign"), "gpt-foreign", 16),
+                codex_task("task_started", "turn-1", 20),
+                codex_task("task_complete", "turn-1", 30),
+                codex_usage(Some("session"), (100, 20, 5), 40),
+                codex_task("task_complete", "turn-1", 50),
+                // The span is closed: a second completion has no start to measure from.
+                codex_task("task_complete", "turn-1", 60),
+            ],
+        );
+        assert_eq!(session.spans(), vec![(10, 50)]);
+        assert_eq!(session.charges(), vec![85]);
+        let outcomes = session
+            .records
+            .iter()
+            .filter_map(|record| record.outcome.as_ref().map(|outcome| outcome.outcome))
+            .collect::<Vec<_>>();
+        assert_eq!(
+            outcomes,
+            vec![
+                OptimizationOutcomeV1::Incomplete,
+                OptimizationOutcomeV1::Incomplete
+            ]
+        );
+        assert!(session.records.iter().all(|record| record.outcome.is_none()
+            || record.missing_fields.contains("outcome_verification")));
+        assert!(
+            session
+                .records
+                .last()
+                .unwrap()
+                .missing_fields
+                .contains("elapsed_time")
+        );
+        assert!(session.partial);
+    }
+
+    #[test]
+    fn codex_repeated_declared_metadata_does_not_clear_quarantine_before_a_foreign_count() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        let session = codex_session(
+            root,
+            &[
+                codex_meta("session", root, 1),
+                codex_usage(Some("session"), (100, 20, 5), 2),
+                codex_usage(Some("other"), (5_000, 0, 500), 3),
+                codex_meta("session", root, 4),
+                codex_count((9_000, 0, 900), 5),
+            ],
+        );
+        assert_eq!(session.charges(), vec![85]);
+        assert!(session.partial);
+        assert!(session.gaps.contains("quarantined_unscoped_record"));
+    }
+
+    #[test]
+    fn codex_explicit_declared_usage_rescopes_before_a_valid_abort_span() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        let session = codex_session(
+            root,
+            &[
+                codex_meta("session", root, 1),
+                codex_usage(Some("other"), (5_000, 0, 500), 2),
+                codex_task("task_started", "turn-2", 3),
+                codex_count((9_000, 0, 900), 4),
+                codex_usage(Some("session"), (100, 20, 5), 5),
+                codex_task("task_started", "turn-2", 60),
+                codex_task("turn_aborted", "turn-2", 70),
+            ],
+        );
+        assert_eq!(session.charges(), vec![85]);
+        assert_eq!(session.spans(), vec![(60, 70)]);
+        assert_eq!(
+            session
+                .records
+                .last()
+                .unwrap()
+                .outcome
+                .as_ref()
+                .unwrap()
+                .outcome,
+            OptimizationOutcomeV1::Abandoned
+        );
+        // The refused foreign record keeps the source visibly partial after the rescope.
+        assert!(session.partial);
+        assert!(session.gaps.contains("foreign_session_record"));
+    }
+
+    #[test]
+    fn codex_declared_usage_without_exact_cumulative_counters_does_not_rescope() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        let mut missing = codex_usage(Some("session"), (100, 20, 5), 3);
+        missing["payload"]
+            .as_object_mut()
+            .unwrap()
+            .remove("thread_token_usage");
+        let mut lower_bound = codex_usage(Some("session"), (100, 20, 5), 4);
+        lower_bound["payload"]["thread_token_usage"]
+            .as_object_mut()
+            .unwrap()
+            .remove("cached_input_tokens");
+        let session = codex_session(
+            root,
+            &[
+                codex_meta("session", root, 1),
+                codex_usage(Some("other"), (5_000, 0, 500), 2),
+                missing,
+                lower_bound,
+                codex_count((9_000, 0, 900), 5),
+            ],
+        );
+        // Only the lower-bound declared record is observed, and it is not exact.
+        assert_eq!(session.records.len(), 1);
+        assert!(
+            session.records[0]
+                .missing_fields
+                .contains("token_usage_non_exact")
+        );
+        assert!(session.gaps.contains("token_usage_unknown"));
+        assert!(session.gaps.contains("quarantined_unscoped_record"));
+    }
+
+    #[test]
+    fn codex_continued_range_adopts_its_first_named_session_as_unverified() {
+        let dir = tempfile::tempdir().unwrap();
+        let project = format!("sha256:{}", "1".repeat(64));
+        let mut adapter = AdapterState::new(
+            "codex",
+            &project,
+            "declared-session",
+            dir.path(),
+            2_000_000_000_000,
+            true,
+        );
+        let mut charges = Vec::new();
+        for line in [
+            codex_usage(Some("session"), (100, 20, 5), 1),
+            codex_usage(Some("other"), (5_000, 0, 500), 2),
+            codex_count((9_000, 0, 900), 3),
+            codex_usage(Some("session"), (120, 30, 10), 4),
+        ] {
+            for record in parse_adapter_record(&mut adapter, line.to_string().as_bytes()).unwrap() {
+                charges.push(record.tokens.unwrap().usage.chargeable_tokens.get());
+            }
+        }
+        assert_eq!(charges, vec![85, 100]);
+        assert!(adapter.has_coverage_gap());
+        let gaps = adapter.take_gaps();
+        assert!(gaps.contains("session_identity_unverified"));
+        assert!(gaps.contains("quarantined_unscoped_record"));
+    }
+
+    #[test]
+    fn codex_repeated_declared_id_with_a_foreign_project_quarantines_until_declared_usage() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        let mut foreign_project = codex_meta("session", root, 3);
+        foreign_project["payload"]["project_id"] =
+            serde_json::json!(format!("sha256:{}", "2".repeat(64)));
+        for foreign in [
+            codex_meta("session", Path::new("/definitely/foreign"), 3),
+            foreign_project,
+        ] {
+            let session = codex_session(
+                root,
+                &[
+                    codex_meta("session", root, 1),
+                    codex_usage(Some("session"), (100, 20, 5), 2),
+                    foreign,
+                    codex_count((9_000, 0, 900), 4),
+                    codex_usage(Some("session"), (120, 30, 10), 5),
+                    codex_count((150, 30, 12), 6),
+                ],
+            );
+            // 9_900 is the foreign count; the declared usage restores scope for 132.
+            assert_eq!(session.charges(), vec![85, 100, 132]);
+            assert!(session.partial);
+            assert!(session.gaps.contains("foreign_session_record"));
+            assert!(session.gaps.contains("quarantined_unscoped_record"));
+        }
+    }
+
+    #[test]
+    fn codex_initial_range_declares_its_session_only_through_session_metadata() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        let session = codex_session(
+            root,
+            &[
+                codex_context(root, "gpt-a", 1),
+                codex_usage(Some("other"), (5_000, 0, 500), 2),
+                codex_meta("session", root, 3),
+                codex_usage(Some("session"), (100, 20, 5), 4),
+                codex_count((120, 30, 10), 5),
+            ],
+        );
+        // The named usage before `session_meta` is refused, never adopted: 5_500 is not counted
+        // and the metadata-declared session keeps its records.
+        assert_eq!(session.charges(), vec![85, 100]);
+        assert!(session.partial);
+        assert!(session.gaps.contains("foreign_session_record"));
+        assert!(!session.gaps.contains("session_identity_unverified"));
+        assert!(!session.gaps.contains("quarantined_unscoped_record"));
+    }
+
+    #[test]
+    fn codex_initial_range_attributes_no_unscoped_count_or_span_before_session_metadata() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        let session = codex_session(
+            root,
+            &[
+                // Project evidence only: no session is declared yet.
+                codex_context(root, "gpt-a", 1),
+                codex_usage(Some("other"), (5_000, 0, 500), 2),
+                codex_count((9_000, 0, 900), 3),
+                codex_task("task_started", "turn-1", 4),
+                codex_meta("session", root, 5),
+                codex_usage(Some("session"), (100, 20, 5), 6),
+                codex_task("task_started", "turn-2", 7),
+                codex_count((120, 30, 10), 8),
+                codex_task("task_complete", "turn-1", 9),
+                codex_task("task_complete", "turn-2", 10),
+            ],
+        );
+        // 9_900 and the turn-1 start precede the declaration: neither is attributed.
+        assert_eq!(session.charges(), vec![85, 100]);
+        assert_eq!(session.spans(), vec![(7, 10)]);
+        assert!(
+            session
+                .records
+                .iter()
+                .all(|record| record.observed_unix_ms.get() >= 6)
+        );
+        assert!(session.partial);
+        assert!(session.gaps.contains("foreign_session_record"));
+        assert!(session.gaps.contains("session_identity_unknown"));
+        assert!(!session.gaps.contains("session_identity_unverified"));
+        assert!(!session.gaps.contains("quarantined_unscoped_record"));
+    }
+
+    #[test]
+    fn codex_declared_session_usage_with_a_foreign_project_keeps_the_quarantine() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        let mut foreign_project = codex_usage(Some("session"), (5_000, 0, 500), 3);
+        foreign_project["payload"]["project_id"] =
+            serde_json::json!(format!("sha256:{}", "2".repeat(64)));
+        let mut foreign_cwd = codex_usage(Some("session"), (5_000, 0, 500), 3);
+        foreign_cwd["payload"]["cwd"] = serde_json::json!("/definitely/foreign");
+        for foreign in [foreign_project, foreign_cwd] {
+            let session = codex_session(
+                root,
+                &[
+                    codex_meta("session", root, 1),
+                    codex_usage(Some("session"), (100, 20, 5), 2),
+                    foreign.clone(),
+                    codex_count((9_000, 0, 900), 4),
+                    codex_usage(Some("session"), (120, 30, 10), 5),
+                    codex_count((150, 30, 12), 6),
+                ],
+            );
+            // The foreign 5_500 neither counts nor rescopes; 9_900 stays quarantined and only
+            // the valid declared usage restores scope for 132.
+            assert_eq!(session.charges(), vec![85, 100, 132]);
+            assert!(session.partial);
+            assert!(session.gaps.contains("foreign_session_record"));
+            assert!(session.gaps.contains("quarantined_unscoped_record"));
+
+            // A continued range never adopts a session from a record with foreign evidence.
+            let project = format!("sha256:{}", "1".repeat(64));
+            let mut adapter = AdapterState::new(
+                "codex",
+                &project,
+                "declared-session",
+                root,
+                2_000_000_000_000,
+                true,
+            );
+            let mut charges = Vec::new();
+            for line in [
+                foreign.clone(),
+                codex_count((9_000, 0, 900), 4),
+                codex_usage(Some("session"), (120, 30, 10), 5),
+            ] {
+                for record in
+                    parse_adapter_record(&mut adapter, line.to_string().as_bytes()).unwrap()
+                {
+                    charges.push(record.tokens.unwrap().usage.chargeable_tokens.get());
+                }
+            }
+            assert_eq!(charges, vec![100]);
+            let gaps = adapter.take_gaps();
+            assert!(gaps.contains("foreign_session_record"));
+            assert!(gaps.contains("quarantined_unscoped_record"));
+            assert!(gaps.contains("session_identity_unverified"));
+        }
+    }
+
+    /// A declared-session `token_usage_record` with exact cumulative counters and the given
+    /// `project_id` and `cwd` fields; `None` leaves a field out.
+    fn codex_usage_with(project_id: Option<Value>, cwd: Option<Value>, at: u64) -> Value {
+        let mut usage = codex_usage(Some("session"), (5_000, 0, 500), at);
+        if let Some(project_id) = project_id {
+            usage["payload"]["project_id"] = project_id;
+        }
+        if let Some(cwd) = cwd {
+            usage["payload"]["cwd"] = cwd;
+        }
+        usage
+    }
+
+    /// Present project evidence of an invalid JSON type, alone and combined, with valid evidence
+    /// beside it and with each other.
+    fn codex_malformed_project_evidence(root: &Path) -> Vec<Value> {
+        let project = serde_json::json!(format!("sha256:{}", "1".repeat(64)));
+        let cwd = serde_json::json!(root);
+        let malformed = [
+            serde_json::json!(7),
+            Value::Null,
+            serde_json::json!({"path": root}),
+            serde_json::json!([root]),
+            serde_json::json!(true),
+        ];
+        let mut usages = Vec::new();
+        for bad in malformed {
+            usages.push(codex_usage_with(Some(bad.clone()), None, 3));
+            usages.push(codex_usage_with(None, Some(bad.clone()), 3));
+            usages.push(codex_usage_with(Some(bad.clone()), Some(cwd.clone()), 3));
+            usages.push(codex_usage_with(
+                Some(project.clone()),
+                Some(bad.clone()),
+                3,
+            ));
+            usages.push(codex_usage_with(Some(bad.clone()), Some(bad), 3));
+        }
+        usages
+    }
+
+    #[test]
+    fn codex_declared_session_usage_with_malformed_project_evidence_keeps_the_quarantine() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        for malformed in codex_malformed_project_evidence(root) {
+            let session = codex_session(
+                root,
+                &[
+                    codex_meta("session", root, 1),
+                    codex_context(root, "gpt-a", 1),
+                    codex_usage(Some("session"), (100, 20, 5), 2),
+                    codex_usage(Some("other"), (5_000, 0, 500), 2),
+                    malformed.clone(),
+                    codex_count((9_000, 0, 900), 4),
+                    codex_usage(Some("session"), (120, 30, 10), 5),
+                    codex_count((150, 30, 12), 6),
+                ],
+            );
+            // The malformed 5_500 neither counts nor rescopes, so 9_900 stays quarantined and only
+            // the valid declared usage restores scope for 132.
+            assert_eq!(session.charges(), vec![85, 100, 132], "{malformed}");
+            assert_eq!(session.labels(), labelled("gpt-a"), "{malformed}");
+            assert!(session.partial, "{malformed}");
+            assert!(session.gaps.contains("foreign_session_record"));
+            assert!(session.gaps.contains("quarantined_unscoped_record"));
+
+            // A continued range neither adopts a session from it nor lets it clear quarantine.
+            let project = format!("sha256:{}", "1".repeat(64));
+            let mut adapter = AdapterState::new(
+                "codex",
+                &project,
+                "declared-session",
+                root,
+                2_000_000_000_000,
+                true,
+            );
+            let mut charges = Vec::new();
+            for line in [
+                malformed.clone(),
+                codex_count((9_000, 0, 900), 4),
+                codex_usage(Some("session"), (120, 30, 10), 5),
+                codex_count((150, 30, 12), 6),
+            ] {
+                for record in
+                    parse_adapter_record(&mut adapter, line.to_string().as_bytes()).unwrap()
+                {
+                    charges.push(record.tokens.unwrap().usage.chargeable_tokens.get());
+                }
+            }
+            assert_eq!(charges, vec![100, 132], "{malformed}");
+            assert!(adapter.has_coverage_gap());
+            let gaps = adapter.take_gaps();
+            assert!(gaps.contains("foreign_session_record"));
+            assert!(gaps.contains("quarantined_unscoped_record"));
+            assert!(gaps.contains("session_identity_unverified"));
+        }
+    }
+
+    #[test]
+    fn codex_usage_project_evidence_matrix_rescopes_only_on_missing_or_matching_evidence() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        let project = || Some(serde_json::json!(format!("sha256:{}", "1".repeat(64))));
+        let cwd = || Some(serde_json::json!(root));
+        let other_project = || Some(serde_json::json!(format!("sha256:{}", "2".repeat(64))));
+        let other_cwd = || Some(serde_json::json!("/definitely/foreign"));
+        let mut cases = vec![
+            (codex_usage_with(None, None, 3), true),
+            (codex_usage_with(project(), None, 3), true),
+            (codex_usage_with(None, cwd(), 3), true),
+            (codex_usage_with(project(), cwd(), 3), true),
+            (codex_usage_with(other_project(), None, 3), false),
+            (codex_usage_with(None, other_cwd(), 3), false),
+            (codex_usage_with(other_project(), cwd(), 3), false),
+            (codex_usage_with(project(), other_cwd(), 3), false),
+            (codex_usage_with(other_project(), other_cwd(), 3), false),
+        ];
+        cases.extend(
+            codex_malformed_project_evidence(root)
+                .into_iter()
+                .map(|usage| (usage, false)),
+        );
+        for (usage, member) in cases {
+            // Initial range: the record follows a refused foreign record of the declared session.
+            let session = codex_session(
+                root,
+                &[
+                    codex_meta("session", root, 1),
+                    codex_usage(Some("other"), (7_000, 0, 700), 2),
+                    usage.clone(),
+                    codex_count((9_000, 0, 900), 4),
+                    codex_usage(Some("session"), (6_000, 0, 600), 5),
+                ],
+            );
+            // A member record counts 5_500 and rescopes, so the cumulative 9_900 counts too.
+            let expected = if member {
+                vec![5_500, 9_900, 6_600]
+            } else {
+                vec![6_600]
+            };
+            assert_eq!(session.charges(), expected, "{usage}");
+            assert!(session.partial, "{usage}");
+            assert!(session.gaps.contains("foreign_session_record"));
+            assert_eq!(
+                session.gaps.contains("quarantined_unscoped_record"),
+                !member,
+                "{usage}"
+            );
+
+            // Continued range: the record is the first one after the cursor.
+            let mut adapter = AdapterState::new(
+                "codex",
+                &format!("sha256:{}", "1".repeat(64)),
+                "declared-session",
+                root,
+                2_000_000_000_000,
+                true,
+            );
+            let mut charges = Vec::new();
+            for line in [
+                usage.clone(),
+                codex_count((9_000, 0, 900), 4),
+                codex_usage(Some("session"), (6_000, 0, 600), 5),
+            ] {
+                for record in
+                    parse_adapter_record(&mut adapter, line.to_string().as_bytes()).unwrap()
+                {
+                    charges.push(record.tokens.unwrap().usage.chargeable_tokens.get());
+                }
+            }
+            assert_eq!(charges, expected, "{usage}");
+            assert!(adapter.has_coverage_gap());
+            let gaps = adapter.take_gaps();
+            assert!(gaps.contains("session_identity_unverified"));
+            assert_eq!(gaps.contains("foreign_session_record"), !member, "{usage}");
+            assert_eq!(
+                gaps.contains("quarantined_unscoped_record"),
+                !member,
+                "{usage}"
+            );
+        }
+    }
+
+    #[test]
+    fn codex_quarantine_survives_an_incremental_capture_cursor() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        let path = root.join("codex.jsonl");
+        let write = |lines: &[Value]| {
+            let text = lines
+                .iter()
+                .map(|line| line.to_string() + "\n")
+                .collect::<String>();
+            std::fs::OpenOptions::new()
+                .create(true)
+                .append(true)
+                .open(&path)
+                .unwrap()
+                .write_all(text.as_bytes())
+                .unwrap();
+        };
+        let project = format!("sha256:{}", "1".repeat(64));
+        let config: SourceConfig = serde_json::from_value(serde_json::json!({
+            "schema":"af.optimization-sources/1","project_id":project,
+            "sources":[{"adapter":"codex","path":"codex.jsonl","source_id":"codex","execution_id":"declared-session"}]
+        }))
+        .unwrap();
+        let capture = |start: u64, prior: &[OptimizationSourceReceiptV1]| {
+            let (mut raw, mut normalized) = (1_000_000, 1_000_000);
+            let (receipt, observations, gaps) = capture_source(
+                &config,
+                root,
+                &config.sources[0],
+                start,
+                None,
+                100,
+                &mut raw,
+                &mut normalized,
+                prior,
+            )
+            .unwrap();
+            assert!(
+                !serde_json::to_string(&observations)
+                    .unwrap()
+                    .contains(SENTINEL)
+            );
+            let charges = observations
+                .iter()
+                .filter_map(|observation| observation.tokens.as_ref())
+                .map(|tokens| tokens.usage.chargeable_tokens.get())
+                .collect::<Vec<_>>();
+            (receipt, charges, gaps)
+        };
+        // The first range ends in quarantine, right after refused foreign usage.
+        write(&[
+            codex_meta("session", root, 1),
+            codex_usage(Some("session"), (100, 20, 5), 2),
+            codex_usage(Some("other"), (5_000, 0, 500), 3),
+        ]);
+        let (first, charges, gaps) = capture(0, &[]);
+        assert_eq!(charges, vec![85]);
+        assert!(gaps.contains("foreign_session_record"));
+        // The appended range begins with a large unscoped count, then declared usage rescopes.
+        write(&[
+            codex_count((9_000, 0, 900), 4),
+            codex_context(root, "gpt-b", 5),
+            codex_usage(Some("session"), (120, 30, 10), 6),
+            codex_count((150, 30, 12), 7),
+        ]);
+        let (second, charges, gaps) = capture(first.byte_end.get(), std::slice::from_ref(&first));
+        assert_eq!(second.byte_start, first.byte_end);
+        assert_eq!(charges, vec![100, 132]);
+        assert_eq!(second.completeness, SourceCompletenessV1::Partial);
+        assert!(gaps.contains("quarantined_unscoped_record"));
+        // The retained prefix declared the session: nothing was adopted as unverified.
+        assert!(!gaps.contains("session_identity_unverified"));
     }
 
     #[test]

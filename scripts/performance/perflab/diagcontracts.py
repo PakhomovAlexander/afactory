@@ -164,17 +164,19 @@ def frozen_identity(diagnostics_doc, recipe_id):
 def diagnostic_recipe(suite_doc, diagnostics_doc, recipe_id):
     """The suite-shaped recipe a diagnostic plan freezes: its base verdict recipe with only the
     diagnostic recipe's features, symbols, frame pointers and the instrumented flag changed.
-    GNU CPU profiles freeze line-tables-only debug information in the existing
-    rustflags field: function/line attribution and unwind information without local-variable
-    and type information. These are diagnostic build settings, never verdict settings."""
+    Linux CPU profiles, the GNU recipe and the musl shipping build alike, freeze
+    line-tables-only debug information in the existing rustflags field: function/line
+    attribution and unwind information without local-variable and type information, which
+    keeps a profiled AF and probe within the unchanged build-artifact and symbol-evidence caps
+    (full debug information did not: a musl AF of 802,606,040 bytes). These are diagnostic
+    build settings, never verdict settings."""
     entry = diagnostics_doc["recipes"].get(recipe_id)
     require(entry is not None, "diagnostic recipe %s is not declared" % recipe_id)
     base = dict(suite_doc["recipes"][entry["base_recipe"]])
     base.update({"description": entry["description"], "features": list(entry["features"]),
                  "debug_symbols": entry["debug_symbols"],
                  "frame_pointers": entry["frame_pointers"], "instrumented": True})
-    if entry["kind"] == "cpu_profile" and base["os"] == "linux" \
-            and base["linker"] == "system_cc":
+    if entry["kind"] == "cpu_profile" and base["os"] == "linux":
         base["rustflags"] = list(base["rustflags"]) + [
             "-Cdebuginfo=line-tables-only"]
     return base

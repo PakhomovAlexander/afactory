@@ -682,11 +682,13 @@ class Profile(object):
 
     def tool_run(self, argv, timeout, cap, cwd, env=None, stdin=b"", stdout_path=None,
                  file_bytes=None, reads=(), writes=(), setup=None, patterns=(), selectors=(),
-                 observe=None):
+                 observe=None, log_cap=None):
         """One supervised run of `argv`; a contained one binds the executable and `reads`
         read-only and `writes` writable, and nothing else (ADR-0176). Under the host observer a
         trusted tool runs on the host under the same authority supervisor and binds nothing.
-        `observe(running)` is called once the run started (the host observer's attachment)."""
+        `observe(running)` is called once the run started (the host observer's attachment).
+        `log_cap` is a CLI command's whole sample log, stdout `cap` and stderr together
+        (`toolrun.request`); other tools keep the default stderr allowance."""
         self.halted(os.path.basename(argv[0]))
         if stdout_path is not None:
             writes = tuple(writes) + (os.path.dirname(stdout_path),)
@@ -707,13 +709,15 @@ class Profile(object):
                                stdin=stdin, cwd=cwd, deadline=self.budget.deadline,
                                clock=self.clock, stdout_path=stdout_path,
                                file_bytes=file_bytes, watch=self.over_room, binds=binds,
-                               setup=setup, patterns=patterns, selectors=selectors)
+                               setup=setup, patterns=patterns, selectors=selectors,
+                               log_cap=log_cap)
             else:
                 running = toolrun.start(supervisor, argv, env or TOOL_ENV, timeout, cap,
                                stdin=stdin, cwd=cwd, deadline=self.budget.deadline,
                                clock=self.clock, stdout_path=stdout_path,
                                file_bytes=file_bytes, watch=self.over_room, binds=binds,
-                               setup=setup, patterns=patterns, selectors=selectors)
+                               setup=setup, patterns=patterns, selectors=selectors,
+                               log_cap=log_cap)
                 if isinstance(running, toolrun.Result):
                     result = running
                 else:
@@ -1635,7 +1639,7 @@ class Profile(object):
                     clicases.expand(entry["cwd"], values), env=environment, setup=setup,
                     patterns=clicases.patterns(entry), selectors=clicases.selectors(entry),
                     file_bytes=file_bytes, reads=(binary, probe, self.cli.fixtures),
-                    writes=(namespace.path,) + tuple(writes), observe=observe)
+                    writes=(namespace.path,) + tuple(writes), observe=observe, log_cap=log)
             except Exception as error:
                 # Only a Result the supervisor settled proves the run ended; an opaque failure
                 # leaves it launching, so its namespace is kept.

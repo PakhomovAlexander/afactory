@@ -69,3 +69,17 @@
   remaining diagnostic window the supervisor refused; a failed attachment after the command
   started releases its scratch only on the supervisor's confirmed cancellation and keeps the
   observer's own reason ahead of any cleanup uncertainty.
+- Executor preflight, submission and the claim check the configured `build_image` and
+  `sample_image` (pinned, present, Linux, no implicit volume) and, in the build image under the
+  machine exclusion, the recipe's Rust toolchain and target and the musl recipe's
+  `zigbuild_bin` cargo-zigbuild and Zig versions; a missing image or tool refuses before any
+  original, claim or build, and one gone after submission ends the original `failed` before
+  its first build, with no fence kept.
+- Storage admission also needs the journal root's filesystem to have the native reserve
+  available now; the refusal prints the `max_bytes` figures and the filesystem's available
+  bytes, and a large filesystem never widens `max_bytes`.
+- A diagnostic CLI case keeps its sample's whole 262,144-byte log (245,760 bytes of stdout and
+  its stderr), as core does, instead of adding another 64 KiB of stderr.
+- The musl CPU profile recipe (`linux_musl_cpu_profile`) builds with line-tables-only debug
+  information and frame pointers, as the GNU recipe does, so its AF and probe fit the unchanged
+  build-artifact and symbol-evidence caps; full debug information left no diagnostic build.

@@ -25,6 +25,27 @@ from tests.support import ROOT, TempDir, lab_repo, read
 LAB = os.path.join(ROOT, "scripts/performance")
 IMAGE = "registry.invalid/sample@sha256:" + "1" * 64
 PRODUCER = synthetic.label_digest("installed-producer-test-only")
+# The journal root's filesystem as the admission boundary sees it: tests never depend on the
+# host's actual free space (`Journal.free_bytes`).
+FILESYSTEM_FREE = 1 << 50
+
+
+REAL_IMAGE_ADMISSION = executor.image_admission
+REAL_JOURNAL_IMAGES = executor.Journal.images
+
+
+def plenty_of_space(test):
+    """The admission boundaries a synthetic journal cannot reach on its host: the root's
+    filesystem space and the configured images, which `ImageAdmission` exercises through a
+    stand-in docker client."""
+    for patcher in (mock.patch.object(executor.Journal, "free_bytes",
+                                      staticmethod(lambda path: FILESYSTEM_FREE)),
+                    mock.patch.object(executor.Journal, "images",
+                                      lambda self, config, recipes: ([], None)),
+                    mock.patch.object(executor, "image_admission",
+                                      lambda config, recipes: ([], None, False))):
+        patcher.start()
+        test.addCleanup(patcher.stop)
 
 
 def config(root, repo, sha):
@@ -52,6 +73,7 @@ class ExecutorFixture(TempDir):
         self.producer = mock.patch.object(executor, "producer", return_value=PRODUCER)
         self.producer.start()
         self.addCleanup(self.producer.stop)
+        plenty_of_space(self)
 
     def submit(self, journal, work="core", key="manual_1", **kwargs):
         return journal.submit(work, self.base, self.head, key, **kwargs)
@@ -696,6 +718,52 @@ class Journal(ExecutorFixture):
             self.assertFalse(os.path.lexists(os.path.join(self.locks,
                                                           "af-perf-machine.lock.fence")))
 
+    def test_storage_admission_needs_the_policy_bound_and_the_filesystems_free_space(self):
+        """A 100 GiB `max_bytes` is a bound, not space: preflight, submission and the claim
+        each also need the root filesystem's available bytes for the same native reserve, and
+        a large filesystem never lets the reserve exceed `max_bytes`."""
+        self.c.update(run_seconds=25200, archive_bytes=6 * 1024 ** 3,
+                      history_bytes=4 * 1024 ** 3, max_bytes=100 * 1024 ** 3)
+        reserve = executor.native_reserve(self.c, "telemetry")
+        free = {"bytes": reserve - 1}
+        probed = []
+
+        def available(path):
+            probed.append(path)
+            return free["bytes"]
+        with mock.patch.object(executor.Journal, "free_bytes", staticmethod(available)), \
+                executor.Journal(self.c) as j:
+            refused = j.preflight("telemetry", self.base, self.head, "physical")
+            self.assertEqual(refused["status"], "refused")
+            self.assertIn("too little free space", refused["detail"])
+            self.assertIn("filesystem: %d bytes available for the %d-byte native reserve"
+                          % (reserve - 1, reserve), refused["detail"])
+            self.assertIn("of max_bytes %d" % self.c["max_bytes"], refused["detail"])
+            self.assertEqual(set(probed), {self.c["root"]})
+            with self.assertRaisesRegex(ContractError, "too little free space"):
+                self.submit(j, "telemetry", "physical")
+            self.assertEqual(j.names(), [], "a refusal reserves nothing")
+            free["bytes"] = reserve
+            ready = j.preflight("telemetry", self.base, self.head, "physical")
+            self.assertEqual(ready["status"], "ready", ready["detail"])
+            request = self.submit(j, "telemetry", "physical")
+            # Space taken between submission and the claim: the claim refuses before anything
+            # is claimed or built, and the original stays queued, never pruned or replayed.
+            free["bytes"] = reserve - 1
+            with mock.patch.object(executor.telemetrybuild, "run",
+                                   side_effect=AssertionError("built before admission")):
+                with self.assertRaisesRegex(ContractError, "too little free space"):
+                    j.cycle(lock_directory=self.locks)
+            self.assertEqual(j.state(request["request_id"])["state"], "queued")
+        # A filesystem far larger than the policy never widens it.
+        free["bytes"] = 1 << 50
+        self.c["max_bytes"] = reserve - 1
+        with mock.patch.object(executor.Journal, "free_bytes", staticmethod(available)), \
+                executor.Journal(self.c) as j:
+            refused = j.preflight("telemetry", self.base, self.head, "bounded")
+            self.assertEqual(refused["status"], "refused")
+            self.assertIn("capacity exhausted", refused["detail"])
+
     def test_local_diagnostic_uses_native_child_planner_report_and_admission(self):
         control = self.repo.commit("diagnostic authority", {diagnostics.REGISTRY_PATH:
             read(os.path.join(ROOT, diagnostics.REGISTRY_PATH))})
@@ -1015,6 +1083,109 @@ def profile_contender(locks, output):
             recipe="linux_gnu_trace", mode="trusted_local", output=output, lock_directory=locks))
     except diagnostics.Unavailable as e:
         print(e.reason)
+
+
+class ImageAdmission(ExecutorFixture):
+    """The configured build and sample images and the shipping recipe's image-local tools,
+    through a stand-in docker client, at preflight, submission and the claim (the Claw musl
+    original that went uncertain 1.7 s after a `ready` preflight, its build image absent)."""
+
+    SAMPLE = "registry.invalid/sample-only@sha256:" + "2" * 64
+
+    def setUp(self):
+        super().setUp()
+        bin_dir = build_fixtures.fake_toolchain(self.path("image", "bin"),
+                                                "x86_64-unknown-linux-musl")
+        self.env = ["PATH=%s:/usr/bin:/bin" % bin_dir]
+        self.zig = build_fixtures.fake_zigbuild(self.path("image-tools"))
+        self.c.update(sample_image=self.SAMPLE, zigbuild_bin=self.zig)
+        self.c["core"].update(tier="nightly", environment="linux_x86_64_musl_claw",
+                              cases=["cli_discovery__command_version"])
+        self.docker_dirs = 0
+        for patcher in (mock.patch.object(executor.Journal, "images", REAL_JOURNAL_IMAGES),
+                        mock.patch.object(executor.Journal, "lock_directory", self.locks)):
+            patcher.start()
+            self.addCleanup(patcher.stop)
+
+    def docker(self, *present, lingering=None):
+        """Route every image admission to a stand-in docker client holding `present`."""
+        self.docker_dirs += 1
+        directory = self.path("docker-%d" % self.docker_dirs)
+        images = {reference: ("sha256:" + "%d" % index * 64, self.env, [reference])
+                  for index, reference in enumerate(present, 3)}
+        docker = build_fixtures.fake_docker(directory, images, lingering)
+        patcher = mock.patch.object(executor, "image_admission", lambda config, recipes:
+                                    REAL_IMAGE_ADMISSION(config, recipes, docker=docker))
+        patcher.start()
+        self.addCleanup(patcher.stop)
+        return directory
+
+    def fence(self):
+        return os.path.lexists(os.path.join(self.locks, "af-perf-machine.lock.fence"))
+
+    def test_missing_images_and_shipping_tools_refuse_before_any_claim_or_build(self):
+        cases = ((("sample",), "the build image %s is not present" % IMAGE, {}),
+                 (("build",), "the sample image %s is not present" % self.SAMPLE, {}),
+                 (("build", "sample"), "the recipe pins cargo-zigbuild 0.23.4",
+                  {"zigbuild_bin": self.path("no-image-tools")}),
+                 (("build", "sample"), "the recipe pins Zig 0.15.2",
+                  {"zigbuild_bin": build_fixtures.fake_zigbuild(self.path("old-zig"),
+                                                                zig="0.15.1")}))
+        for index, (present, why, change) in enumerate(cases):
+            with self.subTest(why=why):
+                directory = self.docker(*[{"build": IMAGE, "sample": self.SAMPLE}[name]
+                                          for name in present])
+                c = dict(self.c, **change)
+                with executor.Journal(c) as j:
+                    refused = j.preflight("core", self.base, self.head, "images_%d" % index)
+                    contracts.write_bytes(refused, "executor-preflight")
+                    self.assertEqual(refused["status"], "refused")
+                    self.assertIn("refused before any claim or build", refused["detail"])
+                    self.assertIn(why, refused["detail"])
+                    self.assertEqual(refused["tools"][-1]["state"], "unavailable")
+                    with self.assertRaisesRegex(ContractError, why):
+                        self.submit(j, "core", "images_%d" % index)
+                    self.assertEqual(j.names(), [], "a refusal reserves nothing")
+                runs = [call for call in build_fixtures.docker_calls(directory)
+                        if call[0] == "run"]
+                self.assertTrue(all(call[call.index("--name") + 1].startswith("af-perf-probe-")
+                                    for call in runs), "only bounded probe containers ran")
+                self.assertFalse(self.fence())
+
+    def test_ready_admission_is_rechecked_by_the_claim_before_any_build(self):
+        self.docker(IMAGE, self.SAMPLE)
+        with executor.Journal(self.c) as j:
+            ready = j.preflight("core", self.base, self.head, "rechecked")
+            self.assertEqual(ready["status"], "ready", ready["detail"])
+            tools = {item["name"]: item for item in ready["tools"]}
+            self.assertIn(IMAGE, tools["build_image"]["detail"])
+            self.assertIn(self.SAMPLE, tools["sample_image"]["detail"])
+            self.assertIn("rustc 1.88.0", tools["image_toolchain"]["detail"])
+            self.assertIn("cargo-zigbuild 0.23.4; zig 0.15.2", tools["image_toolchain"]["detail"])
+            self.assertFalse(self.fence(), "the probes' exclusion settled clean")
+            request = self.submit(j, "core", "rechecked")
+            # The build image disappears after submission: the claim's own admission ends the
+            # original failed before any build, nothing measured, and keeps no fence.
+            self.docker(self.SAMPLE)
+            with mock.patch.object(builds, "Builder",
+                                   side_effect=AssertionError("built before admission")):
+                self.assertEqual(j.cycle(lock_directory=self.locks), "failed")
+            state = j.state(request["request_id"])
+            self.assertIn("core refused before any build, nothing measured", state["detail"])
+            self.assertIn("the build image %s is not present" % IMAGE, state["detail"])
+            result = contracts.read_json(read(os.path.join(j.path(request["request_id"]),
+                                                           "result.json")), "executor-result")
+            self.assertEqual(result["measurement_status"], "unavailable")
+            self.assertFalse(self.fence())
+
+    def test_an_unconfirmed_probe_container_keeps_the_fence(self):
+        self.docker(IMAGE, self.SAMPLE, lingering="af-perf-probe-")
+        with executor.Journal(self.c) as j:
+            refused = j.preflight("core", self.base, self.head, "lingering")
+            self.assertEqual(refused["status"], "refused")
+            self.assertIn("build_container_unconfirmed", refused["detail"])
+            self.assertEqual(j.names(), [])
+        self.assertTrue(self.fence(), "an unconfirmed removal is never settled")
 
 
 class ScratchCommand(TempDir):

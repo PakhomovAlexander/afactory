@@ -7,6 +7,7 @@ import contextlib
 import fcntl
 import json
 import os
+import shutil
 import signal
 import stat
 import subprocess
@@ -197,6 +198,79 @@ def diagnostic_tools(config, registry, recipe, mode, paranoid_path=None):
     return records, None
 
 
+def build_recipes(config, work, plan=None, partition=None, installed=ROOT, suite=None,
+                  registry=None):
+    """The build recipes whose image-local tools one local original runs: the plan's (none for
+    a later partition, which reuses the first one's build), a profile's diagnostic recipe's
+    base beside it, or a telemetry side's trusted toolchain."""
+    if work == "telemetry":
+        channel = tomlfile.loads(telemetrybuild.read_source(installed, "rust-toolchain.toml"),
+                                 "trusted toolchain")["toolchain"]["channel"]
+        return [{"toolchain": channel, "os": "linux", "target": None, "builder": "cargo"}]
+    if partition is not None and partition["build_from"] is not None:
+        return []
+    recipes = [plan["profile"]["recipe"]]
+    if work == "profile" and suite is not None and registry is not None:
+        base = suite["recipes"][registry["recipes"][config["diagnostic"]["recipe"]]["base_recipe"]]
+        if base not in recipes:
+            recipes.append(base)
+    return recipes
+
+
+def image_admission(config, recipes, docker="docker"):
+    """The configured build and sample images as this account finds them, before any claim or
+    build: each pinned by digest, present locally (nothing pulls), Linux and declaring no
+    implicit writable volume; and, in the build image, each recipe's exact toolchain, its
+    target and, for a cargo-zigbuild recipe, the configured image-local cargo-zigbuild and Zig
+    at their pinned versions: the probes `builds.Builder.check_host` runs, in containers of the
+    build image, so the caller holds the machine's one exclusion. Returns (records, refusal or
+    None, uncertain): a probe container whose removal is unconfirmed is uncertain."""
+    records = []
+    try:
+        images = []
+        for name, key in (("build_image", "build_image"), ("sample_image", "sample_image")):
+            image = builds.BuildImage(docker, config[key], role=name.replace("_", " "))
+            image.refuse_implicit_volumes()
+            images.append(image)
+            records.append({"name": name, "state": "available", "detail": "%s: %s, %s" % (
+                config[key], image.id, image.platform)})
+        build = images[0]
+        checked = []
+        for recipe in recipes:
+            key = tuple(recipe.get(field) for field in (
+                "toolchain", "os", "target", "builder", "cargo_zigbuild", "zig"))
+            if key in checked:
+                continue
+            checked.append(key)
+            toolchain = builds.ContainerToolchain(build, recipe["toolchain"])
+            if toolchain.host_os() != recipe["os"]:
+                raise builds.Unavailable("host_mismatch", "the recipe builds for %s, but the "
+                                         "toolchain host in %s is %s" % (
+                                             recipe["os"], build.reference, toolchain.host))
+            if recipe["target"] is not None and not toolchain.supports_target(recipe["target"]):
+                raise builds.Unavailable("target_unavailable", "target %s is not installed for "
+                                         "%s in %s" % (recipe["target"],
+                                                       toolchain.rustc_identity, build.reference))
+            detail = "%s; %s" % (toolchain.rustc_identity, toolchain.cargo_identity)
+            if recipe["builder"] == "cargo_zigbuild":
+                if config["zigbuild_bin"] is None:
+                    raise builds.Unavailable("builder_unavailable", "the recipe builds with "
+                                             "cargo-zigbuild %s and Zig %s; set zigbuild_bin "
+                                             "to their directory in the build image" % (
+                                                 recipe["cargo_zigbuild"], recipe["zig"]))
+                zigbuild = builds.ContainerZigbuild(build, config["zigbuild_bin"],
+                                                    recipe["cargo_zigbuild"], recipe["zig"])
+                detail += "; " + zigbuild.identity
+            records.append({"name": "image_toolchain", "state": "available",
+                            "detail": ("%s in %s" % (detail, build.reference))[:4096]})
+    except builds.Unavailable as error:
+        detail = "%s: %s" % (error.reason, error)
+        records.append({"name": "image_admission", "state": "unavailable",
+                        "detail": detail[:4096]})
+        return records, detail, error.reason == "build_container_unconfirmed"
+    return records, None, False
+
+
 def observer_capability(config, registry, recipe, workdir, seconds=60, clock=time.monotonic):
     """The trusted host observer's actual capability, as the executing account under the held
     machine exclusion, before any build: the configured perf attached by PID to an owned gated
@@ -348,6 +422,11 @@ class Journal:
     # The machine lock's directory (tests only); the anchored system lock otherwise.
     lock_directory = None
 
+    @staticmethod
+    def free_bytes(path):
+        """The bytes the filesystem holding `path` has available to this account."""
+        return shutil.disk_usage(path).free
+
     def __init__(self, config, readonly=False):
         self.config = contracts.validate_executor(config)
         self.root = config["root"]
@@ -355,6 +434,8 @@ class Journal:
         # A reader (`status`, `verify`, `overview`) takes no lock and writes nothing: it reads
         # the retained, atomically published state while a controller executes an original.
         self.readonly = readonly
+        # `images`' admissions this handle made, by configured images and recipes.
+        self.admitted_images = {}
 
     def __enter__(self):
         if self.readonly:
@@ -405,15 +486,22 @@ class Journal:
                 os.close(fd)
 
     def capacity(self, reserve=0, what=None, max_bytes=None):
-        """Admit `reserve` more bytes below the root within `max_bytes` (the configuration's);
-        a refusal names the bytes held, the reserve, the bound and what is available. Returns
-        the admitted figures as text."""
+        """Admit `reserve` more bytes below the root within `max_bytes` (the configuration's)
+        and within what the root's filesystem has available to this account now: the policy
+        bound and the physical space are both required, and neither stands in for the other.
+        A refusal names the bytes held, the reserve, the bound, the policy room and the
+        filesystem's available bytes. Returns the admitted figures as text."""
         bound = self.config["max_bytes"] if max_bytes is None else max_bytes
         used = tree_usage(self.root)
-        text = "storage: %d bytes held + %d-byte %s = %d bytes of max_bytes %d (%d available)" % (
-            used, reserve, what or "reserve", used + reserve, bound, max(0, bound - used))
+        free = self.free_bytes(self.root)
+        text = ("storage: %d bytes held + %d-byte %s = %d bytes of max_bytes %d (%d available); "
+                "filesystem: %d bytes available for the %d-byte %s" % (
+                    used, reserve, what or "reserve", used + reserve, bound,
+                    max(0, bound - used), free, reserve, what or "reserve"))
         require(used + reserve <= bound, "executor root capacity exhausted; retain originals "
                 "and stop submission: " + text)
+        require(reserve <= free, "executor root filesystem has too little free space; retain "
+                "originals and stop submission: " + text)
         return text
 
     def names(self):
@@ -476,29 +564,45 @@ class Journal:
         with timing.enforce("freezing original request"):
             return self._submit(*args, **kwargs)
 
-    def capability(self, config, registry, recipe):
-        """`observer_capability` under the machine's one exclusion, taken for it and settled:
-        a busy machine refuses the check; an unconfirmed end keeps the fence."""
+    def exclusive(self, what, check):
+        """`check()` -> (result, refusal, uncertain) under the machine's one exclusion, taken
+        for it and settled: a busy machine refuses the check; an unconfirmed end keeps the
+        fence."""
         try:
             if self.lock_directory is None:
                 hostlock.read_anchor(required=True)
             lock = hostlock.MachineLock(self.lock_directory)
         except hostlock.Refused as refused:
             if refused.reason == "concurrent_shard":
-                raise JournalBusy("the host observer capability check needs the machine "
-                                  "exclusion, which another experiment holds: %s" % refused)
+                raise JournalBusy("the %s needs the machine exclusion, which another "
+                                  "experiment holds: %s" % (what, refused))
             raise ContractError(str(refused))
         try:
             lock.guard()
-            record, refusal, uncertain = observer_capability(
-                config, registry, recipe, os.path.join(self.root, "observer-probe"))
+            result, refusal, uncertain = check()
             if uncertain:
                 lock.uncertain = True
             else:
                 lock.confirm_clean()
-            return record, refusal
+            return result, refusal
         finally:
             lock.release()
+
+    def capability(self, config, registry, recipe):
+        """`observer_capability` under the machine's one exclusion."""
+        return self.exclusive("host observer capability check", lambda: observer_capability(
+            config, registry, recipe, os.path.join(self.root, "observer-probe")))
+
+    def images(self, config, recipes):
+        """`image_admission` under the machine's one exclusion, once per configured images and
+        recipes for this journal handle (a comparison's members share one check)."""
+        key = canonical_digest({"build_image": config["build_image"],
+                                "sample_image": config["sample_image"],
+                                "zigbuild_bin": config["zigbuild_bin"], "recipes": recipes})
+        if key not in self.admitted_images:
+            self.admitted_images[key] = self.exclusive(
+                "image and tool admission", lambda: image_admission(config, recipes))
+        return self.admitted_images[key]
 
     def preflight(self, work, base, head, key, kind="manual", *, parent=None, **kwargs):
         """Everything a submission checks, as the account that runs it, without reserving an
@@ -584,7 +688,7 @@ class Journal:
                         "sealed parameters must be committed on reviewed main at the documented path")
         elif kind == "calibration":
             raise ContractError("calibration submissions need their immutable declaration")
-        plan = parent_record = verdict_bytes = None
+        plan = parent_record = verdict_bytes = suite = registry = None
         if partition is not None:
             plan = frozen_plan
         if work == "profile" and c["backend"] == "local":
@@ -668,6 +772,14 @@ class Journal:
                                       "native reserve", c["max_bytes"])]
             if checked is not None:
                 checked["admission"] = "; ".join(text for text in admitted if text)
+            # The configured images and their image-local tools, as execution checks them
+            # again before its first build (`image_admission`).
+            records, refusal = self.images(c, build_recipes(
+                c, work, plan, partition, installed, suite and suite.doc, registry))
+            if checked is not None:
+                checked["tools"] = (checked["tools"] + records)[:16]
+            require(refusal is None, "%s refused before any claim or build: the configured "
+                    "images cannot run it: %s" % (work, refusal))
         request = {"schema": "af.perf-executor-request/2", "request_id": ident,
             "backend": c["backend"], "journal_id": c["journal_id"], "machine_id": c["machine_id"],
             "configuration_digest": canonical_digest(c), "sources": sources, "submission": submission,
@@ -880,6 +992,22 @@ def file_manifest(root, prefixes, timing=None):
     return sorted(entries, key=lambda item: item["path"])
 
 
+def admit_images(config, work, path, lease, terminal, recipes):
+    """The execution's own `image_admission`, under its held exclusion and before its first
+    build: an image or image-local tool missing since submission ends the original `failed`,
+    nothing built or measured, and only an unconfirmed probe container keeps the fence."""
+    _, refusal, uncertain = image_admission(config, recipes)
+    if uncertain:
+        lease.uncertain = True
+        raise ContractError("image admission probe cleanup is uncertain: " + str(refusal))
+    if refusal is None:
+        return None
+    return {"status": "failed", "measurement_status": "unavailable",
+            "evidence": file_manifest(path, EVIDENCE_PREFIXES, terminal), "actions": None,
+            "detail": ("%s refused before any build, nothing measured: the configured images "
+                       "cannot run it: %s" % (work, refusal))[:4096]}
+
+
 def execute_local(config, request, path, lease, installed=ROOT):
     lease.check()
     start = time.monotonic()
@@ -912,13 +1040,15 @@ def execute_local(config, request, path, lease, installed=ROOT):
             return {"status": "expired", "measurement_status": "not_executed_off_schedule",
                     "evidence": file_manifest(path, EVIDENCE_PREFIXES, terminal), "actions": None,
                     "detail": "not executed: frozen calibration member day expired during preparation"}
+        suite_doc = registry = None
         if work == "profile":
             # Tools are checked again as the executing compute user, before the first build:
             # an unavailable capability ends here with its exact reason, nothing built.
             git = gitrefs.Git(sources, budget=timing)
             authority = request["sources"]["authority_sha"]
+            suite_doc = planning.read_suite(git, authority).doc
             registry = diagnostics.load_bytes(git.read_file(authority, diagnostics.REGISTRY_PATH),
-                diagnostics.REGISTRY_PATH, planning.read_suite(git, authority).doc)
+                diagnostics.REGISTRY_PATH, suite_doc)
             recipe = config["diagnostic"]["recipe"]
             _, refusal = diagnostic_tools(config, registry, recipe, diagnostics.LINUX_CONTAINER)
             if refusal is None:
@@ -936,6 +1066,10 @@ def execute_local(config, request, path, lease, installed=ROOT):
                         "actions": None, "detail": ("profile refused before any build: "
                                                     + refusal)[:4096]}
         partition = request["partition"]
+        refused = admit_images(config, work, path, lease, terminal, build_recipes(
+            config, work, plan, partition, installed, suite_doc, registry))
+        if refused is not None:
+            return refused
         if partition is not None and partition["build_from"] is not None:
             # A later partition runs on the first partition's verified, immutable build: the
             # one build every shard bundle of the comparison binds. Nothing is rebuilt.
@@ -1054,6 +1188,10 @@ def execute_local(config, request, path, lease, installed=ROOT):
                             ", ".join("%s %d s" % part for part in rest),
                             sum(seconds for _, seconds in rest), int(left),
                             config["run_seconds"]))[:4096]}
+        refused = admit_images(config, work, path, lease, terminal,
+                               build_recipes(config, work, installed=installed))
+        if refused is not None:
+            return refused
         binaries, records = {}, {}
         for side in contracts.SIDES:
             sha = request["sources"][side + "_sha"]

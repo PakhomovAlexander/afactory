@@ -16,7 +16,7 @@ from perflab import telemetrylab
 from perflab.values import ContractError, sha256_bytes
 from tests import telemetry_fixtures as fx
 from tests.support import ROOT, read
-from tests.test_executor import ExecutorFixture
+from tests.test_executor import ExecutorFixture, IMAGE
 
 
 class Comparison(ExecutorFixture):
@@ -164,6 +164,18 @@ class Comparison(ExecutorFixture):
                                                      retained[-1])), "comparison-preflight")
         self.assertEqual(kept["status"], "refused")
         self.assertEqual(self.probes, [], "no capability probe for a refused configuration")
+        # A configured image absent on this host refuses the whole comparison before any
+        # member is submitted (`executor.image_admission`, shared with every original).
+        self.c["diagnostic"]["perf"] = os.path.join(self.path("tools"), "perf")
+        absent = ([{"name": "image_admission", "state": "unavailable", "detail": "absent"}],
+                  "build_image_unavailable: the build image %s is not present" % IMAGE)
+        with mock.patch.object(executor.Journal, "images", lambda *a: absent), \
+                executor.Journal(self.c) as j:
+            refused = comparison.preflight(j, self.base, self.head, "no_image", launch=True)
+            self.assertEqual(refused["status"], "refused")
+            self.assertIn("the build image %s is not present" % IMAGE, refused["detail"])
+            self.assertEqual(j.names(), [])
+        self.assertEqual(len(os.listdir(os.path.join(self.c["root"], comparison.REFUSALS))), 3)
 
     def test_full_comparison_partitions_aggregates_diagnoses_reports_and_exports(self):
         with executor.Journal(self.c) as j:

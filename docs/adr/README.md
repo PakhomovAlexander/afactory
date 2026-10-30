@@ -498,5 +498,7 @@ future readers need.
   changes](0262-offer-a-light-default-pipeline-for-small-changes.md)
 - [0263 — Bound bare af's first browser
   frame](0263-bound-bare-afs-first-browser-frame.md)
+- [0264 — Own Codex session records and quarantine after a foreign
+  one](0264-own-codex-session-records-and-quarantine-after-a-foreign-one.md)
 - [0265 — Bind comparison partition execution to reused build
   artifacts](0265-bind-comparison-partition-execution-to-reused-build-artifacts.md)

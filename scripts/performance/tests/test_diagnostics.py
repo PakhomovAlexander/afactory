@@ -79,7 +79,7 @@ class Registry(unittest.TestCase):
         self.assertEqual(diagcontracts.diagnostic_recipe(
             loaded.doc, registry, "linux_gnu_cpu_profile"), recipe)
         for recipe_id in registry["recipes"]:
-            if recipe_id == "linux_gnu_cpu_profile":
+            if recipe_id in ("linux_gnu_cpu_profile", "linux_musl_cpu_profile"):
                 continue
             other = diagcontracts.diagnostic_recipe(loaded.doc, registry, recipe_id)
             self.assertEqual(other["rustflags"], loaded.doc["recipes"][
@@ -94,7 +94,8 @@ class Registry(unittest.TestCase):
 
     def test_the_musl_shipping_recipes_keep_their_whole_shipping_build_identity(self):
         # Built like the shipping recipe, in its pinned image with cargo-zigbuild and Zig;
-        # only what diagnosis needs is added (ADR-0176).
+        # only what diagnosis needs is added (ADR-0176): a CPU profile's bounded
+        # line-tables-only debug information, as on GNU.
         loaded = suite_module.load(SUITE)
         registry = diagnostics.load(REGISTRY, loaded.doc)
         base = loaded.doc["recipes"]["linux_musl_shipping"]
@@ -103,8 +104,11 @@ class Registry(unittest.TestCase):
             with self.subTest(recipe=recipe_id):
                 recipe = diagcontracts.diagnostic_recipe(loaded.doc, registry, recipe_id)
                 for key in ("os", "target", "toolchain", "builder", "cargo_zigbuild", "zig",
-                            "linker", "profile", "rustflags"):
+                            "linker", "profile"):
                     self.assertEqual(recipe[key], base[key])
+                self.assertEqual(recipe["rustflags"], base["rustflags"] + (
+                    ["-Cdebuginfo=line-tables-only"] if recipe_id == "linux_musl_cpu_profile"
+                    else []))
                 self.assertEqual(recipe["target"], "x86_64-unknown-linux-musl")
                 self.assertEqual((recipe["features"], recipe["instrumented"]), (features, True))
         self.assertTrue(registry["recipes"]["linux_musl_cpu_profile"]["frame_pointers"])
@@ -1605,6 +1609,57 @@ class CliCases(ChildRunBase):
         self.assertEqual(runs, ['["--version"]'] * 24, "12 traced executions per side")
         page = read(os.path.join(output, diagnostics.PAGE_FILE)).decode()
         self.assertIn("cli_process, region cli_startup (1 spans): complete", page)
+
+    def test_a_cli_command_keeps_the_cores_whole_sample_log_total(self):
+        # The supervisor requests the diagnostic driver actually makes: a CLI command's stdout
+        # and stderr together are its sample's log, as in core (`runner`), never that log's
+        # stdout share plus another tool's 64-KiB stderr allowance.
+        requests = []
+        real = toolrun.Running
+
+        def running(supervisor, argv, doc, *rest, **kwargs):
+            requests.append((argv, doc))
+            return real(supervisor, argv, doc, *rest, **kwargs)
+        with mock.patch.object(toolrun, "Running", running):
+            doc, _ = self.profile("linux_gnu_trace", [DISCOVERY], {}, {},
+                                  registry=self.registry_with(overhead_pairs=12), af_config={},
+                                  parent_af_config={})
+        self.assertEqual(len(doc["traces"]), 2)
+        log = suite_module.load(SUITE).doc["limits"]["sample_log_bytes"]
+        self.assertEqual(log, 262144)
+        cli = [doc for argv, doc in requests if argv[-1:] == ["--version"]]
+        self.assertGreaterEqual(len(cli), 24)
+        for request in cli:
+            self.assertEqual((request["stdout_cap_bytes"], request["log_cap_bytes"]),
+                             (clicases.stdout_bytes(log), log))
+            self.assertEqual((request["stdout_cap_bytes"], request["log_cap_bytes"]),
+                             (245760, 262144))
+        others = [doc for argv, doc in requests if argv[-1:] != ["--version"]]
+        for request in others:
+            self.assertEqual(request["log_cap_bytes"] - request["stdout_cap_bytes"],
+                             toolrun.STDERR_CAP_BYTES)
+        # The same caps through the supervisor: 0.14.0-rc.1's 234,442-byte report is retained
+        # whole; output past the stdout cap fails the run, never passed as whole.
+        supervisor = toolrun.Supervisor(fake_supervisor(self.path("cap-supervisor")))
+        for size, whole in ((234442, True), (245760, True), (245761, False)):
+            with self.subTest(size=size):
+                result = toolrun.run(supervisor, ["/bin/sh", "-c", 'head -c "$0" /dev/zero',
+                                                  str(size)], {"PATH": "/usr/bin:/bin"}, 30,
+                                     clicases.stdout_bytes(log), cwd=self.tmp, log_cap=log)
+                self.assertEqual(result.stdout_bytes, size)
+                if whole:
+                    self.assertTrue(result.ok, result.failure())
+                    self.assertEqual(len(result.stdout), size)
+                else:
+                    self.assertFalse(result.ok)
+                    self.assertLessEqual(len(result.stdout), 245760)
+                    self.assertIn("over its 245760-byte output cap", result.failure())
+        # A total that leaves stderr no room, or exceeds the 1-MiB hard cap, is refused.
+        for output, total in ((log, log), (245760, 2 * 1024 * 1024)):
+            with self.assertRaises(ContractError):
+                toolrun.request(supervisor, ["/bin/true"], {}, 1, output, log_cap=total)
+        default = toolrun.request(supervisor, ["/bin/true"], {}, 1, 4096)
+        self.assertEqual(default["log_cap_bytes"], 4096 + toolrun.STDERR_CAP_BYTES)
 
     def test_a_cli_command_that_fails_its_oracle_is_an_omission_never_a_trace(self):
         doc, _ = self.profile("linux_gnu_trace", [DISCOVERY], {}, {}, af_config={

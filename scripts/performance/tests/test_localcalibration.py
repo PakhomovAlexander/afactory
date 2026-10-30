@@ -13,7 +13,7 @@ from perflab import (budget, calibration, contracts, executor, gitrefs, localcal
 from perflab.values import ContractError, canonical_digest, format_decimal
 from tests import calibration_fixtures as fx
 from tests.support import TempDir, lab_repo, read, SYNTHETIC_SUITE
-from tests.test_executor import config, IMAGE, PRODUCER
+from tests.test_executor import config, IMAGE, PRODUCER, plenty_of_space
 
 
 class LocalOriginals(TempDir):
@@ -38,6 +38,7 @@ class LocalOriginals(TempDir):
         self.producer = mock.patch.object(executor, "producer", return_value=PRODUCER)
         self.producer.start()
         self.addCleanup(self.producer.stop)
+        plenty_of_space(self)
         self.now = calibration.start_unix_ms(self.cohort) / 1000 + 3600
         self.clock = mock.patch.object(executor.time, "time", side_effect=lambda: self.now)
         self.clock.start()

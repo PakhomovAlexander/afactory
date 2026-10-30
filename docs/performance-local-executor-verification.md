@@ -778,7 +778,89 @@ new contract's golden examples were added; and two tests outside the changed pat
 (`test_telemetry_workflow` admission, whose subprocess read the rendered page this change was
 editing while the suite ran, and the `test_whole_source_repairs` 2.5-second deadline) failed
 under load and passed alone. `make perf-kernel-measure`, which this protected-harness change
-requires, is recorded in the Task's report with its result.
+requires, was not recorded here with its result; the next section records its run on the
+following candidate.
 
 Not established here: Docker, a real perf, Claw, the v0.13.0 against v0.14.0-rc.1 comparison or
 its export. The outer operator runs that from the installed candidate control.
+
+## Image, storage, CLI log and musl debug-information admission (2026-10-30)
+
+This change repairs four gaps the operator's Claw runs of candidate `fe1d1e59` found, after
+integrating main `955e24bf` (the ADR index keeps both ADR-0264 and ADR-0265). Its focused
+checks ran on a macOS development host (Python 3.14.7) with injected computation; nothing
+here ran Docker, a real perf, Claw or GitHub Actions.
+
+- **Image and image-local tool admission** (`tests/test_executor.py`, `ImageAdmission`). A
+  stand-in docker client answers `image inspect` for the images it holds and runs each probe
+  container's entrypoint on this host. Preflight and submission refuse, reserving nothing and
+  starting only bounded `af-perf-probe-` containers, an absent pinned build image, an absent
+  sample image, a `zigbuild_bin` without cargo-zigbuild and a Zig 0.15.1 where the musl recipe
+  pins 0.15.2. With both images and the pinned tools present, preflight is `ready` and lists
+  `build_image`, `sample_image` and `image_toolchain` (rustc 1.88.0, cargo-zigbuild 0.23.4,
+  Zig 0.15.2); the probes' exclusion settles clean. When the build image is then removed, the
+  claim's own admission ends the original `failed`, measurement `unavailable`, before any
+  build, with no fence kept. A probe container whose removal is unconfirmed keeps the fence.
+  `tests/test_comparison.py` shows a missing image refusing the whole comparison before any
+  member is submitted.
+- **Physical storage** (`tests/test_executor.py`,
+  `test_storage_admission_needs_the_policy_bound_and_the_filesystems_free_space`). The root
+  filesystem's available bytes are injected at `Journal.free_bytes`: within a 100 GiB
+  `max_bytes`, one byte less than the native reserve is refused at preflight, at submission and
+  at the claim (which leaves the original queued and builds nothing); exactly the reserve is
+  ready. A 1 PiB filesystem never admits a reserve over `max_bytes`. Every other executor,
+  comparison and local calibration fixture injects ample space, so no test depends on this
+  host's disk.
+- **CLI diagnostic log total** (`tests/test_diagnostics.py`,
+  `CliCases.test_a_cli_command_keeps_the_cores_whole_sample_log_total`). Through a real
+  diagnostic child run, every CLI command's supervisor request is 245,760 bytes of stdout in a
+  262,144-byte log (it was 311,296), and every other tool keeps its 64 KiB stderr allowance.
+  Through the stand-in supervisor with those caps, 234,442 and 245,760 bytes are retained whole
+  and 245,761 bytes fail the run as over its output cap. A total without stderr room or above
+  the 1 MiB hard cap is refused.
+- **Bounded musl CPU-profile debug information** (`tests/test_builds.py`,
+  `test_the_musl_shipping_cpu_profile_builds_bounded_line_tables_with_frame_pointers`). The
+  real Builder, with a stand-in musl toolchain and cargo-zigbuild, builds the
+  `linux_musl_cpu_profile` child plan through `zigbuild`; every step records
+  `-Cdebuginfo=line-tables-only` and `-Cforce-frame-pointers=yes` with
+  `CARGO_PROFILE_RELEASE_DEBUG=true`, and the recipe digest and settings bind them. The
+  shipping verdict build sets neither. `tests/test_diagnostics.py` `Registry` checks the
+  derivation for every recipe. No real musl AF was built here, so its size under this setting
+  is not measured; on GNU the same setting gave a 285,890,672-byte AF.
+
+Focused command, from the repository root:
+
+```sh
+cd scripts/performance && /opt/homebrew/bin/python3.14 -I -B -c 'import sys,unittest; sys.path.insert(0,"."); unittest.main(module=None,argv=["unittest","tests.test_executor","tests.test_comparison","tests.test_localcalibration","tests.test_builds","tests.test_diagnostics","tests.test_hostobserver","tests.test_telemetry_diagnostics","tests.test_runner.CliOracle","tests.test_contracts","tests.test_supervise"])'
+```
+
+**300 tests, 776.630 seconds, exit 1**, run while a Rust build shared the host. Four cases of
+three executor tests failed with `host_mismatch`, as in the sections above: they need a Linux
+host for the contained mode. With `diagnostics.host_os` patched to Linux they pass (4 tests,
+6.738 s). `test_hostobserver` `test_bounded_runner_ends_its_whole_group_at_its_deadline` and
+`test_supervise` `test_a_late_confirmation_in_real_time_is_unconfirmed`, real-time assertions
+on paths this change does not touch, failed under that load and passed alone (2 tests,
+0.742 s). Every other test passed.
+
+Protected harness:
+
+```sh
+make perf-kernel-measure
+```
+
+**PASS, exit 0:** `perf_kernel_measure::guarded_kernel_experiments_measure_one_judged_sample`,
+1 passed, 776.847 s (778.285 s with its build), after
+`python3 -I scripts/performance/cli.py harness-digest --write` re-pinned
+`fixtures/performance/kernel-measure/` to the protected harness
+`sha256:56432bb59d0a45c708fa0a2be3aa6700c06e2ba34448d169a7d7ccad7738c65a` (667 files; only
+the changed protected Python files differ) and `--check` passed. A run before that re-pin
+failed in 3.392 s as it should: the staged policy was stale for the changed tree. The `cargo`
+on this host's PATH is Homebrew's 1.94.0, not the pinned 1.88.0. `scripts/test-classes.py audit`, `scripts/changelog-notes.py --check` and
+`scripts/performance/schemas.py` pass, and `cargo clippy --workspace --all-targets -- -D
+warnings` passes with the pinned 1.88.0 (Homebrew's 1.94 reports `manual_is_multiple_of` in
+unchanged Rust code).
+
+Not established here: Docker, a real perf, Claw, a musl CPU capture and its flamegraphs, the
+v0.13.0 against v0.14.0-rc.1 comparison or its export. The host observer's timeout and cleanup
+repairs have not yet reached an actual AF capture on musl. The outer operator reruns the musl
+CPU acceptance on Claw from this candidate.

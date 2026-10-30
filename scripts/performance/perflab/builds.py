@@ -300,11 +300,11 @@ def refuse_implicit_volumes(docker, reference, budget=None):
 class BuildImage:
     """A build image pinned by digest and present locally, run as this user."""
 
-    def __init__(self, docker, reference, uid=None, gid=None, budget=None):
+    def __init__(self, docker, reference, uid=None, gid=None, budget=None, role="build image"):
         self.budget = budget
         if not pinned_image(reference):
-            raise Unavailable("build_image_unpinned", "the build image %s is not pinned by "
-                              "digest" % reference)
+            raise Unavailable("build_image_unpinned", "the %s %s is not pinned by "
+                              "digest" % (role, reference))
         try:
             images.canonical(reference)
         except ContractError as error:
@@ -322,15 +322,15 @@ class BuildImage:
         except OSError as error:
             raise Unavailable("no_container_runtime", "%s: %s" % (docker, error))
         if result.returncode != 0:
-            raise Unavailable("build_image_unavailable", "the build image %s is not present "
+            raise Unavailable("build_image_unavailable", "the %s %s is not present "
                               "on this host (builds never pull): %s" % (
-                                  reference, _first_line(result.stderr)))
+                                  role, reference, _first_line(result.stderr)))
         fields = result.stdout.decode("utf-8", "replace").strip().split("\t")
         require(len(fields) == 5, "docker image inspect gave no identity for %s" % reference)
         self.id, image_os, arch, repo_digests, image_env = [json.loads(f) for f in fields]
         if reference.startswith("sha256:"):
-            require(self.id == reference, "the build image ID is %s, not %s" % (self.id,
-                                                                                reference))
+            require(self.id == reference, "the %s ID is %s, not %s" % (role, self.id,
+                                                                       reference))
         else:
             # A manifest digest names the image only under exactly its repository name; it is
             # never compared with the local image ID (ADR-0170).
@@ -340,8 +340,8 @@ class BuildImage:
                                       self.id, reference, ", ".join(repo_digests or [])
                                       or "none"))
         if image_os != "linux":
-            raise Unavailable("build_image_unsupported", "the build image %s is %s, not Linux"
-                              % (reference, image_os))
+            raise Unavailable("build_image_unsupported", "the %s %s is %s, not Linux"
+                              % (role, reference, image_os))
         self.platform = "linux/%s" % arch
         self.env = dict(item.split("=", 1) for item in image_env or [] if "=" in item)
 

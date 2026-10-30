@@ -560,6 +560,57 @@ class FakeBuild(TempDir):
         self.assertNotIn("CARGO_PROFILE_RELEASE_DEBUG", builder.environment())
         self.assertNotIn("CARGO_ENCODED_RUSTFLAGS", builder.environment())
 
+    def test_the_musl_shipping_cpu_profile_builds_bounded_line_tables_with_frame_pointers(self):
+        # The Claw musl CPU acceptance built a full-debug 802,606,040-byte baseline AF that
+        # left no room under the unchanged 1-GiB artifact cap for the later artifacts. Its
+        # diagnostic build now freezes the same line-tables-only level as the GNU recipe,
+        # through cargo-zigbuild, recorded in every step and the recipe digest; the shipping
+        # verdict build keeps neither.
+        loaded = suite_module.load(SUITE)
+        declared = diagnostics.load(os.path.join(ROOT, diagnostics.REGISTRY_PATH), loaded.doc)
+        recipe_id = "linux_musl_cpu_profile"
+        recipe = diagcontracts.diagnostic_recipe(loaded.doc, declared, recipe_id)
+        base = loaded.doc["recipes"]["linux_musl_shipping"]
+        self.assertEqual((recipe["builder"], recipe["linker"], recipe["target"]),
+                         ("cargo_zigbuild", "zig_cc", "x86_64-unknown-linux-musl"))
+        self.assertEqual(recipe["rustflags"], ["-Cdebuginfo=line-tables-only"])
+        self.assertEqual(base["rustflags"], [])
+        self.assertTrue(recipe["debug_symbols"] and recipe["frame_pointers"])
+        toolchain = builds.Toolchain(build_fixtures.fake_toolchain(
+            self.path("musl-toolchain"), "x86_64-unknown-linux-musl"), "1.88.0")
+        zig = build_fixtures.fake_zigbuild(self.path("zig"))
+        plan = plan_for(self.repo, self.base, self.head, self.authority, run_id="musl_cpu",
+                        environment="linux_x86_64_musl_hosted", trusted_host_build=True,
+                        diagnostic_recipe=(recipe_id, recipe,
+                                           diagcontracts.frozen_identity(declared, recipe_id)))
+        builder = builds.Builder(self.repo.path, plan, toolchain, registry(),
+                                 free_bytes=PLENTY, zigbuild_bin=zig)
+        doc = builder.build()
+        self.assertEqual(doc["recipe_digest"], contracts.recipe_digest(
+            recipe_id, recipe, plan["profile"]["build"]))
+        records = [doc["supervisor"]["step"]]
+        for side in ("baseline", "candidate"):
+            record = doc["sides"][side]
+            self.assertEqual(record["status"], "succeeded", record)
+            self.assertEqual(record["argv"][1], "zigbuild")
+            self.assertEqual(record["settings"], contracts.recipe_settings(recipe))
+            records.append(record)
+            records.extend(item["step"] for item in record["adapter_outcomes"]
+                           if item["step"] is not None)
+        for record in records:
+            env = record["environment"]
+            self.assertEqual(env["CARGO_ENCODED_RUSTFLAGS"].split("\x1f"),
+                             ["-Cdebuginfo=line-tables-only", "-Cforce-frame-pointers=yes"])
+            self.assertEqual(env["CARGO_PROFILE_RELEASE_DEBUG"], "true")
+        shipping = plan_for(self.repo, self.base, self.head, self.authority,
+                            run_id="musl_shipping", environment="linux_x86_64_musl_hosted",
+                            trusted_host_build=True)
+        builder = builds.Builder(self.repo.path, shipping, toolchain, registry(),
+                                 free_bytes=PLENTY, zigbuild_bin=zig)
+        self.assertEqual(builder.recipe["rustflags"], [])
+        self.assertNotIn("CARGO_PROFILE_RELEASE_DEBUG", builder.environment())
+        self.assertNotIn("CARGO_ENCODED_RUSTFLAGS", builder.environment())
+
     def test_the_reported_production_probe_size_is_refused_before_reading(self):
         # #353's actual failure: AF and the supervisor had consumed this room before the
         # 531-MB full-debug probe arrived. Keep that refusal under the unchanged cap.

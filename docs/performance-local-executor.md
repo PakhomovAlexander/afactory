@@ -177,17 +177,34 @@ python3 -I -B /opt/af-perf/control/scripts/performance/cli.py executor \
 
 It prints `af.perf-executor-preflight/1` and exits 0 when `ready`, or 4 with the exact first
 refusal: an unreachable root or mirror through any ancestor, a source that does not resolve, a
-reused key, a full queue or journal, missing capacity, the serial bounds above (`serial`) or a
+reused key, a full queue or journal, missing capacity, the serial bounds above (`serial`), a
 profile's diagnostic tools (`tools`, with the host observer's actual capability as
-`host_observer`, checked under the machine exclusion). A ready preflight is not a reservation:
-submit next.
+`host_observer`, checked under the machine exclusion) or the configured images (`tools`:
+`build_image`, `sample_image`, `image_toolchain`, or `image_admission` with the refusal). A
+ready preflight is not a reservation: submit next.
+
+Preflight, submission and the claim each check the configured `build_image` and
+`sample_image` as the compute account: pinned by digest, present on this host (nothing pulls),
+Linux and declaring no implicit writable volume. In the build image they run the recipe's own
+probes: its exact Rust toolchain and target and, for the musl shipping recipe, the
+`zigbuild_bin` directory's cargo-zigbuild and Zig at their pinned versions. These probes start
+containers, so preflight and submission take the machine exclusion for them (a busy machine
+refuses the check) and the claim runs them under its own. A missing image or tool refuses
+before any original, claim or build, naming the image or tool. One that disappears after
+submission ends the original `failed` (measurement `unavailable`) before its first build, with
+no fence kept; only a probe container whose removal is unconfirmed keeps the fence. Nothing is
+pulled, provisioned or re-pinned for you: provision the pinned image, then submit again.
 
 Preflight, submission and the claim admit storage with one calculation: the bytes the root
 holds now plus the original's native reserve (core and profile: worktree, sources, scratch,
 three build artifacts and four copies of every shard bundle; telemetry: 24 GiB of builds and
 the profile's `work_bytes`; each plus four `archive_bytes` and one `history_bytes`) must fit
-`max_bytes`. A refusal prints the bytes held, the reserve, their sum, `max_bytes` and what is
-available, so a ready preflight is never refused at the claim for a different figure. A
+`max_bytes`, and the root's filesystem must have that reserve available to the compute account
+now. `max_bytes` is a bound, not space: a 100 GiB bound on a nearly full filesystem is refused,
+and a large filesystem never lets the reserve exceed `max_bytes`. A refusal prints the bytes
+held, the reserve, their sum, `max_bytes`, what the bound leaves and the filesystem's available
+bytes, so a ready preflight is refused at the claim only when the space was taken in between;
+the original then stays queued, and nothing is pruned to make room. A
 telemetry or profile original is admitted in time the same way, before any claim or build:
 the executor's 30-second reserve, 600 seconds of source retention, each telemetry build's
 whole 4,800-second cap (or the parent plan's `build_minutes`), 240 seconds of scratch
@@ -491,7 +508,10 @@ neither accepts the other. Every rule still checks all 100 Findings (identity, s
 severity, location, distinct keys and the summary tally) over the whole document. A CLI
 sample keeps stdout within its unchanged `sample_log_bytes` total less a 16 KiB stderr reserve
 (245,760 of 262,144 bytes), which holds 0.14.0-rc.1's 234,442-byte report whole; an output
-past it is truncated and refused as truncated, never parsed as a prefix.
+past it is truncated and refused as truncated, never parsed as a prefix. A diagnostic child run
+of a CLI case asks the supervisor for the same split: 245,760 bytes of stdout within a 262,144-byte
+total log, never that stdout plus another tool's 64 KiB stderr allowance (other diagnostic
+tools keep it, under the unchanged 1 MiB per-run log cap).
 
 The 10,000-event seeds (the native `state_projection` seed and the `task show` and Campaign CLI
 seeds) are written by each side's own probe through the same protected public writers, but in
