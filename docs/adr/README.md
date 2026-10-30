@@ -508,7 +508,9 @@ future readers need.
   self](0267-offer-a-nightly-channel-in-af-self.md)
 - [0268 — Quarantine flaky tests on gate evidence and confirm them on
   Claw](0268-quarantine-flaky-tests-on-gate-evidence-and-confirm-them-on-claw.md)
-- [0269 — Compose the nightly report from the night's record and the executor
-  journal](0269-compose-the-nightly-report-from-the-nights-record-and-the-executor-journal.md)
-- [0270 — Publish nightlies as pre-releases and prune
-  them](0270-publish-nightlies-as-pre-releases-and-prune-them.md)
+- [0270 — Compose the nightly report from the night's record and the executor
+  journal](0270-compose-the-nightly-report-from-the-nights-record-and-the-executor-journal.md)
+- [0271 — Publish nightlies as pre-releases and prune
+  them](0271-publish-nightlies-as-pre-releases-and-prune-them.md)
+- [0272 — Run the nightly chain as systemd units on the owner's
+  VM](0272-run-the-nightly-chain-as-systemd-units-on-the-owners-vm.md)

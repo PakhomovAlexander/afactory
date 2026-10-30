@@ -277,7 +277,7 @@ nightly, and a nightly is never pinned by `.af/af.lock`: `scripts/pin-release.sh
 night is published on GitHub as a pre-release of its tag, never marked latest, holding the two
 archives, the signed `SHA256SUMS`, the build record and the daily report; only the newest
 nightly pre-releases stay, 14 by default
-([ADR-0270](adr/0270-publish-nightlies-as-pre-releases-and-prune-them.md)).
+([ADR-0271](adr/0271-publish-nightlies-as-pre-releases-and-prune-them.md)).
 
 ## Removing af
 

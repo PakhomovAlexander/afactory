@@ -8,5 +8,5 @@
   with the reason; only a night without `nightly.json` is refused. `nightly.toml` gains a
   `[report]` table, and `build.py` and `report.py` share one bounded GitHub reader on
   `urllib.request`, whose timeout is now 30 s for the connection as for each read
-  ([ADR-0269](docs/adr/0269-compose-the-nightly-report-from-the-nights-record-and-the-executor-journal.md),
+  ([ADR-0270](docs/adr/0270-compose-the-nightly-report-from-the-nights-record-and-the-executor-journal.md),
   [`docs/nightly.md`](docs/nightly.md#the-daily-report)).

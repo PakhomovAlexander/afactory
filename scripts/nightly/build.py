@@ -1,13 +1,16 @@
 #!/usr/bin/env python3
 """Build a signed nightly af from the newest green main on the owner's Linux VM (ADR-0265).
 
-    python3 -I scripts/nightly/build.py plan  --config PATH --date YYYY-MM-DD [--previous PATH]
-    python3 -I scripts/nightly/build.py build --config PATH --date YYYY-MM-DD [--previous PATH]
-                                              [--only-plan]
+    python3 -I scripts/nightly/build.py plan  --config PATH [--date YYYY-MM-DD | --night-of UNIT]
+                                              [--previous PATH]
+    python3 -I scripts/nightly/build.py build --config PATH [--date YYYY-MM-DD | --night-of UNIT]
+                                              [--previous PATH] [--only-plan]
 
-`plan` walks the first parents of the mirror's refs/heads/main from its tip and prints, as an
-af.nightly-plan/1 document, the newest commit whose `check /` check runs are all green, every
-red commit it walked over, the previous night and the stable baseline. `build` builds that
+Without --date the night is the UTC date systemd last started UNIT, or else today's UTC date,
+printed on stderr (ADR-0272, scripts/nightly/nightlychain.py). `plan` walks the first parents
+of the mirror's refs/heads/main from its tip and prints, as an af.nightly-plan/1 document, the
+newest commit whose `check /` check runs are all green, every red commit it walked over, the
+previous night and the stable baseline. `build` builds that
 plan in the pinned musl image, packages and smokes both Linux targets as the release does,
 signs SHA256SUMS with the nightly key and writes builds_root/<date>/nightly.json
 (af.nightly-build/1). It never pushes, publishes, posts or deletes anything outside
@@ -35,19 +38,22 @@ ROOT = os.path.dirname(os.path.dirname(HERE))
 sys.path.insert(0, os.path.join(ROOT, "scripts", "performance"))
 sys.path.insert(0, HERE)
 
+import nightlychain  # noqa: E402
 import nightlygithub  # noqa: E402
-# The bounds of each GitHub request (ADR-0265, amended by ADR-0269).
+# The bounds of each GitHub request (ADR-0265, amended by ADR-0270).
 from nightlygithub import CONNECT_SECONDS, READ_SECONDS, RESPONSE_BYTES_MAX  # noqa: E402,F401
 from perflab import contracts, gitrefs, tomlfile  # noqa: E402
 from perflab.nightlycontracts import (CHECK_PREFIX, DATE_PATTERN, RELEASE_JOB_PREFIX,  # noqa: E402
                                       RELEASE_JOBS, SIGNATURE, SUMS, TARGETS, asset_name,
-                                      night_date, nightly_tag, nightly_version)
+                                      nightly_tag, nightly_version)
 from perflab.values import ContractError, loads_strict, require  # noqa: E402
 
 EXIT_BUILT, EXIT_REFUSED, EXIT_SKIPPED = 0, 1, 3
 MAX_WALK_DEFAULT = 20
 GREEN = ("success", "skipped")
 PASSWORD_ENV = "AF_NIGHTLY_SIGN_PASSWORD"
+# The systemd credential the build unit may hold the passphrase as instead (ADR-0272).
+PASSWORD_CREDENTIAL = "af-nightly-sign-password"
 SHELLS = ("bash", "zsh", "fish", "elvish", "powershell")
 # Bounds of each external step, in seconds.
 FETCH_SECONDS, BUILD_SECONDS, PROBE_SECONDS = 1800, 5400, 120
@@ -580,13 +586,28 @@ class Night:
                 "sha256": "sha256:" + hashlib.sha256(data).hexdigest(), "bytes": len(data),
                 "smoke": "passed", "version_json": version_json}
 
+    def credential_password(self):
+        """The passphrase systemd's LoadCredential= gave this process as
+        `$CREDENTIALS_DIRECTORY/af-nightly-sign-password`, its first line; "" without one."""
+        directory = self.environ.get("CREDENTIALS_DIRECTORY")
+        path = os.path.join(directory, PASSWORD_CREDENTIAL) if directory else None
+        if path is None or not os.path.isfile(path):
+            return ""
+        try:
+            with open(path, "r", encoding="utf-8") as stream:
+                lines = stream.read(4096).splitlines()
+        except (OSError, UnicodeDecodeError) as error:
+            raise Refused("the credential %s: %s" % (PASSWORD_CREDENTIAL, getattr(
+                error, "strerror", None) or type(error).__name__))
+        return lines[0] if lines else ""
+
     def sign(self, entries):
         digests = dict((entry["asset"][len("dist/"):], entry["sha256"][len("sha256:"):])
                        for entry in entries)
         with open(os.path.join(self.root, SUMS), "w", encoding="ascii", newline="") as stream:
             stream.write(sha256sums_text(digests))
         env = {"PATH": self.path_env(), "LC_ALL": "C"}
-        password = self.environ.get(PASSWORD_ENV, "")
+        password = self.environ.get(PASSWORD_ENV, "") or self.credential_password()
         comment = "af " + self.plan["tag"]
         # -W signs with a key that has no passphrase; with one, minisign reads it from stdin.
         argv = ["minisign", "-S"] + ([] if password else ["-W"]) + [
@@ -697,7 +718,7 @@ def parse(argv):
                        ("build", "build, package, smoke and sign the plan's commit")):
         command = commands.add_parser(name, help=text)
         command.add_argument("--config", required=True, help="the af.nightly-config/1 TOML")
-        command.add_argument("--date", required=True, help="the night, YYYY-MM-DD")
+        nightlychain.add_night_options(command)
         command.add_argument("--previous", help="the previous night's nightly.json, built or "
                              "skipped, instead of the newest one under builds_root")
         if name == "build":
@@ -712,18 +733,21 @@ def emit(doc):
     sys.stdout.flush()
 
 
-def main(argv=None, github=None, host=None, clock=now_ms, environ=None):
+def main(argv=None, github=None, host=None, clock=now_ms, environ=None,
+         show=nightlychain.systemctl_show):
     args = parse(argv)
     environ = os.environ if environ is None else environ
     try:
-        night_date(args.date, "--date")
+        date, chosen = nightlychain.night(args, clock, show, Refused)
+        if chosen:
+            sys.stderr.write(chosen)
         config = load_config(args.config)
         git = Mirror(config["mirror"])
         if github is None:
             github = GitHub(config["repository"], read_token(config))
         started = clock()
-        previous = previous_night(config["builds_root"], args.date, args.previous)
-        plan = make_plan(config, args.date, git, github, previous)
+        previous = previous_night(config["builds_root"], date, args.previous)
+        plan = make_plan(config, date, git, github, previous)
         skipped = plan["status"] == "skipped"
         if args.command == "plan":
             emit(plan)

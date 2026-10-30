@@ -1,0 +1,45 @@
+# Step 1 of the nightly chain (ADR-0265, ADR-0272, docs/nightly.md#the-nightly-chain): build
+# the night of the UTC date this unit started from the newest green main. A built night (exit
+# 0) or a skipped one (exit 3, main has not moved) hands over to the measurement; a refused
+# build (exit 1) ends the chain, because the later steps need the night's nightly.json.
+#
+# The build runs Docker with the night's directory bind-mounted into the build container, and
+# the Docker daemon resolves those paths in the host's mount namespace: a private /tmp or a
+# filesystem view of this unit's own would hand the daemon paths it cannot see. So, as for the
+# executor's compute unit, PrivateTmp=no and no mount hardening; account and file permissions
+# keep it apart. The account needs Docker access (the docker group).
+[Unit]
+Description=AF nightly: build tonight's nightly (step 1 of 4)
+Wants=network-online.target
+After=network-online.target af-perf-source-refresh.service
+OnSuccess=af-nightly-measure.service
+
+[Service]
+Type=oneshot
+User=af-nightly
+Group=af-perf-readers
+UMask=0027
+Environment=PYTHONDONTWRITEBYTECODE=1
+# A nightly key with a passphrase: hold it as the credential af-nightly-sign-password (a file
+# root alone reads), which build.py reads from $CREDENTIALS_DIRECTORY,
+#LoadCredential=af-nightly-sign-password:/etc/af-nightly/sign-password
+# or else as AF_NIGHTLY_SIGN_PASSWORD in a root-owned 0600 environment file. Never a value here.
+#EnvironmentFile=/etc/af-nightly/sign-password.env
+ExecStart=/usr/bin/python3 -I -B /opt/af-perf/control/scripts/nightly/build.py build --config /etc/af-nightly/nightly.toml --night-of af-nightly-build.service
+SuccessExitStatus=3
+# Above the sum of build.py's own bounds: the fetch, two builds, the smokes and the signature.
+TimeoutStartSec=2h
+TimeoutStopSec=120
+KillMode=control-group
+OOMPolicy=stop
+TasksMax=2048
+MemoryMax=16G
+CPUAccounting=yes
+MemoryAccounting=yes
+LimitNOFILE=4096
+LogRateLimitIntervalSec=60
+LogRateLimitBurst=100
+PrivateTmp=no
+PrivateMounts=no
+ProtectSystem=no
+ProtectHome=no

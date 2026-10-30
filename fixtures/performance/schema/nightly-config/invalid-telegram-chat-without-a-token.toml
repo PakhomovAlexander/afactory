@@ -11,7 +11,7 @@
 #
 # The build reads only these files and the GitHub check runs of main's commits; it writes only
 # builds_root/<date>/ and the Cargo cache builds_root/cache/, and never pushes or publishes.
-# Only publish.py writes to GitHub and Telegram, with the [publish] table's tokens (ADR-0270).
+# Only publish.py writes to GitHub and Telegram, with the [publish] table's tokens (ADR-0271).
 
 schema = "af.nightly-config/1"
 # The repository whose check runs decide which main commit is green.
@@ -40,7 +40,7 @@ max_walk = 20
 # anonymously, which works for a public repository.
 # github_token_file = "/etc/af-nightly/github-token"
 
-# Publishing (scripts/nightly/publish.py, ADR-0270); the build never reads this table.
+# Publishing (scripts/nightly/publish.py, ADR-0271); the build never reads this table.
 [publish]
 # A file holding a GitHub token with contents write on the repository, separate from the
 # read-only github_token_file above; it creates, amends and prunes the nightly pre-releases.

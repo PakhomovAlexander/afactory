@@ -1097,8 +1097,8 @@
   },
   {
    "path": "fixtures/performance/schema/index.json",
-   "sha256": "sha256:03266f17baaec529bf14d6dabb65b32a00cb57a1036b41efe624b7d849cfda7a",
-   "size": 81078
+   "sha256": "sha256:a8b08930f035c0df6d48e8cd55b630d2c9628de51433e6be65fb9a999decba05",
+   "size": 81498
   },
   {
    "path": "fixtures/performance/schema/kernel-inventory/invalid-digest.json",
@@ -1352,8 +1352,18 @@
   },
   {
    "path": "fixtures/performance/schema/nightly-config/invalid-history-nights.toml",
-   "sha256": "sha256:a26fd95303de05705a72f368bdbb2ff029aed9b9fefac1aaf2bec3698eee1f73",
+   "sha256": "sha256:c2dec8ee54cffc1ea66d25621bbf9fe552309b6c810c6546c798f32bf7e1b86d",
    "size": 3537
+  },
+  {
+   "path": "fixtures/performance/schema/nightly-config/invalid-measure-deadline.toml",
+   "sha256": "sha256:d07fb8c92f5963cf8e07902332230040a74b007676f20b3bf136b2999403ed02",
+   "size": 5681
+  },
+  {
+   "path": "fixtures/performance/schema/nightly-config/invalid-reports-root-inside-builds-root.toml",
+   "sha256": "sha256:9cc9e2727998dace9eb918338afde58846dc1cdaea01c4409db8a7cca0d16d41",
+   "size": 5689
   },
   {
    "path": "fixtures/performance/schema/nightly-config/invalid-requires-a-release-job.toml",
@@ -1362,7 +1372,7 @@
   },
   {
    "path": "fixtures/performance/schema/nightly-config/invalid-telegram-chat-without-a-token.toml",
-   "sha256": "sha256:426fc210254a913b19b559133dcc6d9bcd5bc23bbc6c43c4a3801682fbeec968",
+   "sha256": "sha256:23f78d424f99248a7636878b359a98d6a2cf1eb4f9e94d5ca36a110930820462",
    "size": 3205
   },
   {
@@ -2897,8 +2907,8 @@
   },
   {
    "path": "scripts/performance/perflab/nightlycontracts.py",
-   "sha256": "sha256:6408f03968bc4a99df67af779de9e5bd28101e1f14b6ae392e3a30b77e0ea284",
-   "size": 32198
+   "sha256": "sha256:69501914e87899bea9aac928b754977c85ba751fafe532aadc6a6e62bcca9a9f",
+   "size": 34583
   },
   {
    "path": "scripts/performance/perflab/oracle.py",
@@ -3049,6 +3059,31 @@
    "path": "scripts/performance/schemas.py",
    "sha256": "sha256:d69448533f4c01110c6c1fb8f12e44eee7a46787df5173afc9972d994ebbd16a",
    "size": 1675
+  },
+  {
+   "path": "scripts/performance/service/af-nightly-build.service",
+   "sha256": "sha256:9c68c15963c0f1d4181cccfd4895c2a671eff8475da7af84c45a491f972d601e",
+   "size": 2047
+  },
+  {
+   "path": "scripts/performance/service/af-nightly-measure.service",
+   "sha256": "sha256:3da3a6f8f5feb1d2c7f6926be1c96643aaf16f718c54d6f517fb53e699ff66bd",
+   "size": 1632
+  },
+  {
+   "path": "scripts/performance/service/af-nightly-publish.service",
+   "sha256": "sha256:7a14009da25826c862b29146565ca6b9d54668b931ba16d9b5c4dfbf281d97ff",
+   "size": 1571
+  },
+  {
+   "path": "scripts/performance/service/af-nightly-report.service",
+   "sha256": "sha256:2c2f34a942c4f7f637d660ec87fddb21d9bbe62262e23f0d4af31aed1ad7b75f",
+   "size": 1512
+  },
+  {
+   "path": "scripts/performance/service/af-nightly.timer",
+   "sha256": "sha256:75f273f36f2c4f32a3b0c7cfb3293ddc3bc7f7669b64bbb6e011f29ada1c379c",
+   "size": 788
   },
   {
    "path": "scripts/performance/service/af-perf-executor.service.in",
@@ -3277,18 +3312,23 @@
   },
   {
    "path": "scripts/performance/tests/test_nightly_build.py",
-   "sha256": "sha256:8ab9520c7347d3fcfb477ec7cd1a9259c49cedc5d812d45e4e07119c43581b2a",
-   "size": 48745
+   "sha256": "sha256:e7d6934a50d1545d1ddec7fa1fadb0276b38fe3e3b545f2bf48b43233a8d4c9d",
+   "size": 50601
+  },
+  {
+   "path": "scripts/performance/tests/test_nightly_measure.py",
+   "sha256": "sha256:4cd378a91f1cc5db3619c585a58ef483c26d376ea8e33a32b6d383313c94b4df",
+   "size": 27206
   },
   {
    "path": "scripts/performance/tests/test_nightly_publish.py",
-   "sha256": "sha256:9b7583e5bb336b6d47f1f6b0d12ac230afc38360561c44e8ed75fdbbe69dd259",
-   "size": 41090
+   "sha256": "sha256:9a516e90c087fc25b0924f2f5fbd70971424707197590b06ec83fd7e3d6f448a",
+   "size": 44886
   },
   {
    "path": "scripts/performance/tests/test_nightly_report.py",
-   "sha256": "sha256:aa8d2ea7f6b42b41b4c04da341c452f62056273a120cd35db43b30ecf8dd6c5e",
-   "size": 58444
+   "sha256": "sha256:d05a169605be7abd6b21ed3029583dc5ea26f7bc4df54ba27c735ffacb778474",
+   "size": 62515
   },
   {
    "path": "scripts/performance/tests/test_oracle.py",
@@ -3471,7 +3511,7 @@
    "size": 6777
   }
  ],
- "harness_digest": "sha256:e4bc73a6920ea8fae12629bd0de6ed353fbaa419afbe4f85dbfaba020511b29e",
+ "harness_digest": "sha256:4b0ad3cbf8beed27e2b09e46fb852bf7b1d5afa6d350f61a30b197d1ba98d47b",
  "inner_metric": "pending",
  "inner_metric_reason": "the inner wall_ms metric is recorded in every Measurement but no staged objective selects it until the guard's real kernel integration and tampered-candidate tests are accepted on the sealed source and a reviewed human change installs and selects it",
  "objective_metric": "elapsed_ms",

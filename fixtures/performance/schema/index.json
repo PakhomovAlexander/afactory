@@ -1239,6 +1239,20 @@
       "shape": false
     },
     {
+      "path": "nightly-config/invalid-measure-deadline.toml",
+      "contract": "nightly-config",
+      "valid": false,
+      "error": "must be within 30..600",
+      "shape": true
+    },
+    {
+      "path": "nightly-config/invalid-reports-root-inside-builds-root.toml",
+      "contract": "nightly-config",
+      "valid": false,
+      "error": "reports_root and builds_root lie apart",
+      "shape": false
+    },
+    {
       "path": "plan-refusal/invalid-status.json",
       "contract": "plan-refusal",
       "valid": false,

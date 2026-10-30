@@ -1,9 +1,15 @@
 #!/usr/bin/env python3
 """Compose the owner's daily nightly report from the night's record and the executor journal
-(ADR-0269).
+(ADR-0270).
 
-    python3 -I -B scripts/nightly/report.py compose --config PATH --date YYYY-MM-DD --output DIR
+    python3 -I -B scripts/nightly/report.py compose --config PATH
+                                                [--date YYYY-MM-DD | --night-of UNIT]
+                                                [--output DIR | --output-root ROOT]
 
+Without --date the night is the UTC date systemd last started UNIT, or else today's UTC date;
+without --output the directory is ROOT/DATE, or ROOT/DATE.K with the smallest K >= 2 free, ROOT
+being --output-root or the configuration's reports_root (ADR-0272). Every default is printed on
+stderr, the directory written on stdout.
 `compose` reads builds_root/DATE/nightly.json (af.nightly-build/1), the nightly executor's
 journal (the originals keyed nightly:TAG:core and nightly:TAG:telemetry and the earlier nights'
 core originals, each verified before use and bound to the night's build), its local telemetry
@@ -14,7 +20,8 @@ inputs; an input that is missing or refused leaves its section unavailable with 
 never a guess. It never pushes, publishes, posts, deletes, runs Docker or cargo.
 
 Exit codes: 0 composed (whatever is unavailable), 1 refused with the reason on stderr: the
-night has no nightly.json, the configuration or command line is malformed, or DIR exists.
+night has no nightly.json, the configuration or command line is malformed, DIR exists, or ROOT
+is no directory or already holds REPORTS_PER_NIGHT_MAX reports of the night.
 docs/nightly.md is the operator page.
 """
 import argparse
@@ -33,11 +40,12 @@ ROOT = os.path.dirname(os.path.dirname(HERE))
 sys.path.insert(0, os.path.join(ROOT, "scripts", "performance"))
 sys.path.insert(0, HERE)
 
+import nightlychain  # noqa: E402
 import nightlygithub  # noqa: E402
 from perflab import contracts, executor, hostlock, render, tomlfile  # noqa: E402
 from perflab import report as labreport  # noqa: E402
 from perflab.nightlycontracts import (HISTORY_NIGHTS_DEFAULT, PULL_REQUESTS_MAX,  # noqa: E402
-                                      SECTIONS, TELEMETRY_SHOWN, UNCHANGED, night_date, number)
+                                      SECTIONS, TELEMETRY_SHOWN, UNCHANGED, number)
 from perflab.values import (ContractError, canonical_digest, document_bytes,  # noqa: E402
                             parse_rational, sha256_bytes)
 
@@ -47,6 +55,8 @@ DIGEST_BYTES_MAX = 3500
 STALE_DAYS = 14
 DAY_MS = 24 * 3600 * 1000
 STALE_SHOWN_MAX = 20
+# The most report directories one night may have below a reports root: DATE, DATE.2 and on.
+REPORTS_PER_NIGHT_MAX = 99
 AF_BYTES_MAX = 1 << 30
 SYSTEMCTL_SECONDS = 30
 PROC_LOCKS = "/proc/locks"
@@ -1156,27 +1166,51 @@ def digest_text(doc):
 _after_mkdir = None
 
 
-def write(output, doc):
-    """Create the new directory `output` and write exactly the three files into it, by
-    descriptor: the parent is opened as a directory, the new directory is created and opened
-    below it without following a link, and each file is created by name below that open
-    directory, so a rename or a symlink put in the way between the steps changes nothing
-    outside the directory this call made."""
+def report_names(date):
+    """The names a night's report directory takes below a reports root, in the order they are
+    tried: `DATE`, then `DATE.2`, `DATE.3` and on (ADR-0272)."""
+    return [date] + ["%s.%d" % (date, k) for k in range(2, REPORTS_PER_NIGHT_MAX + 1)]
+
+
+def write(doc, output=None, root=None):
+    """Create a new directory and write exactly the three files into it, by descriptor; the
+    path of the directory written.
+
+    The directory is `output`, which must not exist, or else the first of `report_names` free
+    below `root`, each tried by an exclusive mkdir. The parent is opened as a directory, the
+    new directory is created and opened below it without following a link, and each file is
+    created by name below that open directory, so a rename or a symlink put in the way between
+    the steps changes nothing outside the directory this call made."""
     files = ((DAILY_JSON, contracts.write_bytes(doc, "nightly-daily")),
              (REPORT_HTML, html_bytes(doc)), (DIGEST_MD, digest_text(doc)))
-    parent, name = os.path.split(os.path.abspath(output).rstrip(os.sep))
-    if not name:
-        raise Refused("--output %s: not a directory name" % output)
+    if root is None:
+        where = "--output %s" % output
+        parent, name = os.path.split(os.path.abspath(output).rstrip(os.sep))
+        if not name:
+            raise Refused("%s: not a directory name" % where)
+        names = [name]
+    else:
+        where = "--output-root %s" % root
+        parent, names = os.path.abspath(root), report_names(doc["date"])
     parent_fd = dir_fd = None
     try:
         try:
             parent_fd = os.open(parent or os.sep, os.O_RDONLY | os.O_DIRECTORY)
-            os.mkdir(name, 0o755, dir_fd=parent_fd)
+            for name in names:
+                try:
+                    os.mkdir(name, 0o755, dir_fd=parent_fd)
+                    break
+                except FileExistsError:
+                    if root is None:
+                        raise
+            else:
+                raise Refused("%s already holds %d reports of the night %s"
+                              % (where, len(names), doc["date"]))
         except OSError as error:
-            raise Refused("--output %s: %s (a report is written into a new directory)"
-                          % (output, error))
+            raise Refused("%s: %s (a report is written into a new directory)" % (where, error))
+        written = os.path.join(parent, name)
         if _after_mkdir is not None:
-            _after_mkdir(output)
+            _after_mkdir(written if root is not None else output)
         try:
             dir_fd = os.open(name, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW,
                              dir_fd=parent_fd)
@@ -1186,12 +1220,13 @@ def write(output, doc):
                 with os.fdopen(fd, "wb") as stream:
                     stream.write(data)
         except OSError as error:
-            raise Refused("--output %s is not the directory this report created: %s"
-                          % (output, error))
+            raise Refused("%s is not the directory this report created: %s"
+                          % (where if root is None else written, error))
     finally:
         for fd in (dir_fd, parent_fd):
             if fd is not None:
                 os.close(fd)
+    return written
 
 
 class Parser(argparse.ArgumentParser):
@@ -1209,19 +1244,35 @@ def parse(argv):
                                   "digest.md of one night into a new directory")
     command.add_argument("--config", required=True, help="the af.nightly-config/1 TOML with "
                          "its [report] table")
-    command.add_argument("--date", required=True, help="the night, YYYY-MM-DD")
-    command.add_argument("--output", required=True, help="the new directory to write into")
+    nightlychain.add_night_options(command)
+    directory = command.add_mutually_exclusive_group()
+    directory.add_argument("--output", help="the new directory to write into")
+    directory.add_argument("--output-root", help="write into ROOT/DATE, or ROOT/DATE.K "
+                           "with the smallest K >= 2 free when DATE exists (default: the "
+                           "configuration's reports_root)")
     return parser.parse_args(argv)
 
 
-def main(argv=None, github=None, host=None, clock=now_ms):
+def main(argv=None, github=None, host=None, clock=now_ms, show=nightlychain.systemctl_show):
     args = parse(argv)
     try:
-        night_date(args.date, "--date")
-        if os.path.lexists(args.output):
+        date, chosen = nightlychain.night(args, clock, show, Refused)
+        if chosen:
+            sys.stderr.write(chosen)
+        if args.output is not None and os.path.lexists(args.output):
             raise Refused("--output %s exists: a report is written into a new directory"
                           % args.output)
         config = load_config(args.config)
+        root = args.output_root
+        if args.output is None and root is None:
+            if "reports_root" not in config:
+                raise Refused("compose needs --output, --output-root or the configuration's "
+                              "reports_root")
+            root = config["reports_root"]
+            sys.stderr.write("nightly: --output-root %s (the configuration's reports_root)\n"
+                             % root)
+        if root is not None and not os.path.isdir(root):
+            raise Refused("--output-root %s is not a directory" % root)
         if github is None:
             try:
                 token = nightlygithub.read_token(config.get("github_token_file"), Unavailable)
@@ -1229,12 +1280,13 @@ def main(argv=None, github=None, host=None, clock=now_ms):
                 github = Offline(str(error))
             else:
                 github = GitHub(config["repository"], token)
-        doc = compose(config, args.date, github, host or Host(), clock)
-        write(args.output, doc)
+        doc = compose(config, date, github, host or Host(), clock)
+        written = write(doc, output=args.output, root=root)
     except (Refused, ContractError) as error:
         sys.stderr.write("nightly: refused: %s\n" % error)
         return EXIT_REFUSED
-    sys.stderr.write("nightly: composed %s: %s\n" % (args.output, doc["headline"]["text"]))
+    sys.stdout.write(written + "\n")
+    sys.stderr.write("nightly: composed %s: %s\n" % (written, doc["headline"]["text"]))
     return EXIT_COMPOSED
 
 

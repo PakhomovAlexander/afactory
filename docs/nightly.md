@@ -3,16 +3,20 @@
 The owner's Linux VM builds a signed nightly af from the newest green commit of main
 ([ADR-0265](adr/0265-build-nightlies-from-the-newest-green-main-on-the-owners-vm.md)),
 composes its [daily report](#the-daily-report)
-([ADR-0269](adr/0269-compose-the-nightly-report-from-the-nights-record-and-the-executor-journal.md))
+([ADR-0270](adr/0270-compose-the-nightly-report-from-the-nights-record-and-the-executor-journal.md))
 and publishes it as a GitHub pre-release
-([ADR-0270](adr/0270-publish-nightlies-as-pre-releases-and-prune-them.md)). This page covers the
-build step, `scripts/nightly/build.py`, the report step, `scripts/nightly/report.py`, and the
-publish step, `scripts/nightly/publish.py`; the measurement is the
-[nightly executor's](performance-local-executor.md#nightly-originals), and the systemd chain
-that runs them in turn comes later. Nothing here runs on GitHub Actions. The build never
-pushes, publishes, posts or deletes anything outside `builds_root/<date>/` and its own claim
-`builds_root/<date>.active`; the report writes only its new `--output` directory; only
-`publish` writes to GitHub and Telegram ([Publishing](#publishing)).
+([ADR-0271](adr/0271-publish-nightlies-as-pre-releases-and-prune-them.md)), every night, as four
+systemd units that hand over to each other
+([ADR-0272](adr/0272-run-the-nightly-chain-as-systemd-units-on-the-owners-vm.md)). This page
+covers the build step, `scripts/nightly/build.py`, the measure step, `scripts/nightly/measure.py`,
+which submits the night to the [nightly executor](performance-local-executor.md#nightly-originals)
+and waits for it, the report step, `scripts/nightly/report.py`, the publish step,
+`scripts/nightly/publish.py`, and the runbook of [the nightly chain](#the-nightly-chain) that
+runs them in turn. Nothing here runs on GitHub Actions. The build never pushes, publishes,
+posts or deletes anything outside `builds_root/<date>/` and its own claim
+`builds_root/<date>.active`; the measurement writes only through the nightly executor; the
+report writes only its new directory; only `publish` writes to GitHub and Telegram
+([Publishing](#publishing)).
 
 A nightly is tagged `nightly-YYYY.MM.DD` and versioned `<core>-nightly.<YYYYMMDD>`: the workspace
 version of the chosen commit without its pre-release part (`0.14.0-rc.3` → `0.14.0`), or with its
@@ -55,8 +59,12 @@ is a commented copy to start from. Unknown keys refuse the file.
 | `required_checks` | Check-run names that must be present and green, beside every `check /` run. A release-workflow job is refused here. |
 | `max_walk` | How many first-parent commits back from main's tip may be inspected (1 to 200, default 20). |
 | `github_token_file` | Optional file holding a read-only GitHub token, for the build's check runs and the report's reads alike; without it the API is asked anonymously, which works for a public repository. |
-| `[report]` | Optional table that only `report.py` reads; `compose` refuses a configuration without it. |
-| `report.executor_config` | Absolute path of the nightly executor's configuration (`/etc/af-nightly/executor.toml`); its `root` is the journal the report reads and its `machine_id` names the host. |
+| `reports_root` | Optional absolute path below which `compose` writes each night's report directory and `publish` finds the newest, when the command line names neither a directory nor a root ([The daily report](#the-daily-report)); apart from `builds_root` and `mirror`. |
+| `[measure]` | Optional table that only `measure.py` reads; every key has a default. |
+| `measure.deadline_minutes` | How long `measure` cycles the nightly executor before it gives up on the originals still queued or running (30 to 600, default 300). |
+| `measure.poll_seconds` | How long `measure` waits after a `busy` or `idle` cycle, or while another process holds the journal (10 to 600, default 60). |
+| `[report]` | Optional table that `report.py` and `measure.py` read; `compose` and `measure` refuse a configuration without it. |
+| `report.executor_config` | Absolute path of the nightly executor's configuration (`/etc/af-nightly/executor.toml`); its `root` is the journal the report reads and its `machine_id` names the host, and `measure` submits to and cycles it. |
 | `report.history_nights` | How many earlier nights the trend shows beside this one: the last that many the journal holds a core original of, by tag date (1 to 60, default 14). |
 | `report.headline_instances` | One to four instance IDs, as the suite names them, whose candidate medians the trend plots. |
 | `[publish]` | The table only `publish` reads, below; `build` ignores it, and `publish` refuses a file without it. |
@@ -65,6 +73,7 @@ The `[publish]` table:
 
 | Key | Meaning |
 |---|---|
+| `github_token_file` | The file holding a GitHub token with contents write on the repository, never the read-only top-level `github_token_file`; it creates, amends and prunes the nightly pre-releases. |
 | `telegram_token_file` | Optional file holding the Telegram bot token; set together with `telegram_chat_id` or not at all. |
 | `telegram_chat_id` | Optional chat the message goes to: a numeric chat id or `@channel`. Without the two keys nothing is sent and the receipt says so. |
 | `keep_nights` | How many nightly pre-releases stay on GitHub (3 to 60, default 14). |
@@ -72,9 +81,19 @@ The `[publish]` table:
 A token file holds the token alone on its first line. Neither token is ever printed, logged,
 written to the receipt or passed as an argument.
 
-The key's passphrase, if it has one, is read from `AF_NIGHTLY_SIGN_PASSWORD` and given to
-`minisign` on its standard input, never as a flag; without it the key is used with `minisign -W`
-(a key without a passphrase).
+The key's passphrase, if it has one, is read from `AF_NIGHTLY_SIGN_PASSWORD`, or else from the
+systemd credential `af-nightly-sign-password` (`$CREDENTIALS_DIRECTORY/af-nightly-sign-password`,
+its first line), and given to `minisign` on its standard input, never as a flag; without either
+the key is used with `minisign -W` (a key without a passphrase).
+
+Every step, `plan` included, takes its night as `--date YYYY-MM-DD`, or as `--night-of UNIT`:
+the UTC date at which systemd last started the service UNIT (`systemctl show
+--property=ExecMainStartTimestamp --timestamp=unix`); a unit that has not started since boot
+refuses. Without either the night is today's UTC date. The step prints the night it chose on
+stderr, `nightly: --date 2026-10-29 (today's UTC date)` or `nightly: --date 2026-10-29 (the UTC
+date af-nightly-build.service last started)`. The chain's units pass `--night-of
+af-nightly-build.service`, so the four steps of one night agree however long the measurement
+runs past midnight UTC ([The nightly chain](#the-nightly-chain)).
 
 ## What a night does
 
@@ -160,14 +179,18 @@ replaces it. A night that already has `nightly.json` is never built again.
 ## Publishing
 
 ```sh
-python3 -I scripts/nightly/publish.py publish --config nightly.toml --date 2026-10-29 \
-    --report /var/lib/af-nightly/reports/2026-10-29 [--notify-again]
+python3 -I -B scripts/nightly/publish.py publish --config nightly.toml --date 2026-10-29 \
+    --report-root /var/lib/af-nightly/reports [--notify-again]
 ```
 
-`--report DIR` is the daily report's directory: `daily.json` must parse as JSON whose `schema`
-starts with `af.nightly-daily/`, `report.html` is at most 4 MiB, and `digest.md` is UTF-8 text
-of at most 3500 bytes; a missing, empty or oversized file refuses. A skipped night reads none of
-them.
+The report is `--report DIR`, the daily report's directory, or else the newest of the night's
+directories below `--report-root ROOT` or, without either, below the configuration's
+`reports_root`: of `ROOT/<date>` and `ROOT/<date>.<k>` the one with the highest `k`, as
+[`compose --output-root`](#the-daily-report) names them; a link is never one. `publish` prints
+the directory it chose and the root it defaulted to on stderr. `daily.json` must parse as JSON
+whose `schema` starts with `af.nightly-daily/`, `report.html` is at most 4 MiB, and `digest.md`
+is UTF-8 text of at most 3500 bytes; a missing, empty or oversized file refuses, and so does a
+built night with no report directory under the root. A skipped night reads none of them.
 
 For a `built` night, `publish`:
 
@@ -231,7 +254,8 @@ release after the release is published still writes the receipt.
 
 ## Exit codes
 
-These are `build.py`'s; `report.py`'s are under [Composing again](#composing-again).
+These are `build.py`'s and `publish.py`'s; `measure.py`'s are under
+[The measurement](#the-measurement), `report.py`'s under [Composing again](#composing-again).
 
 | Exit | Meaning |
 |---|---|
@@ -239,21 +263,235 @@ These are `build.py`'s; `report.py`'s are under [Composing again](#composing-aga
 | 3 | Skipped: main's newest green commit is the previous night's (`build`, `build --only-plan`). |
 | 1 | Refused, with the reason on stderr as `nightly: refused: …`; a malformed command line too. From `publish` also: published, with the receipt written, but the Telegram message or a pruning request failed (`nightly: failed: …`) or a foreign nightly-named release was left alone (`nightly: refused: …`). |
 
-## Running one night by hand
+## The measurement
+
+`measure` submits the night to the nightly executor and waits for it, inside its own process:
 
 ```sh
-git -C /var/lib/af-nightly/afactory.git fetch --prune origin
-python3 -I scripts/nightly/build.py plan --config nightly.toml --date 2026-10-29
-python3 -I scripts/nightly/build.py build --config nightly.toml --date 2026-10-29
-python3 -I scripts/nightly/publish.py publish --config nightly.toml --date 2026-10-29 \
-    --report /var/lib/af-nightly/reports/2026-10-29
+python3 -I -B scripts/nightly/measure.py submit --config nightly.toml --date 2026-10-29
 ```
 
-Run it from a checkout of the trusted repository, not from the night's `source/`. `plan` prints
-the commit it would build and every red commit it walked over; `build --only-plan` prints the
-same plan and exits as `build` would (0 or 3) without writing anything. `--previous PATH`
-compares with a built or skipped record other than the newest one. `publish` prints the
-release URL; running it again amends the night.
+It reads `builds_root/<date>/nightly.json`. A skipped night measures nothing and exits 0. For a
+built night it submits the core and then the telemetry original through the executor of the
+tree it runs from, never another checkout, to the configuration `[report] executor_config`
+names:
+
+```sh
+python3 -I -B scripts/performance/cli.py executor --config <executor_config> submit \
+    --work core --kind nightly --tag nightly-2026.10.29 --head <head_sha>
+python3 -I -B scripts/performance/cli.py executor --config <executor_config> submit \
+    --work telemetry --kind nightly --tag nightly-2026.10.29 --head <head_sha>
+```
+
+A submission of a night already submitted prints the existing original, so running `measure`
+again is safe. Then it runs that executor's `status` and `cycle` in turn until `status` shows
+both originals in a terminal state (`complete`, `failed`, `interrupted`, `uncertain` or
+`expired`) or `[measure] deadline_minutes` have passed since it started. After a cycle that
+answers `busy` (the machine lock is held) or `idle`, or while another process holds the journal,
+it waits `[measure] poll_seconds`, never past the deadline. No cycle starts after the deadline,
+and a cycle that has started is never interrupted: the executor bounds it by its own
+`run_seconds`. A cycle the executor refuses is followed by a `status`: when an original moved
+(a failed launch ends it `uncertain`) the wait goes on, otherwise the step fails. On success it
+prints each original on stdout, `nightly:nightly-2026.10.29:core exp_… complete`. The nightly
+executor's configuration is submitted to and cycled by this step alone: never run an
+`af-perf-executor@` unit on it, so the two never race for its journal.
+
+| Exit | Meaning |
+|---|---|
+| 0 | Both originals ended, whatever their outcome, or the night was skipped. |
+| 1 | `nightly: failed: …`: the deadline passed, and the message names each original still queued or running (`running (claimed)`); or the executor refused a `status`, or a `cycle` after which nothing moved. `nightly: refused: …`: the night has no `nightly.json`, the configuration has no `[report]` table or is malformed, the command line is malformed, or the executor refused a submission (a core original submitted before a refused telemetry one stays queued until `measure` runs again). |
+
+## The nightly chain
+
+On the owner's VM the four steps run as systemd units from the installed control
+`/opt/af-perf/control` ([the local executor](performance-local-executor.md#install-trusted-control-and-source-access));
+their files are in [`scripts/performance/service/`](../scripts/performance/service/):
+
+| Unit | Account | Runs | Then |
+|---|---|---|---|
+| `af-nightly.timer` | | `OnCalendar=*-*-* 22:05:00 UTC`, `Persistent=true` | starts `af-nightly-build.service` |
+| `af-nightly-build.service` | `af-nightly` | `build.py build` | `OnSuccess=af-nightly-measure.service`: a built night (exit 0) or a skipped one (exit 3, `SuccessExitStatus=3`) |
+| `af-nightly-measure.service` | `af-perf-exec` | `measure.py submit` | `OnSuccess=` and `OnFailure=af-nightly-report.service` |
+| `af-nightly-report.service` | `af-perf-exec` | `report.py compose --output-root /var/lib/af-nightly/reports` | `OnSuccess=af-nightly-publish.service` |
+| `af-nightly-publish.service` | `af-nightly` | `publish.py publish --report-root /var/lib/af-nightly/reports` | the night ends |
+
+Each service is `Type=oneshot` in the group `af-perf-readers` and runs
+`/usr/bin/python3 -I -B /opt/af-perf/control/scripts/nightly/<script>.py … --config
+/etc/af-nightly/nightly.toml --night-of af-nightly-build.service` with
+`Environment=PYTHONDONTWRITEBYTECODE=1`, each its own process under its own account, so a step
+that dies takes no other with it. Every step works on the UTC date at which the build unit
+started, the night it built, however late the measurement ends. A refused build ends the chain:
+the later steps need its `nightly.json`. A measurement that failed or passed its deadline is
+still reported, its originals shown as they stand, and published. A refused compose has no
+report to publish and ends the chain; rerun it once its cause is fixed ([Recovery](#recovery)).
+
+The units carry the executor units' bounds (`TimeoutStartSec`, `KillMode=control-group`,
+`MemoryMax`, `TasksMax`, `LimitNOFILE`, log rate limits). The build and the measurement share
+the host's `/tmp` and mount namespace (`PrivateTmp=no`, `PrivateMounts=no`, no `ProtectSystem`
+or `ProtectHome`, `OOMPolicy=stop`): the build bind-mounts the night's directory into its
+containers and the Docker daemon resolves those paths in the host's namespace, and the
+measurement takes the machine lock in `/tmp` and loop-mounts scratch the daemon must see, as
+the executor's compute unit does. The report and the publish measure nothing and are hardened
+like the source refresh (`ProtectSystem=strict`, `NoNewPrivileges=yes`, `ProtectHome=yes`,
+`ReadWritePaths=` the reports root or the builds root); the publish has a private `/tmp`, and
+the report keeps the host's to see whether the machine lock is held.
+
+### What runs when
+
+At 22:05 UTC the timer starts the build; `Persistent=true` starts a night the VM was off for
+when it is up again, as the night of the day it starts then. The build takes about 25 minutes
+(its unit allows 2 hours). The measurement waits for the core nightly, about three hours
+([Nightly originals](performance-local-executor.md#nightly-originals)), and then the telemetry
+original, up to `deadline_minutes` (300 by default) plus the one cycle running at the
+deadline (its unit allows 18 h 30 min: the longest deadline, 600 minutes, and the example's
+8-hour `run_seconds`). Compose and publish take minutes (their units allow 1 hour each, the
+bounds of their GitHub requests). A built night is so published in the small hours UTC of
+the next day, a skipped night within minutes, and the four steps work on the same night: the
+four bounds add to 22 h 30 min, less than the day between two timer starts, so the next
+build never starts while a chain still runs, and a step whose build unit last started more
+than 23 hours ago refuses as out of order rather than work on another night.
+
+## Install
+
+The performance executor is installed first, with its accounts `af-perf-source` and
+`af-perf-exec`, the group `af-perf-readers`, the source mirror and its refresh timer, the machine
+lock and the installed control ([the local executor](performance-local-executor.md)); the
+nightly executor's configuration is `/etc/af-nightly/executor.toml`
+([Nightly originals](performance-local-executor.md#nightly-originals)). Then, as root:
+
+```sh
+useradd --system --user-group --shell /usr/sbin/nologin af-nightly
+usermod --append --groups af-perf-readers,docker af-nightly
+install -d -o root -g af-perf-readers -m 0750 /etc/af-nightly
+install -d -o root -g root -m 0755 /var/lib/af-nightly
+install -d -o af-nightly -g af-perf-readers -m 0750 /var/lib/af-nightly/builds
+install -d -o af-perf-exec -g af-perf-readers -m 0750 /var/lib/af-nightly/reports
+```
+
+| Path | Owner, group, mode | Holds |
+|---|---|---|
+| `/etc/af-nightly/nightly.toml` | `root`, `af-perf-readers`, 0640 | this configuration, from [`nightly.example.toml`](../scripts/nightly/nightly.example.toml); it names files and holds no secret |
+| `/etc/af-nightly/executor.toml` | `root`, `af-perf-readers`, 0640 | the nightly executor's configuration, writable by no one else, as the executor requires |
+| `/etc/af-nightly/nightly.key` | `root`, `af-nightly`, 0440 | the nightly minisign secret key |
+| `/etc/af-nightly/nightly.pub` | `root`, `af-perf-readers`, 0644 | its public key |
+| `/etc/af-nightly/github-token` | `root`, `af-perf-readers`, 0440 | the optional read-only token, read by the build and the report |
+| `/etc/af-nightly/github-publish-token`, `/etc/af-nightly/telegram-token` | `root`, `af-nightly`, 0440 | the publish tokens, readable by `af-nightly` alone |
+| `builds_root`, `/var/lib/af-nightly/builds` | `af-nightly`, `af-perf-readers`, 0750 | the nights and the Cargo cache; the measurement and the report read it |
+| `reports_root`, `/var/lib/af-nightly/reports` | `af-perf-exec`, `af-perf-readers`, 0750 | the report directories; the publish reads them |
+| `mirror` | the executor's `/var/lib/af-perf-executor/source.git`, or one of your own | main and the tags; the executor's mirror, which the source refresh keeps fetched and the group reads, can serve; a mirror of your own needs a fetch before 22:05 UTC |
+
+The units set `UMask=0027`, so what one step writes the next reads through the group; the
+measurement keeps the executor's `UMask=0077` for the journal. Secrets stay files: the
+configuration names the token files, and a unit names credentials, never a value. For a
+nightly key with a passphrase, put it in `/etc/af-nightly/sign-password` (root, 0600) and
+uncomment `LoadCredential=af-nightly-sign-password:/etc/af-nightly/sign-password` in the build
+unit, or put `AF_NIGHTLY_SIGN_PASSWORD=…` in a root-owned 0600 file and uncomment its
+`EnvironmentFile=` line instead. The publish tokens may be held as systemd credentials too:
+uncomment the publish unit's `LoadCredential=github-publish-token:/etc/af-nightly/github-publish-token`
+(and `telegram-token`), make the files root's alone, and point `[publish] github_token_file`
+at `/run/credentials/af-nightly-publish.service/github-publish-token` (and `telegram_token_file`
+at `…/telegram-token`); the step then reads them only inside its unit.
+
+Install the units and start the timer:
+
+```sh
+install -m 0644 /opt/af-perf/control/scripts/performance/service/af-nightly.timer \
+    /opt/af-perf/control/scripts/performance/service/af-nightly-*.service /etc/systemd/system/
+systemctl daemon-reload
+systemctl enable --now af-nightly.timer
+systemctl list-timers af-nightly.timer
+```
+
+Only the timer is enabled; the timer and the hand-over start the four services.
+
+## The first night by hand
+
+Before the first evening, run the four steps once in the units' order, each as its unit's
+account and in the shared group `af-perf-readers`, as the units run (`-g af-perf-readers`: an
+account's own primary group would leave the night's directory unreadable to the next step),
+from the installed control, with `umask 027` in your shell as the units have it:
+
+```sh
+cd /
+umask 027
+sudo -u af-nightly -g af-perf-readers python3 -I -B /opt/af-perf/control/scripts/nightly/build.py build \
+    --config /etc/af-nightly/nightly.toml --date 2026-10-29
+sudo -u af-perf-exec -g af-perf-readers python3 -I -B /opt/af-perf/control/scripts/nightly/measure.py submit \
+    --config /etc/af-nightly/nightly.toml --date 2026-10-29
+sudo -u af-perf-exec -g af-perf-readers python3 -I -B /opt/af-perf/control/scripts/nightly/report.py compose \
+    --config /etc/af-nightly/nightly.toml --date 2026-10-29 \
+    --output-root /var/lib/af-nightly/reports
+sudo -u af-nightly -g af-perf-readers python3 -I -B /opt/af-perf/control/scripts/nightly/publish.py publish \
+    --config /etc/af-nightly/nightly.toml --date 2026-10-29 \
+    --report-root /var/lib/af-nightly/reports
+```
+
+What each leaves behind, and where to look:
+
+1. `build` prints the night's record and exits 0 (built) or 3 (skipped):
+   `/var/lib/af-nightly/builds/2026-10-29/nightly.json`, with `dist/` and `logs/` beside it
+   ([The night's directory](#the-nights-directory)). `plan` and `build --only-plan` show the
+   commit it would choose without building; `--previous PATH` compares with another record.
+2. `measure` prints each original and its end state. The journal's own view (while a cycle
+   runs, the journal is held and this `status` is refused as busy; `measure` in turn waits
+   while yours runs):
+
+   ```sh
+   sudo -u af-perf-exec -g af-perf-readers python3 -I -B /opt/af-perf/control/scripts/performance/cli.py executor \
+       --config /etc/af-nightly/executor.toml status
+   ```
+
+   lists every original's state; the night's are keyed `nightly:nightly-2026.10.29:core` and
+   `…:telemetry` in each request's `submission`, and `verify --request-id` prints a result.
+3. `compose` prints the directory it wrote, `/var/lib/af-nightly/reports/2026-10-29`, holding
+   `daily.json`, `report.html` and `digest.md` ([The daily report](#the-daily-report)).
+4. `publish` prints the release URL and writes
+   `/var/lib/af-nightly/builds/2026-10-29/publish.json` ([Publishing](#publishing)).
+
+A key with a passphrase, or tokens held as systemd credentials, are only there inside the
+units: run that night through them instead, `systemctl start af-nightly-build.service`, which
+runs the whole chain for today's UTC date, and follow it with `journalctl -f -u 'af-nightly-*'`.
+
+## Amending a night
+
+A result that arrives after the night was reported, a measurement that passed its deadline or
+a report you want again: compose the night again, which writes the next directory
+(`2026-10-29.2`), and publish it, which amends the release with that newest report and sends no
+second message unless `--notify-again`:
+
+```sh
+sudo -u af-perf-exec -g af-perf-readers python3 -I -B /opt/af-perf/control/scripts/nightly/report.py compose \
+    --config /etc/af-nightly/nightly.toml --date 2026-10-29 \
+    --output-root /var/lib/af-nightly/reports
+sudo -u af-nightly -g af-perf-readers python3 -I -B /opt/af-perf/control/scripts/nightly/publish.py publish \
+    --config /etc/af-nightly/nightly.toml --date 2026-10-29 \
+    --report-root /var/lib/af-nightly/reports --notify-again
+```
+
+Originals still queued or running when `measure` gave up are finished by running `measure` of
+the night again; `systemctl start af-nightly-measure.service` does it for the night the build
+unit last started and then reports and publishes it, as the chain does.
+
+## Recovery
+
+`systemctl list-timers af-nightly.timer` shows the next and the last start. A unit that failed
+is read with `systemctl status af-nightly-<step>.service` and
+`journalctl -u af-nightly-<step>.service --since yesterday`; `systemctl --failed` lists it, and
+the next report counts it under Machine. Every step can be run again, by hand with `--date` or
+with `systemctl start af-nightly-<step>.service`, which works on the night the build unit last
+started (for the build itself, today's UTC date) and runs the rest of the chain after it:
+
+| Step | Run again |
+|---|---|
+| build | Refuses a night that has `nightly.json`, so a night is never built twice. A directory without `nightly.json` is a refused attempt, which the next build replaces. A built night that is wrong is removed by hand (`rm -r /var/lib/af-nightly/builds/2026-10-29`) before it is published, then built again. A claim `2026-10-29.active` a killed build left is removed by hand once no build of the night runs. |
+| measure | Resubmits idempotently: it prints the night's existing originals and cycles until they end. |
+| compose | Writes a new directory each time, `<date>.<k>`. A refused compose ends the chain before the publish; rerun it once its cause is fixed (`systemctl start af-nightly-report.service`, which publishes after it). |
+| publish | Amends the night ([Publishing](#publishing)); a skipped night's line is never sent twice. |
+
+An original the executor left `uncertain`, a machine-lock fence or a torn journal publication
+is the executor's to recover, under its rules, unchanged:
+[Queue and recovery outcomes](performance-local-executor.md#queue-and-recovery-outcomes).
+`measure` never clears a fence or replays an original.
 
 ## The daily report
 
@@ -262,11 +500,15 @@ building or publishing anything:
 
 ```sh
 python3 -I -B scripts/nightly/report.py compose --config nightly.toml --date 2026-10-29 \
-    --output /var/lib/af-nightly/reports/2026-10-29
+    --output-root /var/lib/af-nightly/reports
 ```
 
-`--output` must not exist; `compose` creates it and writes exactly three files into it, and
-nothing anywhere else:
+The directory is `--output DIR`, which must not exist, or a new one below `--output-root ROOT`
+or, without either, below the configuration's `reports_root`: `ROOT/<date>` when it is free,
+else `ROOT/<date>.<k>` with the smallest `k` of 2 or more that is (at most 99 directories a
+night), each tried by an exclusive `mkdir`, so a second compose of the night never takes the
+first one's directory. `compose` prints the directory it wrote on stdout, and on stderr the root
+it defaulted to. It writes exactly three files into that directory, and nothing anywhere else:
 
 - `daily.json`, `af.nightly-daily/1` (`schemas/performance-nightly-daily-v1.json`): the record
   every other file is drawn from.
@@ -339,7 +581,10 @@ the backlog and the merged pull requests unavailable, never the night.
 
 A night's report is written once into a new directory and never changed. A core result that
 arrives after the report is composed is shown by composing the night again into another
-directory; the later report supersedes the earlier one. `compose` exits 0 whenever the night
-has a record, whatever is unavailable, and 1 (`nightly: refused: …` on stderr) when the night has
-no `nightly.json`, the configuration has no `[report]` table or is malformed, the command line is
-malformed, or `--output` exists; a refusal writes nothing.
+directory, the next `<date>.<k>` below the root; the later report supersedes the earlier one,
+and `publish --report-root` takes the newest ([Amending a night](#amending-a-night)). `compose`
+exits 0 whenever the night has a record, whatever is unavailable, and 1 (`nightly: refused: …`
+on stderr) when the night has no `nightly.json`, the configuration has no `[report]` table or is
+malformed, the command line is malformed or names no directory while the configuration has no
+`reports_root`, `--output` exists, or the root is no directory or already holds 99 directories
+of the night; a refusal writes nothing.

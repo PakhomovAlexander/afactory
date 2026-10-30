@@ -1,4 +1,4 @@
-"""The nightly scripts' one GitHub reader (ADR-0265, ADR-0269).
+"""The nightly scripts' one GitHub reader (ADR-0265, ADR-0270).
 
 `build.py` reads the check runs that decide which main commit is green; `report.py` reads the
 backlog, the merged pull requests and the head's check runs for the daily report. Both ask

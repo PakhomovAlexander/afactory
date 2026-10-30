@@ -1,4 +1,4 @@
-"""The nightly train's GitHub REST transport (ADR-0265, ADR-0270), shared by build.py and
+"""The nightly train's GitHub REST transport (ADR-0265, ADR-0271), shared by build.py and
 publish.py.
 
 The reader asks for the check runs of a commit, anonymously or with the read-only token: one
@@ -22,7 +22,7 @@ sys.path.insert(0, os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 import nightlygithub  # noqa: E402
-# The reader's bounds, shared with build.py and report.py (ADR-0265, ADR-0269).
+# The reader's bounds, shared with build.py and report.py (ADR-0265, ADR-0270).
 from nightlygithub import CONNECT_SECONDS, READ_SECONDS, RESPONSE_BYTES_MAX  # noqa: E402,F401
 from perflab.nightlycontracts import TAG_PATTERN  # noqa: E402
 from perflab.values import ContractError, loads_strict  # noqa: E402

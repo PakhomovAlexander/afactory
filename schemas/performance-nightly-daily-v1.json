@@ -2,7 +2,7 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "urn:af:schema:performance-nightly-daily:1",
   "title": "af.nightly-daily/1",
-  "description": "One night's daily report record, daily.json (ADR-0269): the build, its stable baseline, the verified core verdict per instance with exact rationals and their three-significant-digit text, the telemetry figures, the trend of the headline instances across nights, what changed since the previous night, the GitHub backlog, the machine, and which sections are available and why not.",
+  "description": "One night's daily report record, daily.json (ADR-0270): the build, its stable baseline, the verified core verdict per instance with exact rationals and their three-significant-digit text, the telemetry figures, the trend of the headline instances across nights, what changed since the previous night, the GitHub backlog, the machine, and which sections are available and why not.",
   "type": "object",
   "additionalProperties": false,
   "properties": {

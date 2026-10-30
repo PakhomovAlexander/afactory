@@ -1,13 +1,18 @@
 #!/usr/bin/env python3
-"""Publish a built nightly as a GitHub pre-release, tell the owner, prune old nights (ADR-0270).
+"""Publish a built nightly as a GitHub pre-release, tell the owner, prune old nights (ADR-0271).
 
-    python3 -I scripts/nightly/publish.py publish --config PATH --date YYYY-MM-DD --report DIR
+    python3 -I scripts/nightly/publish.py publish --config PATH
+                                                  [--date YYYY-MM-DD | --night-of UNIT]
+                                                  [--report DIR | --report-root ROOT]
                                                   [--notify-again]
 
-For a `built` night (builds_root/<date>/nightly.json) `publish` verifies the night as `build`
-left it, creates the pre-release of tag nightly-YYYY.MM.DD at its head_sha with digest.md as
-its notes, uploads the two archives, SHA256SUMS, SHA256SUMS.minisig, nightly.json, daily.json
-and report.html, sends digest.md as one plain-text Telegram message, prunes the nightly
+Without --date the night is the UTC date systemd last started UNIT, or else today's UTC date;
+without --report the report is the newest of ROOT/DATE and ROOT/DATE.<k> (the highest k), ROOT
+being --report-root or the configuration's reports_root (ADR-0272); every default is printed
+on stderr. For a `built` night (builds_root/<date>/nightly.json) `publish` verifies the night
+as `build` left it, creates the pre-release of tag nightly-YYYY.MM.DD at its head_sha with
+digest.md as its notes, uploads the two archives, SHA256SUMS, SHA256SUMS.minisig,
+nightly.json, daily.json and report.html, sends digest.md as one plain-text Telegram message, prunes the nightly
 pre-releases beyond the newest `keep_nights`, writes builds_root/<date>/publish.json
 (af.nightly-publish/1) and prints the release URL. A later `publish` of the night amends it:
 the shipped archives, sums, signature and record must be the ones on the release, and only the
@@ -34,10 +39,11 @@ ROOT = os.path.dirname(os.path.dirname(HERE))
 sys.path.insert(0, os.path.join(ROOT, "scripts", "performance"))
 sys.path.insert(0, HERE)
 
+import nightlychain  # noqa: E402
 from githubrest import GitHub, Refused, https_send  # noqa: E402
 from perflab import contracts, tomlfile  # noqa: E402
 from perflab.nightlycontracts import (KEEP_NIGHTS_DEFAULT, REPORT_FILES, SIGNATURE,  # noqa: E402
-                                      SUMS, TAG_PATTERN, night_date, release_assets)
+                                      SUMS, TAG_PATTERN, release_assets)
 from perflab.values import ContractError, loads_strict  # noqa: E402
 
 EXIT_PUBLISHED, EXIT_REFUSED = 0, 1
@@ -125,6 +131,22 @@ def read_report(directory):
     if not text.strip():
         raise Refused("the report's digest.md is blank")
     return {"daily.json": daily, "report.html": html}, text
+
+
+def newest_report(root, date):
+    """The newest report directory of the night below `root`: of `<date>` and `<date>.<k>`
+    (k >= 2), the one with the highest k, as `report.py compose --output-root` names them; None
+    when there is none. A link is never one."""
+    if not os.path.isdir(root):
+        raise Refused("--report-root %s is not a directory" % root)
+    pattern = re.compile(r"^%s(?:\.([2-9]|[1-9][0-9]+))?$" % re.escape(date))
+    found = []
+    for name in os.listdir(root):
+        match = pattern.match(name)
+        path = os.path.join(root, name)
+        if match is not None and os.path.isdir(path) and not os.path.islink(path):
+            found.append((int(match.group(1) or 1), path))
+    return max(found)[1] if found else None
 
 
 def read_night(builds_root, date):
@@ -388,6 +410,10 @@ def publish(config, args, github, telegram_send, run, clock):
         amended = previous is not None
         text = "%s: no new commits on main since %s" % (record["tag"], record["previous_tag"])
     else:
+        if args.report is None:
+            raise Refused("--report-root %s holds no report of the night %s (%s or %s.<k>): "
+                          "compose it first" % (args.report_root, args.date, args.date,
+                                                args.date))
         report, text = read_report(args.report)
         shipped = verify_night(config, record, run)
         if github is None:
@@ -445,9 +471,13 @@ def parse(argv):
                                   "digest and prune old nightlies")
     command.add_argument("--config", required=True, help="the af.nightly-config/1 TOML with "
                          "its [publish] table")
-    command.add_argument("--date", required=True, help="the night, YYYY-MM-DD")
-    command.add_argument("--report", required=True, help="the report directory: daily.json, "
-                         "report.html and digest.md (a skipped night reads none of them)")
+    nightlychain.add_night_options(command)
+    directory = command.add_mutually_exclusive_group()
+    directory.add_argument("--report", help="the report directory: daily.json, report.html and "
+                           "digest.md (a skipped night reads none of them)")
+    directory.add_argument("--report-root", help="the newest of ROOT/<date> and "
+                           "ROOT/<date>.<k> is the report directory (default: the "
+                           "configuration's reports_root)")
     command.add_argument("--notify-again", action="store_true", help="send the Telegram "
                          "message again when amending a built night; a skipped night's line "
                          "is never sent twice")
@@ -455,11 +485,25 @@ def parse(argv):
 
 
 def main(argv=None, github=None, telegram_send=https_send, run=run_command,
-         clock=lambda: int(time.time() * 1000)):
+         clock=lambda: int(time.time() * 1000), show=nightlychain.systemctl_show):
     args = parse(argv)
     try:
-        night_date(args.date, "--date")
+        args.date, chosen = nightlychain.night(args, clock, show, Refused)
+        if chosen:
+            sys.stderr.write(chosen)
         config = load_config(args.config)
+        if args.report is None:
+            if args.report_root is None:
+                if "reports_root" not in config:
+                    raise Refused("publish needs --report, --report-root or the "
+                                  "configuration's reports_root")
+                args.report_root = config["reports_root"]
+                sys.stderr.write("nightly: --report-root %s (the configuration's "
+                                 "reports_root)\n" % args.report_root)
+            args.report = newest_report(args.report_root, args.date)
+            if args.report is not None:
+                sys.stderr.write("nightly: --report %s (the newest of the night under %s)\n"
+                                 % (args.report, args.report_root))
         receipt, failures = publish(config, args, github, telegram_send, run, clock)
     except (Refused, ContractError) as error:
         sys.stderr.write("nightly: refused: %s\n" % error)

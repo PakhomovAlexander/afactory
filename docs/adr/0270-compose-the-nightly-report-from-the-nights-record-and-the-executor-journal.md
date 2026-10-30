@@ -1,4 +1,4 @@
-# ADR-0269: Compose the nightly report from the night's record and the executor journal
+# ADR-0270: Compose the nightly report from the night's record and the executor journal
 
 **Status:** proposed (2026-10-30).
 

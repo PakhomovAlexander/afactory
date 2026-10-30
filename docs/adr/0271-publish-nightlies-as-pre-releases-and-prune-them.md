@@ -1,4 +1,4 @@
-# ADR-0270: Publish nightlies as pre-releases and prune them
+# ADR-0271: Publish nightlies as pre-releases and prune them
 
 **Status:** proposed (2026-10-30).
 

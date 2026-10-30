@@ -11,7 +11,7 @@
 # The build reads only these files and the GitHub check runs of main's commits; it writes only
 # builds_root/<date>/ and the Cargo cache builds_root/cache/, and never pushes or publishes.
 # The report reads the night's record, the nightly executor's journal, GitHub and three host
-# facts, and writes only the new --output directory (ADR-0269).
+# facts, and writes only the new --output directory (ADR-0270).
 
 schema = "af.nightly-config/1"
 # The repository whose check runs decide which main commit is green.
@@ -40,7 +40,7 @@ max_walk = 20
 # anonymously, which works for a public repository.
 # github_token_file = "/etc/af-nightly/github-token"
 
-# What `report.py compose` reads besides the night's record (ADR-0269); `build.py` ignores it.
+# What `report.py compose` reads besides the night's record (ADR-0270); `build.py` ignores it.
 [report]
 # The nightly executor's configuration (docs/performance-local-executor.md#nightly-originals):
 # its `root` is the journal whose nightly:<tag>:core and nightly:<tag>:telemetry originals the

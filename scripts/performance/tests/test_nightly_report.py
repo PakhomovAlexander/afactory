@@ -1,4 +1,4 @@
-"""The owner's daily nightly report (scripts/nightly/report.py, ADR-0269) with injected fakes.
+"""The owner's daily nightly report (scripts/nightly/report.py, ADR-0270) with injected fakes.
 
 Each test builds a builds root and a nightly executor journal in its own temporary directory
 from the laboratory's valid schema fixtures (the night's record, the executor request, result
@@ -808,6 +808,80 @@ class NightWithoutCoreResult(Night):
         self.assertEqual(code, 1)
         self.assertIn("has no [report] table", err)
         self.assertFalse(os.path.lexists(output))
+
+
+class ReportRoot(Night):
+    """`--output-root` and the configuration's `reports_root`, and the night defaulted to
+    today's UTC date (ADR-0272)."""
+
+    def run_main(self, *argv, clock=COMPOSED_MS):
+        out, err = io.StringIO(), io.StringIO()
+        with contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
+            code = nightly.main(["compose", "--config", self.config] + list(argv),
+                                github=self.github.client(), host=self.host,
+                                clock=lambda: clock)
+        return code, out.getvalue(), err.getvalue()
+
+    def test_each_compose_takes_the_date_then_the_smallest_free_suffix_and_prints_it(self):
+        self.night()
+        self.tonight()
+        root = self.path("reports")
+        os.mkdir(root)
+        os.mkdir(os.path.join(root, "2026-10-29.3"))
+        written = []
+        for expected in ("2026-10-29", "2026-10-29.2", "2026-10-29.4"):
+            code, out, err = self.run_main("--date", "2026-10-29", "--output-root", root)
+            self.assertEqual(code, 0, err)
+            self.assertEqual(out, os.path.join(root, expected) + "\n")
+            self.assertIn("nightly: composed %s: " % os.path.join(root, expected), err)
+            written.append(read(os.path.join(root, expected, "daily.json")))
+            self.assertEqual(sorted(os.listdir(os.path.join(root, expected))),
+                             ["daily.json", "digest.md", "report.html"])
+        self.assertEqual(sorted(os.listdir(root)), ["2026-10-29", "2026-10-29.2",
+                                                    "2026-10-29.3", "2026-10-29.4"])
+        self.assertEqual(os.listdir(os.path.join(root, "2026-10-29.3")), [])
+        self.assertEqual(len(set(written)), 1)
+
+    def test_without_date_or_directory_the_night_and_root_are_the_defaults_and_said(self):
+        self.night()
+        self.tonight()
+        root = self.path("reports")
+        os.mkdir(root)
+        write(self.config, ('reports_root = "%s"\n' % root).encode() + read(self.config))
+        # 2026-10-29T15:00:00Z.
+        code, out, err = self.run_main()
+        self.assertEqual(code, 0, err)
+        self.assertEqual(out, os.path.join(root, "2026-10-29") + "\n")
+        self.assertIn("nightly: --date 2026-10-29 (today's UTC date)\n", err)
+        self.assertIn("nightly: --output-root %s (the configuration's reports_root)\n" % root,
+                      err)
+        doc = contracts.read_json(read(os.path.join(root, "2026-10-29", "daily.json")),
+                                  "nightly-daily")
+        self.assertEqual(doc["tag"], "nightly-2026.10.29")
+        # An explicit directory is used as given, and the root says nothing.
+        code, out, err = self.run_main("--date", "2026-10-29", "--output", self.path("out"))
+        self.assertEqual((code, out), (0, self.path("out") + "\n"), err)
+        self.assertNotIn("reports_root", err)
+
+    def test_no_directory_no_root_or_both_is_refused_and_writes_nothing(self):
+        self.night()
+        before = sorted(os.listdir(self.tmp))
+        code, out, err = self.run_main("--date", "2026-10-29")
+        self.assertEqual((code, out), (1, ""))
+        self.assertIn("nightly: refused: compose needs --output, --output-root or the "
+                      "configuration's reports_root", err)
+        code, _, err = self.run_main("--date", "2026-10-29", "--output-root",
+                                     self.path("absent"))
+        self.assertEqual(code, 1)
+        self.assertIn("--output-root %s is not a directory" % self.path("absent"), err)
+        self.assertEqual(sorted(os.listdir(self.tmp)), before)
+        self.assertEqual(self.github.paths, [])
+        with contextlib.redirect_stderr(io.StringIO()) as err:
+            with self.assertRaises(SystemExit) as caught:
+                nightly.parse(["compose", "--config", self.config, "--output", self.path("a"),
+                               "--output-root", self.tmp])
+        self.assertEqual(caught.exception.code, 1)
+        self.assertIn("not allowed with argument", err.getvalue())
 
 
 class JournalRefusals(Night):

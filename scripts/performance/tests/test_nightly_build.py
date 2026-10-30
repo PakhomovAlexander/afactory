@@ -193,6 +193,21 @@ class GreenWalk(History):
         self.assertIsNone(plan["previous_head_sha"])
         contracts.read_json(json.dumps(plan).encode(), "nightly-plan")
 
+    def test_without_date_the_night_is_today_s_utc_date_and_said(self):
+        github = FakeGitHub({self.tip: LINT_FAILED, self.parent: GREEN})
+        out, err = io.StringIO(), io.StringIO()
+        with contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
+            # 2026-10-29T23:59:59.999Z: still the 29th in UTC, whatever the host's zone.
+            code = nightly.main(["plan", "--config", self.config], github=github.client(),
+                                clock=lambda: 1793318399999)
+        self.assertEqual(code, 0, err.getvalue())
+        self.assertEqual(json.loads(out.getvalue())["tag"], "nightly-2026.10.29")
+        self.assertIn("nightly: --date 2026-10-29 (today's UTC date)\n", err.getvalue())
+        # An explicit night is used as given, and nothing is said about it.
+        code, plan, err, _ = self.plan({self.tip: LINT_FAILED, self.parent: GREEN})
+        self.assertEqual((code, plan["tag"]), (0, "nightly-2026.10.29"))
+        self.assertNotIn("today's UTC date", err)
+
     def test_a_green_tip_is_chosen_without_walking(self):
         code, plan, err, github = self.plan({self.tip: GREEN, self.parent: LINT_FAILED})
         self.assertEqual(code, 0, err)
@@ -735,6 +750,21 @@ class Build(History):
         self.assertNotIn("-W", sign[0])
         self.assertFalse(any("s3cret" in word for call in host.calls for word in call[0]))
         self.assertEqual(sign[2], b"s3cret\n")
+
+    def test_a_passphrase_held_as_a_systemd_credential_reaches_minisign_on_stdin(self):
+        credentials = self.path("credentials")
+        os.mkdir(credentials)
+        with open(os.path.join(credentials, nightly.PASSWORD_CREDENTIAL), "w") as stream:
+            stream.write("s3cret\n")
+        host = FakeHost(self)
+        code, _, err = self.build(host, environ={"PATH": os.environ.get("PATH", ""),
+                                                 "CREDENTIALS_DIRECTORY": credentials})
+        self.assertEqual(code, 0, err)
+        sign = [call for call in host.calls if call[0][:2] == ["minisign", "-S"]][0]
+        self.assertNotIn("-W", sign[0])
+        self.assertFalse(any("s3cret" in word for call in host.calls for word in call[0]))
+        self.assertEqual(sign[2], b"s3cret\n")
+        self.assertNotIn("s3cret", err)
 
     def test_a_signature_that_does_not_verify_refuses_the_night(self):
         code, _, err = self.build(FakeHost(self, verifies=False))

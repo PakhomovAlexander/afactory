@@ -1,4 +1,4 @@
-"""Publishing a nightly (scripts/nightly/publish.py, ADR-0270) with injected fakes.
+"""Publishing a nightly (scripts/nightly/publish.py, ADR-0271) with injected fakes.
 
 A night is built in a temporary builds root from the nightly-build fixture; GitHub is an
 in-memory repository behind the transport's `send`, Telegram a recorder of `sendMessage`, and
@@ -753,6 +753,78 @@ class Refusals(Night):
             self.assertEqual(result.returncode, 1, argv)
             self.assertIn(b"nightly: refused: ", result.stderr)
             self.assertEqual(result.stdout, b"")
+
+
+class ReportRoot(Night):
+    """`--report-root` and the configuration's `reports_root`, and the night defaulted to
+    today's UTC date (ADR-0272)."""
+
+    def run_main(self, *argv, clock=1793286000000):
+        out, err = io.StringIO(), io.StringIO()
+        with contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
+            code = publish.main(["publish", "--config", self.config] + list(argv),
+                                github=self.github.client(), telegram_send=self.telegram.send,
+                                run=self.runner, clock=lambda: clock)
+        return code, out.getvalue(), err.getvalue()
+
+    def test_the_newest_report_of_the_night_under_the_root_is_published(self):
+        self.build()
+        root = self.path("reports")
+        for name in ("2026-10-29", "2026-10-29.2", "2026-10-29.10", "2026-10-30"):
+            self.report(os.path.join("reports", name), digest="report %s\n" % name)
+        os.mkdir(self.path("elsewhere"))
+        os.symlink(self.path("elsewhere"), os.path.join(root, "2026-10-29.11"))
+        code, out, err = self.run_main("--date", "2026-10-29", "--report-root", root)
+        self.assertEqual(code, 0, err)
+        newest = os.path.join(root, "2026-10-29.10")
+        self.assertIn("nightly: --report %s (the newest of the night under %s)\n"
+                      % (newest, root), err)
+        (release,) = self.github.releases.values()
+        self.assertEqual(release["body"], "report 2026-10-29.10\n")
+        self.assertEqual(self.telegram.sent[0]["text"], "report 2026-10-29.10\n")
+        self.assertEqual(self.receipt()["published_unix_ms"], 1793286000000)
+
+    def test_without_date_or_report_the_night_and_root_are_the_defaults_and_said(self):
+        self.build()
+        root = self.path("reports")
+        self.report(os.path.join("reports", "2026-10-29"))
+        with open(self.config) as stream:
+            text = stream.read()
+        with open(self.config, "w") as stream:
+            stream.write('reports_root = "%s"\n' % root + text)
+        # 2026-10-29T15:00:00Z.
+        code, out, err = self.run_main()
+        self.assertEqual(code, 0, err)
+        self.assertEqual(out, "https://github.com/owner/af/releases/tag/%s\n" % TAG)
+        self.assertIn("nightly: --date 2026-10-29 (today's UTC date)\n", err)
+        self.assertIn("nightly: --report-root %s (the configuration's reports_root)\n" % root,
+                      err)
+        self.assertEqual(self.github.releases[next(iter(self.github.releases))]["body"], DIGEST)
+
+    def test_a_built_night_without_a_report_under_the_root_is_refused(self):
+        self.build()
+        root = self.path("reports")
+        os.mkdir(root)
+        self.report(os.path.join("reports", "2026-10-28"))
+        code, out, err = self.run_main("--date", "2026-10-29", "--report-root", root)
+        self.assertEqual((code, out), (1, ""))
+        self.assertIn("nightly: refused: --report-root %s holds no report of the night "
+                      "2026-10-29" % root, err)
+        self.assertEqual((self.github.requests, self.telegram.sent), ([], []))
+        self.assertFalse(os.path.exists(os.path.join(self.night, "publish.json")))
+        code, _, err = self.run_main("--date", "2026-10-29")
+        self.assertEqual(code, 1)
+        self.assertIn("publish needs --report, --report-root or the configuration's "
+                      "reports_root", err)
+
+    def test_a_skipped_night_needs_no_report_under_the_root(self):
+        self.skip()
+        root = self.path("reports")
+        os.mkdir(root)
+        code, _, err = self.run_main("--date", "2026-10-30", "--report-root", root)
+        self.assertEqual(code, 0, err)
+        self.assertEqual(len(self.telegram.sent), 1)
+        self.assertEqual(self.receipt("2026-10-30")["status"], "skipped")
 
 
 class Receipt(Night):

@@ -1,0 +1,41 @@
+# Step 2 of the nightly chain (ADR-0266, ADR-0272, docs/nightly.md#the-nightly-chain): submit
+# the night's core and telemetry originals to the nightly executor (/etc/af-nightly/executor.toml)
+# and cycle it until both end or [measure] deadline_minutes pass. This unit alone submits to
+# and cycles that configuration: never run an af-perf-executor@ unit on it.
+#
+# Whatever happens, the report follows: a night whose measurement failed or timed out is
+# reported with its originals as they stand.
+#
+# It measures, so it keeps the executor's compute rules: the host's /tmp (the machine lock)
+# and mount namespace (loop-mounted scratch the Docker daemon must see), PrivateTmp=no and no
+# mount hardening (docs/performance-local-executor.md).
+[Unit]
+Description=AF nightly: measure tonight's nightly (step 2 of 4)
+After=af-perf-source-refresh.service
+OnSuccess=af-nightly-report.service
+OnFailure=af-nightly-report.service
+
+[Service]
+Type=oneshot
+User=af-perf-exec
+Group=af-perf-readers
+UMask=0077
+Environment=PYTHONDONTWRITEBYTECODE=1
+ExecStart=/usr/bin/python3 -I -B /opt/af-perf/control/scripts/nightly/measure.py submit --config /etc/af-nightly/nightly.toml --night-of af-nightly-build.service
+# Above the longest deadline (600 minutes) plus the one cycle measure.py never interrupts (the
+# executor bounds it by run_seconds, 8 hours in the example).
+TimeoutStartSec=18h30min
+TimeoutStopSec=120
+KillMode=control-group
+OOMPolicy=stop
+TasksMax=2048
+MemoryMax=16G
+CPUAccounting=yes
+MemoryAccounting=yes
+LimitNOFILE=4096
+LogRateLimitIntervalSec=60
+LogRateLimitBurst=100
+PrivateTmp=no
+PrivateMounts=no
+ProtectSystem=no
+ProtectHome=no
