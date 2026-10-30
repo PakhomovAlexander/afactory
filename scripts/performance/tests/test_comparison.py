@@ -752,7 +752,7 @@ class Comparison(ExecutorFixture):
         """The operator documentation's full-comparison configuration, applied to the executor
         configuration as it says (telemetry overrides deleted), is a valid `af.perf-executor/3`
         that launches the whole nightly family; its documented checks, run as written on the
-        launched journal, find 33 instances, 31 judged, 2 exploratory, 2852 slots in 4 shards
+        launched journal, find 33 instances, 31 judged, 2 exploratory, 2932 slots in 8 shards
         and 12 manual telemetry runs."""
         text = read(os.path.join(ROOT, "docs", "performance-local-executor.md")).decode()
 
@@ -784,7 +784,7 @@ class Comparison(ExecutorFixture):
                                launched["comparison"]["comparison_id"]],
                               input=script, capture_output=True, text=True)
         self.assertEqual(done.returncode, 0, done.stderr)
-        self.assertIn("('nightly', 'linux_x86_64_musl_claw', 4, 33, 31, 2, 2852)", done.stdout)
+        self.assertIn("('nightly', 'linux_x86_64_musl_claw', 8, 33, 31, 2, 2932)", done.stdout)
         self.assertIn("'manual', ['overhead', 'invocation_cost', 'read_latency'], 2, 12",
                       done.stdout)
         # A narrower telemetry workload fails the documented check, never passes it.
@@ -855,4 +855,3 @@ class DeclarationOnly(TempDir):
         # not submitted and the comparison derives as waiting, never complete.
         with self.assertRaisesRegex(ContractError, "not what its bundled declaration"):
             comparison.verify_export(self.bundle(claimed_complete, plan=True))
-

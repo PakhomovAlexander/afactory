@@ -476,9 +476,16 @@ the operator's to run, not something this change ran.
    release comparison's workload instead of whatever production runs: production's `tier`
    (`quick` in the example, and the `release` tier holds only 11 cases), `shards` and
    telemetry selection are not that workload. A full comparison measures the whole `nightly`
-   family on the shipping musl target in 4 serial shards, and the `manual` telemetry profile's
-   three experiments on both sides over 2 rounds. The suite's `release` tier and production's
-   own configuration stay unchanged:
+   family on the shipping musl target in 8 smaller serial shards, and the `manual` telemetry
+   profile's three experiments on both sides over 2 rounds. The cases, pairs, warmups, windows
+   and deadlines are the tier's own; only the shard count is smaller. The tier's own 4 shards
+   did not fit: on the v0.13.0 against v0.14.0-rc.1 pair, a measured first shard of 776 slots
+   stopped at 738 inside its unchanged 45-minute window
+   ([verification record](performance-local-executor-verification.md#eight-serial-shards-for-the-full-release-comparison-2026-10-30)).
+   Smaller shards are an adaptation to that measurement, not a prediction: the preflight checks
+   the schedule's worst-case bounds, never how fast a host samples, so a shard can still stop
+   at its window on other hardware. The suite's `release` tier (11 cases) and production's own
+   configuration stay unchanged:
 
    <!-- full-comparison-configuration -->
    ```toml
@@ -492,7 +499,7 @@ the operator's to run, not something this change ran.
    [core]
    tier = "nightly"
    environment = "linux_x86_64_musl_claw"
-   shards = 4
+   shards = 8
    cases = []
 
    [telemetry]
@@ -549,7 +556,8 @@ the operator's to run, not something this change ran.
    `TAG` is `v0.14.0-rc.1`. `comparison-launch` retains the frozen plan and queues the
    partitions and the telemetry original; nothing runs until `comparison-run`, since the
    timers are stopped. Before it, check that the retained plan is the whole nightly family
-   (33 case instances, 31 judged and 2 exploratory, 2852 scheduled slots in 4 shards) and
+   (33 case instances, 31 judged and 2 exploratory, 2932 scheduled slots in 8 shards: the 2852
+   of the tier's 4 shards and the health sentinels of 4 more) and
    that the telemetry original's frozen configuration measures 12 runs (3 experiments x 2
    sides x 2 rounds), with the candidate's own installed code:
 
@@ -572,7 +580,7 @@ the operator's to run, not something this change ran.
             sum(case["exploratory"] for case in cases),
             sum(len(schedule.expected_slots(plan, shard["index"])) for shard in plan["shards"]))
    print("plan: tier, environment, shards, instances, judged, exploratory, slots =", found)
-   assert found == ("nightly", "linux_x86_64_musl_claw", 4, 33, 31, 2, 2852), found
+   assert found == ("nightly", "linux_x86_64_musl_claw", 8, 33, 31, 2, 2932), found
    config = contracts.read_json(read("requests", doc["telemetry"]["request_id"],
                                      "configuration.json"), "executor")["telemetry"]
    runs = 2 * config["rounds"] * len(config["experiments"])
@@ -586,8 +594,10 @@ the operator's to run, not something this change ran.
 
    A failed check means the configuration is not the full comparison: run nothing, and
    discard that candidate journal (it holds only queued originals of this comparison) before
-   a corrected configuration with a new `root` and `journal_id`. After the comparison ends,
-   its report's telemetry lane states the same coverage, `required` 12.
+   a corrected configuration with a new `root` and `journal_id`. The launch's `schedule`
+   partitions the 8 shards into 4 serial core originals of 2 shards each; the first builds and
+   the later ones reuse its immutable build. After the comparison ends, its report's telemetry
+   lane states the same coverage, `required` 12.
 
 6. Restore the ordinary services only after the candidate's cleanup is confirmed: every
    original terminal and none `uncertain` in `comparison-status`, no
@@ -611,10 +621,11 @@ nothing here was executed by the change that documents it. `CLI` stands for
 `python3 -I -B /opt/af-perf/control/scripts/performance/cli.py executor --config
 /etc/af-perf/executor.toml`; `BASE`, `HEAD` and `TAG` are the exact full release SHAs and tag
 (for example v0.13.0 against v0.14.0-rc.1), and every key is new. Configure `core.cases = []`
-(the whole family of the configured tier), keep `core.shards` at the tier's count, and
+(the whole family of the configured tier), keep `core.shards` at the tier's count unless a
+measured run showed its shards do not fit their window, and
 configure the CPU-profile tools and `observer = "host_perf"` as above. The comparison
 measures the configured tier's family, not a fixed one: the full release comparison of the
-whole nightly family (33 case instances, 4 shards, the 12 manual telemetry runs) uses the
+whole nightly family (33 case instances, 8 serial shards, the 12 manual telemetry runs) uses the
 configuration and checks of [Validate an exact candidate producer](#validate-an-exact-candidate-producer)
 steps 3 and 5, on its own fresh journal.
 

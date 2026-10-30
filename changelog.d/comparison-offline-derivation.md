@@ -12,5 +12,5 @@
   capture without that omission. A build-ID-less (musl) executable stays bound by its exact hash
   and symbol archive.
 - The local executor guide gives the full release comparison's configuration (the whole
-  nightly family on the musl target in 4 shards, the 12 manual telemetry runs, a fresh
+  nightly family on the musl target in 8 serial shards, the 12 manual telemetry runs, a fresh
   candidate journal) and the checks of its frozen plan and telemetry workload before it runs.

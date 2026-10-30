@@ -1291,7 +1291,12 @@ The repaired Linux test did not run on this host. The outer operator owns:
 Recorded in the AF implementation sandbox on macOS with Python 3.14.7, `HOME` and `TMPDIR` set
 to a fresh `mktemp -d` directory. Nothing here is a Claw measurement or a Linux run. The
 running native comparison `cmp_b748bbb15eb5c84455ea0e6669570c2089b31726a62a43ed` was not
-touched or replayed. Applying this verifier to its export is the outer operator's step.
+touched or replayed. Correction (2026-10-30): an earlier version of this record called applying
+this verifier to that comparison's export the outer operator's step. It is not final proof:
+`telemetrylab.verify` requires its installed authority digest to equal every measured authority
+byte, so the final report needs a new comparison measured on the final repaired source, and
+that comparison's 4-shard first shard did not finish
+([below](#eight-serial-shards-for-the-full-release-comparison-2026-10-30)).
 
 - **Offline verification derives the report** (`perflab/comparison.py`). Before this change,
   `verify_export` checked hashes and the members the report named, and `verify_native` skipped
@@ -1355,7 +1360,9 @@ touched or replayed. Applying this verifier to its export is the outer operator'
   launched journal, prints `('nightly', 'linux_x86_64_musl_claw', 4, 33, 31, 2, 2852)` and 12
   telemetry runs. A narrower telemetry selection fails it. A scratch plan of the suite gave
   33 instances, 31 judged, 2 exploratory and 2852 slots for `nightly`, and 11 instances and
-  1004 slots for `release`, which is unchanged.
+  1004 slots for `release`, which is unchanged. These were the counts tested then. The recipe
+  is now 8 shards and 2932 slots
+  ([below](#eight-serial-shards-for-the-full-release-comparison-2026-10-30)).
 
 The focused run started at 11:43 MSK from the repository root:
 
@@ -1376,3 +1383,71 @@ protected harness was re-pinned after the last protected edit with
 `sha256:6c8afd07290b0b4ff54082fd0861d83ac0f400871bdb01b7e981e49b164a667a`, and `--check`
 passes. The native light gate is the full gate. The outer operator owns the repaired verifier
 on the actual native export, Linux proof and the final head's CI.
+
+## Eight serial shards for the full release comparison (2026-10-30)
+
+The full release comparison recipe of the previous record (`shards = 4`) cannot finish the
+v0.13.0 (`e638219ff4a2a65d5403288cb186c9d2b73ec5f4`) against v0.14.0-rc.1
+(`e47741ac401754be822d92eca29b61f5afbe8418`) pair inside the unchanged per-shard window. Native
+evidence on Claw, producer `cbd8661c010e7bcb65e6cd3adf44f36be83a720b`, comparison
+`cmp_b748bbb15eb5c84455ea0e6669570c2089b31726a62a43ed`:
+
+- The first shard expected 776 records and sealed 738, all valid: 0 failed, 38 unstarted,
+  `interrupted` with stopping reason `sampling_deadline`. It ran 2326.044 seconds and refused to
+  start sequence 738, because that slot's 345-second worst-case budget would exceed what
+  remained of the 45-minute shard window. Sealed shard
+  `sha256:3d388d5cc9f4a8b7a5c808966b41fbafe92cb53be05fefafb22603e67210eec5`, samples
+  `sha256:8adac03caad80c4a009d7943eeb9907b35dbf6fd0e19038394a074b01c622898`.
+- A native SIGTERM during the next shard (1) settled that original `interrupted` with its
+  cleanup confirmed. The later originals never started, and the fence was cleared.
+- The failed original, its configuration and its evidence stay as they are: not retried, not
+  relabelled. This is an admission and time-budget observation, not a performance verdict.
+
+The recipe now uses 8 smaller serial shards (`core.cases = []`, `tier = "nightly"`,
+`environment = "linux_x86_64_musl_claw"`, `shards = 8`). The workload is unchanged: 33 case
+instances, 31 judged and 2 exploratory, 40 pairs and the same warmups, and the 12 `manual`
+telemetry runs. No window, deadline, cap or sentinel changes, and the same single machine lock
+and fence apply. The plan has 2932 slots: the 2852 of 4 shards plus the 80 health-sentinel slots
+(5 start and 5 end pairs, both sides) of 4 more shards. The schedule partitions the 8 shards into
+4 serial originals of 2 shards each (worst case 6630 seconds for the first, which builds, and
+6030 for each later one, which reuses its immutable build, of 7200). The suite's `release` tier
+(11 cases, 1004 slots) is unchanged. Smaller shards adapt to the measured run; the preflight
+checks worst-case bounds and does not predict how fast a host samples, so it guarantees no
+completion on other hardware.
+
+A native copied 8-shard plan on producer `cbd8661c010e7bcb65e6cd3adf44f36be83a720b` was
+verified by the outer operator: comparison
+`cmp_cb9089869680e466235977010fdbbeda55b297b661b7b049`, plan
+`sha256:97325fb52b873b193f8cab28d0c3af125b3a08bea5d0adffe20eb40dcecf1b69`, slots
+`[440, 356, 356, 356, 356, 356, 356, 356]`, partitions `[[0, 1], [2, 3], [4, 5], [6, 7]]`, 12
+telemetry runs. It is preliminary configuration and timing evidence on that producer, not the
+final report: the final comparison must be launched on the exact final repaired source, whose
+installed authority the verifier requires every measured authority byte to equal. That final
+Claw comparison, its report and export, and their verification on Claw and macOS are pending
+with the outer operator. Nothing here claims them.
+
+Recorded in the AF implementation sandbox on macOS, Python 3.15.0, `TMPDIR` a fresh
+`mktemp -d` directory; nothing was measured. A scratch probe drove the real launch path of
+`tests.test_comparison.Comparison`'s fixture with the documented configuration and read the
+retained plan and declaration. With `shards = 4` it gave slots `[776, 692, 692, 692]` (2852) and
+2 originals; with `shards = 8`, slots `[440, 356, 356, 356, 356, 356, 356, 356]` (2932),
+partitions `[[0, 1], [2, 3], [4, 5], [6, 7]]`, worst cases `[6630, 6030, 6030, 6030]` seconds of
+7200. `Comparison.test_the_documented_full_comparison_configuration_and_checks_hold` now
+expects `('nightly', 'linux_x86_64_musl_claw', 8, 33, 31, 2, 2932)`; it still launches the
+documented configuration, runs the documented check script and fails a narrower telemetry
+selection. The stray blank line at the end of `scripts/performance/tests/test_comparison.py`
+was removed. The protected harness was re-pinned after that last protected edit with
+`python3 -I -B scripts/performance/cli.py harness-digest --write`, to
+`sha256:266f29f9be021c8934f1eb5bd9e226bd5f62c190b884a00c2ed6ca618bbcb37c`, and `--check`
+passes.
+`git diff --no-index --check /dev/null <file>` (the sandbox tree is not a Git checkout)
+reports no whitespace error in any changed file; it reports `new blank line at EOF` on a
+control file ending in one. markdownlint-cli2 0.22.1 reports 0 errors in the changed Markdown.
+
+The focused run, from the repository root:
+
+```sh
+python3 -I -B -c 'import sys,unittest; sys.path.insert(0,"scripts/performance"); unittest.main(module=None,argv=["unittest","tests.test_comparison"],verbosity=1)'
+```
+
+**PASS: 9 tests, 42.5 seconds, exit 0.** The native light gate is the full gate.
