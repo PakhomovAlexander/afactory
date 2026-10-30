@@ -37,7 +37,7 @@ fn cache_file(sandbox: &Sandbox) -> PathBuf {
 }
 
 /// The first line of every cache this release writes and reads.
-const CACHE_SCHEMA: &str = "schema = \"af/self-check@3\"\n";
+const CACHE_SCHEMA: &str = "schema = \"af/self-check@4\"\n";
 
 /// The release the cached "updated the default" notice names, when the cache holds one.
 fn auto_updated_to(cache: &str) -> Option<String> {

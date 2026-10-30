@@ -504,5 +504,9 @@ future readers need.
   VM](0265-build-nightlies-from-the-newest-green-main-on-the-owners-vm.md)
 - [0266 — Measure nightlies as originals of the independent
   executor](0266-measure-nightlies-as-originals-of-the-independent-executor.md)
-- [0267 — Compose the nightly report from the night's record and the executor
-  journal](0267-compose-the-nightly-report-from-the-nights-record-and-the-executor-journal.md)
+- [0267 — Offer a nightly channel in af
+  self](0267-offer-a-nightly-channel-in-af-self.md)
+- [0268 — Quarantine flaky tests on gate evidence and confirm them on
+  Claw](0268-quarantine-flaky-tests-on-gate-evidence-and-confirm-them-on-claw.md)
+- [0269 — Compose the nightly report from the night's record and the executor
+  journal](0269-compose-the-nightly-report-from-the-nights-record-and-the-executor-journal.md)

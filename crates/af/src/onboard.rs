@@ -218,7 +218,7 @@ struct Report {
 /// from the release's verified `SHA256SUMS`, or at least this target's from its receipt. A build
 /// without an install receipt pins nothing: there is no released byte to pin. The release's
 /// digest for this target must agree with the receipt, or the lock would pin bytes other than
-/// the ones that wrote it.
+/// the ones that wrote it. A nightly pins nothing either: a nightly is never pinned (ADR-0267).
 fn running_af_pin() -> Result<(Option<AfPin>, Vec<String>), String> {
     let version = env!("CARGO_PKG_VERSION");
     let Some(receipt) = crate::selfmgmt::self_receipt() else {
@@ -233,6 +233,15 @@ fn running_af_pin() -> Result<(Option<AfPin>, Vec<String>), String> {
             )],
         ));
     };
+    if crate::selfmgmt::is_nightly_version(&receipt.version) {
+        return Ok((
+            None,
+            vec![format!(
+                "this af {} is a nightly, and a nightly is never pinned, so the lock pins no af release; `af self channel stable` installs the newest release, which pins itself when you rerun",
+                receipt.version
+            )],
+        ));
+    }
     let own = format!("sha256:{}", receipt.sha256);
     let own_is_digest =
         receipt.sha256.len() == 64 && receipt.sha256.bytes().all(|byte| byte.is_ascii_hexdigit());

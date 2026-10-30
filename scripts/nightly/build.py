@@ -36,7 +36,7 @@ sys.path.insert(0, os.path.join(ROOT, "scripts", "performance"))
 sys.path.insert(0, HERE)
 
 import nightlygithub  # noqa: E402
-# The bounds of each GitHub request (ADR-0265, amended by ADR-0267).
+# The bounds of each GitHub request (ADR-0265, amended by ADR-0269).
 from nightlygithub import CONNECT_SECONDS, READ_SECONDS, RESPONSE_BYTES_MAX  # noqa: E402,F401
 from perflab import contracts, gitrefs, tomlfile  # noqa: E402
 from perflab.nightlycontracts import (CHECK_PREFIX, DATE_PATTERN, RELEASE_JOB_PREFIX,  # noqa: E402

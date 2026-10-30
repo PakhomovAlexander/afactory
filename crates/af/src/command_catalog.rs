@@ -248,6 +248,10 @@ pub(crate) const EFFECTS: &[(&str, Effects)] = &[
         "af self update",
         writes(&[(Machine, Some("without --check"))]),
     ),
+    (
+        "af self channel",
+        writes(&[(Machine, Some("with a channel"))]),
+    ),
     ("af self rollback", writes(&[(Machine, None)])),
     ("af self install", writes(&[(Machine, None)])),
     ("af self remove", writes(&[(Machine, None)])),

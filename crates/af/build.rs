@@ -1,5 +1,5 @@
 //! Build metadata for `af --version --json` and `af self`: the target triple, the git commit, and
-//! the release public key. No build date — identical inputs must give identical binaries.
+//! the release and nightly public keys. No build date — identical inputs must give identical binaries.
 
 use std::path::Path;
 use std::process::Command;
@@ -21,17 +21,18 @@ fn main() {
     // build without the file carries no key and verifies checksums only; the release workflow
     // refuses to publish such a build.
     let manifest_dir = std::env::var("CARGO_MANIFEST_DIR").unwrap_or_default();
-    let key_file = Path::new(&manifest_dir).join("keys/release.pub");
-    let key = std::fs::read_to_string(&key_file)
-        .ok()
-        .and_then(|text| {
-            text.lines()
-                .map(str::trim)
-                .find(|line| !line.is_empty() && !line.starts_with("untrusted comment:"))
-                .map(str::to_string)
-        })
-        .unwrap_or_default();
-    println!("cargo:rustc-env=AF_RELEASE_KEY={key}");
+    let keys = Path::new(&manifest_dir).join("keys");
+    println!(
+        "cargo:rustc-env=AF_RELEASE_KEY={}",
+        public_key(&keys.join("release.pub"))
+    );
+    // The separate key the nightly build signs a nightly's `SHA256SUMS` with
+    // (`keys/nightly.pub`, ADR-0267). A build without the file carries none and refuses the
+    // nightly channel.
+    println!(
+        "cargo:rustc-env=AF_NIGHTLY_KEY={}",
+        public_key(&keys.join("nightly.pub"))
+    );
     println!("cargo:rerun-if-changed=keys");
     // A worktree's .git is a file, not a directory. Watching a nonexistent .git/HEAD
     // makes every Cargo invocation dirty. Resolve the actual metadata paths through Git.
@@ -43,6 +44,19 @@ fn main() {
         watch_git_path("packed-refs");
     }
     println!("cargo:rerun-if-changed=build.rs");
+}
+
+/// The key line of a minisign `.pub` file, empty when the file is absent.
+fn public_key(file: &Path) -> String {
+    std::fs::read_to_string(file)
+        .ok()
+        .and_then(|text| {
+            text.lines()
+                .map(str::trim)
+                .find(|line| !line.is_empty() && !line.starts_with("untrusted comment:"))
+                .map(str::to_string)
+        })
+        .unwrap_or_default()
 }
 
 fn git_text(args: &[&str]) -> Option<String> {

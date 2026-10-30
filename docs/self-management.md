@@ -14,9 +14,11 @@ curl --proto '=https' --tlsv1.2 -fsSL https://github.com/PakhomovAlexander/afact
 (`$XDG_DATA_HOME/af/versions/<v>/`, with the default symlink at `~/.local/bin/af`), and `af`
 takes over from there: the installed binary records its own activation, so `af self rollback`
 works from the first update on. `AF_INSTALL_CHANNEL=rc` (or `sh -s -- --rc`) installs the newest
-pre-release instead, the installer's form of `[self] channel = "rc"`; `AF_INSTALL_VERSION=X.Y.Z`
-installs one release. A re-run is idempotent and verifies the installed binary again against the
-release, never on the strength of its receipt.
+pre-release instead, the installer's form of `[self] channel = "rc"`, and
+`AF_INSTALL_CHANNEL=nightly` (or `sh -s -- --nightly`) the newest nightly by its date, the form of
+`[self] channel = "nightly"` ([Channels](#channels)); `AF_INSTALL_VERSION=X.Y.Z` installs one
+release. A re-run is idempotent and verifies the installed binary again against the release, never
+on the strength of its receipt.
 
 It ends with at most six lines: the installed version and its path, the next steps of a first
 run (`af provider detect`, `af onboard`, `af self setup-shell --write`), and, when the bin
@@ -35,6 +37,14 @@ which comes from the same release as the archive and so catches a corrupt downlo
 install records `verified_by = "sha256sums"` in its receipt; `af self status --json` and
 `af doctor` show it.
 
+A nightly is signed with a key of its own, the nightly key, whose public half belongs at
+`crates/af/keys/nightly.pub`: a build embeds it as it embeds the release key, and
+`AF_NIGHTLY_KEY` names another key file. A nightly's `SHA256SUMS` is verified against the
+nightly key alone, and a release's never against it. A build without the file carries no nightly
+key and refuses every nightly install in one sentence (`this af carries no nightly key`);
+`install.sh` embeds the same key beside the release key (`AF_INSTALL_NIGHTLY_KEY` overrides it),
+refuses the nightly channel while that is empty, and never installs a nightly unsigned.
+
 ## Updates
 
 Updates need no `gh` for the public repository: `af self` lists and downloads releases
@@ -49,9 +59,67 @@ af self update           # install it and make it the default
 af self rollback         # back to the previous default
 ```
 
-After commands, `af` also checks for a newer release on its own;
+`af self update` follows the configured channel; [Channels](#channels) says what each one
+installs and how to switch. After commands, `af` also checks for a newer release on its own;
 [the release check](#the-release-check) below says when it runs, what bounds it, what it
 records and what `af self status` prints from it.
+
+## Channels
+
+`[self] channel` says what `af self` installs and updates to:
+
+- `stable`, the default: the newest release.
+- `rc`: the newest release or release candidate, by semantic version.
+- `nightly`: the newest nightly build of main, by the date its tag names (`nightly-YYYY.MM.DD`).
+  A nightly reports the version `<core>-nightly.<YYYYMMDD>` (`0.14.0-nightly.20261029` while main
+  is `0.14.0-rc.3`), sorts as a pre-release of its core, and installs beside releases under
+  `$XDG_DATA_HOME/af/versions/<version>/`. Its receipt records its `tag`, `channel = "nightly"`
+  and the `commit` its binary reported. `af self install <core>-nightly.<YYYYMMDD>` installs the
+  nightly of that date only when its binary is that version: an installed nightly of the same
+  date that is another version is refused, never reused under the name asked for. Nightlies are
+  built for Linux only until macOS nightlies exist.
+
+```sh
+af self channel                    # the configured channel and the layer it comes from
+af self channel nightly            # install the newest nightly, write it, make it the default
+af self channel stable             # back to the newest release, even an older one
+af self channel rc --no-update     # write it only; af self update follows it from then on
+```
+
+`af self channel <name>` installs the channel's newest, then writes `[self] channel = "<name>"`
+into the user layer, the `user` file `af config paths` names, keeping the file's other keys and
+comments and creating it when absent, and makes that newest the default. A switch is an explicit
+choice, so it may make an older version the default, nightly to stable for one, and it says so
+(`moved back from af … to af …`); `af self update` never moves the default backwards.
+`--no-update` only writes the file and installs nothing.
+
+Before anything is fetched the switch checks the nightly key for `nightly`, that no layer above
+the user file (an `AF_SELF__CHANNEL` variable or a user `conf.d` file) sets another channel, and,
+unless `--no-update`, that this af was installed by `af self` and that `AF_SELF_OFFLINE` is not
+set. It then lists the channel at the release source, downloads its newest, verifies the
+signature of its `SHA256SUMS` and, for a nightly, the version its binary reports, and installs it
+beside the other versions. Only then does it write the file and move the default, and when the
+activation cannot be recorded after the default moved, the default is put back. A switch that
+fails at any of these steps leaves `[self] channel` and the default as they were (a version it
+installed stays installed) and names `af self channel <name>` to try again; `af self update`
+cannot finish a switch that moves backwards. The one step that cannot be undone is said: the
+message names what the default now points at.
+
+On the nightly channel `af self update --check` exits 10 when a nightly with a later date than
+the running one exists and 0 otherwise, naming the nightly's tag; an af that runs no nightly is
+always told of the newest one, with `af self channel nightly` as the command. `af self update`
+installs a newer nightly and makes it the default only when its version is newer than the running
+one. The background check asks for nightlies and, under `auto_update = "always"`, moves an af
+that already runs a nightly to a newer one; moving onto the channel is `af self channel`'s.
+`af self status` prints a `nightly:` line with the running nightly's tag and commit and the
+newest nightly the last check found.
+
+A project whose `.af/af.lock` pins a release keeps running that pin whatever the channel
+([ADR-0044](adr/0044-af-manages-itself-and-dispatches-to-the-pinned-release.md)). A nightly is
+never pinned: `af onboard` writes no pin from a nightly, an install a lock asks for is never a
+nightly, and a lock that pins a nightly pins nothing: dispatch says so in one line and runs the af
+it was started as, even when that nightly is installed. `af self rollback`, `remove`, `prune` and `keep_versions` treat an installed nightly like
+any installed version ([ADR-0267](adr/0267-offer-a-nightly-channel-in-af-self.md)).
 
 ## The release check
 
@@ -108,16 +176,18 @@ check:      a release check has been running since 2026-09-12T08:00:00Z; fix: rm
 
 ### What it records
 
-The cache, `$XDG_CACHE_HOME/af/self/latest.toml`, is `af/self-check@3`
-([schema](../schemas/self-check-v3.json)):
+The cache, `$XDG_CACHE_HOME/af/self/latest.toml`, is `af/self-check@4`
+([schema](../schemas/self-check-v4.json)):
 
 - `checked_at_epoch`: when a check last answered;
 - `attempted_at_epoch`: when one was last attempted, answered or not;
 - `last_error`: why the last attempt failed, one line of at most 512 bytes, absent once one
   succeeds;
-- `latest`: the newest release on the configured channel;
-- `latest_prerelease`: the newest pre-release, asked for whatever the channel while the running
-  `af` is itself a pre-release or the channel is `rc`;
+- `latest`: the newest release on the configured channel, on the `nightly` channel the newest
+  nightly's tag;
+- `latest_prerelease`: the newest pre-release, never a nightly, asked for whatever the channel
+  while the running `af` is itself a pre-release or the channel is `rc`, and never recorded on the
+  `nightly` channel;
 - `auto_updated`: the activation a background check made under `auto_update = "always"`.
 
 A cache an earlier release wrote, of any version, is not read: that machine is due a check,
@@ -147,8 +217,9 @@ installation, the pin and the policy. `next_action` is the command the text name
 lock file for a check that has held it over an hour, else `af self update --rc` while a newer
 pre-release is known. A check that fails, `af self update --check` included, is recorded as the
 last attempt with its cause, and `af doctor` warns about it and about a stalled check with the
-same fix. `latest` always names the newest release of the configured `[self] channel`: an
-explicit `--check --rc` on the stable channel records what it found as `latest_prerelease` only.
+same fix. `latest` always names the newest release of the configured `[self] channel`, a
+nightly's tag on the `nightly` channel, where `policy.channel` is `nightly`: an explicit
+`--check --rc` on the stable channel records what it found as `latest_prerelease` only.
 
 ## macOS: Spotlight and Gatekeeper
 

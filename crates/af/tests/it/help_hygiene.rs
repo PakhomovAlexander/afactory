@@ -113,6 +113,7 @@ fn self_help_leads_with_status_and_update() {
         [
             "status",
             "update",
+            "channel",
             "rollback",
             "install",
             "remove",

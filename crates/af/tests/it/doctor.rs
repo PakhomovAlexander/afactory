@@ -347,7 +347,7 @@ fn the_update_row_warns_of_a_failed_or_stalled_release_check() {
     std::fs::create_dir_all(cache.parent().unwrap()).unwrap();
     std::fs::write(
         &cache,
-        "schema = \"af/self-check@3\"\nchecked_at_epoch = 1\nattempted_at_epoch = 86400\n\
+        "schema = \"af/self-check@4\"\nchecked_at_epoch = 1\nattempted_at_epoch = 86400\n\
          last_error = \"reading /releases: No such file or directory\"\nchannel = \"stable\"\n",
     )
     .unwrap();

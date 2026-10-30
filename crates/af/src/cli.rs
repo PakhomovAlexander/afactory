@@ -352,7 +352,8 @@ af config edit --layer user   # needs: $EDITOR and a terminal"
         arg_required_else_help = true,
         long_about = "See, install, update, roll back, and remove af itself, or analyze project economics.\n\n\
 Start with `af self status`: what is installed, which version is the default, and which pin \
-applies here. `af self update` installs a newer release as the default.\n\n\
+applies here. `af self update` installs a newer release as the default; `af self channel` \
+switches between stable releases, release candidates and nightly builds.\n\n\
 Installed versions live under `$XDG_DATA_HOME/af/versions/<v>/` with a receipt each; the \
 default is the `~/.local/bin/af` symlink. A project whose `.af/af.lock` pins another version \
 is run by that version: `af` execs it. One not installed yet is installed on demand as \
@@ -371,6 +372,7 @@ captures only declared history, and previews a report-only common Task.",
 af self status\n  \
 af self update --check   # exits 10 when a newer release exists\n  \
 af self update   # needs: the network and an af installed by af self\n  \
+af self channel nightly   # needs: the network and an af installed by af self\n  \
 af self rollback   # needs: an earlier version af self activated\n  \
 af self setup-shell --write"
     )]
@@ -3477,7 +3479,9 @@ symlink atomically. The previous version stays installed for `af self rollback`.
 when the release source cannot be asked (the anonymous route's HTTP status or curl error comes \
 before any `gh auth login` hint). With AF_SELF_OFFLINE=1 it asks nothing, prints `offline: check \
 skipped` and exits 0. A pre-release af also hears of a newer pre-release, which `--rc` installs. \
-Every network call is bounded: 5 s to connect and 30 s to list releases.\n\n\
+It follows `[self] channel` (`af self channel` switches): on nightly, the newest nightly by its \
+date, installed when its version is newer than the running one, and `--check` exits 10 for a \
+nightly of a later date. Every network call is bounded: 5 s to connect and 30 s to list releases.\n\n\
 Never: changes what a pinned project runs, activates a release older than 0.8.0, or stores a \
 token.",
         after_long_help = "Examples:\n  \
@@ -3495,6 +3499,37 @@ af self update   # needs: the network and an af installed by af self\n  \
         /// Consider pre-releases
         #[arg(long)]
         rc: bool,
+    },
+    /// Show or switch the release channel: stable, rc or nightly
+    #[command(
+        long_about = "Show or switch the release channel: stable, rc or nightly.\n\n\
+Without a channel, prints the configured one and the layer it comes from (`stable` from the \
+built-in default when no file sets it). With one, installs and verifies the channel's newest \
+first, then writes `[self] channel` into the user layer (`af config paths` names it; its other \
+keys and comments stay as written) and makes that newest the default: stable the newest \
+release, rc the newest release or pre-release, nightly the newest nightly build of main by its \
+date. A switch that fails, at the listing, the download, the signature or a nightly's version, \
+leaves the channel and the default as they were; `af self channel <channel>` tries again. A \
+switch may make an older version the default, nightly to stable for one, and says so; `af self \
+update` never does. `--no-update` only records the channel, and `af self update` follows it \
+from then on.\n\n\
+A nightly's SHA256SUMS is verified against the nightly key alone, never the release key: an af \
+built without crates/af/keys/nightly.pub refuses the nightly channel (AF_NIGHTLY_KEY names a key \
+file instead). Nightlies are built for Linux only. A project whose `.af/af.lock` pins a release \
+keeps running that pin whatever the channel, and a nightly is never pinned.",
+        after_long_help = "Examples:\n  \
+af self channel\n  \
+af self channel nightly   # needs: the network and an af installed by af self\n  \
+af self channel stable   # needs: the network and an af installed by af self\n  \
+af self channel rc --no-update"
+    )]
+    Channel {
+        /// The channel to switch to; without one, print the configured channel
+        #[arg(value_enum)]
+        channel: Option<ChannelArg>,
+        /// Only record the channel; install nothing
+        #[arg(long, requires = "channel")]
+        no_update: bool,
     },
     /// Make the previously active version the default again
     Rollback,
@@ -3607,6 +3642,24 @@ af task output TASK_ID --port report --format markdown \\\n    --output optimiza
     /// Refresh the cached release check (internal; spawned detached)
     #[command(hide = true)]
     RefreshCheck,
+}
+
+/// A release channel as `af self channel` takes it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
+pub(crate) enum ChannelArg {
+    Stable,
+    Rc,
+    Nightly,
+}
+
+impl From<ChannelArg> for crate::config::Channel {
+    fn from(channel: ChannelArg) -> Self {
+        match channel {
+            ChannelArg::Stable => crate::config::Channel::Stable,
+            ChannelArg::Rc => crate::config::Channel::Rc,
+            ChannelArg::Nightly => crate::config::Channel::Nightly,
+        }
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]

@@ -1,0 +1,102 @@
+{
+  "schema": "af.test-quarantine/1",
+  "tests": {
+    "af::it common::recorded::tests::a_process_started_after_its_marker_is_never_the_marker_s": {
+      "evidence": [
+        "light-393-1",
+        "light-443-1",
+        "nightly-build-3"
+      ],
+      "expires": "2026-11-13",
+      "since": "2026-10-30",
+      "state": "quarantined"
+    },
+    "af::it provider_cli_health::setup_refuses_a_cli_that_cannot_start_as_a_missing_provider_cli": {
+      "evidence": [
+        "gate-report-346-2",
+        "performance-lab-scratch-integration-20261028"
+      ],
+      "expires": "2026-11-13",
+      "since": "2026-10-30",
+      "state": "quarantined"
+    },
+    "af::it review_plan_refusals::a_large_change_plans_on_one_screen_and_json_keeps_every_path": {
+      "evidence": [
+        "light-466-q2-1",
+        "light-466-q3-1"
+      ],
+      "expires": "2026-11-13",
+      "since": "2026-10-30",
+      "state": "quarantined"
+    },
+    "af::it tui::a_command_line_hands_the_terminal_to_af_task_show_and_enter_returns": {
+      "evidence": [
+        "light-459-verify-2",
+        "light-466-q1-1",
+        "light-466-q4-1"
+      ],
+      "expires": "2026-11-13",
+      "since": "2026-10-30",
+      "state": "quarantined"
+    },
+    "af::it tui::a_refused_store_shows_its_refusal_while_the_others_load": {
+      "evidence": [
+        "light-466-q4-1",
+        "next-line-rejoin-verify-2"
+      ],
+      "expires": "2026-11-13",
+      "since": "2026-10-30",
+      "state": "quarantined"
+    },
+    "af::it tui::the_tasks_pane_at_80x24_on_a_pseudo_terminal": {
+      "evidence": [
+        "light-466-q2-1",
+        "light-466-q4-1"
+      ],
+      "expires": "2026-11-13",
+      "since": "2026-10-30",
+      "state": "quarantined"
+    },
+    "review-source-git::it capture::a_settled_worktree_is_admitted_on_retry": {
+      "evidence": [
+        "light-461-verify-1",
+        "light-466-q1-1",
+        "nightly-build-1",
+        "nightly-train-verify-1",
+        "nightly-train-verify-2",
+        "self-channel-verify-2"
+      ],
+      "expires": "2026-11-13",
+      "since": "2026-10-30",
+      "state": "quarantined"
+    },
+    "review-source-git::it capture::an_index_change_alone_invalidates_a_pass": {
+      "evidence": [
+        "light-459-verify-2",
+        "light-466-q1-2",
+        "light-466-q3-1",
+        "nightly-build-2",
+        "nightly-executor-2",
+        "nightly-publish-2",
+        "nightly-report-1",
+        "nightly-train-verify-2",
+        "self-channel-3",
+        "self-channel-verify-2"
+      ],
+      "expires": "2026-11-13",
+      "since": "2026-10-30",
+      "state": "quarantined"
+    },
+    "review-source-git::it capture::an_untracked_file_created_between_passes_retries_without_a_cas_error": {
+      "evidence": [
+        "nightly-executor-2",
+        "nightly-train-verify-1",
+        "self-channel-2",
+        "self-channel-verify-2"
+      ],
+      "expires": "2026-11-13",
+      "since": "2026-10-30",
+      "state": "quarantined"
+    }
+  }
+}

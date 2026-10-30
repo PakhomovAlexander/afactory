@@ -4,7 +4,7 @@ The owner's Linux VM builds a signed nightly af from the newest green commit of 
 ([ADR-0265](adr/0265-build-nightlies-from-the-newest-green-main-on-the-owners-vm.md)). This page
 covers the build step, `scripts/nightly/build.py`, and the [daily report](#the-daily-report),
 `scripts/nightly/report.py`
-([ADR-0267](adr/0267-compose-the-nightly-report-from-the-nights-record-and-the-executor-journal.md));
+([ADR-0269](adr/0269-compose-the-nightly-report-from-the-nights-record-and-the-executor-journal.md));
 the measurement is the [nightly executor's](performance-local-executor.md#nightly-originals) and
 publication comes later. Nothing here runs on GitHub Actions. The build never pushes,
 publishes, posts or deletes anything outside `builds_root/<date>/` and its own claim

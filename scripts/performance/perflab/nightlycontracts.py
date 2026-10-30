@@ -1,6 +1,6 @@
 """Closed contracts of the owner's nightly build (ADR-0265): its configuration, the plan it
 prints, the record each night leaves in its directory and the daily report composed from that
-record and the executor journal (ADR-0267).
+record and the executor journal (ADR-0269).
 
 A nightly is a separate train from the releases: its tag is `nightly-YYYY.MM.DD` and its
 version `<core>-nightly.<YYYYMMDD>`, both derived here from the night's date and the
@@ -36,7 +36,7 @@ RELEASE_JOB_PREFIX = "build "
 CHECK_PREFIX = "check /"
 DAILY_SCHEMA = "af.nightly-daily/1"
 # The daily report's sections, in the order the page shows them after its headline; each has
-# one completeness entry (ADR-0267).
+# one completeness entry (ADR-0269).
 SECTIONS = ("build", "baseline", "performance", "telemetry", "trend", "since_last_night",
             "backlog", "machine")
 LABELS = ("PASS", "FAIL", "INCOMPLETE", "UNAVAILABLE")
@@ -127,7 +127,7 @@ def asset_name(tag, target):
 
 
 def daily_node(c):
-    """The shape of `af.nightly-daily/1`, one night's daily report record (ADR-0267)."""
+    """The shape of `af.nightly-daily/1`, one night's daily report record (ADR-0269)."""
     tag = Str(pattern=TAG_PATTERN, max_len=19)
     reason = Str(min_len=1, max_len=2048)
     text = Str(max_len=1024)
@@ -327,7 +327,7 @@ def register(c):
         Field("required_checks", Arr(check_name, 0, 64, unique=True)),
         Field("max_walk", Int(1, 200), required=False),
         Field("github_token_file", path, required=False),
-        # What `report.py compose` reads besides the night's record (ADR-0267).
+        # What `report.py compose` reads besides the night's record (ADR-0269).
         Field("report", Obj(Field("executor_config", path),
                             Field("history_nights", Int(1, HISTORY_NIGHTS_MAX), required=False),
                             Field("headline_instances",
@@ -453,7 +453,7 @@ def register(c):
         "the night was skipped.")
     c.CONTRACTS["nightly-daily"] = (
         DAILY_SCHEMA, daily, validate_daily,
-        "One night's daily report record, daily.json (ADR-0267): the build, its stable "
+        "One night's daily report record, daily.json (ADR-0269): the build, its stable "
         "baseline, the verified core verdict per instance with exact rationals and their "
         "three-significant-digit text, the telemetry figures, the trend of the headline "
         "instances across nights, what changed since the previous night, the GitHub backlog, "

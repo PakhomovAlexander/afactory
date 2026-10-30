@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """Compose the owner's daily nightly report from the night's record and the executor journal
-(ADR-0267).
+(ADR-0269).
 
     python3 -I -B scripts/nightly/report.py compose --config PATH --date YYYY-MM-DD --output DIR
 

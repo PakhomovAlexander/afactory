@@ -1,7 +1,8 @@
 #!/bin/sh
 # Install af — the newest stable release, the newest pre-release under AF_INSTALL_CHANNEL=rc (or
-# --rc, the `[self] channel = "rc"` of an installed af), or AF_INSTALL_VERSION — into the
-# self-managed layout:
+# --rc, the `[self] channel = "rc"` of an installed af), the newest nightly build of main by its
+# date under AF_INSTALL_CHANNEL=nightly (or --nightly; Linux only), or AF_INSTALL_VERSION — into
+# the self-managed layout:
 #   $XDG_DATA_HOME/af/versions/<v>/{af,receipt.toml}   and   $XDG_BIN_HOME/af -> that binary
 # Needs curl, tar and minisign; never stores a token. Re-running is idempotent and verifies the
 # installed binary again against the release; `af self` takes over from here: the installed
@@ -11,6 +12,7 @@
 #
 #   curl --proto '=https' --tlsv1.2 -fsSL https://github.com/PakhomovAlexander/afactory/releases/latest/download/install.sh | sh
 #   curl ... | AF_INSTALL_CHANNEL=rc sh      or      curl ... | sh -s -- --rc
+#   curl ... | AF_INSTALL_CHANNEL=nightly sh      or      curl ... | sh -s -- --nightly
 #
 # A private fork, or a host without curl, falls back to the GitHub CLI: `gh auth login` with an
 # account that can read the release repository (AF_REPO), and the same script works unchanged.
@@ -20,18 +22,22 @@
 # file). Without `minisign` on PATH the script refuses, unless AF_INSTALL_ALLOW_UNSIGNED=1 accepts
 # the checksum alone, which comes from the same place as the archive and so only catches a
 # corrupt download. The installed `af` carries the key itself and verifies every later install.
+# A nightly's SHA256SUMS.minisig is verified against the separate nightly key embedded below
+# (AF_INSTALL_NIGHTLY_KEY names a different key file), always: no nightly installs unsigned, and
+# while that embedded key is empty the nightly channel is refused.
 set -eu
 
 channel="${AF_INSTALL_CHANNEL:-stable}"
 for argument in "$@"; do
   case "$argument" in
     --rc) channel=rc ;;
-    *) echo "af: install.sh takes only --rc, not '$argument' — fix: curl ... | sh -s -- --rc, or AF_INSTALL_CHANNEL=rc" >&2; exit 2 ;;
+    --nightly) channel=nightly ;;
+    *) echo "af: install.sh takes only --rc or --nightly, not '$argument' — fix: curl ... | sh -s -- --rc (or --nightly), or AF_INSTALL_CHANNEL=rc" >&2; exit 2 ;;
   esac
 done
 case "$channel" in
-  stable|rc) ;;
-  *) echo "af: AF_INSTALL_CHANNEL is '$channel'; it is stable or rc — fix: AF_INSTALL_CHANNEL=rc, or leave it unset for stable" >&2; exit 2 ;;
+  stable|rc|nightly) ;;
+  *) echo "af: AF_INSTALL_CHANNEL is '$channel'; it is stable, rc or nightly — fix: AF_INSTALL_CHANNEL=rc, or leave it unset for stable" >&2; exit 2 ;;
 esac
 
 REPO="${AF_REPO:-PakhomovAlexander/afactory}"
@@ -44,6 +50,13 @@ FLOOR="0.8.0"
 # crates/af/keys/release.pub — the key every release is signed with.
 RELEASE_PUB='untrusted comment: minisign public key 0FA9BDD8A1D67165
 RWRlcdah2L2pD6l9dkQHwwqt2PjfdxZTyuAZwArbnqaVkKPrkIGOmqAL'
+# crates/af/keys/nightly.pub — the separate key every nightly is signed with; empty until that
+# file exists.
+NIGHTLY_PUB=''
+if [ "$channel" = nightly ] && [ -z "${AF_INSTALL_VERSION:-}" ] && [ -z "${AF_INSTALL_NIGHTLY_KEY:-}" ] && [ -z "$NIGHTLY_PUB" ]; then
+  echo "af: this installer carries no nightly key (crates/af/keys/nightly.pub), so it cannot verify a nightly — fix: AF_INSTALL_NIGHTLY_KEY=<the nightly .pub file>, or leave AF_INSTALL_CHANNEL unset to install the newest release" >&2
+  exit 1
+fi
 
 case "$(uname -s):$(uname -m)" in
   Darwin:arm64) host="aarch64-apple-darwin" ;;
@@ -115,9 +128,24 @@ semver_max_rc() {
     END { if (seen) print "v" tag }'
 }
 
+# The newest of the given `nightly-YYYY.MM.DD` tags by the date it names: what
+# AF_INSTALL_CHANNEL=nightly installs. A release tag never matches, and the semver rankings above
+# never match a nightly's tag.
+nightly_max() {
+  awk '/^nightly-[0-9][0-9][0-9][0-9]\.[0-9][0-9]\.[0-9][0-9]$/ {
+      d = substr($0, 9, 4) substr($0, 14, 2) substr($0, 17, 2)
+      if (!seen || d + 0 > best + 0) { best = d; tag = $0; seen = 1 }
+    }
+    END { if (seen) print tag }'
+}
+
 # newest_tag: the newest tag on stdin for the chosen channel.
 newest_tag() {
-  if [ "$channel" = rc ]; then semver_max_rc; else semver_max; fi
+  case "$channel" in
+    rc) semver_max_rc ;;
+    nightly) nightly_max ;;
+    *) semver_max ;;
+  esac
 }
 
 # semver_lt A B: true when A < B (major.minor.patch, numeric). As in semver, and as `af self`
@@ -151,8 +179,14 @@ else
   fi
   [ -n "$tag" ] || { echo "af: no $channel release found in $REPO" >&2; exit 1; }
 fi
-version="${tag#v}"
-if semver_lt "$version" "$FLOOR"; then
+# A nightly's version is what its binary says, asked once it is verified; its tag names its date.
+nightly_date=""
+case "$tag" in
+  nightly-*) nightly_date=$(printf '%s\n' "$tag" | sed 's/^nightly-\([0-9]*\)\.\([0-9]*\)\.\([0-9]*\)$/\1\2\3/')
+             version="" ;;
+  *) version="${tag#v}" ;;
+esac
+if [ -z "$nightly_date" ] && semver_lt "$version" "$FLOOR"; then
   echo "af: $version is older than the oldest supported release ($FLOOR); pick a newer release" >&2
   exit 1
 fi
@@ -179,8 +213,26 @@ fetch_asset() {
 fetch_asset "$asset" || { echo "af: release $tag of $REPO has no asset $asset" >&2; exit 1; }
 fetch_asset SHA256SUMS || { echo "af: release $tag of $REPO has no SHA256SUMS" >&2; exit 1; }
 verified_by=sha256sums
+# The exact minisign install line for this machine's package manager.
+minisign_line() {
+  if command -v brew >/dev/null 2>&1; then echo "brew install minisign"
+  elif command -v apt-get >/dev/null 2>&1; then echo "sudo apt install minisign"
+  elif command -v dnf >/dev/null 2>&1; then echo "sudo dnf install minisign"
+  elif command -v pacman >/dev/null 2>&1; then echo "sudo pacman -S minisign"
+  elif command -v apk >/dev/null 2>&1; then echo "apk add minisign"
+  else echo "brew install minisign (macOS) or sudo apt install minisign (Debian/Ubuntu)"
+  fi
+}
 if command -v minisign >/dev/null 2>&1; then
-  if [ -n "${AF_RELEASE_KEY:-}" ]; then
+  if [ -n "$nightly_date" ]; then
+    # A nightly is verified against the nightly key alone, never the release key.
+    if [ -n "${AF_INSTALL_NIGHTLY_KEY:-}" ]; then
+      key="$AF_INSTALL_NIGHTLY_KEY"
+    else
+      key="$tmp/nightly.pub"
+      printf '%s\n' "$NIGHTLY_PUB" > "$key"
+    fi
+  elif [ -n "${AF_RELEASE_KEY:-}" ]; then
     key="$AF_RELEASE_KEY"
   else
     key="$tmp/release.pub"
@@ -193,18 +245,13 @@ if command -v minisign >/dev/null 2>&1; then
   else
     echo "af: release $tag has no SHA256SUMS.minisig to verify against $key" >&2; exit 1
   fi
+elif [ -n "$nightly_date" ]; then
+  echo "af: minisign is not installed, and a nightly installs only with its signature verified — fix: $(minisign_line), then run this again" >&2
+  exit 1
 elif [ "${AF_INSTALL_ALLOW_UNSIGNED:-}" = 1 ]; then
   echo "af: minisign is not installed and AF_INSTALL_ALLOW_UNSIGNED=1, so only the checksum is verified; it comes from the same release as the archive and catches a corrupt download only" >&2
 else
-  # The exact install line for this machine's package manager.
-  if command -v brew >/dev/null 2>&1; then get_minisign="brew install minisign"
-  elif command -v apt-get >/dev/null 2>&1; then get_minisign="sudo apt install minisign"
-  elif command -v dnf >/dev/null 2>&1; then get_minisign="sudo dnf install minisign"
-  elif command -v pacman >/dev/null 2>&1; then get_minisign="sudo pacman -S minisign"
-  elif command -v apk >/dev/null 2>&1; then get_minisign="apk add minisign"
-  else get_minisign="brew install minisign (macOS) or sudo apt install minisign (Debian/Ubuntu)"
-  fi
-  echo "af: minisign is not installed, so the release signature cannot be verified — fix: $get_minisign, then run this again; or set AF_INSTALL_ALLOW_UNSIGNED=1 to accept the checksum alone (only the checksum is verified then; the installed af verifies every later update with its embedded key)" >&2
+  echo "af: minisign is not installed, so the release signature cannot be verified — fix: $(minisign_line), then run this again; or set AF_INSTALL_ALLOW_UNSIGNED=1 to accept the checksum alone (only the checksum is verified then; the installed af verifies every later update with its embedded key)" >&2
   exit 1
 fi
 expected=$(grep " [*]*$asset\$" "$tmp/SHA256SUMS" | awk '{print $1}')
@@ -217,6 +264,25 @@ fi
   echo "af: checksum mismatch for $asset" >&2; echo "expected $expected" >&2; echo "actual   $actual" >&2; exit 1; }
 mkdir -p "$tmp/unpack" && tar -xzf "$tmp/$asset" -C "$tmp/unpack"
 chmod 0755 "$tmp/unpack/af"
+if [ -n "$nightly_date" ]; then
+  # json_field NAME: the string value of NAME in the answer to `af --version --json`.
+  answer=$(AF_SELF_OFFLINE=1 "$tmp/unpack/af" --version --json) || answer=""
+  json_field() {
+    printf '%s\n' "$answer" | tr ',' '\n' | sed -n "s/.*\"$1\"[[:space:]]*:[[:space:]]*\"\([^\"]*\)\".*/\1/p"
+  }
+  version=$(json_field version)
+  commit=$(json_field commit)
+  # Exactly <major>.<minor>.<patch>-nightly.<date>: a pre-release core (1.0.0-rc.3-nightly.…)
+  # is no nightly, as `af self` says too.
+  core=${version%-nightly."$nightly_date"}
+  if [ "$core" = "$version" ] || ! printf '%s\n' "$core" | grep -Eq '^[0-9]+\.[0-9]+\.[0-9]+$'; then
+    echo "af: the binary of $tag reports version '$version', expected <core>-nightly.$nightly_date" >&2; exit 1
+  fi
+  if semver_lt "$version" "$FLOOR"; then
+    echo "af: $version is older than the oldest supported release ($FLOOR); pick a newer release" >&2
+    exit 1
+  fi
+fi
 
 if [ -x "$DATA/$version/af" ] && cmp -s "$tmp/unpack/af" "$DATA/$version/af" \
    && grep -q "^version = \"$version\"" "$DATA/$version/receipt.toml" 2>/dev/null \
@@ -225,8 +291,10 @@ if [ -x "$DATA/$version/af" ] && cmp -s "$tmp/unpack/af" "$DATA/$version/af" \
 else
   # Absent, a bare binary without a receipt, or bytes that are not the release's: never adopt
   # it — install fresh and replace it.
-  reported=$(AF_SELF_OFFLINE=1 "$tmp/unpack/af" --version)
-  [ "$reported" = "af $version" ] || { echo "af: release binary reported '$reported', expected 'af $version'" >&2; exit 1; }
+  if [ -z "$nightly_date" ]; then
+    reported=$(AF_SELF_OFFLINE=1 "$tmp/unpack/af" --version)
+    [ "$reported" = "af $version" ] || { echo "af: release binary reported '$reported', expected 'af $version'" >&2; exit 1; }
+  fi
   staging="$DATA/.$version.$$"
   rm -rf "$staging" && mkdir -p "$staging"
   cp "$tmp/unpack/af" "$staging/af"
@@ -239,6 +307,10 @@ sha256 = "$actual"
 verified_by = "$verified_by"
 installed_at = "$(date -u +%Y-%m-%dT%H:%M:%SZ)"
 RECEIPT
+  # A nightly's receipt also records its tag, its channel and the commit its binary reported.
+  if [ -n "$nightly_date" ]; then
+    printf 'tag = "%s"\nchannel = "nightly"\ncommit = "%s"\n' "$tag" "${commit:-unknown}" >> "$staging/receipt.toml"
+  fi
   rm -rf "${DATA:?}/${version:?}" && mv "$staging" "$DATA/$version"
   echo "af $version installed at $DATA/$version/af ($verified_by verified)"
 fi

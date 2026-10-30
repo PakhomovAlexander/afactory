@@ -24,3 +24,14 @@ binaries built before the rotation keep verifying older releases with the key th
 
 Developer builds without `release.pub` verify checksums only and say so in `af self status`
 (`key: none`); `AF_RELEASE_KEY=<file>` points such a build at a key for testing.
+
+## The nightly key
+
+`nightly.pub` is the public half of a separate minisign key the nightly build signs a nightly's
+`SHA256SUMS` with; it is added here by hand, and `build.rs` embeds it as `AF_NIGHTLY_KEY` when it
+exists. `af self` verifies a nightly against that key alone and a release never against it
+([ADR-0267](../../../docs/adr/0267-offer-a-nightly-channel-in-af-self.md)). A build without the
+file refuses `af self channel nightly` and every nightly install with one sentence (`this af
+carries no nightly key`); `AF_NIGHTLY_KEY=<file>` points a build at a key instead. `install.sh`
+embeds the same key as `NIGHTLY_PUB`, empty until the file exists, and refuses `--nightly` while
+it is (`AF_INSTALL_NIGHTLY_KEY=<file>` overrides it).

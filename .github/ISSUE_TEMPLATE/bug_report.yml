@@ -1,13 +1,14 @@
 name: Bug report
 description: af did something other than what its documentation or contract says.
 title: "bug: "
-labels: [bug]
+labels: [bug, triage/pending]
 body:
   - type: markdown
     attributes:
       value: |
-        Thanks for the report. A reproducible bug needs the exact binary, the exact policy it
-        read, and the exact command; the fields below collect those. Redact anything private
+        Thanks for the report. Only what happened, the af version and the evidence are required;
+        the exact policy af read and the exact command make a bug reproducible, so add them when
+        you have them. Triage labels the issue later, asynchronously. Redact anything private
         (repository names, issue keys, prompts) but keep the shape of the policy intact.
         Security vulnerabilities go through https://github.com/PakhomovAlexander/afactory/security/advisories/new, never here.
   - type: input
@@ -25,7 +26,7 @@ body:
       description: Operating system, version, and the release target you installed (or "source build").
       placeholder: "macOS 15.6 / aarch64-apple-darwin"
     validations:
-      required: true
+      required: false
   - type: textarea
     id: policy
     attributes:
@@ -33,7 +34,7 @@ body:
       description: The pipeline, worker, or project excerpt that af read. Include the `[gate]` binding and provider when a sandbox is involved.
       render: toml
     validations:
-      required: true
+      required: false
   - type: textarea
     id: command
     attributes:
@@ -41,26 +42,26 @@ body:
       description: The exact `af …` invocation, with the environment variables that mattered (`AF_*`, `CLAUDE_CONFIG_DIR`, `CODEX_HOME` as names, never their contents).
       render: shell
     validations:
-      required: true
+      required: false
   - type: textarea
     id: expected
     attributes:
       label: Expected behaviour
       description: What the documentation, ADR, or contract says should happen.
     validations:
-      required: true
+      required: false
   - type: textarea
     id: actual
     attributes:
-      label: Actual behaviour
+      label: What happened
       description: What happened instead, including the exact error line.
     validations:
       required: true
   - type: textarea
     id: evidence
     attributes:
-      label: Report or logs
+      label: Evidence
       description: The output of `af review report` for the affected run, or the relevant stderr. Captured stdout/stderr is redacted for granted paths only, so check it before pasting.
       render: text
     validations:
-      required: false
+      required: true

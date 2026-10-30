@@ -1,4 +1,4 @@
-"""The owner's daily nightly report (scripts/nightly/report.py, ADR-0267) with injected fakes.
+"""The owner's daily nightly report (scripts/nightly/report.py, ADR-0269) with injected fakes.
 
 Each test builds a builds root and a nightly executor journal in its own temporary directory
 from the laboratory's valid schema fixtures (the night's record, the executor request, result

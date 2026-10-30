@@ -58,7 +58,8 @@ are at any point, token-free.
 
    Releases are built for macOS on Apple silicon and for Linux on x86_64 and arm64.
    `curl … | sh -s -- --rc` (or `curl … | AF_INSTALL_CHANNEL=rc sh`) installs the newest
-   release, pre-releases included, and `curl … | AF_INSTALL_VERSION=X.Y.Z sh` an exact one. The
+   release, pre-releases included, `curl … | sh -s -- --nightly` the newest nightly build of main
+   (Linux), and `curl … | AF_INSTALL_VERSION=X.Y.Z sh` an exact one. The
    installer ends with the next steps and, when its bin directory is not on `PATH`, the line that
    puts it there for your shell. Signatures, updates, source builds and removal are in
    [docs/self-management.md](docs/self-management.md).
@@ -131,6 +132,7 @@ explains Task, Worker, Attempt, Snapshot and the other words in two sentences ea
 
 ```sh
 af self update --check   # exit 10 when a newer release exists; af self update installs it
+af self channel nightly  # live on nightly builds; af self channel stable moves back
 af self uninstall        # --purge also removes config, state, Stores, completions and man pages
 ```
 

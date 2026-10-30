@@ -119,7 +119,11 @@ with no terminal, installs nothing and runs the current `af`; `"always"` install
 never does. `af review plan` never installs. `install.sh` fetches over HTTPS only and verifies
 the signature; without `minisign` it refuses unless `AF_INSTALL_ALLOW_UNSIGNED=1` accepts the
 checksum alone, which only catches a corrupt download, and a re-run verifies the installed
-binary again.
+binary again. A nightly build is signed with a separate nightly key
+(`crates/af/keys/nightly.pub`, embedded the same way): a nightly's `SHA256SUMS` is verified
+against that key alone and a release's never against it, a build without the key refuses the
+nightly channel, and a nightly is never pinned
+([ADR-0267](docs/adr/0267-offer-a-nightly-channel-in-af-self.md)).
 
 **Self-management talks to GitHub, and remembers pinned projects.** After an eligible command,
 at most once per `[self] check_every` (24 hours by default), a detached `af self refresh-check`

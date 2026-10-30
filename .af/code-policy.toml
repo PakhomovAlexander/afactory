@@ -89,8 +89,12 @@ checks = ["kernel"]
 [warm]
 build_cache = ["cargo_target", "cargo_home", "npm_cache"]
 # The build has its own deadline (ADR-0207): until verify.sh reports its `build` step, at most
-# 40 minutes; the tests then have check_wall_ms of their own. A busy layer is waited for.
+# 40 minutes; the tests then have check_wall_ms of their own.
 build_wall_ms = 2400000
+# A busy layer is not waited for (issue #459): the check clones it into its own runtime directory
+# (`clonefile` on APFS) and builds there. The clone keeps no sources record, so the workspace
+# crates rebuild; the layer itself is untouched.
+clone_when_busy = true
 # Eviction bound: a directory above it is removed after the check, whose result stands (R5).
 max_bytes = 17179869184
 # The only bound that ends a running check: a disk safety, twice the eviction bound.
