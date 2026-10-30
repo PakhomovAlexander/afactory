@@ -675,7 +675,7 @@ def quarantine():
     cases = 0
     old = 'af::it old::kept'
     one = 'af::it capture::a_settled_worktree_is_admitted_on_retry'
-    two = 'af::it a|pipe::case'
+    two = 'af::it alpha::case'
     with tempfile.TemporaryDirectory() as tmp:
         repo = Path(tmp) / 'repo'
         repo.mkdir()
@@ -689,6 +689,12 @@ def quarantine():
             'remove': {},
             'malformed': '{"schema": "af.test-quarantine/1", "tests": [',
             'bad-entry': {old: entry(['T0', 'T9']), one: {'state': 'gone'}},
+            'no-since': {one: {'state': 'quarantined', 'expires': '2026-11-12', 'evidence': ['T1']}},
+            'bad-date': {one: entry(['T1'], expires='soon')},
+            'long-window': {one: entry(['T1'], expires='2026-11-30')},
+            'bad-identity': {'not-an-identity': entry(['T1'])},
+            'bad-evidence': {one: entry(['T 1'])},
+            'unknown-field': {one: {**entry(['T1']), 'owner': 'me'}},
         }
         heads = {}
         for name, tests in branches.items():
@@ -713,7 +719,7 @@ def quarantine():
 
         row_one = (f"| `{one}` | quarantined | 2026-11-12 | quarantined; flaky in 2 Tasks' "
                    'gates: T1, T2; #466 |')
-        row_two = ("| `af::it a\\|pipe::case` | flaky | 2026-11-12 | flaky; flaky in 1 Task's "
+        row_two = ("| `af::it alpha::case` | flaky | 2026-11-12 | flaky; flaky in 1 Task's "
                    'gates: T3 |')
         table = ['', '| Test | State | Expires | Why |', '|---|---|---|---|']
         expected = {
@@ -733,22 +739,40 @@ def quarantine():
             assert (code, out) == (0, ''), (name, code, out, err)
             assert err == 'no quarantined tests added: no block needed\n', (name, err)
             cases += 1
-        for name, why in (('malformed', 'is not JSON'), ('bad-entry', 'is malformed')):
+        for name, why in (('malformed', 'is not JSON'), ('bad-entry', 'is malformed'),
+                          ('no-since', "missing field ['since']"),
+                          ('bad-date', 'not both YYYY-MM-DD dates'),
+                          ('long-window', 'at most 14 days after it'),
+                          ('bad-identity', 'not a `<binary_id> <test name>` nextest identity'),
+                          ('bad-evidence', 'not a non-empty list of af Task IDs'),
+                          ('unknown-field', "unknown field ['owner']")):
             code, out, err = render('main', name)
             assert code == 1 and out == '', (name, code, out, err)
             assert f'.config/test-quarantine.json at {name}' in err and why in err, (name, err)
             cases += 1
+        # A malformed file at the fork point is named as the fork point.
+        git(repo, 'checkout', '-q', '-b', 'bad-fork', fork)
+        bad_fork = commit(repo, {old: entry(['T0'], expires='soon')}, 'bad fork')
+        git(repo, 'checkout', '-q', '-b', 'on-bad-fork', bad_fork)
+        commit(repo, {old: entry(['T0'], expires='soon'), one: entry(['T1', 'T2'])}, 'on it')
+        code, out, err = render('bad-fork', 'on-bad-fork')
+        assert code == 1 and out == '' and f'at the fork point {bad_fork}' in err \
+            and 'is malformed' in err, (code, out, err)
+        cases += 1
+        # A `|` in a cell is escaped and read back; a valid entry never holds one.
+        assert tool.escape('a|b') == 'a\\|b' and tool.row_cells('| `a\\|b` | x |') == ['`a|b`', 'x']
+        cases += 1
         for ref, why in (('no-such-ref', 'no-such-ref'), ('bare', 'no common ancestor')):
             code, out, err = render(ref, 'two')
             assert code == 1 and out == '' and why in err, err
             cases += 1
-        # The parser reads a rendered block back, its rows in any order, and refuses a block
-        # whose title, rows or reasons disagree.
+        # The parser reads a rendered block back, its rows in order, and refuses a block whose
+        # title, rows or reasons disagree.
         body = tool.render('main', 'two', repo)
         rows = body.splitlines()
         parsed = tool.parse(rows)[0]
         assert parsed['count'] == 2 and {row[0] for row in parsed['rows']} == {one, two}, parsed
-        assert tool.parse(rows[:4] + rows[4:][::-1])[0] == parsed
+        assert tool.parse(rows[:4] + rows[4:][::-1])[0] != parsed
         for bad, why in [
                 (rows[:-1], 'the title says 2 quarantined tests added, but the table has 1 rows'),
                 (rows[:4] + [rows[4], rows[4]], 'has two rows'),
@@ -785,7 +809,8 @@ def quarantine():
                      + '\n')
         for name, (branch, block, args, code, said) in {
                 'the exact block': ('two', expected['two'], (), 0, 'it matches the pull request'),
-                'the exact block, rows reordered': ('two', reordered, (), 0, 'it matches'),
+                'the exact block, rows reordered': ('two', reordered, (), 1,
+                                                    'is not that of this pull request'),
                 'a block from a fork point with no file': ('absent', expected['absent'], (), 0,
                                                            'it matches'),
                 'a missing block': ('two', '', (), 1, 'no quarantine block'),

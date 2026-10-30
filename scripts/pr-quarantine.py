@@ -21,6 +21,7 @@ differs, printing the block to paste, and one that holds a block when nothing is
 This script imports nothing from the other scripts: the check loads it from the base branch.
 """
 import argparse
+import datetime as dt
 import json
 from pathlib import Path
 import re
@@ -32,6 +33,12 @@ END = '<!-- /af-pr-quarantine -->'
 FILE = '.config/test-quarantine.json'
 SCHEMA = 'af.test-quarantine/1'
 STATES = ('quarantined', 'flaky')
+# The file's static shape, as scripts/test-classes.py guards it (ADR-0268), without its
+# expiry-against-today guard: a past commit's entries may have expired since.
+FIELDS = {'state', 'since', 'expires', 'evidence', 'issue'}
+IDENTITY = re.compile(r'[A-Za-z0-9_:./-]+ [A-Za-z0-9_:]+')
+TASK_ID = re.compile(r'[A-Za-z0-9][A-Za-z0-9_-]{0,127}')
+QUARANTINE_DAYS = 14
 HEADER = ['Test', 'State', 'Expires', 'Why']
 SEPARATOR_ROW = '|---|---|---|---|'
 TITLE = re.compile(r'^\*\*Quarantined tests added: ([1-9]\d*)\*\*$')
@@ -84,18 +91,47 @@ def entries(repo, commit, name):
             or not isinstance(document.get('tests'), dict):
         raise QuarantineError(f'{where} is not an `{SCHEMA}` document with a `tests` object')
     for identity, entry in document['tests'].items():
-        if not isinstance(entry, dict) or entry.get('state') not in STATES \
-                or not isinstance(entry.get('expires'), str) \
-                or not isinstance(entry.get('evidence'), list) or not entry['evidence'] \
-                or not all(isinstance(task, str) and task for task in entry['evidence']) \
-                or ('issue' in entry and (not isinstance(entry['issue'], int)
-                                          or isinstance(entry['issue'], bool)
-                                          or entry['issue'] < 1)):
-            raise QuarantineError(f'{where}: the entry `{identity}` is malformed: it needs a '
-                                  f'`state` ({" or ".join(STATES)}), an `expires` date, a '
-                                  'non-empty `evidence` list of Task IDs and, if any, a positive '
-                                  '`issue`')
+        problem = malformed(identity, entry)
+        if problem:
+            raise QuarantineError(f'{where}: the entry `{identity}` is malformed: {problem}')
     return document['tests']
+
+
+def date(text):
+    """`text` as a date when it is `YYYY-MM-DD`, else None."""
+    if not isinstance(text, str) or not DATE.match(text):
+        return None
+    try:
+        return dt.date.fromisoformat(text)
+    except ValueError:
+        return None
+
+
+def malformed(identity, entry):
+    """What breaks the quarantine file's shape in this entry, or None."""
+    if not IDENTITY.fullmatch(identity):
+        return 'its key is not a `<binary_id> <test name>` nextest identity'
+    if not isinstance(entry, dict):
+        return 'it is not an object'
+    if set(entry) - FIELDS:
+        return f'unknown field {sorted(set(entry) - FIELDS)}'
+    if {'state', 'since', 'expires', 'evidence'} - set(entry):
+        return f"missing field {sorted({'state', 'since', 'expires', 'evidence'} - set(entry))}"
+    if entry['state'] not in STATES:
+        return f'state {entry["state"]!r} is neither {" nor ".join(STATES)}'
+    since, expires = date(entry['since']), date(entry['expires'])
+    if since is None or expires is None:
+        return '`since` and `expires` are not both YYYY-MM-DD dates'
+    # A difference, not `since + 14 days`, which overflows near 9999-12-31.
+    if not dt.timedelta(0) < expires - since <= dt.timedelta(days=QUARANTINE_DAYS):
+        return f'`expires` is not after `since` and at most {QUARANTINE_DAYS} days after it'
+    evidence = entry['evidence']
+    if not isinstance(evidence, list) or not evidence \
+            or not all(isinstance(task, str) and TASK_ID.fullmatch(task) for task in evidence):
+        return '`evidence` is not a non-empty list of af Task IDs'
+    if 'issue' in entry and (type(entry['issue']) is not int or entry['issue'] < 1):
+        return f'issue {entry["issue"]!r} is not a positive integer'
+    return None
 
 
 def added(base, head, repo):
@@ -161,7 +197,7 @@ def row_cells(line):
 
 def parse(lines):
     """The block's body `lines` (what it shows, blank lines or not) read back:
-    `({'count': N, 'rows': frozenset of (identity, state, expires, why)}, None)`, or
+    `({'count': N, 'rows': tuple of (identity, state, expires, why) in order}, None)`, or
     `(None, what is wrong)`."""
     lines = [line.strip() for line in lines if line.strip()]
     if not lines:
@@ -200,7 +236,7 @@ def parse(lines):
         return None, (f'the title says {title.group(1)} quarantined tests added, but the table '
                       f'has {len(rows)} rows')
     return ({'count': len(rows),
-             'rows': frozenset((name, *values) for name, values in rows.items())}, None)
+             'rows': tuple((name, *values) for name, values in rows.items())}, None)
 
 
 def main(argv=None):
