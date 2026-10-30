@@ -26,6 +26,8 @@ pub fn af_binary() -> &'static Path {
 }
 pub const VERSION: &str = env!("CARGO_PKG_VERSION");
 pub const TARGET: &str = env!("AF_TARGET");
+/// The commit every fake nightly's `af --version --json` reports.
+pub const NIGHTLY_COMMIT: &str = "0123456789ab";
 
 /// `af` for a test: the binary under test with `HOME` and every XDG directory in a private
 /// directory of this test process, below cargo's target directory, so no test reads or changes
@@ -98,7 +100,10 @@ pub fn private_home_env() -> Vec<(&'static str, PathBuf)> {
             .join("af-test-homes")
             .join(format!("{}-{nanos}", std::process::id()));
         std::fs::create_dir_all(&home).unwrap();
-        home
+        // Resolved, as af resolves the paths it reports: a target directory reached through a
+        // symlink (macOS's `/var` and `/tmp`, a warm layer's clone in a check's runtime
+        // directory) would otherwise make every path assertion compare two spellings.
+        std::fs::canonicalize(&home).unwrap()
     });
     vec![
         ("HOME", home.clone()),
@@ -196,6 +201,8 @@ impl Sandbox {
             .env_remove("AF_SELF_OFFLINE")
             .env_remove("AF_VERSION")
             .env_remove("AF_RELEASE_KEY")
+            .env_remove("AF_NIGHTLY_KEY")
+            .env_remove("AF_TEST_EMBEDDED_NIGHTLY_KEY")
             .env_remove("CI");
         if let Some(key) = &self.key {
             command.env("AF_RELEASE_KEY", key);
@@ -273,22 +280,63 @@ impl Sandbox {
         script: &str,
         tamper: bool,
     ) -> String {
-        let tag_dir = self.release_dir(version);
+        self.publish_tag(&format!("v{version}"), target, script, tamper)
+    }
+
+    /// A nightly tagged `tag` (`nightly-YYYY.MM.DD`) for `target`, whose `af` answers
+    /// `--version --json` with `version` (`<core>-nightly.<YYYYMMDD>`) and [`NIGHTLY_COMMIT`],
+    /// in the release layout with an unsigned `SHA256SUMS`. Returns the archive's digest.
+    pub fn publish_nightly_for(&self, tag: &str, version: &str, target: &str) -> String {
+        let script = format!(
+            "#!/bin/sh\nif [ \"$1\" = \"--version\" ]; then\n  if [ \"$2\" = \"--json\" ]; then printf '{{\"version\": \"{version}\", \"commit\": \"{NIGHTLY_COMMIT}\", \"target\": \"{target}\"}}\\n'; exit 0; fi\n  echo \"af {version}\"; exit 0\nfi\necho \"fake af {version} $*\"\n"
+        );
+        self.publish_tag(tag, target, &script, false)
+    }
+
+    /// [`Sandbox::publish_nightly_for`] this machine's target.
+    pub fn publish_nightly(&self, tag: &str, version: &str) -> String {
+        self.publish_nightly_for(tag, version, TARGET)
+    }
+
+    /// A nightly tagged `tag` for this machine's target whose `af` is the binary under test: run
+    /// with `AF_TEST_RUNNING_VERSION` set to `version`, it reports that version as its own, so
+    /// the nightly a switch installs from it is the af that then runs as that nightly. Returns
+    /// the archive's digest.
+    pub fn publish_nightly_binary(&self, tag: &str) -> String {
+        self.publish_tag_with(tag, TARGET, false, |af| copy_by_a_child(private_af(), af))
+    }
+
+    /// `releases/<tag>/af-<tag>-<target>.tar.gz` holding `script` as `af`, beside a
+    /// `SHA256SUMS` that lists it (tampered when asked) and a second target.
+    fn publish_tag(&self, tag: &str, target: &str, script: &str, tamper: bool) -> String {
+        self.publish_tag_with(tag, target, tamper, |af| write(af, script))
+    }
+
+    /// [`Sandbox::publish_tag`] with `af` written by `stage`, which gets its path.
+    fn publish_tag_with(
+        &self,
+        tag: &str,
+        target: &str,
+        tamper: bool,
+        stage: impl FnOnce(&Path),
+    ) -> String {
+        let tag_dir = self.path(&format!("releases/{tag}"));
         std::fs::create_dir_all(&tag_dir).unwrap();
-        let stage = self.path(&format!("stage-{version}"));
-        std::fs::create_dir_all(&stage).unwrap();
-        write(&stage.join("af"), script);
+        let staging = self.path(&format!("stage-{tag}"));
+        std::fs::create_dir_all(&staging).unwrap();
+        let _ = std::fs::remove_file(staging.join("af"));
+        stage(&staging.join("af"));
         {
             use std::os::unix::fs::PermissionsExt;
-            std::fs::set_permissions(stage.join("af"), std::fs::Permissions::from_mode(0o755))
+            std::fs::set_permissions(staging.join("af"), std::fs::Permissions::from_mode(0o755))
                 .unwrap();
         }
-        let asset = format!("af-v{version}-{target}.tar.gz");
+        let asset = format!("af-{tag}-{target}.tar.gz");
         let status = Command::new("tar")
             .arg("-czf")
             .arg(tag_dir.join(&asset))
             .arg("-C")
-            .arg(&stage)
+            .arg(&staging)
             .arg("af")
             .status()
             .unwrap();
@@ -303,7 +351,7 @@ impl Sandbox {
         write(
             &tag_dir.join("SHA256SUMS"),
             &format!(
-                "{listed}  {asset}\n{}  af-v{version}-other-target.tar.gz\n",
+                "{listed}  {asset}\n{}  af-{tag}-other-target.tar.gz\n",
                 "1".repeat(64)
             ),
         );
@@ -313,15 +361,17 @@ impl Sandbox {
     /// Sign a published release's `SHA256SUMS` (with the file's bytes, or with other bytes to
     /// forge a signature that does not match).
     pub fn sign(&self, version: &str, signer: &Signer, over: Option<&[u8]>) {
-        let sums = self.release_dir(version).join("SHA256SUMS");
+        self.sign_tag(&format!("v{version}"), signer, over);
+    }
+
+    /// [`Sandbox::sign`] for the release tagged `tag`, a nightly's among them.
+    pub fn sign_tag(&self, tag: &str, signer: &Signer, over: Option<&[u8]>) {
+        let dir = self.path(&format!("releases/{tag}"));
         let bytes = match over {
             Some(bytes) => bytes.to_vec(),
-            None => std::fs::read(&sums).unwrap(),
+            None => std::fs::read(dir.join("SHA256SUMS")).unwrap(),
         };
-        write(
-            &self.release_dir(version).join("SHA256SUMS.minisig"),
-            &signer.sign(&bytes),
-        );
+        write(&dir.join("SHA256SUMS.minisig"), &signer.sign(&bytes));
     }
 
     /// Adopt the real binary under test as an installed, receipted version.
