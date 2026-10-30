@@ -293,6 +293,8 @@ class SkipRule(History):
         self.assertEqual(code, 3, err)
         self.assertFalse(os.path.exists(os.path.join(self.builds, "2026-10-29")))
 
+        # A refused attempt of the same night left a partial directory; the skip replaces it.
+        os.makedirs(os.path.join(self.builds, "2026-10-29", "source"))
         code, out, err = self.main("build", "--config", self.config, "--date", "2026-10-29",
                                    github=FakeGitHub({self.tip: LINT_FAILED}).client(),
                                    host=host)

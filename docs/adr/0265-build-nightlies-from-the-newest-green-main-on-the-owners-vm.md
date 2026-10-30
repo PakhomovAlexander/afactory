@@ -73,11 +73,13 @@ with Docker, `git`, `minisign` and `qemu-aarch64-static`, reading one `af.nightl
    refuses the night, it never skips the smoke), and `af-nightly-YYYY.MM.DD-<target>.tar.gz`
    holds `af`, `completions/` and `man/` as a release archive does.
 5. **A separate key.** `SHA256SUMS` is written in the release's exact format and signed with
-   the nightly key `sign_key` (`minisign -S -W … -t "af nightly-YYYY.MM.DD"`; a passphrase comes
-   only from `AF_NIGHTLY_SIGN_PASSWORD`, on minisign's standard input), and the night is refused
-   unless the signature verifies against `public_key`. The build never reads the release key
-   or touches the release workflow. The public key `crates/af/keys/nightly.pub` is added by the
-   owner later and embedded by a later change; until then the configuration names it.
+   the nightly key `sign_key`:
+   `minisign -S -W -s <sign_key> -m SHA256SUMS -t "af nightly-YYYY.MM.DD"` for a key without a
+   passphrase; a passphrase comes only from `AF_NIGHTLY_SIGN_PASSWORD` and is given on
+   minisign's standard input, without `-W`. The night is refused unless the signature verifies
+   against `public_key`. The build never reads the release key or touches the release
+   workflow. The public key `crates/af/keys/nightly.pub` is added by the owner later and
+   embedded by a later change; until then the configuration names it.
 6. **The record.** `builds_root/<date>/nightly.json` is `af.nightly-build/1`, the plan
    `af.nightly-plan/1` and the configuration `af.nightly-config/1`, registered with the
    laboratory's contracts, with generated schemas and golden fixtures; the reader recomputes the

@@ -528,12 +528,16 @@ class Night:
 
     # The phases ----------------------------------------------------------------------------
 
-    def prepare(self):
-        """An empty night directory; a partial one an earlier attempt left is replaced."""
+    def clear(self):
+        """Remove the partial night directory a refused attempt left, if any."""
         if os.path.lexists(self.root):
             require(os.path.isdir(self.root) and not os.path.islink(self.root),
                     "%s is not a directory" % self.root)
             shutil.rmtree(self.root)
+
+    def prepare(self):
+        """An empty night directory; a partial one an earlier attempt left is replaced."""
+        self.clear()
         for path in (self.source, self.dist, self.logs, os.path.join(self.work, "home"),
                      os.path.join(self.work, "tmp"), self.cache):
             os.makedirs(path, exist_ok=True)
@@ -673,7 +677,9 @@ class Night:
             raise Refused("%s already records this night" % path)
 
     def skip(self):
+        """A skipped night's directory holds only its record."""
         self.refuse_recorded()
+        self.clear()
         return self.record("skipped", [])
 
     def run_build(self, git):

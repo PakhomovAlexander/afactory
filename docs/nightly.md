@@ -79,8 +79,9 @@ The key's passphrase, if it has one, is read from `AF_NIGHTLY_SIGN_PASSWORD` and
    (the aarch64 binary runs under `qemu_aarch64`), and `dist/af-nightly-YYYY.MM.DD-<target>.tar.gz`
    holds `af`, `completions/` and `man/` rendered by that binary;
 4. writes `dist/SHA256SUMS` in the release's format (`<sha256>  <archive>` per line), signs it
-   with `minisign -S -s <sign_key> -m SHA256SUMS -t "af nightly-YYYY.MM.DD"`, and refuses the
-   night unless `minisign -V` verifies it against `public_key`;
+   with `minisign -S -W -s <sign_key> -m SHA256SUMS -t "af nightly-YYYY.MM.DD"` (without `-W`
+   when `AF_NIGHTLY_SIGN_PASSWORD` gives a passphrase), and refuses the night unless
+   `minisign -V` verifies it against `public_key`;
 5. writes `nightly.json` (`af.nightly-build/1`).
 
 A skipped night writes only its `nightly.json`, with status `skipped`, and builds nothing.
