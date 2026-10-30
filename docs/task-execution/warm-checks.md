@@ -16,7 +16,7 @@ build_cache = ["cargo_target", "cargo_home", "npm_cache"]
 max_bytes = 17179869184      # eviction bound of one key
 hard_max_bytes = 34359738368 # the only bound that ends a running check
 build_wall_ms = 2400000      # the build phase's own deadline (optional)
-clone_when_busy = false      # true: build in a private copy instead of waiting
+clone_when_busy = true       # build in a private copy instead of waiting (default false)
 ```
 
 ## Where a layer lives

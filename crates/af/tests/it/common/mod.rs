@@ -98,7 +98,10 @@ pub fn private_home_env() -> Vec<(&'static str, PathBuf)> {
             .join("af-test-homes")
             .join(format!("{}-{nanos}", std::process::id()));
         std::fs::create_dir_all(&home).unwrap();
-        home
+        // Resolved, as af resolves the paths it reports: a target directory reached through a
+        // symlink (macOS's `/var` and `/tmp`, a warm layer's clone in a check's runtime
+        // directory) would otherwise make every path assertion compare two spellings.
+        std::fs::canonicalize(&home).unwrap()
     });
     vec![
         ("HOME", home.clone()),
