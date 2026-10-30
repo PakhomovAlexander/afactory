@@ -52,8 +52,8 @@ labels for people and as a typed document for agents.
 
 The template applies exactly one label, `triage/pending`. It applies no class and no title
 prefix. The bug template keeps its fields but requires only `What happened`, `af version` and
-`Evidence`; the policy and command fields become optional. The feature template is unchanged.
-Both existing templates also apply `triage/pending`, so every new issue enters the same queue.
+`Evidence`; the policy, command, platform and expected-behaviour fields become optional. The
+feature template keeps its fields. Both existing templates also apply `triage/pending`, so every new issue enters the same queue.
 The `bug` and `enhancement` labels those templates apply are queue hints that the runner is
 authorized to replace (§6.5).
 

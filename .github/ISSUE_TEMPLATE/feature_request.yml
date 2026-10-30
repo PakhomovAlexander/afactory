@@ -1,7 +1,7 @@
 name: Feature request
 description: Propose a change to af's behaviour, contracts, or CLI.
 title: "feat: "
-labels: [enhancement]
+labels: [enhancement, triage/pending]
 body:
   - type: markdown
     attributes:
