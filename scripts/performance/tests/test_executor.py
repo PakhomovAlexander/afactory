@@ -1214,11 +1214,15 @@ class ImageAdmission(ExecutorFixture):
         # of their shape, is a typed refusal: nothing claimed, built, probed or fenced.
         good = ['"sha256:%s"' % ("3" * 64), '"linux"', '"arm64"', '["%s"]' % IMAGE, '[]']
         # Every field and shape is covered by `test_builds.ImageIdentity`; here, one five-field
-        # output with every field not JSON and one with a misshapen environment.
-        bad = (["{"] * 5, good[:4] + ["[1]"])
-        for index, fields in enumerate(bad):
-            with self.subTest(fields=fields):
-                directory = self.docker(IMAGE, self.SAMPLE, identity="\t".join(fields) + "\n")
+        # output with every field not JSON, one with a misshapen environment, one nested 1200
+        # deep below the byte bound and one whose environment PATH holds the raw byte 0xff.
+        bad = (("\t".join(["{"] * 5) + "\n", "is not JSON"),
+               ("\t".join(good[:4] + ["[1]"]) + "\n", "is not a list of strings"),
+               ("\t".join(good[:4] + ["[" * 1200 + "]" * 1200]) + "\n", "nests deeper"),
+               ("\t".join(good[:4]).encode() + b'\t["PATH=/usr/\xffbin"]\n', "not UTF-8"))
+        for index, (identity, why) in enumerate(bad):
+            with self.subTest(why=why):
+                directory = self.docker(IMAGE, self.SAMPLE, identity=identity)
                 with executor.Journal(self.c) as j:
                     refused = j.preflight("core", self.base, self.head, "identity_%d" % index)
                     contracts.write_bytes(refused, "executor-preflight")
@@ -1226,6 +1230,7 @@ class ImageAdmission(ExecutorFixture):
                     self.assertIn("refused before any claim or build", refused["detail"])
                     self.assertIn("build_image_malformed: docker image inspect gave a "
                                   "malformed identity for the build image", refused["detail"])
+                    self.assertIn(why, refused["detail"])
                     with self.assertRaisesRegex(ContractError, "build_image_malformed"):
                         self.submit(j, "core", "identity_%d" % index)
                     self.assertEqual(j.names(), [], "a refusal reserves nothing")

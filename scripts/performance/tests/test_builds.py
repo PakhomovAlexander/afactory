@@ -680,6 +680,46 @@ class ImageIdentity(unittest.TestCase):
                                   "build image")
         self.assertIn("exceeds its byte bound", str(caught.exception))
 
+    def test_deep_nesting_below_the_byte_bound_is_a_typed_refusal(self):
+        # 1200 nested arrays fit the byte bound but can recurse the decoder past the
+        # interpreter's limit: the depth is refused before any field is decoded.
+        nested = "[" * 1200 + "]" * 1200
+        loads = json.loads
+
+        def decoded(text):
+            assert text != nested, "decoded the nested field"
+            return loads(text)
+        for field in range(5):
+            fields = self.GOOD[:field] + [nested] + self.GOOD[field + 1:]
+            stdout = ("\t".join(fields) + "\n").encode()
+            self.assertLessEqual(len(stdout), builds.limits.RECORD_BYTES_MAX)
+            with self.subTest(field=field):
+                with mock.patch.object(builds.json, "loads", side_effect=decoded):
+                    with self.assertRaises(builds.Unavailable) as caught:
+                        builds.image_identity(stdout, IMAGE, "build image")
+                self.assertEqual(caught.exception.reason, "build_image_malformed")
+                self.assertIn("nests deeper than 1", str(caught.exception))
+        # Brackets inside a string are its contents, not nesting.
+        self.assertEqual(self.identity(self.GOOD[:4] + [r'["A=[[{\"]]", "B=\\"]'])[4],
+                         ['A=[[{"]]', "B=\\"])
+        # A decoder that still recurses too deeply is the same refusal, never a RecursionError.
+        with mock.patch.object(builds.json, "loads", side_effect=RecursionError("deep")):
+            with self.assertRaises(builds.Unavailable) as caught:
+                self.identity(self.GOOD)
+        self.assertEqual(caught.exception.reason, "build_image_malformed")
+        self.assertIn("its ID is not JSON", str(caught.exception))
+
+    def test_malformed_utf8_is_a_typed_refusal_never_repaired(self):
+        # An environment PATH holding byte 0xff is refused, not replaced by U+FFFD and admitted.
+        fields = [field.encode() for field in self.GOOD[:4]] + [b'["PATH=/usr/\xffbin"]']
+        with self.assertRaises(builds.Unavailable) as caught:
+            builds.image_identity(b"\t".join(fields) + b"\n", IMAGE, "build image")
+        self.assertEqual(caught.exception.reason, "build_image_malformed")
+        self.assertIn("it is not UTF-8", str(caught.exception))
+        # Well-formed non-ASCII UTF-8 is still read exactly.
+        self.assertEqual(self.identity(self.GOOD[:4] + ['["LANG=caf\u00e9"]'])[4],
+                         ["LANG=caf\u00e9"])
+
 
 class ContainerBuild(TempDir):
     """A Linux recipe builds in its pinned build image (ADR-0169). The stand-in docker client

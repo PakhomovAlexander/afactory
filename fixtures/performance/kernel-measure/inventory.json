@@ -2657,8 +2657,8 @@
   },
   {
    "path": "scripts/performance/perflab/builds.py",
-   "sha256": "sha256:2b31a149b0a4e28510f96bcfc26ac1ff900c8024090322262f07427d5f4b0a1a",
-   "size": 84985
+   "sha256": "sha256:5025a3c9d44ebba1178e97386fd4bb501bd82ae37f8f8cc84c70b2d4c8d08cc6",
+   "size": 85874
   },
   {
    "path": "scripts/performance/perflab/bundle.py",
@@ -3027,8 +3027,8 @@
   },
   {
    "path": "scripts/performance/tests/build_fixtures.py",
-   "sha256": "sha256:ebbaa71a9c79e299cbccd9a312c22198c0de48635e363d42c9df64dc96468bc8",
-   "size": 15993
+   "sha256": "sha256:defbdd42f43d1737e768b87617e7ae0322d4447bf9c28398706410cf6d9ac09c",
+   "size": 16094
   },
   {
    "path": "scripts/performance/tests/calibration_fixtures.py",
@@ -3112,8 +3112,8 @@
   },
   {
    "path": "scripts/performance/tests/test_builds.py",
-   "sha256": "sha256:08739a6bc292af9cb5bfedc3fe5c4d71c1ad20c97fe12c689fba0ac178800094",
-   "size": 65687
+   "sha256": "sha256:7f4ceefdf18d5e85cb7181159467ed99d411eb20b21bddc5b5f76ea3bb439b00",
+   "size": 68158
   },
   {
    "path": "scripts/performance/tests/test_calibration.py",
@@ -3167,8 +3167,8 @@
   },
   {
    "path": "scripts/performance/tests/test_executor.py",
-   "sha256": "sha256:75d3f3ff12b86e3718b6c13af472d8042fe049f53d534ea38ac324b0739f6049",
-   "size": 89678
+   "sha256": "sha256:82465828bbdccb7d4daf6825df1d3163785f8a2551bab923903f08ab9dc0e4d6",
+   "size": 90106
   },
   {
    "path": "scripts/performance/tests/test_fixtures.py",
@@ -3386,7 +3386,7 @@
    "size": 6777
   }
  ],
- "harness_digest": "sha256:f930a1a0fc035a9952aade53fba5efd63a9352a5f48a57a1b0a769107de74834",
+ "harness_digest": "sha256:25650e659bbfc03672589c5b7592024d7c4b360c3cc5637c395d7617e533fe25",
  "inner_metric": "pending",
  "inner_metric_reason": "the inner wall_ms metric is recorded in every Measurement but no staged objective selects it until the guard's real kernel integration and tampered-candidate tests are accepted on the sealed source and a reviewed human change installs and selects it",
  "objective_metric": "elapsed_ms",

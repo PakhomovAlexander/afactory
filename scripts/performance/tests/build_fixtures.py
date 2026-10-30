@@ -278,7 +278,7 @@ if args[:2] == ["image", "inspect"]:
         sys.exit(0)
     identity = os.path.join(here, "identity")
     if os.path.exists(identity):
-        sys.stdout.write(open(identity).read())
+        sys.stdout.buffer.write(open(identity, "rb").read())
         sys.exit(0)
     identity, env = IMAGES[image][:2]
     digests = IMAGES[image][2] if len(IMAGES[image]) > 2 else []
@@ -327,8 +327,8 @@ os.execve(program, [program] + rest, env)
 def fake_docker(directory, images, lingering=None, volumes=None, identity=None):
     """A bin directory whose `docker` answers for `images` ({reference: (id, [env]) or
     (id, [env], [repository digests])}); `volumes` is the stdout of every image's volume
-    inspection (`null` when None) and `identity`, when given, of every image's identity
-    inspection."""
+    inspection (`null` when None) and `identity` (text, or bytes written exactly), when given,
+    of every image's identity inspection."""
     os.makedirs(directory)
     path = os.path.join(directory, "docker")
     with open(path, "w") as stream:
@@ -338,8 +338,8 @@ def fake_docker(directory, images, lingering=None, volumes=None, identity=None):
         with open(os.path.join(directory, "volumes"), "w") as stream:
             stream.write(volumes)
     if identity is not None:
-        with open(os.path.join(directory, "identity"), "w") as stream:
-            stream.write(identity)
+        with open(os.path.join(directory, "identity"), "wb") as stream:
+            stream.write(identity if isinstance(identity, bytes) else identity.encode())
     if lingering is not None:
         with open(os.path.join(directory, "lingering"), "w") as stream:
             stream.write(lingering)

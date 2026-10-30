@@ -67,6 +67,7 @@ dependency preparation (`dependency_fetch`) is reported separately: it is never 
 import hashlib
 import json
 import os
+import re
 import secrets
 import shutil
 import signal
@@ -87,6 +88,9 @@ ARTIFACTS = "artifacts"
 LOGS = "logs"
 BUILDS_FILE = "builds.json"
 PLAN_FILE = "run.json"
+# The deepest nesting any well-formed identity field has: a list of strings.
+IDENTITY_DEPTH_MAX = 1
+JSON_STRING = re.compile(r'"(?:[^"\\]|\\.)*"')
 EXECUTABLE = stat.S_IRUSR | stat.S_IXUSR | stat.S_IRGRP | stat.S_IXGRP
 
 
@@ -310,15 +314,22 @@ def image_identity(stdout, reference, role):
                            "identity for the %s %s: %s" % (role, reference, why))
     if len(stdout) > limits.RECORD_BYTES_MAX:
         raise malformed("it exceeds its byte bound")
-    fields = stdout.decode("utf-8", "replace").strip().split("\t")
+    try:
+        fields = stdout.decode("utf-8").strip().split("\t")
+    except UnicodeDecodeError:
+        raise malformed("it is not UTF-8")
     if len(fields) != 5:
         raise malformed("%d fields, not 5" % len(fields))
     values = []
     for name, field in zip(("ID", "OS", "architecture", "repository digests", "environment"),
                            fields):
+        # Bound the nesting before decoding, so no field below the byte bound can make the
+        # decoder recurse past the interpreter's limit (a RecursionError, not a refusal).
+        if _nesting(field) > IDENTITY_DEPTH_MAX:
+            raise malformed("its %s nests deeper than %d" % (name, IDENTITY_DEPTH_MAX))
         try:
             values.append(json.loads(field))
-        except ValueError:
+        except (ValueError, RecursionError):
             raise malformed("its %s is not JSON" % name)
     for name, value in zip(("ID", "OS", "architecture"), values[:3]):
         if not isinstance(value, str) or not value:
@@ -328,6 +339,15 @@ def image_identity(stdout, reference, role):
                                       and all(isinstance(item, str) for item in value)):
             raise malformed("its %s is not a list of strings" % name)
     return values
+
+
+def _nesting(field):
+    """The deepest array or object nesting of a JSON text, its strings' contents not counted."""
+    depth = deepest = 0
+    for bracket in re.sub(r"[^\[\]{}]", "", JSON_STRING.sub("", field)):
+        depth += 1 if bracket in "[{" else -1
+        deepest = max(deepest, depth)
+    return deepest
 
 
 class BuildImage:
