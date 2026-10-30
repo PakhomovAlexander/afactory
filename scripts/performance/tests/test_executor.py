@@ -792,12 +792,13 @@ class Nightly(ExecutorFixture):
                          (self.base, self.head))
         self.assertEqual(request["submission"]["baseline"], {"tag": "v0.12.0", "sha": self.base})
 
-    def test_nightly_tier_admits_two_builds_and_four_serial_30_minute_shards_within_180_minutes(self):
+    def test_nightly_tier_admits_five_bounded_build_steps_and_four_serial_15_minute_shards_within_180_minutes(self):
         """ADR-0266's budget on a plan frozen from the suite's nightly tier, through the real
-        local path on a stepped clock: the build starts the run's deadline (ADR-0170), the
-        baseline and candidate builds take their declared build_minutes, and each serial shard
-        passes the shard runner's own admission with its whole sampling window before that
-        deadline. A fifth shard's window does not fit, and the deadline then refuses it."""
+        local path on a stepped clock: the build starts the run's deadline (ADR-0170), its five
+        bounded steps (the supervisor, each side's af and probe) each take their declared
+        build_minutes, and each serial shard passes the shard runner's own admission with its
+        whole sampling window before that deadline. A fifth shard's window does not fit, and
+        the deadline then refuses it."""
         self.release_history()
         self.c["core"].update(shards=4, cases=["cli_discovery__command_" + command for command in
                                                ("version", "help", "task_help", "review_run_help")])
@@ -813,7 +814,7 @@ class Nightly(ExecutorFixture):
             start_execution(started)
             # The stand-in's builds record holds the execution the real start fixes at this instant.
             self.assertEqual(started.execution["run"], synthetic.builds(builder.plan)["execution"]["run"])
-            clock[0] += 2 * builder.plan["limits"]["build_minutes"] * 60
+            clock[0] += 5 * builder.plan["limits"]["build_minutes"] * 60
 
         def admit(run_dir, caller):
             """The shard runner's admission against the run's recorded deadline; the remaining
@@ -837,15 +838,15 @@ class Nightly(ExecutorFixture):
             limits = plan["limits"]
             self.assertEqual((plan["tier"], len(plan["shards"]), limits["build_minutes"],
                               limits["shard_sampling_minutes"], limits["run_total_minutes"]),
-                             ("nightly", 4, 20, 30, 180))
+                             ("nightly", 4, 20, 15, 180))
             self.assertNotEqual(plan["resolved"]["baseline_sha"], plan["resolved"]["candidate_sha"])
             calls = []
             path, _ = self.complete_core(j, request, calls, on_build=build, on_shard=shard)
         self.assertEqual(calls, ["build", "prepare", "shard_0", "shard_1", "shard_2", "shard_3", "cleanup"])
         start = synthetic.RUN_STARTED_MS / 1000.0
-        # 40 build minutes, then four shards of 90 s preflight, 30 sampling minutes and the
+        # 100 build minutes, then four shards of 90 s preflight, 15 sampling minutes and the
         # finish reserve: 168 of 180 minutes, the last window closing 12.5 minutes early.
-        self.assertEqual([(w - start) / 60 for w in windows], [41.5, 73.5, 105.5, 137.5])
+        self.assertEqual([(w - start) / 60 for w in windows], [101.5, 118.5, 135.5, 152.5])
         self.assertEqual((clock[0] - start) / 60, 168)
         left = admit(os.path.join(path, "run"), None)
         self.assertEqual(left, 12 * 60)

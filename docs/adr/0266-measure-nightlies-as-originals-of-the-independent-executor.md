@@ -43,19 +43,21 @@ runs under a second configuration with its own root and `journal_id`, tier `nigh
 machine lock. Shards stay serial and the shard runner is unchanged.
 
 The nightly tier (`[tiers.nightly]` in `fixtures/performance/suite.toml`) is cut to fit those
-serial shards inside the hard maxima: `shards = 4`, `shard_sampling_minutes = 30`,
+serial shards inside the hard maxima: `shards = 4`, `shard_sampling_minutes = 15`,
 `run_total_minutes = 180`, `concurrent_jobs` unchanged. The run deadline starts with the build
 (ADR-0170), so it holds the build as well as the shards. A core nightly performs one build
-before its shards, which compiles the authority's small supervisor and two sides: the stable
-baseline and the frozen candidate, whose commits differ, so the candidate never shares the
-baseline's build. Each build step is bounded by the suite's `build_minutes = 20`. Counting each
-side's build at that bound, 2 × 20 build minutes and 4 × 30 sampling minutes make 160 minutes,
-which leaves 20 of the 180 for each shard's preflight and 30-second finish reserve, the
-supervisor compile and the dependency fetch. A build that runs longer leaves the last shard
-less time: the shard runner stops a shard at the run deadline and starts none after it, and
-the missing slots stay incomplete, never a pass. The hard maxima in
+before its shards, in five bounded steps: the authority's small supervisor, then for each of the
+two sides, the stable baseline and the frozen candidate (whose commits differ, so the candidate
+never shares the baseline's build), its `af` and its probe. Each step is bounded by the suite's
+`build_minutes = 20`, so the build takes at most 100 minutes. Four shards of 90 seconds of
+preflight, 15 sampling minutes and a 30-second finish reserve take 68: 168 of the 180 minutes,
+the rest for the dependency fetch and the archive. The sampling is a quarter of a quick shard's
+per schedule, the price of a serial night under the long tier's hard maximum; a deadline counted
+from the first shard would give it back (a follow-up, not this decision). A build that runs
+longer leaves the last shard less time: the shard runner stops a shard at the run deadline and
+starts none after it, and the missing slots stay incomplete, never a pass. The hard maxima in
 `scripts/performance/perflab/limits.py` are unchanged: 180 minutes is
-`LONG_RUN_TOTAL_MINUTES_MAX`, 30 sampling minutes is below `LONG_SHARD_SAMPLING_MINUTES_MAX`
+`LONG_RUN_TOTAL_MINUTES_MAX`, 15 sampling minutes is below `LONG_SHARD_SAMPLING_MINUTES_MAX`
 (90), and the committed suite/4, run/7, shard/4 and builds/6 schemas already admit both. The
 release tier and every other tier keep their numbers.
 
@@ -97,7 +99,7 @@ configuration, the submit lines, the derived baseline, the duration and how to r
 `binaries`. A core nightly takes at most the tier's 180 minutes from the start of its build,
 plus source retention before it and the report and archive after it; a shard the deadline cuts
 stays incomplete and visible as missing slots, and `run_seconds` (28800 in the installed
-configuration) bounds the whole original. Each nightly shard samples for at most 30 minutes,
+configuration) bounds the whole original. Each nightly shard samples for at most 15 minutes,
 so pairs that do not fit in that window stay unstarted and the shard incomplete. Like PR and
 release originals, a nightly plan is frozen with the planner's manual trigger; the request's
 submission carries what makes it a nightly.
@@ -112,8 +114,8 @@ submission rules through the real CLI, journal and a Git history with `v0.13.0`,
 an unreachable `v0.14.0` and a nightly tag; one head when `--head` names a ref that moves after
 the baseline is derived; the tier's budget on a plan frozen from it, run through the real local
 path with synthetic builds and shards on a stepped clock: the build fixes the 180-minute
-deadline, and after two 20-minute builds the shard runner's own deadline check admits four
-shards with their whole 30 sampling minutes, ending at 168 minutes, while a fifth does not fit
+deadline, and after five 20-minute build steps the shard runner's own deadline check admits
+four shards with their whole 15 sampling minutes, ending at 168 minutes, while a fifth does not fit
 and is refused at the deadline; the request and result fixtures; `verify` and `status` on a
 request/1 and result/2 original under the same installed control; and the Dockerfile's tool
 directory, read as text.
