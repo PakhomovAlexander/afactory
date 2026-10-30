@@ -1,0 +1,86 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:af:schema:performance-nightly-config:1",
+  "title": "af.nightly-config/1",
+  "description": "The owner's nightly build configuration as parsed TOML (ADR-0265): the repository, the bare mirror and builds root, the pinned musl build image, the aarch64 user-mode runner, the nightly signing key pair, the check runs a green commit must carry and how far back the walk may go.",
+  "type": "object",
+  "additionalProperties": false,
+  "properties": {
+    "schema": {
+      "const": "af.nightly-config/1"
+    },
+    "repository": {
+      "type": "string",
+      "maxLength": 201,
+      "pattern": "^[A-Za-z0-9_.-]{1,100}/[A-Za-z0-9_.-]{1,100}$"
+    },
+    "mirror": {
+      "type": "string",
+      "minLength": 2,
+      "maxLength": 4096,
+      "pattern": "^/[^\\x00]*$"
+    },
+    "builds_root": {
+      "type": "string",
+      "minLength": 2,
+      "maxLength": 4096,
+      "pattern": "^/[^\\x00]*$"
+    },
+    "build_image": {
+      "type": "string",
+      "maxLength": 330,
+      "pattern": "^(?:(?:[a-z0-9]+(?:(?:[._]|__|-+)[a-z0-9]+)*(?::[0-9]{1,5})?/)*[a-z0-9]+(?:(?:[._]|__|-+)[a-z0-9]+)*@)?sha256:[0-9a-f]{64}$"
+    },
+    "qemu_aarch64": {
+      "type": "string",
+      "minLength": 2,
+      "maxLength": 4096,
+      "pattern": "^/[^\\x00]*$"
+    },
+    "sign_key": {
+      "type": "string",
+      "minLength": 2,
+      "maxLength": 4096,
+      "pattern": "^/[^\\x00]*$"
+    },
+    "public_key": {
+      "type": "string",
+      "minLength": 2,
+      "maxLength": 4096,
+      "pattern": "^/[^\\x00]*$"
+    },
+    "required_checks": {
+      "type": "array",
+      "items": {
+        "type": "string",
+        "minLength": 1,
+        "maxLength": 256
+      },
+      "minItems": 0,
+      "maxItems": 64,
+      "uniqueItems": true
+    },
+    "max_walk": {
+      "type": "integer",
+      "minimum": 1,
+      "maximum": 200
+    },
+    "github_token_file": {
+      "type": "string",
+      "minLength": 2,
+      "maxLength": 4096,
+      "pattern": "^/[^\\x00]*$"
+    }
+  },
+  "required": [
+    "schema",
+    "repository",
+    "mirror",
+    "builds_root",
+    "build_image",
+    "qemu_aarch64",
+    "sign_key",
+    "public_key",
+    "required_checks"
+  ]
+}

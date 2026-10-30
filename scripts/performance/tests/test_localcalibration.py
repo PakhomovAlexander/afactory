@@ -70,8 +70,11 @@ class LocalOriginals(TempDir):
             run = os.path.join(path, "run")
             synthetic.write_run(plan, run, value, edit=edit, provenance="measured")
             synthetic.observe(run, plan, fx.CPU, IMAGE)
+            # Like execute_local, a core original names the binaries its builds record holds.
+            built = contracts.read_json(read(os.path.join(run, "builds.json")), "builds")
             return {"status": "complete", "measurement_status": "synthetic", "actions": None,
                 "evidence": executor.file_manifest(path, executor.EVIDENCE_PREFIXES),
+                "binaries": executor.built_binaries(built),
                 "detail": "synthetic whole-trial arithmetic; not empirical evidence"}
         self.assertEqual(journal.cycle(execute=execute, lock_directory=self.locks), "complete")
         return request

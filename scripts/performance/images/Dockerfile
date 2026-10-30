@@ -9,7 +9,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends python3 strace 
 ENV RUSTUP_HOME=/usr/local/rustup
 
 FROM gnu AS musl
-RUN rustup target add x86_64-unknown-linux-musl \
+RUN rustup target add x86_64-unknown-linux-musl aarch64-unknown-linux-musl \
     && cargo install --locked cargo-zigbuild --version 0.23.4 \
     && curl --fail --location --retry 3 --max-time 180 \
        https://ziglang.org/download/0.15.2/zig-x86_64-linux-0.15.2.tar.xz -o /tmp/zig.tar.xz \
@@ -18,4 +18,11 @@ RUN rustup target add x86_64-unknown-linux-musl \
     && rm /tmp/zig.tar.xz \
     && ln -s /opt/zig/zig /usr/local/bin/zig \
     && test "$(zig version)" = 0.15.2 \
-    && cargo-zigbuild --version | grep '0.23.4'
+    && cargo-zigbuild --version | grep '0.23.4' \
+    && mkdir -p /opt/af-perf-tools/bin \
+    && ln -s "$(command -v cargo-zigbuild)" /opt/af-perf-tools/bin/cargo-zigbuild \
+    && ln -s /opt/zig/zig /opt/af-perf-tools/bin/zig \
+    && test "$(/opt/af-perf-tools/bin/zig version)" = 0.15.2 \
+    && /opt/af-perf-tools/bin/cargo-zigbuild --version | grep '0.23.4'
+# One directory holds both shipping tools for an executor's zigbuild_bin (ADR-0266); the
+# cargo bin and /usr/local/bin paths above stay as they were.
