@@ -3,6 +3,7 @@
     "test-test-classes.py",
     "test-release-resolve.py",
     "test-af-pin.py",
+    "test-changelog-notes.py",
     "test-gate-owner.py"
   ],
   "binaries": {
@@ -317,6 +318,7 @@
   "schema": "af.test-catalog/1",
   "scripts": {
     "test-af-pin.py": "functional",
+    "test-changelog-notes.py": "functional",
     "test-check-pr-report.py": "functional",
     "test-gate-owner.py": "functional",
     "test-nextest-gate.py": "functional",
