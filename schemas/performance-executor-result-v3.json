@@ -1,0 +1,774 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:af:schema:performance-executor-result:3",
+  "title": "af.perf-executor-result/3",
+  "description": "Independent performance executor: executor-result (ADR-0240).",
+  "type": "object",
+  "additionalProperties": false,
+  "properties": {
+    "schema": {
+      "const": "af.perf-executor-result/3"
+    },
+    "request_id": {
+      "$ref": "#/$defs/id"
+    },
+    "request_digest": {
+      "$ref": "#/$defs/digest"
+    },
+    "backend": {
+      "type": "string",
+      "enum": [
+        "local",
+        "github_actions"
+      ]
+    },
+    "machine_id": {
+      "$ref": "#/$defs/id"
+    },
+    "environment_digest": {
+      "$ref": "#/$defs/digest"
+    },
+    "producer_digest": {
+      "$ref": "#/$defs/digest"
+    },
+    "sources": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "baseline_sha": {
+          "$ref": "#/$defs/git_sha"
+        },
+        "candidate_sha": {
+          "$ref": "#/$defs/git_sha"
+        },
+        "control_sha": {
+          "$ref": "#/$defs/git_sha"
+        },
+        "authority_sha": {
+          "$ref": "#/$defs/git_sha"
+        }
+      },
+      "required": [
+        "baseline_sha",
+        "candidate_sha",
+        "control_sha",
+        "authority_sha"
+      ]
+    },
+    "host": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "cpu_model": {
+          "anyOf": [
+            {
+              "type": "object",
+              "additionalProperties": false,
+              "properties": {
+                "value": {
+                  "type": "string",
+                  "minLength": 1,
+                  "maxLength": 1024
+                }
+              },
+              "required": [
+                "value"
+              ]
+            },
+            {
+              "type": "object",
+              "additionalProperties": false,
+              "properties": {
+                "unknown": {
+                  "type": "string",
+                  "minLength": 1,
+                  "maxLength": 1024
+                }
+              },
+              "required": [
+                "unknown"
+              ]
+            }
+          ]
+        },
+        "cpu_topology": {
+          "anyOf": [
+            {
+              "type": "object",
+              "additionalProperties": false,
+              "properties": {
+                "value": {
+                  "type": "string",
+                  "minLength": 1,
+                  "maxLength": 1024
+                }
+              },
+              "required": [
+                "value"
+              ]
+            },
+            {
+              "type": "object",
+              "additionalProperties": false,
+              "properties": {
+                "unknown": {
+                  "type": "string",
+                  "minLength": 1,
+                  "maxLength": 1024
+                }
+              },
+              "required": [
+                "unknown"
+              ]
+            }
+          ]
+        },
+        "logical_cpus": {
+          "anyOf": [
+            {
+              "type": "object",
+              "additionalProperties": false,
+              "properties": {
+                "value": {
+                  "type": "string",
+                  "minLength": 1,
+                  "maxLength": 1024
+                }
+              },
+              "required": [
+                "value"
+              ]
+            },
+            {
+              "type": "object",
+              "additionalProperties": false,
+              "properties": {
+                "unknown": {
+                  "type": "string",
+                  "minLength": 1,
+                  "maxLength": 1024
+                }
+              },
+              "required": [
+                "unknown"
+              ]
+            }
+          ]
+        },
+        "kernel": {
+          "anyOf": [
+            {
+              "type": "object",
+              "additionalProperties": false,
+              "properties": {
+                "value": {
+                  "type": "string",
+                  "minLength": 1,
+                  "maxLength": 1024
+                }
+              },
+              "required": [
+                "value"
+              ]
+            },
+            {
+              "type": "object",
+              "additionalProperties": false,
+              "properties": {
+                "unknown": {
+                  "type": "string",
+                  "minLength": 1,
+                  "maxLength": 1024
+                }
+              },
+              "required": [
+                "unknown"
+              ]
+            }
+          ]
+        },
+        "os_image": {
+          "anyOf": [
+            {
+              "type": "object",
+              "additionalProperties": false,
+              "properties": {
+                "value": {
+                  "type": "string",
+                  "minLength": 1,
+                  "maxLength": 1024
+                }
+              },
+              "required": [
+                "value"
+              ]
+            },
+            {
+              "type": "object",
+              "additionalProperties": false,
+              "properties": {
+                "unknown": {
+                  "type": "string",
+                  "minLength": 1,
+                  "maxLength": 1024
+                }
+              },
+              "required": [
+                "unknown"
+              ]
+            }
+          ]
+        },
+        "libc": {
+          "anyOf": [
+            {
+              "type": "object",
+              "additionalProperties": false,
+              "properties": {
+                "value": {
+                  "type": "string",
+                  "minLength": 1,
+                  "maxLength": 1024
+                }
+              },
+              "required": [
+                "value"
+              ]
+            },
+            {
+              "type": "object",
+              "additionalProperties": false,
+              "properties": {
+                "unknown": {
+                  "type": "string",
+                  "minLength": 1,
+                  "maxLength": 1024
+                }
+              },
+              "required": [
+                "unknown"
+              ]
+            }
+          ]
+        },
+        "memory_bytes": {
+          "anyOf": [
+            {
+              "type": "object",
+              "additionalProperties": false,
+              "properties": {
+                "value": {
+                  "type": "string",
+                  "minLength": 1,
+                  "maxLength": 1024
+                }
+              },
+              "required": [
+                "value"
+              ]
+            },
+            {
+              "type": "object",
+              "additionalProperties": false,
+              "properties": {
+                "unknown": {
+                  "type": "string",
+                  "minLength": 1,
+                  "maxLength": 1024
+                }
+              },
+              "required": [
+                "unknown"
+              ]
+            }
+          ]
+        },
+        "virtualization": {
+          "anyOf": [
+            {
+              "type": "object",
+              "additionalProperties": false,
+              "properties": {
+                "value": {
+                  "type": "string",
+                  "minLength": 1,
+                  "maxLength": 1024
+                }
+              },
+              "required": [
+                "value"
+              ]
+            },
+            {
+              "type": "object",
+              "additionalProperties": false,
+              "properties": {
+                "unknown": {
+                  "type": "string",
+                  "minLength": 1,
+                  "maxLength": 1024
+                }
+              },
+              "required": [
+                "unknown"
+              ]
+            }
+          ]
+        },
+        "microcode": {
+          "anyOf": [
+            {
+              "type": "object",
+              "additionalProperties": false,
+              "properties": {
+                "value": {
+                  "type": "string",
+                  "minLength": 1,
+                  "maxLength": 1024
+                }
+              },
+              "required": [
+                "value"
+              ]
+            },
+            {
+              "type": "object",
+              "additionalProperties": false,
+              "properties": {
+                "unknown": {
+                  "type": "string",
+                  "minLength": 1,
+                  "maxLength": 1024
+                }
+              },
+              "required": [
+                "unknown"
+              ]
+            }
+          ]
+        },
+        "container_runtime": {
+          "anyOf": [
+            {
+              "type": "object",
+              "additionalProperties": false,
+              "properties": {
+                "value": {
+                  "type": "string",
+                  "minLength": 1,
+                  "maxLength": 1024
+                }
+              },
+              "required": [
+                "value"
+              ]
+            },
+            {
+              "type": "object",
+              "additionalProperties": false,
+              "properties": {
+                "unknown": {
+                  "type": "string",
+                  "minLength": 1,
+                  "maxLength": 1024
+                }
+              },
+              "required": [
+                "unknown"
+              ]
+            }
+          ]
+        },
+        "affinity": {
+          "anyOf": [
+            {
+              "type": "object",
+              "additionalProperties": false,
+              "properties": {
+                "value": {
+                  "type": "string",
+                  "minLength": 1,
+                  "maxLength": 1024
+                }
+              },
+              "required": [
+                "value"
+              ]
+            },
+            {
+              "type": "object",
+              "additionalProperties": false,
+              "properties": {
+                "unknown": {
+                  "type": "string",
+                  "minLength": 1,
+                  "maxLength": 1024
+                }
+              },
+              "required": [
+                "unknown"
+              ]
+            }
+          ]
+        },
+        "cpu_quota": {
+          "anyOf": [
+            {
+              "type": "object",
+              "additionalProperties": false,
+              "properties": {
+                "value": {
+                  "type": "string",
+                  "minLength": 1,
+                  "maxLength": 1024
+                }
+              },
+              "required": [
+                "value"
+              ]
+            },
+            {
+              "type": "object",
+              "additionalProperties": false,
+              "properties": {
+                "unknown": {
+                  "type": "string",
+                  "minLength": 1,
+                  "maxLength": 1024
+                }
+              },
+              "required": [
+                "unknown"
+              ]
+            }
+          ]
+        },
+        "cache": {
+          "anyOf": [
+            {
+              "type": "object",
+              "additionalProperties": false,
+              "properties": {
+                "value": {
+                  "type": "string",
+                  "minLength": 1,
+                  "maxLength": 1024
+                }
+              },
+              "required": [
+                "value"
+              ]
+            },
+            {
+              "type": "object",
+              "additionalProperties": false,
+              "properties": {
+                "unknown": {
+                  "type": "string",
+                  "minLength": 1,
+                  "maxLength": 1024
+                }
+              },
+              "required": [
+                "unknown"
+              ]
+            }
+          ]
+        },
+        "aslr": {
+          "anyOf": [
+            {
+              "type": "object",
+              "additionalProperties": false,
+              "properties": {
+                "value": {
+                  "type": "string",
+                  "minLength": 1,
+                  "maxLength": 1024
+                }
+              },
+              "required": [
+                "value"
+              ]
+            },
+            {
+              "type": "object",
+              "additionalProperties": false,
+              "properties": {
+                "unknown": {
+                  "type": "string",
+                  "minLength": 1,
+                  "maxLength": 1024
+                }
+              },
+              "required": [
+                "unknown"
+              ]
+            }
+          ]
+        },
+        "python": {
+          "anyOf": [
+            {
+              "type": "object",
+              "additionalProperties": false,
+              "properties": {
+                "value": {
+                  "type": "string",
+                  "minLength": 1,
+                  "maxLength": 1024
+                }
+              },
+              "required": [
+                "value"
+              ]
+            },
+            {
+              "type": "object",
+              "additionalProperties": false,
+              "properties": {
+                "unknown": {
+                  "type": "string",
+                  "minLength": 1,
+                  "maxLength": 1024
+                }
+              },
+              "required": [
+                "unknown"
+              ]
+            }
+          ]
+        }
+      },
+      "required": [
+        "cpu_model",
+        "cpu_topology",
+        "logical_cpus",
+        "kernel",
+        "os_image",
+        "libc",
+        "memory_bytes",
+        "virtualization",
+        "microcode",
+        "container_runtime",
+        "affinity",
+        "cpu_quota",
+        "cache",
+        "aslr",
+        "python"
+      ]
+    },
+    "status": {
+      "type": "string",
+      "enum": [
+        "complete",
+        "failed",
+        "interrupted",
+        "uncertain",
+        "submitted",
+        "expired"
+      ]
+    },
+    "measurement_status": {
+      "type": "string",
+      "maxLength": 128
+    },
+    "required_check": {
+      "const": false
+    },
+    "started_unix_ms": {
+      "type": "integer",
+      "minimum": 0,
+      "maximum": 9007199254740992
+    },
+    "ended_unix_ms": {
+      "type": "integer",
+      "minimum": 0,
+      "maximum": 9007199254740992
+    },
+    "evidence": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "path": {
+            "$ref": "#/$defs/relative_path"
+          },
+          "sha256": {
+            "$ref": "#/$defs/digest"
+          },
+          "size": {
+            "type": "integer",
+            "minimum": 0,
+            "maximum": 1099511627776
+          }
+        },
+        "required": [
+          "path",
+          "sha256",
+          "size"
+        ]
+      },
+      "minItems": 0,
+      "maxItems": 8192
+    },
+    "binaries": {
+      "anyOf": [
+        {
+          "type": "null"
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "baseline": {
+              "anyOf": [
+                {
+                  "type": "null"
+                },
+                {
+                  "type": "object",
+                  "additionalProperties": false,
+                  "properties": {
+                    "sha256": {
+                      "$ref": "#/$defs/digest"
+                    },
+                    "bytes": {
+                      "type": "integer",
+                      "minimum": 0,
+                      "maximum": 1099511627776
+                    }
+                  },
+                  "required": [
+                    "sha256",
+                    "bytes"
+                  ]
+                }
+              ]
+            },
+            "candidate": {
+              "anyOf": [
+                {
+                  "type": "null"
+                },
+                {
+                  "type": "object",
+                  "additionalProperties": false,
+                  "properties": {
+                    "sha256": {
+                      "$ref": "#/$defs/digest"
+                    },
+                    "bytes": {
+                      "type": "integer",
+                      "minimum": 0,
+                      "maximum": 1099511627776
+                    }
+                  },
+                  "required": [
+                    "sha256",
+                    "bytes"
+                  ]
+                }
+              ]
+            }
+          },
+          "required": [
+            "baseline",
+            "candidate"
+          ]
+        }
+      ]
+    },
+    "actions": {
+      "anyOf": [
+        {
+          "type": "null"
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "repository": {
+              "type": "string",
+              "maxLength": 201,
+              "pattern": "^[A-Za-z0-9_.-]{1,100}/[A-Za-z0-9_.-]{1,100}$"
+            },
+            "workflow": {
+              "type": "string",
+              "enum": [
+                "performance.yml",
+                "performance-telemetry.yml"
+              ]
+            },
+            "control_sha": {
+              "$ref": "#/$defs/git_sha"
+            },
+            "requested_ref": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 256
+            },
+            "receipt": {
+              "type": "string",
+              "maxLength": 2048
+            }
+          },
+          "required": [
+            "repository",
+            "workflow",
+            "control_sha",
+            "requested_ref",
+            "receipt"
+          ]
+        }
+      ]
+    },
+    "detail": {
+      "type": "string",
+      "maxLength": 4096
+    }
+  },
+  "required": [
+    "schema",
+    "request_id",
+    "request_digest",
+    "backend",
+    "machine_id",
+    "environment_digest",
+    "producer_digest",
+    "sources",
+    "host",
+    "status",
+    "measurement_status",
+    "required_check",
+    "started_unix_ms",
+    "ended_unix_ms",
+    "evidence",
+    "binaries",
+    "actions",
+    "detail"
+  ],
+  "$defs": {
+    "digest": {
+      "type": "string",
+      "maxLength": 71,
+      "pattern": "^sha256:[0-9a-f]{64}$"
+    },
+    "git_sha": {
+      "type": "string",
+      "maxLength": 64,
+      "pattern": "^(?:[0-9a-f]{40}|[0-9a-f]{64})$"
+    },
+    "id": {
+      "type": "string",
+      "maxLength": 64,
+      "pattern": "^[a-z][a-z0-9_]{0,63}$"
+    },
+    "relative_path": {
+      "type": "string",
+      "maxLength": 1024,
+      "pattern": "^[A-Za-z0-9._-]+(?:/[A-Za-z0-9._-]+)*$"
+    }
+  }
+}

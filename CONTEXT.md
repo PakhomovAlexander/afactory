@@ -431,6 +431,16 @@ an explicit remeasurement measures again, under its own claim
 ([ADR-0180](docs/adr/0180-hand-off-published-releases-read-only-and-measure-each-claimed-identity-once.md)).
 _Avoid_: **Remote Check**, **lease** — the kernel's gate pull request and Task leases.
 
+**Nightly**:
+An af built on the owner's Linux VM from the newest green commit of main, tagged
+`nightly-YYYY.MM.DD`, versioned `<core>-nightly.<YYYYMMDD>` and signed with the nightly key, for
+the two Linux targets only; a night on main's previous head builds nothing. Its record is
+`af.nightly-build/1`. A nightly is never a release: `.af/af.lock` never pins it, and `install.sh`
+and `af self` on the stable and rc channels never choose it
+([ADR-0265](docs/adr/0265-build-nightlies-from-the-newest-green-main-on-the-owners-vm.md)).
+_Avoid_: **Release** — only the release train cuts one; the **nightly** trigger of the
+Performance workflow, which measures main against its baseline and builds nothing to install.
+
 **Performance Report**:
 The offline page, `af.perf-report/2` document and job-summary table of one Performance Run,
 rendered by the laboratory's trusted renderer from its recomputed Performance Verdict: every

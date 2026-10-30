@@ -1,0 +1,36 @@
+# The owner's nightly build configuration (af.nightly-config/1, ADR-0265).
+#
+# An example for the owner's Linux VM; nothing installs it. Copy it outside the repository, set
+# the paths, and run one night by hand first (docs/nightly.md):
+#
+#   python3 -I scripts/nightly/build.py plan --config nightly.toml --date 2026-10-29
+#   python3 -I scripts/nightly/build.py build --config nightly.toml --date 2026-10-29
+#
+# The build reads only these files and the GitHub check runs of main's commits; it writes only
+# builds_root/<date>/ and the Cargo cache builds_root/cache/, and never pushes or publishes.
+
+schema = "af.nightly-config/1"
+# The repository whose check runs decide which main commit is green.
+repository = "PakhomovAlexander/afactory"
+# A bare mirror of that repository (`git clone --mirror`) the host keeps fetched; the night
+# reads refs/heads/main and the release tags from it.
+mirror = "/var/lib/af-nightly/afactory.git"
+# Each night's directory is builds_root/<YYYY-MM-DD>/.
+builds_root = "/var/lib/af-nightly/builds"
+# The laboratory's musl image (scripts/performance/images/Dockerfile, target `musl`), by digest,
+# built on this host with both Linux musl Rust targets; a nightly never pulls it.
+build_image = "sha256:0000000000000000000000000000000000000000000000000000000000000000"
+# The user-mode runner the aarch64 binary's smoke runs under; without it the build refuses.
+qemu_aarch64 = "/usr/bin/qemu-aarch64-static"
+# The nightly minisign key pair, never the release key. The passphrase, if the key has one, is
+# read from AF_NIGHTLY_SIGN_PASSWORD; a key without one is used with `minisign -W`.
+sign_key = "/etc/af-nightly/nightly.key"
+public_key = "/etc/af-nightly/nightly.pub"
+# Check runs a green commit must carry, completed with success or skipped, beside every
+# `check /` run it has. Names of the release workflow's own jobs are refused here.
+required_checks = ["check / lint", "sign and publish"]
+# How many first-parent commits back from main's tip the walk may inspect.
+max_walk = 20
+# Optional: a file holding a read-only GitHub token. Without it the check runs are read
+# anonymously, which works for a public repository.
+# github_token_file = "/etc/af-nightly/github-token"
