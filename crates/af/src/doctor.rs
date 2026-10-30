@@ -1372,23 +1372,16 @@ fn update(machine: Option<&Problem>) -> Check {
         crate::config::AutoUpdate::Always => "always",
         crate::config::AutoUpdate::Never => "never",
     };
-    let channel = match policy.channel {
-        crate::config::Channel::Stable => "stable",
-        crate::config::Channel::Rc => "rc",
-    };
     let policy_text = format!(
-        "auto_update={auto} channel={channel} source={}",
+        "auto_update={auto} channel={} source={}",
+        policy.channel.name(),
         policy.source
     );
-    let newer = facts.latest.as_deref().filter(|latest| {
-        match (
-            semver::Version::parse(latest),
-            semver::Version::parse(selfmgmt::VERSION),
-        ) {
-            (Ok(latest), Ok(running)) => latest > running,
-            _ => false,
-        }
-    });
+    // A release by semantic version; on the nightly channel the newest nightly's tag by date.
+    let newer = facts
+        .latest
+        .as_deref()
+        .filter(|latest| selfmgmt::latest_is_newer(latest));
     // A stalled check and a failed one are said the way `af self status` says them, with the
     // same fix.
     if let Some((said, fix)) = &facts.stalled {
@@ -1430,7 +1423,7 @@ fn update(machine: Option<&Problem>) -> Check {
                 "af {latest} is available (running {}); {checked}; {policy_text}",
                 selfmgmt::VERSION
             ),
-            "af self update",
+            selfmgmt::latest_update_command(latest),
         );
     }
     if let Some(off) = &facts.off {
