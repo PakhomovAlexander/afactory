@@ -6,4 +6,4 @@
   an `#[ignore]` test, an identity outside the inventory and one a feature build's fixed
   selector reaches (quarantine covers the default-feature inventory only), naming the entry and
   the fix
-  ([ADR-0264](docs/adr/0264-quarantine-flaky-tests-on-gate-evidence-and-confirm-them-on-claw.md)).
+  ([ADR-0268](docs/adr/0268-quarantine-flaky-tests-on-gate-evidence-and-confirm-them-on-claw.md)).

@@ -607,7 +607,7 @@ class SealedEvidence(unittest.TestCase):
                                                     if r['stage'] == 'tests'))
                             continue
                         rust = next(r for r in records if r['label'] == 'test')
-                        # nextest starts through the quarantine exclusion (ADR-0264).
+                        # nextest starts through the quarantine exclusion (ADR-0268).
                         wanted = (['python3', 'scripts/test-classes.py', 'nextest-gate', '--']
                                   if runner == 'nextest' else ['cargo', 'test'])
                         self.assertEqual(rust['command'][:len(wanted)], wanted)

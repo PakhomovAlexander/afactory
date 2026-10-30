@@ -6,4 +6,4 @@
   rejected; without `--write` it changes nothing, `--write` adds the entries through the
   quarantine guards up to the 20-entry cap and names the overflow, and `--json` prints one
   `af.test-quarantine-scan/1` document
-  ([ADR-0264](docs/adr/0264-quarantine-flaky-tests-on-gate-evidence-and-confirm-them-on-claw.md)).
+  ([ADR-0268](docs/adr/0268-quarantine-flaky-tests-on-gate-evidence-and-confirm-them-on-claw.md)).

@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Propose test quarantine entries from af Tasks' gate flaky lists (ADR-0264; stdlib only).
+"""Propose test quarantine entries from af Tasks' gate flaky lists (ADR-0268; stdlib only).
 
     scripts/test-quarantine.py scan --list FILE | --state DIR [...] [--inventory FILE]
                                     [--today YYYY-MM-DD] [--write] [--json]
