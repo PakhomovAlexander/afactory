@@ -328,6 +328,16 @@ Either is fine; the prefixes are used but not required. Domain terms keep their 
   paste; after a push, run the command again and paste the block when it changed.
   `python3 scripts/check-pr-report.py --body FILE --diff origin/main HEAD` runs the same
   comparison locally.
+- A pull request that adds entries to `.config/test-quarantine.json` also names the tests it
+  quarantines
+  ([ADR-0268](docs/adr/0268-quarantine-flaky-tests-on-gate-evidence-and-confirm-them-on-claw.md)):
+  run `python3 scripts/pr-quarantine.py` (`--base REF` as above) and paste its whole output, both
+  markers included, into the template's `Test quarantine` section: the title
+  `**Quarantined tests added: N**` and a table of each test, its state, its expiry and why.
+  When the script says no block is needed, delete that section. The `PR report` workflow renders
+  the block again from the pull request's commits and refuses a description whose block is
+  missing or differs, printing the block to paste, and one that holds a block when no
+  quarantined test is added; the same `--diff` run checks it locally.
 - One topic per PR. Split unrelated fixes even when they are small.
 - Run full `make check` before the PR and say so in the PR template checklist. The local Task
   gate and every pull request run the fast profile; `make check`, main validation and unbound
