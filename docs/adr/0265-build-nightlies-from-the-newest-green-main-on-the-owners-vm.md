@@ -45,14 +45,22 @@ with Docker, `git`, `minisign` and `qemu-aarch64-static`, reading one `af.nightl
    `check /` run completed with conclusion `success` or `skipped`, and every name in
    `required_checks` present and green. The release workflow's own jobs (`resolve the release`,
    `build …`, `sign and publish`, `pin the release in .af/af.lock`) are ignored and cannot be
-   required. Each red commit walked over is recorded with its reason. Nothing green within
+   required. The walk never chooses a commit without judging its checks, the previous night's
+   head included. Each red commit walked over is recorded with its reason. Nothing green within
    `max_walk` refuses the night. Every API request is bounded (5 s to connect, 30 s per read)
    and retried once; without `github_token_file` it is anonymous.
-2. **Skip when nothing changed.** The previous night is the newest built
-   `builds_root/<date>/nightly.json` before this date, or `--previous PATH`. The walk never goes
-   behind the previous night's head: reaching it chooses it. When the chosen commit is the
-   previous night's head, the plan is `skipped` with a reason naming that night's tag and
-   commit, and `build` writes a skipped record, builds nothing and exits 3.
+2. **Skip when nothing changed.** The previous night is the newest earlier
+   `builds_root/<YYYY-MM-DD>/nightly.json` whatever its status, or the built or skipped earlier
+   record `--previous PATH` names; its `head_sha` is the previous head. The plan's
+   `previous_tag` is the tag of the last built night: the record's own `tag` when it is built,
+   else the `previous_tag` the skipped record carries forward (none on the first nights). The
+   walk chooses the newest commit whose checks are green and never goes behind the previous
+   night's head, but it never chooses a commit without judging its checks, the previous head
+   included. Reaching the previous head: green, the night is `skipped` with a reason naming the
+   last built night's tag and the commit, and `build` writes a skipped record, builds nothing
+   and exits 3; red (its checks were re-run and failed since), the night is refused with one
+   sentence naming the previous head and why it is red, because a nightly never moves
+   backwards.
 3. **Tag and version.** The tag is `nightly-YYYY.MM.DD`, never `v…`, so the release tools keep
    ignoring it. The version is `<core>-nightly.<YYYYMMDD>`, a SemVer pre-release `af self` can
    install beside releases and order: a pre-release workspace version keeps its core
@@ -67,7 +75,10 @@ with Docker, `git`, `minisign` and `qemu-aarch64-static`, reading one `af.nightl
    dependencies into the persistent `builds_root/cache/cargo`, then runs `cargo zigbuild
    --release --locked --bin af --target <target>` for `x86_64-unknown-linux-musl` and
    `aarch64-unknown-linux-musl` in the laboratory's musl image pinned by digest, without
-   network. As release.yml's `Prove, plan, and package` step does, each binary must report
+   network. That image (`scripts/performance/images/Dockerfile`, stage `musl`) builds both
+   targets: its one `rustup target add` line installs both, and `build_image` names the digest
+   the performance executor pins as its `build_image` for the `linux_x86_64_musl_claw`
+   environment. As release.yml's `Prove, plan, and package` step does, each binary must report
    `af <version>` and embed the release key, `af --version --json` is kept, the chosen commit's
    `scripts/release-smoke.sh` runs on it (the aarch64 one under `qemu_aarch64`; a missing runner
    refuses the night, it never skips the smoke), and `af-nightly-YYYY.MM.DD-<target>.tar.gz`
@@ -94,11 +105,14 @@ with Docker, `git`, `minisign` and `qemu-aarch64-static`, reading one `af.nightl
 
 The owner runs one night by hand with the steps in [`docs/nightly.md`](../nightly.md); systemd
 units, the measurement and publication steps, and an `af self` nightly channel are later
-changes. The build image must carry both musl Rust targets and the workspace's pinned
-toolchain: the laboratory's current `musl` stage adds only `x86_64-unknown-linux-musl`, and the
-build refuses an image without both rather than installing anything into it.
+changes. The laboratory's `musl` stage now installs `aarch64-unknown-linux-musl` beside
+`x86_64-unknown-linux-musl`, so its image carries both musl Rust targets and the workspace's
+pinned toolchain; the build still refuses an image without both rather than installing anything
+into it.
 
-`scripts/performance/tests/test_nightly_build.py` proves the walk, the skip rule, the version
+`scripts/performance/tests/test_nightly_build.py` proves the walk (a red previous head refuses
+the night), the skip rule (after skipped nights too), that the `musl` stage installs exactly the
+build's targets, the version
 and tag rules, the Cargo rewrite (with `cargo metadata --locked --offline` on a rewritten copy
 of this tree), the SHA256SUMS format against a release's own file, the record's contract and a
 whole night against a fake host, and that `install.sh`, `scripts/pin-release.sh`,

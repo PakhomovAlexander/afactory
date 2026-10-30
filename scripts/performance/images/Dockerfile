@@ -9,7 +9,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends python3 strace 
 ENV RUSTUP_HOME=/usr/local/rustup
 
 FROM gnu AS musl
-RUN rustup target add x86_64-unknown-linux-musl \
+RUN rustup target add x86_64-unknown-linux-musl aarch64-unknown-linux-musl \
     && cargo install --locked cargo-zigbuild --version 0.23.4 \
     && curl --fail --location --retry 3 --max-time 180 \
        https://ziglang.org/download/0.15.2/zig-x86_64-linux-0.15.2.tar.xz -o /tmp/zig.tar.xz \

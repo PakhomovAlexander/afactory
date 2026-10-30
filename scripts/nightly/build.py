@@ -225,15 +225,18 @@ class Mirror(gitrefs.Git):
 def choose(git, github, required_checks, max_walk, previous_head):
     """(chosen sha, rejected) of the walk along main's first parents from its tip.
 
-    The first commit whose checks are green is chosen; the walk never goes behind the
-    previous night's head, which it chooses without asking again when it reaches it."""
+    The newest commit whose checks are green is chosen, and every commit's checks are judged,
+    the previous night's head included. The walk never goes behind the previous night's head:
+    green, it is chosen (the night is skipped); red, the night is refused, because a nightly
+    never moves backwards."""
     rejected = []
     for sha in git.first_parents("refs/heads/main", max_walk):
-        if sha == previous_head:
-            return sha, rejected
         reason = judge(github.check_runs(sha), required_checks)
         if reason is None:
             return sha, rejected
+        if sha == previous_head:
+            raise Refused("the previous night's head %s is red now (%s), and a nightly never "
+                          "moves behind it" % (sha, reason))
         rejected.append({"sha": sha, "reason": reason})
     raise Refused("no green commit among the newest %d first-parent commits of main: %s"
                   % (max_walk, "; ".join("%s: %s" % (entry["sha"][:12], entry["reason"])
@@ -361,12 +364,11 @@ def read_record(path, where):
 
 
 def previous_night(builds_root, date, path=None):
-    """The record of the newest built night before `date`: `path` when given, else the
-    newest `builds_root/<YYYY-MM-DD>/nightly.json` that is built; None on the first night."""
+    """The record of the newest night before `date`, built or skipped: `path` when given,
+    else the newest `builds_root/<YYYY-MM-DD>/nightly.json`; None on the first night."""
     if path is not None:
         record = read_record(path, "--previous")
-        require(record["status"] == "built" and record["date"] < date,
-                "--previous %s: not an earlier built night" % path)
+        require(record["date"] < date, "--previous %s: not an earlier night" % path)
         return record
     if not os.path.isdir(builds_root):
         return None
@@ -376,14 +378,22 @@ def previous_night(builds_root, date, path=None):
             continue
         record = read_record(candidate, "previous night")
         require(record["date"] == name, "%s records the night %s" % (candidate, record["date"]))
-        if record["status"] == "built":
-            return record
+        return record
     return None
+
+
+def last_built_tag(previous):
+    """The tag of the last built night: the previous record's own when it is built, else the
+    one its skipped record carries forward; None on the first night."""
+    if previous is None:
+        return None
+    return previous["tag"] if previous["status"] == "built" else previous["previous_tag"]
 
 
 def make_plan(config, date, git, github, previous):
     head, rejected = choose(git, github, config["required_checks"], config["max_walk"],
                             previous["head_sha"] if previous else None)
+    built_tag = last_built_tag(previous)
     manifest = git.read_file(head, "Cargo.toml")
     require(manifest is not None, "%s has no Cargo.toml" % head)
     cargo_version = workspace_version(manifest.decode("utf-8"))
@@ -397,11 +407,11 @@ def make_plan(config, date, git, github, previous):
         "head_sha": head, "head_committed_unix": git.committed_unix(head),
         "rejected": rejected,
         "previous_head_sha": previous["head_sha"] if previous else None,
-        "previous_tag": previous["tag"] if previous else None,
+        "previous_tag": built_tag,
         "baseline_tag": baseline_tag, "baseline_sha": baseline_sha,
         "cargo_version_on_main": cargo_version,
         "skip_reason": ("main has not moved since %s: its newest green commit is %s, the "
-                        "commit %s built" % (previous["tag"], head, previous["tag"])
+                        "commit %s built" % (built_tag, head, built_tag)
                         if skipped else None),
     }
     return contracts.validate_nightly_plan(plan)
@@ -727,8 +737,8 @@ def parse(argv):
         command = commands.add_parser(name, help=text)
         command.add_argument("--config", required=True, help="the af.nightly-config/1 TOML")
         command.add_argument("--date", required=True, help="the night, YYYY-MM-DD")
-        command.add_argument("--previous", help="the previous night's nightly.json, instead of "
-                             "the newest built one under builds_root")
+        command.add_argument("--previous", help="the previous night's nightly.json, built or "
+                             "skipped, instead of the newest one under builds_root")
         if name == "build":
             command.add_argument("--only-plan", action="store_true",
                                  help="plan and exit as build would (0, or 3 when skipped), "

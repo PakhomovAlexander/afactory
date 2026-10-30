@@ -19,11 +19,14 @@ An x86_64 Linux host (Debian) with Python 3.9 or later, `git`, Docker, `minisign
 `qemu-aarch64-static` and:
 
 - a bare mirror of the repository (`git clone --mirror`) that the host keeps fetched;
-- the laboratory's musl image (`scripts/performance/images/Dockerfile`, stage `musl`) built
-  locally and named by digest, carrying the workspace's pinned toolchain (`rust-toolchain.toml`)
-  and both musl Rust targets. The Dockerfile's `musl` stage adds only
-  `x86_64-unknown-linux-musl`; the build refuses an image without `aarch64-unknown-linux-musl`
-  instead of installing it. A night never pulls an image;
+- the laboratory's musl image (`scripts/performance/images/Dockerfile`, stage `musl`), which
+  carries the workspace's pinned toolchain (`rust-toolchain.toml`) and builds both targets: its
+  one `rustup target add` line installs `x86_64-unknown-linux-musl` and
+  `aarch64-unknown-linux-musl`. It is the image the performance executor pins by digest as its
+  `build_image` for the `linux_x86_64_musl_claw` environment (`/etc/af-perf/executor.toml`,
+  [the local executor](performance-local-executor.md)); the nightly's `build_image` names that
+  same pinned digest. The build still refuses an image without both targets instead of
+  installing them. A night never pulls an image;
 - the nightly minisign key pair, separate from the release key.
 
 ## Configuration
@@ -53,18 +56,25 @@ The key's passphrase, if it has one, is read from `AF_NIGHTLY_SIGN_PASSWORD` and
 
 `plan` chooses the commit and prints the plan (`af.nightly-plan/1`) without building:
 
-1. The previous night is the newest `builds_root/<YYYY-MM-DD>/nightly.json` with status `built`
-   and an earlier date, or the record `--previous PATH` names.
+1. The previous night is the newest `builds_root/<YYYY-MM-DD>/nightly.json` with an earlier
+   date, whatever its status, or the built or skipped earlier record `--previous PATH` names.
+   Its `head_sha` is the previous head. The plan's `previous_tag` is the tag of the last built
+   night: the record's own `tag` when it is built, else the `previous_tag` the skipped record
+   carries forward (none on the first nights).
 2. Walk the first parents of the mirror's `refs/heads/main` from the tip, at most `max_walk`
    commits. A commit is green when its check runs (every page) include at least one `check /`
    run, every `check /` run is completed with `success` or `skipped`, and every `required_checks`
    name is present and green. The release workflow's jobs (`resolve the release`, `build …`,
-   `sign and publish`, `pin the release in .af/af.lock`) are ignored. The first green commit is
-   chosen; each red one is recorded under `rejected` with its reason. The walk stops at the
-   previous night's head and chooses it. No green commit within `max_walk` refuses the night.
+   `sign and publish`, `pin the release in .af/af.lock`) are ignored. The walk chooses the
+   newest commit whose checks are green and never goes behind the previous night's head, but it
+   never chooses a commit without judging its checks, the previous head included. Each red
+   commit is recorded under `rejected` with its reason. Reaching the previous head: green, the
+   night is `skipped`; red (its checks were re-run and failed since), the night is refused with
+   one sentence naming the previous head and why it is red, because a nightly never moves
+   backwards. No green commit within `max_walk` refuses the night.
 3. The baseline is the highest stable `vX.Y.Z` tag reachable from the chosen commit.
 4. When the chosen commit is the previous night's head, the plan is `skipped` with a
-   `skip_reason` naming that night's tag and commit.
+   `skip_reason` naming the last built night's tag and the commit.
 
 `build` then, unless the plan is skipped:
 
@@ -134,4 +144,4 @@ python3 -I scripts/nightly/build.py build --config nightly.toml --date 2026-10-2
 Run it from a checkout of the trusted repository, not from the night's `source/`. `plan` prints
 the commit it would build and every red commit it walked over; `build --only-plan` prints the
 same plan and exits as `build` would (0 or 3) without writing anything. `--previous PATH`
-compares with a record other than the newest built one.
+compares with a built or skipped record other than the newest one.

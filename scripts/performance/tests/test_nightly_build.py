@@ -275,29 +275,29 @@ class GreenWalk(History):
 class SkipRule(History):
     def test_a_parent_equal_to_the_previous_head_skips_and_build_exits_3(self):
         previous = self.previous(self.parent)
-        code, plan, err, github = self.plan({self.tip: LINT_FAILED})
+        code, plan, err, github = self.plan({self.tip: LINT_FAILED, self.parent: GREEN})
         self.assertEqual(code, 0, err)
         self.assertEqual(plan["status"], "skipped")
         self.assertEqual((plan["head_sha"], plan["previous_head_sha"], plan["previous_tag"]),
                          (self.parent, self.parent, "nightly-2026.10.28"))
         self.assertIn("nightly-2026.10.28", plan["skip_reason"])
         self.assertIn(self.parent, plan["skip_reason"])
-        # The walk stops at the previous night's head without asking about it again.
-        self.assertFalse(github.asked(self.parent))
+        # The previous night's head is judged like any commit, and the walk stops there.
+        self.assertTrue(github.asked(self.parent))
+        self.assertFalse(github.asked(self.rc))
         self.assertEqual(plan["baseline_tag"], "v0.13.0")
 
         host = FakeHost(self)
+        runs = {self.tip: LINT_FAILED, self.parent: GREEN}
         code, out, err = self.main("build", "--config", self.config, "--date", "2026-10-29",
-                                   "--only-plan", github=FakeGitHub(
-                                       {self.tip: LINT_FAILED}).client(), host=host)
+                                   "--only-plan", github=FakeGitHub(runs).client(), host=host)
         self.assertEqual(code, 3, err)
         self.assertFalse(os.path.exists(os.path.join(self.builds, "2026-10-29")))
 
         # A refused attempt of the same night left a partial directory; the skip replaces it.
         os.makedirs(os.path.join(self.builds, "2026-10-29", "source"))
         code, out, err = self.main("build", "--config", self.config, "--date", "2026-10-29",
-                                   github=FakeGitHub({self.tip: LINT_FAILED}).client(),
-                                   host=host)
+                                   github=FakeGitHub(runs).client(), host=host)
         self.assertEqual(code, 3, err)
         self.assertEqual(host.calls, [])
         self.assertIn("nightly: skipped: main has not moved since nightly-2026.10.28", err)
@@ -310,7 +310,21 @@ class SkipRule(History):
         self.assertEqual(sorted(os.listdir(os.path.join(self.builds, "2026-10-29"))),
                          ["nightly.json"])
 
-    def test_a_skipped_night_is_not_the_previous_night_of_the_next_one(self):
+    def test_a_red_previous_head_refuses_the_night_instead_of_moving_behind_it(self):
+        self.previous(self.parent)
+        code, plan, err, github = self.plan({self.tip: LINT_FAILED, self.parent: LINT_FAILED,
+                                             self.rc: GREEN})
+        self.assertEqual(code, 1)
+        self.assertIsNone(plan)
+        self.assertIn("nightly: refused: the previous night's head %s is red now (check / lint "
+                      "concluded failure), and a nightly never moves behind it" % self.parent,
+                      err)
+        # Exactly the tip and the previous head were judged; the green grandparent never was.
+        asked = [re.match(r"^/repos/owner/af/commits/([0-9a-f]+)/", path).group(1)
+                 for path in github.paths]
+        self.assertEqual(asked, [self.tip, self.parent])
+
+    def test_only_an_earlier_night_is_the_previous_night(self):
         self.previous(self.rc, date="2026-10-27")
         code, plan, err, _ = self.plan({self.tip: LINT_FAILED, self.parent: GREEN})
         self.assertEqual((code, plan["status"], plan["previous_tag"]),
@@ -320,13 +334,59 @@ class SkipRule(History):
         code, plan, err, _ = self.plan({self.tip: LINT_FAILED, self.parent: GREEN})
         self.assertEqual((plan["status"], plan["previous_tag"]), ("build", "nightly-2026.10.27"))
 
+    def test_after_two_skipped_nights_the_plan_still_names_the_last_built_tag(self):
+        self.previous(self.parent, date="2026-10-26")
+        runs = {self.tip: LINT_FAILED, self.parent: GREEN}
+        for date in ("2026-10-27", "2026-10-28"):
+            code, _, err = self.main("build", "--config", self.config, "--date", date,
+                                     github=FakeGitHub(runs).client(), host=FakeHost(self))
+            self.assertEqual(code, 3, err)
+            record = contracts.read_file(os.path.join(self.builds, date, "nightly.json"),
+                                         "nightly-build")
+            self.assertEqual((record["status"], record["previous_head_sha"],
+                              record["previous_tag"]),
+                             ("skipped", self.parent, "nightly-2026.10.26"))
+        # The previous record is the newest one, skipped; its head is the last built head.
+        previous = nightly.previous_night(self.builds, "2026-10-29")
+        self.assertEqual((previous["date"], previous["status"]), ("2026-10-28", "skipped"))
+        code, plan, err, _ = self.plan(runs)
+        self.assertEqual(code, 0, err)
+        self.assertEqual((plan["status"], plan["previous_head_sha"], plan["previous_tag"]),
+                         ("skipped", self.parent, "nightly-2026.10.26"))
+        self.assertIn("main has not moved since nightly-2026.10.26", plan["skip_reason"])
+        # Once main's tip turns green, the night builds and still names the last built tag.
+        code, plan, err, _ = self.plan({self.tip: GREEN})
+        self.assertEqual(code, 0, err)
+        self.assertEqual((plan["status"], plan["head_sha"], plan["previous_head_sha"],
+                          plan["previous_tag"]),
+                         ("build", self.tip, self.parent, "nightly-2026.10.26"))
+
     def test_an_explicit_previous_record_is_used(self):
         record = self.previous(self.parent)
         moved = self.path("previous.json")
         os.rename(os.path.join(self.builds, "2026-10-28", "nightly.json"), moved)
-        code, plan, err, _ = self.plan({self.tip: LINT_FAILED}, "--previous", moved)
+        code, plan, err, _ = self.plan({self.tip: LINT_FAILED, self.parent: GREEN},
+                                       "--previous", moved)
         self.assertEqual((code, plan["status"], plan["previous_head_sha"]),
                          (0, "skipped", record["head_sha"]), err)
+
+    def test_an_explicit_skipped_previous_record_is_accepted(self):
+        skipped = os.path.join(ROOT, "fixtures/performance/schema/nightly-build/valid-skipped.json")
+        record = json.loads(read(skipped))
+        self.assertEqual(record["status"], "skipped")
+        github = FakeGitHub({self.tip: LINT_FAILED, self.parent: GREEN})
+        code, out, err = self.main("plan", "--config", self.config, "--date", "2026-10-30",
+                                   "--previous", skipped, github=github.client())
+        self.assertEqual(code, 0, err)
+        plan = json.loads(out)
+        self.assertEqual((plan["status"], plan["head_sha"], plan["previous_head_sha"],
+                          plan["previous_tag"]),
+                         ("build", self.parent, record["head_sha"], record["previous_tag"]))
+        # An explicit record must still be of an earlier night.
+        code, _, err = self.main("plan", "--config", self.config, "--date", record["date"],
+                                 "--previous", skipped, github=github.client())
+        self.assertEqual(code, 1)
+        self.assertIn("not an earlier night", err)
 
     def test_an_invalid_previous_record_refuses(self):
         os.makedirs(os.path.join(self.builds, "2026-10-28"))
@@ -379,6 +439,20 @@ class Versions(unittest.TestCase):
         self.assertEqual(text, "%s  af-nightly-2026.10.29-aarch64-unknown-linux-musl.tar.gz\n"
                          "%s  af-nightly-2026.10.29-x86_64-unknown-linux-musl.tar.gz\n"
                          % ("f" * 64, "e" * 64))
+
+
+class BuildImage(unittest.TestCase):
+    def test_the_lab_musl_stage_installs_exactly_the_nightly_targets(self):
+        # The laboratory's musl image is the nightly's build_image: its recipe must install
+        # every target build.py builds, so a night on it never refuses in Night.fetch.
+        text = read(os.path.join(ROOT, "scripts/performance/images/Dockerfile")).decode("utf-8")
+        stages = re.split(r"^FROM ", text, flags=re.M)
+        musl = [stage for stage in stages if re.match(r"^\S+ AS musl$", stage.split("\n")[0])]
+        self.assertEqual(len(musl), 1, "one `musl` stage")
+        added = re.findall(r"rustup target add ([a-z0-9_ -]+?)\s*(?:\\|&&|$)", musl[0], re.M)
+        self.assertEqual(len(added), 1, "one `rustup target add` line")
+        self.assertEqual(added[0].split(), list(nightly.TARGETS))
+        self.assertEqual(nightly.TARGETS, TARGETS)
 
 
 class CargoRewrite(TempDir):
