@@ -226,14 +226,23 @@ def image_admission(config, recipes, docker="docker"):
     build image, so the caller holds the machine's one exclusion. Returns (records, refusal or
     None, uncertain): a probe container whose removal is unconfirmed is uncertain."""
     records = []
-    try:
-        images = []
-        for name, key in (("build_image", "build_image"), ("sample_image", "sample_image")):
+    images = []
+    for name, key in (("build_image", "build_image"), ("sample_image", "sample_image")):
+        try:
             image = builds.BuildImage(docker, config[key], role=name.replace("_", " "))
             image.refuse_implicit_volumes()
-            images.append(image)
-            records.append({"name": name, "state": "available", "detail": "%s: %s, %s" % (
-                config[key], image.id, image.platform)})
+        except ContractError as error:
+            # Only `docker image inspect` ran for the images so far and no probe container
+            # was started, so the image's identity or volume-policy refusal leaves nothing
+            # uncertain.
+            detail = "%s: %s" % (getattr(error, "reason", "build_image_refused"), error)
+            records.append({"name": "image_admission", "state": "unavailable",
+                            "detail": detail[:4096]})
+            return records, detail, False
+        images.append(image)
+        records.append({"name": name, "state": "available", "detail": "%s: %s, %s" % (
+            config[key], image.id, image.platform)})
+    try:
         build = images[0]
         checked = []
         for recipe in recipes:

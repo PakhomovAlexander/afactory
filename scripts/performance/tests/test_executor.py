@@ -1107,13 +1107,13 @@ class ImageAdmission(ExecutorFixture):
             patcher.start()
             self.addCleanup(patcher.stop)
 
-    def docker(self, *present, lingering=None):
+    def docker(self, *present, lingering=None, volumes=None):
         """Route every image admission to a stand-in docker client holding `present`."""
         self.docker_dirs += 1
         directory = self.path("docker-%d" % self.docker_dirs)
         images = {reference: ("sha256:" + "%d" % index * 64, self.env, [reference])
                   for index, reference in enumerate(present, 3)}
-        docker = build_fixtures.fake_docker(directory, images, lingering)
+        docker = build_fixtures.fake_docker(directory, images, lingering, volumes)
         patcher = mock.patch.object(executor, "image_admission", lambda config, recipes:
                                     REAL_IMAGE_ADMISSION(config, recipes, docker=docker))
         patcher.start()
@@ -1186,6 +1186,45 @@ class ImageAdmission(ExecutorFixture):
             self.assertIn("build_container_unconfirmed", refused["detail"])
             self.assertEqual(j.names(), [])
         self.assertTrue(self.fence(), "an unconfirmed removal is never settled")
+
+
+    def test_an_image_volume_refusal_runs_nothing_and_keeps_no_fence(self):
+        # Only the read-only `docker image inspect` runs before the policy refuses: no probe
+        # container, no reservation and no fence; a malformed declaration refuses the same.
+        for index, volumes in enumerate(('{"/unexpected-volume":{}}', "not json")):
+            with self.subTest(volumes=volumes):
+                directory = self.docker(IMAGE, self.SAMPLE, volumes=volumes)
+                with executor.Journal(self.c) as j:
+                    refused = j.preflight("core", self.base, self.head, "volumes_%d" % index)
+                    contracts.write_bytes(refused, "executor-preflight")
+                    self.assertEqual(refused["status"], "refused")
+                    self.assertIn("refused before any claim or build", refused["detail"])
+                    self.assertIn("build_image_refused", refused["detail"])
+                    with self.assertRaisesRegex(ContractError, "image volume declaration|"
+                                                "declares implicit writable volumes"):
+                        self.submit(j, "core", "volumes_%d" % index)
+                    self.assertEqual(j.names(), [], "a refusal reserves nothing")
+                calls = build_fixtures.docker_calls(directory)
+                self.assertTrue(calls)
+                self.assertTrue(all(call[:2] == ["image", "inspect"] for call in calls), calls)
+                self.assertFalse(self.fence(), "a read-only refusal is settled clean")
+
+    def test_a_claimed_image_volume_refusal_fails_before_any_build_without_a_fence(self):
+        self.docker(IMAGE, self.SAMPLE)
+        with executor.Journal(self.c) as j:
+            request = self.submit(j, "core", "claimed_volumes")
+            # The build image declares a volume after submission: the claim's own admission
+            # ends the original failed before any build, nothing measured, and no fence.
+            directory = self.docker(IMAGE, self.SAMPLE, volumes='{"/unexpected-volume":{}}')
+            with mock.patch.object(builds, "Builder",
+                                   side_effect=AssertionError("built before admission")):
+                self.assertEqual(j.cycle(lock_directory=self.locks), "failed")
+            state = j.state(request["request_id"])
+            self.assertIn("core refused before any build, nothing measured", state["detail"])
+            self.assertIn("declares implicit writable volumes", state["detail"])
+        self.assertTrue(all(call[:2] == ["image", "inspect"]
+                            for call in build_fixtures.docker_calls(directory)))
+        self.assertFalse(self.fence())
 
 
 class ScratchCommand(TempDir):

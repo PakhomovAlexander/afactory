@@ -192,7 +192,9 @@ containers, so preflight and submission take the machine exclusion for them (a b
 refuses the check) and the claim runs them under its own. A missing image or tool refuses
 before any original, claim or build, naming the image or tool. One that disappears after
 submission ends the original `failed` (measurement `unavailable`) before its first build, with
-no fence kept; only a probe container whose removal is unconfirmed keeps the fence. Nothing is
+no fence kept. An image whose identity or volume declaration refuses ran only `docker image
+inspect` and no probe container, so it keeps no fence either; only a probe container whose
+removal is unconfirmed keeps the fence. Nothing is
 pulled, provisioned or re-pinned for you: provision the pinned image, then submit again.
 
 Preflight, submission and the claim admit storage with one calculation: the bytes the root
@@ -274,7 +276,11 @@ contributed, in its `af.perf-repetitions/1` index (`repetitions.json`), which `p
 binds by size and SHA-256; admission refuses a missing, changed or unlisted repetition, and
 decodes each host-observed recording again to check its region time. Each recording is decoded
 by its own `perf script`, in that order, under the tool's own time bound and the diagnostic
-deadline, and a decoding that fails names its recording and keeps the earlier ones' output. perf is never bound into a candidate container: the
+deadline, and a decoding that fails names its recording and keeps the earlier ones' output.
+The build IDs with hits come the same way from every recording, each listed by its own
+`perf buildid-list --with-hits` in that order under the same bounds, so a short first execution
+with no AF sample never hides a later one's hit; a listing that fails or is malformed names its
+recording and leaves the capture unrendered, every recording kept. perf is never bound into a candidate container: the
 host observer runs `perf script`, `perf buildid-list` and Inferno on the host too, reading the
 admitted AF binary at the same path the container saw. The capability is checked by doing it,
 not from a path or a sysctl: `preflight`, `comparison-preflight` and the profile's execution,

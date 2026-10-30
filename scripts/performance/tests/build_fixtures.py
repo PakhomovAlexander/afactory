@@ -273,7 +273,8 @@ if args[:2] == ["image", "inspect"]:
         sys.stderr.write("Error: No such image: %s\n" % image)
         sys.exit(1)
     if args[args.index("--format") + 1] == "{{json .Config.Volumes}}":
-        print("null")
+        volumes = os.path.join(here, "volumes")
+        print(open(volumes).read() if os.path.exists(volumes) else "null")
         sys.exit(0)
     identity, env = IMAGES[image][:2]
     digests = IMAGES[image][2] if len(IMAGES[image]) > 2 else []
@@ -319,14 +320,18 @@ os.execve(program, [program] + rest, env)
 '''
 
 
-def fake_docker(directory, images, lingering=None):
+def fake_docker(directory, images, lingering=None, volumes=None):
     """A bin directory whose `docker` answers for `images` ({reference: (id, [env]) or
-    (id, [env], [repository digests])})."""
+    (id, [env], [repository digests])}); `volumes` is the stdout of every image's volume
+    inspection (`null` when None)."""
     os.makedirs(directory)
     path = os.path.join(directory, "docker")
     with open(path, "w") as stream:
         stream.write("#!%s -I\nIMAGES = %r\n%s" % (sys.executable, images, FAKE_DOCKER))
     os.chmod(path, 0o755)
+    if volumes is not None:
+        with open(os.path.join(directory, "volumes"), "w") as stream:
+            stream.write(volumes)
     if lingering is not None:
         with open(os.path.join(directory, "lingering"), "w") as stream:
             stream.write(lingering)

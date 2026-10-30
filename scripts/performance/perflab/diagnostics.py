@@ -1415,13 +1415,7 @@ class Profile(object):
             script = self.scripts(relative, names)
         parsed = perfcapture.parse_script(script.decode("utf-8", "replace"))
         perfcapture.check_event(parsed, self.event)
-        listed = self.tool_run([perf, "buildid-list", "--with-hits", "-i", data],
-                               self.budget.tool_seconds, BUILD_ID_LIST_BYTES, directory,
-                               reads=(self.output,))
-        ids = []
-        if listed.failure() is None:
-            ids = [identity for identity, _ in perfcapture.parse_build_ids(
-                listed.stdout.decode("utf-8", "replace")) if identity]
+        ids = self.build_ids(relative, names, directory)
         record.update(samples=parsed.samples, frames=parsed.frames,
                       unknown_frames=parsed.unknown)
         if parsed.frames:
@@ -1479,6 +1473,34 @@ class Profile(object):
                 total += len(data)
         return b"".join(chunks)
 
+    def build_ids(self, relative, names, directory):
+        """The build IDs with hits of every recording `names` below `relative`, each listed in
+        exactly that order by its own supervised `perf buildid-list`, bounded by the tool's own
+        time and output and all of them by the diagnostic deadline: a short first execution
+        with no sample of the profiled executable never hides a later one's hits. A listing
+        that fails or is malformed refuses the capture, naming its recording; nothing of the
+        recordings is changed."""
+        perf = self.tool("perf")
+        ids = set()
+        for index, name in enumerate(names):
+            what = "perf buildid-list of recording %d of %d (%s/%s)" % (
+                index + 1, len(names), relative, name)
+            self.budget.check(what)
+            listed = self.tool_run([perf, "buildid-list", "--with-hits", "-i",
+                                    os.path.join(self.output, relative, name)],
+                                   self.budget.tool_seconds, BUILD_ID_LIST_BYTES, directory,
+                                   reads=(self.output,))
+            if listed.failure() is not None:
+                raise perfcapture.CaptureError("tool_failed", "%s: %s" % (
+                    what, listed.failure()))
+            try:
+                ids.update(identity for identity, _ in perfcapture.parse_build_ids(
+                    listed.stdout.decode("utf-8", "replace")) if identity)
+            except perfcapture.CaptureError as error:
+                error.detail = "%s: %s" % (what, error.detail)
+                raise
+        return ids
+
     def symbols(self, profiled, ids):
         """Retain the exact profiled executable as deterministic XZ, once per source hash.
         Repeated captures and identical sides reuse admitted symbols even when the remaining
@@ -1491,7 +1513,7 @@ class Profile(object):
         own = perfcapture.elf_build_id(binary)
         unique = sorted(set(ids))[:256]
         symbols = {"state": "referenced", "build_ids": unique,
-                   "binary_build_id_present": (own in unique) if own else None, "archive": None}
+                   "binary_build_id_present": (own in ids) if own else None, "archive": None}
         target = "symbols/" + profiled[1][7:] + ".xz"
         retained = (self.admitted(self.output, target, self.budget.bytes_limit,
                                   "retained symbols")

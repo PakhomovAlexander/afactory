@@ -1102,6 +1102,68 @@ class RepeatedCaptures(diag.ChildRunBase):
         self.assertEqual(doc["renders"], [])
         report.admit_child(child, self.parent)
 
+    AF_ID = "cbc6452c61751405d91560eb9b6784a97da6faaa"
+    LIBC_ID = "79005c16293efa45b441fed45f4f29b138557e9e"
+    # Enough repetitions to reach the minimum samples; the many-recordings bound is above.
+    FEW = 10
+
+    def listed_child(self, last, **perf_config):
+        """A capture of `FEW` repetitions whose `perf buildid-list --with-hits` of the first, a
+        short execution, hit nothing, of the others only libc, of the last `last`; the
+        profiled executable's own build ID is the AF one."""
+        self.REPETITIONS = self.FEW
+        listed = dict(("rep-%04d.data" % number, ["%s /usr/lib/libc.so.6" % self.LIBC_ID])
+                      for number in range(2, self.FEW))
+        listed["rep-0001.data"] = []
+        listed["rep-%04d.data" % self.FEW] = last
+        listed.update(perf_config.pop("build_ids", {}))
+        with mock.patch.object(perfcapture, "elf_build_id", return_value=self.AF_ID):
+            return self.observed_child(build_ids=listed, **perf_config)
+
+    def test_a_later_recordings_hit_of_the_executable_is_found_when_the_first_has_none(self):
+        doc, child, _ = self.listed_child(["%s /work/af" % self.AF_ID])
+        for capture in doc["captures"]:
+            self.assertIsNone(capture["omission"], capture["omission"])
+            self.assertEqual(capture["symbols"]["build_ids"],
+                             sorted([self.AF_ID, self.LIBC_ID]))
+            self.assertIs(capture["symbols"]["binary_build_id_present"], True)
+            self.assertEqual(len(self.index_of(child, capture)["repetitions"]), self.FEW)
+        report.admit_child(child, self.parent)
+
+    def test_no_recordings_hit_of_the_executable_is_never_inferred_from_the_executable(self):
+        doc, child, _ = self.listed_child([])
+        for capture in doc["captures"]:
+            self.assertIsNone(capture["omission"], capture["omission"])
+            self.assertEqual(capture["symbols"]["build_ids"], [self.LIBC_ID])
+            self.assertIs(capture["symbols"]["binary_build_id_present"], False)
+        report.admit_child(child, self.parent)
+
+    def test_a_failed_or_malformed_build_id_listing_refuses_the_capture_by_its_recording(self):
+        for name, config, reason in (
+                ("failed", {"fail_buildids": "rep-0007.data"}, "tool_failed"),
+                ("malformed", {"build_ids": {"rep-0007.data": ["not a build id line"]}},
+                 "malformed_build_ids")):
+            with self.subTest(name=name):
+                for directory in ("child", "perf", "inferno", "observer-control"):
+                    shutil.rmtree(self.path(directory), True)
+                self.clean()
+                doc, child, _ = self.listed_child(["%s /work/af" % self.AF_ID], **config)
+                for capture in doc["captures"]:
+                    self.assertEqual(capture["omission"]["reason"], reason)
+                    detail = capture["omission"]["detail"]
+                    self.assertIn("perf buildid-list of recording 7 of %d" % self.FEW, detail)
+                    self.assertIn("rep-0007.data", detail)
+                    # Every raw recording and observer record is still kept and indexed.
+                    self.assertEqual(len(self.index_of(child, capture)["repetitions"]),
+                                     self.FEW)
+                    directory = os.path.join(child, diagnostics.diagcontracts.capture_directory(
+                        capture))
+                    self.assertEqual(len([item for item in os.listdir(directory)
+                                          if diagnostics.diagcontracts.repeated_name(item)]),
+                                     2 * self.FEW)
+                self.assertEqual(doc["renders"], [])
+                report.admit_child(child, self.parent)
+
     def test_a_repetition_its_recording_does_not_bound_stops_the_capture_honestly(self):
         with mock.patch.object(perfcapture, "decode_lifetime",
                                side_effect=perfcapture.CaptureError(

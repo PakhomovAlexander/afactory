@@ -293,8 +293,11 @@ def refuse_implicit_volumes(docker, reference, budget=None):
         budget.seconds("completing image volume inspection")
     require(len(result.stdout) <= limits.RECORD_BYTES_MAX,
             "image volume declaration exceeds its byte bound")
-    require(json.loads(result.stdout) in (None, {}),
-            "bounded build image declares implicit writable volumes")
+    try:
+        volumes = json.loads(result.stdout)
+    except ValueError:
+        raise ContractError("image volume declaration is not JSON")
+    require(volumes in (None, {}), "bounded build image declares implicit writable volumes")
 
 
 class BuildImage:

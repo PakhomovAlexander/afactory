@@ -14,7 +14,7 @@ protocols the laboratory relies on, so the driver's own logic is what the tests 
   sample a millisecond whose stack names the probe's phase at that instant: a capture that
   enabled during setup would show `setup_work`. Its recording is a little-endian perf.data
   holding declared LOST and LOST_SAMPLES records; `script` and `buildid-list` print their text
-  formats from it.
+  formats from it, `buildid-list` each recording's configured listing.
 - inferno's three tools collapse, diff and render; the renderer writes the `onload` handler and
   `<script>` element the real `--no-javascript` output still carries.
 - `af` answers `--version` and `task show ... --json`, the latter with a document of 10,000
@@ -263,8 +263,14 @@ if args[0] == "script":
                 sys.stdout.write("\t    7f0000000030 [unknown] ([unknown])\n")
         sys.stdout.write("\t    55aa00000040 main (/fake/perf-probe)\n\n")
     sys.exit(0)
+if args[0] == "buildid-list" and config.get("fail_buildids") == os.path.basename(option("-i")):
+    sys.stderr.write("failed to read build ids\n")
+    sys.exit(3)
 if args[0] == "buildid-list":
-    print("0123456789abcdef0123456789abcdef01234567 /fake/perf-probe")
+    # `build_ids` names the listing of each recording by its file name; the probe's otherwise.
+    listing = config.get("build_ids", {}).get(os.path.basename(option("-i")))
+    sys.stdout.write("0123456789abcdef0123456789abcdef01234567 /fake/perf-probe\n"
+                     if listing is None else "".join(line + "\n" for line in listing))
     sys.exit(0)
 sys.exit(64)
 '''

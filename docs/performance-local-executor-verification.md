@@ -864,3 +864,51 @@ Not established here: Docker, a real perf, Claw, a musl CPU capture and its flam
 v0.13.0 against v0.14.0-rc.1 comparison or its export. The host observer's timeout and cleanup
 repairs have not yet reached an actual AF capture on musl. The outer operator reruns the musl
 CPU acceptance on Claw from this candidate.
+
+## Final native integration: image-policy refusals and every recording's build IDs
+
+This candidate combines the sealed native repairs (image and image-local tool admission,
+physical storage, the CLI diagnostic log total, musl line-tables-only debug information, the
+repeated CLI CPU capture, its decoding and its exec-to-exit timing) and settles two defects
+those repairs left. Its focused checks ran on a macOS development host (Python 3.14.7) with
+injected computation; nothing here ran Docker, a real perf, Claw or GitHub Actions.
+
+- **An image-policy refusal keeps no fence** (`tests/test_executor.py`, `ImageAdmission`).
+  `BuildImage.refuse_implicit_volumes` refused a declared writable volume with a plain
+  `ContractError`, which escaped `image_admission` and `Journal.exclusive`, so a preflight
+  that had run only `docker image inspect` left the machine fence and disabled every later
+  experiment. The images' identity and volume checks now refuse as an admission refusal: no
+  probe container has started then, so the exclusion settles clean. A volume declaration that
+  is not JSON refuses the same way. With the stand-in docker client declaring
+  `{"/unexpected-volume":{}}`, `test_an_image_volume_refusal_runs_nothing_and_keeps_no_fence`
+  shows preflight `refused`, submission refused with nothing reserved, only `image inspect`
+  invoked, and no fence;
+  `test_a_claimed_image_volume_refusal_fails_before_any_build_without_a_fence` shows the claim
+  ending the original `failed` before any build, with no fence.
+  `test_an_unconfirmed_probe_container_keeps_the_fence` still keeps the fence. Both new tests
+  fail on the earlier catch, which left the fence.
+- **Build IDs from every recording** (`tests/test_report_diagnostics.py`, `RepeatedCaptures`).
+  `Profile.analyse` decoded every repetition but listed build IDs only from the first, so a
+  short first execution with no AF sample reported `binary_build_id_present: false` although
+  later recordings hit AF. Each recording is now listed by its own `perf buildid-list
+  --with-hits`, in order, under the tool's own time and output bounds and the diagnostic
+  deadline; a listing that fails or is malformed refuses the capture, naming its recording,
+  where a failure used to be read as no build IDs. Through the actual Profile writer and report
+  admission, a first recording with no hits, libc-only middle recordings and a last recording
+  hitting AF give `binary_build_id_present: true`
+  (`test_a_later_recordings_hit_of_the_executable_is_found_when_the_first_has_none`). With no
+  recording hitting AF it is `false` even though the executable carries that ID
+  (`test_no_recordings_hit_of_the_executable_is_never_inferred_from_the_executable`). A failed
+  or malformed listing of recording 7 omits the capture as `tool_failed` or
+  `malformed_build_ids`, every recording and observer record kept and the report admitted
+  (`test_a_failed_or_malformed_build_id_listing_refuses_the_capture_by_its_recording`). The
+  first two fail on the first-recording-only listing.
+
+The protected harness was re-pinned from this final tree with
+`python3 -I scripts/performance/cli.py harness-digest --write` to
+`sha256:fca6c728a31bc1b0976e5558dcfd27b3a2470672af0be53bf8f424f93e7b0cae` (677 files), and
+`--check` passes; before that it refused both staged files. The manual harness pass recorded
+above used Homebrew's Rust 1.94.0, so it is not proof on the pinned 1.88.0 toolchain. Not
+established here: `make perf-kernel-measure` with the pinned Rust 1.88.0 on Claw, a full
+release comparison, telemetry, an actual trace or CPU capture of this candidate, or a portable
+verified report. The outer operator runs those.
