@@ -272,10 +272,12 @@ if [ -n "$nightly_date" ]; then
   }
   version=$(json_field version)
   commit=$(json_field commit)
-  case "$version" in
-    [0-9]*.[0-9]*.[0-9]*-nightly."$nightly_date") ;;
-    *) echo "af: the binary of $tag reports version '$version', expected <core>-nightly.$nightly_date" >&2; exit 1 ;;
-  esac
+  # Exactly <major>.<minor>.<patch>-nightly.<date>: a pre-release core (1.0.0-rc.3-nightly.…)
+  # is no nightly, as `af self` says too.
+  core=${version%-nightly."$nightly_date"}
+  if [ "$core" = "$version" ] || ! printf '%s\n' "$core" | grep -Eq '^[0-9]+\.[0-9]+\.[0-9]+$'; then
+    echo "af: the binary of $tag reports version '$version', expected <core>-nightly.$nightly_date" >&2; exit 1
+  fi
   if semver_lt "$version" "$FLOOR"; then
     echo "af: $version is older than the oldest supported release ($FLOOR); pick a newer release" >&2
     exit 1

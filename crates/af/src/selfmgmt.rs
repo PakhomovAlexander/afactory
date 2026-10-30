@@ -3563,7 +3563,10 @@ pub(crate) fn channel(choice: Option<Channel>, no_update: bool) -> Result<(), St
             channel.name(),
             written.path.display()
         );
-        println!("nothing installed: `af self update` installs the channel's newest");
+        println!(
+            "nothing installed: `af self channel {}` without --no-update installs the channel's newest and makes it the default",
+            channel.name()
+        );
         return Ok(());
     }
     require_receipt(&paths)?;

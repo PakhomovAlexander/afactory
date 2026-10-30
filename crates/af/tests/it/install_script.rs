@@ -541,6 +541,30 @@ fn install_sh_installs_the_newest_nightly_by_date_with_the_nightly_key() {
         err(&wrong)
     );
     assert!(!installer.installed("0.10.0-nightly.20261031").exists());
+
+    // A nightly whose binary reports a pre-release core is no nightly either, as `af self`
+    // says: the version is exactly <major>.<minor>.<patch>-nightly.<date>.
+    sandbox.publish_nightly_for("nightly-2026.11.02", "1.0.0-rc.3-nightly.20261102", host);
+    write(
+        &sandbox.path("releases/nightly-2026.11.02/SHA256SUMS.minisig"),
+        "signature\n",
+    );
+    let wrong = installer.run(
+        path,
+        &[
+            ("AF_INSTALL_CHANNEL", "nightly"),
+            ("AF_INSTALL_NIGHTLY_KEY", key.as_str()),
+        ],
+    );
+    assert_eq!(wrong.status.code(), Some(1), "{}", out(&wrong));
+    assert!(
+        err(&wrong).contains(
+            "reports version '1.0.0-rc.3-nightly.20261102', expected <core>-nightly.20261102"
+        ),
+        "{}",
+        err(&wrong)
+    );
+    assert!(!installer.installed("1.0.0-rc.3-nightly.20261102").exists());
 }
 
 #[test]

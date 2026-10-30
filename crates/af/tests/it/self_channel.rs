@@ -162,7 +162,9 @@ fn a_channel_switch_writes_the_user_layer_and_moves_between_nightly_and_stable()
     let recorded = af_self(&sandbox, &real, key, &["channel", "rc", "--no-update"]);
     assert!(recorded.status.success(), "{}", err(&recorded));
     assert!(
-        out(&recorded).contains("nothing installed"),
+        out(&recorded).contains(
+            "nothing installed: `af self channel rc` without --no-update installs the channel's newest and makes it the default"
+        ),
         "{}",
         out(&recorded)
     );
