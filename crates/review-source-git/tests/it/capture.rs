@@ -267,7 +267,7 @@ struct StageBetweenPasses<'a> {
 impl CaptureObserver for StageBetweenPasses<'_> {
     fn between_passes(&self, attempt: u32) {
         if attempt == 1 {
-            settled_change(&self.fixture.repo_path(), || {
+            settled_change(self.fixture, || {
                 self.fixture
                     .write("newly_staged.rs", b"// staged mid-capture\n");
                 self.fixture.git(&["add", "newly_staged.rs"]);
@@ -276,37 +276,119 @@ impl CaptureObserver for StageBetweenPasses<'_> {
     }
 }
 
-/// Make `change` and return once the host's file-event service has delivered its events to a
-/// watcher of `root`: the index, the change's last write, reported, then a quiet 300 ms. A
-/// loaded macOS host journals FSEvents late, and an event journaled after the next pass began
-/// watching reads as a change during that pass: a third attempt, which the boundary rightly
-/// makes and this test, counting the attempts an index change alone causes, must not see. The
-/// wait is on that observable state, never a sleep.
-fn settled_change(root: &std::path::Path, change: impl FnOnce()) {
+/// Make `change` and return once a watcher of the repository started afterwards, as the next
+/// pass's is, is no longer handed stale events. A loaded macOS host hands a newly started
+/// FSEvents stream events of its paths that happened before it started, seconds of them, the
+/// fixture's own construction included: one replayed to the next pass's watcher reads as a
+/// change during that pass, a third attempt, which the boundary rightly makes and this test,
+/// counting the attempts an index change alone causes, must not see. The same host also drops
+/// events, so no one event of `change` (the index rename included) is sure to be reported to any
+/// watcher, and waiting for one can wait forever.
+///
+/// So the wait is on observable delivery. First a watcher of a fences directory beside the
+/// repository, started before `change`, must report a fence file written there after it: a
+/// stalled host reports nothing for seconds, to watchers already running too, and then hands it
+/// all on. Then each round starts a probe watching the repository, as the capture's watcher
+/// does, and the fences directory, then writes a fresh fence file there, never inside the
+/// repository. A probe that reports its own fence with no repository event before it or in the
+/// same batch was handed no replay; a probe handed one, or that loses its fence for a second, is
+/// replaced by the next round until the bounded deadline. One clean probe can still be ahead of
+/// a replay delivered late, so two in a row settle the change. Fences are written one second
+/// apart at most, each once the last is reported or lost; the wait is on that observable state,
+/// never a sleep.
+fn settled_change(fixture: &Fixture, change: impl FnOnce()) {
     use notify::Watcher as _;
+    use std::sync::mpsc::RecvTimeoutError;
     use std::time::{Duration, Instant};
-    let (send, events) = std::sync::mpsc::channel();
+    let fences = fixture.dir.path().join("fences");
+    std::fs::create_dir_all(&fences).unwrap();
+    // Event paths are canonical (`/private/var/…` for `/var/…` on macOS).
+    let fences = fences.canonicalize().unwrap();
+    let (send, before) = std::sync::mpsc::channel();
     let mut watcher = notify::recommended_watcher(move |event| {
         let _ = send.send(event);
     })
     .unwrap();
     watcher
-        .watch(root, notify::RecursiveMode::Recursive)
+        .watch(&fences, notify::RecursiveMode::Recursive)
         .unwrap();
     change();
     let deadline = Instant::now() + Duration::from_secs(120);
-    loop {
-        let left = deadline.saturating_duration_since(Instant::now());
-        assert!(!left.is_zero(), "the index change was never reported");
-        match events.recv_timeout(left) {
-            Ok(Ok(event)) if event.paths.iter().any(|path| path.ends_with(".git/index")) => {
-                break;
+    'stall: for round in 0.. {
+        let fence = fences.join(format!("after-{round}"));
+        std::fs::write(&fence, b"").unwrap();
+        let replace_at = Instant::now() + Duration::from_secs(1);
+        loop {
+            let now = Instant::now();
+            assert!(
+                now < deadline,
+                "no watcher reported a fence after the change"
+            );
+            match before.recv_timeout(replace_at.min(deadline).saturating_duration_since(now)) {
+                Ok(Ok(event))
+                    if event.paths.iter().any(|path| {
+                        path.file_name()
+                            .is_some_and(|name| name.to_string_lossy().starts_with("after-"))
+                    }) =>
+                {
+                    break 'stall;
+                }
+                Ok(Ok(_)) => continue,
+                Ok(Err(error)) => panic!("the watcher failed: {error}"),
+                Err(RecvTimeoutError::Timeout) => break,
+                Err(RecvTimeoutError::Disconnected) => panic!("the watcher disconnected"),
             }
-            Ok(_) => continue,
-            Err(error) => panic!("the index change was never reported: {error}"),
         }
     }
-    while Instant::now() < deadline && events.recv_timeout(Duration::from_millis(300)).is_ok() {}
+    drop(watcher);
+    let mut clean_in_a_row = 0;
+    for round in 0.. {
+        assert!(
+            Instant::now() < deadline,
+            "a watcher started after the change was still handed stale events"
+        );
+        let fence = fences.join(format!("fence-{round}"));
+        let (send, events) = std::sync::mpsc::channel();
+        let mut probe = notify::recommended_watcher(move |event| {
+            let _ = send.send(event);
+        })
+        .unwrap();
+        for root in [fixture.repo_path(), fences.clone()] {
+            probe
+                .watch(&root, notify::RecursiveMode::Recursive)
+                .unwrap();
+        }
+        std::fs::write(&fence, b"").unwrap();
+        let replace_at = Instant::now() + Duration::from_secs(1);
+        let mut own_fence = false;
+        let clean = loop {
+            let event = if own_fence {
+                // The rest of the batch that carried the probe's own fence.
+                match events.try_recv() {
+                    Ok(event) => event,
+                    Err(_) => break true,
+                }
+            } else {
+                let left = replace_at
+                    .min(deadline)
+                    .saturating_duration_since(Instant::now());
+                match events.recv_timeout(left) {
+                    Ok(event) => event,
+                    Err(RecvTimeoutError::Timeout) => break false,
+                    Err(RecvTimeoutError::Disconnected) => panic!("the probe disconnected"),
+                }
+            };
+            let event = event.unwrap_or_else(|error| panic!("the probe failed: {error}"));
+            if event.paths.iter().any(|path| !path.starts_with(&fences)) {
+                break false;
+            }
+            own_fence |= event.paths.contains(&fence);
+        };
+        clean_in_a_row = if clean { clean_in_a_row + 1 } else { 0 };
+        if clean_in_a_row == 2 {
+            return;
+        }
+    }
 }
 
 #[test]
