@@ -1451,3 +1451,29 @@ python3 -I -B -c 'import sys,unittest; sys.path.insert(0,"scripts/performance");
 ```
 
 **PASS: 9 tests, 42.5 seconds, exit 0.** The native light gate is the full gate.
+
+## Integration with main `fa85b96` (2026-10-30)
+
+The source is Git's merge-tree of the PR head `894cdb97428daa0bcec60caace700289671cf12d` and
+main `fa85b966410b24f2ab59f0285bedc42149495f4c` (merge base
+`955e24bff603675feb5680d0cf0e4cc60cd4b6f2`). Exactly three files held conflict markers, and only
+they changed, with this section and one change note:
+
+- `docs/adr/README.md` lists the PR's 0265 and main's 0267 in numeric order; both ADR files were
+  already in the tree and neither decision changed.
+- `fixtures/performance/kernel-measure/code-policy-measures.toml` and `inventory.json` were
+  seeded with the PR side, then regenerated with
+  `python3 -I -B scripts/performance/cli.py harness-digest --write`, and `--check` passes. The
+  digest of the integrated source is
+  `sha256:0d9ea79c4aba911c7df48426a20786ceecd5274a264e71dc6a7ca4a465d87936` for **684 files**;
+  neither side's previous digest (`266f29f9…`, `b8d689fd…`) remains in the fixtures. The
+  measures, repetitions, wall and authority are unchanged.
+
+Recorded in the AF implementation sandbox on macOS, Python 3.15.0, `TMPDIR` a fresh
+`mktemp -d` directory. No conflict marker remains in the tree. `tests.test_comparison`, run with
+the command above, **PASS: 9 tests, 48.0 seconds, exit 0**, including
+`Comparison.test_the_documented_full_comparison_configuration_and_checks_hold` (eight serial
+shards, 33 cases, 2932 slots, and a narrower telemetry selection refused);
+`tests.test_kernelguard` **PASS: 29 tests**. Nothing was measured: no new VM or Claw
+measurement and no green final CI is claimed. The final comparison on the integrated producer,
+its report, export and verification are pending with the outer operator.
