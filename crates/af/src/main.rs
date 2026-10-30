@@ -1986,6 +1986,9 @@ fn main() {
                 cli::SelfCommand::Update { check, version, rc } => {
                     selfmgmt::update(check, version, rc).map(|()| 0)
                 }
+                cli::SelfCommand::Channel { channel, no_update } => {
+                    selfmgmt::channel(channel.map(Into::into), no_update).map(|()| 0)
+                }
                 cli::SelfCommand::Rollback => selfmgmt::rollback().map(|()| 0),
                 cli::SelfCommand::Install { version } => {
                     selfmgmt::install_command(&version).map(|()| 0)

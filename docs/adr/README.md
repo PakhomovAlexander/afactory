@@ -504,3 +504,5 @@ future readers need.
   VM](0265-build-nightlies-from-the-newest-green-main-on-the-owners-vm.md)
 - [0266 — Measure nightlies as originals of the independent
   executor](0266-measure-nightlies-as-originals-of-the-independent-executor.md)
+- [0267 — Offer a nightly channel in af
+  self](0267-offer-a-nightly-channel-in-af-self.md)
