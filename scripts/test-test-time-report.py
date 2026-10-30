@@ -443,10 +443,12 @@ def project(base, *, script=True):
     (repo / 'scripts').mkdir(parents=True)
     (repo / '.config').mkdir()
     names = ['verify.sh', 'verify-body.sh', 'gate-owner.py', 'nextest-gate.py',
-             'ci-step.py'] + (['test-time-report.py'] * script)
+             'ci-step.py', 'test-classes.py'] + (['test-time-report.py'] * script)
     for name in names:
         shutil.copyfile(ROOT / 'scripts' / name, repo / 'scripts' / name)
-    shutil.copyfile(ROOT / '.config/nextest.toml', repo / '.config/nextest.toml')
+    # The test recipe starts nextest through the quarantine exclusion, which reads these.
+    for name in ('nextest.toml', 'test-classes.json', 'test-quarantine.json'):
+        shutil.copyfile(ROOT / '.config' / name, repo / '.config' / name)
     makefile = (ROOT / 'Makefile').read_text()
     # `test` depends on `test-build` (the build receipt the kernel's phase monitor waits for).
     start = makefile.index('\ntest-build:\n') + 1

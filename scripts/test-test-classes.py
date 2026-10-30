@@ -433,7 +433,8 @@ class SealedEvidence(unittest.TestCase):
                 if source.name != 'test-classes.py':
                     shutil.copy2(source, scripts / source.name)
             (root / '.config').mkdir()
-            shutil.copy2(ROOT / '.config/test-classes.json', root / '.config/test-classes.json')
+            for name in ('test-classes.json', 'test-quarantine.json'):
+                shutil.copy2(ROOT / '.config' / name, root / '.config' / name)
             (root / 'schemas').mkdir()
             for name in tc.schema_documents():
                 shutil.copy2(ROOT / 'schemas' / name, root / 'schemas' / name)
@@ -606,8 +607,10 @@ class SealedEvidence(unittest.TestCase):
                                                     if r['stage'] == 'tests'))
                             continue
                         rust = next(r for r in records if r['label'] == 'test')
-                        self.assertEqual(rust['command'][:2], ['python3', 'scripts/nextest-gate.py']
-                                         if runner == 'nextest' else ['cargo', 'test'])
+                        # nextest starts through the quarantine exclusion (ADR-0268).
+                        wanted = (['python3', 'scripts/test-classes.py', 'nextest-gate', '--']
+                                  if runner == 'nextest' else ['cargo', 'test'])
+                        self.assertEqual(rust['command'][:len(wanted)], wanted)
                         if entry == 'check':
                             python = next(r for r in records if r['label'] == 'performance-lab')
                             self.assertEqual(python['command'], ['python3', 'scripts/test-performance.py'])
@@ -953,6 +956,221 @@ class Catalog(unittest.TestCase):
         tc.schema_parity()
         for schema in tc.schema_documents().values():
             self.assertFalse(schema['additionalProperties'])
+
+
+class Quarantine(unittest.TestCase):
+    # Every guard reads this date, never the clock.
+    today = '2026-10-29'
+    held = 'af::it cli_surface::usage_errors_name_only_the_failing_command'
+
+    def entry(self, **fields):
+        value = {'state': 'quarantined', 'since': '2026-10-20', 'expires': '2026-11-03',
+                 'evidence': ['gate-flake-1', 'gate-flake-2'], 'issue': 466}
+        value.update(fields)
+        return {k: v for k, v in value.items() if v is not None}
+
+    def held_file(self, tests):
+        """A test-local quarantine file in place of the shipped one, and an explicit today."""
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        path = Path(tmp.name) / 'test-quarantine.json'
+        tc.write(path, {'schema': 'af.test-quarantine/1', 'tests': tests})
+        for patch in (mock.patch.object(tc, 'QUARANTINE', path),
+                      mock.patch.dict(os.environ, {'AF_TEST_QUARANTINE_TODAY': self.today})):
+            patch.start()
+            self.addCleanup(patch.stop)
+
+    def inventory(self):
+        fixture = tc.read(ROOT / 'fixtures/test-classes/inventory.json')
+        suites = fixture['rust-suites']
+        for name in ('cli_surface::help_lists_every_command', 'cli_surface::version_prints_one_line'):
+            suites['af::it']['testcases'][name] = {'ignored': False}
+        suites['review-process::cancellation']['testcases']['cancellation_after_exit_is_a_noop'] = {
+            'ignored': False}
+        return fixture
+
+    @staticmethod
+    def selects(expression, binary, name):
+        for clause in expression.split(' | '):
+            prefix = f'(binary_id(={binary}) & test(/'
+            if clause.startswith(prefix):
+                return tc.re.match(clause[len(prefix):-len('/))')], name) is not None
+        return False
+
+    def test_the_shipped_file_is_empty_and_passes_every_guard(self):
+        self.assertEqual(tc.read(tc.QUARANTINE), {'schema': 'af.test-quarantine/1', 'tests': {}})
+        self.assertEqual(tc.quarantine(today=tc.dt.date(2026, 10, 29)), {})
+        self.assertIn('test-quarantine-v1.json', tc.schema_documents())
+        with mock.patch.dict(os.environ, {'AF_TEST_QUARANTINE_TODAY': self.today}):
+            tc.audit_source()
+            # An empty quarantine selects exactly what the catalog alone selects.
+            fixture = self.inventory()
+            self.assertEqual(tc.partition(fixture), tc.partition(fixture, held={}))
+            self.assertTrue(all(e['class'] in tc.CLASSES for e in tc.partition(fixture)))
+
+    def test_a_quarantined_test_leaves_the_fast_and_full_filters_but_its_siblings_stay(self):
+        other = 'review-process::cancellation cancellation_before_spawn_cannot_execute_the_command'
+        self.held_file({self.held: self.entry(), other: self.entry(state='flaky', issue=None)})
+        entries = tc.partition(self.inventory())
+        classes = {e['binary'] + ' ' + e['test']: e['class'] for e in entries}
+        self.assertEqual(classes[self.held], 'quarantine')
+        self.assertEqual(classes[other], 'quarantine')
+        self.assertNotIn('quarantine', tc.CLASSES)
+        for plan in (tc.resolve(['release:fast'], 'gate'), tc.resolve(['release:full'], 'pr')):
+            self.assertNotIn('quarantine', plan['selected'])
+            expression = tc.filterset(entries, plan['selected'])
+            with self.subTest(profile=plan['profile']):
+                self.assertFalse(self.selects(expression, 'af::it', self.held.split(' ')[1]))
+                self.assertFalse(self.selects(expression, *other.split(' ')))
+                for binary, name in [('af::it', 'cli_surface::help_lists_every_command'),
+                                     ('af::it', 'cli_surface::version_prints_one_line'),
+                                     ('review-process::cancellation', 'cancellation_after_exit_is_a_noop'),
+                                     ('review-core::schema_parity',
+                                      'a_gate_cleanup_is_one_closed_transition_referencing_no_artifact')]:
+                    self.assertTrue(self.selects(expression, binary, name), (binary, name))
+        full = tc.filterset(entries, list(tc.CLASSES))
+        self.assertTrue(self.selects(full, 'af::it',
+                                     'perf_kernel_measure::guarded_kernel_experiments_refuse_every_tampered_harness'))
+        # The class report counts no quarantined case in any class row or timing.
+        with tempfile.TemporaryDirectory() as tmp:
+            junit = Path(tmp) / 'junit.xml'
+            junit.write_text('<testsuites><testsuite name="af::it">'
+                             '<testcase classname="af::it" name="cli_surface::usage_errors_name_only_the_failing_command"'
+                             ' time="9"><failure/></testcase>'
+                             '<testcase classname="af::it" name="cli_surface::version_prints_one_line" time="1"/>'
+                             '</testsuite></testsuites>')
+            value = tc.report(tc.resolve(['release:full'], 'pr'), [junit], inventory=entries)
+        self.assertEqual(value['classes']['uix']['count'], 1)
+        self.assertEqual(value['classes']['uix']['failed'], 0)
+        self.assertEqual(value['classes']['uix']['test_seconds'], 1)
+        self.assertEqual(sum(row['inventory_count'] for row in value['classes'].values()), len(entries) - 2)
+
+    def refusal(self, tests, *needles, inventory=None):
+        self.held_file(tests)
+        with self.assertRaises(ValueError) as caught:
+            if inventory is None:
+                with mock.patch.object(sys, 'argv', ['test-classes.py', 'audit']):
+                    tc.main()  # The `test-catalog` step of make check.
+            else:
+                tc.partition(inventory)
+        for needle in (*needles, 'fix: '):
+            self.assertIn(needle, str(caught.exception))
+
+    def test_each_guard_refuses_naming_the_entry_and_the_fix(self):
+        cases = [
+            ({self.held: self.entry(owner='me')}, "unknown field ['owner']"),
+            ({self.held: self.entry(state='skipped')}, "state 'skipped'"),
+            ({self.held: self.entry(state=None)}, "missing field ['state']"),
+            ({self.held: self.entry(since='2026-10-32')}, '`since`'),
+            ({self.held: self.entry(expires='03.11.2026')}, '`expires`'),
+            ({self.held: self.entry(expires='2026-10-20')}, 'is not after since'),
+            ({self.held: self.entry(expires='2026-11-04')}, 'at most 14 days'),
+            ({self.held: self.entry(evidence=[])}, 'evidence'),
+            ({self.held: self.entry(evidence=['no spaces'])}, 'evidence'),
+            ({self.held: self.entry(issue=0)}, 'issue 0'),
+            ({self.held: self.entry(issue=True)}, 'issue True'),
+            ({self.held: self.entry(since='2026-10-14', expires='2026-10-28')},
+             'expired on 2026-10-28 (today is 2026-10-29)'),
+            ({'af::it perf_kernel_measure::guarded_kernel_experiments_measure_one_judged_sample': self.entry()},
+             'an #[ignore] test cannot be quarantined'),
+            ({'af::it no_such_module::a_test': self.entry()}, 'unclassified module'),
+            ({'af::it': self.entry()}, 'nextest identity'),
+        ]
+        for tests, needle in cases:
+            with self.subTest(needle=needle):
+                self.refusal(tests, '.config/test-quarantine.json: ' + next(iter(tests)), needle)
+        # Today is the last valid day; a date after since is required, not the clock.
+        self.held_file({self.held: self.entry(since='2026-10-15', expires='2026-10-29')})
+        self.assertEqual(list(tc.quarantine()), [self.held])
+        # The window is checked as a difference, so the last representable dates still pass
+        # or refuse with the entry's message.
+        self.held_file({self.held: self.entry(since='9999-12-20', expires='9999-12-21')})
+        self.assertEqual(list(tc.quarantine()), [self.held])
+        self.refusal({self.held: self.entry(since='9999-12-01', expires='9999-12-31')},
+                     '.config/test-quarantine.json: ' + self.held, 'at most 14 days')
+
+    def test_the_file_shape_and_the_entry_bound_are_guarded(self):
+        for value in ({'schema': 'af.test-quarantine/2', 'tests': {}}, {'schema': 'af.test-quarantine/1'},
+                      {'schema': 'af.test-quarantine/1', 'tests': {}, 'extra': 1}):
+            with self.subTest(value=value), self.assertRaisesRegex(ValueError, 'unsupported test quarantine.*fix:'):
+                tc.quarantine(today=tc.dt.date(2026, 10, 29), value=value)
+        many = {f'af::it cli_surface::case_{i}': self.entry() for i in range(21)}
+        self.refusal(many, '21 entries, at most 20', 'cli_surface::case_0')
+        twenty = dict(list(many.items())[:20])
+        self.held_file(twenty)
+        self.assertEqual(len(tc.quarantine()), 20)
+        with mock.patch.dict(os.environ, {'AF_TEST_QUARANTINE_TODAY': '29.10.2026'}), \
+                self.assertRaisesRegex(ValueError, 'AF_TEST_QUARANTINE_TODAY'):
+            tc.quarantine()
+
+    def test_inventory_guards_refuse_absent_and_ignored_identities(self):
+        absent = 'af::it cli_surface::renamed_away'
+        self.refusal({absent: self.entry()}, '.config/test-quarantine.json: ' + absent,
+                     'not in the test inventory', inventory=self.inventory())
+        fixture = self.inventory()
+        fixture['rust-suites']['af::it']['testcases'][self.held.split(' ')[1]]['ignored'] = True
+        self.refusal({self.held: self.entry()}, '.config/test-quarantine.json: ' + self.held,
+                     'an #[ignore] test cannot be quarantined', inventory=fixture)
+
+    def test_a_feature_only_identity_is_refused_as_outside_the_default_feature_inventory(self):
+        feature_only = ('review-pipeline::perf_probe calibration_build::'
+                        'calibration_build_probe_injects_once_inside_the_region_and_keeps_its_oracle')
+        needles = ('covers the default-feature inventory only',
+                   'fix the test, or exclude it from its feature selector by hand')
+        self.refusal({feature_only: self.entry()}, '.config/test-quarantine.json: ' + feature_only,
+                     'calibration feature build', *needles)
+        # At partition time too, before the generic absent-identity guard could name it.
+        self.refusal({feature_only: self.entry()}, *needles, inventory=self.inventory())
+        self.assertNotIn('not in the test inventory', str(self.held_refusal(feature_only)))
+        trace = 'review-core perf_trace::tests::a_recorder_test'
+        self.refusal({trace: self.entry()}, '.config/test-quarantine.json: ' + trace,
+                     'trace feature build', *needles)
+
+    def held_refusal(self, identity):
+        self.held_file({identity: self.entry()})
+        with self.assertRaises(ValueError) as caught:
+            tc.partition(self.inventory())
+        return caught.exception
+
+    @staticmethod
+    def excluded(arguments, binary, name):
+        # The exclusion is one `not (...)` over exact `binary_id` and `test` equalities.
+        expression = arguments[arguments.index('-E') + 1]
+        held = tc.re.findall(r'\(binary_id\(=([^)]+)\) & test\(=([^)]+)\)\)', expression)
+        assert expression == 'not (' + ' | '.join(f'(binary_id(={b}) & test(={n}))' for b, n in held) + ')'
+        return (binary, name) in held
+
+    def test_the_full_gate_route_runs_nextest_without_the_quarantined_test(self):
+        # make check (verify.sh --profile full) reaches nextest only through the `test` recipe.
+        dry = subprocess.run(['make', '-n', 'check', 'TEST_THREADS=4'], cwd=ROOT, capture_output=True,
+                             text=True, check=True).stdout
+        route = 'scripts/test-classes.py nextest-gate -- --locked --profile ci --test-threads 4'
+        self.assertIn(route, dry)
+        self.assertNotIn('scripts/nextest-gate.py', dry)  # No other, unfiltered nextest run.
+        argv = ['test-classes.py', *route.split(' ')[1:]]
+        caller = argv[argv.index('--') + 1:]
+
+        def run(tests):
+            self.held_file(tests)
+            with mock.patch.object(sys, 'argv', argv), mock.patch.object(tc.os, 'execv') as execv:
+                self.assertEqual(tc.main(), 0)
+            executable, command = execv.call_args.args
+            self.assertEqual(command[:2], [executable, str(ROOT / 'scripts/nextest-gate.py')])
+            return command[2:]
+
+        self.assertEqual(run({}), caller)  # An empty quarantine changes nothing.
+        sibling = 'af::it cli_surface::help_lists_every_command'
+        arguments = run({self.held: self.entry()})
+        self.assertEqual(arguments[:-2], caller)
+        self.assertTrue(self.excluded(arguments, *self.held.split(' ')))
+        self.assertFalse(self.excluded(arguments, *sibling.split(' ')))
+        with self.assertRaisesRegex(ValueError, 'only filter; fix: '):
+            tc.gate_arguments([*caller, '-E', 'all()'], {self.held: self.entry()})
+        self.held_file({self.held: self.entry(since='2026-10-01', expires='2026-10-10')})
+        with mock.patch.object(sys, 'argv', argv), mock.patch.object(tc.os, 'execv') as execv, \
+                self.assertRaisesRegex(ValueError, 'expired on 2026-10-10'):
+            tc.main()
+        execv.assert_not_called()
 
 
 class Gates(unittest.TestCase):
