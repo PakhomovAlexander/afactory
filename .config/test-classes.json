@@ -4,7 +4,8 @@
     "test-release-resolve.py",
     "test-af-pin.py",
     "test-changelog-notes.py",
-    "test-gate-owner.py"
+    "test-gate-owner.py",
+    "test-test-quarantine.py"
   ],
   "binaries": {
     "af::bin/af": "functional",
@@ -331,13 +332,15 @@
     "test-stress-proof.py": "e2e",
     "test-task-preflight.py": "functional",
     "test-test-classes.py": "functional",
+    "test-test-quarantine.py": "functional",
     "test-test-time-report.py": "functional"
   },
   "utilities": [
     "test-classes.py",
     "test-time-report.py",
     "test-class-python.py",
-    "test-labels.py"
+    "test-labels.py",
+    "test-quarantine.py"
   ],
   "hosted_checks": {
     "container-probes": "e2e",

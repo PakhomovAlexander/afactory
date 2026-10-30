@@ -101,7 +101,7 @@ nextest identity, in the form the catalog's `exact` map uses:
 
 `state` is `quarantined` (taken out on gate evidence) or `flaky` (confirmed on the Claw VM);
 `expires` is after `since` and at most 14 days after it; `evidence` names the af Tasks whose
-structured check reports list the test as flaky; `issue` is optional. The file ships empty;
+gates listed the test as flaky; `issue` is optional. The file ships empty;
 `schemas/test-quarantine-v1.json` is its schema, checked for parity by `audit`.
 
 A listed identity classifies as `quarantine`, ahead of every catalog rule. `quarantine` is not a
@@ -126,12 +126,46 @@ missing field, a bad state or date, a window over 14 days, empty evidence, an en
 selector reaches or an identity no catalog rule classifies; at partition time, an identity absent from the compiled inventory or ignored
 there. `AF_TEST_QUARANTINE_TODAY=YYYY-MM-DD` replaces the clock for the expiry guard.
 
-Entries are reviewed data, changed by pull request. A test is added when the check reports of at
-least 2 distinct Tasks' gates within 7 days list it as flaky, then confirmed by 50 runs under load
-on Claw: a failure makes it `flaky` with an issue for its fix, 50 passes remove the entry, except
-that an entry with only macOS evidence stays `quarantined` until it is fixed or expires. A fix is
-its own change and removes the entry. The scan and the confirmation script are not built yet;
-until they are, the owner adds and removes entries by hand under the same thresholds.
+Entries are reviewed data, changed by pull request. A test is added when the gates of at least 2
+distinct Tasks within 7 days list it as flaky, then confirmed by 50 runs under load on Claw: a
+failure makes it `flaky` with an issue for its fix, 50 passes remove the entry, except that an
+entry with only macOS evidence stays `quarantined` until it is fixed or expires. A fix is its own
+change and removes the entry. The confirmation script is not built yet; until it is, the owner
+confirms and removes entries by hand.
+
+`scripts/test-quarantine.py scan` proposes the entries:
+
+```sh
+python3 scripts/test-quarantine.py scan --state STORE_DIR             # or --list FILE
+python3 scripts/test-quarantine.py scan --list tasks.json --write    # add them
+```
+
+It reads one or more `af task list --json` documents (`af/task-list@3` or `af/task-list@4`):
+`--list FILE` reads one, `--state DIR` runs `af task list --json --state DIR` (the `af` on `PATH`,
+or `--af PATH`); both repeat, and a Task listed twice counts once. Each row's `task_id`,
+`updated_unix_ms` and `gate.flaky` are read; a row without `gate` adds nothing. A flaky name is
+evidence only when it resolves to exactly one identity of the default-feature nextest inventory
+(`--inventory FILE`, else `cargo nextest list --workspace --locked --message-format json`): as
+that identity exactly, or as a bare test name that one identity carries (af 0.13.0's text
+fallback drops the binary). Every other name is rejected with its reason: `not a test` (no such
+identity, an `#[ignore]` test, or one a feature build's fixed selector reaches) or
+`ambiguous: <identities>`. The fixture names that `crates/af/tests/it/task_gate.rs` prints, and
+0.13.0 recorded as flaky (`gate-store-regression`, `fails_when_crowded`, `af::it`, `many_0`),
+never resolve.
+
+An identity flaky in at least 2 distinct Tasks whose `updated_unix_ms` falls within the 7 days
+ending at the end of today (UTC) is proposed as `quarantined`, `since` today, `expires` today
+plus 14 days, its `evidence` the sorted Task IDs (at most 10), without `issue`. An identity already
+in the file keeps its values; `--write` writes the whole file in the shipped format (two-space
+indent, sorted keys), so an entry already in that format keeps its bytes and a hand-reformatted one
+is normalized. Proposals rank by evidence count, then identity; those past the
+20-entry cap are not added and are named. Without `--write` the scan prints what it would add,
+the over-cap identities and the rejected names, and changes nothing; `--write` adds them through
+every guard above, or refuses and writes nothing, and runs those guards even with nothing to add; `--json` prints the same facts as one
+`af.test-quarantine-scan/1` document. Today is `--today YYYY-MM-DD`, else
+`AF_TEST_QUARANTINE_TODAY`, else the clock. The exit code is 0 with or without proposals, 1 on bad
+input or a guard refusal and 2 on a usage error. `scripts/test-test-quarantine.py` (run by `make check` and the base
+check) proves it on test-local lists and inventories.
 
 ## Selection and precedence
 
@@ -164,7 +198,7 @@ older PR runs through their existing concurrency group.
 | `test:perf`, `no-perf` | refused | none |
 
 Fmt, ordinary and diagnostic-feature clippy, source/catalog/selection validation, release-resolution,
-change-note and pin policy checks, and the binary version smoke are always-on base work. Their costs are retained
+change-note, quarantine scan and pin policy checks, and the binary version smoke are always-on base work. Their costs are retained
 separately; a perf-only plan still performs this work. Release archive, signature, architecture and
 actual packaged-binary onboarding/planning smoke always run for every shipped target.
 
