@@ -161,7 +161,8 @@ def declare(journal, base, head, key, kind="manual", installed=executor.ROOT, gi
     plan = planning.plan(git, planning.Request(trigger="manual", tier=core["tier"],
         scope="bootstrap", base=sources["baseline_sha"], head=sources["candidate_sha"],
         control=control, authority=control, cases=[], environment=core["environment"],
-        build_image=c["build_image"], shards=core["shards"], run_id="local_" + ident[4:]))
+        build_image=c["build_image"], shards=core["shards"], run_id="local_" + ident[4:],
+        windows=core["windows"]))
     require(not plan["required_check_eligible"]
             and plan["profile"]["environment"]["runner"] == "dedicated"
             and plan["profile"]["environment"]["containment"] == "linux_container",
@@ -231,6 +232,9 @@ def _binding(journal, doc, request, work, key, partition=None, lane=None):
     if request["sources"] != doc["sources"] or request["work"] != work or request[
             "submission"] != {"kind": doc["submission"]["kind"], "key": key}:
         return "it was submitted for other sources, work or key"
+    if request["schema"] != contracts.EXECUTOR_REQUEST_SCHEMA:
+        # An earlier request version (ADR-0266) froze no partition or parent.
+        return "it is an %s original, never a comparison member" % request["schema"]
     if work != "profile" and request["partition"] != partition:
         return "it is not this comparison's partition"
     expected = _configuration(journal, doc, lane)
@@ -1122,12 +1126,20 @@ class Bundled:
         return os.path.join(self.requests, ident)
 
     def request(self, ident):
-        return contracts.read_json(executor.read(os.path.join(self.path(ident), "request.json")),
-                                   "executor-request")
+        doc = contracts.read_json(executor.read(os.path.join(self.path(ident), "request.json")),
+                                  "executor-request")
+        # A comparison's members are frozen by its own writer: an earlier request version a
+        # journal still reads (ADR-0266) is never a bundled member.
+        require(doc["schema"] == contracts.EXECUTOR_REQUEST_SCHEMA, "member %s is an %s "
+                "original, not a comparison member" % (ident, doc["schema"]))
+        return doc
 
     def result(self, ident):
-        return contracts.read_json(executor.read(os.path.join(self.path(ident), "result.json")),
-                                   "executor-result")
+        doc = contracts.read_json(executor.read(os.path.join(self.path(ident), "result.json")),
+                                  "executor-result")
+        require(doc["schema"] == contracts.EXECUTOR_RESULT_SCHEMA, "member %s has an %s "
+                "result, not a comparison member's" % (ident, doc["schema"]))
+        return doc
 
     def state(self, ident):
         request = self.request(ident)

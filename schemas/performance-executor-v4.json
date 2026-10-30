@@ -1,13 +1,13 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "$id": "urn:af:schema:performance-executor:3",
-  "title": "af.perf-executor/3",
+  "$id": "urn:af:schema:performance-executor:4",
+  "title": "af.perf-executor/4",
   "description": "Independent performance executor: executor (ADR-0240).",
   "type": "object",
   "additionalProperties": false,
   "properties": {
     "schema": {
-      "const": "af.perf-executor/3"
+      "const": "af.perf-executor/4"
     },
     "backend": {
       "type": "string",
@@ -133,6 +133,33 @@
           "minItems": 0,
           "maxItems": 64,
           "uniqueItems": true
+        },
+        "windows": {
+          "anyOf": [
+            {
+              "type": "null"
+            },
+            {
+              "type": "object",
+              "additionalProperties": false,
+              "properties": {
+                "shard_sampling_minutes": {
+                  "type": "integer",
+                  "minimum": 1,
+                  "maximum": 90
+                },
+                "run_total_minutes": {
+                  "type": "integer",
+                  "minimum": 1,
+                  "maximum": 180
+                }
+              },
+              "required": [
+                "shard_sampling_minutes",
+                "run_total_minutes"
+              ]
+            }
+          ]
         }
       },
       "required": [

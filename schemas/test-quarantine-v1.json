@@ -1,0 +1,60 @@
+{
+  "$id": "urn:af:schema:test-quarantine:1",
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": false,
+  "properties": {
+    "schema": {
+      "const": "af.test-quarantine/1"
+    },
+    "tests": {
+      "additionalProperties": {
+        "additionalProperties": false,
+        "properties": {
+          "evidence": {
+            "items": {
+              "pattern": "^[A-Za-z0-9][A-Za-z0-9_-]{0,127}$",
+              "type": "string"
+            },
+            "minItems": 1,
+            "type": "array"
+          },
+          "expires": {
+            "pattern": "^\\d{4}-\\d{2}-\\d{2}$",
+            "type": "string"
+          },
+          "issue": {
+            "minimum": 1,
+            "type": "integer"
+          },
+          "since": {
+            "pattern": "^\\d{4}-\\d{2}-\\d{2}$",
+            "type": "string"
+          },
+          "state": {
+            "enum": [
+              "quarantined",
+              "flaky"
+            ]
+          }
+        },
+        "required": [
+          "state",
+          "since",
+          "expires",
+          "evidence"
+        ],
+        "type": "object"
+      },
+      "maxProperties": 20,
+      "propertyNames": {
+        "pattern": "^[A-Za-z0-9_:./-]+ [A-Za-z0-9_:]+$"
+      },
+      "type": "object"
+    }
+  },
+  "required": [
+    "schema",
+    "tests"
+  ],
+  "type": "object"
+}

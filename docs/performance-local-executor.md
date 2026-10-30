@@ -48,8 +48,12 @@ Copy [executor.example.toml](../scripts/performance/service/executor.example.tom
 Replace its deliberately unusable zero SHA and image digests with real accepted identities.
 Review paths, repository, machine/journal IDs, byte caps, queue bound, total wall bound, tier,
 local environment, shard count, case selection, telemetry profile and diagnostic settings.
-The configuration is `af.perf-executor/3`; misspellings and obsolete v1 and v2 configurations
-refuse. `diagnostic.observer = "host_perf"` selects the trusted host CPU observer described
+The configuration is `af.perf-executor/4`; misspellings and obsolete v1, v2 and v3
+configurations refuse. `[core.windows]` (optional; absent or empty keeps the tier's own)
+declares the `shard_sampling_minutes` and `run_total_minutes` a core plan freezes instead of
+its tier's, within the same hard maxima (90 and 180 minutes for `nightly` and `release`, 30 and
+120 for `quick`); they are part of the frozen configuration digest and the plan digest, and a
+calibration original refuses them. Only the full release comparison recipe below declares them. `diagnostic.observer = "host_perf"` selects the trusted host CPU observer described
 below; unset, perf runs inside the contained child.
 For `tier = "nightly"` or `"release"` with `environment = "linux_x86_64_musl_claw"`, set
 `zigbuild_bin` to the canonical absolute directory **inside the pinned build image** holding
@@ -61,7 +65,12 @@ refuse. GNU needs no setting. Both parent and diagnostic builders receive the fr
 and verify the unchanged recipe pins: cargo-zigbuild 0.23.4, Zig 0.15.2 and Rust 1.88.0.
 Changing the directory changes the frozen configuration and environment identity.
 Finish or discard prior-version journals with their original control before upgrading;
-state/result v1 receipts are also refused rather than migrated. Profile limits, oracles, N/K, tolerances,
+state/result v1 receipts are also refused rather than migrated. New originals are written as
+`af.perf-executor-request/3` and `af.perf-executor-result/3`; request/1, request/2 and result/2
+originals already in a journal stay readable by `status` and `verify`
+([ADR-0266](adr/0266-measure-nightlies-as-originals-of-the-independent-executor.md)). The
+producer check is ADR-0240's and unchanged: `verify` still refuses an original written under
+another installed control. Profile limits, oracles, N/K, tolerances,
 sentinel rules and the free-disk floor are unchanged. The example reserves 256 GiB overall,
 32 GiB each for native core archive and local telemetry history; capacity exhaustion stops
 new work, never deletes original receipts. Provision a filesystem/quota at that overall bound
@@ -131,8 +140,9 @@ Calibration originals recheck their frozen cohort/member day after capacity scan
 again after source preparation, immediately before the first builder can launch. A missed
 original becomes terminal `expired` in `af.perf-executor-state/2`, without a build or sample,
 and is never retried or replaced. If the day expires during source preparation after claim,
-`af.perf-executor-result/2` records `not_executed_off_schedule`; its start timestamp records the
-claim, not an executed sample. Pre-claim expiry retains null start/result fields. Native local
+`af.perf-executor-result/3` (result/2 before it) records `not_executed_off_schedule`; its start
+timestamp records the claim, not an executed sample. Pre-claim expiry retains null start/result
+fields. Native local
 readiness reports either case as `invalid` / `off_schedule`, retains the request provenance
 and original denominator, and grants no qualification. Future-day submissions still refuse.
 
@@ -322,6 +332,7 @@ Docker access; the observer reads `docker inspect` of its own containers only.
 A request has `requests/exp_<opaque>/request.json`, its frozen configuration/plan and
 `state.json`. After completion `result.json` binds actual backend, persistent-machine environment,
 producer/source identities, observed host/CPU/Python and every retained evidence file by hash.
+A core result also names each side's built `af` in `binaries` (see Nightly originals).
 Native build manifests hold actual image/tool identities. `sources.git` retains original
 commit/tree/blob objects, independent of later mirror GC. Reports are at:
 
@@ -406,6 +417,7 @@ the controller verifies the Git objects. For a release use `--kind release --tag
 `--base`/`--head`; the existing release/predecessor resolver must agree. Published-release
 eligibility is an explicit trusted submission here; the existing hosted release handoff remains
 unchanged. This controller does not automatically watch PR metadata or assert a GitHub check.
+A nightly uses `--kind nightly` under its own configuration, below.
 
 A journal command can report busy while another holds the journal for a long experiment.
 Retry a rejected submission later with the same key. Already queued items persist. The synced journal index detects deleted or unindexed originals;
@@ -477,9 +489,15 @@ the operator's to run, not something this change ran.
    (`quick` in the example, and the `release` tier holds only 11 cases), `shards` and
    telemetry selection are not that workload. A full comparison measures the whole `nightly`
    family on the shipping musl target in 8 smaller serial shards, and the `manual` telemetry
-   profile's three experiments on both sides over 2 rounds. The cases, pairs, warmups, windows
-   and deadlines are the tier's own; only the shard count is smaller. The tier's own 4 shards
-   did not fit: on the v0.13.0 against v0.14.0-rc.1 pair, a measured first shard of 776 slots
+   profile's three experiments on both sides over 2 rounds. The cases, pairs and warmups are
+   the tier's own; the shard count is smaller, and `[core.windows]` declares the 45-minute
+   shard sampling window and the 120-minute run deadline of each serial partition, the windows
+   the recipe was measured in. The `nightly` tier's own windows are 15 and 180 minutes
+   ([ADR-0266](adr/0266-measure-nightlies-as-originals-of-the-independent-executor.md)) and stay
+   the ordinary nightly's; a 15-minute window cannot hold this recipe's largest shard (440
+   records, which took 30 minutes 52 seconds, all valid, in the operator's run of the frozen
+   PR #473 producer `6d8208d`, evidence of that producer only). The tier's own 4 shards
+   did not fit either: on the v0.13.0 against v0.14.0-rc.1 pair, a measured first shard of 776 slots
    stopped at 738 inside its unchanged 45-minute window
    ([verification record](performance-local-executor-verification.md#eight-serial-shards-for-the-full-release-comparison-2026-10-30)).
    Smaller shards are an adaptation to that measurement, not a prediction: the preflight checks
@@ -501,6 +519,10 @@ the operator's to run, not something this change ran.
    environment = "linux_x86_64_musl_claw"
    shards = 8
    cases = []
+
+   [core.windows]
+   shard_sampling_minutes = 45
+   run_total_minutes = 120
 
    [telemetry]
    profile = "manual"
@@ -557,7 +579,10 @@ the operator's to run, not something this change ran.
    partitions and the telemetry original; nothing runs until `comparison-run`, since the
    timers are stopped. Before it, check that the retained plan is the whole nightly family
    (33 case instances, 31 judged and 2 exploratory, 2932 scheduled slots in 8 shards: the 2852
-   of the tier's 4 shards and the health sentinels of 4 more) and
+   of the tier's 4 shards and the health sentinels of 4 more), that it froze the declared 45
+   sampling and 120 run minutes, that the declaration partitions its shards into
+   `[[0, 1], [2, 3], [4, 5], [6, 7]]` where every later partition reuses the first one's
+   build, and
    that the telemetry original's frozen configuration measures 12 runs (3 experiments x 2
    sides x 2 rounds), with the candidate's own installed code:
 
@@ -581,6 +606,12 @@ the operator's to run, not something this change ran.
             sum(len(schedule.expected_slots(plan, shard["index"])) for shard in plan["shards"]))
    print("plan: tier, environment, shards, instances, judged, exploratory, slots =", found)
    assert found == ("nightly", "linux_x86_64_musl_claw", 8, 33, 31, 2, 2932), found
+   windows = (plan["limits"]["shard_sampling_minutes"], plan["limits"]["run_total_minutes"])
+   parts = [item["shards"] for item in doc["partitions"]]
+   print("windows: sampling, run total minutes =", windows, "partitions =", parts)
+   assert windows == (45, 120) and parts == [[0, 1], [2, 3], [4, 5], [6, 7]], (windows, parts)
+   assert all(item["build_from"] == doc["partitions"][0]["request_id"]
+              for item in doc["partitions"][1:]), doc["partitions"]
    config = contracts.read_json(read("requests", doc["telemetry"]["request_id"],
                                      "configuration.json"), "executor")["telemetry"]
    runs = 2 * config["rounds"] * len(config["experiments"])
@@ -657,7 +688,7 @@ sentinels, under its own unchanged run deadline. The first partition builds (the
 `build_minutes`); every later one runs on that partition's verified, immutable build after a
 600-second reuse reserve, so every shard bundle binds one build. A later partition does not
 inherit the first one's run deadline: its run bundle seals its own execution authority
-(`partitions.json`, `af.perf-partition-execution/1`, [ADR-0265](adr/0265-bind-comparison-partition-execution-to-reused-build-artifacts.md)),
+(`partitions.json`, `af.perf-partition-execution/1`, [ADR-0269](adr/0269-bind-comparison-partition-execution-to-reused-build-artifacts.md)),
 the plan's frozen `run_total_minutes` from its own execution start, bound to the reused
 build's exact `builds.json` and its recorded run, which stays unchanged provenance. The runner
 reads its shard's window from it and refuses, before anything starts, an authority for another
@@ -665,8 +696,9 @@ plan or build, a widened window, one starting before the build ended, or a shard
 declare; the original's `run_seconds` still tightens every shard. The aggregate carries every
 later partition's authority, and its evaluation checks each shard against its own partition's
 window and that no partition's shards overlap a later one's. The preflight's `schedule`
-names the shards per original and each partition's worst case; for release, 2 shards per
-original (20 + 2 × 45 + 0.5 of 120 minutes, then 10 + 2 × 45 + 0.5). A plan whose single shard
+names the shards per original and each partition's worst case; for release, and for the full
+comparison recipe's declared `[core.windows]`, 2 shards per original (20 + 2 × 45 + 0.5 of 120
+minutes, then 10 + 2 × 45 + 0.5). A plan whose single shard
 window cannot fit one original is refused, never split further.
 
 `comparison-launch` retains the declaration and frozen plan under `comparisons/CMP_ID/`, then
@@ -790,6 +822,83 @@ scratch disk each. The finished Store is then copied, every file flushed, into t
 directory, re-read through a fresh Store and judged by the seed's oracle; the probe's stderr
 names both paths. Whether this alone brings each writer under its 120-second bound on Claw is
 for that run to show: the per-event protected-writer CPU cost is unchanged.
+
+## Nightly originals
+
+Each nightly is measured as one original of a second executor configuration
+([ADR-0266](adr/0266-measure-nightlies-as-originals-of-the-independent-executor.md)). It compares
+the frozen main commit the nightly was built from with the highest stable `vX.Y.Z` release tag
+reachable from that commit, release candidates excluded, as the `nightly` tier of
+`fixtures/performance/suite.toml` defines it. Copy the executor example a second time to
+`/etc/af-nightly/executor.toml`, with the same owner and mode rules, and change these keys:
+
+```toml
+root = "/var/lib/af-perf-executor/nightly-journal" # its own journal, never the quick one's
+journal_id = "claw_nightly_1"
+build_image = "..." # the verified digest of the image's musl stage
+zigbuild_bin = "/opt/af-perf-tools/bin"
+poll_main = false # nightlies are submitted, never polled
+
+[core]
+tier = "nightly"
+environment = "linux_x86_64_musl_claw"
+shards = 4
+cases = []
+
+[diagnostic]
+recipe = "linux_musl_trace"
+```
+
+Keep `machine_id`, the source mirror and the installed control of the quick configuration.
+Both configurations take the same machine lock, so a nightly and a quick original never run
+at the same time. The musl stage of
+[`scripts/performance/images/Dockerfile`](../scripts/performance/images/Dockerfile) puts
+`cargo-zigbuild` and `zig` together in `/opt/af-perf-tools/bin`; the operator pins that image's
+digest by hand.
+
+Submit a night's core and telemetry originals, then run `cycle` against the same configuration:
+
+```sh
+python3 -I -B /opt/af-perf/control/scripts/performance/cli.py executor \
+  --config /etc/af-nightly/executor.toml submit --work core \
+  --kind nightly --tag "$NIGHTLY_TAG" --head "$MAIN_SHA"
+python3 -I -B /opt/af-perf/control/scripts/performance/cli.py executor \
+  --config /etc/af-nightly/executor.toml submit --work telemetry \
+  --kind nightly --tag "$NIGHTLY_TAG" --head "$MAIN_SHA"
+python3 -I -B /opt/af-perf/control/scripts/performance/cli.py executor \
+  --config /etc/af-nightly/executor.toml cycle
+```
+
+`--tag` must be `nightly-YYYY.MM.DD`, a real calendar date, and there is no `--key`: the key is
+`nightly:<tag>:<work>`. `--head` is resolved to one commit once, and both the derived baseline
+and the request use that commit. Without `--base` the baseline is derived as above, and the
+request's `submission.baseline` records the derived tag and commit; an explicit `--base` is used
+as given and recorded as `null`. No reachable stable tag refuses the submission. Submitting the same
+night again with the same arguments prints the existing original; another `--head` under the
+same tag is refused as a reused key. `--work profile` is refused. A core nightly is refused
+unless the configuration's `core.tier` is `nightly`, naming the tier it found, so the quick
+configuration cannot take one by mistake.
+
+Shards still run one after another. A core nightly is one build, then four shards of at most
+15 sampling minutes each. The plan freezes the tier's 180-minute run deadline, counted from the
+start of the build. The build has five bounded steps, the supervisor and each side's `af` and
+probe, each within the suite's 20 build minutes: 100 build minutes at worst, then four shards
+of 90 seconds of preflight, 15 sampling minutes and a 30-second finish reserve, 68 minutes, make
+168, and the other 12 cover the dependency fetch and the archive. (The sampling is a quarter of
+a quick shard's per schedule: a deadline counted from the first shard would give it back, a
+follow-up.) 180 minutes is the hard maximum of a nightly's run deadline; the hard maxima
+in `scripts/performance/perflab/limits.py` are unchanged. A build that runs long leaves the last
+shard less time: a shard cut by the deadline, or not started, stays incomplete, and its missing
+slots stay visible. Expect about three hours plus source retention and the report;
+`run_seconds = 28800` bounds the whole original.
+
+`verify --request-id` prints the result. For a core original, `binaries.baseline` and
+`binaries.candidate` hold the `sha256` and `bytes` of each side's built `af`, as the run's
+`run/builds.json` names them; `verify` refuses a result whose `binaries` differ from it. If
+`binaries.candidate.sha256` equals the SHA-256 of the `af` inside the nightly archive shipped
+from the same commit, the measured candidate is that archive's binary; if not, the measurement
+used another build of the same source. A side that built no `af` is `null`. Telemetry, profile,
+hosted and non-executed results carry `binaries: null`; telemetry builds its own binaries.
 
 ## Local calibration declaration and review checkpoint
 

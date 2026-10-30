@@ -85,6 +85,111 @@ e2e job on Linux; missing Docker fails it. `make review-kernel-container-probes`
 existing probe selections, including their ignored tests. They remain outside default local
 `make check`, as before; selective e2e execution includes them and requires a live daemon.
 
+## Quarantine
+
+A test shown flaky in the gates leaves every plan until it is fixed
+([ADR-0268](adr/0268-quarantine-flaky-tests-on-gate-evidence-and-confirm-them-on-claw.md)).
+`.config/test-quarantine.json` (`af.test-quarantine/1`) lists it under `tests` by its outer
+nextest identity, in the form the catalog's `exact` map uses:
+
+```json
+{"schema": "af.test-quarantine/1", "tests": {
+  "af::it capture::a_settled_worktree_is_admitted_on_retry": {
+    "state": "quarantined", "since": "2026-10-29", "expires": "2026-11-12",
+    "evidence": ["TASK_ID_1", "TASK_ID_2"], "issue": 466}}}
+```
+
+`state` is `quarantined` (taken out on gate evidence) or `flaky` (confirmed on the Claw VM);
+`expires` is after `since` and at most 14 days after it; `evidence` names the af Tasks whose
+gates listed the test as flaky; `issue` is optional. The file ships empty;
+`schemas/test-quarantine-v1.json` is its schema, checked for parity by `audit`.
+
+A listed identity classifies as `quarantine`, ahead of every catalog rule. `quarantine` is not a
+validation class: no plan selects it, not the fast profile, not `release:full`, not a label or
+custom plan. The test still compiles and stays in the inventory; the generated filters leave it
+out and keep its siblings, and the class report counts it in no class row or timing estimate.
+With the file empty every plan selects what the catalog alone selects. The full gate's
+unplanned nextest run (`make test`, reached by `make check` and `scripts/verify.sh --profile
+full`) starts through `scripts/test-classes.py nextest-gate`, which adds
+`-E 'not (<the quarantined identities>)'` only when the file lists one. `make test-repeat`, a
+direct `cargo nextest run` and `TEST_RUNNER=cargo` still run it.
+
+Quarantine covers the default-feature inventory only: an identity the feature builds' fixed
+selectors reach (`review-core` `perf_`, `review-pipeline::perf_probe` `calibration_build`), even
+one only a feature build compiles, is refused. Fix the test, or exclude it from its feature
+selector by hand.
+
+`python3 scripts/test-classes.py audit` (the `test-catalog` step of `make check`), every plan and
+every class run refuse, naming the entry and the fix: a file of another shape, an unknown or
+missing field, a bad state or date, a window over 14 days, empty evidence, an entry whose
+`expires` is before today, more than 20 entries, an `#[ignore]` test, an identity a feature
+selector reaches or an identity no catalog rule classifies; at partition time, an identity absent from the compiled inventory or ignored
+there. `AF_TEST_QUARANTINE_TODAY=YYYY-MM-DD` replaces the clock for the expiry guard.
+
+Entries are reviewed data, changed by pull request. A test is added when the gates of at least 2
+distinct Tasks within 7 days list it as flaky, then confirmed by 50 runs under load on Claw: a
+failure makes it `flaky` with an issue for its fix, 50 passes remove the entry, except that an
+entry with only macOS evidence stays `quarantined` until it is fixed or expires. A fix is its own
+change and removes the entry.
+
+`scripts/test-quarantine.py scan` proposes the entries:
+
+```sh
+python3 scripts/test-quarantine.py scan --state STORE_DIR             # or --list FILE
+python3 scripts/test-quarantine.py scan --list tasks.json --write    # add them
+```
+
+It reads one or more `af task list --json` documents (`af/task-list@3` or `af/task-list@4`):
+`--list FILE` reads one, `--state DIR` runs `af task list --json --state DIR` (the `af` on `PATH`,
+or `--af PATH`); both repeat, and a Task listed twice counts once. Each row's `task_id`,
+`updated_unix_ms` and `gate.flaky` are read; a row without `gate` adds nothing. A flaky name is
+evidence only when it resolves to exactly one identity of the default-feature nextest inventory
+(`--inventory FILE`, else `cargo nextest list --workspace --locked --message-format json`): as
+that identity exactly, or as a bare test name that one identity carries (af 0.13.0's text
+fallback drops the binary). Every other name is rejected with its reason: `not a test` (no such
+identity, an `#[ignore]` test, or one a feature build's fixed selector reaches) or
+`ambiguous: <identities>`. The fixture names that `crates/af/tests/it/task_gate.rs` prints, and
+0.13.0 recorded as flaky (`gate-store-regression`, `fails_when_crowded`, `af::it`, `many_0`),
+never resolve.
+
+An identity flaky in at least 2 distinct Tasks whose `updated_unix_ms` falls within the 7 days
+ending at the end of today (UTC) is proposed as `quarantined`, `since` today, `expires` today
+plus 14 days, its `evidence` the sorted Task IDs (at most 10), without `issue`. An identity already
+in the file keeps its values; `--write` writes the whole file in the shipped format (two-space
+indent, sorted keys), so an entry already in that format keeps its bytes and a hand-reformatted one
+is normalized. Proposals rank by evidence count, then identity; those past the
+20-entry cap are not added and are named. Without `--write` the scan prints what it would add,
+the over-cap identities and the rejected names, and changes nothing; `--write` adds them through
+every guard above, or refuses and writes nothing, and runs those guards even with nothing to add; `--json` prints the same facts as one
+`af.test-quarantine-scan/1` document. Today is `--today YYYY-MM-DD`, else
+`AF_TEST_QUARANTINE_TODAY`, else the clock. The exit code is 0 with or without proposals, 1 on bad
+input or a guard refusal and 2 on a usage error. `scripts/test-test-quarantine.py` (run by `make check` and the base
+check) proves it on test-local lists and inventories.
+
+`scripts/test-quarantine.py confirm` and `apply` settle the entries; the runbook,
+[`test-quarantine-claw.md`](test-quarantine-claw.md), gives the exact commands:
+
+```sh
+python3 scripts/test-quarantine.py confirm --report confirm.json     # on Claw, in a container
+python3 scripts/test-quarantine.py apply confirm.json --write --issues DIR
+```
+
+`confirm` runs the entries (or the `--only` ones) in N whole runs (`--runs`, default 50), each
+one `cargo nextest run --no-fail-fast --retries 0` of an exact filter at the CPU count's threads
+through `scripts/nextest-gate.py`'s run, never stopping early and never rerunning a failure. The
+functional class's selection, without the quarantined identities, runs in a loop beside them
+(`--load functional`, the default; `--load none` turns it off), and its failures never count. Each
+identity is `flaky` (failed in some runs), `always_fails` (in every run) or `clean` (in none); a run
+without a JUnit, or whose JUnit lacks an identity, writes no report. The report is one
+`af.test-quarantine-confirm/1` document (`schemas/test-quarantine-confirm-v1.json`, checked for
+parity by `audit`) in a new `--report` file. `apply` makes a `flaky` entry `state: flaky` for 14
+days from today with a `flaky: <identity>` issue body, removes an `always_fails` entry with a P0
+issue body, and removes a `clean` entry only when the report's `platform.system()` is the evidence
+platform: `Darwin` by default, because list rows carry no platform and the af gates run on macOS,
+or `Linux` with `--evidence-platform linux`; otherwise it keeps the entry unchanged and says why. It
+refuses a report from a later day or naming an identity the file no longer holds, runs every guard
+above before it writes, changes nothing without `--write`, and never runs `gh`.
+
 ## Selection and precedence
 
 Labels are case-sensitive data, passed through JSON or quoted arguments, never evaluated as shell.
@@ -116,7 +221,7 @@ older PR runs through their existing concurrency group.
 | `test:perf`, `no-perf` | refused | none |
 
 Fmt, ordinary and diagnostic-feature clippy, source/catalog/selection validation, release-resolution,
-change-note and pin policy checks, and the binary version smoke are always-on base work. Their costs are retained
+change-note, quarantine scan and pin policy checks, and the binary version smoke are always-on base work. Their costs are retained
 separately; a perf-only plan still performs this work. Release archive, signature, architecture and
 actual packaged-binary onboarding/planning smoke always run for every shipped target.
 

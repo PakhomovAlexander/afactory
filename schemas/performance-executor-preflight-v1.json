@@ -38,7 +38,7 @@
           "additionalProperties": false,
           "properties": {
             "schema": {
-              "const": "af.perf-executor-request/2"
+              "const": "af.perf-executor-request/3"
             },
             "request_id": {
               "$ref": "#/$defs/id"
@@ -84,28 +84,147 @@
               ]
             },
             "submission": {
-              "type": "object",
-              "additionalProperties": false,
-              "properties": {
-                "kind": {
-                  "type": "string",
-                  "enum": [
-                    "manual",
-                    "main",
-                    "pr",
-                    "release",
-                    "calibration"
+              "oneOf": [
+                {
+                  "type": "object",
+                  "additionalProperties": false,
+                  "properties": {
+                    "kind": {
+                      "const": "calibration"
+                    },
+                    "key": {
+                      "type": "string",
+                      "minLength": 1,
+                      "maxLength": 256
+                    }
+                  },
+                  "required": [
+                    "kind",
+                    "key"
                   ]
                 },
-                "key": {
-                  "type": "string",
-                  "minLength": 1,
-                  "maxLength": 256
+                {
+                  "type": "object",
+                  "additionalProperties": false,
+                  "properties": {
+                    "kind": {
+                      "const": "main"
+                    },
+                    "key": {
+                      "type": "string",
+                      "minLength": 1,
+                      "maxLength": 256
+                    }
+                  },
+                  "required": [
+                    "kind",
+                    "key"
+                  ]
+                },
+                {
+                  "type": "object",
+                  "additionalProperties": false,
+                  "properties": {
+                    "kind": {
+                      "const": "manual"
+                    },
+                    "key": {
+                      "type": "string",
+                      "minLength": 1,
+                      "maxLength": 256
+                    }
+                  },
+                  "required": [
+                    "kind",
+                    "key"
+                  ]
+                },
+                {
+                  "type": "object",
+                  "additionalProperties": false,
+                  "properties": {
+                    "kind": {
+                      "const": "nightly"
+                    },
+                    "key": {
+                      "type": "string",
+                      "maxLength": 64,
+                      "pattern": "^nightly:nightly-[0-9]{4}\\.(?:0[1-9]|1[0-2])\\.(?:0[1-9]|[12][0-9]|3[01]):(?:core|telemetry)$"
+                    },
+                    "tag": {
+                      "type": "string",
+                      "maxLength": 32,
+                      "pattern": "^nightly-[0-9]{4}\\.(?:0[1-9]|1[0-2])\\.(?:0[1-9]|[12][0-9]|3[01])$"
+                    },
+                    "baseline": {
+                      "anyOf": [
+                        {
+                          "type": "null"
+                        },
+                        {
+                          "type": "object",
+                          "additionalProperties": false,
+                          "properties": {
+                            "tag": {
+                              "type": "string",
+                              "maxLength": 64,
+                              "pattern": "^v?(?:0|[1-9][0-9]*)\\.(?:0|[1-9][0-9]*)\\.(?:0|[1-9][0-9]*)$"
+                            },
+                            "sha": {
+                              "$ref": "#/$defs/git_sha"
+                            }
+                          },
+                          "required": [
+                            "tag",
+                            "sha"
+                          ]
+                        }
+                      ]
+                    }
+                  },
+                  "required": [
+                    "kind",
+                    "key",
+                    "tag",
+                    "baseline"
+                  ]
+                },
+                {
+                  "type": "object",
+                  "additionalProperties": false,
+                  "properties": {
+                    "kind": {
+                      "const": "pr"
+                    },
+                    "key": {
+                      "type": "string",
+                      "minLength": 1,
+                      "maxLength": 256
+                    }
+                  },
+                  "required": [
+                    "kind",
+                    "key"
+                  ]
+                },
+                {
+                  "type": "object",
+                  "additionalProperties": false,
+                  "properties": {
+                    "kind": {
+                      "const": "release"
+                    },
+                    "key": {
+                      "type": "string",
+                      "minLength": 1,
+                      "maxLength": 256
+                    }
+                  },
+                  "required": [
+                    "kind",
+                    "key"
+                  ]
                 }
-              },
-              "required": [
-                "kind",
-                "key"
               ]
             },
             "work": {

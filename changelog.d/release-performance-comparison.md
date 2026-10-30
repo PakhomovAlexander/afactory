@@ -11,8 +11,8 @@
   `overview` read the journal without its lock, so they work while a `cycle` executes.
 - A profile with `diagnostic.cases = []` diagnoses the regressions of a verified parent core
   original (`submit --work profile --parent REQUEST_ID`), bound to its exact plan and verdict
-  (`af.perf-executor-request/2`); `diagnostic.perf` and `diagnostic.inferno_bin`
-  (`af.perf-executor/3`) reach the native CPU capture, and missing tools refuse the profile
+  (`af.perf-executor-request/3`); `diagnostic.perf` and `diagnostic.inferno_bin`
+  (`af.perf-executor/4`) reach the native CPU capture, and missing tools refuse the profile
   before any build.
 - `diagnostic.observer = "host_perf"` records a contained CPU profile with a trusted host
   observer: the operator's perf runs on the host under the authority supervisor, attached by
@@ -49,7 +49,7 @@
   recorded run, instead of inheriting the first partition's expired deadline; a forged, widened
   or wrong-partition authority starts nothing, and the aggregate checks each shard against its
   own partition's window
-  ([ADR-0265](../docs/adr/0265-bind-comparison-partition-execution-to-reused-build-artifacts.md)).
+  ([ADR-0269](../docs/adr/0269-bind-comparison-partition-execution-to-reused-build-artifacts.md)).
 - Preflight, submission and the claim share one storage and one time admission: the native
   reserve against `max_bytes`, and a telemetry or profile original's sequential bounds (both
   telemetry builds' caps, scratch, the profile's timeout) against `run_seconds`, each refusal

@@ -1,6 +1,6 @@
 # Replace control/image placeholders with the accepted installed commit and verified registry
 # digests before use. These zeros identify no deployment and are deliberately unusable.
-schema = "af.perf-executor/3"
+schema = "af.perf-executor/4"
 backend = "local" # Or github_actions; no fallback. Stop/drain the old producer first.
 root = "/var/lib/af-perf-executor/journal"
 repository_path = "/var/lib/af-perf-executor/source.git"

@@ -1361,7 +1361,7 @@ class RunDeadline(ShardHarness):
 class PartitionExecution(ShardHarness):
     """A later comparison partition runs on the first partition's unchanged build in its own
     bounded run window, sealed in its run bundle as `af.perf-partition-execution/1`
-    (ADR-0265): the build's recorded run stays its provenance, the window is the plan's frozen
+    (ADR-0269): the build's recorded run stays its provenance, the window is the plan's frozen
     total from the partition's own start, and a caller's deadline still tightens it."""
 
     build_started = RunDeadline.build_started
@@ -1429,6 +1429,13 @@ class PartitionExecution(ShardHarness):
             doc["partitions"][0]["run"]["deadline_unix_ms"] += 60000
 
         def retotaled(doc):
+            # Any total but the plan's frozen one; the nightly tier's 180 minutes are already
+            # the hard maximum, so a wider one is the shape refusal of `overtotaled`.
+            run = doc["partitions"][0]["run"]
+            run["total_minutes"] -= 60
+            run["deadline_unix_ms"] = run["started_unix_ms"] + run["total_minutes"] * 60000
+
+        def overtotaled(doc):
             run = doc["partitions"][0]["run"]
             run["total_minutes"] += 60
             run["deadline_unix_ms"] = run["started_unix_ms"] + run["total_minutes"] * 60000
@@ -1447,6 +1454,7 @@ class PartitionExecution(ShardHarness):
 
         cases = (("widened", widened, "frozen total minutes"),
                  ("retotaled", retotaled, "never widened"),
+                 ("overtotaled", overtotaled, "total_minutes: must be within 1..180"),
                  ("forged", forged, "another plan, build"),
                  ("rebuilt", rebuilt, "another plan, build"),
                  ("early", early, "before the build it reuses ended"))

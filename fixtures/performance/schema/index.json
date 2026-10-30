@@ -1034,6 +1034,113 @@
       "valid": true
     },
     {
+      "path": "../../../scripts/nightly/nightly.example.toml",
+      "contract": "nightly-config",
+      "valid": true
+    },
+    {
+      "path": "nightly-plan/valid-build.json",
+      "contract": "nightly-plan",
+      "valid": true
+    },
+    {
+      "path": "nightly-plan/valid-skipped.json",
+      "contract": "nightly-plan",
+      "valid": true
+    },
+    {
+      "path": "nightly-plan/invalid-release-tag.json",
+      "contract": "nightly-plan",
+      "valid": false,
+      "error": ".tag: string length must be within",
+      "shape": true
+    },
+    {
+      "path": "nightly-plan/invalid-skipped-on-a-new-commit.json",
+      "contract": "nightly-plan",
+      "valid": false,
+      "error": "a night is skipped only when its commit is the previous night's",
+      "shape": false
+    },
+    {
+      "path": "nightly-plan/invalid-version-of-another-release.json",
+      "contract": "nightly-plan",
+      "valid": false,
+      "error": "not the nightly version of cargo_version_on_main and date",
+      "shape": false
+    },
+    {
+      "path": "nightly-build/valid-built.json",
+      "contract": "nightly-build",
+      "valid": true
+    },
+    {
+      "path": "nightly-build/valid-first-night-of-a-plain-release.json",
+      "contract": "nightly-build",
+      "valid": true
+    },
+    {
+      "path": "nightly-build/valid-skipped.json",
+      "contract": "nightly-build",
+      "valid": true
+    },
+    {
+      "path": "nightly-build/invalid-smoke-not-passed.json",
+      "contract": "nightly-build",
+      "valid": false,
+      "error": "expected 'passed'",
+      "shape": true
+    },
+    {
+      "path": "nightly-build/invalid-skipped-with-archives.json",
+      "contract": "nightly-build",
+      "valid": false,
+      "error": "a skipped night has no archives and no SHA256SUMS",
+      "shape": false
+    },
+    {
+      "path": "nightly-build/invalid-missing-aarch64.json",
+      "contract": "nightly-build",
+      "valid": false,
+      "error": "every nightly target, in order",
+      "shape": false
+    },
+    {
+      "path": "nightly-build/invalid-asset-of-another-night.json",
+      "contract": "nightly-build",
+      "valid": false,
+      "error": "asset: expected dist/af-nightly-2026.10.29-x86_64-unknown-linux-musl.tar.gz",
+      "shape": false
+    },
+    {
+      "path": "nightly-build/invalid-version-of-another-date.json",
+      "contract": "nightly-build",
+      "valid": false,
+      "error": "not the nightly version of cargo_version_on_main and date",
+      "shape": false
+    },
+    {
+      "path": "nightly-build/invalid-built-on-the-previous-commit.json",
+      "contract": "nightly-build",
+      "valid": false,
+      "error": "a night on the previous night's commit is skipped, never built",
+      "shape": false
+    },
+    {
+      "path": "nightly-config/invalid-requires-a-release-job.toml",
+      "contract": "nightly-config",
+      "valid": false,
+      "error": "is a job of the release workflow",
+      "shape": false
+    },
+    {
+      "path": "nightly-config/invalid-unpinned-image.toml",
+      "contract": "nightly-config",
+      "valid": false,
+      "error": "does not match",
+      "shape": true
+    },
+    {
       "path": "plan-refusal/invalid-status.json",
       "contract": "plan-refusal",
       "valid": false,
@@ -2516,10 +2623,29 @@
       "valid": true
     },
     {
+      "path": "executor/valid-comparison-windows.json",
+      "contract": "executor",
+      "valid": true
+    },
+    {
+      "path": "executor/invalid-windows-sampling-past-run.json",
+      "contract": "executor",
+      "valid": false,
+      "error": "sampling window fits inside its run total",
+      "shape": false
+    },
+    {
+      "path": "executor/invalid-windows-past-hard-maximum.json",
+      "contract": "executor",
+      "valid": false,
+      "error": "run_total_minutes",
+      "shape": true
+    },
+    {
       "path": "executor/invalid-version.json",
       "contract": "executor",
       "valid": false,
-      "error": "expected af.perf-executor/3",
+      "error": "expected af.perf-executor/4",
       "shape": true
     },
     {
@@ -2531,8 +2657,34 @@
       "path": "executor-request/invalid-version.json",
       "contract": "executor-request",
       "valid": false,
-      "error": "expected af.perf-executor-request/2",
+      "error": "unknown field partition",
       "shape": true
+    },
+    {
+      "path": "executor-request/invalid-v2-partition.json",
+      "contract": "executor-request",
+      "valid": false,
+      "error": "unknown field parent, partition",
+      "shape": true
+    },
+    {
+      "path": "executor-request/invalid-v3-missing-partition.json",
+      "contract": "executor-request",
+      "valid": false,
+      "error": "missing field parent",
+      "shape": true
+    },
+    {
+      "path": "executor-request/valid-nightly-v3.json",
+      "contract": "executor-request",
+      "valid": true
+    },
+    {
+      "path": "executor-request/invalid-nightly-partition.json",
+      "contract": "executor-request",
+      "valid": false,
+      "error": "neither a comparison partition nor a parent-selected profile",
+      "shape": false
     },
     {
       "path": "executor-state/valid-synthetic.json",
@@ -2555,7 +2707,7 @@
       "path": "executor-result/invalid-version.json",
       "contract": "executor-result",
       "valid": false,
-      "error": "expected af.perf-executor-result/2",
+      "error": "expected af.perf-executor-result/3",
       "shape": true
     },
     {
@@ -2634,6 +2786,87 @@
       "path": "executor-result/valid-expired.json",
       "contract": "executor-result",
       "valid": true
+    },
+    {
+      "path": "executor-request/valid-manual.json",
+      "contract": "executor-request",
+      "valid": true
+    },
+    {
+      "path": "executor-request/valid-nightly.json",
+      "contract": "executor-request",
+      "valid": true
+    },
+    {
+      "path": "executor-request/valid-nightly-explicit-base.json",
+      "contract": "executor-request",
+      "valid": true
+    },
+    {
+      "path": "executor-request/invalid-nightly-key.json",
+      "contract": "executor-request",
+      "valid": false,
+      "error": "keyed by its tag",
+      "shape": false
+    },
+    {
+      "path": "executor-request/invalid-nightly-profile.json",
+      "contract": "executor-request",
+      "valid": false,
+      "error": "keyed by its tag",
+      "shape": false
+    },
+    {
+      "path": "executor-request/invalid-nightly-baseline.json",
+      "contract": "executor-request",
+      "valid": false,
+      "error": "names the frozen baseline",
+      "shape": false
+    },
+    {
+      "path": "executor-request/invalid-nightly-prerelease-baseline.json",
+      "contract": "executor-request",
+      "valid": false,
+      "error": "does not match",
+      "shape": true
+    },
+    {
+      "path": "executor-request/invalid-nightly-date.json",
+      "contract": "executor-request",
+      "valid": false,
+      "error": "names no calendar date",
+      "shape": false
+    },
+    {
+      "path": "executor-request/invalid-manual-tag.json",
+      "contract": "executor-request",
+      "valid": false,
+      "error": "unknown field tag",
+      "shape": true
+    },
+    {
+      "path": "executor-result/valid-core-binaries.json",
+      "contract": "executor-result",
+      "valid": true
+    },
+    {
+      "path": "executor-result/valid-no-binaries.json",
+      "contract": "executor-result",
+      "valid": true
+    },
+    {
+      "path": "executor-result/invalid-missing-binaries.json",
+      "contract": "executor-result",
+      "valid": false,
+      "error": "missing field binaries",
+      "shape": true
+    },
+    {
+      "path": "executor-result/invalid-hosted-binaries.json",
+      "contract": "executor-result",
+      "valid": false,
+      "error": "only a completed local original",
+      "shape": false
     },
     {
       "path": "telemetry-result/invalid-version.json",

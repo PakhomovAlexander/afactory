@@ -491,7 +491,7 @@ that gate again
 ([ADR-0205](adr/0205-rerun-a-failed-test-alone-report-the-gate-and-retry-a-failed-gate-on-the-same-candidate.md)):
 
 ```text
-check kernel: stopped at tests step test (exit 100); rerun it with: python3 scripts/nextest-gate.py --locked --profile ci --test-threads 7
+check kernel: stopped at tests step test (exit 100); rerun it with: python3 scripts/test-classes.py nextest-gate -- --locked --profile ci --test-threads 7
 check kernel failed twice: af::it task_heavy::heavy_review_cannot_erase_stale_claims
 check kernel host: load 61.20 at start, 48.03 at end, 14 CPUs, 7 test threads
 next: af task run pagination-cli --retry-gate

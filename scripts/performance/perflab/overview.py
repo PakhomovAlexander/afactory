@@ -68,9 +68,15 @@ def member(journal, ident, verify):
     """One original's record; `verify(journal, ident)` is the native offline admission."""
     request, state = journal.request(ident), journal.state(ident)
     path = journal.path(ident)
+    # A release overview's members are manual, PR or release originals: a nightly original is
+    # verified on its own (`executor verify`, ADR-0266), never combined into a release overview.
+    require(request["submission"]["kind"] != "nightly",
+            "%s is a nightly original; an overview combines release comparison originals" % ident)
+    # An earlier request version (ADR-0266) names no parent.
+    parent = request.get("parent")
     record = {"request_id": ident, "work": request["work"], "submission": request["submission"],
               "plan_sha256": request["plan_sha256"],
-              "parent": None if request["parent"] is None else request["parent"]["request_id"],
+              "parent": None if parent is None else parent["request_id"],
               "state": state["state"], "state_detail": state["detail"],
               "started_unix_ms": state["started_unix_ms"], "ended_unix_ms": state["ended_unix_ms"],
               "verification": {"status": "not_terminal", "detail": ""},

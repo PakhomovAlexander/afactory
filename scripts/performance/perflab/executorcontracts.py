@@ -3,8 +3,15 @@
 Measurement formats stay unchanged: these receipts bind their native evidence to an actual
 backend. Local originals never inhabit an Actions ID field.
 """
-from .spec import Arr, Bool, Const, Field, Int, Nullable, Obj, Str
+from .spec import Arr, Bool, Const, Field, Int, Nullable, Obj, Str, Tagged
 from .values import canonical_digest, require
+
+REQUEST_SCHEMA = "af.perf-executor-request/3"
+RESULT_SCHEMA = "af.perf-executor-result/3"
+# A nightly is named for its build date; its baseline is a stable release tag (ADR-0266).
+NIGHTLY_DATE = r"nightly-[0-9]{4}\.(?:0[1-9]|1[0-2])\.(?:0[1-9]|[12][0-9]|3[01])"
+NIGHTLY_TAG = "^" + NIGHTLY_DATE + "$"
+STABLE_TAG = r"^v?(?:0|[1-9][0-9]*)\.(?:0|[1-9][0-9]*)\.(?:0|[1-9][0-9]*)$"
 
 
 def register(c):
@@ -14,7 +21,7 @@ def register(c):
     # An explicitly configured host tool or tool directory: never searched for on PATH.
     tool = Str(pattern=r"^/[A-Za-z0-9_./+-]{1,1023}$", max_len=1024)
     configuration = Obj(
-        Field("schema", Const("af.perf-executor/3")), Field("backend", backend),
+        Field("schema", Const("af.perf-executor/4")), Field("backend", backend),
         Field("root", path), Field("repository_path", path), Field("repository", c.REPOSITORY),
         Field("control_sha", SHA), Field("trusted_ref", Str(pattern=r"^refs/heads/[A-Za-z0-9._/-]+$")),
         Field("machine_id", ID), Field("journal_id", ID),
@@ -26,8 +33,16 @@ def register(c):
         Field("history_bytes", Int(1, c.limits.ARCHIVE_BYTES_MAX)),
         Field("run_seconds", Int(120, 28800)), Field("cycle_seconds", Int(1, 300)),
         Field("poll_main", Bool()),
+        # executor/4: a core plan's declared run windows (ADR-0269), frozen into the plan and
+        # this configuration's digest instead of the tier's; absent or null keeps the tier's.
         Field("core", Obj(Field("tier", Str(enum=c.TIERS)), Field("environment", ID),
-                          Field("shards", Int(1, 16)), Field("cases", Arr(ID, 0, 64, unique=True)))),
+                          Field("shards", Int(1, 16)), Field("cases", Arr(ID, 0, 64, unique=True)),
+                          Field("windows", Nullable(Obj(
+                              Field("shard_sampling_minutes",
+                                    Int(1, c.limits.LONG_SHARD_SAMPLING_MINUTES_MAX)),
+                              Field("run_total_minutes",
+                                    Int(1, c.limits.LONG_RUN_TOTAL_MINUTES_MAX)))),
+                                required=False))),
         Field("telemetry", Obj(Field("profile", Str(enum=c.TELEMETRY_PROFILES)),
              Field("experiments", Arr(Str(enum=c.TELEMETRY_EXPERIMENTS), 1, 3, unique=True)),
              Field("rounds", Int(1, c.TELEMETRY_ROUNDS_MAX)), Field("pairs", Nullable(Int(1, 40)), required=False),
@@ -46,8 +61,31 @@ def register(c):
              Field("telemetry", Nullable(Str(enum=("spans", "content"))), required=False))))
     frozen = Obj(Field("baseline_sha", SHA), Field("candidate_sha", SHA),
                  Field("control_sha", SHA), Field("authority_sha", SHA))
-    submission = Obj(Field("kind", Str(enum=("manual", "main", "pr", "release", "calibration"))),
-                     Field("key", Str(min_len=1, max_len=256)))
+    key = Str(min_len=1, max_len=256)
+    submission_v1 = Obj(Field("kind", Str(enum=("manual", "main", "pr", "release", "calibration"))),
+                        Field("key", key))
+    # request/2 adds the nightly variant: its tag, its derived key and, when the operator gave
+    # no --base, the stable release tag the baseline was derived from (ADR-0266).
+    submission = Tagged("kind", dict(
+        [(kind, Obj(Field("kind", Const(kind)), Field("key", key)))
+         for kind in ("manual", "main", "pr", "release", "calibration")]
+        + [("nightly", Obj(Field("kind", Const("nightly")),
+               Field("key", Str(pattern=r"^nightly:" + NIGHTLY_DATE + r":(?:core|telemetry)$",
+                                max_len=64)),
+               Field("tag", Str(pattern=NIGHTLY_TAG, max_len=32)),
+               Field("baseline", Nullable(Obj(Field("tag", Str(pattern=STABLE_TAG, max_len=64)),
+                                              Field("sha", SHA))))))]))
+    def request_node(schema, submission, *added):
+        return Obj(Field("schema", Const(schema)), Field("request_id", ID),
+            Field("backend", backend), Field("journal_id", ID), Field("machine_id", ID),
+            Field("configuration_digest", DIGEST), Field("sources", frozen),
+            Field("submission", submission), Field("work", Str(enum=("core", "telemetry", "profile"))),
+            Field("created_unix_ms", c.UNIX_MS), Field("environment_digest", DIGEST),
+            Field("producer_digest", DIGEST), Field("plan_sha256", Nullable(DIGEST)),
+            Field("cohort_digest", Nullable(DIGEST)), Field("member_id", Nullable(ID)),
+            Field("parameters_sha256", Nullable(DIGEST)), *added)
+    request_v1 = request_node("af.perf-executor-request/1", submission_v1)
+    request_v2 = request_node("af.perf-executor-request/2", submission)
     # A profile's verified parent comparison: the completed local core original whose retained
     # plan and verdict choose and bind the diagnosed cases (the exact parent identity).
     parent = Obj(Field("request_id", ID), Field("request_digest", DIGEST),
@@ -59,15 +97,11 @@ def register(c):
     partition = Obj(Field("comparison_id", ID), Field("comparison_digest", DIGEST),
                     Field("index", Int(0, 15)), Field("shards", Arr(shard, 1, 16, unique=True)),
                     Field("build_from", Nullable(ID)))
-    request = Obj(Field("schema", Const("af.perf-executor-request/2")), Field("request_id", ID),
-        Field("backend", backend), Field("journal_id", ID), Field("machine_id", ID),
-        Field("configuration_digest", DIGEST), Field("sources", frozen),
-        Field("submission", submission), Field("work", Str(enum=("core", "telemetry", "profile"))),
-        Field("created_unix_ms", c.UNIX_MS), Field("environment_digest", DIGEST),
-        Field("producer_digest", DIGEST), Field("plan_sha256", Nullable(DIGEST)),
-        Field("cohort_digest", Nullable(DIGEST)), Field("member_id", Nullable(ID)),
-        Field("parameters_sha256", Nullable(DIGEST)), Field("parent", Nullable(parent)),
-        Field("partition", Nullable(partition)))
+    # request/3 keeps request/2's nightly submission and adds a profile's verified parent
+    # comparison and a comparison core child's partition (ADR-0269); request/2 never carries
+    # either, so one version names exactly one shape.
+    request = request_node(REQUEST_SCHEMA, submission, Field("parent", Nullable(parent)),
+                           Field("partition", Nullable(partition)))
     seconds = Int(0, 10 ** 9)
     serial = Obj(Field("backend", Const("local_serial")), Field("shards", Int(1, 256)),
         Field("build_seconds", seconds), Field("shard_sampling_seconds", seconds),
@@ -94,7 +128,8 @@ def register(c):
 
     count = Int(0, 2 ** 31)
     overview_member = Obj(Field("request_id", ID),
-        Field("work", Str(enum=("core", "telemetry", "profile"))), Field("submission", submission),
+        Field("work", Str(enum=("core", "telemetry", "profile"))),
+        Field("submission", submission_v1),
         Field("plan_sha256", Nullable(DIGEST)), Field("parent", Nullable(ID)),
         Field("state", Str(enum=("queued", "claimed", "complete", "failed", "interrupted",
                                  "uncertain", "submitted", "expired"))),
@@ -156,20 +191,28 @@ def register(c):
         Field("request_digest", DIGEST), Field("state", Str(enum=states)),
         Field("started_unix_ms", Nullable(c.UNIX_MS)), Field("ended_unix_ms", Nullable(c.UNIX_MS)),
         Field("result_sha256", Nullable(DIGEST)), Field("detail", Str(max_len=4096)))
-    outcome = Obj(Field("schema", Const("af.perf-executor-result/2")), Field("request_id", ID),
-        Field("request_digest", DIGEST), Field("backend", backend),
-        Field("machine_id", ID), Field("environment_digest", DIGEST),
-        Field("producer_digest", DIGEST), Field("sources", frozen), Field("host", c.HOST),
-        Field("status", Str(enum=("complete", "failed", "interrupted", "uncertain", "submitted", "expired"))),
-        Field("measurement_status", Str(max_len=128)), Field("required_check", Const(False)),
-        Field("started_unix_ms", c.UNIX_MS), Field("ended_unix_ms", c.UNIX_MS),
-        Field("evidence", Arr(Obj(Field("path", c.REL_PATH), Field("sha256", DIGEST),
-                                  Field("size", Int(0, c.limits.ARCHIVE_BYTES_MAX))), 0, 8192)),
-        Field("actions", Nullable(Obj(Field("repository", c.REPOSITORY),
-                         Field("workflow", Str(enum=("performance.yml", "performance-telemetry.yml"))),
-                         Field("control_sha", SHA), Field("requested_ref", c.SHORT_TEXT),
-                         Field("receipt", Str(max_len=2048))))),
-        Field("detail", Str(max_len=4096)))
+    def outcome_node(schema, *added):
+        return Obj(Field("schema", Const(schema)), Field("request_id", ID),
+            Field("request_digest", DIGEST), Field("backend", backend),
+            Field("machine_id", ID), Field("environment_digest", DIGEST),
+            Field("producer_digest", DIGEST), Field("sources", frozen), Field("host", c.HOST),
+            Field("status", Str(enum=("complete", "failed", "interrupted", "uncertain", "submitted", "expired"))),
+            Field("measurement_status", Str(max_len=128)), Field("required_check", Const(False)),
+            Field("started_unix_ms", c.UNIX_MS), Field("ended_unix_ms", c.UNIX_MS),
+            Field("evidence", Arr(Obj(Field("path", c.REL_PATH), Field("sha256", DIGEST),
+                                      Field("size", Int(0, c.limits.ARCHIVE_BYTES_MAX))), 0, 8192)),
+            *added,
+            Field("actions", Nullable(Obj(Field("repository", c.REPOSITORY),
+                             Field("workflow", Str(enum=("performance.yml", "performance-telemetry.yml"))),
+                             Field("control_sha", SHA), Field("requested_ref", c.SHORT_TEXT),
+                             Field("receipt", Str(max_len=2048))))),
+            Field("detail", Str(max_len=4096)))
+    outcome_v2 = outcome_node("af.perf-executor-result/2")
+    # result/3: the af each side of a core original measured, as its builds record names it,
+    # so a report can compare the candidate with a shipped archive's binary (ADR-0266).
+    built = Nullable(Obj(Field("sha256", DIGEST), Field("bytes", Int(0, c.limits.ARCHIVE_BYTES_MAX))))
+    outcome = outcome_node(RESULT_SCHEMA, Field("binaries", Nullable(Obj(
+        Field("baseline", built), Field("candidate", built)))))
     # A separately named current contract, not a migration of the hosted v4 declaration.
     replacements = {
         "schema": Const("af.perf-local-cohort/1"),
@@ -204,6 +247,10 @@ def register(c):
                     "zigbuild_bin: use a canonical image-local absolute directory")
         require(doc["backend"] != "local" or doc["core"]["environment"] != "linux_x86_64_musl_claw"
                 or doc["zigbuild_bin"] is not None, "local musl requires zigbuild_bin in the pinned image")
+        doc["core"].setdefault("windows", None)
+        windows = doc["core"]["windows"]
+        require(windows is None or windows["shard_sampling_minutes"] <= windows["run_total_minutes"],
+                "core.windows: a shard's sampling window fits inside its run total")
         for key in ("pairs", "scale", "corpus_runs"):
             doc["telemetry"].setdefault(key, None)
         for key in ("telemetry", "max_cases", "perf", "inferno_bin", "observer"):
@@ -223,8 +270,37 @@ def register(c):
             require(os.path.normpath(doc[key]) == doc[key], key + ": use canonical absolute paths")
         return doc
 
-    def validate_result(doc, where="executor result"):
-        outcome.validate(doc, where)
+    def validate_request(doc, where="executor request", node=request):
+        node.validate(doc, where)
+        submitted = doc["submission"]
+        if submitted["kind"] == "nightly":
+            check_nightly_tag(submitted["tag"], where + ".submission.tag")
+            require(doc["work"] in ("core", "telemetry")
+                    and submitted["key"] == "nightly:%s:%s" % (submitted["tag"], doc["work"]),
+                    where + ".submission.key: a nightly original is keyed by its tag and core or telemetry work")
+            require(submitted["baseline"] is None
+                    or submitted["baseline"]["sha"] == doc["sources"]["baseline_sha"],
+                    where + ".submission.baseline: the derived release tag names the frozen baseline")
+        if node is not request:
+            return doc
+        require(doc["parent"] is None or doc["work"] == "profile",
+                "only a profile names a parent comparison")
+        require(doc["parent"] is None or doc["plan_sha256"] == doc["parent"]["plan_sha256"],
+                "a parent-selected profile diagnoses its parent's exact plan")
+        require(doc["partition"] is None or (doc["work"] == "core" and doc["plan_sha256"]
+                is not None and doc["cohort_digest"] is None),
+                "only a core original is a partition of a comparison's plan")
+        require(doc["partition"] is None or (doc["partition"]["index"] == 0)
+                == (doc["partition"]["build_from"] is None),
+                "exactly a comparison's first partition builds; later ones reuse its build")
+        require(submitted["kind"] != "nightly" or (doc["parent"] is None
+                and doc["partition"] is None),
+                where + ".submission: a nightly original is neither a comparison partition nor "
+                "a parent-selected profile")
+        return doc
+
+    def validate_result(doc, where="executor result", node=outcome):
+        node.validate(doc, where)
         require(doc["ended_unix_ms"] >= doc["started_unix_ms"], "executor outcome ends before its claim")
         require(doc["backend"] != "local" or (doc["actions"] is None and doc["status"] != "submitted"),
                 "local outcome cannot claim Actions provenance")
@@ -235,6 +311,8 @@ def register(c):
                     "expired calibration outcome must state non-execution off schedule")
         paths = [item["path"] for item in doc["evidence"]]
         require(paths == sorted(set(paths)), "executor evidence paths must be sorted and unique")
+        require(doc.get("binaries") is None or (doc["backend"] == "local" and doc["status"] == "complete"),
+                "only a completed local original names the binaries it built")
         return doc
 
     def validate_local_readiness(doc, where="local readiness", cohort=None, calibration=None):
@@ -280,20 +358,6 @@ def register(c):
                 c.validate_readiness_totals(doc, where, cohort, calibration)
         return doc
 
-    def validate_request(doc, where="executor request"):
-        request.validate(doc, where)
-        require(doc["parent"] is None or doc["work"] == "profile",
-                "only a profile names a parent comparison")
-        require(doc["parent"] is None or doc["plan_sha256"] == doc["parent"]["plan_sha256"],
-                "a parent-selected profile diagnoses its parent's exact plan")
-        require(doc["partition"] is None or (doc["work"] == "core" and doc["plan_sha256"]
-                is not None and doc["cohort_digest"] is None),
-                "only a core original is a partition of a comparison's plan")
-        require(doc["partition"] is None or (doc["partition"]["index"] == 0)
-                == (doc["partition"]["build_from"] is None),
-                "exactly a comparison's first partition builds; later ones reuse its build")
-        return doc
-
     # The trusted host CPU observer's record of one recording (`hostobserver`).
     target = Obj(Field("pid", Int(1, 2 ** 31)), Field("start_ticks", Int(0, 2 ** 63)),
                  Field("uid", Int(0, 2 ** 32)), Field("cmdline_sha256", DIGEST),
@@ -331,7 +395,7 @@ def register(c):
         Field("unsupported", Nullable(Str(max_len=4096))))
     declaration = Obj(Field("schema", Const("af.perf-comparison/1")),
         Field("comparison_id", ID), Field("journal_id", ID), Field("machine_id", ID),
-        Field("submission", submission), Field("sources", frozen),
+        Field("submission", submission_v1), Field("sources", frozen),
         Field("configuration_digest", DIGEST), Field("environment_digest", DIGEST),
         Field("producer_digest", DIGEST), Field("created_unix_ms", c.UNIX_MS),
         Field("plan_sha256", DIGEST), Field("run_id", ID),
@@ -394,7 +458,7 @@ def register(c):
                 "a missing partition never passes")
         return doc
 
-    # The execution authority of a later comparison partition (ADR-0265): its own bounded run
+    # The execution authority of a later comparison partition (ADR-0269): its own bounded run
     # window, the plan's frozen total minutes from its own execution start, on the first
     # partition's unchanged build, whose run (`build_run`) stays its recorded provenance.
     partition_window = Obj(Field("index", Int(1, 15)), Field("request_id", ID),
@@ -437,7 +501,7 @@ def register(c):
     report_doc = Obj(Field("schema", Const("af.perf-comparison-report/1")),
         Field("comparison_id", ID), Field("comparison_digest", DIGEST),
         Field("journal_id", ID), Field("machine_id", ID), Field("sources", frozen),
-        Field("submission", submission),
+        Field("submission", submission_v1),
         Field("status", Str(enum=("complete", "incomplete", "running"))),
         Field("verification", verification),
         Field("calibration", Obj(Field("eligible", Const(False)), Field("detail", Str(max_len=1024)))),
@@ -488,7 +552,7 @@ def register(c):
     comparison_preflight = Obj(Field("schema", Const("af.perf-comparison-preflight/1")),
         Field("operation", Str(enum=("preflight", "launch"))),
         Field("status", Str(enum=("ready", "refused", "launched"))), Field("detail", Str(max_len=4096)),
-        Field("unix_ms", c.UNIX_MS), Field("submission", submission),
+        Field("unix_ms", c.UNIX_MS), Field("submission", submission_v1),
         Field("comparison", Nullable(declaration)),
         Field("checks", Arr(Obj(Field("name", ID),
                                 Field("state", Str(enum=("passed", "refused", "not_checked"))),
@@ -506,7 +570,17 @@ def register(c):
             validate_declaration(doc["comparison"], where + ".comparison")
         return doc
 
+    def check_nightly_tag(tag, where):
+        import datetime
+        try:
+            datetime.date(*(int(part) for part in tag[len("nightly-"):].split(".")))
+        except ValueError:
+            require(False, where + ": %s names no calendar date" % tag)
+
     c.LOCAL_COHORT = local_cohort
+    c.EXECUTOR_REQUEST_SCHEMA, c.EXECUTOR_RESULT_SCHEMA = REQUEST_SCHEMA, RESULT_SCHEMA
+    c.NIGHTLY_TAG = NIGHTLY_TAG
+    c.check_nightly_tag = check_nightly_tag
     c.validate_executor = validate_config
     c.validate_local_readiness = validate_local_readiness
     entries = {
@@ -533,3 +607,13 @@ def register(c):
         schema = node.by_name["schema"].node.value
         c.CONTRACTS[name] = (schema, node, validator or (lambda doc, where="executor", n=node: n.validate(doc, where)),
                              "Independent performance executor: " + name + " (ADR-0240).")
+    # A journal's originals are immutable and bound by digest, so the previous request and
+    # result versions stay readable; nothing writes them (ADR-0266).
+    # request/2 is the nightly shape main wrote before request/3 added the parent and partition.
+    for name, node, validator in (
+            ("executor-request", request_v1, lambda doc, where="executor request": request_v1.validate(doc, where)),
+            ("executor-request", request_v2,
+             lambda doc, where="executor request": validate_request(doc, where, request_v2)),
+            ("executor-result", outcome_v2, lambda doc, where="executor result": validate_result(doc, where, outcome_v2))):
+        c.READABLE.setdefault(name, {})[node.by_name["schema"].node.value] = (
+            node, validator, "Independent performance executor: " + name + " (ADR-0240).")

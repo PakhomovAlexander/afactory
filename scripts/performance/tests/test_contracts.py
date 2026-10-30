@@ -17,7 +17,7 @@ from tests.support import ROOT, read
 FIXTURES = os.path.join(ROOT, "fixtures/performance/schema")
 SCHEMAS = os.path.join(ROOT, "schemas")
 TOML_CONTRACTS = ("suite", "activation", "adapters", "cli", "diagnostics", "telemetry-lab",
-                  "telemetry-collector")
+                  "telemetry-collector", "nightly-config")
 
 
 class SchemaSubset:
@@ -101,9 +101,14 @@ class SchemaSubset:
         return "pattern" not in schema or re.search(schema["pattern"], value) is not None
 
 
-def schema_for(contract):
+def schema_for(contract, doc=None):
+    """The committed schema of the version `doc` names when its reader still admits that
+    earlier version (ADR-0266), else of the contract's current version."""
+    earlier = doc.get("schema") if isinstance(doc, dict) else None
+    if earlier not in contracts.READABLE.get(contract, {}):
+        earlier = None
     return SchemaSubset(json.loads(read(os.path.join(SCHEMAS,
-                                                     contracts.schema_file(contract)))))
+                                                     contracts.schema_file(contract, earlier)))))
 
 
 def parse(entry):
@@ -132,6 +137,8 @@ def read_with_contract(entry):
         return contracts.validate_telemetry_lab(tomlfile.loads(data, path), path)
     if contract == "telemetry-collector":
         return contracts.validate_telemetry_collector(tomlfile.loads(data, path), path)
+    if contract == "nightly-config":
+        return contracts.validate_nightly_config(tomlfile.loads(data, path), path)
     doc = contracts.read_json(data, contract, path)
     if "companion" in entry:
         cohort = contracts.read_file(os.path.join(FIXTURES, entry["companion"]), "cohort")
@@ -191,7 +198,7 @@ class Parity(unittest.TestCase):
                     # Refused before any schema applies (a TOML float, for instance).
                     self.assertTrue(not entry["valid"] and entry["shape"])
                     continue
-                accepted = schema_for(entry["contract"]).valid(doc)
+                accepted = schema_for(entry["contract"], doc).valid(doc)
                 if entry["valid"] or not entry["shape"]:
                     self.assertTrue(accepted, "the schema refuses a shape-valid fixture")
                 else:
@@ -204,6 +211,11 @@ class Parity(unittest.TestCase):
             with self.subTest(fixture=entry["path"]):
                 doc = read_with_contract(entry)
                 if entry["contract"] == "readiness":
+                    continue
+                if doc["schema"] in contracts.READABLE.get(entry["contract"], {}):
+                    # An earlier readable version is never written again.
+                    with self.assertRaises(ContractError):
+                        contracts.write_bytes(doc, entry["contract"])
                     continue
                 data = contracts.write_bytes(doc, entry["contract"])
                 self.assertEqual(contracts.read_json(data, entry["contract"]), doc)
@@ -247,9 +259,14 @@ class Parity(unittest.TestCase):
         # distribution, and activation-verification/3 a fetched bridge run's producer
         # (ADR-0185); readiness/6 binds each case to its observed shard CPU group
         # (ADR-0194); executor/3 names the diagnostic perf and Inferno tools and a
-        # parent-selected profile, and executor-request/2 a profile's verified parent
-        # comparison; profiles/7 lists a repeated capture's recordings by its repetition
-        # index; nothing reads an earlier version.
+        # parent-selected profile, and executor/4 a core plan's declared run windows
+        # (ADR-0269); profiles/7 lists a repeated capture's recordings by its
+        # repetition index. executor-request/2 adds the nightly submission and
+        # executor-result/3 the measured binaries; their previous versions stay readable for a
+        # journal's immutable originals and every older one is refused (ADR-0266).
+        # executor-request/3 adds a profile's verified parent comparison and a comparison
+        # core child's partition (ADR-0269), and request/2 stays the nightly shape without
+        # them. Nothing else reads an earlier version.
         changed = ("run", "capabilities", "tui-open", "builds", "verdict", "sample",
                    "shard", "supervisor-request",
                    "supervisor-result", "probe-request", "golden", "cohort",
@@ -257,7 +274,12 @@ class Parity(unittest.TestCase):
                    "shipping", "profiles", "executor", "executor-state", "executor-result",
                    "executor-request")
         self.assertEqual([contracts.schema_version(name) for name in changed],
-                         [7, 3, 1, 6, 2, 2, 4, 4, 5, 2, 2, 4, 2, 6, 3, 3, 3, 7, 3, 2, 2, 2])
+                         [7, 3, 1, 6, 2, 2, 4, 4, 5, 2, 2, 4, 2, 6, 3, 3, 3, 7, 4, 2, 3, 3])
+        self.assertEqual(dict((name, sorted(versions)) for name, versions
+                              in contracts.READABLE.items()),
+                         {"executor-request": ["af.perf-executor-request/1",
+                                               "af.perf-executor-request/2"],
+                          "executor-result": ["af.perf-executor-result/2"]})
         self.assertEqual(contracts.schema_version("activation"), 3)
         # profiles/6 bound retained archives (ADR-0224) and profiles/7 indexes a repeated
         # capture's recordings; report/3 keeps telemetry (ADR-0214).
@@ -271,6 +293,8 @@ class Parity(unittest.TestCase):
             doc, _ = parse(entry)
             for version in range(1, contracts.schema_version(contract)):
                 doc["schema"] = doc["schema"].rsplit("/", 1)[0] + "/%d" % version
+                if doc["schema"] in contracts.READABLE.get(contract, {}):
+                    continue
                 with self.assertRaises(ContractError) as caught:
                     contracts.read_json(json.dumps(doc).encode(), contract)
                 self.assertIn("expected %s" % contracts.CONTRACTS[contract][0],

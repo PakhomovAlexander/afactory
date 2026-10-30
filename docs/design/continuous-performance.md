@@ -1058,9 +1058,12 @@ profile may select the regressions of a verified parent core original (request v
 Service invocations
 drain admitted work before polling; calibration launch decisions recheck the frozen member day
 after capacity and source preparation. Missed originals retire as non-executed `expired` in
-state/result v2 and remain off schedule in readiness with their original denominator.
+state v2 and result v2 (v3 since ADR-0266) and remain off schedule in readiness with their original denominator.
+Nightlies are submitted as `--kind nightly` originals of a second, nightly-tier configuration,
+their baseline derived as the tier defines it, and a core result names the binaries it measured
+([ADR-0266](../adr/0266-measure-nightlies-as-originals-of-the-independent-executor.md)).
 The [operator guide](../performance-local-executor.md) describes
-reviewed-main polling, explicit trusted PR/release submissions, separately declared seven-day
+reviewed-main polling, explicit trusted PR/release/nightly submissions, separately declared seven-day
 local calibration originals, the parameter review checkpoint and systemd examples. Hosted
 event workflows and calibration declarations stay unchanged. Tests establish orchestration,
 not deployment, empirical calibration, a speedup or a passing required-check claim.

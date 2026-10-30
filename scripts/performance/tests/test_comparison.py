@@ -575,8 +575,10 @@ class Comparison(ExecutorFixture):
         lease). The partition's later shard, the next partition and the queued telemetry
         original never start; the cancelled partition ends interrupted with its partial
         evidence and a settled fence, and is never replayed."""
-        # The nightly tier's 120-minute original holds two 45-minute shards after its build.
-        self.c["core"].update(tier="nightly", environment="linux_x86_64_musl_claw", shards=3)
+        # The full recipe's declared windows (ADR-0269): a 120-minute original holds two
+        # 45-minute shards after its build.
+        self.c["core"].update(tier="nightly", environment="linux_x86_64_musl_claw", shards=3,
+                              windows={"shard_sampling_minutes": 45, "run_total_minutes": 120})
         self.c["zigbuild_bin"] = "/opt/zig/bin"
         with executor.Journal(self.c) as j:
             launched = self.launch(j)
@@ -750,8 +752,8 @@ class Comparison(ExecutorFixture):
 
     def test_the_documented_full_comparison_configuration_and_checks_hold(self):
         """The operator documentation's full-comparison configuration, applied to the executor
-        configuration as it says (telemetry overrides deleted), is a valid `af.perf-executor/3`
-        that launches the whole nightly family; its documented checks, run as written on the
+        configuration as it says (telemetry overrides deleted), is a valid `af.perf-executor/4`
+        that launches the whole nightly family in its declared 45 and 120 minute windows; its documented checks, run as written on the
         launched journal, find 33 instances, 31 judged, 2 exploratory, 2932 slots in 8 shards
         and 12 manual telemetry runs."""
         text = read(os.path.join(ROOT, "docs", "performance-local-executor.md")).decode()
@@ -785,6 +787,12 @@ class Comparison(ExecutorFixture):
                               input=script, capture_output=True, text=True)
         self.assertEqual(done.returncode, 0, done.stderr)
         self.assertIn("('nightly', 'linux_x86_64_musl_claw', 8, 33, 31, 2, 2932)", done.stdout)
+        # The recipe's declared windows, not the nightly tier's 15 and 180 (ADR-0269), frozen
+        # into the plan, over four serial partitions that reuse the first one's build.
+        self.assertEqual(documented["core"]["windows"],
+                         {"shard_sampling_minutes": 45, "run_total_minutes": 120})
+        self.assertIn("windows: sampling, run total minutes = (45, 120) partitions = "
+                      "[[0, 1], [2, 3], [4, 5], [6, 7]]", done.stdout)
         self.assertIn("'manual', ['overhead', 'invocation_cost', 'read_latency'], 2, 12",
                       done.stdout)
         # A narrower telemetry workload fails the documented check, never passes it.

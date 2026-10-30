@@ -1462,6 +1462,8 @@ def cmd_executor(args):
             return 0 if doc["status"] != "running" else 4
         with executor.cancellation(), executor.Journal(config, readonly=readonly) as journal:
             if args.operation in ("comparison-preflight", "comparison-launch"):
+                require(args.kind != "nightly", "a release comparison is a manual, pr or release "
+                        "key; a nightly is submitted alone by submit --kind nightly (ADR-0266)")
                 require(args.base and args.head and args.key,
                         args.operation + " needs exact --base, --head and --key")
                 _trusted_pair(executor.source_repository(config), args)
@@ -1486,7 +1488,16 @@ def cmd_executor(args):
                     _, doc = comparison.export(journal, args.comparison, args.output)
                 _emit(contracts.write_bytes(doc, "comparison-report"), None)
                 return 0 if doc["status"] == "complete" else 4
-            if args.operation in ("submit", "preflight"):
+            if args.operation == "submit" and args.kind == "nightly":
+                # The key is the tag and work; the baseline defaults to the highest stable
+                # release reachable from the frozen main commit (ADR-0266).
+                require(args.head and args.tag and not args.key,
+                        "a nightly submit needs --tag and --head, an optional --base and no --key")
+                doc = journal.submit_nightly(args.work, args.tag, args.head, args.base)
+                print(json.dumps(doc, sort_keys=True))
+            elif args.operation in ("submit", "preflight"):
+                require(args.kind != "nightly", "a nightly is checked and frozen by submit "
+                        "--kind nightly --tag TAG; preflight takes a manual, pr or release key")
                 require(args.base and args.head and args.key,
                         args.operation + " needs exact --base, --head and --key")
                 base, head = args.base, args.head
@@ -1566,7 +1577,7 @@ def parser():
         "comparison-export", "comparison-verify",
         "cohort-declare", "calibration-dispatch", "calibration-prepare", "readiness"))
     execution.add_argument("--work", choices=("core", "telemetry", "profile"), default="core")
-    execution.add_argument("--kind", choices=("manual", "pr", "release"), default="manual")
+    execution.add_argument("--kind", choices=("manual", "pr", "release", "nightly"), default="manual")
     for option in ("base", "head", "key", "pr-head", "tag", "request-id", "cohort", "parameters",
                    "cohort-id", "start-date", "output", "parent", "comparison", "bundle"):
         execution.add_argument("--" + option)

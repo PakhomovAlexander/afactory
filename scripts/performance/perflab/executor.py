@@ -7,6 +7,7 @@ import contextlib
 import fcntl
 import json
 import os
+import re
 import shutil
 import signal
 import stat
@@ -19,7 +20,7 @@ from . import (admission, archive, budget, builds, calibration, clicases, compar
                gitrefs, history, host, hostlock, hostobserver, hostprep, planning, report, runner,
                telemetrybuild, telemetrylab, tomlfile)
 from . import adapters as adapters_module
-from .values import ContractError, add_note, canonical_digest, require, sha256_bytes
+from .values import ContractError, add_note, canonical_digest, document_bytes, require, sha256_bytes
 
 ROOT = telemetrylab.ROOT
 TERMINAL = ("complete", "failed", "interrupted", "uncertain", "submitted", "expired")
@@ -826,16 +827,44 @@ class Journal:
                 "detail": "", "request": request, "serial": checked["serial"],
                 "tools": checked["tools"]}
 
+    def submit_nightly(self, work, tag, head, base=None, *, git=None, **kwargs):
+        """One nightly original per tag and work: frozen main `head` against `base`, or else the
+        highest stable release tag reachable from it (ADR-0266)."""
+        require(isinstance(tag, str) and re.match(contracts.NIGHTLY_TAG, tag) is not None,
+                "a nightly submission needs --tag nightly-YYYY.MM.DD, not %r" % (tag,))
+        contracts.check_nightly_tag(tag, "nightly tag")
+        require(work in ("core", "telemetry"), "a nightly measures core or telemetry work, never "
+                "--work %s; profile a nightly through a manual submission" % work)
+        tier = self.config["core"]["tier"]
+        require(work != "core" or tier == "nightly",
+                "a nightly core original needs core.tier = \"nightly\"; this configuration's tier is "
+                "\"%s\": submit to the nightly executor configuration" % tier)
+        git = git or source_repository(self.config)
+        # One resolution: a ref that moves later can never split the derived baseline's head
+        # from the frozen candidate.
+        head = git.resolve(head, "nightly")
+        derived = None
+        if base is None:
+            name, sha = gitrefs.nightly_baseline(git, head)
+            base, derived = sha, {"tag": name, "sha": sha}
+        key = "nightly:%s:%s" % (tag, work)
+        return self.submit(work, base, head, key, "nightly", git=git,
+                           submission={"kind": "nightly", "key": key, "tag": tag, "baseline": derived},
+                           **kwargs)
+
     def _submit(self, work, base, head, key, kind="manual", *, git=None, installed=ROOT,
                cohort=None, member=None, parameters=None, parent=None, checked=None,
                config=None, frozen_parent=None, frozen_plan=None, partition=None,
-               bind_configuration=False):
+               bind_configuration=False, submission=None):
         """`config` is a comparison lane's derived configuration (its diagnostic recipe);
         `frozen_parent` is (parent record, plan, verdict bytes) of a comparison's verified
         aggregate; `frozen_plan` and `partition` make a core original one partition of a
         comparison's frozen plan. With `bind_configuration` (a comparison's member) an existing
-        original of the key is returned only when it froze this very configuration."""
+        original of the key is returned only when it froze this very configuration. A nightly's
+        `submission` records its tag and derived baseline (`submit_nightly`)."""
         require(work in ("core", "telemetry", "profile"), "unknown experiment kind")
+        require((kind == "nightly") == (submission is not None),
+                "only a nightly submission records its tag and derived baseline")
         require(parent is None or work == "profile", "only a profile names a parent comparison")
         require(frozen_parent is None or (work == "profile" and parent is None),
                 "a comparison's aggregate parent is a profile's only parent")
@@ -850,17 +879,20 @@ class Journal:
         require(trusted is not None and git.is_ancestor(control, trusted), "control is not reviewed main authority")
         sources = {"baseline_sha": git.resolve(base, "baseline"), "candidate_sha": git.resolve(head, "candidate"),
                    "control_sha": control, "authority_sha": control}
-        submission = {"kind": kind, "key": key}
-        ident = "exp_" + canonical_digest({"submission": submission, "work": work})[7:55]
+        # The identity is the kind, key and work alone, so a nightly whose head or derived
+        # baseline differs under the same tag is a reused key, never a second original.
+        ident = "exp_" + canonical_digest({"submission": {"kind": kind, "key": key}, "work": work})[7:55]
+        submission = submission or {"kind": kind, "key": key}
         if ident in self.names() and checked is None:
             original = self.request(ident)
             require(original["sources"] == sources and original["submission"] == submission
                     and original["work"] == work, "original submission key was reused for another source")
             wanted = parent if frozen_parent is None else frozen_parent[0]["request_id"]
-            require(original["parent"] is None if wanted is None
-                    else (original["parent"] or {}).get("request_id") == wanted,
+            # An earlier request version (ADR-0266) names neither parent nor partition.
+            require(original.get("parent") is None if wanted is None
+                    else (original.get("parent") or {}).get("request_id") == wanted,
                     "original submission key was reused for another parent comparison")
-            require(original["partition"] == partition,
+            require(original.get("partition") == partition,
                     "original submission key was reused for another comparison partition")
             # A comparison member's key under another frozen configuration or plan is another
             # workload (a narrower telemetry profile, partial core cases), never its original.
@@ -900,6 +932,8 @@ class Journal:
                 sealed_raw = git.read_file(trusted, "fixtures/performance/local-calibration-parameters.json")
                 require(sealed_raw is not None and contracts.read_json(sealed_raw, "calibration-parameters") == parameters,
                         "sealed parameters must be committed on reviewed main at the documented path")
+            require(c["core"]["windows"] is None, "a calibration original measures its tier's "
+                    "own windows: core.windows declares a comparison recipe's, never a cohort's")
         elif kind == "calibration":
             raise ContractError("calibration submissions need their immutable declaration")
         plan = parent_record = verdict_bytes = suite = registry = None
@@ -954,7 +988,7 @@ class Journal:
                 base=sources["baseline_sha"], head=sources["candidate_sha"], control=control,
                 authority=control, cases=core["cases"], environment=core["environment"],
                 build_image=c["build_image"], shards=core["shards"], run_id="local_" + ident[4:],
-                cohort=cohort, member=member, calibration=parameters))
+                cohort=cohort, member=member, calibration=parameters, windows=core["windows"]))
             require(not plan["required_check_eligible"], "local/advisory request cannot satisfy required checks")
             if c["backend"] == "local":
                 require(plan["profile"]["environment"]["runner"] == "dedicated"
@@ -1005,7 +1039,7 @@ class Journal:
                 checked["tools"] = (checked["tools"] + records)[:16]
             require(refusal is None, "%s refused before any claim or build: the configured "
                     "images cannot run it: %s" % (work, refusal))
-        request = {"schema": "af.perf-executor-request/2", "request_id": ident,
+        request = {"schema": contracts.EXECUTOR_REQUEST_SCHEMA, "request_id": ident,
             "backend": c["backend"], "journal_id": c["journal_id"], "machine_id": c["machine_id"],
             "configuration_digest": canonical_digest(c), "sources": sources, "submission": submission,
             "work": work, "created_unix_ms": int(time.time() * 1000), "environment_digest": env,
@@ -1103,7 +1137,8 @@ class Journal:
                 else:
                     result = dispatch_actions(frozen_config, request, self.path(ident), transport)
                 with terminal.enforce("publishing executor terminal evidence"):
-                    result.update(schema="af.perf-executor-result/2", request_id=ident,
+                    result.setdefault("binaries", None)
+                    result.update(schema=contracts.EXECUTOR_RESULT_SCHEMA, request_id=ident,
                         request_digest=canonical_digest(request), backend=request["backend"],
                         machine_id=request["machine_id"], environment_digest=request["environment_digest"],
                         producer_digest=request["producer_digest"], sources=request["sources"],
@@ -1246,6 +1281,7 @@ def admit_images(config, work, path, lease, terminal, recipes):
 
 def execute_local(config, request, path, lease, installed=ROOT):
     lease.check()
+    binaries = None
     start = time.monotonic()
     deadline = start + config["run_seconds"] - RESERVE
     timing = budget.Budget(deadline, time.monotonic, RESERVE)
@@ -1301,7 +1337,7 @@ def execute_local(config, request, path, lease, installed=ROOT):
                         "evidence": file_manifest(path, EVIDENCE_PREFIXES, terminal),
                         "actions": None, "detail": ("profile refused before any build: "
                                                     + refusal)[:4096]}
-        partition = request["partition"]
+        partition = request.get("partition")
         refused = admit_images(config, work, path, lease, terminal, build_recipes(
             config, work, plan, partition, installed, suite_doc, registry))
         if refused is not None:
@@ -1324,6 +1360,8 @@ def execute_local(config, request, path, lease, installed=ROOT):
                                    zigbuild_bin=config["zigbuild_bin"], deadline_unix_ms=deadline_ms)
             built = build.build()
             require(built["cleanup"]["status"] == "removed", "core build cleanup unconfirmed")
+        if work == "core":
+            binaries = built_binaries(built)
         with timing.enforce("preparing local sample scratch"):
             hostprep.prepare(scratch_image, scratch, plan["profile"]["environment"]["scratch_limit_bytes"],
                              host=preparation_host)
@@ -1388,7 +1426,7 @@ def execute_local(config, request, path, lease, installed=ROOT):
             # A parent-selected profile reads the verified parent verdict it froze at
             # submission; named cases are an explicit selection that reads none.
             verdict = None
-            if request["parent"] is not None:
+            if request.get("parent") is not None:
                 verdict = os.path.join(path, PARENT_VERDICT)
                 require(sha256_bytes(read(verdict)) == request["parent"]["verdict_sha256"],
                         "the frozen parent verdict changed")
@@ -1432,7 +1470,7 @@ def execute_local(config, request, path, lease, installed=ROOT):
                                build_recipes(config, work, installed=installed))
         if refused is not None:
             return refused
-        binaries, records = {}, {}
+        built_af, records = {}, {}
         for side in contracts.SIDES:
             sha = request["sources"][side + "_sha"]
             source = os.path.join(path, side + "-source")
@@ -1441,9 +1479,9 @@ def execute_local(config, request, path, lease, installed=ROOT):
             telemetrybuild.run(source, output, config["build_image"], os.path.join(path, side + "-scratch"),
                                sha, seconds=min(TELEMETRY_BUILD_SECONDS,
                                                 int(timing.seconds("contained telemetry build"))))
-            binaries[side] = os.path.join(output, "af")
+            built_af[side] = os.path.join(output, "af")
             record = {"schema": contracts.TELEMETRY_BUILD_SCHEMA, "side": side, "source_sha": sha,
-                "binary_sha256": telemetrylab._binary(binaries[side], side)[1], "image": config["build_image"],
+                "binary_sha256": telemetrylab._binary(built_af[side], side)[1], "image": config["build_image"],
                 "rustc": read(os.path.join(output, "af-rustc")).decode().strip()[:512],
                 "cargo": read(os.path.join(output, "af-cargo")).decode().strip()[:512],
                 "command": "cargo build --release --locked --offline --bin af --target-dir /state/target"}
@@ -1459,7 +1497,7 @@ def execute_local(config, request, path, lease, installed=ROOT):
         owner_path = os.path.join(path, "telemetry-owner.json")
         with hostprep.TelemetryOwner(owner_path, scratch, create=True, image=scratch_image) as owner_fence:
             result = telemetrylab.run(telemetrylab.Settings(profile=t["profile"], trigger="manual",
-                baseline_af=binaries["baseline"], candidate_af=binaries["candidate"],
+                baseline_af=built_af["baseline"], candidate_af=built_af["candidate"],
                 baseline_sha=request["sources"]["baseline_sha"], candidate_sha=request["sources"]["candidate_sha"],
                 authority_sha=request["sources"]["authority_sha"], builds=records, output=run,
                 result_id="local_" + request["request_id"][4:], mode="linux_container", root=installed,
@@ -1476,7 +1514,17 @@ def execute_local(config, request, path, lease, installed=ROOT):
     with terminal.enforce("sealing original local evidence"):
         evidence = file_manifest(path, EVIDENCE_PREFIXES, terminal)
     return {"status": "complete", "measurement_status": measurement, "evidence": evidence,
-            "actions": None, "detail": "Advisory local measurement; original evidence retained. No required-check claim."}
+            "binaries": binaries, "actions": None,
+            "detail": "Advisory local measurement; original evidence retained. No required-check claim."}
+
+
+def built_binaries(built):
+    """Each side's measured af as its builds record names it, or null for a side without one."""
+    out = {}
+    for side in contracts.SIDES:
+        artifact = built["sides"][side]["artifacts"]["af"]
+        out[side] = None if artifact is None else {"sha256": artifact["sha256"], "bytes": artifact["size"]}
+    return out
 
 
 def settle_cancellation(cancelled, plan, partition, path, lease, terminal, cleanup):
@@ -1512,7 +1560,7 @@ def settle_cancellation(cancelled, plan, partition, path, lease, terminal, clean
 
 
 def partition_authority(plan, partition, request_id, builds_bytes, built, started_unix_ms):
-    """The `af.perf-partition-execution/1` bytes of a later partition original (ADR-0265): its
+    """The `af.perf-partition-execution/1` bytes of a later partition original (ADR-0269): its
     own run window, the plan's frozen total minutes from this execution's start, bound to the
     reused build's exact bytes and its recorded run, which stays unchanged provenance. The
     caller's deadline (this original's `run_seconds`) still tightens every shard."""
@@ -1536,7 +1584,7 @@ def partition_build(config, request, installed=ROOT):
     partition = request["partition"]
     with Journal(config, readonly=True) as journal:
         first, _, _ = verify_original(journal, partition["build_from"], installed)
-        require(first["partition"] is not None
+        require(first.get("partition") is not None
                 and first["partition"]["comparison_id"] == partition["comparison_id"]
                 and first["partition"]["index"] == 0
                 and first["plan_sha256"] == request["plan_sha256"]
@@ -1610,7 +1658,8 @@ def verify_original(journal, ident, installed=ROOT):
             and environment(config) == request["environment_digest"] and config["backend"] == "local",
             "original frozen local configuration changed")
     result = contracts.read_json(read(os.path.join(path, "result.json")), "executor-result")
-    require(sha256_bytes(contracts.write_bytes(result, "executor-result")) == state["result_sha256"], "result receipt changed")
+    # An earlier result version is read but never written again: hash its admitted bytes.
+    require(sha256_bytes(document_bytes(result)) == state["result_sha256"], "result receipt changed")
     require(result["request_digest"] == canonical_digest(request) and result["sources"] == request["sources"]
             and result["backend"] == "local" and result["environment_digest"] == request["environment_digest"]
             and result["producer_digest"] == request["producer_digest"] and result["actions"] is None,
@@ -1632,7 +1681,8 @@ def verify_original(journal, ident, installed=ROOT):
     if request["work"] == "core":
         plan = contracts.read_json(read(os.path.join(path, "plan.json")), "run")
         require(sha256_bytes(contracts.write_bytes(plan, "run")) == request["plan_sha256"], "original plan changed")
-        owner = ident if request["partition"] is None else request["partition"]["comparison_id"]
+        # An earlier request version (ADR-0266) names no partition: its plan is its own.
+        owner = ident if request.get("partition") is None else request["partition"]["comparison_id"]
         require(plan["run_id"] == "local_" + owner[4:]
                 and plan["profile"]["environment"]["runner"] == "dedicated",
                 "hosted evidence cannot be reclassified as a local original")
@@ -1650,10 +1700,14 @@ def verify_original(journal, ident, installed=ROOT):
             control=request["sources"]["control_sha"], authority=request["sources"]["authority_sha"],
             cases=core["cases"], environment=core["environment"], build_image=config["build_image"],
             shards=core["shards"], run_id=plan["run_id"], cohort=cohort,
-            member=request["member_id"], calibration=sealed))
+            member=request["member_id"], calibration=sealed, windows=core["windows"]))
         require(expected == plan, "original plan is not what its retained source authority freezes")
         evaluation = compare.evaluate(os.path.join(path, "run"))
         require(evaluation.plan == plan, "measurement changed original plan")
+        if result["schema"] == contracts.EXECUTOR_RESULT_SCHEMA:
+            measured = contracts.read_json(read(os.path.join(path, "run", "builds.json")), "builds")
+            require(result["binaries"] == built_binaries(measured),
+                    "result binaries are not the ones the original's builds record names")
         for role, source in contracts.BUILD_ROLES:
             require(sha256_bytes(git.read_file(request["sources"][source], "Cargo.lock")) ==
                     plan["build_inputs"][role]["cargo_lock_sha256"], "original Cargo.lock changed")
@@ -1667,7 +1721,7 @@ def verify_original(journal, ident, installed=ROOT):
         parent = contracts.read_json(read(os.path.join(path, "plan.json")), "run")
         require(sha256_bytes(contracts.write_bytes(parent, "run")) == request["plan_sha256"],
                 "diagnostic parent plan changed")
-        if request["parent"] is not None:
+        if request.get("parent") is not None:
             require(sha256_bytes(read(os.path.join(path, PARENT_VERDICT)))
                     == request["parent"]["verdict_sha256"], "the frozen parent verdict changed")
         report.admit_children([os.path.join(path, "profile")], parent)

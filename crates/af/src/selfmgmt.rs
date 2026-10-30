@@ -5983,6 +5983,28 @@ mod tests {
         );
     }
 
+    /// A nightly is tagged `nightly-YYYY.MM.DD` (ADR-0265), which is no version: neither
+    /// channel ever chooses one, even when it is the newest tag.
+    #[test]
+    fn newest_never_chooses_a_nightly_tag() {
+        let tags = vec![
+            "v0.13.0".into(),
+            "nightly-2026.10.29".into(),
+            "v0.14.0-rc.3".into(),
+        ];
+        assert_eq!(
+            newest(&tags, Channel::Stable).unwrap().to_string(),
+            "0.13.0"
+        );
+        assert_eq!(
+            newest(&tags, Channel::Rc).unwrap().to_string(),
+            "0.14.0-rc.3"
+        );
+        let only = vec!["nightly-2026.10.29".to_string()];
+        assert_eq!(newest(&only, Channel::Stable), None);
+        assert_eq!(newest(&only, Channel::Rc), None);
+    }
+
     /// Each channel picks its own: stable the newest release, rc the newest release or
     /// pre-release, nightly the newest `nightly-YYYY.MM.DD` by date. A nightly is never stable's
     /// or rc's, and a release never the nightly channel's, whatever sorts higher.

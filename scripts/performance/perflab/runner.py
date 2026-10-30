@@ -60,7 +60,7 @@ SHARD_FILE = "shard.json"
 LOGS = "logs"
 RUN_FILES = ("run.json", "builds.json")
 # A later comparison partition's execution authority (`af.perf-partition-execution/1`,
-# ADR-0265), the one optional member of a run bundle.
+# ADR-0269), the one optional member of a run bundle.
 PARTITIONS_FILE = "partitions.json"
 TRUSTED_LOCAL = "trusted_local"
 LINUX_CONTAINER = "linux_container"
@@ -220,7 +220,7 @@ def _run_hashes(run_dir):
 
 def partition_window(run_dir, plan, builds_doc, builds_bytes, index):
     """The run window shard `index` executes in when `run_dir` is a later comparison
-    partition's run bundle (ADR-0265), or None when it holds no partition authority. The
+    partition's run bundle (ADR-0269), or None when it holds no partition authority. The
     authority is read from the verified bundle and bound to this plan, this exact build and its
     recorded run, unchanged; a shard it does not declare, or a window that is not the plan's
     frozen total from an execution start after the build ended, is refused."""
@@ -573,7 +573,7 @@ class Shard(object):
     def check_run_deadline(self):
         """The run's execution start and total deadline from its verified build (ADR-0170), or,
         for a later comparison partition, from the partition authority sealed in its run bundle
-        and bound to that unchanged build (ADR-0265): a shard never resets them, and none starts
+        and bound to that unchanged build (ADR-0269): a shard never resets them, and none starts
         its preflight once the deadline has passed."""
         try:
             window = partition_window(self.options.run_dir, self.plan, self.manifest[0],

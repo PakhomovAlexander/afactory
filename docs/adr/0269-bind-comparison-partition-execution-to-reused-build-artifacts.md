@@ -1,4 +1,4 @@
-# ADR-0265: Bind comparison partition execution to reused build artifacts
+# ADR-0269: Bind comparison partition execution to reused build artifacts
 
 **Status:** proposed (2026-10-30).
 
@@ -53,3 +53,20 @@ family at unchanged pair counts and closing sentinels fits sequential originals.
 build's receipt and every shard bundle's binding to it stay exactly as recorded. A forged,
 widened or wrong-partition authority starts nothing and, in an assembled run, makes the shards
 it would cover integrity failures.
+
+## Amended (2026-10-30)
+
+Numbered 0269 when integrated with main, whose
+[ADR-0265](0265-build-nightlies-from-the-newest-green-main-on-the-owners-vm.md) builds
+nightlies; the decision above is unchanged. Main's
+[ADR-0266](0266-measure-nightlies-as-originals-of-the-independent-executor.md) gave the
+`nightly` tier 15 sampling and 180 run minutes, which the full release comparison recipe (the
+whole nightly family in 8 serial shards, partitions `[[0, 1], [2, 3], [4, 5], [6, 7]]`) cannot
+inherit: its largest shard holds 440 records. The executor configuration
+(`af.perf-executor/4`) therefore declares a core plan's windows in `[core.windows]`, and the
+recipe declares the 45 sampling and 120 run minutes it was measured in. The plan freezes them
+in place of the tier's, under the unchanged hard maxima, and they are part of the configuration
+and plan digests every partition binds; without the table a plan keeps its tier's windows, so
+the ordinary nightly stays at 15 and 180. The partition and parent fields a comparison's
+originals carry are `af.perf-executor-request/3`; request/2 stays main's nightly shape without
+them.

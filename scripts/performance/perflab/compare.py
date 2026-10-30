@@ -17,7 +17,7 @@ from . import bundle, contracts, images, limits, schedule, stats
 from .values import ContractError, canonical_bytes, format_rational, sha256_bytes
 
 RUN_FILES = ("builds.json", "run.json")
-# A later comparison partition's execution authority, the one optional run member (ADR-0265).
+# A later comparison partition's execution authority, the one optional run member (ADR-0269).
 PARTITIONS_FILE = "partitions.json"
 SHARD_DIR = "shards"
 LEVEL_INTEGRITY = 0
@@ -111,7 +111,7 @@ def _read(path, limit=limits.MAX_JSON_BYTES):
 
 def _partition_windows(run_dir, plan, hashes, builds_doc, reasons):
     """{shard index: (partition index, run window)} of the later comparison partitions whose
-    execution authority the run bundle seals (ADR-0265), bound to this plan and this exact,
+    execution authority the run bundle seals (ADR-0269), bound to this plan and this exact,
     unchanged build and its recorded run; {} when it holds none, None when it is refused."""
     if hashes is None or PARTITIONS_FILE not in hashes:
         return {}

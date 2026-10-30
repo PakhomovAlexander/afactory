@@ -1477,3 +1477,73 @@ shards, 33 cases, 2932 slots, and a narrower telemetry selection refused);
 `tests.test_kernelguard` **PASS: 29 tests**. Nothing was measured: no new VM or Claw
 measurement and no green final CI is claimed. The final comparison on the integrated producer,
 its report, export and verification are pending with the outer operator.
+
+## Integration with main `26d8a6d` and the merged nightly executor (2026-10-30)
+
+The source is Git's mechanical merge-tree `327d6448c198245ffcc184f73ed2b50a5adb74b6` of the PR
+head `6d8208d4dc8de6413d5ec154f19524fd67b271bd` and main
+`26d8a6da424c125db2bed32694dc5a9bd5b08481`, with conflict markers in ten files. Both sides are
+kept; the shared contracts were reconciled:
+
+- **Request versions.** Main's `af.perf-executor-request/2` is its nightly submission; the PR
+  had independently used request/2 for a profile's `parent` and a comparison's `partition`.
+  The combined shape is `af.perf-executor-request/3` (main's tagged submission, `parent`,
+  `partition`); every writer writes it. Request/1 and main's request/2 stay readable for a
+  journal's immutable originals, as ADR-0266 states, and a reader of either treats an absent
+  `parent` or `partition` as none. A request/3 shape labelled request/1 or request/2 is
+  refused (`invalid-v2-partition.json`), as is a request/2 shape labelled request/3
+  (`invalid-v3-missing-partition.json`). A nightly is never a partition or a parent-selected
+  profile. A comparison's members, its export and its overview accept only request/3 and
+  result/3 originals, and `preflight`, `comparison-preflight` and `overview` refuse a
+  nightly. Result/3 is main's, unchanged.
+- **Windows.** Main gave the `nightly` tier 15 sampling and 180 run minutes. The full release
+  comparison recipe keeps the 45 and 120 its largest shard (440 records) was measured in, by
+  an explicit `[core.windows]` of `af.perf-executor/4`. The plan freezes the windows in place
+  of the tier's, under the unchanged hard maxima; they are part of the configuration and plan
+  digests and of the recomputation `verify` performs, and a calibration original refuses
+  them. Executor v2 and v3 configurations are refused. So the 6d full comparison's executor/3
+  journal is never verified under this source.
+- **ADR.** Main's ADR-0265 (nightly build), 0266, 0267 and 0268 are unchanged. The PR's
+  partition ADR is renumbered ADR-0269, with a dated amendment, and every reference to it
+  follows.
+- **Generated files.** `python3 -I scripts/performance/schemas.py --write` rendered
+  `performance-executor-request-v1.json`, `-v2.json` and `-v3.json` and
+  `performance-executor-v4.json`; the stale `performance-executor-v3.json` was removed, and the
+  check passes. The kernel-measure fixtures were seeded with the PR side, then
+  `python3 -I -B scripts/performance/cli.py harness-digest --write` re-pinned them to
+  `sha256:fae94f3dad2dc1deca60739920bb7b669d7c727d30e031ad1864ea1231c9cdf4` (722 files);
+  `--check` passes.
+
+Recorded in the AF implementation sandbox on macOS, Python 3.15.0; nothing was measured, and no
+Docker, network or benchmark was used. Each command below ran from `scripts/performance` as
+`python3 -I -B -c` over `unittest`:
+
+- `tests.test_comparison`: **9 tests OK**. These include the documented full-comparison
+  configuration and checks (`('nightly', 'linux_x86_64_musl_claw', 8, 33, 31, 2, 2932)`,
+  windows `(45, 120)`, partitions `[[0, 1], [2, 3], [4, 5], [6, 7]]`, each later one reusing
+  the first one's build, and 12 manual telemetry runs), and a narrower telemetry selection is
+  refused.
+- `tests.test_contracts tests.test_localcalibration tests.test_planning tests.test_suite
+  tests.test_kernelguard`: **104 tests OK**.
+- `tests.test_runner tests.test_compare tests.test_report`: **130 tests OK**. A partition
+  authority with any total but the plan's is refused, and one past 180 minutes fails the
+  shape check.
+- `tests.test_diagnostics tests.test_report_diagnostics tests.test_whole_source_repairs
+  tests.test_builds`: **185 tests OK** (1 skipped).
+- `tests.test_executor`: **64 tests, 4 cases fail on this macOS host**, as in the earlier
+  records. Each stops in `diagnostics.check_mode` with `host_mismatch`:
+  `test_local_diagnostic_uses_native_child_planner_report_and_admission`, the two profile
+  subtests of `test_shipping_nightly_release_reach_both_builders_with_frozen_pinned_tools`,
+  and `test_diagnostic_build_removal_uncertainty_keeps_borrowed_executor_fence`. With
+  `diagnostics.host_os` patched to Linux, all three tests pass. The other tests pass. Among
+  them, the ordinary nightly's 4-shard plan is ready with 15 and 180 minutes and the declared
+  windows freeze 45 and 120. Main's nightly tests pass, and so does its request/1-result/2
+  readability test, now also refusing request/3 under request/1 and request/2.
+- `tests.test_nightly_build tests.test_hostobserver tests.test_hostlock`: **63 tests, 1
+  failure**. `CargoRewrite.test_a_rewritten_copy_of_this_tree_still_resolves_locked_and_offline`
+  expects Cargo's `needs to be updated`, but this host's Cargo prints `cannot update the lock
+  file ... because --locked was passed`. This change does not touch that test or its paths.
+
+The 6d full comparison running under the frozen PR head remains that producer's evidence. It
+is not this candidate's validation, and nothing here claims a Claw run, a final report or green
+CI for this source.

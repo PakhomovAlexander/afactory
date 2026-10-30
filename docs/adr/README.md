@@ -500,7 +500,13 @@ future readers need.
   frame](0263-bound-bare-afs-first-browser-frame.md)
 - [0264 — Own Codex session records and quarantine after a foreign
   one](0264-own-codex-session-records-and-quarantine-after-a-foreign-one.md)
-- [0265 — Bind comparison partition execution to reused build
-  artifacts](0265-bind-comparison-partition-execution-to-reused-build-artifacts.md)
+- [0265 — Build nightlies from the newest green main on the owner's
+  VM](0265-build-nightlies-from-the-newest-green-main-on-the-owners-vm.md)
+- [0266 — Measure nightlies as originals of the independent
+  executor](0266-measure-nightlies-as-originals-of-the-independent-executor.md)
 - [0267 — Offer a nightly channel in af
   self](0267-offer-a-nightly-channel-in-af-self.md)
+- [0268 — Quarantine flaky tests on gate evidence and confirm them on
+  Claw](0268-quarantine-flaky-tests-on-gate-evidence-and-confirm-them-on-claw.md)
+- [0269 — Bind comparison partition execution to reused build
+  artifacts](0269-bind-comparison-partition-execution-to-reused-build-artifacts.md)
