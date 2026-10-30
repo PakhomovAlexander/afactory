@@ -98,11 +98,10 @@ never pushes, publishes, posts, deletes, runs Docker or cargo.
    moved instances (cut with a count when they do not fit), the counts, the queue and the
    machine line, then the links as bare URLs on their own lines.
 7. **One GitHub reader.** The bounded anonymous-or-token reader of `build.py` moves to
-   `scripts/nightly/nightlygithub.py` and opens each GET with `urllib.request` alone: 30 s for
-   the connection and for each read (`urllib` has one timeout for both, so the build's former
-   5 s connect bound becomes 30 s, which amends
-   [ADR-0265](0265-build-nightlies-from-the-newest-green-main-on-the-owners-vm.md)), at most
-   16 MiB per response, no proxy from the environment and no redirect followed, so a request and
+   `scripts/nightly/nightlygithub.py` and opens each GET with `urllib.request`: 5 s to connect
+   and 30 s for each read (the opener's HTTPS connection bounds the connect apart from the
+   reads, as the build's reader did), at most 16 MiB per response, no proxy from the
+   environment and no redirect followed, so a request and
    its token reach api.github.com only, each request retried once on a failure or a 5xx. Tests
    inject the opener. It gains one list walk for the report, bounded to 20 pages of 100, more
    items a failure rather than a shortened list. The backlog asks each open pull request for

@@ -151,13 +151,18 @@ class Journal:
     lock, creates nothing and reads only below the configured root, each file confined
     (no symlink followed); every original is bound to the journal index by its digest."""
 
-    def __init__(self, root):
+    def __init__(self, root, journal_id, repository):
         self.root = root
         try:
             self.index = contracts.read_json(executor.read(os.path.join(root, "journal.json")),
                                              "executor-journal")
         except (OSError, ContractError) as error:
             raise Unavailable("the executor journal %s: %s" % (root, error))
+        # The journal is the configured executor's own, not any journal at that path.
+        found = (self.index.get("journal_id"), self.index.get("repository"))
+        if found != (journal_id, repository):
+            raise Unavailable("the executor journal %s is %r of %r, not the configured %r of %r"
+                              % (root, found[0], found[1], journal_id, repository))
         self.nightly = {}
         self.refused = {}
         self.cores = {}
@@ -167,6 +172,9 @@ class Journal:
                 request = self.read(ident, "request.json", "executor-request")
                 if canonical_digest(request) != item["request_digest"]:
                     raise ContractError("its request changed after the journal indexed it")
+                if request["request_id"] != ident:
+                    raise ContractError("its request names another original, %s"
+                                        % request["request_id"])
             except (OSError, ContractError) as error:
                 self.refused[ident] = str(error)
                 continue
@@ -201,7 +209,8 @@ class Journal:
             result = self.read(ident, "result.json", "executor-result")
             if sha256_bytes(document_bytes(result)) != state["result_sha256"]:
                 raise ContractError("its result is not the one its state sealed")
-            if (result["request_digest"] != canonical_digest(request)
+            if (result["request_id"] != ident
+                    or result["request_digest"] != canonical_digest(request)
                     or result["sources"] != request["sources"] or result["backend"] != "local"
                     or result["status"] != "complete" or result["actions"] is not None
                     or result["environment_digest"] != request["environment_digest"]
@@ -675,7 +684,8 @@ def compose(config, date, github, host, clock):
     skipped = record["status"] == "skipped"
     try:
         machine_config = load_executor(table["executor_config"])
-        journal = Journal(machine_config["root"])
+        journal = Journal(machine_config["root"], machine_config["journal_id"],
+                          machine_config["repository"])
         journal_error = None
     except Unavailable as error:
         machine_config, journal, journal_error = None, None, error
@@ -951,7 +961,7 @@ def trend_part(doc):
     parts = [render.paragraph(
         "Each point is one night's own paired comparison: its candidate median against that "
         "night's baseline; points of different nights are never paired with each other. Up "
-        "to %d nights." % trend["nights"], "note")]
+        "to %d earlier nights plus this night." % trend["nights"], "note")]
     for item in trend["instances"]:
         releases = ["%s from %s" % (point["release"], point["tag"]) for point in item["points"]
                     if point["release"]]
@@ -1141,20 +1151,47 @@ def digest_text(doc):
 
 # Command line -------------------------------------------------------------------------------
 
+# A test seam: called with the output path right after its directory is created, before it is
+# opened, so a test can prove that a directory swapped for a symlink in that window gets no file.
+_after_mkdir = None
+
+
 def write(output, doc):
-    """Create the new directory `output` and write exactly the three files into it."""
+    """Create the new directory `output` and write exactly the three files into it, by
+    descriptor: the parent is opened as a directory, the new directory is created and opened
+    below it without following a link, and each file is created by name below that open
+    directory, so a rename or a symlink put in the way between the steps changes nothing
+    outside the directory this call made."""
     files = ((DAILY_JSON, contracts.write_bytes(doc, "nightly-daily")),
              (REPORT_HTML, html_bytes(doc)), (DIGEST_MD, digest_text(doc)))
+    parent, name = os.path.split(os.path.abspath(output).rstrip(os.sep))
+    if not name:
+        raise Refused("--output %s: not a directory name" % output)
+    parent_fd = dir_fd = None
     try:
-        os.mkdir(output, 0o755)
-    except OSError as error:
-        raise Refused("--output %s: %s (a report is written into a new directory)"
-                      % (output, error))
-    for name, data in files:
-        fd = os.open(os.path.join(output, name),
-                     os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o644)
-        with os.fdopen(fd, "wb") as stream:
-            stream.write(data)
+        try:
+            parent_fd = os.open(parent or os.sep, os.O_RDONLY | os.O_DIRECTORY)
+            os.mkdir(name, 0o755, dir_fd=parent_fd)
+        except OSError as error:
+            raise Refused("--output %s: %s (a report is written into a new directory)"
+                          % (output, error))
+        if _after_mkdir is not None:
+            _after_mkdir(output)
+        try:
+            dir_fd = os.open(name, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW,
+                             dir_fd=parent_fd)
+            for filename, data in files:
+                fd = os.open(filename, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW,
+                             0o644, dir_fd=dir_fd)
+                with os.fdopen(fd, "wb") as stream:
+                    stream.write(data)
+        except OSError as error:
+            raise Refused("--output %s is not the directory this report created: %s"
+                          % (output, error))
+    finally:
+        for fd in (dir_fd, parent_fd):
+            if fd is not None:
+                os.close(fd)
 
 
 class Parser(argparse.ArgumentParser):

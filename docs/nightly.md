@@ -194,8 +194,9 @@ repository, and reads only:
    through the executor's service, and never locked or written: the originals keyed
    `nightly:<tag>:core` and `nightly:<tag>:telemetry` and the earlier nights' core originals;
 3. the executor's `local-telemetry-history/history.json`, for the telemetry figures;
-4. GitHub, through the same bounded reader as the build (`urllib.request`, 30 s to connect and
-   for each read, at most 16 MiB a response, no proxy or redirect, each request retried once);
+4. GitHub, through the same bounded reader as the build (`urllib.request`, 5 s to connect and
+   30 s for each read, at most 16 MiB a response, no proxy or redirect, each request retried
+   once);
 5. three host facts: the free bytes of `builds_root`'s filesystem, whether a process holds the
    executor's machine lock (`/tmp/af-perf-machine.lock`, read from `/proc/locks`, never taken)
    and how many systemd units `systemctl --failed --plain --no-legend` lists.

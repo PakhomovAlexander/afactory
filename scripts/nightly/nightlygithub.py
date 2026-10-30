@@ -2,11 +2,12 @@
 
 `build.py` reads the check runs that decide which main commit is green; `report.py` reads the
 backlog, the merged pull requests and the head's check runs for the daily report. Both ask
-api.github.com through `Client`, which opens each GET with `urllib.request`: 30 s for the
-connection and for each read, at most 16 MiB of response, no proxy and no redirect followed,
+api.github.com through `Client`, which opens each GET with `urllib.request`: 5 s to connect
+and 30 s for each read, at most 16 MiB of response, no proxy and no redirect followed,
 retried once when it fails or the server answers 5xx, anonymous unless a read-only token file is
 configured. Nothing here writes to GitHub.
 """
+import http.client
 import re
 import urllib.error
 import urllib.request
@@ -14,7 +15,8 @@ import urllib.request
 from perflab.values import ContractError, loads_strict
 
 API_ROOT = "https://api.github.com"
-TIMEOUT_SECONDS = 30
+CONNECT_SECONDS = 5
+READ_SECONDS = 30
 RESPONSE_BYTES_MAX = 16 * 1024 * 1024
 PER_PAGE, PAGES_MAX = 100, 20
 
@@ -31,9 +33,30 @@ class NoRedirect(urllib.request.HTTPRedirectHandler):
         return None
 
 
+class BoundedConnection(http.client.HTTPSConnection):
+    """urllib's HTTPS connection with the connect bounded apart from the reads: the socket
+    connects within CONNECT_SECONDS and then waits at most the opener's timeout (READ_SECONDS)
+    for each read."""
+
+    def connect(self):
+        read_timeout, self.timeout = self.timeout, CONNECT_SECONDS
+        try:
+            super().connect()
+        finally:
+            self.timeout = read_timeout
+        self.sock.settimeout(read_timeout)
+
+
+class BoundedHTTPSHandler(urllib.request.HTTPSHandler):
+    def https_open(self, req):
+        return self.do_open(BoundedConnection, req, context=self._context)
+
+
 def opener():
-    """The opener every GET goes through: no proxy from the environment, no redirect."""
-    return urllib.request.build_opener(urllib.request.ProxyHandler({}), NoRedirect())
+    """The opener every GET goes through: no proxy from the environment, no redirect, the
+    connect bounded by CONNECT_SECONDS."""
+    return urllib.request.build_opener(urllib.request.ProxyHandler({}), NoRedirect(),
+                                       BoundedHTTPSHandler())
 
 
 def read_token(path, error=Failed):
@@ -53,11 +76,11 @@ def read_token(path, error=Failed):
 
 def https_get(open_url, path, headers):
     """(status, at most RESPONSE_BYTES_MAX + 1 body bytes) of one GET of api.github.com
-    through `open_url` (an opener's `open`), TIMEOUT_SECONDS for the connection and each
-    read. An HTTP error status is an answer, not a failure."""
+    through `open_url` (an opener's `open`), READ_SECONDS for each read (and, through
+    `opener()`, CONNECT_SECONDS to connect). An HTTP error status is an answer, not a failure."""
     request = urllib.request.Request(API_ROOT + path, headers=headers, method="GET")
     try:
-        response = open_url(request, timeout=TIMEOUT_SECONDS)
+        response = open_url(request, timeout=READ_SECONDS)
     except urllib.error.HTTPError as answer:
         with answer:
             return answer.code, answer.read(RESPONSE_BYTES_MAX + 1)

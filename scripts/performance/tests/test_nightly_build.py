@@ -259,9 +259,9 @@ class GreenWalk(History):
         with self.assertRaises(nightly.Refused) as caught:
             github.client().check_runs(self.tip)
         self.assertIn("failed twice: connection reset", str(caught.exception))
-        # Each GET has 30 s to connect and for each read, and goes to api.github.com only.
-        self.assertEqual(github.opener.timeouts, [nightly.TIMEOUT_SECONDS] * 2)
-        self.assertEqual(nightly.TIMEOUT_SECONDS, 30)
+        # Each GET has 5 s to connect and 30 s for each read, and goes to api.github.com only.
+        self.assertEqual(github.opener.timeouts, [nightly.READ_SECONDS] * 2)
+        self.assertEqual((nightly.CONNECT_SECONDS, nightly.READ_SECONDS), (5, 30))
         self.assertTrue(all(url.startswith("https://api.github.com/repos/owner/af/commits/")
                             for url in github.opener.urls))
 

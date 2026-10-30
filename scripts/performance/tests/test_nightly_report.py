@@ -516,7 +516,7 @@ class Night(TempDir):
         self.builds = self.path("builds")
         self.journal = Journal(self.path("executor", "nightly-journal"))
         machine = fixture("executor/valid-synthetic.json")
-        machine.update(root=self.journal.root, journal_id="claw_nightly_1",
+        machine.update(root=self.journal.root, journal_id="claw_nightly_1", repository="owner/af",
                        core=dict(machine["core"], tier="nightly", shards=4))
         self.executor_config = self.path("executor.toml")
         write(self.executor_config, toml(machine).encode())
@@ -858,6 +858,57 @@ class JournalRefusals(Night):
         self.assertIn("holds no original nightly:nightly-2026.10.29:core",
                       doc["completeness"]["performance"]["reason"])
 
+    def test_a_journal_of_another_executor_is_refused(self):
+        self.night()
+        self.tonight()
+        self.journal.index["journal_id"] = "claw_originals_1"
+        self.journal.flush()
+        doc, page, _ = self.composed()
+        self.assertIsNone(doc["performance"])
+        self.assertIn("is 'claw_originals_1' of 'owner/af', not the configured 'claw_nightly_1' "
+                      "of 'owner/af'", doc["completeness"]["performance"]["reason"])
+        self.assertIsNone(doc["trend"])
+
+    def test_an_indexed_request_naming_another_original_is_refused(self):
+        from perflab.values import canonical_digest
+        self.night()
+        ident = self.tonight()
+        path = self.journal.path(ident, "request.json")
+        request = json.loads(read(path).decode())
+        # Indexed as `ident`, the request names another directory; its digest is re-indexed so
+        # the digest check alone would admit it.
+        request["request_id"] = ident[:-1] + ("0" if ident[-1] != "0" else "1")
+        write(path, contracts.write_bytes(request, "executor-request"))
+        for item in self.journal.index["originals"]:
+            if item["request_id"] == ident:
+                item["request_digest"] = canonical_digest(request)
+        self.journal.flush()
+        doc, _, _ = self.composed()
+        self.assertIsNone(doc["performance"])
+        self.assertIn("holds no original nightly:nightly-2026.10.29:core",
+                      doc["completeness"]["performance"]["reason"])
+
+    def test_an_output_directory_swapped_for_a_link_after_its_creation_gets_no_file(self):
+        self.night()
+        self.tonight()
+        target = self.path("elsewhere")
+        os.mkdir(target)
+        moved = self.path("moved")
+
+        def swap(path):
+            os.rename(path, moved)
+            os.symlink(target, path)
+
+        nightly._after_mkdir = swap
+        try:
+            code, output, err = self.compose(output=self.path("out"))
+        finally:
+            nightly._after_mkdir = None
+        self.assertEqual(code, 1)
+        self.assertIn("is not the directory this report created", err)
+        self.assertEqual(os.listdir(target), [])
+        self.assertEqual(os.listdir(moved), [])
+
     def test_an_unknown_headline_instance_leaves_the_trend_unavailable(self):
         self.night()
         self.tonight()
@@ -952,6 +1003,7 @@ class Trend(Night):
             self.assertEqual([point["tag"] for point in item["points"]],
                              ["nightly-2026.10.25", "nightly-2026.10.27", "nightly-2026.10.29"])
         self.assertEqual(doc["trend"]["refused"], [])
+        self.assertIn(b"Up to 2 earlier nights plus this night.", page)
         self.assert_page(doc, page)
 
 
