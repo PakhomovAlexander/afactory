@@ -65,8 +65,9 @@ operator page.
    night's size and digest. It then replaces the notes, `daily.json` and `report.html` (the
    asset is deleted and uploaded again), uploads any of the seven assets an interrupted
    publish left out, sends no second Telegram message unless `--notify-again`, and counts the
-   amendment in the receipt. A publish that died before its receipt sent no message; its
-   retry completes the release and sends the digest once.
+   amendment in the receipt. A publish that died before its receipt is completed by its
+   retry, which sends the digest: once when the first run died during an upload, a second
+   time when it died after the message, since the receipt is the only memory of one.
 4. **Telegram in plain text.** With the bot configured, `digest.md` is sent as one
    `sendMessage` without a parse mode and with the link preview off. A skipped night publishes
    no release and uploads nothing; it sends the one line `nightly-YYYY.MM.DD: no new commits on

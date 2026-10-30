@@ -298,9 +298,12 @@ def publish_release(github, record, shipped, report, notes):
     else:
         release = github.create_release(tag, record["head_sha"],
                                         "Nightly " + record["date"], notes)
-        if (release["tag_name"], release["target_commitish"], release["prerelease"]) != (
-                tag, record["head_sha"], True):
-            raise Refused("GitHub created the release of %s as something else" % tag)
+    # What GitHub answered, created or updated, is the release the assets go to: it must be
+    # this tag at this commit, a pre-release and no draft, or nothing is uploaded to it.
+    if (release.get("tag_name"), release.get("target_commitish"), release.get("prerelease"),
+            release.get("draft")) != (tag, record["head_sha"], True, False):
+        raise Refused("GitHub holds the release of %s as something else (a draft, another "
+                      "commit or not a pre-release); nothing was uploaded" % tag)
     by_name = dict((item["name"], item) for item in release["assets"])
     files = dict(shipped, **report)
     assets = []
@@ -315,18 +318,21 @@ def publish_release(github, record, shipped, report, notes):
     return release, assets, amended
 
 
-def prune(github, keep, own, pruned, failures):
-    """The foreign tags, once the nightly pre-releases beyond the newest `keep` by tag date are
-    deleted, oldest first, each release before its tag, the night's own release included when
-    it is that old. `pruned` gets each tag once its tag ref is deleted too; `failures` gets the
-    tag and reason of a release that went while its tag deletion failed, and pruning stops
-    there. A nightly-named release that is a draft or not a pre-release is foreign and left
-    alone; nothing else is touched."""
-    nightly, foreign = [], []
+def prune(github, keep, own, pruned, failures, foreign):
+    """Delete the nightly pre-releases beyond the newest `keep` by tag date, oldest first, each
+    release before its tag, the night's own release included when it is that old. `foreign`
+    gets, before anything is deleted, the nightly-named releases that are drafts or not
+    pre-releases (other than the night's own): they are left alone and named, whatever happens
+    after. `pruned` gets each tag once its tag ref is deleted too (a ref GitHub no longer holds
+    counts: nothing of the night remains); `failures` gets the tag and reason of a release that
+    went while its tag deletion was refused, and pruning stops there. Nothing else is
+    touched."""
+    nightly, others = [], []
     for item in github.releases():
         if re.match(TAG_PATTERN, item["tag_name"]) is None:
             continue
-        (nightly if item["prerelease"] and not item["draft"] else foreign).append(item)
+        (nightly if item["prerelease"] and not item["draft"] else others).append(item)
+    foreign.extend(sorted(item["tag_name"] for item in others if item["tag_name"] != own))
     tags = [item["tag_name"] for item in nightly]
     if len(set(tags)) != len(tags):
         raise Refused("two nightly pre-releases share a tag; prune by hand")
@@ -340,7 +346,6 @@ def prune(github, keep, own, pruned, failures):
             raise Refused("the release of %s is deleted but its tag is not; delete the tag by "
                           "hand: %s" % (item["tag_name"], error))
         pruned.append(item["tag_name"])
-    return sorted(item["tag_name"] for item in foreign if item["tag_name"] != own)
 
 
 # The receipt --------------------------------------------------------------------------------
@@ -394,7 +399,9 @@ def publish(config, args, github, telegram_send, run, clock):
                        release={"id": release["id"], "url": release["html_url"]})
     # A night with a receipt had its message, or the reason there is none: a skipped night
     # never sends again, an amendment only with --notify-again. A retry of a first publish
-    # that died before its receipt finds the release but sends the message once.
+    # that died before its receipt finds the release and sends the message: once when the
+    # first died during an upload, a second time when it died after the message and before
+    # the receipt, the receipt being the only memory of a message.
     if previous is not None and (record["status"] == "skipped"
                                  or amended and not args.notify_again):
         receipt.update(telegram=previous["telegram"],
@@ -406,12 +413,11 @@ def publish(config, args, github, telegram_send, run, clock):
             failures.append(failure)
     if record["status"] == "built":
         # The release and the message are out: a pruning failure is reported beside them.
-        pruned, prune_failures = [], []
+        pruned, prune_failures, foreign = [], [], []
         try:
-            foreign = prune(github, config["publish"].get("keep_nights", KEEP_NIGHTS_DEFAULT),
-                            record["tag"], pruned, prune_failures)
+            prune(github, config["publish"].get("keep_nights", KEEP_NIGHTS_DEFAULT),
+                  record["tag"], pruned, prune_failures, foreign)
         except Refused as error:
-            foreign = []
             failures.append("nightly: failed: pruning: %s" % error)
         receipt.update(pruned=sorted(pruned), prune_failures=prune_failures, foreign=foreign)
         failures += ["nightly: refused: %s is a nightly-named release that is a draft or not "
@@ -463,7 +469,7 @@ def main(argv=None, github=None, telegram_send=https_send, run=run_command,
     if receipt["tag"] in receipt["pruned"]:
         sys.stderr.write("nightly: %s is older than the newest keep_nights nightly "
                          "pre-releases: published, then pruned\n" % receipt["tag"])
-    else:
+    elif receipt["release"] is None:
         sys.stderr.write("nightly: %s was skipped; published nothing\n" % receipt["tag"])
     for failure in failures:
         sys.stderr.write(failure + "\n")

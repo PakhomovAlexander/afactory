@@ -201,8 +201,10 @@ uploaded again), any of the seven assets an interrupted publish left out is uplo
 receipt is rewritten with `amendments` counted. An amendment sends no Telegram message unless
 `--notify-again` is given; the receipt keeps the earlier message id, or the earlier reason
 there is none. After a failed message, publish again with `--notify-again` to send it. A
-publish that died before writing its receipt (during an upload, say) sent no message: running
-it again completes the release and then sends the digest, once.
+publish that died before writing its receipt is completed by running it again, which sends
+the digest: once when the first run died during an upload, before the message; a second time
+when it died after the message, while pruning or writing the receipt, since the receipt is the
+only memory of a message.
 
 **A skipped night** publishes no release and uploads nothing. It sends the one line
 `nightly-YYYY.MM.DD: no new commits on main since <previous_tag>` and writes a receipt saying

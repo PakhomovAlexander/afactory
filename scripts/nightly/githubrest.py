@@ -264,10 +264,11 @@ class GitHub:
         self.call("DELETE", "/repos/%s/releases/%d" % (self.repository, release_id), ok=(204,))
 
     def delete_tag(self, tag):
-        """Delete the tag ref `tag`; True when it was there, False when it was already gone."""
+        """Delete the tag ref `tag`; True when it was there, False when GitHub holds no such
+        ref (404). Any other answer, 422 included, is refused: the ref may still be there."""
         status, _ = self.call("DELETE", "/repos/%s/git/refs/tags/%s" % (self.repository,
                                                                          _tag(tag)),
-                              ok=(204,), absent=(404, 422))
+                              ok=(204,), absent=(404,))
         return status == 204
 
 

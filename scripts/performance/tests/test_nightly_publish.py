@@ -53,6 +53,8 @@ class FakeGitHub:
         self.requests = []
         self.next_id = 1000
         self.fail = None
+        # When set, a created release is answered as a draft, whatever was asked.
+        self.create_draft = False
 
     def id(self):
         self.next_id += 1
@@ -94,8 +96,12 @@ class FakeGitHub:
         self.test.assertIn(parts.netloc, ("api.github.com", "uploads.github.com"))
         path = parts.path + ("?" + parts.query if parts.query else "")
         self.requests.append((method, path))
-        if self.fail and self.fail(method, path):
-            return 502, b'{"message": "Bad gateway"}'
+        failed = self.fail(method, path) if self.fail else False
+        if failed:
+            # True answers 502; an int is the status to answer with.
+            status = failed if isinstance(failed, int) and not isinstance(failed, bool) else 502
+            return status, b'{"message": "%s"}' % (b"Bad gateway" if status == 502
+                                                    else b"Validation Failed")
         base = "/repos/%s" % REPO
         doc = json.loads(body) if body and headers.get("Content-Type") == "application/json" \
             else None
@@ -118,7 +124,8 @@ class FakeGitHub:
             self.test.assertEqual((doc["draft"], doc["prerelease"], doc["make_latest"]),
                                   (False, True, "false"))
             release = self.add(doc["tag_name"], sha=self.tags.get(doc["tag_name"],
-                                                                   doc["target_commitish"]))
+                                                                   doc["target_commitish"]),
+                               draft=self.create_draft)
             release.update(name=doc["name"], body=doc["body"],
                            target_commitish=doc["target_commitish"])
             return 201, json.dumps(self.render(release)).encode()
@@ -303,6 +310,7 @@ class FirstPublish(Night):
         self.assertEqual(code, 0, err)
         url = "https://github.com/owner/af/releases/tag/" + TAG
         self.assertEqual(out, url + "\n")
+        self.assertNotIn("was skipped", err)
         (release,) = self.github.releases.values()
         self.assertEqual((release["tag_name"], release["target_commitish"], release["prerelease"],
                           release["draft"], release["name"], release["body"]),
@@ -579,6 +587,58 @@ class Pruning(Night):
         self.assertEqual(sorted(self.github.tags), ["nightly-2026.10.11", "nightly-2026.10.12",
                                                     "nightly-2026.10.13", TAG])
         self.assertEqual(len(self.telegram.sent), 1)
+
+    def test_a_refused_tag_deletion_is_a_failure_not_a_pruned_tag(self):
+        for day in range(10, 14):
+            self.github.add("nightly-2026.10.%02d" % day)
+        self.write_config(keep_nights=3)
+        self.build()
+        # GitHub answers 422 to the tag deletion: the ref may still be there, so it is not
+        # pruned, and the receipt says so.
+        self.github.fail = lambda method, path: 422 if (
+            method == "DELETE" and path.endswith("nightly-2026.10.11")) else False
+        code, out, err = self.publish()
+        self.assertEqual(code, 1)
+        receipt = self.receipt()
+        self.assertEqual(receipt["pruned"], ["nightly-2026.10.10"])
+        self.assertEqual([item["tag"] for item in receipt["prune_failures"]],
+                         ["nightly-2026.10.11"])
+        self.assertIn("HTTP 422", receipt["prune_failures"][0]["reason"])
+        self.assertIn("nightly: failed: pruning: the release of nightly-2026.10.11 is deleted "
+                      "but its tag is not", err)
+        self.assertIn("nightly-2026.10.11", self.github.tags)
+
+    def test_a_foreign_draft_is_named_even_when_pruning_fails_after_it(self):
+        for day in range(10, 14):
+            self.github.add("nightly-2026.10.%02d" % day)
+        self.github.add("nightly-2026.10.05", draft=True)
+        self.write_config(keep_nights=3)
+        self.build()
+        self.github.fail = lambda method, path: (method == "DELETE"
+                                                 and path.endswith("nightly-2026.10.11"))
+        code, out, err = self.publish()
+        self.assertEqual(code, 1)
+        receipt = self.receipt()
+        self.assertEqual(receipt["foreign"], ["nightly-2026.10.05"])
+        self.assertIn("nightly: refused: nightly-2026.10.05 is a nightly-named release that is "
+                      "a draft or not a pre-release: foreign, never pruned", err)
+        self.assertIsNotNone(self.github.by_tag("nightly-2026.10.05"))
+        self.assertIn("nightly-2026.10.05", self.github.tags)
+
+    def test_a_release_created_as_a_draft_gets_no_asset_and_no_message(self):
+        self.write_config()
+        self.build()
+        self.github.create_draft = True
+        code, out, err = self.publish()
+        self.assertEqual(code, 1)
+        self.assertEqual(out, "")
+        self.assertIn("nightly: refused: GitHub holds the release of %s as something else "
+                      "(a draft, another commit or not a pre-release); nothing was uploaded"
+                      % TAG, err)
+        self.assertEqual([r for r in self.github.requests if r[0] == "POST"
+                          and "/assets" in r[1]], [])
+        self.assertEqual(self.telegram.sent, [])
+        self.assertFalse(os.path.exists(self.path("publish.json")))
 
     def test_an_older_night_beyond_keep_nights_is_pruned_too_and_keep_nights_is_bounded(self):
         for day in range(1, 5):
