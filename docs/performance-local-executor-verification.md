@@ -1680,3 +1680,101 @@ hosted-windows test, 1 of 1 in 0.676 seconds, belongs to Task 22's candidate. Th
 `6d8208d` comparison and its offline verification remain that producer's evidence; the
 integration on Claw and the final head's CI are the outer operator's, after this change is
 adopted.
+
+## CPU lanes need admitted captures; verified reports derive the aggregate (2026-10-30)
+
+**Findings.** Whole-PR verification 08 left two major correctness findings open on
+`perflab/comparison.py`. First, for each case the aggregate selected, the CPU lane accepted a
+differential render without baseline and candidate captures, and offline admission
+(`report.admit_children`) neither requires captures nor binds a render to them. A copied
+bundle could keep its valid SVGs, remove the captures, reseal the child and the original, and
+still complete the lane. Second, `status` took the aggregate's `result` and `coverage` as the
+core lane's completeness. `comparison-report` and `comparison-export` verified each original
+but never derived those fields again, as `verify_export` did through `aggregate_claims`. So an
+incomplete aggregate edited in the journal before the diagnostic lanes were submitted produced
+matching child parent receipts and a locally complete report, which the copied-bundle
+verifier contradicted.
+
+**Change.** For each case the aggregate selects, the CPU lane now needs a usable baseline
+capture and a usable candidate capture. A usable capture has no omission, at least the frozen
+registry's `capture.minimum_samples` (unchanged at 200) and its own `collapsed.folded`
+artifact. Both directions of the difference must name exactly those two captures' collapsed
+stacks as inputs: forward is baseline then candidate, reverse is the opposite. This is the
+input `diagnostics.Profile.render` hashes into each render. The minimum is read from the
+installed producer's `fixtures/performance/diagnostics.toml`, and only when its bytes are the
+registry the profile names (`registry_sha256`). Otherwise the lane fails, naming both digests.
+The loss rule is unchanged: the native contract's (decoded counts, or unknown with a reason).
+A decoded loss is reported, never a usability threshold, as in the producer. Standalone
+profiles, the producer, the selection and parent checks, the trace lane, sampling, budgets,
+schemas and persisted shapes do not change.
+
+`status` with `verify` (`comparison-report`, `comparison-export`, and `comparison-verify`
+through `Bundled`) now runs `aggregate_claims` over the members it admitted, in a journal and
+a bundle alike. That covers partition entries against their originals' states and sealed
+results, inclusion only of admitted members, the run's shards byte for byte those of the
+included partitions (a bundle's manifest hashes, a journal's files read within the export's
+bounds), the first partition's build, the run evaluated again to its verdict
+(`_same_verdict`), and the result, coverage and regressions read from that verdict. An
+aggregate that judged nothing must claim no build, result, coverage or regressions. A claim
+that does not derive leaves the core lane `failed` with `core aggregate refused: …`, fails
+every diagnostic lane under it, and makes the report's verification `refused` with an empty
+core verdict. The reason uses journal-relative paths, so the journal's report and its
+bundle's derivation are the same document. `comparison-verify` no longer refuses such a
+bundle outright: it derives the same refused, incomplete report and refuses any other claim.
+`comparison-status` (`verify` absent) still reads cheaply and verifies nothing.
+
+**Tests.** In `tests.test_comparison`:
+
+- `stand_in_profiles` now writes, for each selected CPU case, a contract-valid first perf
+  capture per side at exactly the registry minimum, with the renders bound to their collapsed
+  stacks and the installed registry's digest. The honest complete bundle still verifies
+  complete through `cli.py executor comparison-verify`.
+- `Comparison.test_full_comparison_partitions_aggregates_diagnoses_reports_and_exports`, new
+  helper `assert_cpu_lane_needs_admitted_two_sided_captures`: the selected case's captures
+  removed, the candidate missing, the candidate omitted (`too_few_samples`), the candidate at
+  199 samples, and the render's inputs substituted, each with the render surviving. In each
+  case the journal's report leaves the CPU lane failed with its reason. The complete claim over
+  the resealed evidence (original, result, state, report and manifest) is refused: through
+  `comparison-verify` (exit 4) for removed captures, through `verify_export` for the rest.
+  With the captures removed and the report as derived, the bundle verifies `incomplete`.
+- The same test, journal side: an aggregate whose claims alone are injected as judged whole is
+  `incomplete`, `refused`, core `failed`, core verdict empty. Only with the verdict injected
+  as well (`overview._core`, as the offline derivation already did) is it complete.
+- `Comparison.test_a_locally_altered_aggregate_never_reports_complete`: the real
+  `aggregate.json` is rewritten as judged whole before `advance` submits the lanes. Both
+  profiles' parent receipts name the altered bytes. `cli.py executor comparison-report` and
+  `comparison-export` exit 4 with core, trace and CPU lanes failed and verification
+  `refused`, and the exported bundle's offline derivation equals the journal's report.
+- `CpuEvidence.test_the_declared_dwarf_capture_renders_after_an_omitted_first_attempt` and
+  `CpuEvidence.test_a_registry_that_is_not_the_installed_producers_proves_no_sample_minimum`:
+  the producer's DWARF second attempt is usable after an omitted first; a render of the
+  omitted attempt is not; an unknown or unreadable registry fails the lane.
+
+With the `_cpu_case` check replaced by the earlier render-only check, the full test fails at
+the removed-captures variant (`('complete', 'complete', 'complete') != ('incomplete',
+'complete', 'failed')`). With the `aggregate_claims` call in `status` removed, the full test
+fails at the injected-claims assertion, and the local-tamper test fails at
+`comparison-report` (`0 != 4`).
+
+**Focused validation of this candidate.** Run by this repair Task's implementer on its
+candidate at the repository root, offline, with Python 3.14.7, no benchmark, Docker, perf or
+network, on 2026-10-30 at 15:28:59 to 15:33:09 UTC:
+
+```sh
+python3.14 -I -B -c 'import sys,unittest; sys.path.insert(0,"scripts/performance"); suite=unittest.defaultTestLoader.loadTestsFromNames(["tests.test_comparison","tests.test_report_diagnostics"]); result=unittest.TextTestRunner(verbosity=1).run(suite); raise SystemExit(not result.wasSuccessful())'
+```
+
+`tests.test_comparison` and `tests.test_report_diagnostics`: 49 tests, `OK`, 249.316 seconds
+on a shared host, exit 0. That is 46 tests before this change plus the 3 new ones. An earlier
+run of the same selection on this candidate failed one test only because `comparison.py` was
+edited while it ran. The telemetry authority digest covers `perflab/`, so the stand-in
+telemetry result, produced before the edit, was refused when verified after it. Nothing was
+changed in response, and the run above saw no edit. `python3.14 -I -B
+scripts/performance/cli.py harness-digest --write` re-pinned the protected harness after the
+last protected edit, to
+`sha256:8d540a668f6376d9520af4c46f0b287f0d263f97d1b3d40fb620e807153af79c`, and `--check` exits 0.
+No commit SHA, CI run or VM execution of this candidate exists yet, and none is claimed. The
+full 33-case `6d8208d` comparison and its offline verification remain that producer's
+evidence, and nothing here changes them. The integration running on Claw for `4caf525f`, its
+final evidence and the final head's CI belong to the outer operator, after this change is
+adopted.

@@ -600,15 +600,86 @@ def _trace_side(doc, instance, side):
         item["open"])
 
 
-def _profile_usable(path, lane, expected):
+def _minimum_samples(doc, installed):
+    """The frozen registry's `capture.minimum_samples` the profile was captured under, read from
+    the installed trusted producer whose registry bytes are exactly the ones the profile names
+    (`registry_sha256`); (None, why) when they are not."""
+    try:
+        raw = executor.read(os.path.join(installed, diagnostics.REGISTRY_PATH))
+        if sha256_bytes(raw) != doc["registry_sha256"]:
+            return None, ("the profile's diagnostic registry %s is not the installed "
+                          "producer's %s, so its frozen sample minimum is unknown; install the "
+                          "original trusted producer" % (doc["registry_sha256"],
+                                                         sha256_bytes(raw)))
+        return diagnostics.load_bytes(raw)["capture"]["minimum_samples"], None
+    except (ContractError, OSError) as error:
+        return None, "the installed diagnostic registry is unreadable: %s" % str(error)[:512]
+
+
+def _cpu_side(doc, instance, side, minimum):
+    """({digest of the collapsed stacks of each usable `side` capture of `instance`}, why none
+    is usable): a capture is usable exactly when it has no omission, at least the frozen
+    registry's minimum samples and its own collapsed stacks, the input a flamegraph renders
+    (`diagnostics.Profile.render`)."""
+    found = [item for item in doc["captures"]
+             if item["instance_id"] == instance and item["side"] == side]
+    usable, why = set(), []
+    for item in found:
+        folded = [artifact["sha256"] for artifact in item["artifacts"] if artifact["path"]
+                  == diagcontracts.capture_directory(item) + "/collapsed.folded"]
+        if item["omission"] is not None:
+            why.append("its %s capture %d omitted (%s: %s)" % (
+                side, item["attempt"], item["omission"]["reason"],
+                item["omission"]["detail"][:256]))
+        elif item["samples"] is None or item["samples"] < minimum:
+            why.append("a %s capture %d of %s samples, below the frozen minimum of %d" % (
+                side, item["attempt"], item["samples"], minimum))
+        elif not folded:
+            why.append("a %s capture %d without its collapsed stacks" % (side, item["attempt"]))
+        else:
+            usable.add(folded[0])
+    return usable, "; ".join(why) or "no %s capture" % side
+
+
+def _cpu_case(doc, instance, minimum):
+    """Why the profile holds no usable differential flamegraph of `instance`, or None: a usable
+    baseline and candidate capture each, and both directions of the difference rendered from
+    exactly those captures' collapsed stacks (the forward one baseline then candidate)."""
+    usable, missing = {}, []
+    for side in diagcontracts.SIDES:
+        usable[side], why = _cpu_side(doc, instance, side, minimum)
+        if not usable[side]:
+            missing.append(why)
+    if missing:
+        return "no usable two-sided capture: " + "; ".join(missing)
+    inputs = dict((item["kind"], item["inputs"]) for item in doc["renders"]
+                  if item["instance_id"] == instance and item["kind"].startswith("difference"))
+    if not inputs:
+        return "no differential flamegraph"
+    forward, reverse = inputs.get("difference_forward"), inputs.get("difference_reverse")
+    if (forward is None or reverse != forward[::-1] or forward[0] not in usable["baseline"]
+            or forward[1] not in usable["candidate"]):
+        return ("a differential flamegraph whose inputs %s are not its usable baseline and "
+                "candidate captures' collapsed stacks" % (forward or reverse))
+    return None
+
+
+def _profile_usable(path, lane, expected, installed=executor.ROOT):
     """Reasons the profile's evidence is not usable for the cases the aggregate verdict selects.
     `expected` is the selection record `selection` derives from the bundled aggregate: the
     profile's own selection must be exactly that record (mode, limit, parent verdict digest,
-    cases and reasons), never a self-declared one, and each expected case needs a differential
-    flamegraph (CPU) or a complete baseline and candidate trace (trace)."""
+    cases and reasons), never a self-declared one, and each expected case needs a complete
+    baseline and candidate trace (trace) or a differential flamegraph rendered from a usable
+    baseline and candidate capture under the frozen registry's sample minimum (CPU,
+    `_cpu_case`), never a surviving render alone."""
     doc = contracts.read_file(os.path.join(path, "profile", diagnostics.PROFILES_FILE),
                               "profiles")
     reasons = []
+    minimum = None
+    if lane == "cpu_profile" and expected["cases"]:
+        minimum, why = _minimum_samples(doc, installed)
+        if why is not None:
+            reasons.append("%s lane: %s" % (lane, why))
     own = doc["selection"]
     if own != expected:
         reasons.append("%s lane: the profile selected %s %s under verdict %s, not the aggregate "
@@ -619,10 +690,9 @@ def _profile_usable(path, lane, expected):
                            expected["parent_verdict_sha256"]))
     for instance in [case["instance_id"] for case in expected["cases"]]:
         if lane == "cpu_profile":
-            if not any(item["instance_id"] == instance and item["kind"].startswith("difference")
-                       for item in doc["renders"]):
-                reasons.append("%s lane: case %s has no differential flamegraph"
-                               % (lane, instance))
+            why = None if minimum is None else _cpu_case(doc, instance, minimum)
+            if why is not None:
+                reasons.append("%s lane: case %s has %s" % (lane, instance, why))
         else:
             missing = [why for why in (_trace_side(doc, instance, side)
                                        for side in diagcontracts.SIDES) if why]
@@ -634,7 +704,9 @@ def _profile_usable(path, lane, expected):
 
 def status(journal, ident, verify=None, installed=executor.ROOT):
     """The `af.perf-comparison-report/1` of durable state. `verify` (`executor.verify_original`)
-    recomputes every complete original's admission; without it nothing is verified and the
+    recomputes every complete original's admission, and the aggregate's claims are derived
+    again from the admitted partitions and its re-evaluated verdict (`aggregate_claims`), so a
+    journal's report and a copied bundle's agree; without it nothing is verified and the
     comparison is never complete (`status` reads cheaply while an original executes)."""
     doc, plan, raw_plan = load(journal, ident)
     root = journal.root
@@ -689,9 +761,23 @@ def status(journal, ident, verify=None, installed=executor.ROOT):
             for item in doc["partitions"]]
     state = lane_state(core)
     coverage, detail, core_links = None, "", []
+    refused = None
+    if verify is not None and agg is not None:
+        # A verified report takes no claim of the aggregate on trust: its membership, run,
+        # result, coverage and regressions are derived again from the admitted partitions
+        # and its re-evaluated verdict, in a journal and a copied bundle alike.
+        try:
+            aggregate_claims(journal, doc, agg, set(verified))
+        except (ContractError, OSError) as error:
+            # Journal-relative, so a journal's report and its bundle's say the same.
+            refused = "core aggregate refused: %s" % str(error).replace(
+                journal.root + os.sep, "")[:1024]
     if state is None:
         if agg is None:
             state, detail = "running", "every partition ended; awaiting the aggregate (advance)"
+        elif refused is not None:
+            state, detail = "failed", refused
+            reasons.append(refused)
         else:
             coverage = agg["coverage"]
             core_links = [os.path.join(base, "aggregate", name) for name in (
@@ -802,7 +888,7 @@ def status(journal, ident, verify=None, installed=executor.ROOT):
                 result = verified.get(prof["request_id"])
                 measured = None if result is None else result["measurement_status"]
                 if os.path.isfile(os.path.join(path, "profile", diagnostics.PROFILES_FILE)):
-                    unusable, _ = _profile_usable(path, lane["lane"], chosen)
+                    unusable, _ = _profile_usable(path, lane["lane"], chosen, installed)
                 else:
                     unusable = ["%s lane: the profile retained no profiles.json" % lane["lane"]]
                 entry["links"] = [os.path.relpath(os.path.join(path, name), root)
@@ -812,6 +898,9 @@ def status(journal, ident, verify=None, installed=executor.ROOT):
                 if measured not in (None, "available"):
                     unusable.insert(0, "%s lane: profile measurement is %s" % (lane["lane"],
                                                                                measured))
+                if refused is not None:
+                    unusable.append("%s lane: its parent aggregate's claims are refused"
+                                    % lane["lane"])
                 if unusable:
                     entry.update(state="failed", detail="; ".join(unusable))
                     reasons.extend(unusable)
@@ -826,7 +915,7 @@ def status(journal, ident, verify=None, installed=executor.ROOT):
     states = [m["verification"] for m in members if m["state"] == "complete"]
     if not terminal:
         verification = "not_terminal"
-    elif "refused" in states:
+    elif "refused" in states or refused is not None:
         verification = "refused"
     elif verify is None:
         verification = "not_checked"
@@ -851,8 +940,10 @@ def status(journal, ident, verify=None, installed=executor.ROOT):
            "submission": doc["submission"], "status": status_value,
            "verification": verification,
            "calibration": {"eligible": False, "detail": NOT_CALIBRATION},
-           "performance": {"core_verdict": None if agg is None else agg["result"],
-                           "regressions": [] if agg is None else agg["regressions"],
+           "performance": {"core_verdict": (None if agg is None or refused is not None
+                                            else agg["result"]),
+                           "regressions": ([] if agg is None or refused is not None
+                                           else agg["regressions"]),
                            "telemetry_verdict": telemetry_verdict},
            "lanes": lanes, "members": members, "diagnostic_selection": picks,
            "reasons": reasons, "links": sorted(set(links))}
@@ -1058,8 +1149,10 @@ def verify_export(bundle, installed=executor.ROOT):
     the report is derived again (`status` over a read-only view of the bundle, `Bundled`) from
     the bundled declaration, each declared original's state bound to its sealed result, its
     native evidence admitted again (`admit`) and the aggregate's claims recomputed from its
-    partitions and run (`aggregate_claims`); a report that is not exactly that derivation is
-    refused, so a relabelled report or a rehashed manifest proves nothing. Returns (manifest,
+    partitions and run (`aggregate_claims`, which `status` applies to a journal too); a report
+    that is not exactly that derivation is refused, so a relabelled report or a rehashed
+    manifest proves nothing, and a refused aggregate derives an incomplete, refused report,
+    never a complete one. Returns (manifest,
     report). Needs no journal or configuration; `installed` is the trusted measurement
     authority the native telemetry result is verified under."""
     raw = executor.read(os.path.join(bundle, MANIFEST))
@@ -1101,13 +1194,11 @@ def verify_export(bundle, installed=executor.ROOT):
         if agg["verdict_sha256"] is not None:
             require(listed.get(base + "aggregate/report/verdict.json", {}).get("sha256")
                     == agg["verdict_sha256"], "the bundled aggregate verdict changed")
-            _same_verdict(os.path.join(bundle, base, "aggregate"), "the family aggregate")
     view = Bundled(bundle, declaration, listed)
     verify_native(view)
-    verify = admit(view, installed)
-    agg, _ = read_aggregate(view, declaration)
-    aggregate_claims(view, declaration, agg, verify, installed)
-    derived = status(view, declaration["comparison_id"], verify=verify, installed=installed)
+    # `status` derives the aggregate's claims again (`aggregate_claims`), as in a journal.
+    derived = status(view, declaration["comparison_id"], verify=admit(view, installed),
+                     installed=installed)
     differ = sorted(key for key in derived if derived[key] != report_doc.get(key))
     require(not differ, "the report's %s are not what its bundled declaration and native "
             "evidence derive (derived %s, %s): a relabelled report proves nothing"
@@ -1274,15 +1365,17 @@ def _admit(view, ident, installed):
     return request, state, result
 
 
-def aggregate_claims(view, doc, agg, verify, installed=executor.ROOT):
-    """The bundled aggregate's claims derived again: each partition entry is its bundled
-    original's state and sealed result, included exactly when that original is this
-    comparison's member and admitted offline; the family's run holds exactly the included
-    partitions' shards, byte for byte, on the first partition's build; and its result,
-    coverage and regressions are its verdict's (`_same_verdict` re-evaluated the run)."""
+def aggregate_claims(view, doc, agg, admitted):
+    """The aggregate's claims derived again, in a journal or a copied bundle (`Bundled`): each
+    partition entry is its original's state and sealed result, included exactly when that
+    original is this comparison's member and among the `admitted` originals; the family's run
+    holds exactly the included partitions' shards, byte for byte, on the first partition's
+    build, and evaluated again reproduces its verdict (`_same_verdict`); and its result,
+    coverage and regressions are that verdict's. An aggregate that judged nothing claims
+    nothing. Raises naming the first claim that is not derived."""
     if agg is None:
         return
-    where = "the bundled aggregate"
+    where = "the aggregate"
     require([p["index"] for p in agg["partitions"]] == [p["index"] for p in doc["partitions"]],
             "%s does not state every declared partition" % where)
     included = []
@@ -1291,17 +1384,21 @@ def aggregate_claims(view, doc, agg, verify, installed=executor.ROOT):
         require(state is not None and entry["request_id"] == item["request_id"]
                 and entry["shards"] == item["shards"] and entry["state"] == state["state"]
                 and entry["result_sha256"] == state["result_sha256"],
-                "%s's partition %d is not its bundled original" % (where, item["index"]))
+                "%s's partition %d is not its original" % (where, item["index"]))
         if entry["included"]:
             why = _binding(view, doc, view.request(item["request_id"]), "core", item["key"],
                            _partition(doc, item))
             require(why is None, "%s includes partition %d, which is not this comparison's "
                     "member: %s" % (where, item["index"], why))
-            verify(view, item["request_id"], installed)
+            require(item["request_id"] in admitted, "%s includes partition %d, whose original "
+                    "%s is not admitted" % (where, item["index"], item["request_id"]))
             included.append(item)
     if agg["verdict_sha256"] is None:
         require(not agg["partitions"][0]["included"], "%s judged nothing over a verified "
                 "first partition" % where)
+        require(agg["builds_sha256"] is None and agg["result"] is None
+                and agg["coverage"] is None and not agg["regressions"],
+                "%s judged nothing, yet claims a build, result, coverage or regressions" % where)
         return
     require(agg["partitions"][0]["included"], "%s judged a family without its first "
             "partition's verified build" % where)
@@ -1311,22 +1408,36 @@ def aggregate_claims(view, doc, agg, verify, installed=executor.ROOT):
     require(sha256_bytes(first) == agg["builds_sha256"] == sha256_bytes(executor.read(
             os.path.join(path, "run", "builds.json"))), "%s is not on the first partition's "
             "build" % where)
-    family = "%s/%s/%s/aggregate/run/shards/" % (EVIDENCE, DIRECTORY, doc["comparison_id"])
     held = {}
     for item in included:
-        own = "%s/requests/%s/run/shards/" % (EVIDENCE, item["request_id"])
+        own = os.path.join(view.path(item["request_id"]), "run", "shards")
         for index in item["shards"]:
-            prefix = "%s%d/" % (own, index)
-            for name, entry in view.listed.items():
-                if name.startswith(prefix):
-                    held["%d/%s" % (index, name[len(prefix):])] = entry["sha256"]
-    assembled = dict((name[len(family):], entry["sha256"]) for name, entry in view.listed.items()
-                     if name.startswith(family))
-    require(assembled == held, "%s's run is not exactly its included partitions' shards" % where)
+            for name, digest in _files(view, os.path.join(own, str(index))).items():
+                held["%d/%s" % (index, name)] = digest
+    require(_files(view, os.path.join(path, "run", "shards")) == held,
+            "%s's run is not exactly its included partitions' shards" % where)
+    _same_verdict(path, "the family aggregate")
     coverage, performance = overview._core(path)
     require(agg["result"] == performance["verdict"] and agg["coverage"] == coverage
             and agg["regressions"] == performance["regressions"],
             "%s's result, coverage or regressions are not its verdict's" % where)
+
+
+def _files(view, path):
+    """{path below `path`: sha256} of every file below the directory `path`: in a copied bundle
+    its manifest's (each already checked against its bytes), in a journal each file's own,
+    enumerated and read within the export's bounds."""
+    if isinstance(view, Bundled):
+        prefix = os.path.relpath(path, view.bundle).replace(os.sep, "/") + "/"
+        return dict((name[len(prefix):], item["sha256"]) for name, item in view.listed.items()
+                    if name.startswith(prefix))
+    if not os.path.isdir(path) or os.path.islink(path):
+        return {}
+    bounds = admission.Bounds(EXPORT_ENTRIES_MAX, 16, contracts.limits.ARCHIVE_BYTES_MAX,
+                              contracts.limits.ARCHIVE_BYTES_MAX)
+    label = os.path.relpath(path, view.root)
+    entries = admission.scan(path, bounds, label=label)
+    return admission.digests(path, entries, label=label)
 
 
 def _same_verdict(root, what):

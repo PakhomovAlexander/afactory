@@ -72,16 +72,51 @@ def write_json(path, doc, contract):
         f.write(contracts.write_bytes(doc, contract))
 
 
+FOLDED = {"baseline": "sha256:" + "1" * 64, "candidate": "sha256:" + "2" * 64}
+MINIMUM_SAMPLES = diagnostics.load(os.path.join(ROOT, diagnostics.REGISTRY_PATH))[
+    "capture"]["minimum_samples"]
+
+
+def stand_in_capture(case, side, samples=MINIMUM_SAMPLES):
+    """One contract-valid first perf capture of `case`'s `side` with `samples` samples and its
+    collapsed stacks (`FOLDED[side]`), the input its flamegraphs render."""
+    library = case["kind"] == "library"
+    where = "captures/%s/%s/1" % (case["instance_id"], side)
+    return {"instance_id": case["instance_id"], "side": side, "attempt": 1, "tool": "perf",
+            "subject": "probe_region" if library else "cli_process",
+            "binary_sha256": "sha256:" + "e" * 64, "event": "task-clock:u",
+            "frequency_hz": 997, "duration_ms": 1000, "effective_frequency_hz": None,
+            "unwind": "frame_pointer", "dwarf_stack_bytes": None,
+            "region": {"mechanism": "acknowledged_handshake" if library else "whole_process",
+                       "process": "fresh_exec" if library else "fresh_process",
+                       "repetitions": 1, "setup_ms": "1", "region_ms": "1000",
+                       "enabled_ms": "1000", "wall_ms": "1001", "observed": True,
+                       "truncated_at_cap": False, "stopped": "duration_reached"},
+            "samples": samples,
+            "losses": {"state": "decoded", "lost_event_records": 0, "lost_events": 0,
+                       "lost_sample_records": 0, "potentially_lost_samples": 0, "detail": ""},
+            "frames": None, "unknown_frames": None, "unknown_frame_ratio": None,
+            "symbols": {"state": "referenced", "build_ids": [], "binary_build_id_present": None,
+                        "archive": None},
+            "artifacts": [{"path": where + "/collapsed.folded", "bytes": 1,
+                           "sha256": FOLDED[side]}],
+            "repetitions": None if library else {"path": where + "/repetitions.json",
+                                                 "bytes": 1, "sha256": "sha256:" + "f" * 64},
+            "omission": None}
+
+
 def stand_in_profiles(plan, selection, kind):
     """A child run's `profiles.json` valid under its contract and nothing more: for each
-    selected case a complete baseline and candidate trace (a trace recipe) or both directions
-    of its differential flamegraph (a CPU recipe); no capture, tool or counter."""
+    selected case a complete baseline and candidate trace (a trace recipe), or a usable
+    baseline and candidate capture at the frozen registry's sample minimum and both directions
+    of the differential flamegraph rendered from their collapsed stacks (a CPU recipe); no
+    tool or counter. Its registry is the installed one the comparison's control commits."""
     digest = "sha256:" + "a" * 64
     by_id = dict((case["instance_id"], case) for case in plan["cases"])
 
     def artifact(path):
         return {"path": path, "bytes": 1, "sha256": digest}
-    traces, renders = [], []
+    traces, renders, captures = [], [], []
     for item in selection["cases"]:
         instance = item["instance_id"]
         library = by_id[instance]["kind"] == "library"
@@ -94,16 +129,22 @@ def stand_in_profiles(plan, selection, kind):
                         "artifacts": [artifact("traces/%s/%s/trace.json" % (instance, side))],
                         "omission": None} for side in ("baseline", "candidate")]
         else:
+            captures += [stand_in_capture(by_id[instance], side)
+                         for side in ("baseline", "candidate")]
+            forward = [FOLDED["baseline"], FOLDED["candidate"]]
             renders += [{"instance_id": instance, "kind": name, "color": "sample_share_change",
-                         "inputs": [digest, digest],
+                         "inputs": inputs,
                          "original": artifact("flamegraphs/%s/%s.svg" % (instance, name)),
                          "sanitized": artifact("flamegraphs/%s/%s.safe.svg" % (instance, name)),
                          "removed": {"elements": 0, "attributes": 0}}
-                        for name in ("difference_forward", "difference_reverse")]
+                        for name, inputs in (("difference_forward", forward),
+                                             ("difference_reverse", forward[::-1]))]
     use = {"limit": 8, "used": len(selection["cases"])}
     return {"schema": diagnostics.diagcontracts.PROFILES_SCHEMA, "run_id": "child_run",
             "parent_run_id": plan["run_id"], "parent_plan_digest": plan["plan_digest"],
-            "plan_digest": digest, "registry_sha256": digest, "verdict_effect": "none",
+            "plan_digest": digest,
+            "registry_sha256": sha256_bytes(read(os.path.join(ROOT, diagnostics.REGISTRY_PATH))),
+            "verdict_effect": "none",
             "selection": selection,
             "sources": {"baseline_sha": "b" * 40, "candidate_sha": "c" * 40,
                         "authority_sha": "d" * 40},
@@ -123,7 +164,8 @@ def stand_in_profiles(plan, selection, kind):
                           "scratch_bound": "not_enforced_in_trusted_local_mode",
                           "container": None, "retained_scratch": 0, "started_unix_ms": 1,
                           "ended_unix_ms": 2, "deadline_unix_ms": 3, "host": "stand-in"},
-            "tools": [], "captures": [], "renders": renders, "traces": traces, "counters": [],
+            "tools": [], "captures": captures, "renders": renders, "traces": traces,
+            "counters": [],
             "telemetry": {"level": None, "perturbing": False, "verdict_effect": "none",
                           "captures": []},
             "omissions": []}
@@ -277,6 +319,38 @@ class Comparison(ExecutorFixture):
             return executor.verify_original(j, ident, installed)
         return j.request(ident), j.state(ident), contracts.read_file(
             os.path.join(j.path(ident), "result.json"), "executor-result")
+
+    def run_profiles(self, j):
+        """Run the two queued diagnostic originals through the real local path; a stand-in
+        `run_profile` writes, from the selection the frozen parent verdict derives, a
+        contract-valid profiles.json of usable evidence for exactly those cases. Returns the
+        (recipe, observer) of each run."""
+        seen = []
+
+        def profile_run(git, options, machine_lease=None):
+            seen.append((options.recipe, options.observer))
+            os.makedirs(options.output)
+            parent = contracts.read_file(options.plan, "run")
+            verdict = read(options.verdict)
+            selection, _ = diagnostics.select(parent, contracts.read_json(verdict, "verdict"),
+                                              options.cases, options.max_cases,
+                                              sha256_bytes(verdict))
+            write_json(os.path.join(options.output, diagnostics.PROFILES_FILE),
+                       stand_in_profiles(parent, selection, "trace" if options.recipe
+                                         .endswith("_trace") else "cpu_profile"), "profiles")
+            return 0, None, "stand-in profile"
+        builder = SimpleNamespace(build=lambda: {"cleanup": {"status": "removed"}})
+        with mock.patch.object(executor.builds, "Builder", lambda owner, plan, tc, **kw:
+                               SimpleNamespace(layout=SimpleNamespace(build=owner),
+                                               build=builder.build)), \
+                mock.patch.object(executor.hostprep, "prepare",
+                                  lambda image, mount, size, **kw: os.mkdir(mount)), \
+                mock.patch.object(executor.hostprep, "cleanup",
+                                  lambda image, mount, **kw: os.rmdir(mount) or []), \
+                mock.patch.object(diagnostics, "run_profile", profile_run):
+            self.assertEqual(j.cycle(lock_directory=self.locks), "complete")
+            self.assertEqual(j.cycle(lock_directory=self.locks), "complete")
+        return seen
 
     def test_schedule_partitions_the_whole_family_into_bounded_serial_originals(self):
         plan = {"limits": {"build_minutes": 20, "shard_sampling_minutes": 45,
@@ -454,33 +528,7 @@ class Comparison(ExecutorFixture):
             names = sorted(j.names())
             comparison.advance(j, ident)
             self.assertEqual(sorted(j.names()), names)
-            seen = []
-
-            def profile_run(git, options, machine_lease=None):
-                # The selection `run_profile` makes from the frozen parent verdict, and a
-                # contract-valid profiles.json of usable evidence for exactly those cases.
-                seen.append((options.recipe, options.observer))
-                os.makedirs(options.output)
-                parent = contracts.read_file(options.plan, "run")
-                verdict = read(options.verdict)
-                selection, _ = diagnostics.select(parent, contracts.read_json(verdict, "verdict"),
-                                                  options.cases, options.max_cases,
-                                                  sha256_bytes(verdict))
-                write_json(os.path.join(options.output, diagnostics.PROFILES_FILE),
-                           stand_in_profiles(parent, selection, "trace" if options.recipe
-                                             .endswith("_trace") else "cpu_profile"), "profiles")
-                return 0, None, "stand-in profile"
-            builder = SimpleNamespace(build=lambda: {"cleanup": {"status": "removed"}})
-            with mock.patch.object(executor.builds, "Builder", lambda owner, plan, tc, **kw:
-                                   SimpleNamespace(layout=SimpleNamespace(build=owner),
-                                                   build=builder.build)), \
-                    mock.patch.object(executor.hostprep, "prepare",
-                                      lambda image, mount, size, **kw: os.mkdir(mount)), \
-                    mock.patch.object(executor.hostprep, "cleanup",
-                                      lambda image, mount, **kw: os.rmdir(mount) or []), \
-                    mock.patch.object(diagnostics, "run_profile", profile_run):
-                self.assertEqual(j.cycle(lock_directory=self.locks), "complete")
-                self.assertEqual(j.cycle(lock_directory=self.locks), "complete")
+            seen = self.run_profiles(j)
             self.assertEqual(seen, [("linux_gnu_trace", None),
                                     ("linux_gnu_cpu_profile", "host_perf")])
             # Preflight, launch, resumed launch, then once more before the CPU profile's build;
@@ -507,8 +555,23 @@ class Comparison(ExecutorFixture):
             # sealed bytes stay the receipt its profiles' parent names): complete.
             judged = dict(agg, result="fail", coverage=dict(agg["coverage"], observed=agg[
                 "coverage"]["required"], missing=0))
+            judged_core = (judged["coverage"], {"verdict": "fail",
+                                                "regressions": agg["regressions"]})
+            # The aggregate's claims alone altered: its re-evaluated verdict refuses them.
             with mock.patch.object(comparison, "read_aggregate", lambda journal, doc: (
                     judged, agg_raw)):
+                claimed = comparison.status(j, ident, verify=self.verify)
+            self.assertEqual((claimed["status"], claimed["verification"],
+                              claimed["lanes"][0]["state"], claimed["performance"]["core_verdict"]),
+                             ("incomplete", "refused", "failed", None))
+            self.assertIn("core aggregate refused: the aggregate's result, coverage or "
+                          "regressions are not its verdict's", claimed["reasons"])
+            # The family judged whole by its verdict as well (both injected; the aggregate's
+            # sealed bytes stay the receipt its profiles' parent names): complete.
+            injected = (mock.patch.object(comparison, "read_aggregate", lambda journal, doc: (
+                            judged, agg_raw)),
+                        mock.patch.object(overview, "_core", lambda path: judged_core))
+            with injected[0], injected[1]:
                 complete = comparison.status(j, ident, verify=self.verify)
             self.assertEqual((complete["status"], complete["verification"]),
                              ("complete", "verified"), complete["reasons"])
@@ -516,8 +579,7 @@ class Comparison(ExecutorFixture):
             self.assertEqual(complete["performance"]["core_verdict"], "fail")
             self.assertFalse(complete["calibration"]["eligible"])
             complete_bundle = self.path("complete-bundle")
-            with mock.patch.object(comparison, "read_aggregate", lambda journal, doc: (
-                    judged, agg_raw)):
+            with injected[0], injected[1]:
                 comparison.export(j, ident, complete_bundle, verify=self.verify)
             bundle = self.path("bundle")
             manifest, exported = comparison.export(j, ident, bundle, verify=self.verify)
@@ -655,11 +717,6 @@ class Comparison(ExecutorFixture):
         # Complete with a real regression (the family judged whole, injected as above, for the
         # journal's report and the offline derivation alike): it verifies complete, its
         # verdict stays `fail`, and relabelling that verdict a pass is refused.
-        judged_core = (dict(agg["coverage"], observed=agg["coverage"]["required"], missing=0),
-                       {"verdict": "fail", "regressions": agg["regressions"]})
-        injected = (mock.patch.object(comparison, "read_aggregate", lambda journal, doc: (
-                        judged, agg_raw)),
-                    mock.patch.object(overview, "_core", lambda path: judged_core))
         with injected[0], injected[1]:
             _, regressed = comparison.verify_export(complete_bundle)
             self.assertEqual((regressed["status"], regressed["performance"]["core_verdict"]),
@@ -673,11 +730,77 @@ class Comparison(ExecutorFixture):
                 comparison.verify_export(forge(relabel(passed), complete_bundle))
             self.assert_trace_lane_needs_both_complete_sides(
                 ident, doc, plan, complete_bundle, regressed, forge)
+            self.assert_cpu_lane_needs_admitted_two_sided_captures(
+                ident, doc, complete_bundle, forge)
             self.assert_diagnosis_is_the_aggregate_selection(
                 doc, plan, complete_bundle, regressed, forge)
         # Without the injection, the bundled aggregate's own verdict is not that claim.
         with self.assertRaisesRegex(ContractError, "not its verdict's|not what its bundled"):
             comparison.verify_export(complete_bundle)
+
+    def test_a_locally_altered_aggregate_never_reports_complete(self):
+        """The incomplete aggregate's result and coverage altered in the journal before the
+        diagnostic lanes are submitted, so each profile's parent receipt is derived from the
+        altered bytes and matches them. `comparison-report` derives the claims again from the
+        admitted partitions and the re-evaluated verdict: the core lane is refused, the
+        comparison incomplete, exit 4, and its export verifies offline as that same report."""
+        with executor.Journal(self.c) as j:
+            launched = self.launch(j)
+            self.assertEqual(launched["status"], "launched", launched["detail"])
+            ident = launched["comparison"]["comparison_id"]
+            staged, calls = self.staged(j, ident), []
+            for _ in range(2):
+                self.assertEqual(self.run_partition(j, staged, calls), "complete")
+            self.assertEqual(j.cycle(lock_directory=self.locks,
+                                     execute=self.telemetry_stand_in()), "complete")
+            doc, plan, raw_plan = comparison.load(j, ident)
+            agg = comparison.aggregate(j, doc, plan, raw_plan)
+            self.assertEqual(agg["result"], "incomplete")
+            path = os.path.join(comparison.directory(j, ident), "aggregate", "aggregate.json")
+            write_json(path, dict(agg, result="fail", coverage=dict(
+                agg["coverage"], observed=agg["coverage"]["required"], missing=0)),
+                "comparison-aggregate")
+            comparison.advance(j, ident)
+            _, altered = comparison.read_aggregate(j, doc)
+            for lane in doc["diagnostics"]:
+                self.assertEqual(j.request(lane["request_id"])["parent"]["result_sha256"],
+                                 sha256_bytes(altered))
+            self.run_profiles(j)
+        real = executor.verify_original
+
+        def admitted(journal, ident, installed=executor.ROOT):
+            # As `verify`: the stand-ins retain no Git sources; core is verified natively.
+            if journal.request(ident)["work"] == "core":
+                return real(journal, ident, installed)
+            return self.verify(journal, ident, installed)
+        import cli
+        output, bundle = self.path("report"), self.path("bundle")
+        with mock.patch.object(overview, "_telemetry", lambda path: (
+                {"required": 3, "observed": 3, "failed": 0, "missing": 0},
+                {"verdict": "pass", "regressions": []}, "complete")), \
+                mock.patch.object(executor, "verify_original", admitted), \
+                mock.patch.object(executor, "load_config", return_value=self.c), \
+                mock.patch("sys.stdout", new=SimpleNamespace(buffer=io.BytesIO(),
+                                                             flush=lambda: None)):
+            for argv in (["comparison-report", "--output", output],
+                         ["comparison-export", "--output", bundle]):
+                self.assertEqual(cli.main(["executor", "--config", "operator.toml"] + argv
+                                          + ["--comparison", ident]), cli.EXIT_UNAVAILABLE)
+            with mock.patch.object(comparison.report, "admit_children", lambda *a: None):
+                _, offline = comparison.verify_export(bundle)
+        local = contracts.read_file(os.path.join(output, "report.json"), "comparison-report")
+        lanes = dict((lane["lane"], lane["state"]) for lane in local["lanes"])
+        self.assertEqual((local["status"], local["verification"], lanes["core"],
+                          lanes["telemetry"], lanes["trace"], lanes["cpu_profile"],
+                          local["performance"]["core_verdict"]),
+                         ("incomplete", "refused", "failed", "complete", "failed", "failed",
+                          None))
+        self.assertIn("core aggregate refused: the aggregate's result, coverage or regressions "
+                      "are not its verdict's", local["reasons"])
+        self.assertIn("cpu_profile lane: its parent aggregate's claims are refused",
+                      local["reasons"])
+        # The copied bundle derives exactly the journal's report.
+        self.assertEqual(offline, local)
 
     def assert_trace_lane_needs_both_complete_sides(self, ident, doc, plan, bundle, complete,
                                                     forge):
@@ -745,6 +868,93 @@ class Comparison(ExecutorFixture):
             self.assertEqual((shown["status"], shown["lanes"], shown["reasons"]),
                              (derived["status"], derived["lanes"], derived["reasons"]))
         self.assertEqual(complete["status"], "complete")
+
+    def assert_cpu_lane_needs_admitted_two_sided_captures(self, ident, doc, bundle, forge):
+        """A selected case's CPU evidence is a usable baseline and candidate capture (no
+        omission, the frozen registry's minimum samples) and a differential flamegraph rendered
+        from exactly their collapsed stacks: with its captures removed, a side missing, a side
+        omitted or below the minimum, or the render's inputs substituted, a surviving render
+        leaves the CPU lane failed in the journal's report; the complete claim over that
+        evidence, every receipt resealed, is refused by `comparison-verify`, and reported as
+        it is it verifies incomplete."""
+        cpu = doc["diagnostics"][1]["request_id"]
+        relative = "profile/" + diagnostics.PROFILES_FILE
+        honest = contracts.read_file(os.path.join(bundle, comparison.EVIDENCE, "requests", cpu,
+                                                  relative), "profiles")
+        first = honest["selection"]["cases"][0]["instance_id"]
+        self.assertEqual(sorted(item["side"] for item in honest["captures"]
+                                if item["instance_id"] == first), ["baseline", "candidate"])
+
+        def candidate(edit):
+            def change(profiles):
+                for item in profiles["captures"]:
+                    if (item["instance_id"], item["side"]) == (first, "candidate"):
+                        edit(item)
+                profiles["captures"] = [item for item in profiles["captures"]
+                                        if item.get("side") is not None]
+            return change
+
+        def substitute(profiles):
+            for item in profiles["renders"]:
+                if item["instance_id"] == first:
+                    item["inputs"] = [FOLDED["baseline"], "sha256:" + "3" * 64][
+                        ::1 if item["kind"] == "difference_forward" else -1]
+        variants = (
+            ("no usable two-sided capture: no baseline capture; no candidate capture",
+             lambda profiles: profiles.update(captures=[c for c in profiles["captures"]
+                                                        if c["instance_id"] != first])),
+            ("no usable two-sided capture: no candidate capture",
+             candidate(lambda item: item.update(side=None))),
+            ("no usable two-sided capture: its candidate capture 1 omitted (too_few_samples: "
+             "stand-in", candidate(lambda item: item.update(omission={
+                 "reason": "too_few_samples", "detail": "stand-in omission"}))),
+            ("no usable two-sided capture: a candidate capture 1 of %d samples, below the "
+             "frozen minimum of %d" % (MINIMUM_SAMPLES - 1, MINIMUM_SAMPLES),
+             candidate(lambda item: item.update(samples=MINIMUM_SAMPLES - 1))),
+            ("a differential flamegraph whose inputs", substitute))
+        import cli
+        for index, (needle, change) in enumerate(variants):
+            edited = copy.deepcopy(honest)
+            change(edited)
+            self.assertTrue(any(item["instance_id"] == first
+                                and item["kind"].startswith("difference")
+                                for item in edited["renders"]), "the render survives")
+            data = contracts.write_bytes(edited, "profiles")
+            why = "cpu_profile lane: case %s has %s" % (first, needle)
+            with executor.Journal(self.c, readonly=True) as j:
+                target = os.path.join(j.path(cpu), relative)
+                kept = read(target)
+                with open(target, "wb") as f:
+                    f.write(data)
+                try:
+                    derived = comparison.status(j, ident, verify=self.verify)
+                finally:
+                    with open(target, "wb") as f:
+                        f.write(kept)
+            lanes = dict((lane["lane"], lane["state"]) for lane in derived["lanes"])
+            self.assertEqual((derived["status"], lanes["trace"], lanes["cpu_profile"]),
+                             ("incomplete", "complete", "failed"), needle)
+            self.assertTrue(any(reason.startswith(why) for reason in derived["reasons"]),
+                            derived["reasons"])
+            claimed = forge(lambda root: (reseal(root, cpu, relative, data),
+                                          sealed_members()(root)), bundle)
+            if index == 0:
+                # Captures removed and every receipt resealed, through the public verifier.
+                with mock.patch("sys.stdout", new=io.TextIOWrapper(io.BytesIO())), \
+                        mock.patch("sys.stderr", new=io.StringIO()) as printed:
+                    self.assertEqual(cli.main(["executor", "comparison-verify", "--bundle",
+                                               claimed]), cli.EXIT_UNAVAILABLE)
+                self.assertIn(why, printed.getvalue())
+                # Reported as it is, the same resealed evidence verifies incomplete.
+                with mock.patch("sys.stdout", new=io.StringIO()) as printed:
+                    self.assertEqual(cli.main(["executor", "comparison-verify", "--bundle", forge(
+                        lambda root: (reseal(root, cpu, relative, data), sealed_members(
+                            lambda _: copy.deepcopy(derived))(root)), bundle)]), 0)
+                self.assertIn('"comparison": "incomplete"', printed.getvalue())
+            else:
+                with self.assertRaisesRegex(ContractError, "not what its bundled .*derived "
+                                            "incomplete.*" + re.escape(why)):
+                    comparison.verify_export(claimed)
 
     def assert_diagnosis_is_the_aggregate_selection(self, doc, plan, bundle, complete, forge):
         """Otherwise valid children of a parent case the aggregate verdict did not select, or
@@ -1083,3 +1293,54 @@ class DeclarationOnly(TempDir):
         # not submitted and the comparison derives as waiting, never complete.
         with self.assertRaisesRegex(ContractError, "not what its bundled declaration"):
             comparison.verify_export(self.bundle(claimed_complete, plan=True))
+
+
+class CpuEvidence(TempDir):
+    """`comparison._profile_usable` of one selected case's CPU evidence, in process."""
+
+    def setUp(self):
+        super().setUp()
+        digest = "sha256:" + "a" * 64
+        self.plan = {"run_id": "parent_run", "plan_digest": digest,
+                     "cases": [{"instance_id": "case_a", "case_id": "case_a",
+                                "kind": "library"}]}
+        self.selection = {"mode": "automatic", "limit": 8, "parent_verdict_sha256": digest,
+                          "cases": [{"instance_id": "case_a", "case_id": "case_a",
+                                     "reason": "regressed"}], "not_selected": []}
+
+    def usable(self, profiles, installed=ROOT):
+        os.makedirs(self.path("profile"), exist_ok=True)
+        write_json(self.path("profile", diagnostics.PROFILES_FILE), profiles, "profiles")
+        return comparison._profile_usable(self.tmp, "cpu_profile", self.selection,
+                                          installed)[0]
+
+    def test_the_declared_dwarf_capture_renders_after_an_omitted_first_attempt(self):
+        profiles = stand_in_profiles(self.plan, self.selection, "cpu_profile")
+        self.assertEqual(self.usable(profiles), [])
+        first = [item for item in profiles["captures"] if item["side"] == "candidate"][0]
+        first["omission"] = {"reason": "too_few_samples", "detail": "stand-in omission"}
+        second = copy.deepcopy(first)
+        second.update(attempt=2, unwind="dwarf", omission=None,
+                      dwarf_stack_bytes=diagnostics.limits.DIAGNOSTIC_DWARF_STACK_BYTES,
+                      artifacts=[{"path": "captures/case_a/candidate/2/collapsed.folded",
+                                  "bytes": 1, "sha256": "sha256:" + "4" * 64}])
+        profiles["captures"].append(second)
+        self.assertEqual(self.usable(profiles), [
+            "cpu_profile lane: case case_a has a differential flamegraph whose inputs %s are "
+            "not its usable baseline and candidate captures' collapsed stacks"
+            % [FOLDED["baseline"], FOLDED["candidate"]]])
+        for render in profiles["renders"]:
+            render["inputs"] = [FOLDED["baseline"], second["artifacts"][0]["sha256"]][
+                ::1 if render["kind"] == "difference_forward" else -1]
+        self.assertEqual(self.usable(profiles), [])
+
+    def test_a_registry_that_is_not_the_installed_producers_proves_no_sample_minimum(self):
+        profiles = stand_in_profiles(self.plan, self.selection, "cpu_profile")
+        profiles["registry_sha256"] = "sha256:" + "0" * 64
+        reasons = self.usable(profiles)
+        self.assertEqual(len(reasons), 1)
+        self.assertIn("cpu_profile lane: the profile's diagnostic registry sha256:%s is not the "
+                      "installed producer's" % ("0" * 64), reasons[0])
+        self.assertIn("the installed diagnostic registry is unreadable",
+                      self.usable(stand_in_profiles(self.plan, self.selection, "cpu_profile"),
+                                  installed=self.path("empty"))[0])

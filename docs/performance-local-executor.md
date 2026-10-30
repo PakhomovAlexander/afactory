@@ -731,12 +731,25 @@ controller, still just ends `interrupted`.
 
 `comparison-report` writes `report.json` (`af.perf-comparison-report/1`), `report.md` and
 `report.html`, prints the JSON and exits 0 only for a `complete` comparison, 4 otherwise. It
-verifies every complete original offline now. `complete` needs the core aggregate over every
-partition and not `incomplete` (a missing closing sentinel or an unstable environment leaves
-it ineligible), every telemetry run measured, and for every case the aggregate verdict
-selects a baseline and a candidate trace without omission whose region coverage is complete (a
-missing side, an omitted side, a `partial` or a setup-only `region_missing` trace leaves the
-trace lane failed with its reason) and a differential flamegraph, and every original verified.
+verifies every complete original offline now, and takes no claim of the aggregate on trust:
+its partition entries, its run's shards (byte for byte those of the admitted partitions, on
+the first partition's build), its verdict (evaluated again from that run) and the result,
+coverage and regressions it states are derived again, exactly as `comparison-verify` derives
+them from a bundle. An aggregate whose claims are not derived is refused: the core lane fails
+with the reason, the diagnostic lanes under it fail, the report's verification is `refused`
+and its core verdict empty, whatever parent receipts its profiles name. `complete` needs the
+core aggregate over every partition and not `incomplete` (a missing closing sentinel or an
+unstable environment leaves it ineligible), every telemetry run measured, and for every case
+the aggregate verdict selects a baseline and a candidate trace without omission whose region
+coverage is complete (a missing side, an omitted side, a `partial` or a setup-only
+`region_missing` trace leaves the trace lane failed with its reason) and a usable baseline and
+candidate CPU capture with the differential flamegraph rendered from them, and every original
+verified. A usable capture has no omission, at least the frozen registry's `minimum_samples`
+(200 in `fixtures/performance/diagnostics.toml`; the registry the profile names must be the
+installed producer's) and its own collapsed stacks, and both directions of the difference must
+name exactly those two captures' collapsed stacks as their inputs. No capture, a missing or
+omitted side, too few samples or a render of other inputs leaves the CPU lane failed with its
+reason, however well-formed the surviving SVG is.
 Each profile's own selection must be exactly the one the aggregate's verdict derives (mode,
 limit, parent verdict digest, cases and reasons), and its parent receipt the aggregate's
 result, plan and verdict; a profile of another case or another aggregate never completes a
@@ -767,10 +780,15 @@ submitted), the aggregate's partitions, run, result and coverage recomputed from
 originals and its verdict, and every lane's state, coverage and diagnostic selection. A report
 that says anything else is refused, however its hashes and manifest were rewritten: a failed
 or missing original relabelled complete, a dropped member, a passed verdict over a
-regression, a one-sided, partial or setup-only trace of a selected case, or valid diagnostic
-children of a case the aggregate did not select with every receipt resealed. An honest incomplete or running bundle verifies, as what it is. That checks what
+regression, a one-sided, partial or setup-only trace of a selected case, a selected case's
+flamegraph without its two usable captures, or valid diagnostic children of a case the
+aggregate did not select with every receipt resealed. An aggregate whose claims are not
+derived makes the derived report refused and incomplete, never complete. An honest incomplete
+or running bundle verifies, as what it is. That checks what
 the originals sealed; it is not a new performance acceptance. Run it from the trusted control installation that produced the bundle, or a
-checkout of the same measurement authority: the telemetry result is refused under any other.
+checkout of the same measurement authority: the telemetry result is refused under any other,
+and a CPU lane whose profile names another diagnostic registry than the installed one fails,
+since its frozen sample minimum is then unknown.
 
 Repeat the comparison with new keys to see run-to-run spread. A same-source A/A comparison
 uses `--base "$HEAD" --head "$HEAD"` with a new key; an injected slowdown and the A/A
