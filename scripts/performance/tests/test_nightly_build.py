@@ -18,10 +18,11 @@ import sys
 import tarfile
 import tempfile
 import unittest
+import urllib.request
 
 from perflab import contracts, gitrefs
 from perflab.values import ContractError
-from tests.support import ROOT, Repo, TempDir, read
+from tests.support import GitHubOpener, ROOT, Repo, TempDir, read
 
 BUILD = os.path.join(ROOT, "scripts", "nightly", "build.py")
 _spec = importlib.util.spec_from_file_location("nightly_build", BUILD)
@@ -95,7 +96,8 @@ class FakeGitHub:
         return 200, json.dumps({"total_count": len(runs), "check_runs": batch}).encode()
 
     def client(self):
-        return nightly.GitHub("owner/af", get=self.get)
+        self.opener = GitHubOpener(self.get)
+        return nightly.GitHub("owner/af", opener=self.opener)
 
     def asked(self, sha):
         return any("/commits/%s/" % sha in path for path in self.paths)
@@ -257,17 +259,49 @@ class GreenWalk(History):
         with self.assertRaises(nightly.Refused) as caught:
             github.client().check_runs(self.tip)
         self.assertIn("failed twice: connection reset", str(caught.exception))
-        self.assertEqual((nightly.CONNECT_SECONDS, nightly.READ_SECONDS), (5, 30))
+        # Each GET has 30 s to connect and for each read, and goes to api.github.com only.
+        self.assertEqual(github.opener.timeouts, [nightly.TIMEOUT_SECONDS] * 2)
+        self.assertEqual(nightly.TIMEOUT_SECONDS, 30)
+        self.assertTrue(all(url.startswith("https://api.github.com/repos/owner/af/commits/")
+                            for url in github.opener.urls))
+
+    def test_a_response_beyond_its_byte_bound_is_refused(self):
+        body = b'{"total_count": 0, "check_runs": []}'
+        body += b" " * (nightly.RESPONSE_BYTES_MAX + 1 - len(body))
+        client = nightly.GitHub("owner/af", opener=GitHubOpener(lambda path, headers: (
+            200, body)))
+        with self.assertRaises(nightly.Refused) as caught:
+            client.check_runs(self.tip)
+        self.assertIn("exceeds", str(caught.exception))
+        client = nightly.GitHub("owner/af", opener=GitHubOpener(lambda path, headers: (
+            200, body[:-1])))
+        self.assertEqual(client.check_runs(self.tip), [])
+
+    def test_a_client_error_is_an_answer_and_a_server_error_is_retried_once(self):
+        answers = [(503, b"unavailable"), (404, b'{"message": "Not Found"}')]
+        opener = GitHubOpener(lambda path, headers: answers.pop(0))
+        with self.assertRaises(nightly.Refused) as caught:
+            nightly.GitHub("owner/af", opener=opener).check_runs(self.tip)
+        self.assertIn("GitHub answered HTTP 404", str(caught.exception))
+        self.assertEqual(len(opener.urls), 2)
+
+    def test_the_default_opener_follows_no_redirect_and_no_proxy(self):
+        handlers = nightly.nightlygithub.opener().handlers
+        self.assertEqual([type(handler) for handler in handlers
+                          if isinstance(handler, urllib.request.HTTPRedirectHandler)],
+                         [nightly.nightlygithub.NoRedirect])
+        self.assertFalse(any(isinstance(handler, urllib.request.ProxyHandler)
+                             for handler in handlers))
 
     def test_a_token_is_sent_only_when_configured(self):
         seen = []
-        client = nightly.GitHub("owner/af", token="t0ken",
-                                get=lambda path, headers: (seen.append(headers), (
-                                    200, b'{"total_count": 0, "check_runs": []}'))[1])
+        client = nightly.GitHub("owner/af", token="t0ken", opener=GitHubOpener(
+            lambda path, headers: (seen.append(headers), (
+                200, b'{"total_count": 0, "check_runs": []}'))[1]))
         client.check_runs(self.tip)
         self.assertEqual(seen[0]["Authorization"], "Bearer t0ken")
-        anonymous = nightly.GitHub("owner/af", get=lambda path, headers: (
-            seen.append(headers), (200, b'{"total_count": 0, "check_runs": []}'))[1])
+        anonymous = nightly.GitHub("owner/af", opener=GitHubOpener(lambda path, headers: (
+            seen.append(headers), (200, b'{"total_count": 0, "check_runs": []}'))[1]))
         anonymous.check_runs(self.tip)
         self.assertNotIn("Authorization", seen[1])
 

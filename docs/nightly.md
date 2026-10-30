@@ -2,9 +2,13 @@
 
 The owner's Linux VM builds a signed nightly af from the newest green commit of main
 ([ADR-0265](adr/0265-build-nightlies-from-the-newest-green-main-on-the-owners-vm.md)). This page
-covers the build step, `scripts/nightly/build.py`; the measurement, report and publication steps
-come later. Nothing here runs on GitHub Actions, and the build never pushes, publishes, posts or
-deletes anything outside `builds_root/<date>/` and its own claim `builds_root/<date>.active`.
+covers the build step, `scripts/nightly/build.py`, and the [daily report](#the-daily-report),
+`scripts/nightly/report.py`
+([ADR-0267](adr/0267-compose-the-nightly-report-from-the-nights-record-and-the-executor-journal.md));
+the measurement is the [nightly executor's](performance-local-executor.md#nightly-originals) and
+publication comes later. Nothing here runs on GitHub Actions. The build never pushes,
+publishes, posts or deletes anything outside `builds_root/<date>/` and its own claim
+`builds_root/<date>.active`; the report writes only its new `--output` directory.
 
 A nightly is tagged `nightly-YYYY.MM.DD` and versioned `<core>-nightly.<YYYYMMDD>`: the workspace
 version of the chosen commit without its pre-release part (`0.14.0-rc.3` → `0.14.0`), or with its
@@ -46,7 +50,11 @@ is a commented copy to start from. Unknown keys refuse the file.
 | `public_key` | The matching minisign public key file; the signature must verify against it. |
 | `required_checks` | Check-run names that must be present and green, beside every `check /` run. A release-workflow job is refused here. |
 | `max_walk` | How many first-parent commits back from main's tip may be inspected (1 to 200, default 20). |
-| `github_token_file` | Optional file holding a read-only GitHub token; without it the API is asked anonymously, which works for a public repository. |
+| `github_token_file` | Optional file holding a read-only GitHub token, for the build's check runs and the report's reads alike; without it the API is asked anonymously, which works for a public repository. |
+| `[report]` | Optional table that only `report.py` reads; `compose` refuses a configuration without it. |
+| `report.executor_config` | Absolute path of the nightly executor's configuration (`/etc/af-nightly/executor.toml`); its `root` is the journal the report reads and its `machine_id` names the host. |
+| `report.history_nights` | How many earlier nights the trend shows beside this one: the last that many the journal holds a core original of, by tag date (1 to 60, default 14). |
+| `report.headline_instances` | One to four instance IDs, as the suite names them, whose candidate medians the trend plots. |
 
 The key's passphrase, if it has one, is read from `AF_NIGHTLY_SIGN_PASSWORD` and given to
 `minisign` on its standard input, never as a flag; without it the key is used with `minisign -W`
@@ -134,6 +142,8 @@ replaces it. A night that already has `nightly.json` is never built again.
 
 ## Exit codes
 
+These are `build.py`'s; `report.py`'s are under [Composing again](#composing-again).
+
 | Exit | Meaning |
 |---|---|
 | 0 | Built (`build`), or planned (`plan`, `build --only-plan` of a night that would build). |
@@ -152,3 +162,91 @@ Run it from a checkout of the trusted repository, not from the night's `source/`
 the commit it would build and every red commit it walked over; `build --only-plan` prints the
 same plan and exits as `build` would (0 or 3) without writing anything. `--previous PATH`
 compares with a built or skipped record other than the newest one.
+
+## The daily report
+
+`compose` writes one night's report from what the night left behind, without measuring,
+building or publishing anything:
+
+```sh
+python3 -I -B scripts/nightly/report.py compose --config nightly.toml --date 2026-10-29 \
+    --output /var/lib/af-nightly/reports/2026-10-29
+```
+
+`--output` must not exist; `compose` creates it and writes exactly three files into it, and
+nothing anywhere else:
+
+- `daily.json`, `af.nightly-daily/1` (`schemas/performance-nightly-daily-v1.json`): the record
+  every other file is drawn from.
+- `report.html`, one self-contained page rendered by the laboratory's renderer
+  (`perflab.render`): its Content-Security-Policy, its one hash-authorized style and script,
+  every value escaped, no external reference: the page links nowhere, and the GitHub links are
+  the digest's.
+- `digest.md`, the Telegram digest: at most 3500 bytes of plain Markdown, the headline first,
+  then what moved, the queue and the machine, the links as bare URLs on their own lines.
+
+It runs as the account that owns the nightly executor's journal, from a checkout of the trusted
+repository, and reads only:
+
+1. `builds_root/<date>/nightly.json` and, for a built night, its two archives, whose size and
+   digest must be the record's before the `af` inside each is hashed;
+2. the nightly executor's journal under its configuration's `root`, read directly, never
+   through the executor's service, and never locked or written: the originals keyed
+   `nightly:<tag>:core` and `nightly:<tag>:telemetry` and the earlier nights' core originals;
+3. the executor's `local-telemetry-history/history.json`, for the telemetry figures;
+4. GitHub, through the same bounded reader as the build (`urllib.request`, 30 s to connect and
+   for each read, at most 16 MiB a response, no proxy or redirect, each request retried once);
+5. three host facts: the free bytes of `builds_root`'s filesystem, whether a process holds the
+   executor's machine lock (`/tmp/af-perf-machine.lock`, read from `/proc/locks`, never taken)
+   and how many systemd units `systemctl --failed --plain --no-legend` lists.
+
+An original is used only after it verifies the way `executor verify` binds it: its request is
+the one the journal index names by digest, its state is `complete` and seals its result's
+bytes, the result is this local original's (its request, sources, environment and producer),
+and every evidence file is rehashed against the result's sealed list. The core original's
+`plan.json` must be the plan its request froze, its sealed `run/builds.json` must belong to that
+plan and name the very binaries the result's `binaries` hold, its `report/verdict.json` must
+name that plan, and its `report/report.json` must carry that verdict and list every report
+member with the hash the result sealed. Files are opened by fixed names, never by a path a
+document supplies. An original under the night's tag is this build's evidence only when it
+measured the night's `head_sha` against the record's baseline (`baseline_sha`, and the derived
+`baseline_tag` when the request names one); the previous night's core original counts for the
+verdict changes only when it measured the record's `previous_head_sha`. An original that fails
+any check is refused for its section, with the reason, and never shown, so
+`measured_is_shipped` is only ever computed from verified binaries.
+
+### The sections
+
+| Section | What it shows |
+|---|---|
+| Headline | The tag, the head with its subject, the version, the previous night, the build's baseline (the stable tag and commit, which a core original must have measured against), its publication date and the commits and pull requests since, the archives with the `af` inside each, and the verdict label. |
+| Performance | The core verdict in the laboratory's words, the moved instances first with their baseline and candidate medians, relative change and interval (exact rationals in `daily.json`, three significant digits on the page), classification and outcome, the unchanged ones as a count, the sentinels' shards, the coverage, and whether the measured candidate `af` is the shipped x86_64 one (`measured_is_shipped`). The telemetry figures follow: each overhead and read-latency figure's median change in percent. |
+| Trend | One plot per headline instance: the last `history_nights` earlier nights the journal holds a core original of, chosen by tag date however far apart, and this night, each night's own candidate median, in night order, a night whose baseline release changed marked in the title. Each point is that night's paired comparison; nights are never paired with each other. An earlier original that does not verify is listed with its reason instead of a point. |
+| Since last night | The pull requests merged between the previous night's head and this one, and each instance whose verdict status changed since the previous built night. |
+| Backlog | Open issues by label, issues opened and closed in the last 24 hours, stale issues (no update for 14 days), open pull requests with drafts and each one's mergeable state, and the head's check runs. The mergeable state takes one request per pull request, so at most 100 (`PULL_REQUESTS_MAX`) carry it, the lowest-numbered; with more open, `pull_requests_partial` and the page say so. |
+| Machine | Free bytes, the machine lock, failed systemd units. |
+| Completeness | One line per section: available, or why not. |
+
+An instance has moved when its status is anything but `within_tolerance` or `non_regression`,
+or its outcome is not a pass.
+
+### Reading the label
+
+The headline's label is the core verdict's result: `PASS`, `FAIL` or `INCOMPLETE`, followed by
+the verdict's scope and evidence words (`bootstrap scope, synthetic evidence`), so a pass of a
+partial or synthetic run never reads as a full measured one. `UNAVAILABLE` means there is no
+verified core verdict for the night, and the headline says why: a skipped night (no new commits
+reached main; it names the night it stands on), a core original that is queued, running,
+failed or refused, or a journal that cannot be read. Every number is copied or recomputed from
+validated inputs; whatever an input lacks is `null` in `daily.json`, `unavailable` on the page
+and `?` in the digest, with the reason under `completeness`. GitHub being unreachable leaves
+the backlog and the merged pull requests unavailable, never the night.
+
+### Composing again
+
+A night's report is written once into a new directory and never changed. A core result that
+arrives after the report is composed is shown by composing the night again into another
+directory; the later report supersedes the earlier one. `compose` exits 0 whenever the night
+has a record, whatever is unavailable, and 1 (`nightly: refused: …` on stderr) when the night has
+no `nightly.json`, the configuration has no `[report]` table or is malformed, the command line is
+malformed, or `--output` exists; a refusal writes nothing.

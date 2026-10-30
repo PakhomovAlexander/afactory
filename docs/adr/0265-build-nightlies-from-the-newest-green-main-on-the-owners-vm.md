@@ -2,6 +2,12 @@
 
 **Status:** proposed (2026-10-29).
 
+**Amended 2026-10-30**
+([ADR-0267](0267-compose-the-nightly-report-from-the-nights-record-and-the-executor-journal.md)).
+The check-run reads go through the nightly scripts' shared reader, which opens each GET with
+`urllib.request`: 30 s to connect and for each read (no separate 5 s connect bound), at most
+16 MiB a response, no proxy or redirect, each request retried once.
+
 ## Context
 
 Releases are cut only through the release train

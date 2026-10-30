@@ -435,7 +435,10 @@ _Avoid_: **Remote Check**, **lease** — the kernel's gate pull request and Task
 An af built on the owner's Linux VM from the newest green commit of main, tagged
 `nightly-YYYY.MM.DD`, versioned `<core>-nightly.<YYYYMMDD>` and signed with the nightly key, for
 the two Linux targets only; a night on main's previous head builds nothing. Its record is
-`af.nightly-build/1`. A nightly is never a release: `.af/af.lock` never pins it, and `install.sh`
+`af.nightly-build/1`, and its daily report, `af.nightly-daily/1` with a page and a digest, is
+composed from that record and the nightly executor's verified originals
+([ADR-0267](docs/adr/0267-compose-the-nightly-report-from-the-nights-record-and-the-executor-journal.md)).
+A nightly is never a release: `.af/af.lock` never pins it, and `install.sh`
 and `af self` on the stable and rc channels never choose it
 ([ADR-0265](docs/adr/0265-build-nightlies-from-the-newest-green-main-on-the-owners-vm.md)).
 _Avoid_: **Release** — only the release train cuts one; the **nightly** trigger of the

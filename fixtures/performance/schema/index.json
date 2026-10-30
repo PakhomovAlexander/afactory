@@ -1113,6 +1113,59 @@
       "shape": false
     },
     {
+      "path": "nightly-daily/valid-complete.json",
+      "contract": "nightly-daily",
+      "valid": true,
+      "digest": "nightly-daily/digest-complete.md"
+    },
+    {
+      "path": "nightly-daily/valid-skipped.json",
+      "contract": "nightly-daily",
+      "valid": true,
+      "digest": "nightly-daily/digest-skipped.md"
+    },
+    {
+      "path": "nightly-daily/valid-no-core-result.json",
+      "contract": "nightly-daily",
+      "valid": true,
+      "digest": "nightly-daily/digest-no-core-result.md"
+    },
+    {
+      "path": "nightly-daily/invalid-label-without-a-verdict.json",
+      "contract": "nightly-daily",
+      "valid": false,
+      "error": "the verdict's result, or UNAVAILABLE without one",
+      "shape": false
+    },
+    {
+      "path": "nightly-daily/invalid-shown-is-not-its-rational.json",
+      "contract": "nightly-daily",
+      "valid": false,
+      "error": "the exact rational to three significant digits",
+      "shape": false
+    },
+    {
+      "path": "nightly-daily/invalid-skipped-with-performance.json",
+      "contract": "nightly-daily",
+      "valid": false,
+      "error": "a skipped night measures nothing",
+      "shape": false
+    },
+    {
+      "path": "nightly-daily/invalid-unknown-field.json",
+      "contract": "nightly-daily",
+      "valid": false,
+      "error": "unknown field published",
+      "shape": true
+    },
+    {
+      "path": "nightly-config/invalid-history-nights.toml",
+      "contract": "nightly-config",
+      "valid": false,
+      "error": "must be within 1..60",
+      "shape": true
+    },
+    {
       "path": "nightly-config/invalid-requires-a-release-job.toml",
       "contract": "nightly-config",
       "valid": false,

@@ -18,7 +18,6 @@ night, 1 refused with the reason on stderr. docs/nightly.md is the operator page
 """
 import argparse
 import hashlib
-import http.client
 import json
 import os
 import platform
@@ -34,7 +33,11 @@ sys.dont_write_bytecode = True
 HERE = os.path.dirname(os.path.abspath(__file__))
 ROOT = os.path.dirname(os.path.dirname(HERE))
 sys.path.insert(0, os.path.join(ROOT, "scripts", "performance"))
+sys.path.insert(0, HERE)
 
+import nightlygithub  # noqa: E402
+# The bounds of each GitHub request (ADR-0265, amended by ADR-0267).
+from nightlygithub import RESPONSE_BYTES_MAX, TIMEOUT_SECONDS  # noqa: E402,F401
 from perflab import contracts, gitrefs, tomlfile  # noqa: E402
 from perflab.nightlycontracts import (CHECK_PREFIX, DATE_PATTERN, RELEASE_JOB_PREFIX,  # noqa: E402
                                       RELEASE_JOBS, SIGNATURE, SUMS, TARGETS, asset_name,
@@ -43,10 +46,6 @@ from perflab.values import ContractError, loads_strict, require  # noqa: E402
 
 EXIT_BUILT, EXIT_REFUSED, EXIT_SKIPPED = 0, 1, 3
 MAX_WALK_DEFAULT = 20
-API_HOST = "api.github.com"
-CONNECT_SECONDS, READ_SECONDS = 5, 30
-RESPONSE_BYTES_MAX = 16 * 1024 * 1024
-PER_PAGE, PAGES_MAX = 100, 20
 GREEN = ("success", "skipped")
 PASSWORD_ENV = "AF_NIGHTLY_SIGN_PASSWORD"
 SHELLS = ("bash", "zsh", "fish", "elvish", "powershell")
@@ -75,87 +74,18 @@ def load_config(path):
 
 def read_token(config):
     """The GitHub token from `github_token_file`, or None to ask anonymously."""
-    path = config.get("github_token_file")
-    if path is None:
-        return None
-    try:
-        with open(path, "r", encoding="utf-8") as stream:
-            token = stream.read(4096).strip()
-    except OSError as error:
-        raise Refused("github_token_file %s: %s" % (path, error))
-    require(token and re.match(r"^[A-Za-z0-9_.-]+$", token) is not None,
-            "github_token_file %s holds no token" % path)
-    return token
+    return nightlygithub.read_token(config.get("github_token_file"), Refused)
 
 
 # GitHub check runs --------------------------------------------------------------------------
 
-def https_get(path, headers):
-    """One bounded GET of api.github.com: 5 s to connect, 30 s for each read."""
-    connection = http.client.HTTPSConnection(API_HOST, timeout=CONNECT_SECONDS)
-    try:
-        connection.connect()
-        connection.sock.settimeout(READ_SECONDS)
-        connection.request("GET", path, headers=headers)
-        response = connection.getresponse()
-        return response.status, response.read(RESPONSE_BYTES_MAX + 1)
-    finally:
-        connection.close()
+class GitHub(nightlygithub.Client):
+    """The check runs of a commit, every page, through `opener` (`nightlygithub.opener()` by
+    default), each request retried once when it fails or the server answers 5xx; a failure
+    refuses the night."""
 
-
-class GitHub:
-    """The check runs of a commit, every page, through `get` (`https_get` by default), each
-    request retried once when it fails or the server answers 5xx."""
-
-    def __init__(self, repository, token=None, get=https_get):
-        self.repository = repository
-        self.token = token
-        self.get = get
-
-    def request(self, path):
-        headers = {"Accept": "application/vnd.github+json", "User-Agent": "af-nightly-build",
-                   "X-GitHub-Api-Version": "2022-11-28"}
-        if self.token:
-            headers["Authorization"] = "Bearer " + self.token
-        failure = None
-        for _ in range(2):
-            try:
-                status, body = self.get(path, headers)
-            except (OSError, http.client.HTTPException) as error:
-                failure = str(error) or type(error).__name__
-                continue
-            if status >= 500:
-                failure = "HTTP %d" % status
-                continue
-            if status != 200:
-                raise Refused("GitHub answered HTTP %d for %s" % (status, path))
-            try:
-                return loads_strict(body, "GitHub " + path, RESPONSE_BYTES_MAX)
-            except ContractError as error:
-                raise Refused(str(error))
-        raise Refused("GitHub %s failed twice: %s" % (path, failure))
-
-    def check_runs(self, sha):
-        """[{name, status, conclusion}] of every check run of `sha`, all pages."""
-        runs = []
-        for page in range(1, PAGES_MAX + 1):
-            doc = self.request("/repos/%s/commits/%s/check-runs?filter=latest&per_page=%d"
-                               "&page=%d" % (self.repository, sha, PER_PAGE, page))
-            batch = doc.get("check_runs") if isinstance(doc, dict) else None
-            total = doc.get("total_count") if isinstance(doc, dict) else None
-            if not isinstance(batch, list) or type(total) is not int:
-                raise Refused("GitHub check runs of %s: not a check-runs page" % sha)
-            for item in batch:
-                if not (isinstance(item, dict) and isinstance(item.get("name"), str)
-                        and isinstance(item.get("status"), str)
-                        and (item.get("conclusion") is None
-                             or isinstance(item.get("conclusion"), str))):
-                    raise Refused("GitHub check runs of %s: a malformed check run" % sha)
-                runs.append({"name": item["name"], "status": item["status"],
-                             "conclusion": item["conclusion"]})
-            if not batch or len(runs) >= total:
-                return runs
-        raise Refused("%s has more than %d check runs" % (sha, PER_PAGE * PAGES_MAX))
+    error = Refused
+    agent = "af-nightly-build"
 
 
 def is_release_job(name):

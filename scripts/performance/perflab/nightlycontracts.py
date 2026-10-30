@@ -1,15 +1,18 @@
 """Closed contracts of the owner's nightly build (ADR-0265): its configuration, the plan it
-prints and the record each night leaves in its directory.
+prints, the record each night leaves in its directory and the daily report composed from that
+record and the executor journal (ADR-0267).
 
 A nightly is a separate train from the releases: its tag is `nightly-YYYY.MM.DD` and its
 version `<core>-nightly.<YYYYMMDD>`, both derived here from the night's date and the
 workspace version on the chosen commit, so a reader recomputes them instead of trusting them.
 """
 import datetime
+from fractions import Fraction
 import re
 
-from .spec import Arr, Const, Field, Int, Map, Nullable, Obj, Str
-from .values import ContractError, require
+from .spec import (Arr, Bool, COUNT, Const, DIGEST, Field, GIT_SHA, ID, Int, Map, Nullable, Obj,
+                   RATIONAL, Str, UNIT)
+from .values import ContractError, format_rational, parse_rational, require
 
 CONFIG_SCHEMA = "af.nightly-config/1"
 PLAN_SCHEMA = "af.nightly-plan/1"
@@ -31,6 +34,57 @@ _WORKSPACE_VERSION = re.compile(r"^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-
 RELEASE_JOBS = ("resolve the release", "sign and publish", "pin the release in .af/af.lock")
 RELEASE_JOB_PREFIX = "build "
 CHECK_PREFIX = "check /"
+DAILY_SCHEMA = "af.nightly-daily/1"
+# The daily report's sections, in the order the page shows them after its headline; each has
+# one completeness entry (ADR-0267).
+SECTIONS = ("build", "baseline", "performance", "telemetry", "trend", "since_last_night",
+            "backlog", "machine")
+LABELS = ("PASS", "FAIL", "INCOMPLETE", "UNAVAILABLE")
+HISTORY_NIGHTS_DEFAULT, HISTORY_NIGHTS_MAX = 14, 60
+HEADLINE_INSTANCES_MAX = 4
+# A verdict case that did not move: its interval lies inside the tolerance, or not above it,
+# and it passed. Every other case is a moved one the report lists by itself.
+UNCHANGED = ("within_tolerance", "non_regression")
+TELEMETRY_SHOWN = ("overhead", "read_latency")
+# The most items the nightly GitHub reader returns from one list (its 20 pages of 100).
+GITHUB_ITEMS_MAX = 2000
+# The most open pull requests whose mergeable state the backlog reads, one request each; more
+# open pull requests are a partial read the backlog records with its reason.
+PULL_REQUESTS_MAX = 100
+
+
+def three_significant(value):
+    """An exact rational (its text or a Fraction) as a decimal of three significant digits,
+    rounded half away from zero with exact arithmetic: 21/2 -> 10.5, 50 -> 50.0, 1/3 -> 0.333,
+    1234 -> 1230, 0 -> 0."""
+    number = Fraction(value)
+    if number == 0:
+        return "0"
+    sign, number = ("-" if number < 0 else ""), abs(number)
+    exponent = len(str(number.numerator)) - len(str(number.denominator))
+    while Fraction(10) ** exponent > number:
+        exponent -= 1
+    while Fraction(10) ** (exponent + 1) <= number:
+        exponent += 1
+    scaled = number / Fraction(10) ** (exponent - 2)
+    digits = int(scaled)
+    if scaled - digits >= Fraction(1, 2):
+        digits += 1
+    if digits == 1000:
+        digits, exponent = 100, exponent + 1
+    text = str(digits)
+    if exponent >= 2:
+        return sign + text + "0" * (exponent - 2)
+    decimals = 2 - exponent
+    if decimals >= 3:
+        return sign + "0." + "0" * (decimals - 3) + text
+    return sign + text[:3 - decimals] + "." + text[3 - decimals:]
+
+
+def number(value):
+    """The daily report's number: the exact rational and its three-significant-digit text."""
+    text = format_rational(Fraction(value))
+    return {"exact": text, "shown": three_significant(text)}
 
 
 def night_date(text, where="date"):
@@ -72,6 +126,195 @@ def asset_name(tag, target):
     return "af-%s-%s.tar.gz" % (tag, target)
 
 
+def daily_node(c):
+    """The shape of `af.nightly-daily/1`, one night's daily report record (ADR-0267)."""
+    tag = Str(pattern=TAG_PATTERN, max_len=19)
+    reason = Str(min_len=1, max_len=2048)
+    text = Str(max_len=1024)
+    shown = Obj(Field("exact", RATIONAL),
+                Field("shown", Str(pattern=r"^-?[0-9]+(?:\.[0-9]+)?$", min_len=1, max_len=600)))
+    fact = Obj(Field("value", Nullable(COUNT)), Field("reason", Nullable(reason)))
+    held = Obj(Field("value", Nullable(Bool())), Field("reason", Nullable(reason)))
+    build = Obj(
+        Field("status", Str(enum=("built", "skipped"))), Field("head_sha", GIT_SHA),
+        Field("head_subject", Nullable(text)), Field("version", Str(pattern=VERSION_PATTERN,
+                                                                   max_len=96)),
+        Field("previous_tag", Nullable(tag)), Field("previous_head_sha", Nullable(GIT_SHA)),
+        Field("skip_reason", Nullable(reason)),
+        Field("targets", Arr(Obj(Field("target", Str(enum=TARGETS)),
+                                 Field("asset", Str(min_len=1, max_len=128)),
+                                 Field("sha256", DIGEST), Field("bytes", Int(1, 2 ** 40)),
+                                 Field("af_sha256", Nullable(DIGEST)),
+                                 Field("af_reason", Nullable(reason))), 0, len(TARGETS))))
+    baseline = Obj(Field("tag", Str(min_len=1, max_len=256)), Field("sha", GIT_SHA),
+                   Field("published", Nullable(c.DATE)), Field("commits_since", Nullable(COUNT)),
+                   Field("pull_requests_since", Nullable(COUNT)),
+                   Field("reasons", Arr(reason, 0, 4)))
+    instance = Obj(
+        Field("instance_id", ID), Field("criticality", Str(enum=("critical", "advisory"))),
+        Field("unit", UNIT), Field("baseline_median", Nullable(shown)),
+        Field("candidate_median", Nullable(shown)), Field("relative_change", Nullable(shown)),
+        Field("interval", Nullable(Obj(Field("lower", shown), Field("upper", shown)))),
+        Field("status", Str(enum=c.CASE_STATUSES)),
+        Field("classification", Nullable(Str(enum=c.READINESS_CLASSIFICATIONS))),
+        Field("outcome", Str(enum=("pass", "fail", "incomplete"))), Field("moved", Bool()))
+    performance = Obj(
+        Field("request_id", ID), Field("run_id", ID), Field("plan_digest", DIGEST),
+        Field("verdict_sha256", DIGEST),
+        Field("result", Str(enum=("pass", "fail", "incomplete"))), Field("exit_code", Int(0, 4)),
+        Field("scope", Str(enum=c.SCOPES)),
+        Field("provenance", Str(enum=("measured", "synthetic", "mixed", "none"))),
+        Field("headline", Str(min_len=1, max_len=2048)),
+        Field("satisfies_required_check", Bool()),
+        Field("reasons", Arr(Obj(Field("code", ID), Field("instance_id", Nullable(ID)),
+                                 Field("detail", Str(max_len=4096))), 0, 64)),
+        Field("instances", Arr(instance, 0, 4096)), Field("unchanged", COUNT),
+        Field("coverage", Obj(Field("expected_records", COUNT), Field("matched_records", COUNT),
+                              Field("missing_records", COUNT))),
+        Field("sentinel", Obj(Field("shards", COUNT), Field("healthy", COUNT),
+                              Field("flags", Arr(ID, 0, 64, unique=True)))),
+        Field("measured_candidate_sha256", Nullable(DIGEST)),
+        Field("shipped_sha256", Nullable(DIGEST)), Field("measured_is_shipped", Nullable(Bool())),
+        Field("measured_reason", Nullable(reason)))
+    telemetry = Obj(
+        Field("request_id", ID), Field("result_id", ID),
+        Field("figures", Arr(Obj(
+            Field("experiment", Str(enum=TELEMETRY_SHOWN)), Field("subject", Str(min_len=1,
+                                                                                 max_len=256)),
+            Field("level", Str(enum=c.TELEMETRY_LEVEL_NAMES)),
+            Field("metric", Str(enum=c.TELEMETRY_METRICS)), Field("unit", UNIT),
+            Field("state", Str(enum=("compared", "incompatible", "missing"))),
+            Field("median_change_percent", Nullable(shown))), 0, 1024)))
+    trend = Obj(
+        Field("nights", Int(1, HISTORY_NIGHTS_MAX)),
+        Field("instances", Arr(Obj(
+            Field("instance_id", ID), Field("unit", Nullable(UNIT)),
+            Field("points", Arr(Obj(Field("tag", tag), Field("baseline_tag", Str(min_len=1,
+                                                                                 max_len=256)),
+                                    Field("candidate_median", Nullable(shown)),
+                                    Field("release", Nullable(Str(min_len=1, max_len=256)))),
+                                0, HISTORY_NIGHTS_MAX + 1))), 0, HEADLINE_INSTANCES_MAX)),
+        Field("refused", Arr(Obj(Field("tag", tag), Field("reason", reason)),
+                             0, HISTORY_NIGHTS_MAX + 1)))
+    pull = Obj(Field("number", Int(1, 2 ** 31)), Field("title", text))
+    since = Obj(
+        Field("previous_tag", Nullable(tag)), Field("previous_head_sha", Nullable(GIT_SHA)),
+        Field("merged_pull_requests", Nullable(Arr(pull, 0, GITHUB_ITEMS_MAX))),
+        Field("verdict_changes", Nullable(Arr(Obj(Field("instance_id", ID),
+                                                  Field("previous", Str(enum=c.CASE_STATUSES)),
+                                                  Field("current", Str(enum=c.CASE_STATUSES))),
+                                              0, 4096))),
+        Field("reasons", Arr(reason, 0, 4)))
+    backlog = Obj(
+        Field("open_issues", COUNT),
+        Field("labels", Arr(Obj(Field("name", Str(min_len=1, max_len=256)),
+                                Field("count", COUNT)), 0, GITHUB_ITEMS_MAX)),
+        Field("opened_24h", COUNT), Field("closed_24h", COUNT),
+        Field("stale_issues", COUNT),
+        Field("stale", Arr(Obj(Field("number", Int(1, 2 ** 31)), Field("title", text),
+                               Field("updated", c.DATE)), 0, 20)),
+        Field("open_pull_requests", COUNT), Field("draft_pull_requests", COUNT),
+        Field("pull_requests", Arr(Obj(Field("number", Int(1, 2 ** 31)), Field("title", text),
+                                       Field("draft", Bool()),
+                                       Field("mergeable_state", Str(min_len=1, max_len=32))),
+                                   0, PULL_REQUESTS_MAX)),
+        Field("pull_requests_partial", Nullable(reason)),
+        Field("head_checks", Obj(Field("total", COUNT), Field("success", COUNT),
+                                 Field("failure", COUNT), Field("skipped", COUNT),
+                                 Field("pending", COUNT), Field("other", COUNT))))
+    machine = Obj(Field("free_bytes", fact), Field("lock_held", held),
+                  Field("failed_units", fact))
+    entry = Obj(Field("available", Bool()), Field("reason", reason))
+    return Obj(
+        Field("schema", Const(DAILY_SCHEMA)),
+        Field("date", Str(pattern=DATE_PATTERN, max_len=10)), Field("tag", tag),
+        Field("composed_unix_ms", c.UNIX_MS), Field("repository", c.REPOSITORY),
+        Field("host", Obj(Field("machine_id", Nullable(ID)))),
+        Field("headline", Obj(Field("label", Str(enum=LABELS)),
+                              Field("text", Str(min_len=1, max_len=2048)))),
+        Field("build", build), Field("baseline", baseline),
+        Field("performance", Nullable(performance)), Field("telemetry", Nullable(telemetry)),
+        Field("trend", Nullable(trend)), Field("since_last_night", Nullable(since)),
+        Field("backlog", Nullable(backlog)), Field("machine", machine),
+        Field("completeness", Obj(*[Field(name, entry) for name in SECTIONS])))
+
+
+def _numbers(value, where):
+    """Every `{exact, shown}` number below `value` shows its exact rational's three
+    significant digits."""
+    if isinstance(value, dict):
+        if set(value) == {"exact", "shown"}:
+            require(value["shown"] == three_significant(parse_rational(value["exact"], where)),
+                    where + ".shown: the exact rational to three significant digits")
+            return
+        for key, item in value.items():
+            _numbers(item, where + "." + key)
+    elif isinstance(value, list):
+        for index, item in enumerate(value):
+            _numbers(item, "%s[%d]" % (where, index))
+
+
+def validate_daily_semantics(doc, where):
+    require(doc["tag"] == nightly_tag(doc["date"]),
+            where + ".tag: a night's tag is nightly-YYYY.MM.DD of its date")
+    _numbers(doc, where)
+    for name in SECTIONS:
+        require(doc["completeness"][name]["available"] is False
+                or doc[name] is not None,
+                where + ".completeness.%s: available only when the section is recorded" % name)
+    for name, fact in doc["machine"].items():
+        require((fact["value"] is None) == (fact["reason"] is not None),
+                where + ".machine.%s: a value, or null with the reason" % name)
+    performance = doc["performance"]
+    label = "UNAVAILABLE" if performance is None else performance["result"].upper()
+    require(doc["headline"]["label"] == label,
+            where + ".headline.label: the verdict's result, or UNAVAILABLE without one")
+    build = doc["build"]
+    skipped = build["status"] == "skipped"
+    require(skipped == (build["skip_reason"] is not None) and (not skipped or not build["targets"]),
+            where + ".build: a skipped night has its reason and no archives")
+    if skipped:
+        require(all(doc[name] is None for name in ("performance", "telemetry", "trend",
+                                                   "since_last_night")),
+                where + ": a skipped night measures nothing, so it has no performance, "
+                "telemetry, trend or since-last-night section")
+    for entry in build["targets"]:
+        require((entry["af_sha256"] is None) == (entry["af_reason"] is not None),
+                where + ".build.targets: the shipped af's digest, or null with the reason")
+    if performance is not None:
+        ids = [item["instance_id"] for item in performance["instances"]]
+        require(len(ids) == len(set(ids)), where + ".performance.instances: each instance once")
+        for item in performance["instances"]:
+            require(item["moved"] == (item["status"] not in UNCHANGED
+                                      or item["outcome"] != "pass"),
+                    where + ".performance.instances.%s.moved: every case that is not unchanged "
+                    "and passing" % item["instance_id"])
+        require(performance["unchanged"] == sum(1 for item in performance["instances"]
+                                                if not item["moved"]),
+                where + ".performance.unchanged: the count of instances that did not move")
+        measured, shipped = performance["measured_candidate_sha256"], performance["shipped_sha256"]
+        same = None if measured is None or shipped is None else measured == shipped
+        require(performance["measured_is_shipped"] == same
+                and (same is None) == (performance["measured_reason"] is not None),
+                where + ".performance.measured_is_shipped: the measured candidate's digest "
+                "compared with the shipped af's, or null with the reason")
+    if doc["trend"] is not None:
+        for item in doc["trend"]["instances"]:
+            tags = [point["tag"] for point in item["points"]]
+            require(tags == sorted(set(tags)) and len(tags) <= doc["trend"]["nights"] + 1
+                    and all(tag <= doc["tag"] for tag in tags),
+                    where + ".trend.%s: at most the configured earlier nights and this one, "
+                    "each once and in night order" % item["instance_id"])
+    backlog = doc["backlog"]
+    if backlog is not None:
+        listed, total = len(backlog["pull_requests"]), backlog["open_pull_requests"]
+        require(listed == min(total, PULL_REQUESTS_MAX)
+                and (backlog["pull_requests_partial"] is None) == (total <= PULL_REQUESTS_MAX),
+                where + ".backlog.pull_requests: every open pull request's mergeable state, or "
+                "the first %d and the partial read's reason" % PULL_REQUESTS_MAX)
+    return doc
+
+
 def register(c):
     SHA, DIGEST = c.GIT_SHA, c.DIGEST
     path = c.ABSOLUTE_PATH
@@ -83,7 +326,13 @@ def register(c):
         Field("sign_key", path), Field("public_key", path),
         Field("required_checks", Arr(check_name, 0, 64, unique=True)),
         Field("max_walk", Int(1, 200), required=False),
-        Field("github_token_file", path, required=False))
+        Field("github_token_file", path, required=False),
+        # What `report.py compose` reads besides the night's record (ADR-0267).
+        Field("report", Obj(Field("executor_config", path),
+                            Field("history_nights", Int(1, HISTORY_NIGHTS_MAX), required=False),
+                            Field("headline_instances",
+                                  Arr(ID, 1, HEADLINE_INSTANCES_MAX, unique=True))),
+              required=False))
     rejected = Obj(Field("sha", SHA), Field("reason", Str(min_len=1, max_len=2048)))
     common = (
         Field("date", Str(pattern=DATE_PATTERN, max_len=10)),
@@ -114,6 +363,7 @@ def register(c):
         Field("sha256sums", Nullable(Obj(Field("path", Const(SUMS)),
                                          Field("signature_path", Const(SIGNATURE))))),
         Field("timings", Map(r"^[a-z0-9][a-z0-9_.-]{0,63}$", phase, 1, 32)))
+    daily = daily_node(c)
 
     def validate_config(doc, where="nightly.toml"):
         configuration.validate(doc, where)
@@ -178,6 +428,12 @@ def register(c):
     c.validate_nightly_config = validate_config
     c.validate_nightly_plan = validate_plan
     c.validate_nightly_build = validate_record
+
+    def validate_daily(doc, where="daily.json"):
+        daily.validate(doc, where)
+        return validate_daily_semantics(doc, where)
+
+    c.validate_nightly_daily = validate_daily
     c.CONTRACTS["nightly-config"] = (
         CONFIG_SCHEMA, configuration, validate_config,
         "The owner's nightly build configuration as parsed TOML (ADR-0265): the repository, "
@@ -195,3 +451,10 @@ def register(c):
         "plan it built, the build image, each Linux target's archive with its digest, size, "
         "smoke and version report, the signed SHA256SUMS and every phase's timing, or why "
         "the night was skipped.")
+    c.CONTRACTS["nightly-daily"] = (
+        DAILY_SCHEMA, daily, validate_daily,
+        "One night's daily report record, daily.json (ADR-0267): the build, its stable "
+        "baseline, the verified core verdict per instance with exact rationals and their "
+        "three-significant-digit text, the telemetry figures, the trend of the headline "
+        "instances across nights, what changed since the previous night, the GitHub backlog, "
+        "the machine, and which sections are available and why not.")

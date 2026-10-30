@@ -504,3 +504,5 @@ future readers need.
   VM](0265-build-nightlies-from-the-newest-green-main-on-the-owners-vm.md)
 - [0266 — Measure nightlies as originals of the independent
   executor](0266-measure-nightlies-as-originals-of-the-independent-executor.md)
+- [0267 — Compose the nightly report from the night's record and the executor
+  journal](0267-compose-the-nightly-report-from-the-nights-record-and-the-executor-journal.md)

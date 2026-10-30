@@ -70,6 +70,36 @@
       "minLength": 2,
       "maxLength": 4096,
       "pattern": "^/[^\\x00]*$"
+    },
+    "report": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "executor_config": {
+          "type": "string",
+          "minLength": 2,
+          "maxLength": 4096,
+          "pattern": "^/[^\\x00]*$"
+        },
+        "history_nights": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 60
+        },
+        "headline_instances": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/id"
+          },
+          "minItems": 1,
+          "maxItems": 4,
+          "uniqueItems": true
+        }
+      },
+      "required": [
+        "executor_config",
+        "headline_instances"
+      ]
     }
   },
   "required": [
@@ -82,5 +112,12 @@
     "sign_key",
     "public_key",
     "required_checks"
-  ]
+  ],
+  "$defs": {
+    "id": {
+      "type": "string",
+      "maxLength": 64,
+      "pattern": "^[a-z][a-z0-9_]{0,63}$"
+    }
+  }
 }

@@ -5,9 +5,13 @@
 #
 #   python3 -I scripts/nightly/build.py plan --config nightly.toml --date 2026-10-29
 #   python3 -I scripts/nightly/build.py build --config nightly.toml --date 2026-10-29
+#   python3 -I -B scripts/nightly/report.py compose --config nightly.toml --date 2026-10-29 \
+#       --output /var/lib/af-nightly/reports/2026-10-29
 #
 # The build reads only these files and the GitHub check runs of main's commits; it writes only
 # builds_root/<date>/ and the Cargo cache builds_root/cache/, and never pushes or publishes.
+# The report reads the night's record, the nightly executor's journal, GitHub and three host
+# facts, and writes only the new --output directory (ADR-0267).
 
 schema = "af.nightly-config/1"
 # The repository whose check runs decide which main commit is green.
@@ -35,3 +39,18 @@ max_walk = 20
 # Optional: a file holding a read-only GitHub token. Without it the check runs are read
 # anonymously, which works for a public repository.
 # github_token_file = "/etc/af-nightly/github-token"
+
+# What `report.py compose` reads besides the night's record (ADR-0267); `build.py` ignores it.
+[report]
+# The nightly executor's configuration (docs/performance-local-executor.md#nightly-originals):
+# its `root` is the journal whose nightly:<tag>:core and nightly:<tag>:telemetry originals the
+# report verifies and shows, and its `machine_id` names the host.
+executor_config = "/etc/af-nightly/executor.toml"
+# How many earlier nights the trend shows beside this one: the last that many the journal holds
+# a core original of, by tag date (1 to 60, default 14).
+history_nights = 14
+# The instances the trend plots, as the suite names them; at most four. A name that is no
+# instance of the night's verdict leaves the trend unavailable with that reason.
+headline_instances = ["cli_discovery__command_version", "tui_open__registry_stores_20x10000",
+                      "source_capture__files_10000_tree_source_files_128b",
+                      "state_projection__log_events_10000_projection_application_cold"]
