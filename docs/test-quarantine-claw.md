@@ -128,7 +128,10 @@ git commit -am 'test quarantine: apply the confirmation of <commit>'
 Like every change to this repository, the pull request carries an `af task report` block
 ([ADR-0142](adr/0142-carry-the-af-task-report-in-every-pull-request.md)) and the lines-added block
 ([ADR-0195](adr/0195-state-the-lines-a-pull-request-adds-per-directory-and-check-them.md)), which the PR report
-check requires. The commit is a hand-made candidate, so an af verification Task judges it
+check requires, and the quarantine block when the commit adds an entry to
+`.config/test-quarantine.json`. `apply` changes and removes entries but adds none, so for its
+commit alone `scripts/pr-quarantine.py` says no block is needed; the body below adds the block
+only when the script prints one. The commit is a hand-made candidate, so an af verification Task judges it
 (`default-light/verification`,
 [ADR-0262](adr/0262-offer-a-light-default-pipeline-for-small-changes.md)), with `../base` the commit before it and the
 confirmation report as its evidence. Then build the body from that Task and open the pull request:
@@ -141,6 +144,11 @@ confirmation report as its evidence. Then build the body from that Task and open
   af task report <verification Task ID>
   echo; echo '## Lines added'; echo
   python3 scripts/pr-lines.py --base origin/main
+  python3 scripts/pr-quarantine.py --base origin/main > "$TMPDIR/quarantine-block.md"
+  if [ -s "$TMPDIR/quarantine-block.md" ]; then
+    echo; echo '## Test quarantine'; echo
+    cat "$TMPDIR/quarantine-block.md"
+  fi
 } > "$TMPDIR/quarantine-pr.md"
 git push -u origin test-quarantine-confirm
 gh pr create --title 'test quarantine: apply the confirmation of <commit>' \
