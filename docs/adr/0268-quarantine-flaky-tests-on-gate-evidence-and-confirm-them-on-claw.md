@@ -139,6 +139,28 @@ because this repository's af gates run locally on macOS. A clean report from a h
 confirmation, run locally, releases it. The runbook is
 [`docs/test-quarantine-claw.md`](../test-quarantine-claw.md).
 
+**Amended 2026-10-30** ([#466](https://github.com/PakhomovAlexander/afactory/issues/466), Q4).
+A pull request that quarantines tests says so in its description, in a block modelled on the
+lines-added block of
+[ADR-0195](0195-state-the-lines-a-pull-request-adds-per-directory-and-check-them.md).
+`scripts/pr-quarantine.py` reads `.config/test-quarantine.json` with `git show` at the fork
+point of `BASE...HEAD` (`--base`, default `origin/main`; `--head`, default `HEAD`) and at the
+head, a file absent at either counting as empty. An identity the head adds is listed; a changed
+or removed entry is not. With none added it prints nothing and says on stderr that no block is
+needed. Otherwise it prints, between `<!-- af-pr-quarantine:v1 -->` and
+`<!-- /af-pr-quarantine -->`, the title `**Quarantined tests added: N**` and one sorted row per
+added identity: the identity as code, its state, its expiry, and why, built as its state,
+`flaky in K Tasks' gates:` with the evidence Task IDs, and `; #<issue>` when one is set. A file
+that cannot be read or is malformed at either commit is an error naming the commit. The
+`PR report` check (`scripts/check-pr-report.py`) renders the block again from the pull
+request's commits: when they add a quarantined test, a missing or differing block is refused
+with the block to paste; when they add none, a block is refused as stale and none is needed.
+Its markers count only where GitHub renders them as text: not in a code block, a raw HTML block
+or an HTML comment. Without the commits only a block present is checked, for its shape.
+Dependabot and `release/` pull requests stay exempt. The pull request template's
+`## Test quarantine` section holds no markers, so a description that adds no quarantined test
+needs no edit there to pass.
+
 ## Consequences
 
 - A flaky test costs the gates that met it, then leaves every gate until it is fixed or its 14

@@ -27,6 +27,11 @@ review corpora belong in consuming repositories, not here.
   directory's figure, bar and share; the same check renders the block again from the pull
   request's commits and refuses a description whose block is missing or differs
   ([ADR-0195](docs/adr/0195-state-the-lines-a-pull-request-adds-per-directory-and-check-them.md)).
+  A pull request that adds quarantined tests also carries the block between
+  `<!-- af-pr-quarantine:v1 -->` and `<!-- /af-pr-quarantine -->` that
+  `python3 scripts/pr-quarantine.py` prints, checked the same way; one that adds none carries
+  no such block
+  ([ADR-0268](docs/adr/0268-quarantine-flaky-tests-on-gate-evidence-and-confirm-them-on-claw.md)).
 - Every PR defaults to fast validation (functional, e2e and uix), including AF gate and release
   PRs. PR validation uses the reviewed functional/e2e/uix/perf catalog and label selection in
   [the test-class design](docs/test-classes.md). `no-perf` excludes both perf validation and

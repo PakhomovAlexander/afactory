@@ -132,6 +132,18 @@ failure makes it `flaky` with an issue for its fix, 50 passes remove the entry, 
 entry with only macOS evidence stays `quarantined` until it is fixed or expires. A fix is its own
 change and removes the entry.
 
+A pull request that adds entries says so in its description: `python3 scripts/pr-quarantine.py`
+(`--base REF` for a base other than `origin/main`) prints the block for the identities the
+branch adds since its fork point, between `<!-- af-pr-quarantine:v1 -->` and
+`<!-- /af-pr-quarantine -->`: the title `**Quarantined tests added: N**` and a sorted table of
+each test, its state, its expiry and why (its state, `flaky in K Tasks' gates:` with the evidence
+Task IDs, and `; #<issue>` when one is set). Paste it into the template's `Test quarantine`
+section. A pull request that only changes or removes entries needs no block: the script prints
+nothing and says so, and the section is deleted. The `PR report` check
+(`scripts/check-pr-report.py`) renders the block again from the pull request's commits and
+refuses a description whose block is missing or differs, printing the block to paste, and one
+that holds a block when no quarantined test is added.
+
 `scripts/test-quarantine.py scan` proposes the entries:
 
 ```sh
