@@ -259,6 +259,7 @@ future readers need.
   registered](0141-list-a-logged-out-default-context-only-until-its-kind-is-registered.md)
 - [0142 — Carry the `af task report` of its Tasks in every pull
   request](0142-carry-the-af-task-report-in-every-pull-request.md)
+  (superseded in part by [ADR-0269](0269-let-ci-maintain-the-lines-added-block.md))
 - [0143 — Charge zero and record unknown usage when no usage is
   reported](0143-charge-zero-and-record-unknown-usage-when-no-usage-is-reported.md)
 - [0144 — Hold af's disk use to a machine budget](0144-hold-afs-disk-use-to-a-machine-budget.md)
@@ -364,6 +365,7 @@ future readers need.
   group](0194-bind-calibration-to-each-cases-observed-shard-cpu-group.md)
 - [0195 — State the lines a pull request adds per directory, and check
   them](0195-state-the-lines-a-pull-request-adds-per-directory-and-check-them.md)
+  (superseded in part by [ADR-0269](0269-let-ci-maintain-the-lines-added-block.md))
 - [0196 — Skip pull request measurements only for an explicit `no-perf`
   label](0196-skip-pull-request-measurements-only-for-an-explicit-no-perf-label.md)
 - [0197 — Validate on one latest stable Python](0197-validate-on-one-latest-stable-python.md)
@@ -502,3 +504,5 @@ future readers need.
   one](0264-own-codex-session-records-and-quarantine-after-a-foreign-one.md)
 - [0267 — Offer a nightly channel in af
   self](0267-offer-a-nightly-channel-in-af-self.md)
+- [0269 — Let CI maintain the lines added
+  block](0269-let-ci-maintain-the-lines-added-block.md)

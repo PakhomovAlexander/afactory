@@ -1,16 +1,24 @@
 # Every change is made through af Tasks, and its pull request description carries their
-# `af task report` block (ADR-0142) and the lines it adds per directory (ADR-0195). Dependabot
-# and `release/` pull requests are exempt.
+# `af task report` block (ADR-0142) and the lines it adds per directory (ADR-0195), which this
+# job keeps up to date (ADR-0269). Dependabot and `release/` pull requests are exempt.
 #
 # Only trusted code judges a pull request. `pull_request_target` runs this workflow as the base
 # branch holds it, not as the pull request changed it, and the job checks out the base branch,
-# never the pull request's head or merge ref, so it runs the base's checker. The description is
-# read from the event payload GitHub hands the job: no API call, no token beyond
-# `contents: read`, and no code from the pull request runs. The lines block is compared with
-# the pull request's own commits: the job fetches them as objects into the base checkout and
-# reads them with `git diff --numstat` alone; nothing of them is checked out, built or run. A
-# pull request can therefore change neither this workflow nor the checker that judges it; a
-# change to either takes effect for the pull requests opened after it merges.
+# never the pull request's head or merge ref, so it runs the base's checker. The check reads the
+# description from the event payload GitHub hands the job, and no code from the pull request
+# runs. The lines block is compared with the pull request's own commits: the job fetches them as
+# objects into the base checkout and reads them with `git diff --numstat` alone; nothing of them
+# is checked out, built or run. A pull request can therefore change neither this workflow nor
+# the checker that judges it; a change to either takes effect for the pull requests opened after
+# it merges.
+#
+# When the lines block differs from the one the commits give, or is absent, the job writes it
+# into the description instead of failing: it reads the description once more through the API,
+# so an edit made since the event is kept, has the checker replace only the text between the
+# block's markers (or insert the block after the report block), and writes back the `body` field
+# alone with the job's token, which is why it holds `pull-requests: write` and nothing more. A
+# refused write fails the check as before, with the block to paste. GitHub starts no run for an
+# edit made with the job's token; a run that did would find the block equal and write nothing.
 name: PR report
 
 on:
@@ -19,6 +27,8 @@ on:
 
 permissions:
   contents: read
+  # To write the lines block into this pull request's own description, and nothing else.
+  pull-requests: write
 
 # Under `pull_request_target`, `github.ref` is the base branch every pull request shares.
 concurrency:
@@ -44,4 +54,31 @@ jobs:
           git fetch --no-tags origin "refs/pull/$NUMBER/head"
           git cat-file -e "$HEAD_SHA^{commit}" || git fetch --no-tags origin "$HEAD_SHA"
       - name: Check the af task report and lines added blocks in the description
-        run: python3 scripts/check-pr-report.py --event "$GITHUB_EVENT_PATH"
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          NUMBER: ${{ github.event.pull_request.number }}
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+        run: |
+          stale="$RUNNER_TEMP/stale.md"
+          current="$RUNNER_TEMP/current.md"
+          refreshed="$RUNNER_TEMP/refreshed.md"
+          # The event's description: a bad report block fails here; a stale or absent lines
+          # block passes and writes $stale, which says the description needs a refresh.
+          python3 scripts/check-pr-report.py --event "$GITHUB_EVENT_PATH" --refresh-into "$stale"
+          if [ ! -f "$stale" ]; then exit 0; fi
+          # Refresh the description as it is now, not as the event saw it, and write back its
+          # body alone. A non-zero exit of either `gh` call falls back to the refusal below.
+          if gh api "repos/$REPO/pulls/$NUMBER" --template '{{if .body}}{{.body}}{{end}}' > "$current" &&
+            python3 scripts/check-pr-report.py --body "$current" --diff "$BASE_SHA" "$HEAD_SHA" \
+              --refresh-into "$refreshed"; then
+            if [ ! -f "$refreshed" ]; then exit 0; fi
+            if gh api --method PATCH "repos/$REPO/pulls/$NUMBER" -F "body=@$refreshed" --silent; then
+              echo "lines added: refreshed the block in the description from the pull request's commits"
+              exit 0
+            fi
+          fi
+          echo "lines added: the description was not refreshed; the block to paste follows" >&2
+          python3 scripts/check-pr-report.py --event "$GITHUB_EVENT_PATH"
+          exit 1
