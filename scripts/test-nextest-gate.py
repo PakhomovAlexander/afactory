@@ -141,8 +141,12 @@ def main():
                      'ci-step.py', 'test-time-report.py', 'test-classes.py']:
             shutil.copyfile(ROOT / 'scripts' / name, repo / 'scripts' / name)
         # The test recipe starts nextest through the quarantine exclusion, which reads these.
-        for name in ['nextest.toml', 'test-classes.json', 'test-quarantine.json']:
+        for name in ['nextest.toml', 'test-classes.json']:
             shutil.copyfile(ROOT / '.config' / name, repo / '.config' / name)
+        # An empty quarantine, not this repository's: its identities name binaries this
+        # miniature crate does not build, and nextest refuses a `binary_id` that matches none.
+        (repo / '.config' / 'test-quarantine.json').write_text(
+            '{"schema": "af.test-quarantine/1", "tests": {}}\n')
         shutil.copyfile(ROOT / 'rust-toolchain.toml', repo / 'rust-toolchain.toml')
         # Use the actual Makefile test recipe; other gate stages do not apply to
         # this miniature crate. The production check target is not modified.

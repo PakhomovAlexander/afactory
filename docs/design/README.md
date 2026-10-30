@@ -61,3 +61,10 @@ and an ADR disagree, the ADR wins. Shared vocabulary is defined in
   contracts, registry, planning and verdicts, is
   [ADR-0162](../adr/0162-freeze-performance-plans-and-judge-them-by-exact-paired-verdicts.md),
   and p2–p8 are in flight.
+- [`issue-triage.md`](issue-triage.md) — filing an issue raw (one sentence, evidence, an
+  optional repro, the `triage/pending` label) and triaging it asynchronously: two models classify,
+  size and route each issue through a report Task on the owner's executor, recorded as the
+  namespaced `class/`, `size/`, `pipeline/` and `triage/` labels and an `af/issue-triage@1`
+  document. Accepted 2026-10-30; rollout step 1, the raw issue template, the loosened bug
+  template, `scripts/backlog-labels.py` and the filing rule in [`AGENTS.md`](../../AGENTS.md),
+  ships; steps 2 to 5 (the kind and schema, the runner, the backfill, the plugin) follow.
