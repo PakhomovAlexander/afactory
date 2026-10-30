@@ -324,6 +324,29 @@ class SkipRule(History):
                  for path in github.paths]
         self.assertEqual(asked, [self.tip, self.parent])
 
+    def test_a_main_rewound_below_the_previous_head_is_refused(self):
+        # Its own mirror, since this one moves main: a green O, then the P a night built on;
+        # main is then force-pushed back to O, so the walk meets O green and never meets P.
+        rewound = Repo(self.path("rewound"))
+        green = rewound.commit("release 0.13.0", tree("0.13.0"))
+        rewound.tag("v0.13.0", green, annotated=True)
+        built = rewound.commit("a change the night built")
+        self.write_config(mirror=rewound.path)
+        self.previous(built)
+        rewound.git("update-ref", "refs/heads/main", green)
+        code, plan, err, github = self.plan({green: GREEN, built: GREEN})
+        self.assertEqual(code, 1)
+        self.assertIsNone(plan)
+        self.assertIn("nightly: refused: the previous night's head %s is not behind main's newest "
+                      "green commit %s: main was rewound, and a nightly never moves behind the "
+                      "previous night's head" % (built, green), err)
+        self.assertFalse(github.asked(built))
+        # The same previous head, with main ahead of it again, plans a build.
+        rewound.git("update-ref", "refs/heads/main", built)
+        ahead = rewound.commit("a later change")
+        code, plan, err, _ = self.plan({ahead: GREEN})
+        self.assertEqual((code, plan["status"], plan["head_sha"]), (0, "build", ahead), err)
+
     def test_only_an_earlier_night_is_the_previous_night(self):
         self.previous(self.rc, date="2026-10-27")
         code, plan, err, _ = self.plan({self.tip: LINT_FAILED, self.parent: GREEN})
@@ -371,9 +394,14 @@ class SkipRule(History):
                          (0, "skipped", record["head_sha"]), err)
 
     def test_an_explicit_skipped_previous_record_is_accepted(self):
-        skipped = os.path.join(ROOT, "fixtures/performance/schema/nightly-build/valid-skipped.json")
-        record = json.loads(read(skipped))
+        fixture = os.path.join(ROOT, "fixtures/performance/schema/nightly-build/valid-skipped.json")
+        record = json.loads(read(fixture))
         self.assertEqual(record["status"], "skipped")
+        # The fixture's head, on a commit this mirror holds behind main's newest green one.
+        record["head_sha"] = record["previous_head_sha"] = self.rc
+        skipped = self.path("skipped.json")
+        with open(skipped, "wb") as stream:
+            stream.write(contracts.write_bytes(record, "nightly-build"))
         github = FakeGitHub({self.tip: LINT_FAILED, self.parent: GREEN})
         code, out, err = self.main("plan", "--config", self.config, "--date", "2026-10-30",
                                    "--previous", skipped, github=github.client())

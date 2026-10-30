@@ -228,7 +228,8 @@ def choose(git, github, required_checks, max_walk, previous_head):
     The newest commit whose checks are green is chosen, and every commit's checks are judged,
     the previous night's head included. The walk never goes behind the previous night's head:
     green, it is chosen (the night is skipped); red, the night is refused, because a nightly
-    never moves backwards."""
+    never moves backwards. A main rewound below that head never reaches it here; `make_plan`
+    refuses that night."""
     rejected = []
     for sha in git.first_parents("refs/heads/main", max_walk):
         reason = judge(github.check_runs(sha), required_checks)
@@ -393,6 +394,16 @@ def last_built_tag(previous):
 def make_plan(config, date, git, github, previous):
     head, rejected = choose(git, github, config["required_checks"], config["max_walk"],
                             previous["head_sha"] if previous else None)
+    if previous is not None and head != previous["head_sha"]:
+        # main rewound (a force-push) below the previous head, or a head the mirror never had:
+        # the walk never met it.
+        try:
+            behind = git.is_ancestor(previous["head_sha"], head)
+        except ContractError:
+            behind = False
+        require(behind, "the previous night's head %s is not behind main's newest green commit "
+                "%s: main was rewound, and a nightly never moves behind the previous night's head"
+                % (previous["head_sha"], head))
     built_tag = last_built_tag(previous)
     manifest = git.read_file(head, "Cargo.toml")
     require(manifest is not None, "%s has no Cargo.toml" % head)

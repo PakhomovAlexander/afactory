@@ -60,7 +60,9 @@ with Docker, `git`, `minisign` and `qemu-aarch64-static`, reading one `af.nightl
    last built night's tag and the commit, and `build` writes a skipped record, builds nothing
    and exits 3; red (its checks were re-run and failed since), the night is refused with one
    sentence naming the previous head and why it is red, because a nightly never moves
-   backwards.
+   backwards; so is a night whose main was rewound below the previous head, which the walk
+   then never meets (`make_plan` checks that the previous head is an ancestor of the chosen
+   commit).
 3. **Tag and version.** The tag is `nightly-YYYY.MM.DD`, never `v…`, so the release tools keep
    ignoring it. The version is `<core>-nightly.<YYYYMMDD>`, a SemVer pre-release `af self` can
    install beside releases and order: a pre-release workspace version keeps its core

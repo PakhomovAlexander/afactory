@@ -71,7 +71,9 @@ The key's passphrase, if it has one, is read from `AF_NIGHTLY_SIGN_PASSWORD` and
    commit is recorded under `rejected` with its reason. Reaching the previous head: green, the
    night is `skipped`; red (its checks were re-run and failed since), the night is refused with
    one sentence naming the previous head and why it is red, because a nightly never moves
-   backwards. No green commit within `max_walk` refuses the night.
+   backwards. A main rewound below the previous head (a force-push) never reaches it: that
+   night is refused too, naming both commits. No green commit within `max_walk` refuses the
+   night.
 3. The baseline is the highest stable `vX.Y.Z` tag reachable from the chosen commit.
 4. When the chosen commit is the previous night's head, the plan is `skipped` with a
    `skip_reason` naming the last built night's tag and the commit.
