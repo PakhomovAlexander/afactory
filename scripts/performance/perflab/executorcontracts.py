@@ -456,11 +456,24 @@ def register(c):
                 "a comparison report states its four lanes in order")
         ids = [item["request_id"] for item in doc["members"]]
         require(len(ids) == len(set(ids)), "a comparison report states each original once")
+        found = dict((item["request_id"], item) for item in doc["members"])
+        for item in doc["lanes"]:
+            held = [found.get(ident) for ident in item["members"]]
+            require(None not in held, "a lane names only the report's originals")
+            require(item["state"] != "complete" or (held and all(
+                m["state"] == "complete" and m["verification"] in ("verified", "not_checked")
+                for m in held)), "a complete lane holds only complete, unrefused originals")
+            require(item["state"] != "not_applicable" or (
+                item["lane"] in ("trace", "cpu_profile") and not held),
+                "only a diagnostic lane with no original has nothing to diagnose")
         settled = all(item["state"] in ("complete", "not_applicable") for item in doc["lanes"])
         require((doc["status"] == "complete") == (settled and not doc["reasons"]
                 and doc["verification"] == "verified"),
                 "a comparison is complete only when every lane is complete (or has nothing to "
                 "diagnose), every original verified and no reason remains")
+        require(doc["status"] != "complete" or all(
+            m["state"] == "complete" and m["verification"] == "verified" for m in doc["members"]),
+            "a complete comparison holds only complete, verified originals")
         require(doc["status"] != "running" or any(item["state"] in ("waiting", "queued", "running")
                 for item in doc["lanes"]), "a running comparison has an unfinished lane")
         require(doc["status"] == "complete" or doc["reasons"],

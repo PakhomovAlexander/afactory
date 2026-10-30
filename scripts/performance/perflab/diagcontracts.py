@@ -705,6 +705,9 @@ def validate_profiles(doc, where="profiles.json"):
                     and capture["samples"] is not None and capture["samples"] > 0,
                     at + ": a capture without omission observed its region and has samples "
                     "and artifacts")
+            require(symbols["binary_build_id_present"] is not False, at + ": a capture "
+                    "whose recordings never hit the profiled executable's known build ID is "
+                    "no evidence of it and records an omission")
         require(region["observed"] == (region["repetitions"] > 0)
                 and (region["stopped"] == "not_started") == (region["repetitions"] == 0),
                 at + ".region: observed exactly when a repetition ran, and only then stopped "

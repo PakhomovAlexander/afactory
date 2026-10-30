@@ -1190,6 +1190,15 @@ class Profile(object):
                 "from it" % (record["samples"], record["region"]["region_ms"],
                              record["region"]["repetitions"], record["region"]["stopped"],
                              minimum))}
+        if record["omission"] is None and record["symbols"]["binary_build_id_present"] is False:
+            # The executable's own build ID is known and no recording hit it: whatever was
+            # sampled is not this executable's code. A build-ID-less executable (musl) is
+            # identified by its exact hash and archive instead, never by an invented ID.
+            record["omission"] = {"reason": "executable_not_sampled", "detail": (
+                "no recording of the %d repetitions has a hit of the profiled executable's "
+                "build ID (hits: %s), so its samples are not attributed and nothing is "
+                "rendered from it" % (record["region"]["repetitions"], ", ".join(
+                    record["symbols"]["build_ids"]) or "none"))[:4096]}
         try:
             record["artifacts"] = self.artifacts(relative)
             if attempts is not None and record["artifacts"]:

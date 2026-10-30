@@ -289,7 +289,13 @@ symbols keep it available, by decoding them again with plain `perf script` outsi
 The build IDs with hits come the same way from every recording, each listed by its own
 `perf buildid-list --with-hits` in that order under the same bounds, so a short first execution
 with no AF sample never hides a later one's hit; a listing that fails or is malformed names its
-recording and leaves the capture unrendered, every recording kept. perf is never bound into a candidate container: the
+recording and leaves the capture unrendered, every recording kept. When the profiled
+executable carries a build ID and no recording hit it, the capture is omitted as
+`executable_not_sampled`, every recording kept and nothing rendered from it: what was sampled
+is not that executable's code, and `profiles.json` refuses such a capture without its
+omission, so a child claiming it usable is not admitted. A musl executable carries no build ID
+(`binary_build_id_present` is null): its capture is bound by the executable's exact hash and
+retained symbol archive instead, and no build ID is invented for it. perf is never bound into a candidate container: the
 host observer runs `perf script`, `perf buildid-list` and Inferno on the host too, reading the
 admitted AF binary at the same path the container saw. The capability is checked by doing it,
 not from a path or a sysctl: `preflight`, `comparison-preflight` and the profile's execution,
@@ -463,9 +469,18 @@ the operator's to run, not something this change ran.
    credential with the source account, none in compute's environment or the mirror.
 
 3. Write a private configuration, `/etc/af-perf/candidate-$SHA.toml` (root-owned, 0644, no
-   group or other write), from production's: the same images, machine ID, tier, shards and
-   caps, but its own data root and journal, the candidate mirror and ref and the candidate SHA:
+   group or other write): a copy of production's `/etc/af-perf/executor.toml` (the same
+   images, `machine_id`, `zigbuild_bin`, byte caps, `max_requests`, `max_queue`,
+   `run_seconds` and `cycle_seconds`, none raised) with exactly the keys below replaced. They
+   give the candidate its own fresh data root, journal and mirror, and they freeze the full
+   release comparison's workload instead of whatever production runs: production's `tier`
+   (`quick` in the example, and the `release` tier holds only 11 cases), `shards` and
+   telemetry selection are not that workload. A full comparison measures the whole `nightly`
+   family on the shipping musl target in 4 serial shards, and the `manual` telemetry profile's
+   three experiments on both sides over 2 rounds. The suite's `release` tier and production's
+   own configuration stay unchanged:
 
+   <!-- full-comparison-configuration -->
    ```toml
    root = "/var/lib/af-perf-candidate/journal"
    repository_path = "/var/lib/af-perf-candidate/source.git"
@@ -473,7 +488,26 @@ the operator's to run, not something this change ran.
    trusted_ref = "refs/heads/perf-lab-stability-20261029"
    journal_id = "claw_candidate_<first 12 of the SHA>"
    poll_main = false
+
+   [core]
+   tier = "nightly"
+   environment = "linux_x86_64_musl_claw"
+   shards = 4
+   cases = []
+
+   [telemetry]
+   profile = "manual"
+   experiments = ["overhead", "invocation_cost", "read_latency"]
+   rounds = 2
    ```
+   <!-- /full-comparison-configuration -->
+
+   Delete any `pairs`, `scale` or `corpus_runs` line under `[telemetry]`: an override is a
+   narrower workload, and its result is another question. Keep production's `zigbuild_bin`
+   (the musl target refuses a configuration without it) and its `[diagnostic]` CPU-profile
+   tools with `observer = "host_perf"`; the comparison derives each diagnostic lane's recipe
+   (`linux_musl_trace`, `linux_musl_cpu_profile`) and selected cases itself. The `root` must
+   not exist yet: a fresh journal holds no earlier original under a comparison's keys.
 
    Create the journal's parent as compute's own, 0700, under the candidate data root:
    `install -d -o af-perf-exec -g af-perf-exec -m 0700 /var/lib/af-perf-candidate`. Scope the
@@ -502,12 +536,58 @@ the operator's to run, not something this change ran.
      --config /etc/af-perf/candidate-$SHA.toml"
    $CAND comparison-preflight --kind release --tag "$TAG" --base "$BASE" --head "$HEAD" --key rel_1
    $CAND comparison-launch --kind release --tag "$TAG" --base "$BASE" --head "$HEAD" --key rel_1
+   # Check the frozen plan and telemetry workload below before anything executes.
    $CAND comparison-run --comparison "$CMP_ID"     # repeat until it exits 0
    $CAND comparison-status --comparison "$CMP_ID"
    $CAND comparison-export --comparison "$CMP_ID" --output "$BUNDLE_DIR"
    python3 -I -B "/opt/af-perf/candidates/$SHA/scripts/performance/cli.py" executor \
      comparison-verify --bundle "$BUNDLE_DIR"
    ```
+
+   `BASE` and `HEAD` are the exact full SHAs of `v0.13.0` and `v0.14.0-rc.1` in the candidate
+   mirror (`git -C /var/lib/af-perf-candidate/source.git rev-parse "v0.13.0^{commit}"`), and
+   `TAG` is `v0.14.0-rc.1`. `comparison-launch` retains the frozen plan and queues the
+   partitions and the telemetry original; nothing runs until `comparison-run`, since the
+   timers are stopped. Before it, check that the retained plan is the whole nightly family
+   (33 case instances, 31 judged and 2 exploratory, 2852 scheduled slots in 4 shards) and
+   that the telemetry original's frozen configuration measures 12 runs (3 experiments x 2
+   sides x 2 rounds), with the candidate's own installed code:
+
+   <!-- full-comparison-checks -->
+   ```sh
+   python3 -I -B - "/opt/af-perf/candidates/$SHA/scripts/performance" \
+     /var/lib/af-perf-candidate/journal "$CMP_ID" <<'PYCODE'
+   import os, sys
+   sys.path.insert(0, sys.argv[1])
+   from perflab import contracts, schedule
+   root, ident = sys.argv[2], sys.argv[3]
+   def read(*parts):
+       with open(os.path.join(root, *parts), "rb") as stream:
+           return stream.read()
+   doc = contracts.read_json(read("comparisons", ident, "comparison.json"), "comparison")
+   plan = contracts.read_json(read("comparisons", ident, "plan.json"), "run")
+   cases = plan["cases"]
+   found = (plan["tier"], plan["profile"]["environment_id"], len(plan["shards"]), len(cases),
+            sum(not case["exploratory"] for case in cases),
+            sum(case["exploratory"] for case in cases),
+            sum(len(schedule.expected_slots(plan, shard["index"])) for shard in plan["shards"]))
+   print("plan: tier, environment, shards, instances, judged, exploratory, slots =", found)
+   assert found == ("nightly", "linux_x86_64_musl_claw", 4, 33, 31, 2, 2852), found
+   config = contracts.read_json(read("requests", doc["telemetry"]["request_id"],
+                                     "configuration.json"), "executor")["telemetry"]
+   runs = 2 * config["rounds"] * len(config["experiments"])
+   print("telemetry: profile, experiments, rounds, runs =",
+         (config["profile"], config["experiments"], config["rounds"], runs))
+   assert (config["profile"], runs) == ("manual", 12) and all(
+       config.get(name) is None for name in ("pairs", "scale", "corpus_runs")), config
+   PYCODE
+   ```
+   <!-- /full-comparison-checks -->
+
+   A failed check means the configuration is not the full comparison: run nothing, and
+   discard that candidate journal (it holds only queued originals of this comparison) before
+   a corrected configuration with a new `root` and `journal_id`. After the comparison ends,
+   its report's telemetry lane states the same coverage, `required` 12.
 
 6. Restore the ordinary services only after the candidate's cleanup is confirmed: every
    original terminal and none `uncertain` in `comparison-status`, no
@@ -531,8 +611,12 @@ nothing here was executed by the change that documents it. `CLI` stands for
 `python3 -I -B /opt/af-perf/control/scripts/performance/cli.py executor --config
 /etc/af-perf/executor.toml`; `BASE`, `HEAD` and `TAG` are the exact full release SHAs and tag
 (for example v0.13.0 against v0.14.0-rc.1), and every key is new. Configure `core.cases = []`
-(the whole family), keep `core.shards` at the tier's count, and configure the CPU-profile tools
-and `observer = "host_perf"` as above.
+(the whole family of the configured tier), keep `core.shards` at the tier's count, and
+configure the CPU-profile tools and `observer = "host_perf"` as above. The comparison
+measures the configured tier's family, not a fixed one: the full release comparison of the
+whole nightly family (33 case instances, 4 shards, the 12 manual telemetry runs) uses the
+configuration and checks of [Validate an exact candidate producer](#validate-an-exact-candidate-producer)
+steps 3 and 5, on its own fresh journal.
 
 ```sh
 CLI comparison-preflight --kind release --tag "$TAG" --base "$BASE" --head "$HEAD" --key rel_1
@@ -622,8 +706,15 @@ It then verifies the native evidence itself: every bundled file of an original m
 its sealed terminal result names with that hash, each core run (and the aggregate's) is
 evaluated again offline and must reproduce its bundled verdict, the telemetry result is
 verified again under the installed measurement authority, and each profile's children are
-admitted again. That checks what the originals sealed; it is not a new performance
-acceptance. Run it from the trusted control installation that produced the bundle, or a
+admitted again. Finally it derives the report again from the bundle alone, as
+`comparison-report` derives it from the journal: the members the bundled declaration names,
+each original's state bound to its sealed result (an original the bundle does not hold is not
+submitted), the aggregate's partitions, run, result and coverage recomputed from those
+originals and its verdict, and every lane's state, coverage and diagnostic selection. A report
+that says anything else is refused, however its hashes and manifest were rewritten: a failed
+or missing original relabelled complete, a dropped member or a passed verdict over a
+regression. An honest incomplete or running bundle verifies, as what it is. That checks what
+the originals sealed; it is not a new performance acceptance. Run it from the trusted control installation that produced the bundle, or a
 checkout of the same measurement authority: the telemetry result is refused under any other.
 
 Repeat the comparison with new keys to see run-to-run spread. A same-source A/A comparison

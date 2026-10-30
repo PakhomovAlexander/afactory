@@ -21,7 +21,8 @@ machine's one exclusion and its own deadline; nothing here executes candidate co
   (`af.perf-comparison-report/1`); completeness, verification, the performance verdict and
   calibration eligibility are separate. `export` copies the report and every linked native
   record into a self-contained bundle with a hash manifest (`af.perf-comparison-export/1`),
-  which `verify_export` checks after copying, with no journal.
+  which `verify_export` checks after copying, with no journal: it derives the report again
+  from the bundled declaration and native records and refuses one that claims otherwise.
 
 Preflight and launch refusals are retained under `comparison-refusals/`. Launch and advance
 are resumable: a member is submitted by its declared key, so a resumed launch returns the
@@ -1010,11 +1011,15 @@ def export(journal, ident, output, installed=executor.ROOT, verify=None):
 
 def verify_export(bundle, installed=executor.ROOT):
     """Check a copied bundle offline: exactly the manifest's files with their hashes, a valid
-    report whose every link and member result is inside the bundle, every relative link of
-    every bundled page (nested native reports included) resolving inside it, and the
-    declaration and aggregate it names; then the native evidence itself (`verify_native`).
-    Returns (manifest, report). Needs no journal or configuration; `installed` is the trusted
-    measurement authority the native telemetry result is verified under."""
+    report whose every link is inside the bundle, every relative link of every bundled page
+    (nested native reports included) resolving inside it, and the declaration it names. Then
+    the report is derived again (`status` over a read-only view of the bundle, `Bundled`) from
+    the bundled declaration, each declared original's state bound to its sealed result, its
+    native evidence admitted again (`admit`) and the aggregate's claims recomputed from its
+    partitions and run (`aggregate_claims`); a report that is not exactly that derivation is
+    refused, so a relabelled report or a rehashed manifest proves nothing. Returns (manifest,
+    report). Needs no journal or configuration; `installed` is the trusted measurement
+    authority the native telemetry result is verified under."""
     raw = executor.read(os.path.join(bundle, MANIFEST))
     manifest = contracts.read_json(raw, "comparison-export")
     listed = dict((item["path"], item) for item in manifest["files"])
@@ -1041,16 +1046,12 @@ def verify_export(bundle, installed=executor.ROOT):
         require(EVIDENCE + "/" + link in listed, "the report links %s outside the bundle" % link)
     check_links(bundle, listed)
     base = "%s/%s/%s/" % (EVIDENCE, DIRECTORY, manifest["comparison_id"])
+    require(base + "comparison.json" in listed and base + "plan.json" in listed,
+            "the bundle holds no declaration and frozen plan")
     declaration = contracts.read_json(executor.read(os.path.join(bundle, base, "comparison.json")),
                                       "comparison")
     require(canonical_digest(declaration) == manifest["comparison_digest"],
             "the bundled declaration is not the reported comparison")
-    for m in report_doc["members"]:
-        if m["result_sha256"] is None:
-            continue
-        path = "%s/requests/%s/result.json" % (EVIDENCE, m["request_id"])
-        require(path in listed and listed[path]["sha256"] == m["result_sha256"],
-                "member %s's terminal result is not the bundled one" % m["request_id"])
     if (base + "aggregate/aggregate.json") in listed:
         agg = contracts.read_json(executor.read(os.path.join(bundle, base, "aggregate",
                                                              "aggregate.json")),
@@ -1059,8 +1060,223 @@ def verify_export(bundle, installed=executor.ROOT):
             require(listed.get(base + "aggregate/report/verdict.json", {}).get("sha256")
                     == agg["verdict_sha256"], "the bundled aggregate verdict changed")
             _same_verdict(os.path.join(bundle, base, "aggregate"), "the family aggregate")
-    verify_native(bundle, report_doc, listed, installed)
+    view = Bundled(bundle, declaration, listed)
+    verify_native(view)
+    verify = admit(view, installed)
+    agg, _ = read_aggregate(view, declaration)
+    aggregate_claims(view, declaration, agg, verify, installed)
+    derived = status(view, declaration["comparison_id"], verify=verify, installed=installed)
+    differ = sorted(key for key in derived if derived[key] != report_doc.get(key))
+    require(not differ, "the report's %s are not what its bundled declaration and native "
+            "evidence derive (derived %s, %s): a relabelled report proves nothing"
+            % (", ".join(differ), derived["status"], "; ".join(derived["reasons"])[:1024]))
+    members = set(m["request_id"] for m in derived["members"])
+    require(set(view.names()) <= members, "the bundle holds originals %s that are not members "
+            "of its derived report" % sorted(set(view.names()) - members)[:8])
     return manifest, report_doc
+
+
+class Bundled:
+    """The read-only journal view `status` derives a report from offline: the bundled
+    declaration's journal and the bundled records of its declared originals. A state's
+    terminal claim is bound to its sealed result; the frozen configuration is the one a
+    bundled original carries under the declaration's digest, never a live one."""
+
+    def __init__(self, bundle, declaration, listed):
+        self.bundle, self.listed = bundle, listed
+        self.root = os.path.join(bundle, EVIDENCE)
+        self.requests = os.path.join(self.root, "requests")
+        prefix = EVIDENCE + "/requests/"
+        self._names = sorted(set(path[len(prefix):].split("/", 1)[0] for path in listed
+                                 if path.startswith(prefix)))
+        declared = set([item["request_id"] for item in declaration["partitions"]]
+                       + [declaration["telemetry"]["request_id"]]
+                       + [lane["request_id"] for lane in declaration["diagnostics"]
+                          if lane["request_id"]])
+        require(set(self._names) <= declared, "the bundle holds originals %s its declaration "
+                "does not name" % sorted(set(self._names) - declared)[:8])
+        for ident in self._names:
+            contracts.ID.validate(ident, "bundled original")
+            for name in ("request.json", "state.json"):
+                require(prefix + ident + "/" + name in listed, "bundled original %s has no %s"
+                        % (ident, name))
+        self.config = {"journal_id": declaration["journal_id"]}
+        for ident in self._names:
+            if prefix + ident + "/configuration.json" not in listed:
+                continue
+            config = contracts.read_json(executor.read(os.path.join(
+                self.path(ident), "configuration.json")), "executor")
+            if canonical_digest(config) == declaration["configuration_digest"]:
+                self.config = config
+                break
+        require("diagnostic" in self.config or "%s/%s/%s/aggregate/aggregate.json" % (
+                EVIDENCE, DIRECTORY, declaration["comparison_id"]) not in listed,
+                "no bundled original carries the comparison's frozen configuration, so no "
+                "aggregate selection or diagnostic lane can be derived")
+
+    def names(self):
+        return list(self._names)
+
+    def path(self, ident):
+        contracts.ID.validate(ident, "request ID")
+        return os.path.join(self.requests, ident)
+
+    def request(self, ident):
+        return contracts.read_json(executor.read(os.path.join(self.path(ident), "request.json")),
+                                   "executor-request")
+
+    def result(self, ident):
+        return contracts.read_json(executor.read(os.path.join(self.path(ident), "result.json")),
+                                   "executor-result")
+
+    def state(self, ident):
+        request = self.request(ident)
+        doc = contracts.read_json(executor.read(os.path.join(self.path(ident), "state.json")),
+                                  "executor-state")
+        require(doc["request_id"] == ident and doc["request_digest"] == canonical_digest(request),
+                "state belongs to another original")
+        if doc["state"] == "complete" or doc["result_sha256"] is not None:
+            # A terminal claim is the sealed result's own status, never an edited label.
+            require(doc["result_sha256"] is not None, "original %s is complete without a "
+                    "sealed result" % ident)
+            result = self.result(ident)
+            require(sha256_bytes(contracts.write_bytes(result, "executor-result"))
+                    == doc["result_sha256"] and result["status"] == doc["state"]
+                    and result["request_digest"] == doc["request_digest"],
+                    "original %s's state %s is not its sealed terminal result" % (ident,
+                                                                                doc["state"]))
+        return doc
+
+
+# What a complete original of each work must have sealed and bundled for its offline admission.
+REQUIRED = {"core": ("plan.json", "run"), "telemetry": ("run",), "profile": ("plan.json",
+                                                                          "profile")}
+
+
+def admit(view, installed=executor.ROOT):
+    """The offline admission `status` applies to each complete bundled original (the part of
+    `executor.verify_original` its bundled records support): its frozen configuration,
+    provenance and sealed result; the native evidence its work needs, sealed and bundled; a
+    core run evaluated again to its verdict, a telemetry result verified again under the
+    installed authority, a profile's children admitted again. Memoized: the aggregate and the
+    report ask once each. This checks the evidence an original sealed; it is never a fresh
+    performance acceptance."""
+    done = {}
+
+    def verify(journal, ident, installed=installed):
+        if ident not in done:
+            try:
+                done[ident] = (True, _admit(view, ident, installed))
+            except (ContractError, OSError) as error:
+                done[ident] = (False, error)
+        ok, value = done[ident]
+        if not ok:
+            raise value
+        return value
+    return verify
+
+
+def _admit(view, ident, installed):
+    request, state = view.request(ident), view.state(ident)
+    require(request["backend"] == "local" and state["state"] == "complete",
+            "not a completed local original")
+    root = view.path(ident)
+    rel = "%s/requests/%s" % (EVIDENCE, ident)
+    config = contracts.read_json(executor.read(os.path.join(root, "configuration.json")),
+                                 "executor")
+    require(canonical_digest(config) == request["configuration_digest"]
+            and executor.environment(config) == request["environment_digest"],
+            "original frozen local configuration changed")
+    result = view.result(ident)
+    require(result["sources"] == request["sources"] and result["backend"] == "local"
+            and result["environment_digest"] == request["environment_digest"]
+            and result["producer_digest"] == request["producer_digest"]
+            and result["actions"] is None, "local provenance does not match original reservation")
+    sealed = set(entry["path"] for entry in result["evidence"])
+    what = "member %s" % ident
+    needed = REQUIRED[request["work"]] + ((executor.PARENT_VERDICT,) if request["work"]
+                                          == "profile" and request["parent"] else ())
+    for prefix in needed:
+        require(any(entry == prefix or entry.startswith(prefix + "/") for entry in sealed),
+                "%s is complete without sealed %s evidence" % (what, prefix))
+    for prefix in NATIVE[request["work"]]:
+        if any(entry == prefix or entry.startswith(prefix + "/") for entry in sealed):
+            require(any(path == rel + "/" + prefix or path.startswith(rel + "/" + prefix + "/")
+                        for path in view.listed), "%s's sealed %s is not bundled"
+                    % (what, prefix))
+    if request["work"] == "core":
+        plan = executor.read(os.path.join(root, "plan.json"))
+        require(sha256_bytes(plan) == request["plan_sha256"], "%s: original plan changed" % what)
+        _same_verdict(root, what)
+    elif request["work"] == "telemetry":
+        measured, _, _ = telemetrylab.verify(os.path.join(root, "run"), installed)
+        require(measured["result_id"] == "local_" + ident[4:],
+                "%s: the bundled telemetry result is another original's" % what)
+    else:
+        raw = executor.read(os.path.join(root, "plan.json"))
+        require(sha256_bytes(raw) == request["plan_sha256"], "%s: diagnostic parent plan "
+                "changed" % what)
+        if request["parent"] is not None:
+            require(sha256_bytes(executor.read(os.path.join(root, executor.PARENT_VERDICT)))
+                    == request["parent"]["verdict_sha256"], "%s: the frozen parent verdict "
+                    "changed" % what)
+        report.admit_children([os.path.join(root, "profile")], contracts.read_json(raw, "run"))
+    return request, state, result
+
+
+def aggregate_claims(view, doc, agg, verify, installed=executor.ROOT):
+    """The bundled aggregate's claims derived again: each partition entry is its bundled
+    original's state and sealed result, included exactly when that original is this
+    comparison's member and admitted offline; the family's run holds exactly the included
+    partitions' shards, byte for byte, on the first partition's build; and its result,
+    coverage and regressions are its verdict's (`_same_verdict` re-evaluated the run)."""
+    if agg is None:
+        return
+    where = "the bundled aggregate"
+    require([p["index"] for p in agg["partitions"]] == [p["index"] for p in doc["partitions"]],
+            "%s does not state every declared partition" % where)
+    included = []
+    for item, entry in zip(doc["partitions"], agg["partitions"]):
+        state = _state(view, item["request_id"])
+        require(state is not None and entry["request_id"] == item["request_id"]
+                and entry["shards"] == item["shards"] and entry["state"] == state["state"]
+                and entry["result_sha256"] == state["result_sha256"],
+                "%s's partition %d is not its bundled original" % (where, item["index"]))
+        if entry["included"]:
+            why = _binding(view, doc, view.request(item["request_id"]), "core", item["key"],
+                           _partition(doc, item))
+            require(why is None, "%s includes partition %d, which is not this comparison's "
+                    "member: %s" % (where, item["index"], why))
+            verify(view, item["request_id"], installed)
+            included.append(item)
+    if agg["verdict_sha256"] is None:
+        require(not agg["partitions"][0]["included"], "%s judged nothing over a verified "
+                "first partition" % where)
+        return
+    require(agg["partitions"][0]["included"], "%s judged a family without its first "
+            "partition's verified build" % where)
+    path = os.path.join(directory(view, doc["comparison_id"]), "aggregate")
+    first = executor.read(os.path.join(view.path(doc["partitions"][0]["request_id"]), "run",
+                                       "builds.json"))
+    require(sha256_bytes(first) == agg["builds_sha256"] == sha256_bytes(executor.read(
+            os.path.join(path, "run", "builds.json"))), "%s is not on the first partition's "
+            "build" % where)
+    family = "%s/%s/%s/aggregate/run/shards/" % (EVIDENCE, DIRECTORY, doc["comparison_id"])
+    held = {}
+    for item in included:
+        own = "%s/requests/%s/run/shards/" % (EVIDENCE, item["request_id"])
+        for index in item["shards"]:
+            prefix = "%s%d/" % (own, index)
+            for name, entry in view.listed.items():
+                if name.startswith(prefix):
+                    held["%d/%s" % (index, name[len(prefix):])] = entry["sha256"]
+    assembled = dict((name[len(family):], entry["sha256"]) for name, entry in view.listed.items()
+                     if name.startswith(family))
+    require(assembled == held, "%s's run is not exactly its included partitions' shards" % where)
+    coverage, performance = overview._core(path)
+    require(agg["result"] == performance["verdict"] and agg["coverage"] == coverage
+            and agg["regressions"] == performance["regressions"],
+            "%s's result, coverage or regressions are not its verdict's" % where)
 
 
 def _same_verdict(root, what):
@@ -1074,43 +1290,20 @@ def _same_verdict(root, what):
             "verdict" % what)
 
 
-def verify_native(bundle, report_doc, listed, installed=executor.ROOT):
-    """Verify each bundled original's native evidence offline: every bundled file of it is a
-    file its sealed terminal result names, with that hash, and everything its verification
-    reads is present (a core run evaluated again to its verdict, a telemetry result verified
-    again under the installed authority, a profile's children admitted again). This checks the
-    evidence an original sealed; it is never a fresh performance acceptance."""
-    for m in report_doc["members"]:
-        if m["result_sha256"] is None:
+def verify_native(view):
+    """Every bundled file of each bundled original with a sealed terminal result, outside its
+    journal records, is a file that result names, with that hash. An original without one is
+    never admitted, so nothing of it is read as evidence."""
+    for ident in view.names():
+        rel = "%s/requests/%s" % (EVIDENCE, ident)
+        if view.state(ident)["result_sha256"] is None:
             continue
-        rel = "%s/requests/%s" % (EVIDENCE, m["request_id"])
-        root = os.path.join(bundle, rel)
-        result = contracts.read_json(executor.read(os.path.join(root, "result.json")),
-                                     "executor-result")
-        sealed = dict((entry["path"], entry["sha256"]) for entry in result["evidence"])
-        for path, item in listed.items():
+        sealed = dict((entry["path"], entry["sha256"]) for entry in view.result(ident)["evidence"])
+        for path, item in view.listed.items():
             if not path.startswith(rel + "/") or path[len(rel) + 1:] in RECORDS:
                 continue
             require(sealed.get(path[len(rel) + 1:]) == item["sha256"], "member %s's bundled "
-                    "%s is not evidence its sealed result names" % (m["request_id"], path))
-        if m["state"] != "complete":
-            continue
-        needed = [prefix for prefix in NATIVE[m["work"]]
-                  if any(entry == prefix or entry.startswith(prefix + "/") for entry in sealed)]
-        for prefix in needed:
-            require(any(path == rel + "/" + prefix or path.startswith(rel + "/" + prefix + "/")
-                        for path in listed), "member %s's sealed %s is not bundled"
-                    % (m["request_id"], prefix))
-        what = "member %s" % m["request_id"]
-        if m["work"] == "core" and "run" in needed:
-            _same_verdict(root, what)
-        elif m["work"] == "telemetry" and "run" in needed:
-            measured, _, _ = telemetrylab.verify(os.path.join(root, "run"), installed)
-            require(measured["result_id"] == "local_" + m["request_id"][4:],
-                    "%s: the bundled telemetry result is another original's" % what)
-        elif m["work"] == "profile" and "profile" in needed:
-            plan = contracts.read_json(executor.read(os.path.join(root, "plan.json")), "run")
-            report.admit_children([os.path.join(root, "profile")], plan)
+                    "%s is not evidence its sealed result names" % (ident, path))
 
 
 def run(journal_factory, ident, cycle, installed=executor.ROOT, rounds=None):

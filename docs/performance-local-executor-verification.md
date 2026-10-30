@@ -1285,3 +1285,94 @@ The repaired Linux test did not run on this host. The outer operator owns:
 
 - the repaired test on Claw in a writable copy, followed by the copied CLI and bytecode checks;
 - the final head's CI.
+
+## Offline comparison derivation, unsampled executables and the full recipe (2026-10-30)
+
+Recorded in the AF implementation sandbox on macOS with Python 3.14.7, `HOME` and `TMPDIR` set
+to a fresh `mktemp -d` directory. Nothing here is a Claw measurement or a Linux run. The
+running native comparison `cmp_b748bbb15eb5c84455ea0e6669570c2089b31726a62a43ed` was not
+touched or replayed. Applying this verifier to its export is the outer operator's step.
+
+- **Offline verification derives the report** (`perflab/comparison.py`). Before this change,
+  `verify_export` checked hashes and the members the report named, and `verify_native` skipped
+  every member the report did not call complete. A bundle could therefore relabel a failed
+  telemetry original, or queued members with no native result, as complete, rehash its report
+  and manifest, and pass. `verify_export` now runs `status` over `Bundled`, a read-only journal
+  view of the bundle. The view reads the bundled declaration's members, binds each original's
+  state to its sealed result, and takes the frozen configuration from a bundled original under
+  the declaration's digest. Each complete original is admitted offline (`admit`):
+  configuration, provenance, the native evidence its work requires sealed and bundled, its core
+  run evaluated again, its telemetry verified again, its profile children admitted again.
+  `aggregate_claims` recomputes the aggregate's partition entries, its run's shards (byte for
+  byte those of its included partitions), its build, result, coverage and regressions. A report
+  that is not exactly that derivation is refused. The `af.perf-comparison-report/1` contract
+  also refuses a complete lane over an original that is not complete, and a complete comparison
+  over one that is not verified. Its shape is unchanged.
+  - `Comparison.test_a_failed_telemetry_export_verifies_incomplete_and_never_relabelled_complete`:
+    a real failed telemetry original with its sealed native run. The export verifies as
+    `incomplete` through `cli.py executor comparison-verify`. A complete telemetry lane over
+    the failed original is refused by the contract. The original also relabelled complete is
+    refused by the derivation. Every lane, original and the comparison relabelled complete with
+    reasons cleared, report and manifest rehashed (manifest `status` `complete`), makes the
+    public command exit non-zero. The state record relabelled complete is refused against its
+    sealed result.
+  - `DeclarationOnly.test_queued_members_relabelled_complete_with_no_native_result_are_refused`:
+    the schema fixtures `comparison/valid-release.json` and `comparison-report/valid-running.json`
+    with three queued members and no native result. Relabelled complete, the contract refuses
+    it. Relabelled complete and verified too, it is refused for lack of a frozen plan. With a
+    plan the declaration names, it derives as unfinished and is refused.
+  - `Comparison.test_full_comparison_partitions_aggregates_diagnoses_reports_and_exports`, extended:
+    the honest incomplete bundle with both diagnostic lanes still verifies. Its report relabelled
+    complete is refused. Its aggregate relabelled as judged whole is refused against its verdict.
+    A dropped trace member is refused, with or without its records. A complete export with a
+    real regression (the family judged whole, injected for the journal's report and the offline
+    derivation alike, as the existing status assertion injects it) verifies `complete` with
+    verdict `fail`. Relabelling that verdict `pass` is refused.
+- **Known build ID, no recording hit** (`perflab/diagnostics.py`, `perflab/diagcontracts.py`).
+  A capture whose recordings never hit the profiled executable's known build ID was kept
+  usable (`binary_build_id_present: false`, no omission) and rendered. It is now omitted as
+  `executable_not_sampled`, every recording kept and nothing rendered. `profiles.json` refuses
+  such a capture without an omission, so `report.admit_child` and the comparison's profile lane
+  refuse a forged usable claim. Its shape is unchanged.
+  - `RepeatedCaptures.test_no_recordings_hit_of_a_known_build_id_omits_the_capture_and_renders_nothing`
+    replaces `test_no_recordings_hit_of_the_executable_is_never_inferred_from_the_executable`,
+    which expected no omission. It also checks that the omission removed and resealed is refused
+    at admission.
+  - `RepeatedCaptures.test_a_build_id_less_executable_keeps_its_hash_bound_capture_and_renders`:
+    an executable with no build ID (musl) keeps its capture bound by its exact hash and
+    retained archive, renders its differential flamegraphs and is admitted.
+  - `test_a_later_recordings_hit_of_the_executable_is_found_when_the_first_has_none`
+    (known build ID, hit) is unchanged and passes.
+- **The full release comparison recipe** (`docs/performance-local-executor.md`, "Validate an
+  exact candidate producer", steps 3 and 5). The guide now gives the candidate configuration's
+  replaced keys: a fresh root, journal and mirror, `tier = "nightly"`,
+  `environment = "linux_x86_64_musl_claw"`, `shards = 4`, `cases = []`, and the `manual`
+  telemetry profile with its three experiments and 2 rounds, no overrides. It also gives the
+  checks of the frozen plan and telemetry workload before `comparison-run`.
+  `Comparison.test_the_documented_full_comparison_configuration_and_checks_hold` parses both
+  documented blocks. Applied to an executor configuration, the configuration validates as
+  `af.perf-executor/3` and launches. The documented check script, run as written on the
+  launched journal, prints `('nightly', 'linux_x86_64_musl_claw', 4, 33, 31, 2, 2852)` and 12
+  telemetry runs. A narrower telemetry selection fails it. A scratch plan of the suite gave
+  33 instances, 31 judged, 2 exploratory and 2852 slots for `nightly`, and 11 instances and
+  1004 slots for `release`, which is unchanged.
+
+The focused run started at 11:43 MSK from the repository root:
+
+```sh
+python3.14 -I -B -c 'import sys,unittest; sys.path.insert(0,"scripts/performance"); unittest.main(module=None,argv=["unittest","tests.test_comparison","tests.test_contracts","tests.test_report","tests.test_report_diagnostics","tests.test_diagnostics","tests.test_executor"],verbosity=1)'
+```
+
+**219 tests, 581.4 seconds: 1 failure, 3 errors, exit 1.** All four are this macOS host's,
+already recorded above, and on paths this change does not touch. The three
+`tests.test_executor.Journal` profile cases
+(`test_local_diagnostic_uses_native_child_planner_report_and_admission` and both subtests of
+`test_shipping_nightly_release_reach_both_builders_with_frozen_pinned_tools`) refuse with
+`environment linux_x86_64_*_claw is the contained Linux profile; this host is macos`.
+`test_diagnostic_build_removal_uncertainty_keeps_borrowed_executor_fence` reads
+`host_mismatch`. The comparison, contract, report and diagnostics suites passed whole. The
+protected harness was re-pinned after the last protected edit with
+`python3 -I -B scripts/performance/cli.py harness-digest --write`, to
+`sha256:6c8afd07290b0b4ff54082fd0861d83ac0f400871bdb01b7e981e49b164a667a`, and `--check`
+passes. The native light gate is the full gate. The outer operator owns the repaired verifier
+on the actual native export, Linux proof and the final head's CI.

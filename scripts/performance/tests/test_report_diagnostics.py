@@ -1160,12 +1160,46 @@ class RepeatedCaptures(diag.ChildRunBase):
             self.assertEqual(len(self.index_of(child, capture)["repetitions"]), self.FEW)
         report.admit_child(child, self.parent)
 
-    def test_no_recordings_hit_of_the_executable_is_never_inferred_from_the_executable(self):
+    def test_no_recordings_hit_of_a_known_build_id_omits_the_capture_and_renders_nothing(self):
         doc, child, _ = self.listed_child([])
         for capture in doc["captures"]:
-            self.assertIsNone(capture["omission"], capture["omission"])
+            self.assertEqual(capture["omission"]["reason"], "executable_not_sampled")
+            self.assertIn("hits: %s" % self.LIBC_ID, capture["omission"]["detail"])
             self.assertEqual(capture["symbols"]["build_ids"], [self.LIBC_ID])
             self.assertIs(capture["symbols"]["binary_build_id_present"], False)
+            # Every recording is still kept and indexed: the omission is honest, not a loss.
+            self.assertEqual(len(self.index_of(child, capture)["repetitions"]), self.FEW)
+        self.assertEqual(doc["renders"], [])
+        report.admit_child(child, self.parent)
+
+        def usable(target):
+            # The forged claim: the omission removed, the profiles rewritten and resealed.
+            path = os.path.join(target, diagnostics.PROFILES_FILE)
+            forged = json.loads(read(path))
+            for capture in forged["captures"]:
+                capture["omission"] = None
+            with open(path, "wb") as stream:
+                stream.write(document_bytes(forged))
+        with self.assertRaisesRegex(ContractError, "never hit the profiled executable's known "
+                                    "build ID"):
+            report.admit_child(self.resealed(child, "forged-usable", usable), self.parent)
+
+    def test_a_build_id_less_executable_keeps_its_hash_bound_capture_and_renders(self):
+        """A musl executable carries no GNU build ID: its capture is identified by its exact
+        hash and retained archive, the recordings' other hits change nothing, and no build
+        ID is invented for it."""
+        self.REPETITIONS = self.FEW
+        listed = dict(("rep-%04d.data" % number, ["%s /usr/lib/libc.so.6" % self.LIBC_ID])
+                      for number in range(1, self.FEW + 1))
+        with mock.patch.object(perfcapture, "elf_build_id", return_value=None):
+            doc, child, _ = self.observed_child(build_ids=listed)
+        for capture in doc["captures"]:
+            self.assertIsNone(capture["omission"], capture["omission"])
+            self.assertIsNone(capture["symbols"]["binary_build_id_present"])
+            self.assertEqual(capture["symbols"]["build_ids"], [self.LIBC_ID])
+            self.assertEqual(capture["symbols"]["archive"]["path"],
+                             "symbols/" + capture["binary_sha256"][7:] + ".xz")
+        self.assertTrue(any(item["kind"].startswith("difference") for item in doc["renders"]))
         report.admit_child(child, self.parent)
 
     def test_a_failed_or_malformed_build_id_listing_refuses_the_capture_by_its_recording(self):
