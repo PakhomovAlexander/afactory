@@ -622,10 +622,12 @@ def main():
                                  '--no-diff'], capture_output=True, text=True, env={})
         assert result.returncode == 0, result.stdout + result.stderr
         assert 'the figures were not compared' in result.stdout, result.stdout
+    refreshes = refreshing(pipeline)
     quarantine_cases = quarantine()
     print(f'check-pr-report: {len(passing) + 1} passing and {len(failing)} failing cases, '
           f'{len(TYPE6_AUDIT)} type 6 names; lines added: {len(lines_passing)} passing and '
-          f'{len(lines_failing)} failing cases; test quarantine: {quarantine_cases} cases')
+          f'{len(lines_failing)} failing cases; {refreshes} refresh cases; test quarantine: '
+          f'{quarantine_cases} cases')
 
 
 GIT_ENV = {
@@ -871,6 +873,173 @@ def quarantine():
             assert done.returncode == code, (author, block, done.stdout + done.stderr)
             cases += 1
     return cases
+
+
+# What `scripts/pr-lines.py` renders for the fixture repository's commits: twelve lines of docs.
+RENDERED = ('**Lines added: 12**\n\n| Directory | Added | Share |\n|:--|--:|:--|\n'
+            '| docs | 12 | ████████████ 100% |')
+FRESH = '<!-- af-pr-lines:v1 -->\n' + RENDERED + '\n<!-- /af-pr-lines -->\n'
+STALE = FRESH.replace('| docs | 12 |', '| docs | 11 |').replace('**Lines added: 12**',
+                                                              '**Lines added: 11**')
+
+
+def refreshing(pipeline):
+    """`--refresh-into` (ADR-0269): the pure replacement, then the real entry on a repository
+    whose commits add twelve lines of docs. Returns the number of cases."""
+    spec = importlib.util.spec_from_file_location('check_pr_report', SCRIPT)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    refresh = module.refresh
+    end = '<!-- /af-task-report -->\n'
+    absent = description(BLOCK, '')
+    fenced = description(BLOCK, '```\n' + STALE + '```\n')
+    cases = {
+        # A stale block is replaced in place, its markers and everything around it kept.
+        'a stale block': (description(BLOCK, STALE), description(BLOCK, FRESH)),
+        'the template\'s empty block': (description(BLOCK, '<!-- af-pr-lines:v1 -->\n'
+                                                           '<!-- /af-pr-lines -->\n'),
+                                        description(BLOCK, FRESH)),
+        'a stale block with indented markers and a note around it': (
+            'Note.\n' + description(BLOCK, '  <!-- af-pr-lines:v1 -->\n**Lines added: 3**\n'
+                                    '  <!-- /af-pr-lines -->\n'),
+            'Note.\n' + description(BLOCK, '  <!-- af-pr-lines:v1 -->\n' + RENDERED
+                                    + '\n  <!-- /af-pr-lines -->\n')),
+        # Without markers, after a blank line right after the report block's end marker.
+        'an absent block': (absent, absent.replace(end, end + '\n' + FRESH)),
+        'an absent block, the report block last': (
+            'Intro.\n\n' + BLOCK, 'Intro.\n\n' + BLOCK + '\n' + FRESH),
+        'an absent block, the report block last without a newline': (
+            'Intro.\n\n' + BLOCK.rstrip('\n'), 'Intro.\n\n' + BLOCK + '\n' + FRESH),
+        'an absent block, text right after the report block': (
+            'Intro.\n\n' + BLOCK + 'After.\n', 'Intro.\n\n' + BLOCK + '\n' + FRESH + '\nAfter.\n'),
+        # At the end of a description without a report block.
+        'no report block': ('## What\n\nX.', '## What\n\nX.\n\n' + FRESH),
+        'no report block, ending in a blank line': ('X.\n\n', 'X.\n\n' + FRESH),
+        'an empty description': ('', FRESH),
+        # Markers shown as code are text: they stay, and the real block is inserted.
+        'markers inside a code fence': (fenced, fenced.replace(end, end + '\n' + FRESH)),
+    }
+    for case, (before, after) in cases.items():
+        assert refresh(before, RENDERED) == after, f'{case}:\n{refresh(before, RENDERED)!r}'
+        if not before:
+            continue  # no line ending to follow: `\n`
+        crlf = refresh(before.replace('\n', '\r\n'), RENDERED)
+        assert crlf == after.replace('\n', '\r\n'), f'{case} with CRLF:\n{crlf!r}'
+    # Everything else of the description stays byte for byte, line endings included.
+    mixed = description(BLOCK, STALE).replace('## What\n', '## What\r\n')
+    assert refresh(mixed, RENDERED) == description(BLOCK, FRESH).replace('## What\n',
+                                                                         '## What\r\n')
+    # No one place for the block: nothing is refreshed.
+    nowhere = {
+        'two blocks': description(BLOCK, STALE + STALE),
+        'a begin marker alone': description(BLOCK, '<!-- af-pr-lines:v1 -->\n'),
+        'an end marker alone': description(BLOCK, '<!-- /af-pr-lines -->\n'),
+        'markers out of order': description(BLOCK, '<!-- /af-pr-lines -->\n'
+                                                   '<!-- af-pr-lines:v1 -->\n'),
+    }
+    for case, before in nowhere.items():
+        assert refresh(before, RENDERED) is None, case
+    runs = []
+
+    with tempfile.TemporaryDirectory() as tmp:
+        tmp = Path(tmp)
+        repo = tmp / 'repo'
+        repo.mkdir()
+
+        def git(*args):
+            return subprocess.run(['git', '-C', str(repo), *args], check=True,
+                                  capture_output=True, text=True, env=GIT_ENV).stdout.strip()
+
+        git('init', '-q', '-b', 'main')
+        (repo / 'README.md').write_text('one\n', encoding='utf-8')
+        git('add', '-A')
+        git('commit', '-qm', 'base')
+        base = git('rev-parse', 'HEAD')
+        (repo / 'docs').mkdir()
+        (repo / 'docs' / 'a.md').write_text(''.join(f'{n}\n' for n in range(12)),
+                                            encoding='utf-8')
+        git('add', '-A')
+        git('commit', '-qm', 'head')
+        head = git('rev-parse', 'HEAD')
+        into = tmp / 'refreshed.md'
+
+        def run(body, *args, event_payload=None):
+            """Run the script in refresh mode; return (exit code, output, what it wrote)."""
+            into.unlink(missing_ok=True)
+            runs.append(body)
+            source = tmp / ('event.json' if event_payload else 'body.md')
+            if event_payload:
+                source.write_text(json.dumps(event_payload), encoding='utf-8')
+                flags = ['--event', str(source)]
+            else:
+                source.write_bytes(body.encode('utf-8'))
+                flags = ['--body', str(source), '--diff', base, head]
+            done = subprocess.run([sys.executable, '-I', str(SCRIPT), *flags, '--repo', str(repo),
+                                   '--refresh-into', str(into), *args], capture_output=True,
+                                  text=True, env=GIT_ENV)
+            wrote = into.read_bytes().decode('utf-8') if into.exists() else None
+            return done.returncode, done.stdout + done.stderr, wrote
+
+        # Stale: the description is written with the block replaced, and the check passes.
+        code, said, wrote = run(description(BLOCK, STALE))
+        assert code == 0 and wrote == description(BLOCK, FRESH), said
+        assert 'the block is not that of this pull request\'s commits; wrote the description' \
+            in said, said
+        # Absent: inserted after the report block.
+        code, said, wrote = run(absent)
+        assert code == 0 and wrote == absent.replace(end, end + '\n' + FRESH), said
+        assert 'the description has no block; wrote the description' in said, said
+        # CRLF, read and written as it is.
+        code, said, wrote = run(description(BLOCK, STALE).replace('\n', '\r\n'))
+        assert code == 0 and wrote == description(BLOCK, FRESH).replace('\n', '\r\n'), said
+        # Matching: nothing is written, and the check passes as it does without the flag.
+        code, said, wrote = run(description(BLOCK, FRESH))
+        assert code == 0 and wrote is None, said
+        assert 'the figures match the pull request\'s commits' in said, said
+        # A malformed Task report block fails with today's message, and nothing is written.
+        code, said, wrote = run(description(BLOCK.replace(pipeline + '\n', ''), STALE))
+        assert code == 1 and wrote is None, said
+        assert 'no pipeline line' in said and HOW in said, said
+        code, said, wrote = run(description('', ''))
+        assert code == 1 and wrote is None and 'no af task report block' in said, said
+        # Two lines blocks: refused as without the flag, with the block to paste.
+        code, said, wrote = run(description(BLOCK, STALE + STALE))
+        assert code == 1 and wrote is None, said
+        assert '2 lines added blocks' in said and 'the description was not refreshed' in said, said
+        assert 'to paste:\n' + FRESH.rstrip('\n') in said, said
+        # Without the flag, an absent block is refused with the block to paste, as the
+        # workflow's fallback prints it when the write is refused.
+        source = tmp / 'body.md'
+        source.write_text(absent, encoding='utf-8')
+        done = subprocess.run([sys.executable, '-I', str(SCRIPT), '--body', str(source), '--diff',
+                               base, head, '--repo', str(repo)], capture_output=True, text=True,
+                              env=GIT_ENV)
+        runs.append(absent)
+        assert done.returncode == 1 and 'no lines added block' in done.stderr, done.stderr
+        assert 'to paste:\n' + FRESH.rstrip('\n') in done.stderr, done.stderr
+        # The event names the commits, as the workflow's first run of the check reads them.
+        payload = event(description(BLOCK, STALE))
+        payload['pull_request']['base']['sha'] = base
+        payload['pull_request']['head']['sha'] = head
+        code, said, wrote = run(None, event_payload=payload)
+        assert code == 0 and wrote == description(BLOCK, FRESH), said
+        payload['pull_request']['user']['login'] = 'dependabot[bot]'
+        code, said, wrote = run(None, event_payload=payload)
+        assert code == 0 and wrote is None and 'not required' in said, said
+        # A bad quarantine block is judged first: nothing is written, whatever the lines block.
+        code, said, wrote = run(description(BLOCK, STALE) + QBEGIN + '\n**Quarantined tests '
+                                'added: 1**\n' + QEND + '\n')
+        assert code == 1 and wrote is None and 'remove the af-pr-quarantine block' in said, said
+        # The refresh renders from commits: without them it is refused before anything runs.
+        code, said, wrote = run(description(BLOCK, STALE), '--no-diff')
+        assert code == 2 and wrote is None and 'drop --no-diff' in said, said
+        source = tmp / 'body.md'
+        done = subprocess.run([sys.executable, '-I', str(SCRIPT), '--body', str(source),
+                               '--refresh-into', str(into)], capture_output=True, text=True,
+                              env=GIT_ENV)
+        assert done.returncode == 2 and 'give --diff BASE HEAD' in done.stderr, done.stderr
+        assert not into.exists()
+    return len(cases) + len(nowhere) + len(runs) + 1
 
 
 if __name__ == '__main__':

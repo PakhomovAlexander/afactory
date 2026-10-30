@@ -21,15 +21,18 @@
 
 ## Lines added
 
-<!-- Run, from this repository on this branch, with its base fetched:
+<!-- The lines this pull request adds, per directory, as a title with the total and a table
+     (ADR-0195). CI maintains this block (ADR-0269): the `PR report` check renders it from the
+     pull request's commits and, when the block below is empty or differs, writes it into the
+     description itself, changing nothing outside its markers. Leave the markers as they are,
+     or paste the block yourself; run, from this repository on this branch, with its base
+     fetched:
 
        python3 scripts/pr-lines.py
 
      (`--base REF` for a base other than origin/main) and replace the whole block below, both
-     markers included, with its output: the lines this pull request adds, per directory, as a
-     title with the total and a table (ADR-0195). The `PR report` check renders the block again
-     from the pull request's commits and refuses a description whose block is missing or
-     differs; after a push, run it again and replace the block when it changed. -->
+     markers included, with its output. The check prints the block to paste when it cannot
+     write the description. -->
 
 <!-- af-pr-lines:v1 -->
 <!-- /af-pr-lines -->
@@ -52,7 +55,7 @@
 - [ ] `make check` passes locally (fmt, clippy `-D warnings`, `cargo test --locked`, release check).
 - [ ] `make review-kernel-container-probes` passes, if `crates/review-sandbox` changed (needs Docker).
 - [ ] This change was made through af Tasks (implementation and verification pipelines), and their `af task report` is included above.
-- [ ] The `Lines added` block above is `scripts/pr-lines.py`'s output for this branch as pushed.
+- [ ] The `Lines added` markers above are kept (CI writes the block between them).
 - [ ] A change note `changelog.d/<topic>.md`, if the change is user-visible (never an edit to `CHANGELOG.md`).
 - [ ] A design change references its ADR: <!-- docs/adr/NNNN-….md, or "not a design change" -->
 - [ ] No contract, fixture, gate, budget, or sandbox boundary was weakened to make a test pass.

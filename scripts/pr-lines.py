@@ -19,8 +19,10 @@ and a percentage (`| crates | 7.5k | ████████████ 40% |`
 tenth of a thousand up to 10k (`5k`, `7.9k`) and to a thousand from there (`23k`); the bar is
 the row's count against the largest row's, in up to twelve cells of eighth blocks, a sliver at
 least; a pull request that adds no line says `**Lines added: none**`. The `PR report` check
-recomputes the block from the pull request's own commits and refuses a description whose block
-is missing or differs, printing the block to paste.
+recomputes the block from the pull request's own commits and, when the description's block is
+missing or differs, writes the block into the description itself; it refuses the description,
+printing the block to paste, only when it cannot: two blocks, a marker without its pair, or a
+refused write (ADR-0269).
 """
 import argparse
 from collections import Counter

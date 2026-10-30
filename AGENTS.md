@@ -29,9 +29,13 @@ review corpora belong in consuming repositories, not here.
 - The description also states the lines the pull request adds per directory: the block
   between `<!-- af-pr-lines:v1 -->` and `<!-- /af-pr-lines -->` that
   `python3 scripts/pr-lines.py` prints — a title with the total and a table with each
-  directory's figure, bar and share; the same check renders the block again from the pull
-  request's commits and refuses a description whose block is missing or differs
-  ([ADR-0195](docs/adr/0195-state-the-lines-a-pull-request-adds-per-directory-and-check-them.md)).
+  directory's figure, bar and share. CI maintains it: the same check renders the block again
+  from the pull request's commits and, when the description's block is missing or differs,
+  writes it into the description itself; paste the block or leave the template's markers. The
+  check refuses the block, printing it to paste, only when it cannot write it: two blocks, a
+  marker without its pair, or a refused write. The `af task report` block stays the author's
+  ([ADR-0195](docs/adr/0195-state-the-lines-a-pull-request-adds-per-directory-and-check-them.md),
+  [ADR-0269](docs/adr/0269-let-ci-maintain-the-lines-added-block.md)).
   A pull request that adds quarantined tests also carries the block between
   `<!-- af-pr-quarantine:v1 -->` and `<!-- /af-pr-quarantine -->` that
   `python3 scripts/pr-quarantine.py` prints, checked the same way; one that adds none carries

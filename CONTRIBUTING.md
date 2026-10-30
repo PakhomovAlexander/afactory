@@ -316,18 +316,26 @@ Either is fine; the prefixes are used but not required. Domain terms keep their 
   `release/` pull requests are exempt. `python3 scripts/check-pr-report.py --body FILE`
   runs the same check locally.
 - The description also states the lines the pull request adds, per directory
-  ([ADR-0195](docs/adr/0195-state-the-lines-a-pull-request-adds-per-directory-and-check-them.md)):
-  run `python3 scripts/pr-lines.py` from the repository on your branch, with its base fetched
+  ([ADR-0195](docs/adr/0195-state-the-lines-a-pull-request-adds-per-directory-and-check-them.md)),
+  in the template's `Lines added` section: the block `python3 scripts/pr-lines.py` prints, a
+  title with the total and a table with one row per directory — its figure, and its share as a
+  bar and a percentage. It counts `git diff --numstat` additions under the first directory of
+  each path, a file under a `tests` directory as `tests`, a root file under its own name,
+  figures rounded past 1000 (`12k`, `1.1k`, `463`). CI maintains the block
+  ([ADR-0269](docs/adr/0269-let-ci-maintain-the-lines-added-block.md)): the `PR report`
+  workflow renders it again from the pull request's commits on every opening, edit and push,
+  and when the description's block is missing or differs it writes the block into the
+  description itself, changing nothing outside the block's markers (without them, it inserts
+  the block right after the `af task report` block). So you may leave the template's markers
+  empty, or run the command from the repository on your branch, with its base fetched
   (`--base REF` for a base other than `origin/main`), and paste its whole output, both markers
-  included, into the template's `Lines added` section: a title with the total and a table with
-  one row per directory — its figure, and its share as a bar and a percentage. It counts
-  `git diff --numstat` additions under the first directory of each path, a file under a `tests`
-  directory as `tests`, a root file under its own name, figures rounded past 1000 (`12k`,
-  `1.1k`, `463`). The `PR report` workflow renders the block again from the pull request's
-  commits and refuses a description whose block is missing or differs, printing the block to
-  paste; after a push, run the command again and paste the block when it changed.
+  included; a push or a merge from main needs no edit for it. The workflow refuses the
+  description, printing the block to paste, only when it cannot write it: two blocks, a marker
+  without its pair, or a write GitHub refuses. The `af task report` block is still yours to
+  paste and keep.
   `python3 scripts/check-pr-report.py --body FILE --diff origin/main HEAD` runs the same
-  comparison locally.
+  comparison locally; with `--refresh-into OUT` it writes the description with the block
+  refreshed to `OUT`.
 - A pull request that adds entries to `.config/test-quarantine.json` also names the tests it
   quarantines
   ([ADR-0268](docs/adr/0268-quarantine-flaky-tests-on-gate-evidence-and-confirm-them-on-claw.md)):

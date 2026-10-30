@@ -47,6 +47,15 @@ that differs is refused, with the block to paste; when they add none, a block is
 stale and no block passes. Without the commits only a block present is checked, for its shape,
 and the check says so.
 
+With `--refresh-into FILE` (ADR-0269) a lines block that differs from the rendered one, or is
+absent, is not refused: when the Task report block is well formed, the description is written to
+FILE with the text between the lines markers replaced by the rendered block (the markers and every
+other byte kept), or, without the markers, with the block inserted after a blank line right after
+the report's end marker (at the end of a description without one), and the check passes. A block
+that matches writes nothing. A bad Task report block or quarantine block, more than one lines
+block, or a marker without its pair still fails as without the flag, and writes nothing. The workflow writes FILE
+back as the description; this script calls no API itself.
+
 The workflow runs this script as the base branch holds it, on `pull_request_target`, so a pull
 request can change neither the check nor the workflow that runs it (ADR-0142).
 
@@ -55,6 +64,7 @@ request can change neither the check nor the workflow that runs it (ADR-0142).
     ... [--repo DIR] [--diff BASE HEAD]    the commits the lines and quarantine blocks are
                                            rendered from
     ... --no-diff                          check the blocks' shape only
+    ... --refresh-into FILE                write the description with a stale block refreshed
 """
 import argparse
 from collections import Counter
@@ -708,6 +718,55 @@ def lines_problems(body, expected=None):
     return []
 
 
+def markers(lines, begin, end):
+    """The indexes of the lines of `lines` that are the marker `begin` or `end` as GitHub renders
+    them, as (begins, ends): a marker line inside a code block or a raw HTML block is text."""
+    code, raw, _, _ = unrendered(lines)
+    found = {n: line.strip() for n, line in enumerate(lines) if n not in code | raw}
+    return ([n for n, text in found.items() if text == begin],
+            [n for n, text in found.items() if text == end])
+
+
+def refresh(body, expected):
+    """`body` with its lines added block holding `expected` (`pr-lines.render`), or None when
+    the block has no one place: more than one lines block, or a marker without its pair.
+
+    The text between the one pair of lines markers is replaced, the markers kept; a description
+    without them gets the whole block after a blank line right after the Task report's end
+    marker, or at its end when it has not exactly one such marker. Every other character of
+    `body` is kept, its line endings included; the new lines end as the line they follow does."""
+    body = body or ''
+    kept = body.splitlines(keepends=True)
+    lines = body.splitlines()
+    begins, ends = markers(lines, LINES_BEGIN, LINES_END)
+
+    def ending(n):
+        return kept[n][len(lines[n]):] or ('\r\n' if '\r\n' in body else '\n')
+
+    if len(begins) == 1 and len(ends) == 1 and begins[0] < ends[0]:
+        nl = ending(begins[0])
+        rendered = [line + nl for line in expected.split('\n')]
+        return ''.join(kept[:begins[0] + 1] + rendered + kept[ends[0]:])
+    if begins or ends:
+        return None
+    _, report_ends = markers(lines, BEGIN, END)
+    if len(report_ends) == 1:
+        at = report_ends[0]
+        nl = ending(at)
+        head = kept[:at] + [lines[at] + nl]
+        rest = kept[at + 1:]
+    else:
+        nl = ending(len(kept) - 1) if kept else '\n'
+        head = kept[:-1] + [lines[-1] + nl] if kept else []
+        rest = []
+    block = [LINES_BEGIN + nl] + [line + nl for line in expected.split('\n')] + [LINES_END + nl]
+    if head and head[-1].strip():
+        block.insert(0, nl)
+    if rest and rest[0].strip():
+        block.append(nl)
+    return ''.join(head + block + rest)
+
+
 def pr_quarantine():
     """The `pr-quarantine.py` module beside this script: the block's renderer and parser."""
     spec = importlib.util.spec_from_file_location(
@@ -777,10 +836,19 @@ def main(argv=None):
     parser.add_argument('--no-diff', action='store_true',
                         help='check the shape of the lines added block, and of a quarantine '
                              'block present, only')
+    parser.add_argument('--refresh-into', type=Path, metavar='FILE',
+                        help='when the lines added block is stale or absent, write the '
+                             'description with the block of the commits to FILE and pass')
     args = parser.parse_args(argv)
+    if args.refresh_into and args.no_diff:
+        parser.error('--refresh-into renders the block from the commits: drop --no-diff')
+    if args.refresh_into and args.body is not None and not args.diff:
+        parser.error('--refresh-into with --body needs the commits: give --diff BASE HEAD')
     base = head = None
     if args.body is not None:
-        body = args.body.read_text(encoding='utf-8')
+        # Read as written, `\r\n` included: a refreshed description keeps its line endings.
+        with open(args.body, encoding='utf-8', newline='') as file:
+            body = file.read()
         if args.diff:
             base, head = args.diff
     else:
@@ -813,23 +881,50 @@ def main(argv=None):
                                f'{error.stderr.decode("utf-8", "replace").strip()}')
     if not lines_found:
         lines_found = lines_problems(body, expected)
+    # The quarantine block is judged before a refresh: a description that fails it is not
+    # written back, whatever its lines block.
+    quarantine = pr_quarantine()
+    compared, wanted, quarantine_found = False, None, []
+    if base and head and not args.no_diff:
+        try:
+            wanted, compared = quarantine.render(base, head, args.repo), True
+        except quarantine.QuarantineError as error:
+            quarantine_found.append(f'could not read the quarantined tests added: {error}')
+    if not quarantine_found:
+        quarantine_found = quarantine_problems(body, compared, wanted)
+    if args.refresh_into and lines_found and expected is not None and not found \
+            and not quarantine_found:
+        refreshed = refresh(body, expected)
+        # The refreshed description passes both checks before it is written, or it is not.
+        if refreshed is not None and not problems(refreshed) \
+                and not lines_problems(refreshed, expected):
+            absent = markers(body.splitlines(), LINES_BEGIN, LINES_END) == ([], [])
+            with open(args.refresh_into, 'w', encoding='utf-8', newline='') as file:
+                file.write(refreshed)
+            print('lines added: '
+                  + ('the description has no block' if absent
+                     else 'the block is not that of this pull request\'s commits')
+                  + f'; wrote the description with the block of its commits to '
+                    f'{args.refresh_into}')
+            return 0
+        lines_found.append('the description was not refreshed: '
+                           + ('the check replaces only the text between one pair of lines added '
+                              'markers, or inserts the block where the description has none'
+                              if refreshed is None else
+                              'the block written into it would not render as text there'))
     if not lines_found:
         print('lines added: the description carries one well-formed block'
               + ('; the figures match the pull request\'s commits' if expected is not None
                  else '; the figures were not compared with any commits'))
     for problem in lines_found:
         print(f'lines added: {problem}', file=sys.stderr)
+    if lines_found and expected is not None and not any('replace it with' in problem
+                                                        for problem in lines_found):
+        # A block that is absent or misshapen is refused with the block to paste too.
+        print(f'lines added: the block of this pull request\'s commits, to paste:\n'
+              f'{LINES_BEGIN}\n{expected}\n{LINES_END}', file=sys.stderr)
     if lines_found:
         print(f'lines added: {pr_lines().HOW}', file=sys.stderr)
-    quarantine = pr_quarantine()
-    compared, expected, quarantine_found = False, None, []
-    if base and head and not args.no_diff:
-        try:
-            expected, compared = quarantine.render(base, head, args.repo), True
-        except quarantine.QuarantineError as error:
-            quarantine_found.append(f'could not read the quarantined tests added: {error}')
-    if not quarantine_found:
-        quarantine_found = quarantine_problems(body, compared, expected)
     if not quarantine_found:
         if not compared:
             present = marked(body, QUARANTINE_BEGIN, QUARANTINE_END, 'quarantine',
@@ -838,7 +933,7 @@ def main(argv=None):
                                          if present else 'the description carries no block')
                   + '; it was not compared with any commits, so whether one is needed was not '
                   'checked')
-        elif expected is None:
+        elif wanted is None:
             print('test quarantine: the pull request\'s commits add no quarantined test, and the '
                   'description carries no block')
         else:
