@@ -750,19 +750,6 @@ class Build(History):
             self.assertIn(b"nightly: refused: ", result.stderr)
             self.assertEqual(result.stdout, b"")
 
-
-def shell_functions(path, names):
-    """The definitions of `names` in the shell script at `path`, verbatim."""
-    text = read(path).decode("utf-8")
-    out = []
-    for name in names:
-        match = re.search(r"^%s\(\) \{\n.*?^\}\n" % re.escape(name), text, re.M | re.S)
-        if match is None:
-            raise AssertionError("%s defines no %s()" % (path, name))
-        out.append(match.group(0))
-    return "".join(out)
-
-
     def test_a_binary_that_reports_another_commit_is_refused(self):
         host = FakeHost(self, commit="0123456789ab")
         code, _, err = self.build(host)
@@ -793,6 +780,19 @@ def shell_functions(path, names):
         self.assertEqual(code, 0, err)
         self.assertFalse(os.path.exists(kept))
         self.assertFalse(os.path.exists(night + ".active"))
+
+
+def shell_functions(path, names):
+    """The definitions of `names` in the shell script at `path`, verbatim."""
+    text = read(path).decode("utf-8")
+    out = []
+    for name in names:
+        match = re.search(r"^%s\(\) \{\n.*?^\}\n" % re.escape(name), text, re.M | re.S)
+        if match is None:
+            raise AssertionError("%s defines no %s()" % (path, name))
+        out.append(match.group(0))
+    return "".join(out)
+
 
 class ReleaseToolsIgnoreNightlies(TempDir):
     TAGS = ["v0.13.0", "nightly-2026.10.29", "v0.14.0-rc.3", "nightly-2026.10.30"]

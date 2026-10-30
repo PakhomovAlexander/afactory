@@ -4,7 +4,7 @@ The owner's Linux VM builds a signed nightly af from the newest green commit of 
 ([ADR-0265](adr/0265-build-nightlies-from-the-newest-green-main-on-the-owners-vm.md)). This page
 covers the build step, `scripts/nightly/build.py`; the measurement, report and publication steps
 come later. Nothing here runs on GitHub Actions, and the build never pushes, publishes, posts or
-deletes anything outside `builds_root/<date>/`.
+deletes anything outside `builds_root/<date>/` and its own claim `builds_root/<date>.active`.
 
 A nightly is tagged `nightly-YYYY.MM.DD` and versioned `<core>-nightly.<YYYYMMDD>`: the workspace
 version of the chosen commit without its pre-release part (`0.14.0-rc.3` → `0.14.0`), or with its

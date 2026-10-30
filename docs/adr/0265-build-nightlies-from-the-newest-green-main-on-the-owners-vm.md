@@ -100,7 +100,7 @@ with Docker, `git`, `minisign` and `qemu-aarch64-static`, reading one `af.nightl
    laboratory's contracts, with generated schemas and golden fixtures; the reader recomputes the
    tag, the version and the asset names. Exit codes: 0 built, 3 skipped, 1 refused with the
    reason on stderr. Nothing is pushed, published, posted or deleted outside
-   `builds_root/<date>/`.
+   `builds_root/<date>/` and the build's own claim `builds_root/<date>.active`.
 7. **What a nightly is not.** It is Linux only: the VM cannot build macOS, so a nightly has no
    `aarch64-apple-darwin` archive. It is never pinned by `.af/af.lock`, never chosen by
    `install.sh` or by `af self` on the stable or rc channel, and never a baseline.
