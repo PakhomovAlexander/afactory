@@ -55,6 +55,9 @@ Foreign and unassigned sessions are excluded and reported as coverage gaps. Code
 distinct turns/messages remain distinct. Provider-native costs are marked as outer-session usage
 and never added to AF charges.
 
+The current Codex records and their ownership rules are listed under
+[Native Codex sessions](#native-codex-sessions).
+
 Credential-free Codex and Claude examples live in `fixtures/self-optimizer/native/`. Fields that
 a source did not measure remain named unknowns. No provider-internal span or cache result is
 inferred.
@@ -234,6 +237,48 @@ A declared provider source may set an absolute `project_root` to the original
 project location when analysis runs in a separate checkout. Native cwd metadata
 must match that declared root. This grants read-only source attribution, not
 execution authority.
+
+### Native Codex sessions
+
+The `codex` adapter reads these current rollout records and ignores every other one
+([ADR-0264](../adr/0264-own-codex-session-records-and-quarantine-after-a-foreign-one.md)):
+
+| Record | What capture takes from it |
+|---|---|
+| `session_meta` | `payload.id` declares the session; `payload.cwd` or `payload.project_id` its project |
+| `turn_context` | `payload.model` and `payload.effort`; a `payload.cwd` is checked against the project |
+| `token_usage_record` | `payload.session_id` and the cumulative `payload.thread_token_usage` |
+| `event_msg` `token_count` | the cumulative `payload.info.total_token_usage` |
+| `event_msg` `task_started`, `task_complete`, `turn_aborted` | the `payload.turn_id` span, end and outcome |
+| `response_item` | nothing: its `payload.id` is an item ID, its body message, tool or reasoning content |
+
+The first project `session_meta` declares the one session the source is attributed to; a
+`token_usage_record` before it is refused, never adopted, and a `token_count` or task lifecycle
+record before it is not attributed (`session_identity_unknown`), even after a project
+`turn_context`. A later `session_meta` with another ID or with the declared ID and a foreign
+`cwd` or `project_id`, a `token_usage_record` naming another session or no session or carrying a
+foreign `cwd` or `project_id`, and a `turn_context` whose `cwd` leaves the project are foreign
+records:
+they change no declared
+identity, model, effort, project membership, counter or open task span, and they put the source
+in quarantine. While it is quarantined, the records that name no session (`token_count`,
+`turn_context`, `task_started`, `task_complete`, `turn_aborted`) are refused, even after a
+`turn_context` back in the project or a repeated declared `session_meta`; only a
+`token_usage_record` of the declared session with exact cumulative counters restores scope. The
+gaps `foreign_session_record` and `quarantined_unscoped_record` keep the receipt and the report
+visibly partial. A present `cwd` or `project_id` that is not a string (`null`, a number, an
+object) matches no project: it is foreign evidence, so it never declares, adopts or rescopes. A range continued from a cursor first replays the retained bytes below the
+cursor through the adapter while their hashes are rechecked, so the declared session, its
+project membership, an open task span and a quarantine carry over the cursor without reading any
+byte twice. Only when that prefix cannot be replayed whole does the continued range adopt the
+first session a `token_usage_record` names, recording `session_identity_unverified`.
+
+`thread_token_usage` and `token_count` are snapshots of one whole-session total, so both share the
+session's cumulative key and the report keeps each counter's maximum, never their sum; the
+overlapping per-turn `usage`, `turn_token_usage` and `last_token_usage` are not read. Report
+limits: Codex records no cache-write counter, so it stays unknown; a span exists only for a
+turn whose `task_started` and end were both in scope; a `task_complete` is an incomplete
+outcome and a `turn_aborted` an abandoned one, never verified acceptance.
 
 ### Incremental source integrity and overlapping exports
 

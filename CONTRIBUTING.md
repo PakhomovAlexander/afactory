@@ -44,7 +44,7 @@ make check
 
 That is `cargo fmt --all -- --check`, `cargo clippy --all-targets --locked -- -D warnings`,
 `cargo nextest run --profile ci` over every test binary except the tests
-`.config/test-quarantine.json` lists (ADR-0264), and the release-selection check
+`.config/test-quarantine.json` lists (ADR-0268), and the release-selection check
 (`scripts/test-release-resolve.py`), plus preflight and feature-on perf checks.
 This repository's Task gate runs `scripts/verify.sh --profile fast` (functional, e2e, uix).
 CI uses the selected classes described below; the default PR omits perf. A local pass alone
@@ -385,7 +385,7 @@ component default unless overridden. Tests of help/errors/navigation belong to u
 belong to e2e even if they assert output. Keep nextest exclusive scheduling independent of class.
 A test listed in `.config/test-quarantine.json` classifies as `quarantine`, which no plan selects,
 until a fix removes its entry or the entry expires
-([ADR-0264](docs/adr/0264-quarantine-flaky-tests-on-gate-evidence-and-confirm-them-on-claw.md)).
+([ADR-0268](docs/adr/0268-quarantine-flaky-tests-on-gate-evidence-and-confirm-them-on-claw.md)).
 
 The guarded kernel perf-class test refuses every tampered harness as a baseline with no build.
 Its judged comparison and tampered-candidate refusals after a measured baseline are an ignored

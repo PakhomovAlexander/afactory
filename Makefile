@@ -17,7 +17,7 @@ prereqs:
 # `flaky:` and does not fail the step, one that fails twice does, with nextest's exit status.
 # Every step names its stage (`--stage`), which a Task check's report records (CONTRIBUTING.md).
 # scripts/test-classes.py starts that run without the tests .config/test-quarantine.json lists
-# (ADR-0264); with the file empty the selection is unchanged.
+# (ADR-0268); with the file empty the selection is unchanged.
 TEST_RUNNER ?= nextest
 TEST_THREADS ?= $(shell python3 -c 'import os; print(max(4, (os.cpu_count() or 4) // 2))')
 CI_STEP = python3 scripts/ci-step.py

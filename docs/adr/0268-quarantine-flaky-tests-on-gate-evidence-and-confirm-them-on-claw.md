@@ -1,4 +1,4 @@
-# ADR-0264: Quarantine flaky tests on gate evidence and confirm them on Claw
+# ADR-0268: Quarantine flaky tests on gate evidence and confirm them on Claw
 
 **Status:** proposed (2026-10-29).
 

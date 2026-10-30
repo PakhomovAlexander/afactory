@@ -352,8 +352,60 @@ fn digest(bytes: &[u8]) -> String {
     )
 }
 
+/// Codex ownership and quarantine are state of the whole source (ADR-0264). A continued Codex
+/// range replays the retained prefix below its cursor through the adapter while that prefix is
+/// verified, so no byte is read twice and no checkpoint is persisted.
+struct PrefixReplay {
+    state: AdapterState,
+    cursor: u64,
+    replayed: u64,
+    line: Vec<u8>,
+    max_record_bytes: u64,
+    stopped: bool,
+}
+
+impl PrefixReplay {
+    /// Replay the bytes at `offset` that extend the replayed prefix toward the cursor. A range
+    /// that starts past the replayed end leaves a hole, and a record the adapter refuses can only
+    /// come from rewritten bytes the hash check then reports: either way the replay stops short
+    /// of the cursor and never completes.
+    fn feed(&mut self, offset: u64, bytes: &[u8]) {
+        let end = (offset + bytes.len() as u64).min(self.cursor);
+        if self.stopped || offset > self.replayed || end <= self.replayed {
+            return;
+        }
+        let from = (self.replayed - offset) as usize;
+        let to = (end - offset) as usize;
+        for piece in bytes[from..to].split_inclusive(|byte| *byte == b'\n') {
+            self.line.extend_from_slice(piece);
+            if self.line.len() as u64 > self.max_record_bytes
+                || (piece.ends_with(b"\n")
+                    && parse_adapter_record(&mut self.state, &self.line).is_err())
+            {
+                self.stopped = true;
+                return;
+            }
+            if piece.ends_with(b"\n") {
+                self.line.clear();
+            }
+        }
+        self.replayed = end;
+    }
+
+    /// The reconstructed state when every byte below the cursor was replayed, without the gaps
+    /// the retained receipts already reported.
+    fn finish(mut self) -> Option<AdapterState> {
+        if self.stopped || self.replayed != self.cursor || !self.line.is_empty() {
+            return None;
+        }
+        self.state.take_gaps();
+        Some(self.state)
+    }
+}
+
 /// The legacy field `prefix_digest` hashes the exact receipted byte range. Recheck all
 /// retained ranges before continuing a source; an empty last capture must not hide rotation.
+/// Ranges are checked in byte order so that `replay` sees the prefix as the source wrote it.
 /// A seek or read failure on the opened `file` makes the source unreadable at `path`.
 fn verify_retained_ranges(
     file: &mut (impl Read + Seek),
@@ -361,13 +413,16 @@ fn verify_retained_ranges(
     source: &DeclaredSource,
     receipts: &[OptimizationSourceReceiptV1],
     remaining_raw: &mut u64,
+    mut replay: Option<&mut PrefixReplay>,
 ) -> Result<(), SourceError> {
     let mut checked = BTreeSet::new();
     let mut buffer = [0u8; 64 * 1024];
-    for receipt in receipts
+    let mut ranges = receipts
         .iter()
         .filter(|receipt| receipt.source_id == source.source_id)
-    {
+        .collect::<Vec<_>>();
+    ranges.sort_by_key(|receipt| (receipt.byte_start.get(), receipt.byte_end.get()));
+    for receipt in ranges {
         if receipt.adapter != source.adapter || receipt.execution_id != source.execution_id {
             return Err("Declared source identity changed; use a new source identity".into());
         }
@@ -392,6 +447,9 @@ fn verify_retained_ranges(
             let count = file.read(&mut buffer[..wanted]).map_err(unreadable(path))?;
             if count == 0 {
                 return Err("Retained source range was truncated or rotated".into());
+            }
+            if let Some(replay) = replay.as_deref_mut() {
+                replay.feed(end - left, &buffer[..count]);
             }
             left -= count as u64;
             *remaining_raw -= count as u64;
@@ -468,7 +526,39 @@ fn capture_source(
         return Err(format!("declared history source {} was truncated", source.source_id).into());
     }
     let mut file = std::fs::File::open(&path).map_err(unreadable(&path))?;
-    verify_retained_ranges(&mut file, &path, source, prior_receipts, remaining_raw)?;
+    let root = source.project_root.as_deref().unwrap_or(project_root);
+    let new_state = |continued: bool| {
+        let mut state = AdapterState::new(
+            &source.adapter,
+            &config.project_id,
+            &source.execution_id,
+            root,
+            cutoff,
+            continued,
+        );
+        state.attest_project = source.attest_project;
+        state
+    };
+    let mut replay = (source.adapter == "codex" && start > 0).then(|| PrefixReplay {
+        state: new_state(false),
+        cursor: start,
+        replayed: 0,
+        line: Vec::new(),
+        max_record_bytes: config.max_record_bytes,
+        stopped: false,
+    });
+    verify_retained_ranges(
+        &mut file,
+        &path,
+        source,
+        prior_receipts,
+        remaining_raw,
+        replay.as_mut(),
+    )?;
+    // Without a whole replayed prefix the range is trusted as a continuation (ADR-0264).
+    let mut adapter_state = replay
+        .and_then(PrefixReplay::finish)
+        .unwrap_or_else(|| new_state(start > 0));
     let available = end - start;
     let selected = available.min(*remaining_raw);
     let mut complete = selected == available;
@@ -478,15 +568,6 @@ fn capture_source(
     let mut reader = BufReader::new(file.take(selected));
     let mut hasher = Sha256::new();
     let mut records = Vec::new();
-    let mut adapter_state = AdapterState::new(
-        &source.adapter,
-        &config.project_id,
-        &source.execution_id,
-        source.project_root.as_deref().unwrap_or(project_root),
-        cutoff,
-        start > 0,
-    );
-    adapter_state.attest_project = source.attest_project;
     let mut line = Vec::new();
     let mut consumed = 0u64;
     loop {
@@ -946,18 +1027,18 @@ mod tests {
         let receipts = vec![empty, receipt];
         let mut file = std::fs::File::open(&path).unwrap();
         let mut budget = 8;
-        verify_retained_ranges(&mut file, &path, &source, &receipts, &mut budget).unwrap();
+        verify_retained_ranges(&mut file, &path, &source, &receipts, &mut budget, None).unwrap();
         assert_eq!(budget, 4);
         std::fs::write(&path, b"new\n").unwrap();
         let mut file = std::fs::File::open(&path).unwrap();
         assert!(
-            verify_retained_ranges(&mut file, &path, &source, &receipts, &mut 8)
+            verify_retained_ranges(&mut file, &path, &source, &receipts, &mut 8, None)
                 .unwrap_err()
                 .to_string()
                 .contains("changed")
         );
         assert!(
-            verify_retained_ranges(&mut file, &path, &source, &receipts, &mut 3)
+            verify_retained_ranges(&mut file, &path, &source, &receipts, &mut 3, None)
                 .unwrap_err()
                 .to_string()
                 .contains("limit")
@@ -1422,6 +1503,7 @@ mod source_tests {
                 &source,
                 std::slice::from_ref(&receipt),
                 &mut 8,
+                None,
             )
             .unwrap_err();
             assert!(
