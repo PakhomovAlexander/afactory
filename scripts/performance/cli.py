@@ -861,7 +861,7 @@ def cmd_telemetry_verify(args):
 
 
 def cmd_telemetry_build_record(args):
-    """Write one side's build record (`af.perf-telemetry-build/1`) beside its binary."""
+    """Write one side's build record (`af.perf-telemetry-build/2`) beside its binary."""
     try:
         doc = {"schema": contracts.TELEMETRY_BUILD_SCHEMA, "side": args.side,
                "source_sha": args.source_sha,
@@ -1409,10 +1409,35 @@ def cmd_harness_digest(args):
 
 
 
+def _trusted_pair(git, args):
+    """PR/release metadata is an explicit trusted operator submission. Never read candidate
+    workflows or run hooks on this controller."""
+    base, head = args.base, args.head
+    if args.kind == "pr":
+        parents = git.parents(git.resolve(head, "PR merge"))
+        require(len(parents) == 2 and parents[0] == git.resolve(base, "PR base")
+                and args.pr_head and parents[1] == git.resolve(args.pr_head, "PR head"),
+                "PR submission must bind the exact merge and its ordered parents")
+    elif args.kind == "release":
+        require(args.tag, "release submission needs --tag")
+        tagged, _, _, predecessor = gitrefs.release_baseline(git, args.tag)
+        require(git.resolve(head, "release") == tagged and git.resolve(base, "predecessor") == predecessor,
+                "release submission disagrees with the tag/predecessor rule")
+
+
 def cmd_executor(args):
     """Operator controller; all executable authority comes from this installed checkout."""
-    from perflab import executor, localcalibration
+    from perflab import comparison, executor, localcalibration
     try:
+        if args.operation == "comparison-verify":
+            # A copied bundle verifies on its own: no journal or configuration is read.
+            require(args.bundle, "comparison-verify needs --bundle DIRECTORY")
+            manifest, doc = comparison.verify_export(args.bundle)
+            print(json.dumps({"status": "verified", "comparison_id": doc["comparison_id"],
+                              "comparison": doc["status"], "files": len(manifest["files"])},
+                             sort_keys=True))
+            return 0
+        require(args.config, "executor %s needs --config" % args.operation)
         config = executor.load_config(args.config)
         if args.operation == "cohort-declare":
             require(args.cohort_id and args.start_date and args.output and args.group,
@@ -1422,7 +1447,47 @@ def cmd_executor(args):
                 args.days, args.preparation_members)
             _emit(contracts.write_bytes(doc, "local-cohort-declaration"), args.output)
             return 0
-        with executor.cancellation(), executor.Journal(config) as journal:
+        # Readers take no journal lock: status, verify and an overview are usable while the
+        # controller holding it executes an original.
+        readonly = args.operation in ("status", "verify", "overview", "comparison-status",
+                                      "comparison-report", "comparison-export")
+        if args.operation == "comparison-run":
+            require(args.comparison, "comparison-run needs --comparison CMP_ID")
+            with executor.cancellation():
+                doc, outcomes = comparison.run(
+                    lambda readonly: executor.Journal(config, readonly=readonly),
+                    args.comparison, lambda journal: journal.cycle())
+            print(json.dumps({"cycles": outcomes, "status": doc}, sort_keys=True))
+            # The loop's end is not the comparison's: `comparison-report` judges it.
+            return 0 if doc["status"] != "running" else 4
+        with executor.cancellation(), executor.Journal(config, readonly=readonly) as journal:
+            if args.operation in ("comparison-preflight", "comparison-launch"):
+                require(args.kind != "nightly", "a release comparison is a manual, pr or release "
+                        "key; a nightly is submitted alone by submit --kind nightly (ADR-0266)")
+                require(args.base and args.head and args.key,
+                        args.operation + " needs exact --base, --head and --key")
+                _trusted_pair(executor.source_repository(config), args)
+                doc = comparison.preflight(journal, args.base, args.head, args.key, args.kind,
+                                           launch=args.operation == "comparison-launch")
+                _emit(contracts.write_bytes(doc, "comparison-preflight"), None)
+                return 0 if doc["status"] != "refused" else 4
+            elif args.operation.startswith("comparison-"):
+                require(args.comparison, args.operation + " needs --comparison CMP_ID")
+                if args.operation == "comparison-advance":
+                    doc = comparison.advance(journal, args.comparison)
+                elif args.operation == "comparison-status":
+                    doc = comparison.status(journal, args.comparison)
+                elif args.operation == "comparison-report":
+                    require(args.output, "comparison-report needs --output DIRECTORY")
+                    doc = comparison.status(journal, args.comparison,
+                                            verify=executor.verify_original)
+                    comparison.write(doc, args.output, os.path.relpath(
+                        config["root"], os.path.abspath(args.output)))
+                else:
+                    require(args.output, "comparison-export needs --output DIRECTORY")
+                    _, doc = comparison.export(journal, args.comparison, args.output)
+                _emit(contracts.write_bytes(doc, "comparison-report"), None)
+                return 0 if doc["status"] == "complete" else 4
             if args.operation == "submit" and args.kind == "nightly":
                 # The key is the tag and work; the baseline defaults to the highest stable
                 # release reachable from the frozen main commit (ADR-0266).
@@ -1430,23 +1495,22 @@ def cmd_executor(args):
                         "a nightly submit needs --tag and --head, an optional --base and no --key")
                 doc = journal.submit_nightly(args.work, args.tag, args.head, args.base)
                 print(json.dumps(doc, sort_keys=True))
-            elif args.operation == "submit":
-                require(args.base and args.head and args.key, "submit needs exact --base, --head and --key")
-                git = executor.source_repository(config)
+            elif args.operation in ("submit", "preflight"):
+                require(args.kind != "nightly", "a nightly is checked and frozen by submit "
+                        "--kind nightly --tag TAG; preflight takes a manual, pr or release key")
+                require(args.base and args.head and args.key,
+                        args.operation + " needs exact --base, --head and --key")
                 base, head = args.base, args.head
-                # PR/release metadata is an explicit trusted operator submission. Never read
-                # candidate workflows or run hooks on this controller.
-                if args.kind == "pr":
-                    parents = git.parents(git.resolve(head, "PR merge"))
-                    require(len(parents) == 2 and parents[0] == git.resolve(base, "PR base")
-                            and args.pr_head and parents[1] == git.resolve(args.pr_head, "PR head"),
-                            "PR submission must bind the exact merge and its ordered parents")
-                elif args.kind == "release":
-                    require(args.tag, "release submission needs --tag")
-                    tagged, _, _, predecessor = gitrefs.release_baseline(git, args.tag)
-                    require(git.resolve(head, "release") == tagged and git.resolve(base, "predecessor") == predecessor,
-                            "release submission disagrees with the tag/predecessor rule")
-                doc = journal.submit(args.work, base, head, args.key, args.kind)
+                _trusted_pair(executor.source_repository(config), args)
+                if args.operation == "preflight":
+                    # Every submission check as this account, nothing reserved: a refusal
+                    # prints its exact reason and exits 4 before any claim or build.
+                    doc = journal.preflight(args.work, base, head, args.key, args.kind,
+                                            parent=args.parent)
+                    _emit(contracts.write_bytes(doc, "executor-preflight"), None)
+                    return 0 if doc["status"] == "ready" else 4
+                doc = journal.submit(args.work, base, head, args.key, args.kind,
+                                     parent=args.parent)
                 print(json.dumps(doc, sort_keys=True))
             elif args.operation in ("cycle", "service"):
                 outcome = journal.cycle()
@@ -1458,6 +1522,17 @@ def cmd_executor(args):
                         if outcome == "idle":
                             outcome = journal.cycle()
                 print(outcome)
+            elif args.operation == "overview":
+                # One combined report of retained native originals: never inferred from a
+                # process exit or a file's existence; incomplete exits 4.
+                from perflab import overview
+                require(args.member and args.output, "overview needs --member REQUEST_ID... and --output")
+                require(args.scope, "overview needs --scope full|partial")
+                doc = overview.overview(journal, args.member, executor.verify_original,
+                                        args.scope)
+                overview.write(doc, args.output, config["root"])
+                _emit(contracts.write_bytes(doc, "comparison-overview"), None)
+                return 0 if doc["status"] == "complete" else 4
             elif args.operation == "status":
                 print(json.dumps([journal.state(i) for i in journal.names()], sort_keys=True))
             elif args.operation == "verify":
@@ -1494,15 +1569,24 @@ def parser():
     commands.required = True
 
     execution = commands.add_parser("executor", help="independent local or GitHub performance backend")
-    execution.add_argument("--config", required=True)
-    execution.add_argument("operation", choices=("submit", "cycle", "service", "status", "verify",
+    execution.add_argument("--config", help="the operator configuration; every operation but "
+                           "comparison-verify, which reads only the copied bundle, needs it")
+    execution.add_argument("operation", choices=("submit", "preflight", "cycle", "service",
+        "status", "verify", "overview", "comparison-preflight", "comparison-launch",
+        "comparison-advance", "comparison-run", "comparison-status", "comparison-report",
+        "comparison-export", "comparison-verify",
         "cohort-declare", "calibration-dispatch", "calibration-prepare", "readiness"))
     execution.add_argument("--work", choices=("core", "telemetry", "profile"), default="core")
     execution.add_argument("--kind", choices=("manual", "pr", "release", "nightly"), default="manual")
     for option in ("base", "head", "key", "pr-head", "tag", "request-id", "cohort", "parameters",
-                   "cohort-id", "start-date", "output"):
+                   "cohort-id", "start-date", "output", "parent", "comparison", "bundle"):
         execution.add_argument("--" + option)
     execution.add_argument("--group", nargs=3, action="append")
+    execution.add_argument("--member", action="append", help="an original of the overview")
+    execution.add_argument("--scope", choices=("full", "partial"),
+                           help="the overview's declared scope: `full` requires a core, a "
+                           "telemetry, a trace and a CPU profile original; `partial` is never "
+                           "a complete release comparison")
     execution.add_argument("--days", type=int, default=7)
     execution.add_argument("--preparation-members", type=int, default=2)
     execution.set_defaults(handler=cmd_executor)
@@ -1736,7 +1820,7 @@ def parser():
     telemetry_run.add_argument("--scratch-owner", help="linux_container: trusted ownership "
                                "directory created by ci-scratch --telemetry-owner")
     telemetry_run.add_argument("--baseline-build", help="the baseline's build record "
-                               "(af.perf-telemetry-build/1)")
+                               "(af.perf-telemetry-build/2)")
     telemetry_run.add_argument("--candidate-build", help="the candidate's build record")
     telemetry_run.set_defaults(handler=cmd_telemetry_run)
 
@@ -1781,7 +1865,9 @@ def parser():
     telemetry_build.add_argument("--side", required=True, choices=("baseline", "candidate"))
     telemetry_build.add_argument("--source-sha", required=True)
     telemetry_build.add_argument("--binary", required=True)
-    telemetry_build.add_argument("--image", required=True)
+    telemetry_build.add_argument("--image", required=True,
+                                 help="the build image pinned by digest: sha256:<image ID> "
+                                 "or name@sha256:<manifest digest>, without a tag")
     telemetry_build.add_argument("--rustc", required=True)
     telemetry_build.add_argument("--cargo", required=True)
     telemetry_build.add_argument("--command", dest="command_text", required=True)

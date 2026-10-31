@@ -1165,10 +1165,20 @@ the pristine repository's own config that every copy inherits holds, `gc.auto=0`
 --auto` after a commit holds a lock the copy trips over and can run inside a measured command. Per
 fixture the script reports the paired differences `(spans - off) / off`, their median and a 95%
 percentile-bootstrap interval of the median (10,000 resamples, seeded). **Drain latency** is
-measured on the dense fixture's runs: from the harness's last write (its final stderr line names
-the unix nanosecond) to the supervisor's drain completion (the modification time of the Worker's
-drained stdout in the Store, which `ModelRunner` writes first thing after the supervisor
-returns, at the file system's timestamp resolution), `spans` minus `off` per pair. The gate
+measured on the dense fixture's runs, and named for its boundaries
+(`harness_last_write_to_command_exit`): from the harness's last write (its final stderr line
+names the moment on the host's `CLOCK_MONOTONIC`, `last_write_monotonic_ns`) to the script's own
+reading of `CLOCK_MONOTONIC` right after `wait4` returned the command's exit, `spans` minus `off`
+per pair. The harness writes before it exits and the command exits only after it reaped the
+harness, so the two readings of the one monotonic clock are causally ordered; no file timestamp
+is read, so a wall-clock step, a filesystem's timestamp rounding or a de-duplicated Store object
+that keeps an earlier run's modification time cannot reorder them. It is not the Store's commit
+time: it covers the drain, the rest of the command and its exit. Both ends name the clock
+explicitly, because `time.monotonic_ns` is not one clock across Python builds. A run's drain is
+a physical duration and the pair's difference a signed one: a run whose drain duration reads
+negative (its two readings out of order) is kept as measured and leaves the gate `not_judged`,
+never clamped or dropped, while a negative `spans` minus `off` difference is an ordinary signed
+comparison and is judged. The gate
 passes when every fixture's median is at most 2% and its interval's upper bound at most 3%, and
 the drain latency's median difference is at most 10 ms; it is judged only over all three
 fixtures at full scale with 20 pairs, and anything less is `not_judged`.
@@ -1179,9 +1189,20 @@ python3 scripts/telemetry-overhead.py --af target/release/af --pairs 5 --fixture
 python3 scripts/telemetry-overhead.py --judge target/telemetry-gate/overhead.json
 ```
 
+Each release is measured on the workload it accepts (`fixture_contract`, ADR-0240): the
+committed fixtures declare `af/TaskCheckReceipt@2`; a release a contract of
+`FIXTURE_CONTRACTS` names (`check-receipt@1`: af 0.13.0) gets the same packages with only that
+artifact type renamed and each re-pinned with the digest the contract declares, which the
+measured binary's own `af catalog digest` must print; `check-receipt@2` names the releases
+that write the committed `@2` (af 0.14.0-rc.1 through this tree's 0.14.0-rc.3), and a release
+no contract names is refused, never measured under the committed contract. The contract is
+selected by the version `af --version` prints; `--fixture-contract NAME` only asserts it and is
+refused when the version selects another. It is benchmark fixture
+production, never a reader of state an earlier release wrote.
+
 `make telemetry-gate` prints the table, fails when the script exits 3 (the gate failed), and
-writes the `af/telemetry-overhead@1` document
-([`schemas/telemetry-overhead-v1.json`](../schemas/telemetry-overhead-v1.json)) to
+writes the `af/telemetry-overhead@2` document
+([`schemas/telemetry-overhead-v2.json`](../schemas/telemetry-overhead-v2.json)) to
 `target/telemetry-gate/overhead.json`; `--json` prints the document instead, `--judge`
 recomputes every figure and the verdict from a recorded document's own pairs, and `--keep`
 keeps every run's directory. `make check` runs only a one-pair smoke of the script
@@ -1220,6 +1241,10 @@ between 14 and 56). `make telemetry-gate`, 20 pairs per fixture, seed 20261021:
 | `telemetry-bench-dense` | 27 | 827 ms | 847 ms | +3.05% | [−2.30%, +9.48%] | fail |
 | `telemetry-bench-store` | 1,178 | 12,001 ms | 13,585 ms | +7.94% | [−9.21%, +37.71%] | fail |
 | drain latency, `telemetry-bench-dense` | | 0.637 ms | 0.685 ms | +0.050 ms | [−0.018 ms, +0.195 ms] | pass |
+
+The drain-latency row is historical: it was measured at the drained result's CAS write, the
+boundary before `harness_last_write_to_command_exit`, so it is not directly comparable with a
+current document's drain latency, which also covers the rest of the command and its exit.
 
 **`spans` does not pass the 2% gate on this machine in this measurement.** The drain latency is
 within its bound. The dense and Store fixtures' intervals are as wide as the machine's load made
@@ -1260,16 +1285,17 @@ pairs, randomized order, 20 pairs, private homes and the bootstrap interval — 
 with 1, 16 or 64 MiB of intermediate tool output per Attempt and prints only the result under
 `json`. Each pair is one command of each shape at one level, `off` and `spans`; per run it
 records the command's wall time, its peak RSS (with its reaped children) and, for one Attempt,
-the drain latency taken as the overhead gate takes it (at the drained result's CAS write, the
-same known follow-up), and it stops when a run's accounting (the Task's charge, its Attempts,
+the drain latency taken as the overhead gate takes it (`harness_last_write_to_command_exit`:
+from the harness's last write to the command's observed exit, both on `CLOCK_MONOTONIC`, a
+physical duration per run and a signed difference per pair), and it stops when a run's accounting (the Task's charge, its Attempts,
 every usage record) differs between the shapes or the levels. The gate passes when at `off`
 every case's median wall difference is at most 2% and its median peak-RSS difference at most
 the stream's bytes plus 16 MiB; a failed gate keeps two shapes, `json` at `off` and `metrics`
 and `stream-json` at `spans` and `content`, which the envelope-parity fixtures
 (`claude_stream_result_envelope_is_the_json_envelope`, `claude_accounting_identical_at_every_level`)
 pin to the same accounting, classification and Store bytes. `--json` prints the
-`af/telemetry-invocation-cost@1` document
-([`schemas/telemetry-invocation-cost-v1.json`](../schemas/telemetry-invocation-cost-v1.json)),
+`af/telemetry-invocation-cost@2` document
+([`schemas/telemetry-invocation-cost-v2.json`](../schemas/telemetry-invocation-cost-v2.json)),
 `--judge` recomputes a recorded one, and `make check` runs its one-pair smoke
 (`telemetry_stream_json_cost_gate`), always `not_judged`.
 
@@ -1300,7 +1326,9 @@ between 20 and 95 throughout; seed 20261021, 20 pairs per case and level; the di
 | four Attempts, 64 MiB | `spans` | 3,147 ms | 3,869 ms | +18.20% | [+11.16%, +28.46%] | +508.0 MiB | 257.7 MiB | |
 
 The one-Attempt drain latency differences at `off` were +0.37 ms, +6.40 ms and +25.18 ms for
-1, 16 and 64 MiB, and at `spans` +7.54 ms, +122.11 ms and +479.37 ms.
+1, 16 and 64 MiB, and at `spans` +7.54 ms, +122.11 ms and +479.37 ms. These are historical
+figures measured at the drained result's CAS write, the earlier boundary, and are not directly
+comparable with a current document's `harness_last_write_to_command_exit` drain latency.
 
 **The gate failed** — the one-Attempt 64 MiB case's median wall is +20.3% at `off`, and the
 four-Attempt 1 MiB case's +5.9%; every peak-RSS difference is within the stream's bytes plus

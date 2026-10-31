@@ -307,6 +307,20 @@ def tui_home_environment(scratch):
             "XDG_DATA_HOME": os.path.join(home, "data")}
 
 
+# Of a CLI sample's declared log bytes (`limits.sample_log_bytes`), the most its stderr is
+# given before stdout: stdout is what every oracle rule judges, and a JSON rule needs the
+# whole document retained, so stdout keeps all the rest of the same total (the 100-Finding
+# review report of 0.14.0-rc.1 writes 234,442 bytes). stderr is diagnostics only and keeps
+# at least this; neither the declared total nor the supervisor's hard cap grows.
+STDERR_RESERVE_BYTES = 16 * 1024
+
+
+def stdout_bytes(log_bytes):
+    """The retained stdout of a CLI command within its sample's `log_bytes`: the total less
+    the stderr reserve, or less a quarter of a total too small to give the reserve."""
+    return max(1, log_bytes - min(STDERR_RESERVE_BYTES, log_bytes // 4))
+
+
 def patterns(entry):
     """The byte patterns the supervisor must count, in rule order."""
     return [rule["pattern"] for rule in entry["rules"] if rule["kind"] == "stdout_count"]

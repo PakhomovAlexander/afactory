@@ -1,5 +1,5 @@
 {
-  "schema": "af.perf-profiles/6",
+  "schema": "af.perf-profiles/7",
   "run_id": "diag_child",
   "parent_run_id": "schema_fixture_run",
   "parent_plan_digest": "sha256:de1427adef11aa8cb7886c5519b526f973597182a824a146bcc1e835a3b10358",
@@ -172,6 +172,7 @@
           "sha256": "sha256:d273eb059e142b93dd51734d5ab2b90e04ee8f2aa4174b8fe0c8a39fd87177b3"
         }
       ],
+      "repetitions": null,
       "omission": null,
       "losses": {
         "state": "decoded",
@@ -240,6 +241,7 @@
           "sha256": "sha256:7704a919259b9ae574cd52a90dca17cca4adc42096a05d840f5c3afe38603179"
         }
       ],
+      "repetitions": null,
       "omission": null,
       "losses": {
         "state": "decoded",
@@ -308,6 +310,7 @@
           "sha256": "sha256:f543795cfaa1ec9cd11cc6befe54043f23f126b4df3e4ce094cb119af2472224"
         }
       ],
+      "repetitions": null,
       "omission": null,
       "losses": {
         "state": "decoded",
@@ -376,6 +379,7 @@
           "sha256": "sha256:3e5049062d3b862cebd87d1467d0ee17cea9e315eb6ea57e75f30af1bc7d563c"
         }
       ],
+      "repetitions": null,
       "omission": null,
       "losses": {
         "state": "decoded",

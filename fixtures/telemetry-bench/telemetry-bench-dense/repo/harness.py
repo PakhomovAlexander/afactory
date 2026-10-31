@@ -5,8 +5,8 @@ process (`ModelRunner::capture_filtered`). It reads its request, writes stream-j
 `assistant` lines to stderr, and answers a clean reviewer result on stdout. `bench.json` beside
 it says how: `paced` writes `lines` lines of `line_bytes` bytes, one every `interval_ms`, then
 answers; `dense` answers first, then writes `bytes` bytes of lines at pipe speed, and its last
-write is one line naming the unix nanosecond it was made at, after which it closes both streams
-and exits at once. Credential-free; never touches the network.
+write is one line naming the unix nanosecond it was made at and the same moment on the host's
+`CLOCK_MONOTONIC` (`last_write_monotonic_ns`), after which it closes both streams and exits at once. Credential-free; never touches the network.
 """
 
 import json
@@ -66,10 +66,11 @@ def main():
     if batch:
         write_all(2, batch)
     last = time.time_ns()
+    last_monotonic = time.clock_gettime_ns(time.CLOCK_MONOTONIC)
     write_all(
         2,
-        b'{"type":"result","subtype":"af_bench_last_write","last_write_unix_ns":"%d"}\n'
-        % last,
+        b'{"type":"result","subtype":"af_bench_last_write","last_write_unix_ns":"%d",'
+        b'"last_write_monotonic_ns":"%d"}\n' % (last, last_monotonic),
     )
     os.close(1)
     os.close(2)

@@ -508,3 +508,5 @@ future readers need.
   self](0267-offer-a-nightly-channel-in-af-self.md)
 - [0268 — Quarantine flaky tests on gate evidence and confirm them on
   Claw](0268-quarantine-flaky-tests-on-gate-evidence-and-confirm-them-on-claw.md)
+- [0269 — Bind comparison partition execution to reused build
+  artifacts](0269-bind-comparison-partition-execution-to-reused-build-artifacts.md)

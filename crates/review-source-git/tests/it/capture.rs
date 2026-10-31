@@ -259,68 +259,135 @@ fn an_untracked_file_created_between_passes_retries_without_a_cas_error() {
     );
 }
 
-/// A staged change with no file-content change still moves the index, and the boundary sees it.
+/// Staging a file already in the worktree, bytes unchanged, moves the index and nothing a worktree
+/// pass reads, so only the index boundary can reject the pass.
 struct StageBetweenPasses<'a> {
     fixture: &'a Fixture,
+    /// Everything under the watched worktree, just before and just after the staging.
+    views: std::cell::RefCell<Vec<WorktreeView>>,
+    /// `git ls-files -s`, just before and just after the staging.
+    indexes: std::cell::RefCell<Vec<String>>,
 }
 
 impl CaptureObserver for StageBetweenPasses<'_> {
     fn between_passes(&self, attempt: u32) {
         if attempt == 1 {
-            settled_change(&self.fixture.repo_path(), || {
-                self.fixture
-                    .write("newly_staged.rs", b"// staged mid-capture\n");
-                self.fixture.git(&["add", "newly_staged.rs"]);
-            });
+            self.record();
+            self.fixture.git(&["add", "newly_staged.rs"]);
+            self.record();
         }
     }
 }
 
-/// Make `change` and return once the host's file-event service has delivered its events to a
-/// watcher of `root`: the index, the change's last write, reported, then a quiet 300 ms. A
-/// loaded macOS host journals FSEvents late, and an event journaled after the next pass began
-/// watching reads as a change during that pass: a third attempt, which the boundary rightly
-/// makes and this test, counting the attempts an index change alone causes, must not see. The
-/// wait is on that observable state, never a sleep.
-fn settled_change(root: &std::path::Path, change: impl FnOnce()) {
-    use notify::Watcher as _;
-    use std::time::{Duration, Instant};
-    let (send, events) = std::sync::mpsc::channel();
-    let mut watcher = notify::recommended_watcher(move |event| {
-        let _ = send.send(event);
-    })
-    .unwrap();
-    watcher
-        .watch(root, notify::RecursiveMode::Recursive)
-        .unwrap();
-    change();
-    let deadline = Instant::now() + Duration::from_secs(120);
-    loop {
-        let left = deadline.saturating_duration_since(Instant::now());
-        assert!(!left.is_zero(), "the index change was never reported");
-        match events.recv_timeout(left) {
-            Ok(Ok(event)) if event.paths.iter().any(|path| path.ends_with(".git/index")) => {
-                break;
+impl StageBetweenPasses<'_> {
+    fn record(&self) {
+        self.views
+            .borrow_mut()
+            .push(worktree_view(&self.fixture.repo_path()));
+        self.indexes
+            .borrow_mut()
+            .push(self.fixture.git(&["ls-files", "-s", "-z"]));
+    }
+}
+
+/// Each entry's mode, bytes (a symlink's target, nothing for a directory), and device, inode,
+/// modification and change times: everything a capture's worktree pass fingerprints, for every
+/// entry under the root, directories and the ignored and `.git` files included.
+type WorktreeView = std::collections::BTreeMap<std::path::PathBuf, (u32, Vec<u8>, [i64; 6])>;
+
+/// Every entry under `root`, the directory the capture's watcher monitors, with what
+/// [`WorktreeView`] records of it. A creation, removal, rename or write anywhere under the root
+/// changes a file's stamps or bytes or its directory's modification time.
+fn worktree_view(root: &std::path::Path) -> WorktreeView {
+    use std::os::unix::ffi::OsStrExt;
+    use std::os::unix::fs::MetadataExt;
+    let mut view = WorktreeView::new();
+    let mut pending = vec![root.to_path_buf()];
+    while let Some(full) = pending.pop() {
+        let metadata = std::fs::symlink_metadata(&full).unwrap();
+        let bytes = if metadata.file_type().is_symlink() {
+            std::fs::read_link(&full)
+                .unwrap()
+                .as_os_str()
+                .as_bytes()
+                .to_vec()
+        } else if metadata.is_dir() {
+            for entry in std::fs::read_dir(&full).unwrap() {
+                pending.push(entry.unwrap().path());
             }
-            Ok(_) => continue,
-            Err(error) => panic!("the index change was never reported: {error}"),
-        }
+            Vec::new()
+        } else {
+            std::fs::read(&full).unwrap()
+        };
+        let stamp = [
+            metadata.dev() as i64,
+            metadata.ino() as i64,
+            metadata.mtime(),
+            metadata.mtime_nsec(),
+            metadata.ctime(),
+            metadata.ctime_nsec(),
+        ];
+        let path = full.strip_prefix(root).unwrap().to_path_buf();
+        view.insert(path, (metadata.mode(), bytes, stamp));
     }
-    while Instant::now() < deadline && events.recv_timeout(Duration::from_millis(300)).is_ok() {}
+    view
 }
 
+/// The repository's administrative directory, and so its real index, is beside the worktree,
+/// outside the root the capture's watcher monitors, and complete before the capture starts. So
+/// `git add` between the passes changes the index and nothing under the watched root, which the
+/// test asserts entry by entry: no watcher event, delivered or replayed, can come of it, and only
+/// the index boundary can reject the first pass.
 #[test]
 fn an_index_change_alone_invalidates_a_pass() {
-    let fixture = Fixture::new();
+    let fixture = Fixture::with_separate_git_dir();
     fixture.with_content();
     fixture.commit_all("initial");
+    // In the worktree, untracked, before the capture starts: both passes read the same file.
+    fixture.write("newly_staged.rs", b"// staged mid-capture\n");
+
+    let worktree = fixture.repo_path().canonicalize().unwrap();
+    let index = fixture.git(&["rev-parse", "--path-format=absolute", "--git-path", "index"]);
+    let index = std::path::Path::new(index.trim()).canonicalize().unwrap();
+    assert_eq!(
+        index,
+        fixture.admin_path().canonicalize().unwrap().join("index")
+    );
+    assert!(
+        !index.starts_with(&worktree),
+        "the index is outside the watched worktree"
+    );
+    assert!(
+        std::fs::symlink_metadata(worktree.join(".git"))
+            .unwrap()
+            .is_file(),
+        "the worktree holds only a `.git` file naming the administrative directory"
+    );
 
     let repo = repo_of(&fixture);
     let cas = cas_of(&fixture);
-    let snapshot = Capture::new(&repo, &cas)
-        .dirty_observed(&StageBetweenPasses { fixture: &fixture })
-        .unwrap();
+    let observer = StageBetweenPasses {
+        fixture: &fixture,
+        views: Default::default(),
+        indexes: Default::default(),
+    };
+    let snapshot = Capture::new(&repo, &cas).dirty_observed(&observer).unwrap();
     assert_eq!(snapshot.attempts, 2, "the index fingerprint caught it");
+
+    let views = observer.views.into_inner();
+    assert!(views[0].contains_key(std::path::Path::new("newly_staged.rs")));
+    assert!(views[0].contains_key(std::path::Path::new("ignored/secret.txt")));
+    assert_eq!(
+        views[0], views[1],
+        "staging changed something under the watched worktree, not only the index"
+    );
+    let indexes = observer.indexes.into_inner();
+    assert!(!indexes[0].contains("newly_staged.rs"));
+    assert!(indexes[1].contains("newly_staged.rs"), "the index changed");
+    assert_eq!(
+        snapshot.manifest.get("newly_staged.rs").unwrap().content,
+        review_source_git::digest_bytes(b"// staged mid-capture\n")
+    );
 }
 
 #[test]

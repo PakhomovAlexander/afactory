@@ -1,19 +1,31 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "$id": "urn:af:schema:telemetry-overhead:1",
-  "title": "af/telemetry-overhead@1",
+  "$id": "urn:af:schema:telemetry-overhead:2",
+  "title": "af/telemetry-overhead@2",
   "description": "`scripts/telemetry-overhead.py --json` (design §12, docs/telemetry.md \"Performance\"): Telemetry's overhead at `spans` against `off` on the pinned bench fixtures of `fixtures/telemetry-bench/`. Each pair is one command at each level on the same machine and fixture, in the recorded order, each in a fresh copy of the fixture with private homes; `wall_ms` runs from exec to exit. `difference_pct` is `(spans - off) / off` in percent; `median_pct` its median over the fixture's pairs and `interval_pct` the 95% percentile-bootstrap interval of that median (`protocol.resamples` resamples, seeded by `protocol.seed`). `drain` is the dense fixture's drain latency (the harness's last write to the supervisor's drain completion), `spans - off` per pair in milliseconds. The gate passes when every fixture's median is at most `median_bound_pct` and its interval's upper bound at most `upper_bound_pct`, and the drain latency's median difference at most `drain.bound_ms`; it is `not_judged` unless all three fixtures ran at scale `full` with at least 20 pairs and the drain latency was measured. Every figure and the verdict are recomputed from the pairs by `--judge`, which refuses a document whose bounds or resamples are not the protocol's.",
   "type": "object",
   "additionalProperties": false,
-  "required": ["schema", "af", "machine", "protocol", "fixtures", "drain", "gate"],
+  "required": [
+    "af",
+    "drain",
+    "fixture_contract",
+    "fixtures",
+    "gate",
+    "machine",
+    "protocol",
+    "schema"
+  ],
   "properties": {
     "schema": {
-      "const": "af/telemetry-overhead@1"
+      "const": "af/telemetry-overhead@2"
     },
     "af": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["path", "version"],
+      "required": [
+        "path",
+        "version"
+      ],
       "properties": {
         "path": {
           "type": "string",
@@ -25,13 +37,82 @@
         }
       }
     },
+    "fixture_contract": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "name",
+        "release",
+        "check_receipt",
+        "fixtures"
+      ],
+      "description": "The equivalent bench workload the measured release accepts (`FIXTURE_CONTRACTS` in scripts/telemetry-overhead.py): selected by the release `af --version` names, never by the caller alone. Benchmark fixture production, never a reader of earlier releases' state.",
+      "properties": {
+        "name": {
+          "enum": [
+            "check-receipt@1",
+            "check-receipt@2"
+          ]
+        },
+        "release": {
+          "type": "string",
+          "minLength": 1,
+          "description": "The version `af --version` printed."
+        },
+        "check_receipt": {
+          "enum": [
+            "af/TaskCheckReceipt@1",
+            "af/TaskCheckReceipt@2"
+          ]
+        },
+        "fixtures": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "fixture",
+              "packages",
+              "renamed_files"
+            ],
+            "properties": {
+              "fixture": {
+                "type": "string",
+                "minLength": 1
+              },
+              "packages": {
+                "type": "object",
+                "additionalProperties": {
+                  "type": "string",
+                  "pattern": "^sha256:[0-9a-f]{64}$"
+                },
+                "description": "Each package's pin: the measured binary's own `af catalog digest`, equal to the pin the contract declares."
+              },
+              "renamed_files": {
+                "type": "array",
+                "items": {
+                  "type": "string"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "machine": {
       "$ref": "#/$defs/machine"
     },
     "protocol": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["pairs", "scale", "seed", "resamples", "median_bound_pct", "upper_bound_pct"],
+      "required": [
+        "pairs",
+        "scale",
+        "seed",
+        "resamples",
+        "median_bound_pct",
+        "upper_bound_pct"
+      ],
       "properties": {
         "pairs": {
           "type": "integer",
@@ -39,7 +120,10 @@
           "description": "Pairs per fixture; the protocol's default is 20."
         },
         "scale": {
-          "enum": ["full", "smoke"],
+          "enum": [
+            "full",
+            "smoke"
+          ],
           "description": "`full`: the fixtures as pinned; `smoke`: the same commands over far less harness output (the one-pair smoke of `make check`)."
         },
         "seed": {
@@ -65,7 +149,15 @@
       "items": {
         "type": "object",
         "additionalProperties": false,
-        "required": ["name", "command", "store_events", "pairs", "median_pct", "interval_pct", "passed"],
+        "required": [
+          "name",
+          "command",
+          "store_events",
+          "pairs",
+          "median_pct",
+          "interval_pct",
+          "passed"
+        ],
         "properties": {
           "name": {
             "$ref": "#/$defs/fixture"
@@ -76,7 +168,10 @@
             "description": "The af command the fixture runs (`task start --execute`, `review run --pipeline`)."
           },
           "store_events": {
-            "type": ["integer", "null"],
+            "type": [
+              "integer",
+              "null"
+            ],
             "minimum": 0,
             "description": "Events in the last run's Store; null when it could not be read."
           },
@@ -86,7 +181,12 @@
             "items": {
               "type": "object",
               "additionalProperties": false,
-              "required": ["order", "off", "spans", "difference_pct"],
+              "required": [
+                "order",
+                "off",
+                "spans",
+                "difference_pct"
+              ],
               "properties": {
                 "order": {
                   "type": "array",
@@ -94,7 +194,10 @@
                   "maxItems": 2,
                   "uniqueItems": true,
                   "items": {
-                    "enum": ["off", "spans"]
+                    "enum": [
+                      "off",
+                      "spans"
+                    ]
                   }
                 },
                 "off": {
@@ -129,7 +232,16 @@
         {
           "type": "object",
           "additionalProperties": false,
-          "required": ["fixture", "bound_ms", "pairs", "median_ms", "interval_ms", "passed"],
+          "required": [
+            "fixture",
+            "bound_ms",
+            "boundary",
+            "clock",
+            "pairs",
+            "median_ms",
+            "interval_ms",
+            "passed"
+          ],
           "properties": {
             "fixture": {
               "const": "telemetry-bench-dense"
@@ -137,13 +249,25 @@
             "bound_ms": {
               "type": "number"
             },
+            "boundary": {
+              "const": "harness_last_write_to_command_exit",
+              "description": "From the harness's last write to the measurement's observation of the command's exit (`wait4` returned): the drain, the rest of the command and its exit. Not the Store's commit time."
+            },
+            "clock": {
+              "const": "CLOCK_MONOTONIC",
+              "description": "Both ends read `clock_gettime(CLOCK_MONOTONIC)`, in the harness and in the measurement; causally ordered, never a file timestamp."
+            },
             "pairs": {
               "type": "array",
               "minItems": 1,
               "items": {
                 "type": "object",
                 "additionalProperties": false,
-                "required": ["off_ms", "spans_ms", "difference_ms"],
+                "required": [
+                  "off_ms",
+                  "spans_ms",
+                  "difference_ms"
+                ],
                 "properties": {
                   "off_ms": {
                     "type": "number"
@@ -173,10 +297,17 @@
     "gate": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["verdict", "reasons"],
+      "required": [
+        "verdict",
+        "reasons"
+      ],
       "properties": {
         "verdict": {
-          "enum": ["pass", "fail", "not_judged"]
+          "enum": [
+            "pass",
+            "fail",
+            "not_judged"
+          ]
         },
         "reasons": {
           "type": "array",
@@ -191,12 +322,21 @@
   },
   "$defs": {
     "fixture": {
-      "enum": ["telemetry-bench-concurrent", "telemetry-bench-dense", "telemetry-bench-store"]
+      "enum": [
+        "telemetry-bench-concurrent",
+        "telemetry-bench-dense",
+        "telemetry-bench-store"
+      ]
     },
     "run": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["wall_ms", "exit_code", "peak_rss_bytes", "segments"],
+      "required": [
+        "wall_ms",
+        "exit_code",
+        "peak_rss_bytes",
+        "segments"
+      ],
       "properties": {
         "wall_ms": {
           "type": "number",
@@ -229,7 +369,12 @@
     "machine": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["os", "arch", "cpus", "load1"],
+      "required": [
+        "os",
+        "arch",
+        "cpus",
+        "load1"
+      ],
       "properties": {
         "os": {
           "type": "string"
@@ -242,7 +387,10 @@
           "minimum": 0
         },
         "load1": {
-          "type": ["number", "null"],
+          "type": [
+            "number",
+            "null"
+          ],
           "description": "The one-minute load average when the measurement started."
         }
       }

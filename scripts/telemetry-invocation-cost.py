@@ -16,10 +16,13 @@ intermediate tool output per Attempt (`--scale smoke`: 64 KiB); the harness
 (`fixtures/telemetry-bench/invocation-claude.py`) builds the same tool output and answers the
 same final result under both shapes and prints only the result under `json`. Per run it records
 the command's wall time, its peak RSS (`wait4`, the command with its reaped children), the drain
-latency of the one-Attempt fixture (from the harness's last write to the drained result's store
-time, as the overhead gate takes it) and the bytes the harness wrote to stdout; and it requires
+latency of the one-Attempt fixture (from the harness's last write to the command's observed
+exit, both on `CLOCK_MONOTONIC`, as the overhead gate takes it; a negative one is kept as
+measured and leaves the gate `not_judged`) and the bytes the harness wrote to stdout; and it requires
 the run to finish with the same accounting under both shapes and at both levels (the Task's
 charge, its Attempts and every Attempt's usage records), stopping the measurement otherwise.
+Each release runs the workload its fixture contract describes (`--fixture-contract`, as the
+overhead gate selects it).
 
 The gate is judged at `off`: in every case the median paired wall difference `(stream-json -
 json) / json` is at most 2%, and the median paired peak-RSS difference at most the stream's bytes
@@ -30,8 +33,8 @@ and a passed one a single `stream-json` shape (`decision`). `--judge` recomputes
 and the verdict from a recorded document's own pairs. Exit status: 0 for `pass` or `not_judged`,
 3 for `fail`, 1 when a measurement or a document cannot be read.
 
-Prints a Markdown table, or with `--json` the `af/telemetry-invocation-cost@1` document
-(`schemas/telemetry-invocation-cost-v1.json`); `--report PATH` writes the document as well.
+Prints a Markdown table, or with `--json` the `af/telemetry-invocation-cost@2` document
+(`schemas/telemetry-invocation-cost-v2.json`); `--report PATH` writes the document as well.
 """
 import argparse
 import importlib.util
@@ -58,7 +61,7 @@ _OVERHEAD_PATH = REPOSITORY / 'scripts' / 'telemetry-overhead.py'
 exec(compile(_OVERHEAD_PATH.read_bytes(), str(_OVERHEAD_PATH), 'exec'), overhead.__dict__)
 BenchError = overhead.BenchError
 
-SCHEMA = 'af/telemetry-invocation-cost@1'
+SCHEMA = 'af/telemetry-invocation-cost@2'
 FIXTURES_DIR = overhead.FIXTURES_DIR
 HARNESS = FIXTURES_DIR / 'invocation-claude.py'
 FIXTURES = {'telemetry-bench-invocation-one': 1, 'telemetry-bench-invocation-four': 4}
@@ -86,6 +89,15 @@ def summarize(document):
     if ((protocol['wall_bound_pct'], protocol['rss_slack_bytes'], protocol['resamples'])
             != (WALL_BOUND_PCT, RSS_SLACK_BYTES, overhead.RESAMPLES)):
         raise BenchError('the document names other bounds or resamples than the protocol')
+    if (document['drain']['boundary'], document['drain']['clock']) != (
+            overhead.DRAIN_BOUNDARY, overhead.DRAIN_CLOCK):
+        raise BenchError('the document measures its drain between other boundaries than the '
+                         f'protocol ({overhead.DRAIN_BOUNDARY} on the {overhead.DRAIN_CLOCK} '
+                         'clock)')
+    contract = document['fixture_contract']
+    if overhead.select_contract(contract['release']) != contract['name']:
+        raise BenchError(f"the document measured af {contract['release']} under the fixture "
+                         f"contract `{contract['name']}`, which does not describe it")
     seed = protocol['seed']
     reasons = []
     for case in document['cases']:
@@ -127,7 +139,15 @@ def summarize(document):
                                    f"stream's {entry['stream_bytes'] / 2**20:.1f} MiB plus 16 MiB)")
             else:
                 entry['passed'] = None
+    # A run's drain is a physical duration: a negative one is an ordering failure of the
+    # measurement, kept as measured and never clamped or filtered, and leaves the gate unjudged.
+    negative = sum(overhead.negative_drains([pair['json'], pair['stream-json']], ('drain_ms',))
+                   for case in document['cases'] for level in LEVELS
+                   for pair in case['levels'][level]['pairs'])
     unjudged = []
+    if negative:
+        unjudged.append(f"drain latency: {negative} negative physical duration"
+                        f"{'s' if negative != 1 else ''}, kept as measured and not judged")
     expected = len(FIXTURES) * len(SIZES['full'])
     if protocol['scale'] != 'full':
         unjudged.append(f"scale `{protocol['scale']}`, not `full`")
@@ -165,12 +185,12 @@ def judge(path):
 # the measurement
 
 
-def prepare(fixture, work):
-    """The fixture's repository, committed once; every run copies it."""
+def prepare(fixture, work, af, contract):
+    """The fixture's repository under the fixture contract `contract`, committed once; every
+    run copies it. Returns it with the contract's provenance (`overhead.apply_contract`)."""
     pristine = work / fixture / 'pristine'
-    if pristine.exists():
-        return pristine
     overhead.copy_writable(FIXTURES_DIR / fixture / 'repo', pristine)
+    produced = overhead.apply_contract(af, fixture, pristine, contract)
     env = {name: value for name, value in os.environ.items() if not name.startswith('GIT_')}
     env.update(overhead.GIT_IDENTITY)
     for args in (['init', '-q', '-b', 'main'], ['add', '-A'], ['commit', '-qm', fixture]):
@@ -178,7 +198,7 @@ def prepare(fixture, work):
                               text=True)
         if done.returncode != 0:
             raise BenchError(f'{fixture}: git {" ".join(args)}: {done.stderr.strip()}')
-    return pristine
+    return pristine, produced
 
 
 def objects(state):
@@ -189,15 +209,23 @@ def objects(state):
 
 
 def harness_report(state):
-    """The harness's last writes (unix ns, stdout bytes) and the drained result's store time."""
-    lasts, drained = [], None
+    """The harness's last writes and whether the Store holds the drained result.
+
+    Each last write is the harness's reading of `CLOCK_MONOTONIC` after every earlier write
+    (`last_write_monotonic_ns`) and its stdout bytes; the drain ends at the measurement's own
+    reading of that clock when the command's exit is observed (`overhead.DRAIN_BOUNDARY`).
+    """
+    lasts, drained = [], False
     for path in objects(state):
         data = path.read_bytes() if path.stat().st_size < 1 << 16 else b''
         if LAST_WRITE in data:
             line = json.loads(data.strip().rsplit(b'\n', 1)[-1])
-            lasts.append((int(line['last_write_unix_ns']), int(line['stdout_bytes'])))
+            if 'last_write_monotonic_ns' not in line:
+                raise BenchError(f'{path}: the harness named no last write on the monotonic '
+                                 'clock')
+            lasts.append((int(line['last_write_monotonic_ns']), int(line['stdout_bytes'])))
         elif data.startswith(b'{"type":"result","subtype":"success"') and b'af.worker-reply' in data:
-            drained = path.stat().st_mtime_ns
+            drained = True
     return lasts, drained
 
 
@@ -238,6 +266,7 @@ def run_once(af, fixture, size, pristine, work, name, shape, level):
         process = subprocess.Popen(argv, cwd=repo, env=env, stdin=subprocess.DEVNULL,
                                    stdout=stdout, stderr=stderr)
         _, status, usage = os.wait4(process.pid, 0)
+        exit_observed_ns = time.clock_gettime_ns(time.CLOCK_MONOTONIC)
         wall_ns = time.perf_counter_ns() - start
     code = os.waitstatus_to_exitcode(status)
     if code != 0:
@@ -253,8 +282,8 @@ def run_once(af, fixture, size, pristine, work, name, shape, level):
         raise BenchError(f'{fixture} {name}: {len(lasts)} harness reports for '
                          f'{FIXTURES[fixture]} Attempts')
     drain = None
-    if FIXTURES[fixture] == 1 and drained is not None:
-        drain = round((drained - lasts[0][0]) / 1e6, 3)
+    if FIXTURES[fixture] == 1 and drained:
+        drain = overhead.drain_latency(lasts[0][0], exit_observed_ns)
     scale = 1 if sys.platform == 'darwin' else 1024
     result = {'wall_ms': round(wall_ns / 1e6, 3), 'exit_code': code,
               'peak_rss_bytes': usage.ru_maxrss * scale, 'segments': sealed or 0,
@@ -271,11 +300,17 @@ def measure(args):
                              env=overhead.private_env(work / 'version', 'off'))
     if version.returncode != 0:
         raise BenchError(f'{af} --version: {version.stderr.strip()}')
+    release = overhead.release_version(version.stdout.strip())
+    contract = overhead.select_contract(release, args.fixture_contract)
     order_rng = random.Random(args.seed)
     load = os.getloadavg()[0] if hasattr(os, 'getloadavg') else None
     document = {
         'schema': SCHEMA,
         'af': {'path': af, 'version': version.stdout.strip()},
+        'fixture_contract': {'name': contract, 'release': release,
+                             'check_receipt': overhead.FIXTURE_CONTRACTS[contract]['check_receipt'],
+                             'fixtures': []},
+        'drain': {'boundary': overhead.DRAIN_BOUNDARY, 'clock': overhead.DRAIN_CLOCK},
         'machine': {'os': overhead.platform.system().lower(), 'arch': overhead.platform.machine(),
                     'cpus': os.cpu_count() or 0,
                     'load1': None if load is None else round(load, 2)},
@@ -286,7 +321,8 @@ def measure(args):
     }
     try:
         for fixture, attempts in FIXTURES.items():
-            pristine = prepare(fixture, work)
+            pristine, produced = prepare(fixture, work, af, contract)
+            document['fixture_contract']['fixtures'].append(produced)
             for size in SIZES[args.scale]:
                 case = {'name': f'{fixture} {label(size)}', 'fixture': fixture,
                         'attempts': attempts, 'tool_output_bytes': size,
@@ -359,6 +395,9 @@ def main(argv=None):
     parser.add_argument('--seed', type=int, default=overhead.DEFAULT_SEED)
     parser.add_argument('--work', help='the work directory (default: a fresh temporary one)')
     parser.add_argument('--keep', action='store_true', help='keep every run directory')
+    parser.add_argument('--fixture-contract', choices=sorted(overhead.FIXTURE_CONTRACTS),
+                        help='require this fixture contract; refused unless the measured '
+                        "release's version selects it")
     parser.add_argument('--json', action='store_true', help=f'print the {SCHEMA} document')
     parser.add_argument('--report', help='also write the document to this file')
     parser.add_argument('--judge', metavar='DOCUMENT',

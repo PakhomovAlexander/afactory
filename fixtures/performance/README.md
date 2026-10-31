@@ -41,10 +41,12 @@ The data of the continuous performance laboratory
   confirmed. Its private registry setup registers all 20 copied Stores through each
   side's own `af task gc --state` preview, which records the Store it names and writes nothing
   else (ADR-0263).
-- `adapters.toml` — the reviewed native probe adapters (`af.perf-adapters/1`): each a fixed
-  priority, an equivalence group, the contracts it serves and the exact closure of authority
-  example files a build copies into a measured source before compiling it. A test requires each
-  closure to be exactly its example's files.
+- `adapters.toml` — the reviewed native probe adapters (`af.perf-adapters/2`): each a fixed
+  priority, an equivalence group, the first AF release it covers (`min_version`), the contracts
+  it serves and the exact closure of authority example files a build copies into a measured
+  source before compiling it. A test requires each closure to be exactly its example's files. A
+  local submission refuses, before any claim or build, a side whose release no adapter declares
+  or whose plan runs a native contract no declared adapter serves.
 - `diagnostic/real-tool-synthetic/` — retained real perf 6.1 output over an owned synthetic C
   workload, its DSO prefix normalized, for the parser and stack-quality tests; not an AF capture
   (its README).
@@ -54,7 +56,7 @@ The data of the continuous performance laboratory
   target, the counter cases, the child run's limits, the diagnostic recipes (each a verdict
   recipe of `suite.toml` with only features, symbols and frame pointers added) and every external
   tool with its pin, how it reports its version and its provisioning instructions.
-- `telemetry.toml` — the telemetry experiments (`af.perf-telemetry-lab/2`, ADR-0214): each
+- `telemetry.toml` — the telemetry experiments (`af.perf-telemetry-lab/3`, ADR-0214): each
   exactly a bench script of the telemetry design's §12 with its document, the product schema it
   is read through, its levels and the inputs that identify its measurement authority, and one
   bounded profile per trigger (rounds, pairs, scale, corpus size, timeout, work bytes and
@@ -266,7 +268,8 @@ only the run's own directory of that filesystem writable (ADR-0176). Every file 
 candidate wrote is admitted as a confined bounded regular file. A step whose files together
 outgrow the room is cancelled and refused, and the byte usage recorded is the evidence's actual
 size, with an 8-MiB administrative reserve inside the cap. It
-writes `run.json`, `profiles.json` (`af.perf-profiles/6`), `diagnostic.html`, the captures,
+writes `run.json`, `profiles.json` (`af.perf-profiles/7`), `diagnostic.html`, the captures
+(a capture of fresh processes with its `af.perf-repetitions/1` index, `repetitions.json`),
 flamegraphs, traces, counters and, with `--telemetry spans|content`, each eligible CLI case's
 telemetry documents (`telemetry/<case>/<side>/`, ADR-0214), and a bundle manifest into the new
 `--output` directory. It

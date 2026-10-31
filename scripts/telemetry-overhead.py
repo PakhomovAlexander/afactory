@@ -17,21 +17,27 @@ stops the measurement.
 
 Per fixture the report gives the paired differences, `(spans - off) / off` in percent, their
 median and a 95% percentile-bootstrap interval of the median (10,000 resamples, seeded). Drain
-latency is the second figure of `telemetry-bench-dense`: from the scripted harness's last write
-(the unix nanosecond its final stderr line names) to the supervisor's drain completion (the
-modification time of the Worker's drained stdout in the Store, which `ModelRunner` writes first
-thing after the supervisor returns), `spans` minus `off` per pair in milliseconds, reported the
-same way.
+latency is the second figure of `telemetry-bench-dense`, named for its boundaries
+(`harness_last_write_to_command_exit`): from the scripted harness's last write (the
+`CLOCK_MONOTONIC` reading its final stderr line names, `last_write_monotonic_ns`) to this
+script's own `CLOCK_MONOTONIC` reading right after `wait4` returned the command's exit, so the
+two are causally ordered on one clock and no file timestamp is read; it covers the drain, the
+rest of the command and its exit, never the Store's commit time alone. `spans` minus `off` per
+pair in milliseconds, reported the same way. Each run's drain is a physical duration and the
+pair's difference a signed one: a negative duration is kept as measured and leaves the gate
+`not_judged`, never clamped or dropped. Each release is measured on the workload it accepts
+(`--fixture-contract`, selected by the version `af --version` prints; `FIXTURE_CONTRACTS`); a
+version no contract names is refused, never measured under the current one.
 
 The gate passes when every fixture's median is at most 2% and its interval's upper bound at
 most 3%, and the drain latency's median difference is at most 10 ms. It is judged only over all
 three fixtures at `--scale full` with at least 20 pairs; anything less (the one-pair smoke `make
 check` runs) is reported `not_judged`. `--judge` recomputes every figure and the verdict from a
-recorded `af/telemetry-overhead@1` document's own pairs. Exit status: 0 for `pass` or
+recorded `af/telemetry-overhead@2` document's own pairs. Exit status: 0 for `pass` or
 `not_judged`, 3 for `fail`, 1 when a measurement or a document cannot be read.
 
-Prints a Markdown table, or with `--json` the `af/telemetry-overhead@1` document
-(`schemas/telemetry-overhead-v1.json`); `--report PATH` writes the document as well.
+Prints a Markdown table, or with `--json` the `af/telemetry-overhead@2` document
+(`schemas/telemetry-overhead-v2.json`); `--report PATH` writes the document as well.
 """
 import argparse
 import hashlib
@@ -40,6 +46,7 @@ import os
 from pathlib import Path
 import platform
 import random
+import re
 import shutil
 import signal
 import sqlite3
@@ -50,7 +57,7 @@ import sys
 import tempfile
 import time
 
-SCHEMA = 'af/telemetry-overhead@1'
+SCHEMA = 'af/telemetry-overhead@2'
 REPOSITORY = Path(__file__).resolve().parent.parent
 FIXTURES_DIR = REPOSITORY / 'fixtures' / 'telemetry-bench'
 LEVELS = ('off', 'spans')
@@ -65,6 +72,56 @@ DRAIN_FIXTURE = 'telemetry-bench-dense'
 REPLY = (b'{"schema":"af.worker-reply/1","outputs":{"result":[{"reports":[],'
          b'"benchmark_demands":[],"dispositions":[]}]}}\n')
 LAST_WRITE = b'"subtype":"af_bench_last_write"'
+# What a drain latency measures (`drain.boundary`): from the harness's last write, read on the
+# host's `CLOCK_MONOTONIC` in the harness, to the measurement's own reading of that clock right
+# after `wait4` returned the command's exit. Both name the clock explicitly: `time.monotonic_ns`
+# is not one clock across Python builds (on macOS two builds read clocks days apart). The harness writes before it exits and the command
+# exits only after it reaped the harness, so the two readings are causally ordered on one clock.
+# It is not the Store's commit time: it includes the drain, the rest of the command and its exit.
+DRAIN_BOUNDARY = 'harness_last_write_to_command_exit'
+DRAIN_CLOCK = 'CLOCK_MONOTONIC'
+# The equivalent bench workload each measured release accepts (`fixture_contract`). The current
+# tree's packages declare `af/TaskCheckReceipt@2`; a release named under another contract gets
+# the same packages with only that artifact type renamed, every package re-pinned with the
+# digest the contract declares, which the measured binary's own `af catalog digest` must print.
+# Every measured release is named by exactly one contract: a release no contract names is
+# refused, never assumed to accept the current tree's workload. The current contract names the
+# releases that write `@2`, this tree's own included. This is benchmark fixture production,
+# never a reader of state an earlier release wrote.
+CURRENT_CONTRACT = 'check-receipt@2'
+CHECK_RECEIPT_CURRENT = 'af/TaskCheckReceipt@2'
+FIXTURE_CONTRACTS = {
+    'check-receipt@2': {'check_receipt': CHECK_RECEIPT_CURRENT,
+                        'versions': ('0.14.0-rc.1', '0.14.0-rc.2', '0.14.0-rc.3'), 'pins': None},
+    'check-receipt@1': {
+        'check_receipt': 'af/TaskCheckReceipt@1',
+        'versions': ('0.13.0',),
+        'pins': {
+            'telemetry-bench-concurrent': {
+                'bench/alpha': 'sha256:f28baea4ec08301ce675bc1767c0e9387587107d13405df4a6c9669f1b69d0b4',
+                'bench/beta': 'sha256:cdd4489e232574655bf215e2a7db80d4478f905e283dba4d7fb3a5e9c8e843ba',
+                'bench/gamma': 'sha256:dd036a3e8730cd34a6c85a11e6d315efd6685698864693ac4772f468dc94bfa0',
+                'bench/delta': 'sha256:5d5bdf67ac982cdf6afaff49bf3e83368e9eac3cc08d36c9f035899b6e57bb39',
+                'bench/concurrent': 'sha256:15b2ccff3d067f7dec9c89a2c5028c248fe6810df8b0ee65023729f68f03f2a4',
+            },
+            'telemetry-bench-dense': {
+                'bench/stream': 'sha256:587b5c25030adaeee23ae89ca3992b01a48b123d5c0a5e2f353484b31efd768d',
+                'bench/dense': 'sha256:07d13fb0c02001573b3c9fa94feb9b1f2b4fb2129a05f515f4218c4149c33314',
+            },
+            'telemetry-bench-invocation-four': {
+                'bench/alpha': 'sha256:f1a11b66606686e54ecb065bb4b6f57c93927b4ee802682f66001aa14b531f7c',
+                'bench/beta': 'sha256:084c6136bcf6ce8231a9eb0b30eb7f68d43b31b90072c37b410f6ab8303417d5',
+                'bench/gamma': 'sha256:7c3954ee5a0fdbfbb30fa661637421078e2ef779a0b7936e2450afb87905d479',
+                'bench/delta': 'sha256:5dd86245f98436dafa93cc62e2938f024603d37c7b8d0ae733c380e1318d30b6',
+                'bench/invocation': 'sha256:ab687e0f91b9e38489a64f74e5edc6fb12ca9654f3ced4fddb599f2c6c7d2403',
+            },
+            'telemetry-bench-invocation-one': {
+                'bench/stream': 'sha256:686de92a9607d16af8d3875d9570f0a635ce30c51d335c5e7d57c75049a0f683',
+                'bench/invocation': 'sha256:fa17cbc33ccfe3a1ae7e9e4752365ee0c804df09608a60ee6765275363aa98f6',
+            },
+        },
+    },
+}
 # Each fixture: how its command is spelled and the exit it must end with. `{task}` is the
 # fixture's Task file, `{state}` the run's own Store.
 FIXTURES = {
@@ -133,6 +190,12 @@ def bootstrap_interval(values, seed, label):
             round(medians[int(RESAMPLES * 0.975) - 1], 3)]
 
 
+def negative_drains(records, keys):
+    """How many of the records' physical drain durations under `keys` are below zero."""
+    return sum(1 for record in records for key in keys
+               if record.get(key) is not None and record[key] < 0)
+
+
 def summarize(document):
     """Recompute every difference, median, interval and the verdict from the recorded pairs."""
     protocol = document['protocol']
@@ -143,7 +206,14 @@ def summarize(document):
             != (MEDIAN_BOUND_PCT, UPPER_BOUND_PCT, RESAMPLES)
             or (drain is not None and drain['bound_ms'] != DRAIN_BOUND_MS)):
         raise BenchError('the document names other bounds or resamples than the protocol')
-    reasons = []
+    if drain is not None and (drain['boundary'], drain['clock']) != (DRAIN_BOUNDARY, DRAIN_CLOCK):
+        raise BenchError('the document measures its drain between other boundaries than the '
+                         f'protocol ({DRAIN_BOUNDARY} on the {DRAIN_CLOCK} clock)')
+    contract = document['fixture_contract']
+    if select_contract(contract['release']) != contract['name']:
+        raise BenchError(f"the document measured af {contract['release']} under the fixture "
+                         f"contract `{contract['name']}`, which does not describe it")
+    reasons, invalid_drains = [], []
     for fixture in document['fixtures']:
         differences = []
         for pair in fixture['pairs']:
@@ -170,14 +240,20 @@ def summarize(document):
             differences.append(pair['difference_ms'])
         if not differences:
             raise BenchError('drain: no pairs')
+        # A drain is a physical duration: a negative one is an ordering failure of the
+        # measurement, kept in the pairs as measured and never clamped, filtered or judged.
+        negative = negative_drains(drain['pairs'], ('off_ms', 'spans_ms'))
         drain['median_ms'] = round(statistics.median(differences), 3)
         drain['interval_ms'] = bootstrap_interval(differences, seed, 'drain')
         drain['passed'] = drain['median_ms'] <= drain['bound_ms']
-        if not drain['passed']:
+        if negative:
+            invalid_drains = [f'drain latency: {negative} negative physical duration'
+                              f"{'s' if negative != 1 else ''}, kept as measured and not judged"]
+        elif not drain['passed']:
             reasons.append(f"drain latency: median difference {drain['median_ms']:+.3f} ms "
                            f"(bound {drain['bound_ms']} ms)")
     names = sorted(fixture['name'] for fixture in document['fixtures'])
-    unjudged = []
+    unjudged = list(invalid_drains)
     if names != sorted(FIXTURES):
         unjudged.append(f'{len(names)} of the {len(FIXTURES)} fixtures measured')
     if drain is None:
@@ -265,11 +341,97 @@ def copy_writable(source, destination):
                 os.chmod(path, os.stat(path).st_mode | stat.S_IRUSR | stat.S_IWUSR)
 
 
-def prepare(fixture, scale, work):
-    """The fixture's repository, committed once; every run copies it."""
+def release_version(version_line):
+    """The release `af --version` names: `af 0.13.0` is `0.13.0`."""
+    words = version_line.split()
+    if len(words) < 2 or words[0] != 'af':
+        raise BenchError(f'`af --version` printed {version_line!r}, not `af VERSION`')
+    return words[1]
+
+
+def select_contract(version, requested=None):
+    """The fixture contract of the measured release `version`.
+
+    The one contract that names the version is that release's; a version no contract names is
+    refused, since nothing declares which workload it accepts. `requested`
+    (`--fixture-contract`) must be the one the version selects: a contract is never fed to a
+    release it does not describe."""
+    named = sorted(name for name, contract in FIXTURE_CONTRACTS.items()
+                   if version in contract['versions'])
+    if len(named) != 1:
+        raise BenchError(f'af {version} is named by no fixture contract '
+                         f'({", ".join(sorted(FIXTURE_CONTRACTS))}): its bench workload is not '
+                         'declared, and the current contract is never assumed to describe it')
+    selected = named[0]
+    if requested is not None and requested != selected:
+        raise BenchError(f'af {version} measures under the fixture contract `{selected}`, '
+                         f'not `{requested}`')
+    return selected
+
+
+def af_digest(af, repo, path):
+    run = repo.parent / 'contract'
+    for name in ('home', 'config', 'xstate', 'data', 'cache', 'bin', 'tmp'):
+        (run / name).mkdir(parents=True, exist_ok=True)
+    try:
+        done = subprocess.run([af, 'catalog', 'digest', path], cwd=repo, capture_output=True,
+                              text=True, env=private_env(run, 'off'))
+    finally:
+        shutil.rmtree(run, ignore_errors=True)
+    if done.returncode != 0:
+        raise BenchError(f'{af} catalog digest {path}: {done.stderr.strip()}')
+    return done.stdout.strip()
+
+
+def apply_contract(af, fixture, repo, name):
+    """Produce `fixture`'s workload under contract `name` in the copy `repo` and return its
+    provenance: every package's pin, each the measured binary's own `af catalog digest` and
+    equal to the pin the contract (or, under the current one, the committed catalog) declares.
+    A fixture without a Task catalog (the Store fixture) is the same under every contract."""
+    contract = FIXTURE_CONTRACTS[name]
+    catalog = repo / '.af' / 'task-catalog.toml'
+    if not catalog.exists():
+        return {'fixture': fixture, 'packages': {}, 'renamed_files': []}
+    text = catalog.read_text(encoding='utf-8')
+    entries = re.findall(r'^\[packages\."([^"]+)"\]\nversion = "[^"]*"\ndigest = "([^"]+)"\n'
+                         r'path = "([^"]+)"$', text, re.M)
+    if not entries or len(entries) != text.count('[packages.'):
+        raise BenchError(f'{catalog}: not a catalog of pinned packages')
+    renamed = []
+    if contract['check_receipt'] != CHECK_RECEIPT_CURRENT:
+        old, new = CHECK_RECEIPT_CURRENT.encode(), contract['check_receipt'].encode()
+        for path in sorted((repo / '.af').rglob('*')):
+            if path.is_file() and not path.is_symlink() and old in path.read_bytes():
+                path.write_bytes(path.read_bytes().replace(old, new))
+                renamed.append(str(path.relative_to(repo)))
+        if not renamed:
+            raise BenchError(f'{fixture}: no package declares {CHECK_RECEIPT_CURRENT}')
+    declared = contract['pins']
+    if declared is not None and sorted(declared.get(fixture, {})) != sorted(
+            package for package, _, _ in entries):
+        raise BenchError(f'{fixture}: the fixture contract `{name}` does not pin exactly its '
+                         'packages')
+    packages = {}
+    for package, committed, path in entries:
+        expected = committed if declared is None else declared[fixture][package]
+        digest = af_digest(af, repo, path)
+        if digest != expected:
+            raise BenchError(f'{fixture}: {package} under the fixture contract `{name}` has the '
+                             f'digest {digest}, not the declared {expected}')
+        text = text.replace(f'digest = "{committed}"\npath = "{path}"',
+                            f'digest = "{digest}"\npath = "{path}"')
+        packages[package] = digest
+    catalog.write_text(text, encoding='utf-8')
+    return {'fixture': fixture, 'packages': packages, 'renamed_files': renamed}
+
+
+def prepare(fixture, scale, work, af, contract):
+    """The fixture's repository under the fixture contract `contract`, committed once; every
+    run copies it. Returns it with the contract's provenance (`apply_contract`)."""
     source = FIXTURES_DIR / fixture
     pristine = work / fixture / 'pristine'
     copy_writable(source / 'repo', pristine)
+    produced = apply_contract(af, fixture, pristine, contract)
     if scale == 'smoke':
         bench = pristine / 'bench.json'
         parameters = json.loads(bench.read_text(encoding='utf-8'))
@@ -289,7 +451,7 @@ def prepare(fixture, scale, work):
     locks = sorted(str(path) for path in (pristine / '.git').rglob('*.lock'))
     if locks:
         raise BenchError(f'{fixture}: a git lock remains after the commit: {", ".join(locks)}')
-    return pristine
+    return pristine, produced
 
 
 def store_events(state):
@@ -308,25 +470,36 @@ def store_events(state):
     return total if found else None
 
 
-def drain_latency(state):
-    """Milliseconds from the dense harness's last write to the drained stdout's store time."""
+def last_write(state):
+    """The dense harness's last write on `CLOCK_MONOTONIC`, from the stderr the Store holds.
+
+    The Store must also hold the harness's drained answer: a run whose answer was not stored
+    has no drain to measure."""
     objects = state / 'cas' / 'objects'
-    drained, last_write = None, None
+    answered, written = False, None
     for path in sorted(objects.glob('*/*')):
         if path.name.startswith('.') or not path.is_file():
             continue
         size = path.stat().st_size
         if size == len(REPLY) and path.read_bytes() == REPLY:
-            drained = path.stat().st_mtime_ns
+            answered = True
         elif size > len(LAST_WRITE):
             with path.open('rb') as file:
                 file.seek(max(0, size - 4096))
                 tail = file.read().rstrip(b'\n').rsplit(b'\n', 1)[-1]
             if LAST_WRITE in tail:
-                last_write = int(json.loads(tail)['last_write_unix_ns'])
-    if drained is None or last_write is None:
-        raise BenchError(f'{state}: the dense harness left no drained answer and last write')
-    return round((drained - last_write) / 1e6, 3)
+                written = json.loads(tail).get('last_write_monotonic_ns')
+    if not answered or written is None:
+        raise BenchError(f'{state}: the dense harness left no drained answer and last write '
+                         'on CLOCK_MONOTONIC')
+    return int(written)
+
+
+def drain_latency(last_write_ns, exit_observed_ns):
+    """Milliseconds from the harness's last write to the observed exit of its command
+    (`DRAIN_BOUNDARY`), both readings of the one `CLOCK_MONOTONIC`. A negative duration is kept as
+    measured: `summarize` leaves the drain unjudged rather than clamp it."""
+    return round((exit_observed_ns - last_write_ns) / 1e6, 3)
 
 
 def segments(run):
@@ -352,6 +525,7 @@ def run_once(af, fixture, pristine, work, label, level):
         process = subprocess.Popen(argv, cwd=repo, env=private_env(run, level),
                                    stdin=subprocess.DEVNULL, stdout=stdout, stderr=stderr)
         _, status, usage = os.wait4(process.pid, 0)
+        exit_observed_ns = time.clock_gettime_ns(time.CLOCK_MONOTONIC)
         wall_ns = time.perf_counter_ns() - start
     process.returncode = os.waitstatus_to_exitcode(status)
     if process.returncode != FIXTURES[fixture]['exit']:
@@ -368,7 +542,7 @@ def run_once(af, fixture, pristine, work, label, level):
               'peak_rss_bytes': usage.ru_maxrss * scale, 'segments': sealed or 0}
     extra = {'store_events': store_events(state)}
     if fixture == DRAIN_FIXTURE:
-        extra['drain_ms'] = drain_latency(state)
+        extra['drain_ms'] = drain_latency(last_write(state), exit_observed_ns)
     return result, extra
 
 
@@ -382,11 +556,16 @@ def measure(args):
                              env=private_env(work / 'version', 'off'))
     if version.returncode != 0:
         raise BenchError(f'{af} --version: {version.stderr.strip()}')
+    release = release_version(version.stdout.strip())
+    contract = select_contract(release, args.fixture_contract)
     order_rng = random.Random(args.seed)
     load = os.getloadavg()[0] if hasattr(os, 'getloadavg') else None
     document = {
         'schema': SCHEMA,
         'af': {'path': af, 'version': version.stdout.strip()},
+        'fixture_contract': {'name': contract, 'release': release,
+                             'check_receipt': FIXTURE_CONTRACTS[contract]['check_receipt'],
+                             'fixtures': []},
         'machine': {'os': platform.system().lower(), 'arch': platform.machine(),
                     'cpus': os.cpu_count() or 0,
                     'load1': None if load is None else round(load, 2)},
@@ -398,7 +577,8 @@ def measure(args):
     }
     try:
         for fixture in fixtures:
-            pristine = prepare(fixture, args.scale, work)
+            pristine, produced = prepare(fixture, args.scale, work, af, contract)
+            document['fixture_contract']['fixtures'].append(produced)
             entry = {'name': fixture, 'command': ' '.join(FIXTURES[fixture]['argv'][:3]),
                      'store_events': None, 'pairs': []}
             drains = []
@@ -424,6 +604,7 @@ def measure(args):
             document['fixtures'].append(entry)
             if drains:
                 document['drain'] = {'fixture': DRAIN_FIXTURE, 'bound_ms': DRAIN_BOUND_MS,
+                                     'boundary': DRAIN_BOUNDARY, 'clock': DRAIN_CLOCK,
                                      'pairs': drains}
     finally:
         if not args.keep and not args.work:
@@ -479,6 +660,9 @@ def main(argv=None):
     parser.add_argument('--seed', type=int, default=DEFAULT_SEED)
     parser.add_argument('--work', help='the work directory (default: a fresh temporary one)')
     parser.add_argument('--keep', action='store_true', help='keep every run directory')
+    parser.add_argument('--fixture-contract', choices=sorted(FIXTURE_CONTRACTS),
+                        help='require this fixture contract; refused unless the measured '
+                        "release's version selects it")
     parser.add_argument('--json', action='store_true', help=f'print the {SCHEMA} document')
     parser.add_argument('--report', help='also write the document to this file')
     parser.add_argument('--judge', metavar='DOCUMENT',

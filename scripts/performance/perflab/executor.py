@@ -8,21 +8,494 @@ import fcntl
 import json
 import os
 import re
+import shutil
 import signal
 import stat
 import subprocess
 import time
+import types
 
-from . import (admission, archive, budget, builds, calibration, compare, contracts, diagnostics,
-               gitrefs, history, host, hostlock, hostprep, planning, report, runner,
+from . import (admission, archive, budget, builds, calibration, clicases, compare, contracts,
+               diagnostics,
+               gitrefs, history, host, hostlock, hostobserver, hostprep, planning, report, runner,
                telemetrybuild, telemetrylab, tomlfile)
+from . import adapters as adapters_module
 from .values import ContractError, add_note, canonical_digest, document_bytes, require, sha256_bytes
 
 ROOT = telemetrylab.ROOT
 TERMINAL = ("complete", "failed", "interrupted", "uncertain", "submitted", "expired")
 RESERVE = 30
-EVIDENCE_PREFIXES = ("plan.json", "cohort.json", "parameters.json", "sources.git", "run",
-                     "report", "profile", "baseline-build", "candidate-build")
+EVIDENCE_PREFIXES = ("plan.json", "cohort.json", "parameters.json", "parent-verdict.json",
+                     "sources.git", "run", "report", "profile", "baseline-build", "candidate-build")
+PARENT_VERDICT = "parent-verdict.json"
+PERF_PARANOID = "/proc/sys/kernel/perf_event_paranoid"
+
+
+def serial_bounds(plan, run_seconds):
+    """The local backend's worst-case serial schedule of a core plan, in seconds.
+
+    The local executor builds once and then runs the plan's shards one after another, each
+    bounded by the plan's frozen sampling window (start and end health sentinels included),
+    under the run deadline the build starts and the executor's own `run_seconds` wall, with the
+    runner's finish reserve kept for publication and cleanup. Hosted Actions runs the shards in
+    parallel; its feasibility is not this one.
+    """
+    limits = plan["limits"]
+    shards = len(plan["shards"])
+    build = limits["build_minutes"] * 60
+    sampling = limits["shard_sampling_minutes"] * 60
+    reserve = runner.FINISH_RESERVE_SECONDS
+    needed = build + shards * sampling + reserve
+    available = min(limits["run_total_minutes"] * 60, run_seconds)
+    fitting = max(0, (available - build - reserve) // sampling)
+    return {"backend": "local_serial", "shards": shards, "build_seconds": build,
+            "shard_sampling_seconds": sampling, "finish_reserve_seconds": reserve,
+            "needed_seconds": needed, "run_total_seconds": limits["run_total_minutes"] * 60,
+            "run_seconds": run_seconds, "available_seconds": available,
+            "fitting_shards": fitting, "feasible": needed <= available}
+
+
+# What a later partition spends before its first shard: verifying the first partition's
+# retained build and evidence, retaining its own sources and preparing its scratch.
+REUSE_SECONDS = 600
+
+
+# Sequential bounds of the steps before and after an original's measurement, shared by
+# preflight, submission and execution (`time_bounds`): retaining the source authority (and a
+# telemetry side's worktree), each contained telemetry build's whole lifetime with its own
+# cleanup (`telemetrybuild.run`), and preparing and cleaning one scratch image.
+SOURCE_SECONDS = 600
+TELEMETRY_BUILD_SECONDS = 4800
+
+
+def time_bounds(c, work, plan=None, installed=ROOT):
+    """(needed seconds, [(step, seconds)]) of one telemetry or profile original's sequential
+    worst case: the executor's reserve, its sources, its builds, its scratch and its declared
+    measurement (the telemetry profile's `timeout_minutes`, the diagnostic `total_minutes`);
+    None for core work, whose bound is its serial schedule (`serial_bounds`)."""
+    if work == "core":
+        return None
+    parts = [("executor reserve", RESERVE), ("source retention", SOURCE_SECONDS)]
+    if work == "telemetry":
+        t = c["telemetry"]
+        cfg = telemetrylab.configuration(telemetrylab.load_registry(installed)[0], t["profile"],
+                                         t["experiments"], t["rounds"], t["pairs"], t["scale"],
+                                         t["corpus_runs"])
+        parts += [("baseline build", TELEMETRY_BUILD_SECONDS),
+                  ("candidate build", TELEMETRY_BUILD_SECONDS),
+                  ("scratch preparation and cleanup", 2 * hostprep.STEP_SECONDS),
+                  ("telemetry profile %s" % t["profile"], cfg["timeout_minutes"] * 60)]
+    else:
+        parts += [("parent build", plan["limits"]["build_minutes"] * 60),
+                  ("scratch preparation and cleanup", 2 * hostprep.STEP_SECONDS),
+                  ("diagnostic profile", c["diagnostic"]["total_minutes"] * 60)]
+    return sum(seconds for _, seconds in parts), parts
+
+
+def require_time(c, work, plan=None, installed=ROOT):
+    """Refuse a telemetry or profile original whose sequential worst case does not fit its
+    `run_seconds`, naming every bound; nothing is relaxed to fit. Returns the admitted bound
+    as text, or "" for core work."""
+    bounds = time_bounds(c, work, plan, installed)
+    if bounds is None:
+        return ""
+    needed, parts = bounds
+    text = "%s needs %d s (%s); run_seconds allows %d s" % (
+        work, needed, ", ".join("%s %d s" % part for part in parts), c["run_seconds"])
+    require(needed <= c["run_seconds"], text + ": refused before any claim or build, and no "
+            "build cap, profile timeout or deadline is relaxed to fit")
+    return text
+
+
+def native_reserve(c, work, plan=None, installed=ROOT):
+    """The bytes one original's native work may write beyond what the root holds now: its
+    sources, scratch, builds and shard bundles (core and profile) or its builds and telemetry
+    work (telemetry), and the bounded archive and history copies it may materialize. One
+    calculation for preflight, submission and the claim; original storage is never evicted."""
+    if work in ("core", "profile"):
+        reserve = (plan["limits"]["worktree_bytes"] + 3 * 1024 ** 3
+                   + plan["profile"]["environment"]["scratch_limit_bytes"]
+                   + plan["limits"]["build_artifact_bytes"] * 3
+                   + plan["limits"]["shard_bundle_bytes"] * len(plan["shards"]) * 4)
+    else:
+        registry = telemetrylab.load_registry(installed)[0]
+        reserve = 24 * 1024 ** 3 + registry["profiles"][c["telemetry"]["profile"]]["work_bytes"]
+    return reserve + 4 * c["archive_bytes"] + c["history_bytes"]
+
+
+def available_seconds(plan, run_seconds):
+    return min(plan["limits"]["run_total_minutes"] * 60, run_seconds)
+
+
+def partition_seconds(plan, partition):
+    """The worst-case serial wall of one partition original: its build (the first) or build
+    reuse (later ones), each of its shards' whole sampling windows, and the finish reserve."""
+    limits = plan["limits"]
+    fixed = limits["build_minutes"] * 60 if partition["build_from"] is None else REUSE_SECONDS
+    return (fixed + len(partition["shards"]) * limits["shard_sampling_minutes"] * 60
+            + runner.FINISH_RESERVE_SECONDS)
+
+
+def require_serial(plan, run_seconds):
+    bounds = serial_bounds(plan, run_seconds)
+    require(bounds["feasible"], "infeasible on the serial local backend: %(shards)d shards of "
+            "%(shard_sampling_seconds)d s sampling after a %(build_seconds)d s build and a "
+            "%(finish_reserve_seconds)d s finish reserve need %(needed_seconds)d s, but the run "
+            "deadline allows %(available_seconds)d s; at most %(fitting_shards)d shards fit, and "
+            "no sampling window, sentinel or deadline is relaxed to fit" % bounds)
+    return bounds
+
+
+def reachable(path, name):
+    """Refuse a configured path the executing account cannot reach through every ancestor."""
+    current = "/"
+    for part in [part for part in path.split("/") if part]:
+        require(os.access(current, os.X_OK), "%s: %s is not searchable by uid %d"
+                % (name, current, os.geteuid()))
+        current = os.path.join(current, part)
+    require(os.path.exists(path), "%s: %s does not exist" % (name, path))
+    require(os.access(path, os.R_OK | os.X_OK), "%s: %s is not readable by uid %d"
+            % (name, path, os.geteuid()))
+
+
+def observed(config, registry, recipe):
+    """The CPU observer a profile of `recipe` runs with: `host_perf` for a CPU-profile recipe
+    when the executor configures the trusted host observer, None (perf contained) otherwise."""
+    if registry["recipes"][recipe]["kind"] != "cpu_profile":
+        return None
+    return config["diagnostic"]["observer"]
+
+
+def diagnostic_tools(config, registry, recipe, mode, paranoid_path=None):
+    """The configured tools a profile's recipe needs, checked before anything is built.
+
+    Returns (records, refusal or None). Tools come only from the executor's explicit `perf`
+    and `inferno_bin`; nothing is searched for on PATH. A path is not proof the tool runs:
+    the native child run still probes each tool's version and perf's actual capture. What is
+    refused here is only what makes that probe certain to fail: a missing or unexecutable
+    configured tool, or, in the contained mode (whose child holds no capability), a kernel that
+    denies every unprivileged perf event. The trusted host observer's capability is not
+    guessed from a sysctl: `observer_capability` records an actual attachment.
+    """
+    d = config["diagnostic"]
+    entry = registry["recipes"][recipe]
+    configured = diagnostics.configured_tools(d["perf"], d["inferno_bin"])
+    found = diagnostics.probe_tools(registry, configured, "linux", entry["tools"])
+    records = [record for record, _ in found.values()]
+    missing = ["%s: %s" % (name, record["detail"]) for name, (record, path) in sorted(found.items())
+               if path is None]
+    if missing:
+        return records, "recipe %s needs tools this executor cannot run: %s" % (recipe, "; ".join(missing))
+    if ("perf" in entry["tools"] and mode == diagnostics.LINUX_CONTAINER
+            and observed(config, registry, recipe) is None):
+        paranoid_path = paranoid_path or PERF_PARANOID
+        try:
+            with open(paranoid_path, "rb") as stream:
+                paranoid = int(stream.read(64).strip())
+        except (OSError, ValueError) as error:
+            return records, "cannot read %s: %s" % (paranoid_path, error)
+        if paranoid > 2:
+            return records, ("kernel.perf_event_paranoid=%d denies every perf event to the "
+                             "contained child, which holds no capability; the executor never "
+                             "changes host sysctls or grants capabilities" % paranoid)
+    return records, None
+
+
+def source_release(git, sha, side):
+    """The `af` release the retained source `sha` declares, from its Cargo.lock."""
+    lock = git.read_file(sha, "Cargo.lock")
+    require(lock is not None, "the %s source %s has no Cargo.lock: its release, and so its "
+            "workload, is unknown" % (side, sha[:12]))
+    return clicases.package_version(lock, "%s:Cargo.lock" % sha[:12])
+
+
+def telemetry_workload(git, sources, experiments, installed=ROOT):
+    """Each side's declared telemetry workload, before any claim or build: the overhead and
+    invocation-cost bench scripts of the installed authority measure a release only under the
+    fixture contract that names the release its retained source declares (`select_contract`),
+    never the current contract by default. The read-latency corpus is one for every release.
+    Returns the admission's detail; raises ContractError."""
+    if not set(experiments) & {"overhead", "invocation_cost"}:
+        return ""
+    module = telemetrylab.script_module("scripts/telemetry-overhead.py", installed)
+    named = []
+    for side, key in (("baseline", "baseline_sha"), ("candidate", "candidate_sha")):
+        version = source_release(git, sources[key], side)
+        try:
+            contract = module.select_contract(version)
+        except module.BenchError as error:
+            raise ContractError("telemetry refused before any claim or build: the %s source "
+                                "%s is af %s: %s" % (side, sources[key][:12], version, error))
+        named.append("%s af %s under %s" % (side, version, contract))
+    return "telemetry workload: " + ", ".join(named)
+
+
+def cli_workload(git, plan, control, suite_doc):
+    """Each side's declared CLI workload, before any claim or build: a plan (a core original's,
+    or the parent plan a profile diagnoses) with process cases
+    needs the authority's CLI registry and, for the release each side's retained source
+    declares, an adapter of it (`clicases.choose_adapter`), as its shards choose, with a
+    runnable command for every selected process case and its parameters: a command the
+    adapter does not declare, or declares pending, refuses with its reason. Returns the
+    admission's detail; raises ContractError."""
+    selected = [case for case in plan["cases"] if case["kind"] == "process"]
+    if not selected:
+        return ""
+    raw = git.read_file(control, clicases.CLI_PATH)
+    require(raw is not None, "refused before any claim or build: the authority %s has no %s; "
+            "its process cases have no CLI workload" % (control[:12], clicases.CLI_PATH))
+    try:
+        registry = clicases.check_registry(clicases.load_bytes(raw), suite_doc)
+    except ContractError as error:
+        raise ContractError("refused before any claim or build: the authority %s's CLI "
+                            "registry declares no admissible workload: %s" % (control[:12], error))
+    named = []
+    for side, version in sorted(clicases.side_versions(git, plan).items()):
+        adapter_id, adapter = clicases.choose_adapter(registry, version)
+        require(adapter_id is not None, "refused before any claim or build: the %s source is "
+                "af %s: %s" % (side, version, adapter))
+        for case in selected:
+            entry = clicases.command(adapter, case["case_id"], case["parameters"])
+            if entry is None or "pending" in entry:
+                raise ContractError(
+                    "refused before any claim or build: the %s source is af %s, whose CLI "
+                    "adapter %s has no runnable command for %s: %s" % (
+                        side, version, adapter_id, case["instance_id"],
+                        entry["pending"] if entry is not None else "not declared"))
+        named.append("%s af %s with %s" % (side, version, adapter_id))
+    return "CLI workload: " + ", ".join(named)
+
+
+def library_workload(git, plan, control, suite_doc):
+    """Each side's declared native workload, before any claim or build: every plan runs the
+    health sentinel through the probe, and each selected library case (with the seed it copies)
+    through its native contract. For the release each side's retained source declares, an
+    adapter of the authority's registry (`adapters.toml`) must declare that release
+    (`min_version`) and serve every such contract (`adapters.coverage`); a compile at the
+    build never stands in for that declaration. Returns the admission's detail; raises
+    ContractError."""
+    raw = git.read_file(control, adapters_module.ADAPTERS_PATH)
+    require(raw is not None, "refused before any claim or build: the authority %s has no %s; "
+            "its library workload has no declared coverage"
+            % (control[:12], adapters_module.ADAPTERS_PATH))
+    try:
+        registry = adapters_module.check_registry(adapters_module.load_bytes(
+            raw, "%s@%s" % (adapters_module.ADAPTERS_PATH, control[:12])), suite_doc)
+    except ContractError as error:
+        raise ContractError("refused before any claim or build: the authority %s's adapter "
+                            "registry declares no admissible library workload: %s"
+                            % (control[:12], error))
+    needed = {suite_doc["probe"]["sentinel_contract"]: "the health sentinel"}
+    for case in plan["cases"]:
+        if case["kind"] != "library":
+            continue
+        probe = suite_doc["cases"][case["case_id"]]["probe"]
+        needed.setdefault(probe["contract_id"], case["instance_id"])
+        if "seed" in probe:
+            needed.setdefault(probe["seed"]["contract_id"], case["instance_id"] + "'s seed")
+    named = []
+    for side, version in sorted(clicases.side_versions(git, plan).items()):
+        adapter_id, why = adapters_module.coverage(registry, version, needed)
+        require(adapter_id is not None, "refused before any claim or build: the %s source is "
+                "af %s: %s" % (side, version, why))
+        named.append("%s af %s with %s" % (side, version, adapter_id))
+    return "native workload: " + ", ".join(named)
+
+
+def build_recipes(config, work, plan=None, partition=None, installed=ROOT, suite=None,
+                  registry=None):
+    """The build recipes whose image-local tools one local original runs: the plan's (none for
+    a later partition, which reuses the first one's build), a profile's diagnostic recipe's
+    base beside it, or a telemetry side's trusted toolchain."""
+    if work == "telemetry":
+        channel = tomlfile.loads(telemetrybuild.read_source(installed, "rust-toolchain.toml"),
+                                 "trusted toolchain")["toolchain"]["channel"]
+        return [{"toolchain": channel, "os": "linux", "target": None, "builder": "cargo"}]
+    if partition is not None and partition["build_from"] is not None:
+        return []
+    recipes = [plan["profile"]["recipe"]]
+    if work == "profile" and suite is not None and registry is not None:
+        base = suite["recipes"][registry["recipes"][config["diagnostic"]["recipe"]]["base_recipe"]]
+        if base not in recipes:
+            recipes.append(base)
+    return recipes
+
+
+# The sample image's own interpreter, which runs every contained driver (the PTY driver, the
+# telemetry bench scripts), and the probe it runs there, in one bounded container of exactly
+# the containment every sample gets: it names its account, effective capabilities, no-new-
+# privileges flag, network interfaces, cgroup v2 namespace, whether its root is writable, and
+# whether the standard modules the drivers import load. Nothing of a candidate is in it.
+SAMPLE_PYTHON = "/usr/bin/python3"
+SAMPLE_SHELL = "/bin/sh"
+SAMPLE_PROBE = r"""import json, os, sys
+status = dict(line.split(":", 1) for line in open("/proc/self/status") if ":" in line)
+try:
+    import fcntl, pty, select, signal, termios
+    modules = True
+except ImportError:
+    modules = False
+try:
+    open("/.af-perf-root-write", "w").close()
+    writable = True
+except OSError:
+    writable = False
+nets = sorted(os.listdir("/sys/class/net")) if os.path.isdir("/sys/class/net") else []
+print(json.dumps({"uid": os.getuid(), "gid": os.getgid(),
+                  "cap_eff": status.get("CapEff", "").strip(),
+                  "no_new_privs": status.get("NoNewPrivs", "").strip(), "networks": nets,
+                  "cgroup2": os.path.exists("/sys/fs/cgroup/cgroup.controllers"),
+                  "root_writable": writable, "modules": modules,
+                  "shell": os.access("/bin/sh", os.X_OK),
+                  "python": "%d.%d.%d" % sys.version_info[:3]}))
+"""
+SAMPLE_PROBE_BYTES = 4096
+
+
+def sample_admission(image):
+    """The sample image's actual runtime, required tools and containment, before any build:
+    one probe of `SAMPLE_PROBE` by the image's own `SAMPLE_PYTHON`, in a container started as
+    every bounded container is (`builds.BuildImage.run_once`: its own name, this account, no
+    network, a read-only root, every capability dropped, no new privileges, its removal
+    confirmed). A runtime that cannot run it, a missing interpreter, shell or driver module, or
+    any containment the container does not have refuses (`builds.Unavailable`); an unconfirmed
+    removal is `build_container_unconfirmed`. Returns the record's detail."""
+    result = image.run_once([SAMPLE_PYTHON, "-I", "-B", "-c", SAMPLE_PROBE],
+                            {"PATH": builds.SYSTEM_PATH, "LC_ALL": "C",
+                             "AF_PERF_SAMPLE_PROBE": "1"})
+    where = "the sample image %s" % image.reference
+    if result.returncode != 0:
+        raise builds.Unavailable("sample_tools_unavailable", "%s cannot run %s: exit %d: %s" % (
+            where, SAMPLE_PYTHON, result.returncode,
+            result.stderr.decode("utf-8", "replace").strip()[-512:]))
+    try:
+        require(len(result.stdout) <= SAMPLE_PROBE_BYTES, "over its bound")
+        facts = json.loads(result.stdout.decode("utf-8"))
+        require(isinstance(facts, dict), "not an object")
+        found = dict((key, facts[key]) for key in (
+            "uid", "gid", "cap_eff", "no_new_privs", "networks", "cgroup2", "root_writable",
+            "modules", "shell", "python"))
+    except (ContractError, UnicodeError, ValueError, KeyError) as error:
+        raise builds.Unavailable("sample_tools_unavailable", "%s answered no probe record: %s"
+                                 % (where, error))
+    missing = [name for name, present in ((SAMPLE_SHELL, found["shell"]),
+                                          ("the driver modules", found["modules"]))
+               if present is not True]
+    if missing:
+        raise builds.Unavailable("sample_tools_unavailable", "%s lacks %s" % (
+            where, " and ".join(missing)))
+    problems = []
+    if (found["uid"], found["gid"]) != (image.uid, image.gid):
+        problems.append("it runs as %r:%r, not %d:%d" % (found["uid"], found["gid"],
+                                                         image.uid, image.gid))
+    if not isinstance(found["cap_eff"], str) or not found["cap_eff"] or set(
+            found["cap_eff"]) != {"0"}:
+        problems.append("its effective capabilities are %r" % found["cap_eff"])
+    if found["no_new_privs"] != "1":
+        problems.append("no_new_privs is %r" % found["no_new_privs"])
+    if not isinstance(found["networks"], list) or set(found["networks"]) - {"lo"}:
+        problems.append("it has the networks %r" % found["networks"])
+    if found["cgroup2"] is not True:
+        problems.append("it has no cgroup v2 namespace")
+    if found["root_writable"] is not False:
+        problems.append("its root filesystem is writable")
+    if problems:
+        raise builds.Unavailable("sample_containment_unavailable", "%s: a probe container "
+                                 "lacks the samples' containment: %s" % (
+                                     where, "; ".join(problems)))
+    return ("%s Python %s and %s run as %d:%d with no network, no capability, no new "
+            "privileges, cgroup v2 and a read-only root" % (
+                where, str(found["python"])[:32], SAMPLE_SHELL, image.uid, image.gid))
+
+
+def image_admission(config, recipes, docker="docker"):
+    """The configured build and sample images as this account finds them, before any claim or
+    build: each pinned by digest, present locally (nothing pulls), Linux and declaring no
+    implicit writable volume; in the build image, each recipe's exact toolchain, its
+    target and, for a cargo-zigbuild recipe, the configured image-local cargo-zigbuild and Zig
+    at their pinned versions: the probes `builds.Builder.check_host` runs, in containers of the
+    build image; and in the sample image its actual runtime, tools and containment
+    (`sample_admission`). The caller holds the machine's one exclusion. Returns (records, refusal or
+    None, uncertain): a probe container whose removal is unconfirmed is uncertain."""
+    records = []
+    images = []
+    for name, key in (("build_image", "build_image"), ("sample_image", "sample_image")):
+        try:
+            image = builds.BuildImage(docker, config[key], role=name.replace("_", " "))
+            image.refuse_implicit_volumes()
+        except ContractError as error:
+            # Only `docker image inspect` ran for the images so far and no probe container
+            # was started, so the image's identity or volume-policy refusal leaves nothing
+            # uncertain.
+            detail = "%s: %s" % (getattr(error, "reason", "build_image_refused"), error)
+            records.append({"name": "image_admission", "state": "unavailable",
+                            "detail": detail[:4096]})
+            return records, detail, False
+        images.append(image)
+        records.append({"name": name, "state": "available", "detail": "%s: %s, %s" % (
+            config[key], image.id, image.platform)})
+    try:
+        build = images[0]
+        checked = []
+        for recipe in recipes:
+            key = tuple(recipe.get(field) for field in (
+                "toolchain", "os", "target", "builder", "cargo_zigbuild", "zig"))
+            if key in checked:
+                continue
+            checked.append(key)
+            toolchain = builds.ContainerToolchain(build, recipe["toolchain"])
+            if toolchain.host_os() != recipe["os"]:
+                raise builds.Unavailable("host_mismatch", "the recipe builds for %s, but the "
+                                         "toolchain host in %s is %s" % (
+                                             recipe["os"], build.reference, toolchain.host))
+            if recipe["target"] is not None and not toolchain.supports_target(recipe["target"]):
+                raise builds.Unavailable("target_unavailable", "target %s is not installed for "
+                                         "%s in %s" % (recipe["target"],
+                                                       toolchain.rustc_identity, build.reference))
+            detail = "%s; %s" % (toolchain.rustc_identity, toolchain.cargo_identity)
+            if recipe["builder"] == "cargo_zigbuild":
+                if config["zigbuild_bin"] is None:
+                    raise builds.Unavailable("builder_unavailable", "the recipe builds with "
+                                             "cargo-zigbuild %s and Zig %s; set zigbuild_bin "
+                                             "to their directory in the build image" % (
+                                                 recipe["cargo_zigbuild"], recipe["zig"]))
+                zigbuild = builds.ContainerZigbuild(build, config["zigbuild_bin"],
+                                                    recipe["cargo_zigbuild"], recipe["zig"])
+                detail += "; " + zigbuild.identity
+            records.append({"name": "image_toolchain", "state": "available",
+                            "detail": ("%s in %s" % (detail, build.reference))[:4096]})
+        records.append({"name": "sample_runtime", "state": "available",
+                        "detail": sample_admission(images[1])[:4096]})
+    except builds.Unavailable as error:
+        detail = "%s: %s" % (error.reason, error)
+        records.append({"name": "image_admission", "state": "unavailable",
+                        "detail": detail[:4096]})
+        return records, detail, error.reason == "build_container_unconfirmed"
+    return records, None, False
+
+
+def observer_capability(config, registry, recipe, workdir, seconds=60, clock=time.monotonic):
+    """The trusted host observer's actual capability, as the executing account under the held
+    machine exclusion, before any build: the configured perf attached by PID to an owned gated
+    process and its samples decoded (`hostobserver.probe`). Returns (record, refusal or None,
+    uncertain). Nothing is checked for a recipe that is not observed on the host."""
+    if observed(config, registry, recipe) is None:
+        return None, None, False
+    d = config["diagnostic"]
+    os.mkdir(workdir, 0o700)
+    try:
+        available, reason, detail = hostobserver.probe(
+            hostobserver.bounded_start(diagnostics.TOOL_ENV, workdir, clock), d["perf"],
+            registry["capture"]["event"], d["frequency_hz"], workdir, clock() + seconds, clock)
+    finally:
+        problems = admission.remove_tree(workdir)
+    uncertain = reason == "cleanup_uncertain" or bool(problems)
+    record = {"name": "host_observer", "state": "available" if available else "unavailable",
+              "detail": (detail if available else "%s: %s" % (reason, detail))[:4096]}
+    refusal = None if available and not problems else (
+        "the trusted host observer cannot record: " + record["detail"]
+        + ("; " + "; ".join(problems) if problems else ""))
+    return record, refusal, uncertain
 
 
 class JournalBusy(ContractError):
@@ -149,12 +622,37 @@ class Journal:
     A directory is the original reservation. Torn directories, pending writes and claims
     are never silently requeued. Capacity refuses new work rather than deleting originals.
     """
-    def __init__(self, config):
+    # The machine lock's directory (tests only); the anchored system lock otherwise.
+    lock_directory = None
+
+    @staticmethod
+    def free_bytes(path):
+        """The bytes the filesystem holding `path` has available to this account."""
+        return shutil.disk_usage(path).free
+
+    def __init__(self, config, readonly=False):
         self.config = contracts.validate_executor(config)
         self.root = config["root"]
         self.fd = None
+        # A reader (`status`, `verify`, `overview`) takes no lock and writes nothing: it reads
+        # the retained, atomically published state while a controller executes an original.
+        self.readonly = readonly
+        # `images`' admissions this handle made, by configured images and recipes.
+        self.admitted_images = {}
 
     def __enter__(self):
+        if self.readonly:
+            private_directory(self.root)
+            self.requests = os.path.join(self.root, "requests")
+            private_directory(self.requests)
+            marker = os.path.join(self.root, "journal.json")
+            require(not os.path.lexists(marker + ".pending"),
+                    "the original journal index is being published; read it again")
+            self.index = contracts.read_json(read(marker), "executor-journal")
+            require(self.index["journal_id"] == self.config["journal_id"]
+                    and self.index["repository"] == self.config["repository"],
+                    "journal identity changed")
+            return self
         private_directory(self.root, create=True)
         with budget.defer_alarm():
             self.fd = os.open(os.path.join(self.root, "journal.lock"),
@@ -190,9 +688,24 @@ class Journal:
                 fd, self.fd = self.fd, None
                 os.close(fd)
 
-    def capacity(self, reserve=0):
-        require(tree_usage(self.root) + reserve <= self.config["max_bytes"],
-                "executor root capacity exhausted; retain originals and stop submission")
+    def capacity(self, reserve=0, what=None, max_bytes=None):
+        """Admit `reserve` more bytes below the root within `max_bytes` (the configuration's)
+        and within what the root's filesystem has available to this account now: the policy
+        bound and the physical space are both required, and neither stands in for the other.
+        A refusal names the bytes held, the reserve, the bound, the policy room and the
+        filesystem's available bytes. Returns the admitted figures as text."""
+        bound = self.config["max_bytes"] if max_bytes is None else max_bytes
+        used = tree_usage(self.root)
+        free = self.free_bytes(self.root)
+        text = ("storage: %d bytes held + %d-byte %s = %d bytes of max_bytes %d (%d available); "
+                "filesystem: %d bytes available for the %d-byte %s" % (
+                    used, reserve, what or "reserve", used + reserve, bound,
+                    max(0, bound - used), free, reserve, what or "reserve"))
+        require(used + reserve <= bound, "executor root capacity exhausted; retain originals "
+                "and stop submission: " + text)
+        require(reserve <= free, "executor root filesystem has too little free space; retain "
+                "originals and stop submission: " + text)
+        return text
 
     def names(self):
         names = sorted(os.listdir(self.requests))
@@ -254,6 +767,66 @@ class Journal:
         with timing.enforce("freezing original request"):
             return self._submit(*args, **kwargs)
 
+    def exclusive(self, what, check):
+        """`check()` -> (result, refusal, uncertain) under the machine's one exclusion, taken
+        for it and settled: a busy machine refuses the check; an unconfirmed end keeps the
+        fence."""
+        try:
+            if self.lock_directory is None:
+                hostlock.read_anchor(required=True)
+            lock = hostlock.MachineLock(self.lock_directory)
+        except hostlock.Refused as refused:
+            if refused.reason == "concurrent_shard":
+                raise JournalBusy("the %s needs the machine exclusion, which another "
+                                  "experiment holds: %s" % (what, refused))
+            raise ContractError(str(refused))
+        try:
+            lock.guard()
+            result, refusal, uncertain = check()
+            if uncertain:
+                lock.uncertain = True
+            else:
+                lock.confirm_clean()
+            return result, refusal
+        finally:
+            lock.release()
+
+    def capability(self, config, registry, recipe):
+        """`observer_capability` under the machine's one exclusion."""
+        return self.exclusive("host observer capability check", lambda: observer_capability(
+            config, registry, recipe, os.path.join(self.root, "observer-probe")))
+
+    def images(self, config, recipes):
+        """`image_admission` under the machine's one exclusion, once per configured images and
+        recipes for this journal handle (a comparison's members share one check)."""
+        key = canonical_digest({"build_image": config["build_image"],
+                                "sample_image": config["sample_image"],
+                                "zigbuild_bin": config["zigbuild_bin"], "recipes": recipes})
+        if key not in self.admitted_images:
+            self.admitted_images[key] = self.exclusive(
+                "image and tool admission", lambda: image_admission(config, recipes))
+        return self.admitted_images[key]
+
+    def preflight(self, work, base, head, key, kind="manual", *, parent=None, **kwargs):
+        """Everything a submission checks, as the account that runs it, without reserving an
+        original: the `af.perf-executor-preflight/1` document, `ready` or `refused` with the
+        exact first refusal, and the local serial bounds and diagnostic tools it checked."""
+        timing = budget.Budget(time.monotonic() + self.config["cycle_seconds"], time.monotonic, 0)
+        checked = {"serial": None, "tools": []}
+        try:
+            with timing.enforce("preflight"):
+                for key_name in ("root", "repository_path"):
+                    reachable(self.config[key_name], key_name)
+                request = self._submit(work, base, head, key, kind, parent=parent,
+                                       checked=checked, **kwargs)
+        except ContractError as error:
+            return {"schema": "af.perf-executor-preflight/1", "work": work, "status": "refused",
+                    "detail": str(error)[:4096], "request": None, "serial": checked["serial"],
+                    "tools": checked["tools"]}
+        return {"schema": "af.perf-executor-preflight/1", "work": work, "status": "ready",
+                "detail": "", "request": request, "serial": checked["serial"],
+                "tools": checked["tools"]}
+
     def submit_nightly(self, work, tag, head, base=None, *, git=None, **kwargs):
         """One nightly original per tag and work: frozen main `head` against `base`, or else the
         highest stable release tag reachable from it (ADR-0266)."""
@@ -280,13 +853,26 @@ class Journal:
                            **kwargs)
 
     def _submit(self, work, base, head, key, kind="manual", *, git=None, installed=ROOT,
-               cohort=None, member=None, parameters=None, submission=None):
+               cohort=None, member=None, parameters=None, parent=None, checked=None,
+               config=None, frozen_parent=None, frozen_plan=None, partition=None,
+               bind_configuration=False, submission=None):
+        """`config` is a comparison lane's derived configuration (its diagnostic recipe);
+        `frozen_parent` is (parent record, plan, verdict bytes) of a comparison's verified
+        aggregate; `frozen_plan` and `partition` make a core original one partition of a
+        comparison's frozen plan. With `bind_configuration` (a comparison's member) an existing
+        original of the key is returned only when it froze this very configuration. A nightly's
+        `submission` records its tag and derived baseline (`submit_nightly`)."""
         require(work in ("core", "telemetry", "profile"), "unknown experiment kind")
         require((kind == "nightly") == (submission is not None),
                 "only a nightly submission records its tag and derived baseline")
+        require(parent is None or work == "profile", "only a profile names a parent comparison")
+        require(frozen_parent is None or (work == "profile" and parent is None),
+                "a comparison's aggregate parent is a profile's only parent")
+        require((frozen_plan is None) == (partition is None) and (partition is None
+                or work == "core"), "only a core partition carries a comparison's frozen plan")
         timing = budget.Budget(time.monotonic() + self.config["cycle_seconds"], time.monotonic, 0)
         git = git or source_repository(self.config, timing)
-        c = self.config
+        c = contracts.validate_executor(config) if config is not None else self.config
         control = git.resolve(c["control_sha"], "installed control")
         require(control == c["control_sha"], "control must be an exact full SHA")
         trusted = git.exact_ref(c["trusted_ref"], "reviewed main")
@@ -297,11 +883,29 @@ class Journal:
         # baseline differs under the same tag is a reused key, never a second original.
         ident = "exp_" + canonical_digest({"submission": {"kind": kind, "key": key}, "work": work})[7:55]
         submission = submission or {"kind": kind, "key": key}
-        if ident in self.names():
+        if ident in self.names() and checked is None:
             original = self.request(ident)
             require(original["sources"] == sources and original["submission"] == submission
                     and original["work"] == work, "original submission key was reused for another source")
+            wanted = parent if frozen_parent is None else frozen_parent[0]["request_id"]
+            # An earlier request version (ADR-0266) names neither parent nor partition.
+            require(original.get("parent") is None if wanted is None
+                    else (original.get("parent") or {}).get("request_id") == wanted,
+                    "original submission key was reused for another parent comparison")
+            require(original.get("partition") == partition,
+                    "original submission key was reused for another comparison partition")
+            # A comparison member's key under another frozen configuration or plan is another
+            # workload (a narrower telemetry profile, partial core cases), never its original.
+            # A plain resubmission keeps the original it froze, whatever the journal says now.
+            require(not bind_configuration
+                    or original["configuration_digest"] == canonical_digest(c),
+                    "original submission key was reused for another frozen configuration or "
+                    "declared workload")
+            require(frozen_plan is None or original["plan_sha256"] == sha256_bytes(
+                contracts.write_bytes(frozen_plan, "run")),
+                    "original submission key was reused for another frozen plan")
             return original
+        require(ident not in self.names(), "the submission key already names an original")
         require(len(self.names()) < c["max_requests"], "original journal is full")
         require(sum(self.state(i)["state"] == "queued" for i in self.names()) < c["max_queue"], "queue is full")
         produced = producer(git, control, installed)
@@ -328,36 +932,125 @@ class Journal:
                 sealed_raw = git.read_file(trusted, "fixtures/performance/local-calibration-parameters.json")
                 require(sealed_raw is not None and contracts.read_json(sealed_raw, "calibration-parameters") == parameters,
                         "sealed parameters must be committed on reviewed main at the documented path")
+            require(c["core"]["windows"] is None, "a calibration original measures its tier's "
+                    "own windows: core.windows declares a comparison recipe's, never a cohort's")
         elif kind == "calibration":
             raise ContractError("calibration submissions need their immutable declaration")
-        plan = None
-        if work in ("core", "profile") and c["backend"] == "local":
+        plan = parent_record = verdict_bytes = suite = registry = None
+        if partition is not None:
+            plan = frozen_plan
+        if work == "profile" and c["backend"] == "local":
+            d = c["diagnostic"]
+            suite = planning.read_suite(git, control)
+            raw = git.read_file(control, diagnostics.REGISTRY_PATH)
+            require(raw is not None, "control has no diagnostic registry")
+            registry = diagnostics.load_bytes(raw, diagnostics.REGISTRY_PATH, suite.doc)
+            require(d["recipe"] in registry["recipes"], "diagnostic.recipe is not in the registry")
+            records, refusal = diagnostic_tools(c, registry, d["recipe"], diagnostics.LINUX_CONTAINER)
+            if checked is not None:
+                checked["tools"] = [{"name": r["name"], "state": r["state"], "detail": r["detail"]}
+                                    for r in records]
+            require(refusal is None, "profile refused before any build: " + str(refusal))
+            if checked is not None and observed(c, registry, d["recipe"]) is not None:
+                # The actual attachment, not a path or sysctl guess, before anything is built.
+                record, refusal = self.capability(c, registry, d["recipe"])
+                checked["tools"].append(record)
+                require(refusal is None, "profile refused before any build: " + str(refusal))
+            if frozen_parent is not None:
+                require(not d["cases"], "a parent-selected profile names no diagnostic.cases")
+                parent_record, plan, verdict_bytes = frozen_parent
+            elif parent is not None:
+                require(not d["cases"], "a parent-selected profile names no diagnostic.cases")
+                # Only a verified completed local core original selects; its retained plan
+                # and verdict are this profile's exact parent identity.
+                parent_request, parent_state, _ = verify_original(self, parent, installed)
+                require(parent_request["work"] == "core" and parent_request["sources"] == sources,
+                        "the parent is not a core comparison of these exact sources")
+                parent_path = self.path(parent)
+                plan = contracts.read_json(read(os.path.join(parent_path, "plan.json")), "run")
+                verdict_bytes = read(os.path.join(parent_path, "report", report.VERDICT_JSON))
+                verdict = contracts.read_json(verdict_bytes, "verdict")
+                require(verdict["run_id"] == plan["run_id"]
+                        and verdict["plan_digest"] == plan["plan_digest"],
+                        "the parent verdict is of another plan")
+                parent_record = {"request_id": parent,
+                    "request_digest": canonical_digest(parent_request),
+                    "result_sha256": parent_state["result_sha256"],
+                    "plan_sha256": parent_request["plan_sha256"],
+                    "verdict_sha256": sha256_bytes(verdict_bytes)}
+            else:
+                require(d["cases"], "a profile without diagnostic.cases selects from a verified "
+                        "parent comparison: submit with --parent REQUEST_ID")
+        if plan is None and work in ("core", "profile") and c["backend"] == "local":
             core = c["core"]
             plan = planning.plan(git, planning.Request(trigger="manual", tier=core["tier"],
                 scope="calibration" if cohort else ("partial_scope" if core["cases"] else "bootstrap"),
                 base=sources["baseline_sha"], head=sources["candidate_sha"], control=control,
                 authority=control, cases=core["cases"], environment=core["environment"],
                 build_image=c["build_image"], shards=core["shards"], run_id="local_" + ident[4:],
-                cohort=cohort, member=member, calibration=parameters))
+                cohort=cohort, member=member, calibration=parameters, windows=core["windows"]))
             require(not plan["required_check_eligible"], "local/advisory request cannot satisfy required checks")
             if c["backend"] == "local":
                 require(plan["profile"]["environment"]["runner"] == "dedicated"
                         and plan["profile"]["environment"]["containment"] == "linux_container",
                         "local core needs a dedicated contained environment")
+            if work == "core":
+                if checked is not None:
+                    checked["serial"] = serial_bounds(plan, c["run_seconds"])
+                require_serial(plan, c["run_seconds"])
+        elif work == "core" and partition is not None:
+            require(c["backend"] == "local" and cohort is None,
+                    "a comparison partition is a local, non-calibration core original")
+            require(plan["run_id"] == "local_" + partition["comparison_id"][4:]
+                    and plan["resolved"] == sources
+                    and set(partition["shards"]) <= set(s["index"] for s in plan["shards"]),
+                    "a partition executes shards of its comparison's frozen plan")
+            require(partition_seconds(plan, partition) <= available_seconds(plan, c["run_seconds"]),
+                    "the partition does not fit one bounded local original")
         elif work == "telemetry":
             registry = telemetrylab.load_registry(installed)[0]
             t = c["telemetry"]
-            telemetrylab.configuration(registry, t["profile"], t["experiments"], t["rounds"],
-                                       t["pairs"], t["scale"], t["corpus_runs"])
+            chosen = telemetrylab.configuration(registry, t["profile"], t["experiments"],
+                                                t["rounds"], t["pairs"], t["scale"],
+                                                t["corpus_runs"])
+        if c["backend"] == "local":
+            # The selected releases' declared workloads, from their retained sources under
+            # this authority, before anything is claimed or built: a release no contract or
+            # adapter names, or a selected case its adapter leaves pending, is refused, never
+            # measured under the current fixture or left to a compile.
+            if work == "telemetry":
+                workloads = [telemetry_workload(git, sources, chosen["experiments"], installed)]
+            else:
+                suite_doc = (suite or planning.read_suite(git, control)).doc
+                workloads = [cli_workload(git, plan, control, suite_doc),
+                             library_workload(git, plan, control, suite_doc)]
+            # The same time and storage admission execution applies, before anything is
+            # reserved, claimed or built (`time_bounds`, `native_reserve`).
+            admitted = workloads + [require_time(c, work, plan, installed),
+                        self.capacity(native_reserve(c, work, plan, installed),
+                                      "native reserve", c["max_bytes"])]
+            if checked is not None:
+                checked["admission"] = "; ".join(text for text in admitted if text)
+            # The configured images and their image-local tools, as execution checks them
+            # again before its first build (`image_admission`).
+            records, refusal = self.images(c, build_recipes(
+                c, work, plan, partition, installed, suite and suite.doc, registry))
+            if checked is not None:
+                checked["tools"] = (checked["tools"] + records)[:16]
+            require(refusal is None, "%s refused before any claim or build: the configured "
+                    "images cannot run it: %s" % (work, refusal))
         request = {"schema": contracts.EXECUTOR_REQUEST_SCHEMA, "request_id": ident,
             "backend": c["backend"], "journal_id": c["journal_id"], "machine_id": c["machine_id"],
             "configuration_digest": canonical_digest(c), "sources": sources, "submission": submission,
             "work": work, "created_unix_ms": int(time.time() * 1000), "environment_digest": env,
             "producer_digest": produced, "plan_sha256": None if plan is None else sha256_bytes(contracts.write_bytes(plan, "run")),
             "cohort_digest": None if cohort is None else canonical_digest(cohort), "member_id": member,
-            "parameters_sha256": None if parameters is None else sha256_bytes(contracts.write_bytes(parameters, "calibration-parameters"))}
+            "parameters_sha256": None if parameters is None else sha256_bytes(contracts.write_bytes(parameters, "calibration-parameters")),
+            "parent": parent_record, "partition": partition}
         contracts.CONTRACTS["executor-request"][2](request, "request")
         self.capacity(16 * 1024 * 1024)
+        if checked is not None:
+            return request
         path = self.path(ident)
         os.mkdir(path, 0o700)  # original identity precedes every possible launch
         sync_dir(self.requests)
@@ -366,6 +1059,11 @@ class Journal:
                 ("cohort.json", cohort, "local-cohort-declaration"), ("parameters.json", parameters, "calibration-parameters")):
             if doc is not None:
                 atomic(os.path.join(path, filename), doc, contract)
+        if verdict_bytes is not None:
+            with open(os.path.join(path, PARENT_VERDICT), "xb") as stream:
+                stream.write(verdict_bytes)
+                stream.flush()
+                os.fsync(stream.fileno())
         self.index["originals"].append({"request_id": ident, "request_digest": canonical_digest(request)})
         atomic(os.path.join(self.root, "journal.json"), self.index, "executor-journal")
         atomic(os.path.join(path, "state.json"), {"schema": "af.perf-executor-state/2",
@@ -408,19 +1106,13 @@ class Journal:
             # Reserve the native bounds before claiming/launching; original storage is
             # never evicted to make progress. Scratch images themselves enforce writes.
             if request["backend"] == "local":
+                p = None
                 if request["work"] in ("core", "profile"):
                     p = contracts.read_json(read(os.path.join(self.path(ident), "plan.json")), "run")
-                    reserve = (p["limits"]["worktree_bytes"] + 3 * 1024 ** 3
-                        + p["profile"]["environment"]["scratch_limit_bytes"]
-                        + p["limits"]["build_artifact_bytes"] * 3
-                        + p["limits"]["shard_bundle_bytes"] * len(p["shards"]) * 4)
-                else:
-                    registry = telemetrylab.load_registry(installed)[0]
-                    reserve = 24 * 1024 ** 3 + registry["profiles"][frozen_config["telemetry"]["profile"]]["work_bytes"]
-                # Native history may materialize retained evidence/report copies. Reserve
-                # those bounded archives too, before any original is spent.
-                reserve += 4 * frozen_config["archive_bytes"] + frozen_config["history_bytes"]
-                self.capacity(reserve)
+                # The same reserve the submission admitted (`native_reserve`), under the frozen
+                # configuration's own bound, before any original is spent.
+                self.capacity(native_reserve(frozen_config, request["work"], p, installed),
+                              "native reserve", frozen_config["max_bytes"])
             if calibration_expired(request, self.path(ident)):
                 self.transition(request, "expired", "not executed: frozen calibration member day expired")
                 return "expired"
@@ -429,11 +1121,19 @@ class Journal:
                 lock.guard()
             started = state["started_unix_ms"]
             terminal = budget.Budget(time.monotonic() + frozen_config["run_seconds"], time.monotonic, 0)
+            cancelled = None
             try:
                 operation = execute or execute_local
                 if request["backend"] == "local":
                     require(transport is None, "local execution refuses an Actions transport")
-                    result = operation(frozen_config, request, self.path(ident), lock, installed)
+                    try:
+                        result = operation(frozen_config, request, self.path(ident), lock, installed)
+                    except runner.Cancelled as error:
+                        # A cancellation whose owned cleanup was confirmed ends this original
+                        # interrupted, then goes on: nothing later of this controller runs.
+                        if error.result is None:
+                            raise
+                        result, cancelled = error.result, error
                 else:
                     result = dispatch_actions(frozen_config, request, self.path(ident), transport)
                 with terminal.enforce("publishing executor terminal evidence"):
@@ -452,7 +1152,8 @@ class Journal:
                     # Terminal evidence precedes release; uncertainty never settles a fence.
                     if lock is not None and result["status"] != "uncertain":
                         lock.confirm_clean()
-                return result["status"]
+                if cancelled is None:
+                    return result["status"]
             except BaseException as error:
                 # Claims never replay, including an ambiguous remote handoff or publication.
                 try:
@@ -469,6 +1170,8 @@ class Journal:
                 except BaseException as recording:
                     add_note(error, "uncertainty publication unconfirmed; retain original claim: %s" % recording)
                 raise
+            # Its terminal record is published and its fence settled; the cancellation goes on.
+            raise cancelled
         finally:
             if lock is not None:
                 lock.release()
@@ -560,6 +1263,22 @@ def file_manifest(root, prefixes, timing=None):
     return sorted(entries, key=lambda item: item["path"])
 
 
+def admit_images(config, work, path, lease, terminal, recipes):
+    """The execution's own `image_admission`, under its held exclusion and before its first
+    build: an image or image-local tool missing since submission ends the original `failed`,
+    nothing built or measured, and only an unconfirmed probe container keeps the fence."""
+    _, refusal, uncertain = image_admission(config, recipes)
+    if uncertain:
+        lease.uncertain = True
+        raise ContractError("image admission probe cleanup is uncertain: " + str(refusal))
+    if refusal is None:
+        return None
+    return {"status": "failed", "measurement_status": "unavailable",
+            "evidence": file_manifest(path, EVIDENCE_PREFIXES, terminal), "actions": None,
+            "detail": ("%s refused before any build, nothing measured: the configured images "
+                       "cannot run it: %s" % (work, refusal))[:4096]}
+
+
 def execute_local(config, request, path, lease, installed=ROOT):
     lease.check()
     binaries = None
@@ -593,18 +1312,70 @@ def execute_local(config, request, path, lease, installed=ROOT):
             return {"status": "expired", "measurement_status": "not_executed_off_schedule",
                     "evidence": file_manifest(path, EVIDENCE_PREFIXES, terminal), "actions": None,
                     "detail": "not executed: frozen calibration member day expired during preparation"}
-        build = builds.Builder(owner, plan, None, bounded_container=True,
-                               zigbuild_bin=config["zigbuild_bin"], deadline_unix_ms=deadline_ms)
-        built = build.build()
-        require(built["cleanup"]["status"] == "removed", "core build cleanup unconfirmed")
+        suite_doc = registry = None
+        if work == "profile":
+            # Tools are checked again as the executing compute user, before the first build:
+            # an unavailable capability ends here with its exact reason, nothing built.
+            git = gitrefs.Git(sources, budget=timing)
+            authority = request["sources"]["authority_sha"]
+            suite_doc = planning.read_suite(git, authority).doc
+            registry = diagnostics.load_bytes(git.read_file(authority, diagnostics.REGISTRY_PATH),
+                diagnostics.REGISTRY_PATH, suite_doc)
+            recipe = config["diagnostic"]["recipe"]
+            _, refusal = diagnostic_tools(config, registry, recipe, diagnostics.LINUX_CONTAINER)
+            if refusal is None:
+                # The trusted host observer's actual attachment, under this held exclusion.
+                _, refusal, uncertain = observer_capability(
+                    config, registry, recipe, os.path.join(path, "observer-probe"),
+                    clock=time.monotonic)
+                if uncertain:
+                    lease.uncertain = True
+                    raise ContractError("host observer capability cleanup is uncertain: "
+                                        + str(refusal))
+            if refusal is not None:
+                return {"status": "failed", "measurement_status": "unavailable",
+                        "evidence": file_manifest(path, EVIDENCE_PREFIXES, terminal),
+                        "actions": None, "detail": ("profile refused before any build: "
+                                                    + refusal)[:4096]}
+        partition = request.get("partition")
+        refused = admit_images(config, work, path, lease, terminal, build_recipes(
+            config, work, plan, partition, installed, suite_doc, registry))
+        if refused is not None:
+            return refused
+        if partition is not None and partition["build_from"] is not None:
+            # A later partition runs on the first partition's verified, immutable build: the
+            # one build every shard bundle of the comparison binds. Nothing is rebuilt.
+            try:
+                build_dir, builds_bytes = partition_build(config, request, installed)
+            except (ContractError, OSError) as error:
+                return {"status": "failed", "measurement_status": "unavailable",
+                        "evidence": file_manifest(path, EVIDENCE_PREFIXES, terminal),
+                        "actions": None, "detail": ("partition refused before any launch: the "
+                                                    "first partition's build is not admitted: %s"
+                                                    % error)[:4096]}
+            build = types.SimpleNamespace(layout=types.SimpleNamespace(build=build_dir))
+            built = contracts.read_json(builds_bytes, "builds")
+        else:
+            build = builds.Builder(owner, plan, None, bounded_container=True,
+                                   zigbuild_bin=config["zigbuild_bin"], deadline_unix_ms=deadline_ms)
+            built = build.build()
+            require(built["cleanup"]["status"] == "removed", "core build cleanup unconfirmed")
         if work == "core":
             binaries = built_binaries(built)
         with timing.enforce("preparing local sample scratch"):
             hostprep.prepare(scratch_image, scratch, plan["profile"]["environment"]["scratch_limit_bytes"],
                              host=preparation_host)
         if work == "core":
-            runner.prepare_run_dir(run, contracts.write_bytes(plan, "run"), contracts.write_bytes(built, "builds"))
+            authority = None
+            if partition is not None and partition["build_from"] is not None:
+                authority = partition_authority(plan, partition, request["request_id"],
+                                                builds_bytes, built, int(time.time() * 1000))
+            runner.prepare_run_dir(run, contracts.write_bytes(plan, "run"),
+                                   builds_bytes if authority is not None
+                                   else contracts.write_bytes(built, "builds"), authority)
             for shard in plan["shards"]:
+                if partition is not None and shard["index"] not in partition["shards"]:
+                    continue
                 try:
                     doc = runner.run_shard(runner.Options(
                         plan=os.path.join(path, "plan.json"), build=build.layout.build,
@@ -615,6 +1386,10 @@ def execute_local(config, request, path, lease, installed=ROOT):
                     # No candidate launched; absent shard remains incomplete, never a pass.
                     require(not lease.uncertain, "preflight scratch cleanup is uncertain")
                     continue
+                except runner.Cancelled as cancelled:
+                    raise settle_cancellation(cancelled, plan, partition, path, lease, terminal,
+                                              lambda: hostprep.cleanup(scratch_image, scratch,
+                                                                       host=preparation_host))
                 require(not lease.uncertain, "owned shard cleanup is uncertain")
                 if doc["failure"] and doc["failure"]["reason"] in (
                         "cleanup_uncertain", "seed_cleanup_failed"):
@@ -622,17 +1397,22 @@ def execute_local(config, request, path, lease, installed=ROOT):
             with terminal.enforce("rendering and archiving local measurement"):
                 evaluation = compare.evaluate(run)
                 report.write(run, os.path.join(path, "report"))
-                archive_root = os.path.join(config["root"], "core-archive")
-                if not os.path.exists(archive_root):
-                    archive.Archive.create(archive_root, config["archive_bytes"])
-                with archive.Archive(archive_root) as store:
-                    store.import_run(run)
-                    if request["cohort_digest"]:
-                        store.pin(plan["run_id"], "active_cohort", "Local calibration original")
-                    store.retain()
-                history_output = os.path.join(path, "history")
-                history.write([archive_root], history_output)
-                measurement = evaluation.verdict["aggregate"]["result"]
+                if partition is not None:
+                    # A partition's shards are judged only in its comparison's aggregate,
+                    # which the comparison archives once; alone it is never a verdict.
+                    measurement = "partition_measured"
+                else:
+                    archive_root = os.path.join(config["root"], "core-archive")
+                    if not os.path.exists(archive_root):
+                        archive.Archive.create(archive_root, config["archive_bytes"])
+                    with archive.Archive(archive_root) as store:
+                        store.import_run(run)
+                        if request["cohort_digest"]:
+                            store.pin(plan["run_id"], "active_cohort", "Local calibration original")
+                        store.retain()
+                    history_output = os.path.join(path, "history")
+                    history.write([archive_root], history_output)
+                    measurement = evaluation.verdict["aggregate"]["result"]
         else:
             d = config["diagnostic"]
             require(timing.left() >= d["total_minutes"] * 60,
@@ -643,9 +1423,19 @@ def execute_local(config, request, path, lease, installed=ROOT):
                 doc = builder.build()
                 require(doc["cleanup"]["status"] == "removed", "diagnostic build cleanup unconfirmed")
                 return builder.layout.build
+            # A parent-selected profile reads the verified parent verdict it froze at
+            # submission; named cases are an explicit selection that reads none.
+            verdict = None
+            if request.get("parent") is not None:
+                verdict = os.path.join(path, PARENT_VERDICT)
+                require(sha256_bytes(read(verdict)) == request["parent"]["verdict_sha256"],
+                        "the frozen parent verdict changed")
             code, profiles, detail = diagnostics.run_profile(gitrefs.Git(sources, budget=timing),
                 diagnostics.Options(plan=os.path.join(path, "plan.json"), cases=d["cases"],
-                    recipe=d["recipe"], output=os.path.join(path, "profile"), parent_build=build.layout.build,
+                    verdict=verdict, max_cases=d["max_cases"], perf=d["perf"],
+                    inferno_bin=d["inferno_bin"],
+                    recipe=d["recipe"], observer=observed(config, registry, d["recipe"]),
+                    output=os.path.join(path, "profile"), parent_build=build.layout.build,
                     repo=sources, mode=diagnostics.LINUX_CONTAINER, image=config["sample_image"],
                     scratch_fs=scratch, builder=diagnostic_builder, build_image=config["build_image"],
                     duration_seconds=d["duration_seconds"], frequency_hz=d["frequency_hz"],
@@ -661,6 +1451,25 @@ def execute_local(config, request, path, lease, installed=ROOT):
             problems = hostprep.cleanup(scratch_image, scratch, host=preparation_host)
             require(not problems, "; ".join(problems))
     else:
+        # Before either build: the sequential bounds left must still cover both builds, the
+        # scratch and the profile; a known refusal is a clean terminal outcome, nothing built
+        # and nothing measured.
+        _, parts = time_bounds(config, "telemetry", None, installed)
+        rest = [part for part in parts if part[0] not in ("executor reserve", "source retention")]
+        left = timing.left()
+        if left < sum(seconds for _, seconds in rest):
+            return {"status": "failed", "measurement_status": "not_executed",
+                    "evidence": file_manifest(path, EVIDENCE_PREFIXES, terminal),
+                    "actions": None, "detail": (
+                        "telemetry refused before any build, nothing measured: %s need %d s, "
+                        "%d s are left of run_seconds %d" % (
+                            ", ".join("%s %d s" % part for part in rest),
+                            sum(seconds for _, seconds in rest), int(left),
+                            config["run_seconds"]))[:4096]}
+        refused = admit_images(config, work, path, lease, terminal,
+                               build_recipes(config, work, installed=installed))
+        if refused is not None:
+            return refused
         built_af, records = {}, {}
         for side in contracts.SIDES:
             sha = request["sources"][side + "_sha"]
@@ -668,7 +1477,8 @@ def execute_local(config, request, path, lease, installed=ROOT):
             run_git(sources, ["worktree", "add", "--detach", "--quiet", source, sha], timing)
             output = os.path.join(path, side + "-build")
             telemetrybuild.run(source, output, config["build_image"], os.path.join(path, side + "-scratch"),
-                               sha, seconds=min(4800, int(timing.seconds("contained telemetry build"))))
+                               sha, seconds=min(TELEMETRY_BUILD_SECONDS,
+                                                int(timing.seconds("contained telemetry build"))))
             built_af[side] = os.path.join(output, "af")
             record = {"schema": contracts.TELEMETRY_BUILD_SCHEMA, "side": side, "source_sha": sha,
                 "binary_sha256": telemetrylab._binary(built_af[side], side)[1], "image": config["build_image"],
@@ -715,6 +1525,78 @@ def built_binaries(built):
         artifact = built["sides"][side]["artifacts"]["af"]
         out[side] = None if artifact is None else {"sha256": artifact["sha256"], "bytes": artifact["size"]}
     return out
+
+
+def settle_cancellation(cancelled, plan, partition, path, lease, terminal, cleanup):
+    """The controller's cancellation a shard consumed (`runner.Cancelled`), after this
+    original's owned scratch cleanup: with every cleanup confirmed it carries the original's
+    `interrupted` outcome, its sealed partial evidence kept and no later shard started; with
+    any unconfirmed it carries none, so the claim turns uncertain and the fence stays."""
+    if lease.uncertain:
+        add_note(cancelled, "owned shard cleanup is uncertain; retained original fence")
+        return cancelled
+    try:
+        with terminal.enforce("cleaning local scratch after cancellation"):
+            problems = cleanup()
+    except Exception as error:  # noqa: BLE001 - kept on the cancellation, never swallowed
+        problems = ["%s: %s" % (type(error).__name__, error)]
+    if problems:
+        add_note(cancelled, "scratch cleanup unconfirmed; retained original fence: "
+                 + "; ".join(problems)[:2048])
+        return cancelled
+    index = cancelled.doc["shard"]
+    owned = [s["index"] for s in plan["shards"]
+             if partition is None or s["index"] in partition["shards"]]
+    later = [i for i in owned if i > index]
+    with terminal.enforce("sealing cancelled local evidence"):
+        evidence = file_manifest(path, EVIDENCE_PREFIXES, terminal)
+    cancelled.result = {
+        "status": "interrupted", "measurement_status": "interrupted", "evidence": evidence,
+        "actions": None, "detail": (
+            "cancelled by signal %d during shard %d: its sealed record is kept, shards %s and "
+            "every later original were not started; cleanup confirmed. No verdict." % (
+                cancelled.signum, index, ", ".join(map(str, later)) or "none"))[:4096]}
+    return cancelled
+
+
+def partition_authority(plan, partition, request_id, builds_bytes, built, started_unix_ms):
+    """The `af.perf-partition-execution/1` bytes of a later partition original (ADR-0269): its
+    own run window, the plan's frozen total minutes from this execution's start, bound to the
+    reused build's exact bytes and its recorded run, which stays unchanged provenance. The
+    caller's deadline (this original's `run_seconds`) still tightens every shard."""
+    total = plan["limits"]["run_total_minutes"]
+    doc = {"schema": "af.perf-partition-execution/1",
+           "comparison_id": partition["comparison_id"], "plan_digest": plan["plan_digest"],
+           "builds_sha256": sha256_bytes(builds_bytes), "build_from": partition["build_from"],
+           "build_run": built["execution"]["run"],
+           "partitions": [{"index": partition["index"], "request_id": request_id,
+                           "shards": partition["shards"],
+                           "run": {"started_unix_ms": started_unix_ms,
+                                   "deadline_unix_ms": started_unix_ms + total * 60000,
+                                   "total_minutes": total}}]}
+    return contracts.write_bytes(doc, "partition-execution")
+
+
+def partition_build(config, request, installed=ROOT):
+    """(build directory, builds.json bytes) of the first partition a later partition reuses:
+    a completed, offline-verified original of the same comparison and plan, whose build lies in
+    its retained, hash-bound evidence (`sources.git`). Refused otherwise."""
+    partition = request["partition"]
+    with Journal(config, readonly=True) as journal:
+        first, _, _ = verify_original(journal, partition["build_from"], installed)
+        require(first.get("partition") is not None
+                and first["partition"]["comparison_id"] == partition["comparison_id"]
+                and first["partition"]["index"] == 0
+                and first["plan_sha256"] == request["plan_sha256"]
+                and first["sources"] == request["sources"],
+                "the reused build belongs to another comparison, plan or source pair")
+        root = journal.path(partition["build_from"])
+    plan = contracts.read_json(read(os.path.join(root, "plan.json")), "run")
+    builds_bytes = read(os.path.join(root, "run", "builds.json"))
+    layout = builds.Layout(os.path.join(root, "sources.git"), plan["run_id"])
+    require(os.path.isdir(layout.build) and not os.path.islink(layout.build),
+            "the first partition retains no build directory")
+    return layout.build, builds_bytes
 
 
 def dispatch_actions(config, request, path, transport=None):
@@ -799,7 +1681,9 @@ def verify_original(journal, ident, installed=ROOT):
     if request["work"] == "core":
         plan = contracts.read_json(read(os.path.join(path, "plan.json")), "run")
         require(sha256_bytes(contracts.write_bytes(plan, "run")) == request["plan_sha256"], "original plan changed")
-        require(plan["run_id"] == "local_" + ident[4:]
+        # An earlier request version (ADR-0266) names no partition: its plan is its own.
+        owner = ident if request.get("partition") is None else request["partition"]["comparison_id"]
+        require(plan["run_id"] == "local_" + owner[4:]
                 and plan["profile"]["environment"]["runner"] == "dedicated",
                 "hosted evidence cannot be reclassified as a local original")
         cohort = (contracts.read_json(read(os.path.join(path, "cohort.json")), "local-cohort-declaration")
@@ -816,7 +1700,7 @@ def verify_original(journal, ident, installed=ROOT):
             control=request["sources"]["control_sha"], authority=request["sources"]["authority_sha"],
             cases=core["cases"], environment=core["environment"], build_image=config["build_image"],
             shards=core["shards"], run_id=plan["run_id"], cohort=cohort,
-            member=request["member_id"], calibration=sealed))
+            member=request["member_id"], calibration=sealed, windows=core["windows"]))
         require(expected == plan, "original plan is not what its retained source authority freezes")
         evaluation = compare.evaluate(os.path.join(path, "run"))
         require(evaluation.plan == plan, "measurement changed original plan")
@@ -837,6 +1721,9 @@ def verify_original(journal, ident, installed=ROOT):
         parent = contracts.read_json(read(os.path.join(path, "plan.json")), "run")
         require(sha256_bytes(contracts.write_bytes(parent, "run")) == request["plan_sha256"],
                 "diagnostic parent plan changed")
+        if request.get("parent") is not None:
+            require(sha256_bytes(read(os.path.join(path, PARENT_VERDICT)))
+                    == request["parent"]["verdict_sha256"], "the frozen parent verdict changed")
         report.admit_children([os.path.join(path, "profile")], parent)
     return request, state, result
 

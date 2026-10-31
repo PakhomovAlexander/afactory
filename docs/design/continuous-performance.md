@@ -435,12 +435,18 @@ fixtures must demonstrate usable unwinding for the supported recipe. This choice
 because perf documents invalid frame-pointer call graphs for code built without the
 necessary frame pointers. [perf record documentation](https://man7.org/linux/man-pages/man1/perf-record.1.html).
 
-GNU CPU diagnostic recipes freeze `-Cdebuginfo=line-tables-only` in the existing recipe
+Linux CPU diagnostic recipes, GNU and the musl shipping build (`linux_musl_cpu_profile`,
+built through cargo-zigbuild) alike, freeze `-Cdebuginfo=line-tables-only` in the existing recipe
 `rustflags` and build settings. This preserves function names, source lines, inlined call
 locations and unwind information while omitting local-variable and type debugging for compiled
 crates. `debug_symbols = true` means attribution information is retained; it does not promise
 full debugger information. The explicit rustflag overrides Cargo's full-debug default for a
 symbol-enabled recipe. Ordinary verdict recipes and release product settings stay unchanged.
+The musl recipe once kept Cargo's full debug information: on Claw its baseline AF alone was
+802,606,040 bytes, and with the supervisor it left too little of the unchanged 1-GiB
+build-artifact cap for the other artifacts, so no diagnostic build was admitted. The GNU
+line-tables-only AF was 285,890,672 bytes ([retained report](../performance-evidence/diagnostic-symbols-353.md)).
+Neither cap changes.
 
 Both region and whole-command `perf record` explicitly pass `--no-buildid-cache`, including
 the capability probe, avoiding private-HOME cache hard links while retaining build IDs in
@@ -464,7 +470,7 @@ Use deterministic colors and script-free SVG in the report; inferno exposes thes
 Retained ELF executables use lossless XZ (preset 6, CRC64, no filename or timestamp) at
 `symbols/<original-binary-sha256>.xz`. Decompress with `xz -dc FILE.xz > BINARY` and check
 the resulting SHA-256 against the filename and capture's binary identity before use.
-`af.perf-profiles/6` requires the exact archive path, compressed hash and size on each retained
+`af.perf-profiles/7` requires the exact archive path, compressed hash and size on each retained
 capture; referenced/missing symbols require null. Collection and report admission independently
 check the manifest's compressed integrity and bounded decompressed identity, once per shared
 archive. They reject missing, unrelated, corrupt, truncated, trailing and oversized evidence.
@@ -893,7 +899,11 @@ seeds written by that side's writers and its whole output judged by the command'
 musl shipping recipes beside GNU and macOS. It fails a run whose stdout was truncated before any
 oracle, bounds a step's files together while they are written, admits a seed tree before it is
 copied, and states each trace's region coverage (`af.perf-profiles/4`). A qualified contained
-capture remains operational evidence of package p8.
+capture remains operational evidence of package p8. A capture of fresh processes lists each
+repetition's recording and host-observer record in its own hash-bound index
+(`af.perf-repetitions/1`, named by `af.perf-profiles/7`), decodes each recording by its own
+bounded function-level `perf script --no-inline` in order, and bounds a host-observed command
+by its exec and exit in the trusted recording, so a capture of thousands of CLI processes still serializes and verifies.
 p6a (ADR-0177) adds `.github/workflows/performance.yml` and the `ci-*` commands. Each event is
 resolved once from the trusted control revision's own worktree (`af.perf-schedule/1`). Gate
 branches are skipped, and a pull request is never trusted. The primary comparison is full
@@ -1003,7 +1013,7 @@ multiple groups. Unknown or unprepared hosts still invalidate the whole trial.
 
 Telemetry joins the laboratory beside the verdict, not inside it (ADR-0214). A diagnostic child
 may record its CLI cases at an explicitly selected telemetry level and read them back through
-the side's own `af telemetry` documents (`af.perf-profiles/6`, `af.perf-report/3`). The bench
+the side's own `af telemetry` documents (`af.perf-profiles/7`, `af.perf-report/3`). The bench
 scripts of the telemetry design's §12 run as advisory telemetry experiments on a baseline and a
 candidate binary in their own workflow (`af.perf-telemetry-lab/1`,
 `af.perf-telemetry-result/2`, `af.perf-telemetry-history/1`). §13 of that design proposed
@@ -1039,8 +1049,13 @@ Actions remains a selectable dispatch backend and preserves original hosted rece
 dedicated Claw profiles and a local telemetry history keep persistent VM evidence distinct.
 The common machine lock covers preparation through terminal evidence and retains a crash fence
 when owned cleanup is uncertain, including a diagnostic build container whose removal is
-unconfirmed even with clean diagnostic scratch. Executor configuration v2 freezes the pinned
-image's Zig/cargo-zigbuild directory for shipping and diagnostic builders. Service invocations
+unconfirmed even with clean diagnostic scratch. Executor configuration v3 freezes the pinned
+image's Zig/cargo-zigbuild directory for shipping and diagnostic builders and names the
+diagnostic perf and Inferno tools. A core plan whose serial schedule cannot fit its run
+deadline is refused before reservation; `preflight` runs the same checks without reserving, a
+profile may select the regressions of a verified parent core original (request v2), and
+`overview` reports retained originals with state, verification, coverage and verdict apart.
+Service invocations
 drain admitted work before polling; calibration launch decisions recheck the frozen member day
 after capacity and source preparation. Missed originals retire as non-executed `expired` in
 state v2 and result v2 (v3 since ADR-0266) and remain off schedule in readiness with their original denominator.

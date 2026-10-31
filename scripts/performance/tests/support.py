@@ -171,13 +171,24 @@ def fetched_checkout(origin, path, branch="main"):
     return repo
 
 
+# The stand-in lock of `lab_repo`'s sources: a release every bench and CLI workload names.
+LOCK = b'# lock stand-in\nversion = 4\n\n[[package]]\nname = "af"\nversion = "0.14.0-rc.3"\n'
+
+
 def lab_repo(path, suite_bytes=None):
     """A repository whose first commit holds the registry and a stand-in instrument."""
     repo = Repo(path)
     files = {"fixtures/performance/suite.toml": suite_bytes or read(SUITE),
              "scripts/performance/cli.py": b"# instrument stand-in\n",
-             "Cargo.lock": b"# lock stand-in\nversion = 4\n",
+             "Cargo.lock": LOCK,
              "README": b"product\n"}
+    if suite_bytes is None:
+        # The CLI and native adapter registries of the committed suite, which the admission of
+        # its process and library workloads reads.
+        files["fixtures/performance/cli.toml"] = read(os.path.join(ROOT,
+                                                                   "fixtures/performance/cli.toml"))
+        files["fixtures/performance/adapters.toml"] = read(
+            os.path.join(ROOT, "fixtures/performance/adapters.toml"))
     root = repo.commit("lab", files)
     return repo, root
 

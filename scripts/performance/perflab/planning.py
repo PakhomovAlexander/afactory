@@ -80,6 +80,10 @@ class Request:
         # A diagnostic plan's capture bounds (ADR-0174); the hard defaults otherwise.
         self.diagnostic_duration_ms = None
         self.diagnostic_frequency_hz = None
+        # An operator configuration's declared run windows (`core.windows`, ADR-0269): the
+        # shard sampling and run total minutes frozen instead of the tier's, under the same
+        # hard maxima; None keeps the tier's own.
+        self.windows = None
         for key, value in values.items():
             require(hasattr(self, key), "unknown planning input " + key)
             setattr(self, key, value)
@@ -510,6 +514,9 @@ def freeze(suite, request, ids, mode, authority, activation, digests, changed, b
         shards = min(tier_doc["shards"], len(instances))
     require(1 <= shards <= limits.SHARDS_MAX, "--shards: between 1 and 16")
     require(shards <= len(instances), "--shards: never more shards than instances")
+    windows = tier_doc if request.windows is None else request.windows
+    require(set(windows) >= {"shard_sampling_minutes", "run_total_minutes"},
+            "declared windows name shard_sampling_minutes and run_total_minutes")
     assignment = schedule.assign_shards([item["instance_id"] for item in instances], shards)
     owner = dict((ident, index) for index, members in enumerate(assignment)
                  for ident in members)
@@ -608,8 +615,8 @@ def freeze(suite, request, ids, mode, authority, activation, digests, changed, b
                    "max_mad_ratio": health["max_mad_ratio"],
                    "denominator_floor": health["denominator_floor"],
                    "state": health["state"], "oracle": health["oracle"]},
-        "limits": dict(doc["limits"], shard_sampling_minutes=tier_doc["shard_sampling_minutes"],
-                       run_total_minutes=tier_doc["run_total_minutes"],
+        "limits": dict(doc["limits"], shard_sampling_minutes=windows["shard_sampling_minutes"],
+                       run_total_minutes=windows["run_total_minutes"],
                        concurrent_jobs=min(tier_doc["concurrent_jobs"], shards),
                        record_bytes=limits.RECORD_BYTES_MAX),
         "seed": seed,

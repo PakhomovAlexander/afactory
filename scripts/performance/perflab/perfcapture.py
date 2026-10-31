@@ -26,10 +26,18 @@ deadline, or when the supervised window could not hold another repetition; the c
 region is disabled on time.
 
 **The evidence.** The raw `perf.data` is kept. `perf script` with explicit fields (no period, so
-a collapsed weight is one sample) yields the samples, frames and unknown frames (`[unknown]`
+a collapsed weight is one sample), decoded at function level by `script_argv` (`--no-inline`),
+yields the samples, frames and unknown frames (`[unknown]`
 symbols, which inferno shows as DSO placeholders, are counted from the script, not guessed from
 folded names); the loss records are decoded from the file itself (`decode_losses`), and `perf
 buildid-list --with-hits` the build IDs. The effective frequency is samples over the region.
+Function level is a presentation choice, not a sampling one: the samples, their physically
+unwound frames and the recording are the same, but no inlined callee is expanded into frames of
+its own, which on a real Claw recording cost 4.7 s per fresh-process record against 0.09 s and so
+could not be repeated over the hundreds of records a CLI capture holds within its budget. The
+retained recordings and symbols can be decoded again with inline expansion outside the capture.
+A host-observed command's own time is its exec to its exit in its recording
+(`decode_lifetime`), never the wall of the shell that waited at the observer's gate.
 
 **Capability.** `probe_capability` runs a real acknowledged capture of the declared event on a
 bounded shell loop and requires decoded samples: a present tool or a zero exit status is not
@@ -49,6 +57,8 @@ from .values import sha256_bytes
 
 ACK = b"ack\n"
 SCRIPT_FIELDS = "comm,pid,tid,time,event,ip,sym,dso"
+# Function-level stacks: the one decoding every capture and capability proof uses.
+SCRIPT_OPTIONS = ("--no-inline", "-F", SCRIPT_FIELDS)
 CONTROL_COMMANDS = (b"enable\n", b"disable\n")
 READY_ENV = "AF_PERF_REGION_READY"
 GO_ENV = "AF_PERF_REGION_GO"
@@ -59,6 +69,11 @@ _RECORD = re.compile(rb"^record (0|[1-9][0-9]{0,9})\n")
 _PARTIAL_RECORD = re.compile(rb"^(?:r|re|rec|reco|recor|record|record |record [0-9]{1,10})$")
 # perf 6.1 pads a DSO without a build ID with blanks where its ID would be.
 _BUILD_ID = re.compile(r"^([0-9a-f]{16,64})?\s+(\S.*)$")
+
+
+def script_argv(perf, data):
+    """The `perf script` of the recording `data`: explicit fields, function-level frames."""
+    return [perf, "script", "-i", data] + list(SCRIPT_OPTIONS)
 
 
 class CaptureError(Exception):
@@ -330,7 +345,8 @@ def _repetitions(run, channel, alive, started, on_begin, on_end, on_record, capt
 
 def bracketed_run(supervisor, argv, env, cwd, request_path, fifo_dir, on_begin, on_end,
                   on_record, capture_seconds, run_deadline, handshake_seconds, timeout_seconds,
-                  on_next=None, file_bytes=None, clock=time.monotonic, watch=None, binds=()):
+                  on_next=None, file_bytes=None, clock=time.monotonic, watch=None, binds=(),
+                  after_start=None):
     """Run `argv` (a profiler wrapping the probe, or the probe itself) once under `supervisor`,
     with the probe's region channel in `fifo_dir` and its request, at `request_path`, as stdin.
     `on_begin(deadline)` and `on_end(deadline)` switch the recording on and off; a region is
@@ -341,7 +357,8 @@ def bracketed_run(supervisor, argv, env, cwd, request_path, fifo_dir, on_begin, 
     the recording continues. `file_bytes` bounds every file the recording writes, and `watch`
     all of them together while they are written (`toolrun.Running`): a recording that outgrew
     its room is cancelled and refused as `evidence_over_room`. A contained supervisor binds
-    `binds` into the recording's container. Returns a `Bracketed` whose
+    `binds` into the recording's container. `after_start(running)`, when given, is called once
+    the run started and before its handshake (the host observer's attachment). Returns a `Bracketed` whose
     profiler exited 0 with a clean lifecycle; anything else raises."""
     channel = Channel(fifo_dir)
     running = None
@@ -360,6 +377,8 @@ def bracketed_run(supervisor, argv, env, cwd, request_path, fifo_dir, on_begin, 
         run = Bracketed(launched)
         alive = lambda: not running.done()  # noqa: E731
         try:
+            if after_start is not None:
+                after_start(running)
             _repetitions(run, channel, alive, launched, on_begin, on_end, on_record,
                          capture_seconds, run_deadline, launched + timeout_seconds,
                          handshake_seconds, on_next, clock)
@@ -599,6 +618,102 @@ def decode_losses(read, size):
     return dict(counts, state="decoded", detail="")
 
 
+PERF_RECORD_COMM = 3
+PERF_RECORD_EXIT = 4
+PERF_RECORD_MISC_COMM_EXEC = 1 << 13
+PERF_SAMPLE_TID = 1 << 1
+PERF_SAMPLE_TIME = 1 << 2
+# The `sample_id` fields every non-sample record carries with `sample_id_all`, in their order:
+# TID, TIME, ID, STREAM_ID, CPU, IDENTIFIER; only TID precedes TIME.
+PERF_SAMPLE_ID_FIELDS = (1 << 1) | (1 << 2) | (1 << 6) | (1 << 9) | (1 << 7) | (1 << 16)
+PERF_ATTR_SAMPLE_ID_ALL = 1 << 18
+PERF_ATTR_BYTES = 48
+
+
+def _unknown_lifetime(pid, detail):
+    return CaptureError("command_boundary_unknown", "the recording does not bound process %d's "
+                        "command: %s; its wait at the observer's gate cannot be told apart from "
+                        "the command's own time, so none of it is attributed" % (pid, detail))
+
+
+def decode_lifetime(read, size, pid):
+    """(exec, exit) of process `pid` in perf's clock, in nanoseconds, decoded from a `perf.data`
+    file of `size` bytes read through `read(offset, count)`: the kernel's `PERF_RECORD_COMM`
+    with its exec flag (the gate executing the command in the attached task) and its
+    `PERF_RECORD_EXIT`. The interval between them is the command alone, without the observer's
+    attachment, the wait at the gate or any Docker client time. A recording this reader cannot
+    decode, or one without both records of `pid`, raises `command_boundary_unknown`, never an
+    estimate."""
+    header = read(0, PERF_HEADER_BYTES)
+    if len(header) < PERF_HEADER_BYTES or header[:8] != PERF_FILE_MAGIC:
+        raise _unknown_lifetime(pid, "not a little-endian perf.data file")
+    header_size, attr_size, attrs_offset, attrs_size, data_offset, data_size = \
+        struct.unpack_from("<QQQQQQ", header, 8)
+    if header_size != PERF_HEADER_BYTES or data_size == 0 \
+            or data_offset < PERF_HEADER_BYTES or data_offset + data_size > size:
+        raise _unknown_lifetime(pid, "an unfinished or malformed header")
+    if attr_size < PERF_ATTR_BYTES + 16 or not attrs_size or attrs_size % attr_size \
+            or attrs_offset + attrs_size > size or attrs_size // attr_size > 64:
+        raise _unknown_lifetime(pid, "no readable event attributes")
+    kinds = set()
+    for offset in range(attrs_offset, attrs_offset + attrs_size, attr_size):
+        attr = read(offset, PERF_ATTR_BYTES)
+        if len(attr) < PERF_ATTR_BYTES:
+            raise _unknown_lifetime(pid, "an event attribute is cut short")
+        sample_type, = struct.unpack_from("<Q", attr, 24)
+        flags, = struct.unpack_from("<Q", attr, 40)
+        if not flags & PERF_ATTR_SAMPLE_ID_ALL or not sample_type & PERF_SAMPLE_TIME:
+            raise _unknown_lifetime(pid, "its events carry no time on their task records")
+        kinds.add(sample_type & PERF_SAMPLE_ID_FIELDS)
+    if len(kinds) != 1:
+        raise _unknown_lifetime(pid, "its events disagree on their record identity fields")
+    fields = kinds.pop()
+    trailer = 8 * bin(fields).count("1")
+    time_at = 8 if fields & PERF_SAMPLE_TID else 0
+    executed = exited = None
+    position, end = data_offset, data_offset + data_size
+    while position < end:
+        head = read(position, 8)
+        if len(head) < 8:
+            raise _unknown_lifetime(pid, "a record header at %d is cut short" % position)
+        kind, misc, length = struct.unpack("<IHH", head)
+        if length < 8 or position + length > end:
+            raise _unknown_lifetime(pid, "a record at %d does not fit its data section"
+                                    % position)
+        step = length
+        if kind == PERF_RECORD_COMPRESSED:
+            raise _unknown_lifetime(pid, "it holds compressed records")
+        if kind == PERF_RECORD_COMM and misc & PERF_RECORD_MISC_COMM_EXEC:
+            if length < 16 + trailer:
+                raise _unknown_lifetime(pid, "a COMM record of %d bytes at %d"
+                                        % (length, position))
+            owner, thread = struct.unpack("<II", read(position + 8, 8))
+            if owner == pid and thread == pid and executed is None:
+                executed, = struct.unpack("<Q", read(position + length - trailer + time_at, 8))
+        elif kind == PERF_RECORD_EXIT:
+            if length < 32:
+                raise _unknown_lifetime(pid, "an EXIT record of %d bytes at %d"
+                                        % (length, position))
+            owner, _, thread, _, when = struct.unpack("<IIIIQ", read(position + 8, 24))
+            if owner == pid and thread == pid:
+                exited = when
+        elif kind == PERF_RECORD_AUXTRACE:
+            if length < 16:
+                raise _unknown_lifetime(pid, "an AUXTRACE record of %d bytes at %d"
+                                        % (length, position))
+            extra, = struct.unpack("<Q", read(position + 8, 8))
+            step += extra
+        position += step
+    if position != end:
+        raise _unknown_lifetime(pid, "the last record ends past its data section")
+    if executed is None or exited is None:
+        raise _unknown_lifetime(pid, "it holds no %s of it" % (
+            "exec" if executed is None else "exit"))
+    if exited < executed:
+        raise _unknown_lifetime(pid, "it exited before it executed its command")
+    return executed, exited
+
+
 def parse_build_ids(text):
     """[(build ID or None, path)] of `perf buildid-list`; a DSO without one is listed with
     None."""
@@ -702,7 +817,7 @@ def probe_capability(supervisor, perf, event, frequency, workdir, env, seconds, 
             running.cancel()
             running.wait()
         control.close()
-    script = toolrun.run(supervisor, [perf, "script", "-i", data, "-F", SCRIPT_FIELDS], env,
+    script = toolrun.run(supervisor, script_argv(perf, data), env,
                          seconds, CAPABILITY_SCRIPT_BYTES, cwd=workdir, deadline=deadline,
                          clock=clock, binds=binds)
     if script.failure() is not None:
