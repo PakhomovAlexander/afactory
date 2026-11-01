@@ -73,3 +73,5 @@ and an ADR disagree, the ADR wins. Shared vocabulary is defined in
   and model admission, confined file tools and partial accounting. Token-free real SDK and
   hermetic runtime fixtures cover the boundaries; paid live smoke was not run. Architecture
   adjustment: proposed [ADR-0274](../adr/0274-own-the-pi-sdk-host-and-confine-its-tools.md).
+- [`pi-provider-validation.md`](pi-provider-validation.md) — retained original issue #494
+  observation, coordinator measurement bound to its historical source and current candidate checks.

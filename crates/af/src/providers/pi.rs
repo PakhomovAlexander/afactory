@@ -41,6 +41,58 @@ fn safe_installation(program: &Path, module: bool) -> Result<PathBuf, String> {
     }
     Ok(program)
 }
+/// Resolve installed layouts without executing (or interpreting) the Pi launcher.
+/// Managed installations select only the supported release, never a path from shell text.
+fn discover_sdk() -> Result<PathBuf, String> {
+    let unresolved = "Cannot safely resolve Pi SDK; pass --sdk-entrypoint /installed/node_modules/@earendil-works/pi-coding-agent/dist/index.js";
+    let launcher = resolve_program("pi").ok_or(unresolved)?;
+    let launcher = safe_installation(&launcher, true)?;
+    let bin = launcher.parent().ok_or(unresolved)?;
+    let agent = bin.parent().ok_or(unresolved)?;
+    let install = agent.join("install");
+    if launcher.file_name().is_some_and(|name| name == "pi")
+        && bin.file_name().is_some_and(|name| name == "bin")
+        && install.exists()
+    {
+        let invalid = "Pi managed installation requires a regular current-version containing exactly supported SDK version 1.4.0 and an SDK inside that release";
+        if safe_installation(&install, true)? != install {
+            return Err(invalid.into());
+        }
+        // Bound reads and refuse links/special files before consulting the version.
+        let version_file = install.join("current-version");
+        let file = OpenOptions::new()
+            .read(true)
+            .custom_flags(nix::libc::O_NOFOLLOW | nix::libc::O_NONBLOCK)
+            .open(&version_file)
+            .map_err(|_| invalid)?;
+        if !file.metadata().map_err(|_| invalid)?.is_file() {
+            return Err(invalid.into());
+        }
+        let mut version = String::new();
+        file.take(64)
+            .read_to_string(&mut version)
+            .map_err(|_| invalid)?;
+        let version = version.strip_suffix('\n').unwrap_or(&version);
+        let version = version.strip_suffix('\r').unwrap_or(version);
+        if version != review_runner_pi::SDK_VERSION {
+            return Err(invalid.into());
+        }
+        let release = install.join("releases").join(version);
+        let canonical_release = safe_installation(&release, true)?;
+        // A symlinked install/release or package must not redirect discovery elsewhere.
+        if canonical_release != release {
+            return Err(invalid.into());
+        }
+        let entry = release.join("node_modules/@earendil-works/pi-coding-agent/dist/index.js");
+        let canonical_entry = safe_installation(&entry, true)?;
+        if !canonical_entry.starts_with(&release) || !canonical_entry.is_file() {
+            return Err(invalid.into());
+        }
+        return Ok(canonical_entry);
+    }
+    // Existing SDK bundle CLI layout: dist/bundle/cli.js -> dist/index.js.
+    Ok(agent.join("index.js"))
+}
 pub(super) fn node() -> Result<PathBuf, String> {
     safe_installation(
         &resolve_program("node").ok_or("Pi requires Node >=22.19 on PATH")?,
@@ -131,8 +183,10 @@ pub fn setup(
     validate_utf8_destination(auth)?;
     validate_private_auth_directory(auth)?;
     let auth = fs::canonicalize(auth).map_err(|_| "Pi auth directory is missing")?;
-    let resolved = sdk.map(PathBuf::from).or_else(|| resolve_program("pi").and_then(|p| fs::canonicalize(p).ok()).and_then(|p| p.parent()?.parent().map(|p| p.join("index.js"))))
-        .ok_or("Cannot safely resolve Pi SDK; pass --sdk-entrypoint /installed/node_modules/@earendil-works/pi-coding-agent/dist/index.js")?;
+    let resolved = match sdk {
+        Some(path) => path.to_path_buf(),
+        None => discover_sdk()?,
+    };
     let config = PiConfig {
         backend: backend.into(),
         sdk_entrypoint: safe_installation(&resolved, true)?,
@@ -185,6 +239,9 @@ pub fn setup(
         );
     } else {
         println!("provider {id}: {detail}");
+    }
+    if code != EXIT_OK {
+        eprintln!("af provider setup: {detail} ({state})");
     }
     Ok(code)
 }

@@ -33,7 +33,12 @@ af provider models pi-personal --json
 ```
 
 `--sdk-entrypoint` may be omitted when the installed Pi launcher safely resolves to its
-SDK `dist/index.js`. Node is resolved to an absolute executable outside the candidate's
+SDK `dist/index.js`. For the standard managed `<agent>/bin/pi` launcher, AF reads
+`<agent>/install/current-version` as exactly supported version `1.4.0` and resolves
+`install/releases/1.4.0/node_modules/@earendil-works/pi-coding-agent/dist/index.js`.
+It never executes the launcher. Malformed/unsupported versions, symlinked version files,
+release/entrypoint escapes and repository-owned installations refuse. Explicit entrypoints
+and safely resolved SDK CLI layouts remain supported. Node is resolved to an absolute executable outside the candidate's
 repository-owned paths; the SDK must be installed outside any repository. `NODE_OPTIONS`, `NODE_PATH`, proxy,
 cloud and API-key environment variables are absent from the host. `--login` and
 `af provider auth` are unavailable for Pi; login stays human-driven in Pi's own terminal.
@@ -187,3 +192,7 @@ SDK leaves that coverage explicitly **not run**, while the hermetic host protoco
 quota request or paid inference was used for implementation evidence. The successful
 official SDK test proves construction, tool confinement and synthetic stream handling; the
 synthetic inference fixtures prove AF's protocol/runtime behavior. They are not a live service receipt.
+
+The [indexed validation record](pi-provider-validation.md) retains the original issue #494
+observation and manual measurement with exact source and file bindings, separately from current
+candidate checks. No historical execution is reconstructed or attributed to this candidate.

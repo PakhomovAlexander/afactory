@@ -22,6 +22,11 @@ af provider setup pi-personal --kind pi --backend openai-codex \
   --sdk-entrypoint /installed/node_modules/@earendil-works/pi-coding-agent/dist/index.js
 ```
 
+`--sdk-entrypoint` may be omitted for the standard managed `<agent>/bin/pi` launcher:
+AF validates `install/current-version` and resolves the supported 1.4.0 release SDK without
+executing the launcher. Unsafe paths and incompatible versions refuse. Failed Pi setup keeps
+its JSON (or human result) on stdout and prints an AF-authored detail and outcome on stderr.
+
 Pi setup does not start login; `--login` and `af provider auth` remain unavailable for Pi.
 `provider detect` scans Claude/Codex contexts; Pi registration is explicit. Writable Pi
 Workers get confined edit/write tools in addition to read/grep/find/ls, with no shell,

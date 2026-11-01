@@ -117,7 +117,7 @@ mod process {
         response["schema"] = json!(PROTOCOL);
         response["type"] = json!("ready");
         let body = r#"#!/usr/bin/python3 -B
-import json,os,sys,socket
+import json,os,sys,socket,signal
 mode=MODE
 open(START_MARKER,'w').write('started')
 ready=json.loads(READY)
@@ -143,9 +143,12 @@ prompt=json.loads(sys.stdin.readline())
 open(MARKER,'w').write(prompt['text'])
 emit({'type':'accepted'})
 emit({'type':'usage','inference':1,'complete':True,'input':10,'output':2,'cache_read':3,'cache_write':None,'reasoning':None})
-if mode=='cancel':
- s=socket.socket(socket.AF_UNIX); s.connect(SOCKET); s.sendall(str(os.getpid()).encode()); s.close()
- sys.stdin.read(); sys.exit(1)
+if mode in ['cancel','cancel-no-pid']:
+ s=socket.socket(socket.AF_UNIX); s.connect(SOCKET)
+ if mode=='cancel-no-pid': sys.exit(1)
+ s.sendall(str(os.getpid()).encode()); s.close()
+ # Wait for supervisor cancellation; stdin can already be closed after the prompt.
+ signal.pause(); sys.exit(1)
 if mode=='oversize': os.write(1,b'x'*(4*1024*1024+1)); sys.exit(0)
 if mode=='malformed': os.write(1,b'garbage\n'); sys.exit(0)
 if mode=='partial': os.write(1,b'{"schema":'); sys.exit(0)
@@ -304,18 +307,72 @@ if mode=='after': emit({'type':'error','code':'inference_failed'})
             assert!(!observed.charge_complete, "{mode}");
         }
     }
-    #[test]
-    fn cancellation_during_inference_reaps_the_process_and_keeps_usage() {
+    // Readiness comes from the host, but neither accept nor a connected peer may
+    // outlive the bounded wait. Completion wakes the wait on early host failure.
+    fn cancellation_pid(
+        listener: &std::os::unix::net::UnixListener,
+        completed: &mpsc::Receiver<()>,
+    ) -> Result<String, String> {
+        let deadline = Instant::now() + Duration::from_secs(30);
+        listener.set_nonblocking(true).map_err(|e| e.to_string())?;
+        let mut peer = None;
+        let mut pid = Vec::new();
+        loop {
+            if peer.is_none() {
+                match listener.accept() {
+                    Ok((stream, _)) => {
+                        stream.set_nonblocking(true).map_err(|e| e.to_string())?;
+                        peer = Some(stream);
+                    }
+                    Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => {}
+                    Err(e) => return Err(e.to_string()),
+                }
+            }
+            if let Some(stream) = &mut peer {
+                let mut bytes = [0; 32];
+                match stream.read(&mut bytes) {
+                    Ok(0) => {
+                        let pid = String::from_utf8(pid).map_err(|e| e.to_string())?;
+                        if pid.is_empty() || !pid.bytes().all(|b| b.is_ascii_digit()) {
+                            return Err("host closed readiness without a PID".into());
+                        }
+                        return Ok(pid);
+                    }
+                    Ok(count) => {
+                        pid.extend_from_slice(&bytes[..count]);
+                        if pid.len() > 20 {
+                            return Err("oversized readiness PID".into());
+                        }
+                    }
+                    Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => {}
+                    Err(e) => return Err(e.to_string()),
+                }
+            }
+            let remaining = deadline.saturating_duration_since(Instant::now());
+            if remaining.is_zero() {
+                return Err("host readiness deadline elapsed".into());
+            }
+            match completed.recv_timeout(remaining.min(Duration::from_millis(10))) {
+                Ok(()) | Err(mpsc::RecvTimeoutError::Disconnected) => {
+                    return Err("adapter completed before host readiness".into());
+                }
+                Err(mpsc::RecvTimeoutError::Timeout) => {}
+            }
+        }
+    }
+
+    fn cancel_fixture(mode: &str) -> Result<String, String> {
         use std::os::unix::net::UnixListener;
         let root = tempfile::tempdir().unwrap();
         let socket = root.path().join("control");
         let listener = UnixListener::bind(&socket).unwrap();
-        let adapter = fixture("cancel", root.path(), Some(&socket));
+        let adapter = fixture(mode, root.path(), Some(&socket));
         let cas = Cas::open(root.path().join("cas")).unwrap();
         let cancelled = AtomicBool::new(false);
+        let (finished, completed) = mpsc::channel();
         std::thread::scope(|scope| {
             let running = scope.spawn(|| {
-                adapter.invoke(
+                let returned = adapter.invoke(
                     &cas,
                     root.path(),
                     b"request".to_vec(),
@@ -323,11 +380,12 @@ if mode=='after': emit({'type':'error','code':'inference_failed'})
                     WorkerAccess::ReadOnly,
                     Some(&cancelled),
                     &[],
-                )
+                );
+                let _ = finished.send(());
+                returned
             });
-            let (mut peer, _) = listener.accept().unwrap();
-            let mut pid = String::new();
-            peer.read_to_string(&mut pid).unwrap();
+            let pid = cancellation_pid(&listener, &completed);
+            // Always cancel before joining, including every failed readiness path.
             cancelled.store(true, Ordering::Release);
             let returned = running.join().unwrap();
             assert!(returned.message.is_err());
@@ -341,12 +399,25 @@ if mode=='after': emit({'type':'error','code':'inference_failed'})
                     .get(),
                 9
             );
-            let status = std::process::Command::new("/bin/kill")
-                .args(["-0", &pid])
-                .stderr(std::process::Stdio::null())
-                .status()
-                .unwrap();
-            assert!(!status.success(), "owned leader was reaped");
-        });
+            pid
+        })
+    }
+
+    #[test]
+    fn cancellation_during_inference_reaps_the_process_and_keeps_usage() {
+        let pid = cancel_fixture("cancel").unwrap();
+        let status = std::process::Command::new("/bin/kill")
+            .args(["-0", &pid])
+            .stderr(std::process::Stdio::null())
+            .status()
+            .unwrap();
+        assert!(!status.success(), "owned leader was reaped");
+    }
+
+    #[test]
+    fn cancellation_readiness_observes_early_failure_before_accept_or_pid() {
+        for mode in ["error", "cancel-no-pid"] {
+            assert!(cancel_fixture(mode).is_err(), "{mode}");
+        }
     }
 }

@@ -648,3 +648,185 @@ fn pi_setup_status_and_exact_model_catalog_are_token_free_and_secret_free() {
         String::from_utf8_lossy(&removed.stderr)
     );
 }
+
+#[test]
+fn pi_setup_discovers_managed_launcher_without_executing_it_and_refuses_unsafe_versions() {
+    let root = tempfile::tempdir().unwrap();
+    let work = root.path().join("work");
+    std::fs::create_dir(&work).unwrap();
+    let auth = root.path().join("auth");
+    let (_, path, state) = crate::fake_models::install_pi(root.path(), &auth, "review");
+    let agent = root.path().join("agent");
+    let install = agent.join("install");
+    let release = install.join("releases/1.4.0");
+    std::fs::create_dir_all(release.parent().unwrap()).unwrap();
+    std::fs::rename(root.path().join("installed"), &release).unwrap();
+    let launcher = agent.join("bin/pi");
+    std::fs::create_dir_all(launcher.parent().unwrap()).unwrap();
+    let marker = root.path().join("launcher-executed");
+    std::fs::write(
+        &launcher,
+        format!("#!/bin/sh\n: > '{}'\nexit 99\n", marker.display()),
+    )
+    .unwrap();
+    std::fs::set_permissions(&launcher, std::fs::Permissions::from_mode(0o700)).unwrap();
+    std::os::unix::fs::symlink(&launcher, Path::new(&path).join("pi")).unwrap();
+    let current = install.join("current-version");
+    let setup = || {
+        crate::common::af()
+            .args([
+                "provider",
+                "setup",
+                "pi-managed",
+                "--kind",
+                "pi",
+                "--backend",
+                "openai-codex",
+                "--auth-dir",
+                auth.to_str().unwrap(),
+                "--json",
+            ])
+            .current_dir(&work)
+            .env("HOME", root.path())
+            .env("XDG_CONFIG_HOME", root.path().join("config"))
+            .env("PATH", &path)
+            .env("AF_PROVIDERS_FILE", root.path().join("providers.toml"))
+            .output()
+            .unwrap()
+    };
+    for bad in [
+        "",
+        "..",
+        "../1.4.0",
+        "/1.4.0",
+        "1.5.0",
+        "1.4.0/../../outside",
+        "1.4.0\nextra",
+        " 1.4.0",
+        "1.4.0\0",
+        &"x".repeat(4096),
+    ] {
+        std::fs::write(&current, bad).unwrap();
+        let output = setup();
+        assert!(
+            !output.status.success(),
+            "accepted unsafe current-version {bad:?}"
+        );
+        assert!(!root.path().join("providers.toml").exists());
+        assert!(!marker.exists());
+    }
+    std::fs::write(&current, "1.4.0\n").unwrap();
+    let saved_version = root.path().join("saved-version");
+    std::fs::rename(&current, &saved_version).unwrap();
+    std::os::unix::fs::symlink(&saved_version, &current).unwrap();
+    assert!(
+        !setup().status.success(),
+        "accepted a symlinked current-version"
+    );
+    std::fs::remove_file(&current).unwrap();
+    std::fs::rename(&saved_version, &current).unwrap();
+    // The previous implementation derived agent/index.js, which does not exist.
+    assert!(!agent.join("index.js").exists());
+    let sdk = release.join("node_modules/@earendil-works/pi-coding-agent/dist/index.js");
+    let saved = root.path().join("saved-sdk.js");
+    std::fs::rename(&sdk, &saved).unwrap();
+    std::os::unix::fs::symlink(&saved, &sdk).unwrap();
+    assert!(
+        !setup().status.success(),
+        "managed entrypoint escaped its release"
+    );
+    std::fs::remove_file(&sdk).unwrap();
+    std::fs::rename(&saved, &sdk).unwrap();
+    let output = setup();
+    assert_eq!(code(&output), 0, "{} {}", out(&output), err(&output));
+    valid("pi-provider-setup-v1.json", &document(&output));
+    assert_eq!(document(&output)["outcome"], "registered");
+    let registry = std::fs::read_to_string(root.path().join("providers.toml")).unwrap();
+    assert!(registry.contains(sdk.to_str().unwrap()));
+    assert!(!marker.exists(), "discovery executed the managed launcher");
+    assert!(
+        !state.with_extension("json.calls").exists(),
+        "setup started inference"
+    );
+}
+
+#[test]
+fn pi_failed_setup_emits_safe_json_and_human_stderr_for_probe_and_registration_conflict() {
+    let root = tempfile::tempdir().unwrap();
+    let work = root.path().join("work");
+    std::fs::create_dir(&work).unwrap();
+    let auth = root.path().join("auth");
+    let (sdk, path, _) = crate::fake_models::install_pi(root.path(), &auth, "review");
+    let setup = |id: &str, json: bool| {
+        let mut command = crate::common::af();
+        command.args([
+            "provider",
+            "setup",
+            id,
+            "--kind",
+            "pi",
+            "--backend",
+            "openai-codex",
+            "--auth-dir",
+            auth.to_str().unwrap(),
+            "--sdk-entrypoint",
+            sdk.to_str().unwrap(),
+        ]);
+        if json {
+            command.arg("--json");
+        }
+        command
+            .current_dir(&work)
+            .env("HOME", root.path())
+            .env("XDG_CONFIG_HOME", root.path().join("config"))
+            .env("PATH", &path)
+            .env("AF_PROVIDERS_FILE", root.path().join("providers.toml"))
+            .output()
+            .unwrap()
+    };
+    let credential = std::fs::read(auth.join("auth.json")).unwrap();
+    std::fs::write(
+        auth.join("auth.json"),
+        r#"{"openai-codex":{"type":"api_key","key":"RAW_AUTH_MUST_NOT_ESCAPE"}}"#,
+    )
+    .unwrap();
+    let check = |output: &Output, expected_code, outcome: &str, json| {
+        assert_eq!(
+            code(output),
+            expected_code,
+            "{} {}",
+            out(output),
+            err(output)
+        );
+        if json {
+            let value = document(output);
+            valid("pi-provider-setup-v1.json", &value);
+            assert_eq!(value["outcome"], outcome);
+            assert!(err(output).contains(value["detail"].as_str().unwrap()));
+        } else {
+            assert!(out(output).starts_with("provider "));
+        }
+        assert!(
+            err(output).starts_with("af provider setup: "),
+            "{}",
+            err(output)
+        );
+        assert!(err(output).contains(&format!("({outcome})")));
+        for secret in [
+            "RAW_AUTH_MUST_NOT_ESCAPE",
+            "synthetic-account",
+            "SYNTHETIC_REFRESH",
+        ] {
+            assert!(!out(output).contains(secret));
+            assert!(!err(output).contains(secret));
+        }
+    };
+    for json in [true, false] {
+        check(&setup("pi-one", json), 3, "human_action_required", json);
+    }
+    std::fs::write(auth.join("auth.json"), credential).unwrap();
+    assert_eq!(code(&setup("pi-one", true)), 0);
+    for json in [true, false] {
+        check(&setup("pi-two", json), 5, "registry_conflict", json);
+    }
+}
