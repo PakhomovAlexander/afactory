@@ -448,9 +448,13 @@ fn without_a_nightly_key(installer: &Installer) -> PathBuf {
 #[test]
 fn install_sh_embeds_the_nightly_public_key() {
     let script = std::fs::read_to_string(install_script()).unwrap();
-    let key =
-        std::fs::read_to_string(PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("keys/nightly.pub"))
-            .unwrap();
+    let key = std::fs::read_to_string(
+        install_script()
+            .parent()
+            .unwrap()
+            .join("crates/af/keys/nightly.pub"),
+    )
+    .unwrap();
     let embedded = format!("NIGHTLY_PUB='{}'", key.trim_end());
     assert!(
         script.contains(&embedded),
