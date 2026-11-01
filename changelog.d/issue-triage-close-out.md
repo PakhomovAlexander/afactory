@@ -14,3 +14,8 @@
 - Label holds return even with unreadable reports or malformed draft sections; non-held drafts
   whose `sections` is not an array are refused with exit 1. The triage script's tests run on
   Python 3.9 using only its standard library, including exact Worker allowance checks.
+- A security class from the author holds before reading the evaluation; one from the verifier
+  holds before reading pulls or hand-triage, or processing merge, evidence or publication
+  identities. Both print only the existing private hold with exit 3. Non-string `Triage` and
+  `Rationale` draft bodies are refused with exit 1, empty stdout and a one-line diagnostic;
+  missing or null bodies keep the blank-section refusal, and label holds still take precedence.

@@ -309,7 +309,10 @@ def author_document(*, document=None, draft=None):
             if isinstance(section, dict) and section.get('heading') in ('Triage', 'Rationale'):
                 if section['heading'] in sections:
                     raise Refusal('author-draft', f'the draft has two {section["heading"]} sections')
-                sections[section['heading']] = section.get('body') or ''
+                body = section.get('body')
+                if body is not None and not isinstance(body, str):
+                    raise Refusal('author-draft', f'the draft {section["heading"]} section body must be a string')
+                sections[section['heading']] = body or ''
     else:
         sections = markdown_sections(document)
         if 'Triage' in sections and not fenced_blocks(sections['Triage']):
@@ -672,15 +675,20 @@ def main(argv=None):
             record, code = check(None, None, args.label, None, owner_labels=args.owner_label, identity=identity)
         else:
             document = _read_author(args)
-            evaluation = _load_json(args.evaluation, 'evaluation')
-            pulls = None
-            if args.pulls is not None:
-                pulls = _load_json(args.pulls, 'pulls')
-                if not isinstance(pulls, list) or not all(isinstance(n, int) and not isinstance(n, bool) and n > 0
-                                                          for n in pulls):
-                    raise Refusal('input', f'pulls {args.pulls}: not a JSON list of pull request numbers')
-                pulls = set(pulls)
-            hand = _load_json(args.hand_triage, 'hand triage') if args.hand_triage else None
+            evaluation, verifier = None, None
+            # Stop at the first known security class; `check` writes the existing private hold.
+            if not hold_triggers((), (), document, None)[1]:
+                evaluation = _load_json(args.evaluation, 'evaluation')
+                _, verifier = verifier_document(evaluation, validator())
+            pulls, hand = None, None
+            if not hold_triggers((), (), document, verifier)[1]:
+                if args.pulls is not None:
+                    pulls = _load_json(args.pulls, 'pulls')
+                    if not isinstance(pulls, list) or not all(isinstance(n, int) and not isinstance(n, bool) and n > 0
+                                                              for n in pulls):
+                        raise Refusal('input', f'pulls {args.pulls}: not a JSON list of pull request numbers')
+                    pulls = set(pulls)
+                hand = _load_json(args.hand_triage, 'hand triage') if args.hand_triage else None
             record, code = check(
                 document, evaluation, args.label, GitReach(args.repo, args.main, pulls),
                 owner_labels=args.owner_label, hand_triage=hand, identity=identity)

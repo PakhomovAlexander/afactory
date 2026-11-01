@@ -532,13 +532,15 @@ class Cli(unittest.TestCase):
         self.assertEqual([git(self.repo, 'rev-parse', ref) for ref in ('main~1', 'side', 'main')],
                          [FIX, SIDE, FIXTURE_MAIN])
 
-    def run_cli(self, author, verifier_block=AS_AUTHOR, outcome='passed', *extra, draft=False, omit=()):
+    def run_cli(self, author, verifier_block=AS_AUTHOR, outcome='passed', *extra, draft=False, omit=(),
+                sections=None):
         """The script's exit code, stdout and stderr, with every identity flag but those in `omit`."""
         if verifier_block is AS_AUTHOR:
             verifier_block = copy.deepcopy(author)
         path = self.dir / ('author.json' if draft else 'report.md')
         if draft:
-            path.write_text(json.dumps({'schema': 'af.document-draft/2', 'title': 't', 'citations': [], 'sections': [
+            path.write_text(json.dumps({'schema': 'af.document-draft/2', 'title': 't', 'citations': [],
+                                       'sections': sections if sections is not None else [
                 {'heading': 'Triage', 'body': '```json\n' + json.dumps(author) + '\n```'},
                 {'heading': 'Rationale', 'body': 'Why.'}]}))
         else:
@@ -662,6 +664,87 @@ class Cli(unittest.TestCase):
                             })
                             self.assertIn('held:', err.getvalue())
                             self.assertNotIn('Traceback', err.getvalue())
+
+    def security_hold_without_later_reads(self, who):
+        read_text = Path.read_text
+        every = tuple(flag for flag, _ in triage.IDENTITIES)
+        for draft in (False, True):
+            # A directory cannot be read as a file, even when tests run as root.
+            for unreadable in (self.dir / 'absent-auxiliary', self.dir):
+                with self.subTest(who=who, draft=draft, unreadable=unreadable):
+                    def guarded_read(path, *args, **kwargs):
+                        if path == unreadable:
+                            raise AssertionError(f'hold tried to read {path}')
+                        return read_text(path, *args, **kwargs)
+
+                    extra = ['--pulls', str(unreadable), '--hand-triage', str(unreadable),
+                             '--owner-label', 'size/S', '--owner-label', 'size/L']
+                    if who == 'author':
+                        extra += ['--evaluation', str(unreadable)]
+                    author = doc(size='S', adr='new ADR: x', resolution={'state': 'fixed_candidate'})
+                    verifier = doc(**{'class': 'security'})
+                    if who == 'author':
+                        author['class'] = 'security'
+                    with contextlib.ExitStack() as stack:
+                        read = stack.enter_context(mock.patch.object(
+                            Path, 'read_text', autospec=True, side_effect=guarded_read))
+                        for name in ('merge', 'check_rules', 'owner_overrides'):
+                            stack.enter_context(mock.patch.object(
+                                triage, name, side_effect=AssertionError(f'hold called {name}')))
+                        stack.enter_context(mock.patch.object(
+                            triage.GitReach, '_git', side_effect=AssertionError('hold ran Git')))
+                        code, out, err = self.run_cli(author, verifier, 'failed', *extra, draft=draft, omit=every)
+                    self.assertNotIn(unreadable, [call.args[0] for call in read.call_args_list])
+                    self.assertEqual(code, 3, err)
+                    self.assertEqual(err, 'backlog-check-triage: held: security hold; '
+                                         'publish nothing about this issue\n')
+                    record = json.loads(out)
+                    self.assertEqual(SCHEMA.errors(record, 'urn:af:schema:issue-triage-hold:1'), [])
+                    self.assertEqual(record, {
+                        'schema': triage.HOLD, 'issue': 432, 'reasons': [f'the {who} classified security'],
+                        'held_labels': [], 'security_triagers': [who], 'generation': None,
+                    })
+
+    def test_author_security_never_reads_evaluation_or_auxiliary_inputs(self):
+        self.security_hold_without_later_reads('author')
+
+    def test_verifier_security_never_reads_pulls_or_hand_triage_or_processes_publication(self):
+        self.security_hold_without_later_reads('verifier')
+
+    def test_non_string_relevant_draft_bodies_are_refused_and_label_holds_still_win(self):
+        for heading in ('Triage', 'Rationale'):
+            for body in (42, ['nonempty'], False, {}, []):
+                sections = [{'heading': 'Triage', 'body': '```json\n' + json.dumps(doc()) + '\n```'},
+                            {'heading': 'Rationale', 'body': 'Why.'}]
+                next(section for section in sections if section['heading'] == heading)['body'] = body
+                for flag in (None, '--label', '--owner-label'):
+                    with self.subTest(heading=heading, body=body, flag=flag):
+                        extra = [flag, 'triage/held'] if flag else []
+                        code, out, err = self.run_cli(doc(), AS_AUTHOR, 'passed', *extra, draft=True, sections=sections)
+                        self.assertEqual(len(err.splitlines()), 1, err)
+                        self.assertNotIn('Traceback', err)
+                        if flag:
+                            self.assertEqual(code, 3, err)
+                            self.assertEqual(SCHEMA.errors(json.loads(out), 'urn:af:schema:issue-triage-hold:1'), [])
+                        else:
+                            self.assertEqual((code, out), (1, ''))
+                            self.assertEqual(err, f'backlog-check-triage: refused: author-draft: '
+                                                 f'the draft {heading} section body must be a string\n')
+
+    def test_missing_or_null_relevant_draft_bodies_keep_the_blank_section_refusal(self):
+        for heading in ('Triage', 'Rationale'):
+            for missing in (False, True):
+                with self.subTest(heading=heading, missing=missing):
+                    sections = [{'heading': 'Triage', 'body': '```json\n' + json.dumps(doc()) + '\n```'},
+                                {'heading': 'Rationale', 'body': 'Why.'}]
+                    section = next(section for section in sections if section['heading'] == heading)
+                    section['body'] = None
+                    if missing:
+                        del section['body']
+                    code, out, err = self.run_cli(doc(), draft=True, sections=sections)
+                    self.assertEqual((code, out), (1, ''))
+                    self.assertEqual(err, f'backlog-check-triage: refused: author-draft: '
+                                         f'the report has no nonblank {heading} section\n')
 
     def test_malformed_draft_sections_hold_for_every_label_source_or_are_normally_refused(self):
         # Include the evaluator's exact sections: 42 reproduction and other non-array shapes.
