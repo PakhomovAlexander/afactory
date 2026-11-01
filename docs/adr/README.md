@@ -514,3 +514,9 @@ future readers need.
   artifacts](0269-bind-comparison-partition-execution-to-reused-build-artifacts.md)
 - [0270 — Let CI maintain the lines added
   block](0270-let-ci-maintain-the-lines-added-block.md)
+- [0271 — Compose the nightly report from the night's record and the executor
+  journal](0271-compose-the-nightly-report-from-the-nights-record-and-the-executor-journal.md)
+- [0272 — Publish nightlies as pre-releases and prune
+  them](0272-publish-nightlies-as-pre-releases-and-prune-them.md)
+- [0273 — Run the nightly chain as systemd units on the owner's
+  VM](0273-run-the-nightly-chain-as-systemd-units-on-the-owners-vm.md)
