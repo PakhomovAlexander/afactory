@@ -72,4 +72,4 @@ and an ADR disagree, the ADR wins. Shared vocabulary is defined in
   Pi 1.4.0, Node >=22.19 and explicitly registered `openai-codex` stored OAuth, exact account
   and model admission, confined file tools and partial accounting. Token-free real SDK and
   hermetic runtime fixtures cover the boundaries; paid live smoke was not run. Architecture
-  adjustment: proposed [ADR-0271](../adr/0271-own-the-pi-sdk-host-and-confine-its-tools.md).
+  adjustment: proposed [ADR-0274](../adr/0274-own-the-pi-sdk-host-and-confine-its-tools.md).

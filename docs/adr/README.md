@@ -520,5 +520,5 @@ future readers need.
   them](0272-publish-nightlies-as-pre-releases-and-prune-them.md)
 - [0273 — Run the nightly chain as systemd units on the owner's
   VM](0273-run-the-nightly-chain-as-systemd-units-on-the-owners-vm.md)
-- [0271 — Own the Pi SDK host and confine its
-  tools](0271-own-the-pi-sdk-host-and-confine-its-tools.md) (proposed)
+- [0274 — Own the Pi SDK host and confine its
+  tools](0274-own-the-pi-sdk-host-and-confine-its-tools.md) (proposed)

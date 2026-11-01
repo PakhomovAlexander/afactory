@@ -1,4 +1,4 @@
-# ADR-0271: Own the Pi SDK host and confine its tools
+# ADR-0274: Own the Pi SDK host and confine its tools
 
 Date: 2026-11-01. Status: proposed; accepted on merge.
 
