@@ -14,7 +14,7 @@ protocols the laboratory relies on, so the driver's own logic is what the tests 
   sample a millisecond whose stack names the probe's phase at that instant: a capture that
   enabled during setup would show `setup_work`. Its recording is a little-endian perf.data
   holding declared LOST and LOST_SAMPLES records; `script` and `buildid-list` print their text
-  formats from it.
+  formats from it, `buildid-list` each recording's configured listing.
 - inferno's three tools collapse, diff and render; the renderer writes the `onload` handler and
   `<script>` element the real `--no-javascript` output still carries.
 - `af` answers `--version` and `task show ... --json`, the latter with a document of 10,000
@@ -244,9 +244,25 @@ if args[0] == "record":
         with open(output, "ab") as stream:
             stream.write(b"\0" * config["pad_bytes"])
     sys.exit(child.returncode if child.returncode >= 0 else 128 - child.returncode)
+if args[0] == "script":
+    with open(os.path.join(here, "script-argv.jsonl"), "a") as stream:
+        stream.write(json.dumps(args) + "\n")
+    if config.get("reject_no_inline") and "--no-inline" in args:
+        # A perf without the option refuses it, as perf's option parser does.
+        sys.stderr.write("  Error: unknown option `no-inline'\n")
+        sys.exit(129)
+    if "--no-inline" not in args:
+        # Inline expansion is what a capture never asks for: refused, not decoded.
+        sys.stderr.write("fake perf: script without --no-inline\n")
+        sys.exit(65)
 data = read_data(option("-i"))
 def option_event(data):
     return data["event"]
+if args[0] == "script" and config.get("fail_script") == os.path.basename(option("-i")):
+    # A decoding that fails part way: some output, then perf's own error.
+    sys.stdout.write("perf-probe 4242/4242 0.000000: partial\n")
+    sys.stderr.write("failed to process sample\n")
+    sys.exit(3)
 if args[0] == "script":
     for index, phase in enumerate(data["samples"]):
         sys.stdout.write("perf-probe 4242/4242 %d.%06d: %s:\n" % (
@@ -258,8 +274,14 @@ if args[0] == "script":
                 sys.stdout.write("\t    7f0000000030 [unknown] ([unknown])\n")
         sys.stdout.write("\t    55aa00000040 main (/fake/perf-probe)\n\n")
     sys.exit(0)
+if args[0] == "buildid-list" and config.get("fail_buildids") == os.path.basename(option("-i")):
+    sys.stderr.write("failed to read build ids\n")
+    sys.exit(3)
 if args[0] == "buildid-list":
-    print("0123456789abcdef0123456789abcdef01234567 /fake/perf-probe")
+    # `build_ids` names the listing of each recording by its file name; the probe's otherwise.
+    listing = config.get("build_ids", {}).get(os.path.basename(option("-i")))
+    sys.stdout.write("0123456789abcdef0123456789abcdef01234567 /fake/perf-probe\n"
+                     if listing is None else "".join(line + "\n" for line in listing))
     sys.exit(0)
 sys.exit(64)
 '''

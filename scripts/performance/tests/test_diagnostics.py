@@ -10,6 +10,7 @@ the real supervisor's bounds over diagnostic tools are exercised by
 `crates/review-process/tests/diagnostic_tools.rs`.
 """
 import struct
+import html
 import lzma
 import json
 import os
@@ -79,7 +80,7 @@ class Registry(unittest.TestCase):
         self.assertEqual(diagcontracts.diagnostic_recipe(
             loaded.doc, registry, "linux_gnu_cpu_profile"), recipe)
         for recipe_id in registry["recipes"]:
-            if recipe_id == "linux_gnu_cpu_profile":
+            if recipe_id in ("linux_gnu_cpu_profile", "linux_musl_cpu_profile"):
                 continue
             other = diagcontracts.diagnostic_recipe(loaded.doc, registry, recipe_id)
             self.assertEqual(other["rustflags"], loaded.doc["recipes"][
@@ -94,7 +95,8 @@ class Registry(unittest.TestCase):
 
     def test_the_musl_shipping_recipes_keep_their_whole_shipping_build_identity(self):
         # Built like the shipping recipe, in its pinned image with cargo-zigbuild and Zig;
-        # only what diagnosis needs is added (ADR-0176).
+        # only what diagnosis needs is added (ADR-0176): a CPU profile's bounded
+        # line-tables-only debug information, as on GNU.
         loaded = suite_module.load(SUITE)
         registry = diagnostics.load(REGISTRY, loaded.doc)
         base = loaded.doc["recipes"]["linux_musl_shipping"]
@@ -103,8 +105,11 @@ class Registry(unittest.TestCase):
             with self.subTest(recipe=recipe_id):
                 recipe = diagcontracts.diagnostic_recipe(loaded.doc, registry, recipe_id)
                 for key in ("os", "target", "toolchain", "builder", "cargo_zigbuild", "zig",
-                            "linker", "profile", "rustflags"):
+                            "linker", "profile"):
                     self.assertEqual(recipe[key], base[key])
+                self.assertEqual(recipe["rustflags"], base["rustflags"] + (
+                    ["-Cdebuginfo=line-tables-only"] if recipe_id == "linux_musl_cpu_profile"
+                    else []))
                 self.assertEqual(recipe["target"], "x86_64-unknown-linux-musl")
                 self.assertEqual((recipe["features"], recipe["instrumented"]), (features, True))
         self.assertTrue(registry["recipes"]["linux_musl_cpu_profile"]["frame_pointers"])
@@ -1379,6 +1384,71 @@ class ChildRun(ChildRunBase):
         paths = [entry["path"] for entry in manifest["entries"]]
         self.assertIn(diagnostics.PROFILES_FILE, paths)
         self.assertTrue(any(path.endswith(".data") for path in paths), "raw captures kept")
+        self.assertIn("Stacks are function-level: each recording is decoded by perf script "
+                      "--no-inline", html.unescape(page))
+
+    def test_every_capture_is_decoded_function_level_with_its_sampling_unchanged(self):
+        perf = fakes.perf(self.path("perf"), phase_file=self.path("probe-bin", "phase"),
+                          unknown_with_frame_pointers=2)
+        tools = diagnostics.configured_tools(perf=perf, inferno_bin=fakes.inferno(
+            self.path("inferno")))
+        registry = json.loads(json.dumps(self.registry))
+        registry["capture"].update(max_repetitions=2, minimum_samples=20)
+        doc, output = self.profile("linux_gnu_cpu_profile", [SMALL], tools,
+                                   {"setup_seconds": 0.05, "region_seconds": 0.12},
+                                   duration_ms=20000, registry=registry)
+        self.assertEqual(len(doc["captures"]), 4)
+        scripts = [json.loads(line) for line in
+                   read(self.path("perf", "script-argv.jsonl")).decode().splitlines()]
+        # One decoding per recording, each of its own capture.data, without inline expansion.
+        self.assertEqual(len(scripts), len(doc["captures"]))
+        data = [argv[argv.index("-i") + 1] for argv in scripts]
+        self.assertEqual(len(set(data)), len(data))
+        for argv, path in zip(scripts, data):
+            self.assertEqual(argv, perfcapture.script_argv(perf, path)[1:])
+            self.assertEqual(argv[argv.index("-F") + 1], "comm,pid,tid,time,event,ip,sym,dso")
+            self.assertEqual(os.path.basename(path), "capture.data")
+            self.assertTrue(os.path.isfile(path), "the raw recording is kept")
+        # The recording itself is unchanged: the declared event and frequency, frame pointers
+        # then DWARF, and the decoded samples, losses and unknown frames are its own.
+        records = [json.loads(line) for line in
+                   read(self.path("perf", "record-argv.jsonl")).decode().splitlines()]
+        self.assertEqual(sorted(argv[argv.index("--call-graph") + 1] for argv in records),
+                         ["dwarf,32768", "dwarf,32768", "fp", "fp"])
+        for argv in records:
+            self.assertEqual(argv[argv.index("-e") + 1], self.registry["capture"]["event"])
+            self.assertEqual(argv[argv.index("-F") + 1],
+                             str(self.registry["capture"]["frequency_hz"]))
+            self.assertNotIn("--no-inline", argv)
+        for item in doc["captures"]:
+            self.assertIsNone(item["omission"], item["omission"])
+            self.assertEqual(item["frames"], 5 * item["samples"]
+                             if item["unwind"] == "frame_pointer" else 3 * item["samples"])
+            self.assertEqual(item["unknown_frames"], 2 * item["samples"]
+                             if item["unwind"] == "frame_pointer" else 0)
+        self.assertEqual(len(doc["renders"]), 4)
+
+    def test_a_perf_that_cannot_decode_function_level_is_refused_never_expanded(self):
+        perf = fakes.perf(self.path("perf"), phase_file=self.path("probe-bin", "phase"),
+                          reject_no_inline=True)
+        tools = diagnostics.configured_tools(perf=perf, inferno_bin=fakes.inferno(
+            self.path("inferno")))
+        registry = json.loads(json.dumps(self.registry))
+        registry["capture"].update(max_repetitions=2, minimum_samples=20)
+        doc, output = self.profile("linux_gnu_cpu_profile", [SMALL], tools,
+                                   {"setup_seconds": 0.05, "region_seconds": 0.12},
+                                   duration_ms=20000, registry=registry)
+        self.assertTrue(doc["captures"])
+        for item in doc["captures"]:
+            self.assertEqual(item["omission"]["reason"], "tool_failed", item["omission"])
+            self.assertIn("perf script", item["omission"]["detail"])
+            self.assertIsNone(item["samples"])
+        scripts = [json.loads(line) for line in
+                   read(self.path("perf", "script-argv.jsonl")).decode().splitlines()]
+        # No second decoding with inline expansion stands in for the refused one.
+        self.assertTrue(scripts)
+        self.assertTrue(all("--no-inline" in argv for argv in scripts), scripts)
+        self.assertEqual(doc["renders"], [])
 
     def test_a_seeded_case_copies_its_sides_written_seed_fresh_for_every_repetition(self):
         # The side's own writer writes the seed once (the stand-in writes probe-work/), and each
@@ -1606,6 +1676,57 @@ class CliCases(ChildRunBase):
         page = read(os.path.join(output, diagnostics.PAGE_FILE)).decode()
         self.assertIn("cli_process, region cli_startup (1 spans): complete", page)
 
+    def test_a_cli_command_keeps_the_cores_whole_sample_log_total(self):
+        # The supervisor requests the diagnostic driver actually makes: a CLI command's stdout
+        # and stderr together are its sample's log, as in core (`runner`), never that log's
+        # stdout share plus another tool's 64-KiB stderr allowance.
+        requests = []
+        real = toolrun.Running
+
+        def running(supervisor, argv, doc, *rest, **kwargs):
+            requests.append((argv, doc))
+            return real(supervisor, argv, doc, *rest, **kwargs)
+        with mock.patch.object(toolrun, "Running", running):
+            doc, _ = self.profile("linux_gnu_trace", [DISCOVERY], {}, {},
+                                  registry=self.registry_with(overhead_pairs=12), af_config={},
+                                  parent_af_config={})
+        self.assertEqual(len(doc["traces"]), 2)
+        log = suite_module.load(SUITE).doc["limits"]["sample_log_bytes"]
+        self.assertEqual(log, 262144)
+        cli = [doc for argv, doc in requests if argv[-1:] == ["--version"]]
+        self.assertGreaterEqual(len(cli), 24)
+        for request in cli:
+            self.assertEqual((request["stdout_cap_bytes"], request["log_cap_bytes"]),
+                             (clicases.stdout_bytes(log), log))
+            self.assertEqual((request["stdout_cap_bytes"], request["log_cap_bytes"]),
+                             (245760, 262144))
+        others = [doc for argv, doc in requests if argv[-1:] != ["--version"]]
+        for request in others:
+            self.assertEqual(request["log_cap_bytes"] - request["stdout_cap_bytes"],
+                             toolrun.STDERR_CAP_BYTES)
+        # The same caps through the supervisor: 0.14.0-rc.1's 234,442-byte report is retained
+        # whole; output past the stdout cap fails the run, never passed as whole.
+        supervisor = toolrun.Supervisor(fake_supervisor(self.path("cap-supervisor")))
+        for size, whole in ((234442, True), (245760, True), (245761, False)):
+            with self.subTest(size=size):
+                result = toolrun.run(supervisor, ["/bin/sh", "-c", 'head -c "$0" /dev/zero',
+                                                  str(size)], {"PATH": "/usr/bin:/bin"}, 30,
+                                     clicases.stdout_bytes(log), cwd=self.tmp, log_cap=log)
+                self.assertEqual(result.stdout_bytes, size)
+                if whole:
+                    self.assertTrue(result.ok, result.failure())
+                    self.assertEqual(len(result.stdout), size)
+                else:
+                    self.assertFalse(result.ok)
+                    self.assertLessEqual(len(result.stdout), 245760)
+                    self.assertIn("over its 245760-byte output cap", result.failure())
+        # A total that leaves stderr no room, or exceeds the 1-MiB hard cap, is refused.
+        for output, total in ((log, log), (245760, 2 * 1024 * 1024)):
+            with self.assertRaises(ContractError):
+                toolrun.request(supervisor, ["/bin/true"], {}, 1, output, log_cap=total)
+        default = toolrun.request(supervisor, ["/bin/true"], {}, 1, 4096)
+        self.assertEqual(default["log_cap_bytes"], 4096 + toolrun.STDERR_CAP_BYTES)
+
     def test_a_cli_command_that_fails_its_oracle_is_an_omission_never_a_trace(self):
         doc, _ = self.profile("linux_gnu_trace", [DISCOVERY], {}, {}, af_config={
             "version": "9.9.9"})
@@ -1639,8 +1760,15 @@ class CliCases(ChildRunBase):
             self.assertEqual(item["region"]["stopped"], "duration_reached")
             self.assertGreater(item["samples"], 0)
             names = [artifact["path"].rsplit("/", 1)[1] for artifact in item["artifacts"]]
-            self.assertIn("rep-0001.data", names)
             self.assertIn("capture.script", names)
+            self.assertNotIn("rep-0001.data", names, "the index lists every recording")
+            index = contracts.read_file(os.path.join(output, item["repetitions"]["path"]),
+                                        "repetitions")
+            self.assertEqual(index["boundary"], "supervised_child_wall")
+            self.assertEqual([entry["recording"]["path"].rsplit("/", 1)[1]
+                              for entry in index["repetitions"]],
+                             ["rep-%04d.data" % (number + 1)
+                              for number in range(item["region"]["repetitions"])])
         self.assertEqual(sorted(item["kind"] for item in doc["renders"]),
                          ["baseline", "candidate", "difference_forward", "difference_reverse"])
         folded = read(os.path.join(output, "flamegraphs", DISCOVERY, "baseline.folded"))
@@ -2599,3 +2727,8 @@ class PerfCache(ChildRunBase):
         argv = json.loads(read(self.path("perf", "record-argv.jsonl")))
         self.assertIn("--no-buildid-cache", argv)
         self.assertNotIn("--no-buildid", argv)
+        # Its proof decodes as an accepted capture does: function-level, the same fields.
+        script = json.loads(read(self.path("perf", "script-argv.jsonl")))
+        data = script[script.index("-i") + 1]
+        self.assertEqual(script, perfcapture.script_argv(perf, data)[1:])
+        self.assertIn("--no-inline", script)

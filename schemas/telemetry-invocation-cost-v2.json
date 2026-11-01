@@ -1,7 +1,7 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "$id": "urn:af:schema:telemetry-invocation-cost:1",
-  "title": "af/telemetry-invocation-cost@1",
+  "$id": "urn:af:schema:telemetry-invocation-cost:2",
+  "title": "af/telemetry-invocation-cost@2",
   "description": "`scripts/telemetry-invocation-cost.py --json` (design §12, the invocation-cost gate; docs/telemetry.md, Invocation cost): the scripted Claude harness of the invocation fixtures answering the same final result in the `json` and in the `stream-json` shape, with 1, 16 or 64 MiB of intermediate tool output per Attempt, alone and as four concurrent Attempts, measured as pairs of commands at `off` and at `spans` under the overhead gate's protocol: per run the command's wall time, its peak RSS, the one-Attempt fixture's drain latency and the bytes the harness wrote to stdout; per pair the wall difference `(stream-json - json) / json` in percent and the peak-RSS difference in bytes; per level the median wall difference with its 95% percentile-bootstrap interval, the median RSS difference, the median stream bytes and the median drain difference; per case the accounting every run came to, the same under both shapes and at both levels. The gate (judged only over all six cases at full scale with at least 20 pairs, else `not_judged`) passes when at `off` every case's median wall difference is at most `wall_bound_pct` and its median RSS difference at most its stream bytes plus `rss_slack_bytes`; `decision` is `one_shape` for a pass and `two_shapes` (`json` at `off` and `metrics`, `stream-json` at `spans` and `content`) for a fail.",
   "type": "object",
   "additionalProperties": false,
@@ -9,6 +9,8 @@
     "af",
     "cases",
     "decision",
+    "drain",
+    "fixture_contract",
     "gate",
     "machine",
     "protocol",
@@ -16,7 +18,7 @@
   ],
   "properties": {
     "schema": {
-      "const": "af/telemetry-invocation-cost@1"
+      "const": "af/telemetry-invocation-cost@2"
     },
     "af": {
       "type": "object",
@@ -31,6 +33,87 @@
         },
         "version": {
           "type": "string"
+        }
+      }
+    },
+    "fixture_contract": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "name",
+        "release",
+        "check_receipt",
+        "fixtures"
+      ],
+      "description": "The equivalent bench workload the measured release accepts (`FIXTURE_CONTRACTS` in scripts/telemetry-overhead.py): selected by the release `af --version` names, never by the caller alone. Benchmark fixture production, never a reader of earlier releases' state.",
+      "properties": {
+        "name": {
+          "enum": [
+            "check-receipt@1",
+            "check-receipt@2"
+          ]
+        },
+        "release": {
+          "type": "string",
+          "minLength": 1,
+          "description": "The version `af --version` printed."
+        },
+        "check_receipt": {
+          "enum": [
+            "af/TaskCheckReceipt@1",
+            "af/TaskCheckReceipt@2"
+          ]
+        },
+        "fixtures": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "fixture",
+              "packages",
+              "renamed_files"
+            ],
+            "properties": {
+              "fixture": {
+                "type": "string",
+                "minLength": 1
+              },
+              "packages": {
+                "type": "object",
+                "additionalProperties": {
+                  "type": "string",
+                  "pattern": "^sha256:[0-9a-f]{64}$"
+                },
+                "description": "Each package's pin: the measured binary's own `af catalog digest`, equal to the pin the contract declares."
+              },
+              "renamed_files": {
+                "type": "array",
+                "items": {
+                  "type": "string"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "drain": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "boundary",
+        "clock"
+      ],
+      "description": "What every run's `drain_ms` measures.",
+      "properties": {
+        "boundary": {
+          "const": "harness_last_write_to_command_exit",
+          "description": "From the harness's last write to the measurement's observation of the command's exit (`wait4` returned): the drain, the rest of the command and its exit. Not the Store's commit time."
+        },
+        "clock": {
+          "const": "CLOCK_MONOTONIC",
+          "description": "Both ends read `clock_gettime(CLOCK_MONOTONIC)`, in the harness and in the measurement; causally ordered, never a file timestamp."
         }
       }
     },

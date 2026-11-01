@@ -689,3 +689,1250 @@ an indented line; a bare `\` after a cut piece, then the next piece at column 0.
   `task_outcomes::a_next_line_fits_the_terminal_and_runs_as_printed` failed because the printed
   command is wider than the test's 250-column terminal. It passes at 104 and did not fail in
   the gate. Its assertions were kept unchanged; it is out of this repair's scope.
+
+## Host CPU observer and the durable release comparison (2026-10-30)
+
+This change adds the trusted host CPU observer (`perflab/hostobserver.py`), the partitioned
+serial core comparison and the native comparison lifecycle (`perflab/comparison.py`). Its
+focused checks ran on a macOS development host, with injected computation:
+
+- **Host observer** (`tests/test_hostobserver.py`, 9 tests). Real processes: a gated shell, a
+  stand-in perf that speaks perf's acknowledged control protocol and ends with its target, and
+  the observer's bounded runner. A fixture process table stands in for `/proc`. The tests show
+  perf's acknowledgement before the command's first instruction, a region probe attached
+  disabled, a recycled PID refused with the gate kept closed, a target outside the owned
+  container or account refused, the capability probe decoding samples and refusing a perf that
+  cannot record, and trusted tools routed to the host while perf and the host shell are never
+  bound into the candidate container.
+- **Comparison** (`tests/test_comparison.py`, 4 tests). The real journal, Git retention,
+  claims, offline verification, aggregation, rendering and export, with synthetic builds and
+  shards. Checked: the serial schedule, retained refusals that reserve nothing, launch and
+  resume without a replay, read-only status while the journal is locked, build reuse by the
+  second partition, the aggregate over the whole family's denominator, lanes selected by the
+  aggregate verdict, a portable export verified after copying (also through `cli.py executor
+  comparison-verify`), and a lost controller with its failed reuse leaving the family
+  incomplete. The synthetic stand-in writes no seed copies, so its real aggregate is
+  `incomplete`; the `complete` report is shown with that aggregate injected as whole.
+- **Unchanged contracts.** The contract parity, executor, diagnostics, report-diagnostics,
+  supervision, reproduction and whole-source tests pass. Three executor tests (four cases)
+  need a Linux host for the contained mode (`host_mismatch` on macOS). With `host_os` patched
+  to Linux, all three pass. One of them needed a repair: it asserted that no tool is probed at
+  all, while the executor's existing pre-build tool check probes once before any build. It now
+  asserts that every tool probe precedes the first build.
+
+Not established here: Docker, a real perf, Claw, the v0.13.0 against v0.14.0-rc.1 comparison or
+its export. The outer operator runs that from the installed candidate control.
+
+## Claw validation repairs: admission, CLI contracts, partitions, export, observer (2026-10-30)
+
+This change repairs the concrete defects the operator's Claw runs of the previous candidate
+found. Its focused checks ran on a macOS development host with injected computation; nothing
+here ran Docker, a real perf, Claw or GitHub Actions, and no figure below is a measurement.
+
+- **One storage and time admission** (`tests/test_executor.py`,
+  `test_preflight_submission_and_execution_share_time_and_storage_admission`). Preflight,
+  submission and the claim use `executor.native_reserve` and `executor.time_bounds`: with
+  `run_seconds = 3600` the `manual` telemetry profile is refused at preflight naming 24,870
+  seconds and each step, nothing reserved; a 64 GiB `max_bytes` below the native reserve is
+  refused with the bytes held, the reserve and the bound, and 100 GiB is ready. An executing
+  telemetry original with too little time left ends `failed`, `not_executed`, before either
+  build, with no fence kept.
+- **Per-release CLI contracts and whole output** (`tests/test_runner.py`, `CliOracle`
+  `test_each_release_declares_its_own_report_schema_and_whole_output`). 0.13.0 selects
+  `af_cli_v2` (`af/review-report@4`), 0.14.0-rc.1 and later `af_cli_v3` (`@5`); each refuses the
+  other's schema, malformed JSON, a truncated output, a missing Finding, a duplicated Finding
+  and empty output. A 234,442-byte 100-Finding report is retained whole within the unchanged
+  262,144-byte total (245,760 bytes of stdout, a 16 KiB stderr reserve).
+- **Partition execution authority** (`tests/test_runner.py`, `PartitionExecution`). Through the
+  real runner deadline path: a later partition whose reused build's run expired a run total
+  ago completes in its own sealed window, the caller's deadline still tightens it, its build
+  bytes stay unchanged, and its shard in a bundle without the authority is a `shard_identity`
+  failure. A widened or re-totalled window, a forged build digest, a changed build run, a
+  window before the build ended, an undeclared shard and an authority changed after sealing
+  each start nothing (`partition_authority`). `tests/test_comparison.py` shows the aggregate
+  carrying the second partition's authority.
+- **Portable export closure** (`tests/test_comparison.py`). The telemetry original is now a
+  real `telemetrylab.run` result: its page links `raw/` and `logs/`, and the export carries
+  them with its manifest; each core partition carries its run bundle and its report's
+  evidence; the aggregate carries its run. The copied bundle verifies (also through `cli.py
+  executor comparison-verify`), re-evaluating every core run to its bundled verdict and the
+  telemetry result under the installed authority. A self-consistently rehashed copy missing a
+  linked raw document, one with a changed raw document, and one without a partition's run
+  bundle are each refused.
+- **Host observer lifetime and callback failures** (`tests/test_hostobserver.py`). Through the
+  real `toolrun.start` request admission with 1,404 seconds of diagnostic window left, the
+  whole window is refused (`at most 120 s`) and the per-command lifetime (10 s + 40 s of
+  allowances) is admitted and records. `Profile.tool_run` with a failing observer callback: a
+  confirmed cancellation carries its settled Result and keeps nothing; an unconfirmed one and an
+  opaque supervisor failure are `cleanup_uncertain` with the observer's reason first and the
+  scratch kept; a cleanup failure after a failed repetition keeps the primary cause.
+- **Telemetry documentation.** `docs/telemetry.md` names the
+  `harness_last_write_to_command_exit` boundary for the invocation-cost drain, marks the
+  CAS-write drain figures historical and separates a negative physical duration (not judged)
+  from a negative signed difference (judged); the rendered telemetry page says the same.
+
+The whole laboratory suite (`python3 -I scripts/test-performance.py`, 1,162 tests) ran once on
+this host at load: the three executor tests (four cases) that need a Linux host for the
+contained mode failed with `host_mismatch` as before; the contract parity test failed until the
+new contract's golden examples were added; and two tests outside the changed paths
+(`test_telemetry_workflow` admission, whose subprocess read the rendered page this change was
+editing while the suite ran, and the `test_whole_source_repairs` 2.5-second deadline) failed
+under load and passed alone. `make perf-kernel-measure`, which this protected-harness change
+requires, was not recorded here with its result; the next section records its run on the
+following candidate.
+
+Not established here: Docker, a real perf, Claw, the v0.13.0 against v0.14.0-rc.1 comparison or
+its export. The outer operator runs that from the installed candidate control.
+
+## Image, storage, CLI log and musl debug-information admission (2026-10-30)
+
+This change repairs four gaps the operator's Claw runs of candidate `fe1d1e59` found, after
+integrating main `955e24bf` (the ADR index keeps both ADR-0264 and ADR-0265). Its focused
+checks ran on a macOS development host (Python 3.14.7) with injected computation; nothing
+here ran Docker, a real perf, Claw or GitHub Actions.
+
+- **Image and image-local tool admission** (`tests/test_executor.py`, `ImageAdmission`). A
+  stand-in docker client answers `image inspect` for the images it holds and runs each probe
+  container's entrypoint on this host. Preflight and submission refuse, reserving nothing and
+  starting only bounded `af-perf-probe-` containers, an absent pinned build image, an absent
+  sample image, a `zigbuild_bin` without cargo-zigbuild and a Zig 0.15.1 where the musl recipe
+  pins 0.15.2. With both images and the pinned tools present, preflight is `ready` and lists
+  `build_image`, `sample_image` and `image_toolchain` (rustc 1.88.0, cargo-zigbuild 0.23.4,
+  Zig 0.15.2); the probes' exclusion settles clean. When the build image is then removed, the
+  claim's own admission ends the original `failed`, measurement `unavailable`, before any
+  build, with no fence kept. A probe container whose removal is unconfirmed keeps the fence.
+  `tests/test_comparison.py` shows a missing image refusing the whole comparison before any
+  member is submitted.
+- **Physical storage** (`tests/test_executor.py`,
+  `test_storage_admission_needs_the_policy_bound_and_the_filesystems_free_space`). The root
+  filesystem's available bytes are injected at `Journal.free_bytes`: within a 100 GiB
+  `max_bytes`, one byte less than the native reserve is refused at preflight, at submission and
+  at the claim (which leaves the original queued and builds nothing); exactly the reserve is
+  ready. A 1 PiB filesystem never admits a reserve over `max_bytes`. Every other executor,
+  comparison and local calibration fixture injects ample space, so no test depends on this
+  host's disk.
+- **CLI diagnostic log total** (`tests/test_diagnostics.py`,
+  `CliCases.test_a_cli_command_keeps_the_cores_whole_sample_log_total`). Through a real
+  diagnostic child run, every CLI command's supervisor request is 245,760 bytes of stdout in a
+  262,144-byte log (it was 311,296), and every other tool keeps its 64 KiB stderr allowance.
+  Through the stand-in supervisor with those caps, 234,442 and 245,760 bytes are retained whole
+  and 245,761 bytes fail the run as over its output cap. A total without stderr room or above
+  the 1 MiB hard cap is refused.
+- **Bounded musl CPU-profile debug information** (`tests/test_builds.py`,
+  `test_the_musl_shipping_cpu_profile_builds_bounded_line_tables_with_frame_pointers`). The
+  real Builder, with a stand-in musl toolchain and cargo-zigbuild, builds the
+  `linux_musl_cpu_profile` child plan through `zigbuild`; every step records
+  `-Cdebuginfo=line-tables-only` and `-Cforce-frame-pointers=yes` with
+  `CARGO_PROFILE_RELEASE_DEBUG=true`, and the recipe digest and settings bind them. The
+  shipping verdict build sets neither. `tests/test_diagnostics.py` `Registry` checks the
+  derivation for every recipe. No real musl AF was built here, so its size under this setting
+  is not measured; on GNU the same setting gave a 285,890,672-byte AF.
+
+Focused command, from the repository root:
+
+```sh
+cd scripts/performance && /opt/homebrew/bin/python3.14 -I -B -c 'import sys,unittest; sys.path.insert(0,"."); unittest.main(module=None,argv=["unittest","tests.test_executor","tests.test_comparison","tests.test_localcalibration","tests.test_builds","tests.test_diagnostics","tests.test_hostobserver","tests.test_telemetry_diagnostics","tests.test_runner.CliOracle","tests.test_contracts","tests.test_supervise"])'
+```
+
+**300 tests, 776.630 seconds, exit 1**, run while a Rust build shared the host. Four cases of
+three executor tests failed with `host_mismatch`, as in the sections above: they need a Linux
+host for the contained mode. With `diagnostics.host_os` patched to Linux they pass (4 tests,
+6.738 s). `test_hostobserver` `test_bounded_runner_ends_its_whole_group_at_its_deadline` and
+`test_supervise` `test_a_late_confirmation_in_real_time_is_unconfirmed`, real-time assertions
+on paths this change does not touch, failed under that load and passed alone (2 tests,
+0.742 s). Every other test passed.
+
+Protected harness:
+
+```sh
+make perf-kernel-measure
+```
+
+**PASS, exit 0:** `perf_kernel_measure::guarded_kernel_experiments_measure_one_judged_sample`,
+1 passed, 776.847 s (778.285 s with its build), after
+`python3 -I scripts/performance/cli.py harness-digest --write` re-pinned
+`fixtures/performance/kernel-measure/` to the protected harness
+`sha256:56432bb59d0a45c708fa0a2be3aa6700c06e2ba34448d169a7d7ccad7738c65a` (667 files; only
+the changed protected Python files differ) and `--check` passed. A run before that re-pin
+failed in 3.392 s as it should: the staged policy was stale for the changed tree. The `cargo`
+on this host's PATH is Homebrew's 1.94.0, not the pinned 1.88.0. `scripts/test-classes.py audit`, `scripts/changelog-notes.py --check` and
+`scripts/performance/schemas.py` pass, and `cargo clippy --workspace --all-targets -- -D
+warnings` passes with the pinned 1.88.0 (Homebrew's 1.94 reports `manual_is_multiple_of` in
+unchanged Rust code).
+
+Not established here: Docker, a real perf, Claw, a musl CPU capture and its flamegraphs, the
+v0.13.0 against v0.14.0-rc.1 comparison or its export. The host observer's timeout and cleanup
+repairs have not yet reached an actual AF capture on musl. The outer operator reruns the musl
+CPU acceptance on Claw from this candidate.
+
+## Final native integration: image-policy refusals and every recording's build IDs
+
+This candidate combines the sealed native repairs (image and image-local tool admission,
+physical storage, the CLI diagnostic log total, musl line-tables-only debug information, the
+repeated CLI CPU capture, its decoding and its exec-to-exit timing) and settles two defects
+those repairs left. Its focused checks ran on a macOS development host (Python 3.14.7) with
+injected computation; nothing here ran Docker, a real perf, Claw or GitHub Actions.
+
+- **An image-policy refusal keeps no fence** (`tests/test_executor.py`, `ImageAdmission`).
+  `BuildImage.refuse_implicit_volumes` refused a declared writable volume with a plain
+  `ContractError`, which escaped `image_admission` and `Journal.exclusive`, so a preflight
+  that had run only `docker image inspect` left the machine fence and disabled every later
+  experiment. The images' identity and volume checks now refuse as an admission refusal: no
+  probe container has started then, so the exclusion settles clean. A volume declaration that
+  is not JSON refuses the same way. With the stand-in docker client declaring
+  `{"/unexpected-volume":{}}`, `test_an_image_volume_refusal_runs_nothing_and_keeps_no_fence`
+  shows preflight `refused`, submission refused with nothing reserved, only `image inspect`
+  invoked, and no fence;
+  `test_a_claimed_image_volume_refusal_fails_before_any_build_without_a_fence` shows the claim
+  ending the original `failed` before any build, with no fence.
+  `test_an_unconfirmed_probe_container_keeps_the_fence` still keeps the fence. Both new tests
+  fail on the earlier catch, which left the fence.
+- **Build IDs from every recording** (`tests/test_report_diagnostics.py`, `RepeatedCaptures`).
+  `Profile.analyse` decoded every repetition but listed build IDs only from the first, so a
+  short first execution with no AF sample reported `binary_build_id_present: false` although
+  later recordings hit AF. Each recording is now listed by its own `perf buildid-list
+  --with-hits`, in order, under the tool's own time and output bounds and the diagnostic
+  deadline; a listing that fails or is malformed refuses the capture, naming its recording,
+  where a failure used to be read as no build IDs. Through the actual Profile writer and report
+  admission, a first recording with no hits, libc-only middle recordings and a last recording
+  hitting AF give `binary_build_id_present: true`
+  (`test_a_later_recordings_hit_of_the_executable_is_found_when_the_first_has_none`). With no
+  recording hitting AF it is `false` even though the executable carries that ID
+  (`test_no_recordings_hit_of_the_executable_is_never_inferred_from_the_executable`). A failed
+  or malformed listing of recording 7 omits the capture as `tool_failed` or
+  `malformed_build_ids`, every recording and observer record kept and the report admitted
+  (`test_a_failed_or_malformed_build_id_listing_refuses_the_capture_by_its_recording`). The
+  first two fail on the first-recording-only listing.
+
+The protected harness was re-pinned from this final tree with
+`python3 -I scripts/performance/cli.py harness-digest --write` to
+`sha256:fca6c728a31bc1b0976e5558dcfd27b3a2470672af0be53bf8f424f93e7b0cae` (677 files), and
+`--check` passes; before that it refused both staged files. The manual harness pass recorded
+above used Homebrew's Rust 1.94.0, so it is not proof on the pinned 1.88.0 toolchain. Not
+established here: `make perf-kernel-measure` with the pinned Rust 1.88.0 on Claw, a full
+release comparison, telemetry, an actual trace or CPU capture of this candidate, or a portable
+verified report. The outer operator runs those.
+
+## Whole-controller cancellation and the telemetry build image ID (2026-10-30)
+
+Two integration failures of an actual Claw full comparison (`cmp_1dd3108b…`), whose failed
+evidence stays as recorded and is not replayed. The focused checks below ran on a macOS
+development host (Python 3.14) with injected computation. Nothing here ran Docker, Claw or
+GitHub Actions, and no signal was sent to any process.
+
+- **A controller's signal no longer ends only one shard** (`perflab/runner.py`,
+  `perflab/executor.py`). SIGTERM to `comparison-run` during shard 2 was consumed by the
+  shard's own handler; `execute_local` went on to shard 3 and `comparison.run` to the queued
+  telemetry original. Under a controller's lease, `run_shard` now seals the shard's
+  `interrupted` record and then raises `runner.Cancelled`. The executor removes the original's
+  scratch (`settle_cancellation`), and the cycle publishes an `interrupted` result with the
+  partial evidence and settles the fence only when every owned cleanup was confirmed, then
+  re-raises; otherwise the claim is `uncertain` and the fence stays.
+  `test_runner.ControllerCancellation` calls the handler the real shard installed: under a
+  lease it raises with the sealed record, and alone the shard returns its `interrupted`
+  record as before. `test_executor` covers the confirmed outcome, an `interrupted` original
+  that is never replayed
+  (`test_a_cancelled_shard_settles_confirmed_cleanup_interrupted_and_never_replays`), and an
+  unconfirmed cleanup that stays `uncertain` with the fence kept
+  (`test_a_cancelled_shard_with_unconfirmed_cleanup_is_uncertain_and_keeps_the_fence`).
+  `test_comparison.test_a_controller_cancelled_in_a_shard_runs_no_later_shard_or_original`
+  runs a nightly partition of shards 0 and 1 through `comparison.run`. A cancellation in
+  shard 0 leaves shard 1, the second partition and the telemetry original unstarted and
+  queued, and the next cycle claims only the second partition.
+- **A telemetry build in a local image ID** (`perflab/contracts.py`). Build admission takes
+  `sha256:<64 hex>` (ADR-0170), but the build record's image allowed only `name@sha256:…`, so
+  a comparison's telemetry original compiled both sides and was then refused at
+  `validate_telemetry_build`. The record now uses `images.REFERENCE`, the same canonical
+  authority as admission, as `af.perf-telemetry-build/2` inside `af.perf-telemetry-result/3`.
+  The previous versions are refused. A tag, a tag before a digest, an uppercase name, a short
+  or uppercase ID, and a bare hexadecimal ID are refused too.
+  `test_local_telemetry_publishes_and_verifies_an_actual_local_image_id` publishes the actual
+  ID through the executor and verifies the native result carrying it.
+  `test_telemetry_build_records_refuse_previous_versions_and_mutable_references` refuses
+  those references through `telemetry-build-record` and a `/1` record through `read_build`.
+  The golden fixtures add the local ID and each refusal.
+
+The protected harness was re-pinned from this final tree with
+`python3 -I scripts/performance/cli.py harness-digest --write` to
+`sha256:348cf76d702a1bcd1f483303207b65aec29256a300278afcd8b5f85660441805` (682 files), and
+`--check` passes. Not established here: the actual Claw full comparison and its cancellation,
+a telemetry build in the real local image, or the final head's CI. The outer operator runs
+those.
+
+## Final release-comparison validation repairs (2026-10-30)
+
+Recorded in the AF implementation sandbox on macOS with Python 3.14.7, each suite in its own
+owned writable temporary directory (`HOME` and `TMPDIR` set to a fresh `mktemp -d`). Nothing
+here is a Claw measurement or a Linux run; the Linux-only tests named below were skipped on
+this host and run in the outer operator's Linux validation and CI.
+
+- **Bounded host-tool cleanup** (`perflab/hostobserver.py`). GitHub run 40998521481, job
+  123877732296: `test_bounded_runner_ends_its_whole_group_at_its_deadline` reported
+  `uncertain=True` because `Bounded.wait` reaped the leader and then read `killpg(group, 0)`
+  success as a live descendant, although killed descendants a subreaper keeps unreaped still
+  hold the group. `Bounded` now observes its leader's exit without reaping it (kqueue
+  `NOTE_EXIT` on XNU, `waitid(WNOWAIT)` on Linux), so the group ID stays reserved; it kills and
+  scans the group (`group_alive`) until no member executes, within `SETTLE_SECONDS`, and only
+  then reaps the leader, signalling nothing after. A member in `Z`/`X` state counts as exited (a
+  zombie leader thread beside live threads does not); a `stat` that cannot be read or parsed, a
+  leader absent from the table or no longer leading its group, or a scan over its bound leaves
+  the end `uncertain`, and so does a member that outlived a leader that exited of its own
+  accord. XNU keeps its EPERM-for-zombies reading. Captures still run under the authority
+  supervisor. Tests: `test_group_alive_tells_exited_members_from_executing_and_unestablished_ones`
+  (fixture table: exited, live, zombie-with-threads, unreadable, unparsable, recycled leader),
+  `test_a_group_of_exited_members_settles_and_no_other_group_is_signalled`,
+  `test_an_executing_or_unestablished_survivor_leaves_the_end_unconfirmed` (only the reserved
+  group is ever signalled; an unreadable member or absent leader signals nothing),
+  `test_a_member_that_outlives_its_leader_is_killed_and_unconfirmed` (real processes), the
+  unchanged CI test, and, Linux only,
+  `test_killed_descendants_an_adopting_subreaper_keeps_unreaped_are_confirmed_ended`: a child
+  subreaper in its own interpreter keeps the killed descendants unreaped while the runner
+  settles, the condition reproduced on Claw at `be37` (the first assertion then failed in
+  0.202 s), and reaps them afterwards.
+- **TUI cleanup after a refused exit watcher** (`fixtures/performance/cli/tui-open.py`). The
+  same CI job: `test_a_session_whose_exit_cannot_be_watched_is_still_ended_and_cleared` exited
+  3 instead of 1 because the driver built `Exit` before reading the browser's start, so an
+  EMFILE left `born` unset and an older same-user process with an unreadable environment (pid
+  1165 on the runner) was not excluded. The browser's start is now read (`birth`) right after
+  the spawn, before the watcher, and is kept through the watcher's refusal. Tests:
+  `test_a_refused_watcher_keeps_the_browsers_birth_for_the_listing` (any platform: the listing
+  receives the birth read before the refusal), and, Linux only,
+  `test_a_refused_watcher_leaves_an_older_unreadable_process_untouched_and_certain` (an older
+  undumpable sentinel of this user's, the Claw reproduction's condition: exit 1, browser and
+  escaped descendant gone, sentinel still running and released by its own file, never
+  signalled) and `test_a_refused_watcher_still_fences_a_newer_unreadable_descendant` (exit 3).
+- **Comparison member binding** (`perflab/comparison.py`, `perflab/executor.py`). A member's
+  request ID depends only on its kind, key and work, so a narrower `K:telemetry` original was
+  accepted by full comparison `K`. Every reused member is now checked against the comparison's
+  sources, submission, partition, frozen configuration digest and, for a core partition, its
+  frozen plan (`_binding`): `comparison-preflight`/`comparison-launch` refuse a mismatched
+  original before any new claim; the comparison's own submissions pass
+  `bind_configuration=True`, so `Journal._submit` returns an existing original only when it
+  froze that configuration (a plain resubmission keeps the original it froze, as before); the
+  aggregate excludes such a partition; `status`, `report` and `export` mark it `refused` with a
+  reason, so the comparison is never `complete` over its run list; `advance` derives no lane
+  from a journal configuration that is no longer the declared one. Test:
+  `test_a_narrower_same_key_original_refuses_the_full_comparison_and_never_completes` (real
+  Journal, a completed overhead-only telemetry original, then the full comparison; also the
+  same-configuration idempotent resubmission). The unchanged full-comparison test proves the
+  valid resumed launch and no replay.
+- **Telemetry registry version.** The registry is `af.perf-telemetry-lab/3`
+  (`schemas/performance-telemetry-lab-v3.json`, regenerated; v2 removed); the fixtures and docs
+  name `/3`, and `invalid-prior-version.toml` is the current registry under `/2`. Test:
+  `TelemetryLabVersion` and the parity suite. The Task14 `af.perf-telemetry-build/2` is
+  unchanged.
+- **Pre-build workload and sample admission.** `select_contract` refuses a release no fixture
+  contract names (`check-receipt@2` names 0.14.0-rc.1 to rc.3); `Journal._submit` admits, from
+  each side's retained Cargo.lock, the telemetry contract of both sides and, for a plan with
+  CLI cases, the authority's CLI registry and an adapter for both sides, before any claim or
+  build. `image_admission` runs the sample image's own `/usr/bin/python3` once in a probe
+  container (`sample_admission`: this account, no network, read-only root, no capability, no
+  new privileges, removal confirmed) and refuses a missing interpreter, shell or driver module,
+  or missing containment or cgroup v2. Library cases then kept their compile-time probe
+  adapters; the final-slot cancellation and selected-workload section below admits them
+  before any claim or build.
+  Tests: `WorkloadAdmission` (0.11.9 refused for telemetry and CLI with nothing reserved;
+  v0.13.0 against v0.14.0-rc.1 admitted with `check-receipt@1`/`@2` and `af_cli_v2`/`af_cli_v3`),
+  `test_an_unusable_sample_runtime_tool_or_containment_refuses_before_any_claim` (ten probe
+  answers, the fence settled clean), the ready-admission test's `sample_runtime` record, and
+  `test_a_release_no_contract_names_is_refused_never_given_the_current_contract`. The Rust
+  `telemetry_bench` judges' recorded documents now name 0.14.0-rc.1.
+
+### Historical TUI first-frame audit (operator evidence, Claw, 2026-10-30)
+
+Supplied by the outer operator; not run by this change. Unprivileged UID 991 containers
+(network none, read-only tools and fixtures, every capability dropped, private HOME/XDG) under
+the common machine lock ran each side's native `setup.sh` registry fixtures and the current
+`tui-open.py` driver against the manifest-verified musl release binaries. The loaded fixture
+was written by each side's own perf-probe public Store writer, exactly 10,000 events, in the
+native `AF_PERF_FIXTURE_PREP` 512 MiB tmpfs; `setup.sh` copied and registered 20 Stores and
+checked the registry count. Each first-frame document passed its schema, exit and numeric
+interval checks, and every owned container was removed with cleanup confirmed. One observation
+per side and fixture: workload and frame compatibility only, no statistical or performance
+claim; the full 40-pair experiment gives the verdict. A first attempt without the native
+preparation environment hit its 120-second seed bound and is retained as an operator setup
+error, not evidence. Per side and fixture, the procedure uses the laboratory's own entry points
+and the `tui_open` cases of `fixtures/performance/cli.toml` (the operator's literal scripts are
+the receipt's logs, identified by their digests below):
+
+```sh
+# In a container of the audit image as UID 991 (--network none --read-only --cap-drop ALL),
+# private HOME/XDG, the side's verified binaries and the fixtures mounted read-only.
+# The loaded registry's Task seed, written by the side's own probe in the 512 MiB tmpfs:
+AF_PERF_FIXTURE_PREP=/perf/prep sh "$FIXTURES/setup.sh" seed_task_state "$SEED_WORK" \
+  "$SIDE/af" "$SIDE/perf-probe" "$TASK_SEED_REQUEST"
+sh "$FIXTURES/setup.sh" seed_publish "$SEED_WORK" "$SIDE/af" "$SIDE/perf-probe" "$SEED"
+# Each fixture in its own scratch, then the driver, which prints one af.perf-tui-open/1 line:
+sh "$FIXTURES/setup.sh" registry_empty "$SCRATCH" "$SIDE/af" "$SIDE/perf-probe" -
+sh "$FIXTURES/setup.sh" registry_stores_20x10000 "$SCRATCH" "$SIDE/af" "$SIDE/perf-probe" "$SEED"
+(cd "$SCRATCH" && /usr/bin/python3 -I "$FIXTURES/tui-open.py" "$SIDE/af")
+```
+
+The receipt, as supplied:
+
+```json
+{
+  "kind": "operator_verified_historical_tui_contract_audit",
+  "producer": "be37b698ee8d66df00f340a50c04c5511b71007b",
+  "sources": {
+    "authority_sha": "be37b698ee8d66df00f340a50c04c5511b71007b",
+    "baseline_sha": "e638219ff4a2a65d5403288cb186c9d2b73ec5f4",
+    "candidate_sha": "e47741ac401754be822d92eca29b61f5afbe8418",
+    "control_sha": "be37b698ee8d66df00f340a50c04c5511b71007b"
+  },
+  "image": "sha256:4f5e1e215d31e1e7844332afa5c4585bc63cdad88ae6e0b9237ffdbdeefbc2e1",
+  "binary_manifest_entries": [
+    {"path": "baseline/af", "sha256": "sha256:040210ebf43a8422ecd92ddbd68fec8e578cc348a3952adb1e6f123f88d8b463", "size": 58050304},
+    {"path": "baseline/perf-probe", "sha256": "sha256:b64bb8562ffcf6b5f05262b66367902fd1332eaef7a3051b2913dbd250797041", "size": 23606816},
+    {"path": "candidate/af", "sha256": "sha256:42152ad11083d26bb1501c05c3bc45aaf04b230d41883be48df4c40a8ba15f58", "size": 60380208},
+    {"path": "candidate/perf-probe", "sha256": "sha256:c7c9a2eecbfcd168c1552d7aea6623888e9cd295703df79ccccf54f97e38ec78", "size": 23862992}
+  ],
+  "observations": [
+    {"side": "baseline", "version": "af 0.13.0", "registry": "empty", "browser_ms": "6.364553", "exit_code": 0, "schema": "af.perf-tui-open/1", "splash_ms": "5.075649"},
+    {"side": "baseline", "version": "af 0.13.0", "registry": "stores_20x10000", "browser_ms": "5730.15642", "exit_code": 0, "schema": "af.perf-tui-open/1", "splash_ms": "4.935427"},
+    {"side": "candidate", "version": "af 0.14.0-rc.1", "registry": "empty", "browser_ms": "7.555114", "exit_code": 0, "schema": "af.perf-tui-open/1", "splash_ms": "5.974847"},
+    {"side": "candidate", "version": "af 0.14.0-rc.1", "registry": "stores_20x10000", "browser_ms": "10.21211", "exit_code": 0, "schema": "af.perf-tui-open/1", "splash_ms": "4.998213"}
+  ],
+  "elapsed_seconds": 79.445,
+  "cleanup_confirmed": true,
+  "statistical_performance_claim": false,
+  "source_files_sha256": {
+    "candidate.log": "8f1dd786d665b4055f5a8b87cc1c38de1bf0c66cbaf34117d584e1afd29b74bf",
+    "baseline.log": "455075b19e54f947563950aff6172a1c4dc9a31a36156dc2363ed5c6e66ca82f",
+    "historical-tui-audit-02-20261030.json": "18bb8614ce6f7aae7b85960909cfbe8fb6a987863114b23beaf629700c22c970"
+  }
+}
+```
+
+### Image admission records (Task13) and this change's focused runs
+
+The outer operator ran `tests.test_builds.ImageIdentity` and `tests.test_executor.ImageAdmission`
+on combined `1cbe414667f2ebe337b80b16d13840ad21cf90aa` with Python 3.14.7 and private
+HOME/TMPDIR: 10/10 passed in 17.524 test seconds (18.178 s outer), exit 0, log SHA-256
+`bfbdf18a987a72f03d3f58eb74416ad798d59015b3d2c0df9108e78dcb5ee3e3`. This change reran them on
+its final source, with its own new sample-admission test, as below.
+
+Each command ran from the repository root with `HOME` and `TMPDIR` set to a fresh owned
+directory, Python 3.14.7, on macOS (the Linux-only tests skip here).
+
+```sh
+python3.14 -I -B -c 'import sys,unittest; sys.path.insert(0,"scripts/performance"); unittest.main(module=None,argv=["unittest","tests.test_hostobserver","tests.test_tui_open","tests.test_comparison","tests.test_executor","tests.test_contracts","tests.test_telemetry_lab","tests.test_telemetry_bench_contracts","tests.test_builds","tests.test_calibration","tests.test_localcalibration","tests.test_planning","tests.test_diagnostics","tests.test_telemetry_cleanup","tests.test_telemetry_collect","tests.test_telemetry_exec","tests.test_telemetry_lock_handoff","tests.test_telemetry_measurements","tests.test_telemetry_terminal","tests.test_telemetry_workflow","tests.test_whole_source_repairs"],verbosity=1)'
+```
+
+**526 tests, 1003.6 seconds: 1 failure, 4 errors, 21 skipped.** Four are this macOS host's, on
+paths this change does not touch: three `tests.test_executor.Journal` profile cases refuse
+with `environment linux_x86_64_*_claw is the contained Linux profile; this host is macos`, and
+`test_diagnostic_build_removal_uncertainty_keeps_borrowed_executor_fence` reads
+`host_mismatch` from the stand-in toolchain's macOS host; all four failed identically before
+the workload and sample admission existed. The fifth,
+`test_telemetry_lab.Runs.test_documents_unlike_their_planned_run_are_refused_even_when_both_sides_agree`,
+was this change's: its foreign stand-in document named af 9.9.9, which no fixture contract
+names any more; it now names another declared release (0.14.0-rc.1) and passes below. An
+earlier run of the same modules failed four `test_localcalibration.LocalOriginals` cases (their
+synthetic suite's process cases have no CLI registry; they run no shard, so they now stub the
+CLI admission `WorkloadAdmission` proves) and once
+`test_telemetry_collect.Collection.test_rotation_keeps_old_results_retries_and_higher_attempts_eligible`,
+which passed when rerun alone and in the run above.
+
+```sh
+python3.14 -I -B -c 'import sys,unittest; sys.path.insert(0,"scripts/performance"); unittest.main(module=None,argv=["unittest","tests.test_hostobserver","tests.test_tui_open","tests.test_telemetry_lab","tests.test_telemetry_bench_contracts","tests.test_contracts","tests.test_comparison","tests.test_builds.ImageIdentity","tests.test_executor.ImageAdmission","tests.test_executor.WorkloadAdmission"],verbosity=1)'
+```
+
+**PASS: 109 tests, 122.6 seconds, 5 skipped (Linux only), exit 0.** It includes the Task13
+`ImageIdentity` and `ImageAdmission` suites (both malformed-identity cases and the unconfirmed
+probe container that keeps the fence) with the new sample-admission test.
+`cargo nextest run --workspace --locked --profile ci -E 'binary_id(af::it) &
+test(/^telemetry_bench::/)'`: 7 passed. `python3 -I scripts/performance/schemas.py`,
+`python3 -I scripts/test-classes.py audit`, `cargo fmt --all -- --check` and `cargo clippy
+--workspace --all-targets -- -D warnings` pass. The protected harness was re-pinned after the
+last edit with `python3 -I scripts/performance/cli.py harness-digest --write` to
+`sha256:52d8516373e80469b112a033166b68f66b63436428faec212d96193a57799b4f` (682 files), and
+`--check` passes. Not established here: the Linux-only tests above, the actual Claw full
+comparison and the final head's CI, which the outer operator runs.
+
+### Final-slot cancellation and selected-workload admission (2026-10-30)
+
+A narrow repair on the combined candidate; every earlier repair above is unchanged. Nothing
+here ran Docker, Claw, GitHub Actions or a measurement, and no signal was sent to any process.
+
+- **A signal in the final slot interrupts the shard** (`perflab/runner.py`, `Shard.run`). The
+  shard's handler latches the signal, and the loop checked it only before a slot. A SIGTERM
+  during the final sample that then returned normally left no later check: the shard sealed
+  `complete`, and under a lease `run_shard` raised `Cancelled` with that complete record inside
+  an `interrupted` original. Now, after the handlers are restored and before the seeds are
+  cleaned up, a latched signal with no stop already made becomes the `cancelled` stop. The
+  shard seals `interrupted` and every completed record is kept: `record_count` equals
+  `expected_records`, no slot is failed or unstarted, and the comparator still reads the run as
+  `incomplete` (`shard_not_complete`). A stop a slot already made keeps its status, failure and
+  retained scratch, such as an uncertain cleanup that keeps the fence. Seed cleanup and lease
+  marking run as before.
+  `test_runner.ControllerCancellation` invokes the handler the real shard installed from
+  inside its final slot, after the stand-in sample returned:
+  `test_a_signal_in_the_final_slot_under_a_lease_seals_interrupted_then_cancels`,
+  `test_a_standalone_shard_a_signal_ends_in_its_final_slot_returns_interrupted` and
+  `test_an_uncertain_final_slot_keeps_its_stop_and_fence_when_a_signal_follows`. Before the
+  fix, the first two failed: their sealed shard had no failure. The executor's cancellation
+  stand-in now seals what the fixed runner seals: every record kept, status `interrupted`.
+  `test_a_cancelled_shard_settles_confirmed_cleanup_interrupted_and_never_replays` asserts that
+  the original's kept `shard.json` and its result both say `interrupted`.
+- **Library workload admission before any claim or build** (`perflab/executor.py`
+  `library_workload`, `perflab/adapters.py` `coverage`). The native adapter registry is
+  `af.perf-adapters/2` (`schemas/performance-adapters-v2.json`; v1 removed and refused,
+  `invalid-previous-version.toml`, `invalid-missing-min-version.toml`). Each adapter declares
+  `min_version`; `native_probe_public_api_v1` declares 0.12.0-rc.3, the release whose real
+  builds compiled it (ADR-0168, ADR-0169). For every core original, both sides need an
+  adapter that declares their release and serves the sentinel's contract and every selected
+  library case's contract, its seed's included. An authority without the registry, an
+  undeclared release (0.11.9) or an unserved contract refuses with side, release and reason,
+  even for a library-only plan. The build still chooses by compile, but only after this
+  admission. Tests:
+  `test_unknown_or_absent_library_coverage_refuses_before_any_claim_or_build` and
+  `test_declared_library_coverage_is_admitted_for_each_side` (0.13.0/0.14.0-rc.1 and
+  0.12.0-rc.3).
+- **Per-case CLI admission** (`cli_workload`). Every selected process case and its parameters
+  needs a declared, runnable command in the chosen adapter of each side. `af_cli_v1`'s pending
+  `tui_open` refuses 0.12.0-rc.3 with its exact reason, and its discovery commands stay
+  admitted, as do the 0.13/0.14 browser cases. An authority whose registry omits a command is
+  refused as before. Tests: `test_a_pending_cli_command_refuses_before_any_claim_or_build`,
+  `test_runnable_cli_commands_of_each_adapter_stay_admitted` and
+  `test_a_cli_command_the_authority_does_not_declare_refuses_before_any_claim`. Each refusal
+  test also asserts that no original exists and that no build or scratch preparation ran.
+  Before the change, the library and pending tests failed.
+
+The focused run started at 09:39:45 MSK from the repository root, with `HOME` and `TMPDIR` set
+to a fresh owned directory, under Python 3.14.7 on macOS:
+
+```sh
+python3.14 -I -B -c 'import sys,unittest; sys.path.insert(0,"scripts/performance"); unittest.main(module=None,argv=["unittest","tests.test_runner.ControllerCancellation","tests.test_executor.Journal.test_a_cancelled_shard_settles_confirmed_cleanup_interrupted_and_never_replays","tests.test_executor.Journal.test_a_cancelled_shard_with_unconfirmed_cleanup_is_uncertain_and_keeps_the_fence","tests.test_comparison.Comparison.test_a_controller_cancelled_in_a_shard_runs_no_later_shard_or_original","tests.test_executor.Journal.test_local_telemetry_publishes_and_verifies_an_actual_local_image_id","tests.test_executor.Journal.test_telemetry_build_records_refuse_previous_versions_and_mutable_references","tests.test_executor.WorkloadAdmission","tests.test_contracts.Parity"],verbosity=2)'
+```
+
+**PASS: 25 tests, 44.7 seconds, exit 0.** The run covered the 5 runner cancellation tests, both
+executor cancellation outcomes, the comparison's whole-controller propagation (no later shard
+or original, no replay), the two Task14 image-provenance tests, the 7 `WorkloadAdmission`
+tests and the 8 schema parity tests.
+
+Two wider runs used the same environment:
+
+- `tests.test_comparison`, `tests.test_localcalibration`, `tests.test_contracts`,
+  `tests.test_builds` and `tests.test_planning`: 94 tests, OK.
+- `tests.test_activation`, `tests.test_calibration` and `tests.test_diagnostics`: 161 tests,
+  OK.
+- `tests.test_runner`: 65 tests, OK.
+- `tests.test_executor`: 57 tests, 1 failure and 5 errors.
+  - Four of these are this macOS host's, as recorded above: three profile cases with `this
+    host is macos`, and `host_mismatch` in the diagnostic-build removal test.
+  - Two `AuthorityAndShapes` cases refused a bytecode cache. An earlier inspection command,
+    run without `-B`, left it in the tree. After the cache was removed,
+    `tests.test_executor.AuthorityAndShapes` ran again: 9 tests, OK.
+
+The protected harness was re-pinned after the last protected edit with `python3 -I -B
+scripts/performance/cli.py harness-digest --write`, to
+`sha256:e905d33fe5473c9ff117e637f957057bc787676df73d5afd8a776aeb3bd974bb` (684 files), and
+`--check` passes.
+
+Not established here, and owned by the outer operator:
+
+- the exact final Claw regression tests;
+- the pinned Rust 1.88 manual harness;
+- the full 33-case release comparison;
+- the portable export;
+- the final head's CI.
+
+### Bytecode-free Linux subreaper regression in writable checkouts (2026-10-30)
+
+A narrow CI repair to a test; no product code changed. Every earlier repair above, the
+production refusal of bytecode caches, the schema versions and the suite samples and bounds
+are unchanged. Nothing here ran Docker, Claw, GitHub Actions or a measurement.
+
+- **The defect.** GitHub run 41012988068 on `e67f8bd` (CI 695, Python 3.15.2) failed the
+  classperf job: 1209 tests, 72 failures, 121 errors. The Linux-only
+  `test_hostobserver.HostObserver.test_killed_descendants_an_adopting_subreaper_keeps_unreaped_are_confirmed_ended`
+  passed, but its child ran `[sys.executable, "-I", "-c", SUBREAPER, ...]` and imported
+  `perflab.hostobserver` from the writable checkout. `-I` ignores `PYTHONDONTWRITEBYTECODE`,
+  and the child does not inherit the parent's `-B`, so the child wrote
+  `scripts/performance/perflab/__pycache__`. Every later test and CLI run then refused that
+  source ("measurement library bytecode cache refused"), as the authority must. The outer
+  operator reproduced this on Claw in a writable copy of the `e67` source. Earlier Claw checks
+  ran on read-only source, and macOS skips the test, so neither saw it.
+- **The repair** (`tests/test_hostobserver.py`). The child sets `sys.dont_write_bytecode`
+  before any import and runs with `-I -B`. The test no longer imports the checkout: it copies
+  `perflab` with `tests.support.writable_copy` into its own temporary directory and runs the
+  child there, with every `PYTHON*` variable removed and with private `HOME`, `TMPDIR` and
+  working directory. A failure therefore cannot write into the checkout. The test asserts that
+  the copy is bytecode-free before and after the run. It also asserts that the child imported
+  `hostobserver.py` from the copy and that the real subreaper outcome is unchanged
+  (`timed_out` true, `uncertain` false). `tests.test_telemetry_exec.AncestorSubreaper` covers
+  the telemetry executor the same way. A scratch check on macOS ran the child against such a
+  copy without any suppression: the child stops at `prctl`, after its import, and had written
+  25 bytecode files. With the source line alone, or `-B` alone, it wrote none.
+
+The focused run started at 09:59 MSK from the repository root, with `HOME` and `TMPDIR` set to
+a fresh owned directory and `PYTHONDONTWRITEBYTECODE` unset, under Python 3.14.7 on macOS:
+
+```sh
+python3.14 -I -B -c 'import sys,unittest; sys.path.insert(0,"scripts/performance"); unittest.main(module=None,argv=["unittest","tests.test_hostobserver","tests.test_kernelguard","tests.test_telemetry_exec.AncestorSubreaper","tests.test_whole_source_repairs"],verbosity=1)'
+```
+
+**PASS: 72 tests, 99.0 seconds, 8 skipped, exit 0.** All eight skips are Linux-only: the
+repaired subreaper test and the seven `AncestorSubreaper` cases. Afterwards
+`python3.14 -I scripts/performance/cli.py --help` exited 0 on the checkout, and the tree held
+no `__pycache__` or `.pyc` file. The protected harness was re-pinned after the last protected
+edit with `python3 -I -B scripts/performance/cli.py harness-digest --write`, to
+`sha256:8733e772805cdfc71296593f950a85fca19d3151f38bef018e1e3f6061eacc75` (684 files), and
+`--check` passes.
+
+The repaired Linux test did not run on this host. The outer operator owns:
+
+- the repaired test on Claw in a writable copy, followed by the copied CLI and bytecode checks;
+- the final head's CI.
+
+## Offline comparison derivation, unsampled executables and the full recipe (2026-10-30)
+
+Recorded in the AF implementation sandbox on macOS with Python 3.14.7, `HOME` and `TMPDIR` set
+to a fresh `mktemp -d` directory. Nothing here is a Claw measurement or a Linux run. The
+running native comparison `cmp_b748bbb15eb5c84455ea0e6669570c2089b31726a62a43ed` was not
+touched or replayed. Correction (2026-10-30): an earlier version of this record called applying
+this verifier to that comparison's export the outer operator's step. It is not final proof:
+`telemetrylab.verify` requires its installed authority digest to equal every measured authority
+byte, so the final report needs a new comparison measured on the final repaired source, and
+that comparison's 4-shard first shard did not finish
+([below](#eight-serial-shards-for-the-full-release-comparison-2026-10-30)).
+
+- **Offline verification derives the report** (`perflab/comparison.py`). Before this change,
+  `verify_export` checked hashes and the members the report named, and `verify_native` skipped
+  every member the report did not call complete. A bundle could therefore relabel a failed
+  telemetry original, or queued members with no native result, as complete, rehash its report
+  and manifest, and pass. `verify_export` now runs `status` over `Bundled`, a read-only journal
+  view of the bundle. The view reads the bundled declaration's members, binds each original's
+  state to its sealed result, and takes the frozen configuration from a bundled original under
+  the declaration's digest. Each complete original is admitted offline (`admit`):
+  configuration, provenance, the native evidence its work requires sealed and bundled, its core
+  run evaluated again, its telemetry verified again, its profile children admitted again.
+  `aggregate_claims` recomputes the aggregate's partition entries, its run's shards (byte for
+  byte those of its included partitions), its build, result, coverage and regressions. A report
+  that is not exactly that derivation is refused. The `af.perf-comparison-report/1` contract
+  also refuses a complete lane over an original that is not complete, and a complete comparison
+  over one that is not verified. Its shape is unchanged.
+  - `Comparison.test_a_failed_telemetry_export_verifies_incomplete_and_never_relabelled_complete`:
+    a real failed telemetry original with its sealed native run. The export verifies as
+    `incomplete` through `cli.py executor comparison-verify`. A complete telemetry lane over
+    the failed original is refused by the contract. The original also relabelled complete is
+    refused by the derivation. Every lane, original and the comparison relabelled complete with
+    reasons cleared, report and manifest rehashed (manifest `status` `complete`), makes the
+    public command exit non-zero. The state record relabelled complete is refused against its
+    sealed result.
+  - `DeclarationOnly.test_queued_members_relabelled_complete_with_no_native_result_are_refused`:
+    the schema fixtures `comparison/valid-release.json` and `comparison-report/valid-running.json`
+    with three queued members and no native result. Relabelled complete, the contract refuses
+    it. Relabelled complete and verified too, it is refused for lack of a frozen plan. With a
+    plan the declaration names, it derives as unfinished and is refused.
+  - `Comparison.test_full_comparison_partitions_aggregates_diagnoses_reports_and_exports`, extended:
+    the honest incomplete bundle with both diagnostic lanes still verifies. Its report relabelled
+    complete is refused. Its aggregate relabelled as judged whole is refused against its verdict.
+    A dropped trace member is refused, with or without its records. A complete export with a
+    real regression (the family judged whole, injected for the journal's report and the offline
+    derivation alike, as the existing status assertion injects it) verifies `complete` with
+    verdict `fail`. Relabelling that verdict `pass` is refused.
+- **Known build ID, no recording hit** (`perflab/diagnostics.py`, `perflab/diagcontracts.py`).
+  A capture whose recordings never hit the profiled executable's known build ID was kept
+  usable (`binary_build_id_present: false`, no omission) and rendered. It is now omitted as
+  `executable_not_sampled`, every recording kept and nothing rendered. `profiles.json` refuses
+  such a capture without an omission, so `report.admit_child` and the comparison's profile lane
+  refuse a forged usable claim. Its shape is unchanged.
+  - `RepeatedCaptures.test_no_recordings_hit_of_a_known_build_id_omits_the_capture_and_renders_nothing`
+    replaces `test_no_recordings_hit_of_the_executable_is_never_inferred_from_the_executable`,
+    which expected no omission. It also checks that the omission removed and resealed is refused
+    at admission.
+  - `RepeatedCaptures.test_a_build_id_less_executable_keeps_its_hash_bound_capture_and_renders`:
+    an executable with no build ID (musl) keeps its capture bound by its exact hash and
+    retained archive, renders its differential flamegraphs and is admitted.
+  - `test_a_later_recordings_hit_of_the_executable_is_found_when_the_first_has_none`
+    (known build ID, hit) is unchanged and passes.
+- **The full release comparison recipe** (`docs/performance-local-executor.md`, "Validate an
+  exact candidate producer", steps 3 and 5). The guide now gives the candidate configuration's
+  replaced keys: a fresh root, journal and mirror, `tier = "nightly"`,
+  `environment = "linux_x86_64_musl_claw"`, `shards = 4`, `cases = []`, and the `manual`
+  telemetry profile with its three experiments and 2 rounds, no overrides. It also gives the
+  checks of the frozen plan and telemetry workload before `comparison-run`.
+  `Comparison.test_the_documented_full_comparison_configuration_and_checks_hold` parses both
+  documented blocks. Applied to an executor configuration, the configuration validates as
+  `af.perf-executor/3` and launches. The documented check script, run as written on the
+  launched journal, prints `('nightly', 'linux_x86_64_musl_claw', 4, 33, 31, 2, 2852)` and 12
+  telemetry runs. A narrower telemetry selection fails it. A scratch plan of the suite gave
+  33 instances, 31 judged, 2 exploratory and 2852 slots for `nightly`, and 11 instances and
+  1004 slots for `release`, which is unchanged. These were the counts tested then. The recipe
+  is now 8 shards and 2932 slots
+  ([below](#eight-serial-shards-for-the-full-release-comparison-2026-10-30)).
+
+The focused run started at 11:43 MSK from the repository root:
+
+```sh
+python3.14 -I -B -c 'import sys,unittest; sys.path.insert(0,"scripts/performance"); unittest.main(module=None,argv=["unittest","tests.test_comparison","tests.test_contracts","tests.test_report","tests.test_report_diagnostics","tests.test_diagnostics","tests.test_executor"],verbosity=1)'
+```
+
+**219 tests, 581.4 seconds: 1 failure, 3 errors, exit 1.** All four are this macOS host's,
+already recorded above, and on paths this change does not touch. The three
+`tests.test_executor.Journal` profile cases
+(`test_local_diagnostic_uses_native_child_planner_report_and_admission` and both subtests of
+`test_shipping_nightly_release_reach_both_builders_with_frozen_pinned_tools`) refuse with
+`environment linux_x86_64_*_claw is the contained Linux profile; this host is macos`.
+`test_diagnostic_build_removal_uncertainty_keeps_borrowed_executor_fence` reads
+`host_mismatch`. The comparison, contract, report and diagnostics suites passed whole. The
+protected harness was re-pinned after the last protected edit with
+`python3 -I -B scripts/performance/cli.py harness-digest --write`, to
+`sha256:6c8afd07290b0b4ff54082fd0861d83ac0f400871bdb01b7e981e49b164a667a`, and `--check`
+passes. The native light gate is the full gate. The outer operator owns the repaired verifier
+on the actual native export, Linux proof and the final head's CI.
+
+## Eight serial shards for the full release comparison (2026-10-30)
+
+The full release comparison recipe of the previous record (`shards = 4`) cannot finish the
+v0.13.0 (`e638219ff4a2a65d5403288cb186c9d2b73ec5f4`) against v0.14.0-rc.1
+(`e47741ac401754be822d92eca29b61f5afbe8418`) pair inside the unchanged per-shard window. Native
+evidence on Claw, producer `cbd8661c010e7bcb65e6cd3adf44f36be83a720b`, comparison
+`cmp_b748bbb15eb5c84455ea0e6669570c2089b31726a62a43ed`:
+
+- The first shard expected 776 records and sealed 738, all valid: 0 failed, 38 unstarted,
+  `interrupted` with stopping reason `sampling_deadline`. It ran 2326.044 seconds and refused to
+  start sequence 738, because that slot's 345-second worst-case budget would exceed what
+  remained of the 45-minute shard window. Sealed shard
+  `sha256:3d388d5cc9f4a8b7a5c808966b41fbafe92cb53be05fefafb22603e67210eec5`, samples
+  `sha256:8adac03caad80c4a009d7943eeb9907b35dbf6fd0e19038394a074b01c622898`.
+- A native SIGTERM during the next shard (1) settled that original `interrupted` with its
+  cleanup confirmed. The later originals never started, and the fence was cleared.
+- The failed original, its configuration and its evidence stay as they are: not retried, not
+  relabelled. This is an admission and time-budget observation, not a performance verdict.
+
+The recipe now uses 8 smaller serial shards (`core.cases = []`, `tier = "nightly"`,
+`environment = "linux_x86_64_musl_claw"`, `shards = 8`). The workload is unchanged: 33 case
+instances, 31 judged and 2 exploratory, 40 pairs and the same warmups, and the 12 `manual`
+telemetry runs. No window, deadline, cap or sentinel changes, and the same single machine lock
+and fence apply. The plan has 2932 slots: the 2852 of 4 shards plus the 80 health-sentinel slots
+(5 start and 5 end pairs, both sides) of 4 more shards. The schedule partitions the 8 shards into
+4 serial originals of 2 shards each (worst case 6630 seconds for the first, which builds, and
+6030 for each later one, which reuses its immutable build, of 7200). The suite's `release` tier
+(11 cases, 1004 slots) is unchanged. Smaller shards adapt to the measured run; the preflight
+checks worst-case bounds and does not predict how fast a host samples, so it guarantees no
+completion on other hardware.
+
+A native copied 8-shard plan on producer `cbd8661c010e7bcb65e6cd3adf44f36be83a720b` was
+verified by the outer operator: comparison
+`cmp_cb9089869680e466235977010fdbbeda55b297b661b7b049`, plan
+`sha256:97325fb52b873b193f8cab28d0c3af125b3a08bea5d0adffe20eb40dcecf1b69`, slots
+`[440, 356, 356, 356, 356, 356, 356, 356]`, partitions `[[0, 1], [2, 3], [4, 5], [6, 7]]`, 12
+telemetry runs. It is preliminary configuration and timing evidence on that producer, not the
+final report: the final comparison must be launched on the exact final repaired source, whose
+installed authority the verifier requires every measured authority byte to equal. That final
+Claw comparison, its report and export, and their verification on Claw and macOS are pending
+with the outer operator. Nothing here claims them.
+
+Recorded in the AF implementation sandbox on macOS, Python 3.15.0, `TMPDIR` a fresh
+`mktemp -d` directory; nothing was measured. A scratch probe drove the real launch path of
+`tests.test_comparison.Comparison`'s fixture with the documented configuration and read the
+retained plan and declaration. With `shards = 4` it gave slots `[776, 692, 692, 692]` (2852) and
+2 originals; with `shards = 8`, slots `[440, 356, 356, 356, 356, 356, 356, 356]` (2932),
+partitions `[[0, 1], [2, 3], [4, 5], [6, 7]]`, worst cases `[6630, 6030, 6030, 6030]` seconds of
+7200. `Comparison.test_the_documented_full_comparison_configuration_and_checks_hold` now
+expects `('nightly', 'linux_x86_64_musl_claw', 8, 33, 31, 2, 2932)`; it still launches the
+documented configuration, runs the documented check script and fails a narrower telemetry
+selection. The stray blank line at the end of `scripts/performance/tests/test_comparison.py`
+was removed. The protected harness was re-pinned after that last protected edit with
+`python3 -I -B scripts/performance/cli.py harness-digest --write`, to
+`sha256:266f29f9be021c8934f1eb5bd9e226bd5f62c190b884a00c2ed6ca618bbcb37c`, and `--check`
+passes.
+`git diff --no-index --check /dev/null <file>` (the sandbox tree is not a Git checkout)
+reports no whitespace error in any changed file; it reports `new blank line at EOF` on a
+control file ending in one. markdownlint-cli2 0.22.1 reports 0 errors in the changed Markdown.
+
+The focused run, from the repository root:
+
+```sh
+python3 -I -B -c 'import sys,unittest; sys.path.insert(0,"scripts/performance"); unittest.main(module=None,argv=["unittest","tests.test_comparison"],verbosity=1)'
+```
+
+**PASS: 9 tests, 42.5 seconds, exit 0.** The native light gate is the full gate.
+
+## Integration with main `fa85b96` (2026-10-30)
+
+The source is Git's merge-tree of the PR head `894cdb97428daa0bcec60caace700289671cf12d` and
+main `fa85b966410b24f2ab59f0285bedc42149495f4c` (merge base
+`955e24bff603675feb5680d0cf0e4cc60cd4b6f2`). Exactly three files held conflict markers, and only
+they changed, with this section and one change note:
+
+- `docs/adr/README.md` lists the PR's 0265 and main's 0267 in numeric order; both ADR files were
+  already in the tree and neither decision changed.
+- `fixtures/performance/kernel-measure/code-policy-measures.toml` and `inventory.json` were
+  seeded with the PR side, then regenerated with
+  `python3 -I -B scripts/performance/cli.py harness-digest --write`, and `--check` passes. The
+  digest of the integrated source is
+  `sha256:0d9ea79c4aba911c7df48426a20786ceecd5274a264e71dc6a7ca4a465d87936` for **684 files**;
+  neither side's previous digest (`266f29f9…`, `b8d689fd…`) remains in the fixtures. The
+  measures, repetitions, wall and authority are unchanged.
+
+Recorded in the AF implementation sandbox on macOS, Python 3.15.0, `TMPDIR` a fresh
+`mktemp -d` directory. No conflict marker remains in the tree. `tests.test_comparison`, run with
+the command above, **PASS: 9 tests, 48.0 seconds, exit 0**, including
+`Comparison.test_the_documented_full_comparison_configuration_and_checks_hold` (eight serial
+shards, 33 cases, 2932 slots, and a narrower telemetry selection refused);
+`tests.test_kernelguard` **PASS: 29 tests**. Nothing was measured: no new VM or Claw
+measurement and no green final CI is claimed. The final comparison on the integrated producer,
+its report, export and verification are pending with the outer operator.
+
+## Integration with main `26d8a6d` and the merged nightly executor (2026-10-30)
+
+The source is Git's mechanical merge-tree `327d6448c198245ffcc184f73ed2b50a5adb74b6` of the PR
+head `6d8208d4dc8de6413d5ec154f19524fd67b271bd` and main
+`26d8a6da424c125db2bed32694dc5a9bd5b08481`, with conflict markers in ten files. Both sides are
+kept; the shared contracts were reconciled:
+
+- **Request versions.** Main's `af.perf-executor-request/2` is its nightly submission; the PR
+  had independently used request/2 for a profile's `parent` and a comparison's `partition`.
+  The combined shape is `af.perf-executor-request/3` (main's tagged submission, `parent`,
+  `partition`); every writer writes it. Request/1 and main's request/2 stay readable for a
+  journal's immutable originals, as ADR-0266 states, and a reader of either treats an absent
+  `parent` or `partition` as none. A request/3 shape labelled request/1 or request/2 is
+  refused (`invalid-v2-partition.json`), as is a request/2 shape labelled request/3
+  (`invalid-v3-missing-partition.json`). A nightly is never a partition or a parent-selected
+  profile. A durable comparison (`comparison.Bundled`) admits only current request/3 and
+  result/3 members, so its members and its export carry only those versions. The standalone
+  `overview` reads each named original through `overview.member`, which still reads an earlier
+  request version and treats its absent `parent` as none, as ADR-0266 states. `preflight`,
+  `comparison-preflight` and `overview` refuse a nightly. Result/3 is main's, unchanged.
+- **Windows.** Main gave the `nightly` tier 15 sampling and 180 run minutes. The full release
+  comparison recipe keeps the 45 and 120 its largest shard (440 records) was measured in, by
+  an explicit `[core.windows]` of `af.perf-executor/4`. The plan freezes the windows in place
+  of the tier's, under the unchanged hard maxima; they are part of the configuration and plan
+  digests and of the recomputation `verify` performs, and a calibration original refuses
+  them. Executor v2 and v3 configurations are refused. Declared windows are a `local` backend
+  setting: `performance.yml` has no windows input, so a `github_actions` configuration that
+  declares them is refused when it is admitted (see the record below). So the 6d full comparison's executor/3
+  journal is never verified under this source.
+- **ADR.** Main's ADR-0265 (nightly build), 0266, 0267 and 0268 are unchanged. The PR's
+  partition ADR is renumbered ADR-0269, with a dated amendment, and every reference to it
+  follows.
+- **Generated files.** `python3 -I scripts/performance/schemas.py --write` rendered
+  `performance-executor-request-v1.json`, `-v2.json` and `-v3.json` and
+  `performance-executor-v4.json`; the stale `performance-executor-v3.json` was removed, and the
+  check passes. The kernel-measure fixtures were seeded with the PR side, then
+  `python3 -I -B scripts/performance/cli.py harness-digest --write` re-pinned them to
+  `sha256:fae94f3dad2dc1deca60739920bb7b669d7c727d30e031ad1864ea1231c9cdf4` (722 files);
+  `--check` passes.
+
+Recorded in the AF implementation sandbox on macOS, Python 3.15.0; nothing was measured, and no
+Docker, network or benchmark was used. Each command below ran from `scripts/performance` as
+`python3 -I -B -c` over `unittest`:
+
+- `tests.test_comparison`: **9 tests OK**. These include the documented full-comparison
+  configuration and checks (`('nightly', 'linux_x86_64_musl_claw', 8, 33, 31, 2, 2932)`,
+  windows `(45, 120)`, partitions `[[0, 1], [2, 3], [4, 5], [6, 7]]`, each later one reusing
+  the first one's build, and 12 manual telemetry runs), and a narrower telemetry selection is
+  refused.
+- `tests.test_contracts tests.test_localcalibration tests.test_planning tests.test_suite
+  tests.test_kernelguard`: **104 tests OK**.
+- `tests.test_runner tests.test_compare tests.test_report`: **130 tests OK**. A partition
+  authority with any total but the plan's is refused, and one past 180 minutes fails the
+  shape check.
+- `tests.test_diagnostics tests.test_report_diagnostics tests.test_whole_source_repairs
+  tests.test_builds`: **185 tests OK** (1 skipped).
+- `tests.test_executor`: **64 tests, 4 cases fail on this macOS host**, as in the earlier
+  records. Each stops in `diagnostics.check_mode` with `host_mismatch`:
+  `test_local_diagnostic_uses_native_child_planner_report_and_admission`, the two profile
+  subtests of `test_shipping_nightly_release_reach_both_builders_with_frozen_pinned_tools`,
+  and `test_diagnostic_build_removal_uncertainty_keeps_borrowed_executor_fence`. With
+  `diagnostics.host_os` patched to Linux, all three tests pass. The other tests pass. Among
+  them, the ordinary nightly's 4-shard plan is ready with 15 and 180 minutes and the declared
+  windows freeze 45 and 120. Main's nightly tests pass, and so does its request/1-result/2
+  readability test, now also refusing request/3 under request/1 and request/2.
+- `tests.test_nightly_build tests.test_hostobserver tests.test_hostlock`: **63 tests, 1
+  failure**. `CargoRewrite.test_a_rewritten_copy_of_this_tree_still_resolves_locked_and_offline`
+  expects Cargo's `needs to be updated`, but this host's Cargo prints `cannot update the lock
+  file ... because --locked was passed`. This change does not touch that test or its paths.
+
+The 6d full comparison running under the frozen PR head remains that producer's evidence. It
+is not this candidate's validation, and nothing here claims a Claw run, a final report or green
+CI for this source.
+
+## Hosted windows refusal and integration evidence corrections (2026-10-30)
+
+**Reproduction.** On the integrated candidate `208fab5b84e7b7f292dd051b91532440f3055a6b`, with
+Python 3.14.7, the outer operator drove the native `ExecutorFixture`, the real `Journal.submit`
+and `dispatch_actions` with a fake transport (no network, nothing measured). A
+`github_actions` executor/4 configuration declaring quick windows 20 and 110 (tier defaults 25
+and 60) was admitted, and dispatch returned `submitted` with a payload of only `base`, `head`,
+`control`, `scope`, `tier`, `cases`, `shards` and `authority`: `performance.yml` has no windows
+input, so the declared windows were silently ignored.
+
+**Change.** `validate_config` refuses a non-null `core.windows` unless the backend is `local`,
+so a hosted configuration that declares them fails when it is loaded, when a `Journal` opens
+it, or when `submit` is given it, before any original is reserved or dispatched. The workflow
+is not extended and the windows are never cleared. The executor/4 shape is unchanged, so no
+schema version, schema file or fixture changes. `Journal.test_hosted_declared_windows_refuse_before_any_original_or_transport`
+proves the refusal at all three points with no original and no transport call, that the same
+hosted configuration without windows still dispatches `performance.yml` with exactly those
+eight inputs, and that a local configuration keeps the declared windows.
+
+**Corrections.** The executor guide said an absent or empty `[core.windows]` keeps the tier's
+own; an empty table is refused (`executor.core.windows missing field shard_sampling_minutes`),
+so it now says absent (or JSON `null`) keeps the tier's own and a declared table supplies both
+numbers. The guide's 30 minutes 52 seconds for the 440-record shard is the preliminary producer
+`cbd8661c`'s, not `6d8208d`'s. The frozen producer `6d8208d`'s shard 0 sealed complete, 440 of
+440 records, 0 failed and 0 unstarted, started `1793354884652` and ended `1793356916852` Unix
+ms, 2032.200 seconds (33 minutes 52.2 seconds); its native `shard.json` has SHA-256
+`0a6ff1e81cb090ebd32aaa9f22c10e1266c2aa133bc4a0cc1faa5a7e8ff2d8d7`. Both are evidence of their
+own producers only, neither is this source's validation, and the full `6d` comparison
+continues as that producer's evidence. The integration record above said a comparison's
+overview accepts only request/3 and result/3; it now distinguishes the durable comparison's
+current-version members and export from the standalone overview, which still reads earlier
+request versions.
+
+## The nightly lock-rewrite proof resolves for the host platform (2026-10-30)
+
+**Reproduction.** GitHub CI run 41050608459 on `fb3b632d`, performance job 124045553040:
+`scripts/test-performance.py` ran 1268 tests with one failure,
+`CargoRewrite.test_a_rewritten_copy_of_this_tree_still_resolves_locked_and_offline`. After the
+nightly rewrite, `cargo metadata --locked --offline` exited 101 with `failed to download
+anstyle-wincon v3.0.11` and `attempting to make an HTTP request, but --offline was specified`.
+Unfiltered `cargo metadata` downloads every platform's packages, and the CI Cargo cache holds
+only the Linux build's. On macOS with Cargo 1.88, a Cargo home holding the index and only the
+187 archives `--filter-platform x86_64-unknown-linux-gnu` resolves gave exactly that error. The
+stale-lock step already failed before any download.
+
+**Change.** The test now runs `cargo metadata --locked --offline --filter-platform <host>`,
+where `<host>` is what `cargo -vV` prints. It first resolves the unchanged copy through the
+test's own Cargo home. From that, it builds a private Cargo home with the shared index, the
+host's archives and their unpacked sources, and nothing else. It asserts the lock names
+packages this home does not hold, so the proof runs with the CI cache's gap on every host.
+Rewriting only `Cargo.toml` must fail with Cargo's stale-lock refusal: `the lock file ... needs
+to be updated but --locked was passed` (Cargo 1.88) or `cannot update the lock file ... because
+--locked was passed` (Cargo 1.94). The refusal must also contain no `failed to download`,
+`--offline was specified` or `no matching package`. After `rewrite_source`, the resolution must
+succeed and every workspace member must report the nightly version. Without the filter, the
+same test fails on macOS with the CI error. The nightly build, its `cargo fetch`, the CI cache
+and the test selection do not change.
+
+**Focused validation on `b909` (operator).** On `b909353dac34882326c5636677206ed8061d0949`, the
+sealed Task 23 candidate
+`sha256:08cfba24762a7dd3a7a631591f6a0bd0dbdd2a3e84d6942c0a5a9d652ba048d7`, the outer operator
+ran, at the repository root with Python 3.14.7 and the pinned Rust 1.88.0 through
+`rustup run 1.88.0`:
+
+```sh
+rustup run 1.88.0 python3.14 -I -B -c 'import sys,unittest; sys.path.insert(0,"scripts/performance"); suite=unittest.defaultTestLoader.loadTestsFromName("tests.test_nightly_build.CargoRewrite"); result=unittest.TextTestRunner(verbosity=2).run(suite); raise SystemExit(not result.wasSuccessful())'
+```
+
+`tests.test_nightly_build.CargoRewrite`: 3 tests, `OK`, 6.378 seconds, exit 0. That is the
+operator's observation on `b909`, not a run of any later candidate. CI run 41050608459 on
+`fb3b632d` (above) is the predecessor failure CI706. CI707, GitHub run 41057018586 on `b909`,
+then passed all 11 jobs, among them 1268 Python performance tests and the selected Rust
+performance tests. Neither CI run is a run of the candidate below, and no CI run or VM execution
+of that candidate is claimed here.
+
+## Diagnostic lanes need two complete sides and the aggregate's selection (2026-10-30)
+
+**Findings.** The required correctness review of `b909` found that a comparison's trace lane
+was complete when any trace of a selected case had no omission: a one-sided trace, a trace whose
+other side was omitted, a `partial` or a setup-only `region_missing` trace (never complete under
+ADR-0176) completed it. It also found that each profile's coverage was checked against the
+profile's own selection, so otherwise valid trace and CPU children of a parent-plan case the
+aggregate verdict did not select, with their sealed results, states and the export manifest
+resealed, completed both lanes while the report's diagnostic selection named the actual
+regression.
+
+**Change.** `comparison.status`, which `comparison-report` and `comparison-verify` both derive
+the report through, recomputes the selection record from the aggregate's own verdict
+(`diagnostics.select` with the frozen configuration's `max_cases` and that verdict's digest) and
+requires each profile's selection to be exactly it: mode, limit, parent verdict digest, cases
+with their reasons, and the cases left over the limit. Each expected case needs, for the trace
+lane, one baseline and one candidate trace without omission whose region coverage is
+`complete`, and for the CPU lane a differential flamegraph. A profile whose request's parent
+receipt is not the aggregate's (its comparison, declaration digest, result, plan and verdict
+hashes) is refused as not the comparison's member. Each failure keeps its lane `failed` with a
+reason naming the case, the side and what the trace holds; the evidence stays bundled, and an
+honest incomplete bundle verifies as incomplete. Standalone profiles, the `not_applicable` lane
+of a verdict with nothing to diagnose, measurement, capture budgets and contracts do not change.
+
+**Tests.** `tests.test_comparison.Comparison.test_full_comparison_partitions_aggregates_diagnoses_reports_and_exports`
+no longer injects profile usability: its profile stand-in writes a contract-valid
+`profiles.json` of the selection the frozen parent verdict derives, and the honest complete
+bundle verifies complete through `cli.py executor comparison-verify`. For a missing candidate
+trace, an omitted one, a `partial` one and a `region_missing` one, the journal's report leaves
+the trace lane failed with its reason, the complete claim over the resealed evidence is
+refused, and the same evidence reported as it is verifies incomplete. Children of an unselected
+case with every receipt resealed fail `comparison-verify` (exit 4) naming both lanes'
+selections, and a profile whose parent receipt names another aggregate result is refused. With
+each of the three checks removed in turn, the test fails at its attack.
+
+**Focused validation of this candidate.** Run by this repair Task's implementer on its
+candidate, the source tree of `b909` with this change, at the repository root, offline, with
+Python 3.14.7 and Rust 1.88.0 (`cargo 1.88.0 (873a06493 2025-05-10)`) through
+`rustup run 1.88.0`, on 2026-10-30 at 14:10 to 14:15 UTC. The commands are the one above with
+the named tests in place of `tests.test_nightly_build.CargoRewrite`:
+
+- `tests.test_nightly_build.CargoRewrite`: 3 tests, `OK`, 0.928 seconds, exit 0.
+- `tests.test_executor.Journal.test_hosted_declared_windows_refuse_before_any_original_or_transport`:
+  1 test, `OK`, 0.242 seconds, exit 0.
+- `tests.test_comparison` and `tests.test_report_diagnostics`: 46 tests, `OK`, 233.742 seconds
+  on a shared, loaded host, exit 0.
+
+These are this candidate's focused runs, recorded by its native Task record; no commit SHA, CI
+run or VM execution of it exists yet, and none is claimed. The earlier focused run of the
+hosted-windows test, 1 of 1 in 0.676 seconds, belongs to Task 22's candidate. The full 33-case
+`6d8208d` comparison and its offline verification remain that producer's evidence; the
+integration on Claw and the final head's CI are the outer operator's, after this change is
+adopted.
+
+## CPU lanes need admitted captures; verified reports derive the aggregate (2026-10-30)
+
+**Findings.** Whole-PR verification 08 left two major correctness findings open on
+`perflab/comparison.py`. First, for each case the aggregate selected, the CPU lane accepted a
+differential render without baseline and candidate captures, and offline admission
+(`report.admit_children`) neither requires captures nor binds a render to them. A copied
+bundle could keep its valid SVGs, remove the captures, reseal the child and the original, and
+still complete the lane. Second, `status` took the aggregate's `result` and `coverage` as the
+core lane's completeness. `comparison-report` and `comparison-export` verified each original
+but never derived those fields again, as `verify_export` did through `aggregate_claims`. So an
+incomplete aggregate edited in the journal before the diagnostic lanes were submitted produced
+matching child parent receipts and a locally complete report, which the copied-bundle
+verifier contradicted.
+
+**Change.** For each case the aggregate selects, the CPU lane now needs a usable baseline
+capture and a usable candidate capture. A usable capture has no omission, at least the frozen
+registry's `capture.minimum_samples` (unchanged at 200) and its own `collapsed.folded`
+artifact. Both directions of the difference must name exactly those two captures' collapsed
+stacks as inputs: forward is baseline then candidate, reverse is the opposite. This is the
+input `diagnostics.Profile.render` hashes into each render. The minimum is read from the
+installed producer's `fixtures/performance/diagnostics.toml`, and only when its bytes are the
+registry the profile names (`registry_sha256`). Otherwise the lane fails, naming both digests.
+The loss rule is unchanged: the native contract's (decoded counts, or unknown with a reason).
+A decoded loss is reported, never a usability threshold, as in the producer. Standalone
+profiles, the producer, the selection and parent checks, the trace lane, sampling, budgets,
+schemas and persisted shapes do not change.
+
+`status` with `verify` (`comparison-report`, `comparison-export`, and `comparison-verify`
+through `Bundled`) now runs `aggregate_claims` over the members it admitted, in a journal and
+a bundle alike. That covers partition entries against their originals' states and sealed
+results, inclusion only of admitted members, the run's shards byte for byte those of the
+included partitions (a bundle's manifest hashes, a journal's files read within the export's
+bounds), the first partition's build, the run evaluated again to its verdict
+(`_same_verdict`), and the result, coverage and regressions read from that verdict. An
+aggregate that judged nothing must claim no build, result, coverage or regressions. A claim
+that does not derive leaves the core lane `failed` with `core aggregate refused: …`, fails
+every diagnostic lane under it, and makes the report's verification `refused` with an empty
+core verdict. The reason uses journal-relative paths, so the journal's report and its
+bundle's derivation are the same document. `comparison-verify` no longer refuses such a
+bundle outright: it derives the same refused, incomplete report and refuses any other claim.
+`comparison-status` (`verify` absent) still reads cheaply and verifies nothing.
+
+**Tests.** In `tests.test_comparison`:
+
+- `stand_in_profiles` now writes, for each selected CPU case, a contract-valid first perf
+  capture per side at exactly the registry minimum, with the renders bound to their collapsed
+  stacks and the installed registry's digest. The honest complete bundle still verifies
+  complete through `cli.py executor comparison-verify`.
+- `Comparison.test_full_comparison_partitions_aggregates_diagnoses_reports_and_exports`, new
+  helper `assert_cpu_lane_needs_admitted_two_sided_captures`: the selected case's captures
+  removed, the candidate missing, the candidate omitted (`too_few_samples`), the candidate at
+  199 samples, and the render's inputs substituted, each with the render surviving. In each
+  case the journal's report leaves the CPU lane failed with its reason. The complete claim over
+  the resealed evidence (original, result, state, report and manifest) is refused: through
+  `comparison-verify` (exit 4) for removed captures, through `verify_export` for the rest.
+  With the captures removed and the report as derived, the bundle verifies `incomplete`.
+- The same test, journal side: an aggregate whose claims alone are injected as judged whole is
+  `incomplete`, `refused`, core `failed`, core verdict empty. Only with the verdict injected
+  as well (`overview._core`, as the offline derivation already did) is it complete.
+- `Comparison.test_a_locally_altered_aggregate_never_reports_complete`: the real
+  `aggregate.json` is rewritten as judged whole before `advance` submits the lanes. Both
+  profiles' parent receipts name the altered bytes. `cli.py executor comparison-report` and
+  `comparison-export` exit 4 with core, trace and CPU lanes failed and verification
+  `refused`, and the exported bundle's offline derivation equals the journal's report.
+- `CpuEvidence.test_the_declared_dwarf_capture_renders_after_an_omitted_first_attempt` and
+  `CpuEvidence.test_a_registry_that_is_not_the_installed_producers_proves_no_sample_minimum`:
+  the producer's DWARF second attempt is usable after an omitted first; a render of the
+  omitted attempt is not; an unknown or unreadable registry fails the lane.
+
+With the `_cpu_case` check replaced by the earlier render-only check, the full test fails at
+the removed-captures variant (`('complete', 'complete', 'complete') != ('incomplete',
+'complete', 'failed')`). With the `aggregate_claims` call in `status` removed, the full test
+fails at the injected-claims assertion, and the local-tamper test fails at
+`comparison-report` (`0 != 4`).
+
+**Focused validation of this candidate.** Run by this repair Task's implementer on its
+candidate at the repository root, offline, with Python 3.14.7, no benchmark, Docker, perf or
+network, on 2026-10-30 at 15:28:59 to 15:33:09 UTC:
+
+```sh
+python3.14 -I -B -c 'import sys,unittest; sys.path.insert(0,"scripts/performance"); suite=unittest.defaultTestLoader.loadTestsFromNames(["tests.test_comparison","tests.test_report_diagnostics"]); result=unittest.TextTestRunner(verbosity=1).run(suite); raise SystemExit(not result.wasSuccessful())'
+```
+
+`tests.test_comparison` and `tests.test_report_diagnostics`: 49 tests, `OK`, 249.316 seconds
+on a shared host, exit 0. That is 46 tests before this change plus the 3 new ones. An earlier
+run of the same selection on this candidate failed one test only because `comparison.py` was
+edited while it ran. The telemetry authority digest covers `perflab/`, so the stand-in
+telemetry result, produced before the edit, was refused when verified after it. Nothing was
+changed in response, and the run above saw no edit. `python3.14 -I -B
+scripts/performance/cli.py harness-digest --write` re-pinned the protected harness after the
+last protected edit, to
+`sha256:8d540a668f6376d9520af4c46f0b287f0d263f97d1b3d40fb620e807153af79c`, and `--check` exits 0.
+No commit SHA, CI run or VM execution of this candidate exists yet, and none is claimed. The
+full 33-case `6d8208d` comparison and its offline verification remain that producer's
+evidence, and nothing here changes them. The integration running on Claw for `4caf525f`, its
+final evidence and the final head's CI belong to the outer operator, after this change is
+adopted.
+
+## The aggregate names its declaration and includes every admitted partition (2026-10-30)
+
+`aggregate_claims` checked admission only for partition entries the aggregate marked
+`included`. It did not compare the aggregate's `comparison_id` or `plan_sha256` with the
+declaration. So an aggregate with only those identity fields changed, or one that marked a
+complete, admitted partition `refused` and dropped its shards, still derived a verified
+report. The diagnostic children submitted under it carried matching parent receipts.
+
+`aggregate_claims` now requires the aggregate's `comparison_id` and `plan_sha256` to equal the
+declaration's. It derives each partition entry from the original, as `aggregate` writes it:
+
+- The original's state must be terminal.
+- A partition is included and `verified` exactly when its original is this comparison's member
+  (`_binding`), complete, among the admitted originals, and, for a later partition, carries
+  its declared execution window (`_window`).
+- Otherwise the entry is `refused` when the original is complete and `not_complete` when it is
+  not, and it is never included.
+
+Both directions are checked: an included entry that does not derive is refused as before, and
+an excluded entry that derives is refused with `the aggregate excludes partition N, whose
+original … is this comparison's admitted complete member`. The run's shards are checked
+against the derived inclusion. An incomplete, foreign or unadmitted partition still reports
+honestly as incomplete. `comparison-status` (`verify` absent) is unchanged and verifies
+nothing. Schemas, the writer, shard and verdict checks and persisted shapes do not change.
+
+**Tests.** In `tests.test_comparison`:
+
+- `Comparison.test_an_aggregate_of_another_identity_or_excluding_an_admitted_partition_is_refused`
+  uses three fresh journals. In each, the real aggregate is rewritten before `advance` submits
+  the lanes, so both profiles' parent receipts name the rewritten bytes:
+  - the comparison ID alone changed;
+  - the plan digest alone changed;
+  - the writer run again with the admitted later partition reported refused, which drops its
+    shard from the family's run and re-evaluates its verdict.
+
+  Each time, `cli.py executor comparison-report` and `comparison-export` exit 4 with core,
+  trace and CPU lanes failed, verification `refused` and the guard's reason. The exported
+  bundle passes `comparison-verify` (exit 0, `incomplete`), and `verify_export` derives exactly
+  the journal's report. Then the excluded partition's sealed verdict is changed, so it is
+  genuinely not admitted. The same aggregate bytes then report without an aggregate refusal:
+  `core partition 1 … is complete, refused`.
+- `Comparison.test_failed_partition_and_lost_controller_leave_the_family_incomplete` now also
+  checks that the verified report of an uncertain and a failed partition is `incomplete` and
+  `verified`, with no aggregate refusal.
+
+Each guard was mutated alone in the candidate, and the new test was run against each mutant:
+
+- comparison-identity check removed: the comparison-ID variant fails;
+- plan conjunct removed: the plan variant fails;
+- exclusion and verification derivation removed, with inclusion taken from the entry as
+  before: the exclusion variant fails.
+
+Each mutant failed with `('incomplete', 'verified', 'failed', 'complete', 'complete') !=
+('incomplete', 'refused', 'failed', 'failed', 'failed')`. Those runs took 12.4 s, 23.5 s and
+40.3 s. The candidate was restored byte for byte, and its digest was checked.
+
+**Historical focused validation of the identity/inclusion repair.** Run by that Task's
+implementer at the repository root, offline, with Python 3.14.7, no benchmark, Docker, perf or
+network, on 2026-10-30 from 17:09:40 to 17:14:56 UTC:
+
+```sh
+python3.14 -I -B -c 'import sys,unittest; sys.path.insert(0,"scripts/performance"); suite=unittest.defaultTestLoader.loadTestsFromNames(["tests.test_comparison","tests.test_report_diagnostics"]); result=unittest.TextTestRunner(verbosity=1).run(suite); raise SystemExit(not result.wasSuccessful())'
+```
+
+`tests.test_comparison` and `tests.test_report_diagnostics`: 50 tests, `OK`, 315.765 seconds
+on a shared host, exit 0. That is 49 tests before that repair plus its new one. Alone, the new
+test took 36.7 s. `python3.14 -I -B scripts/performance/cli.py harness-digest --write`
+re-pinned the protected harness after the last protected edit, to
+`sha256:1e472f28ae1edece3a9fec7bd899579683aca2b3524f688dbb2ed690ea6f510e`, and `--check`
+exits 0. At that point, no commit SHA, CI run or VM execution of that candidate was claimed.
+The full 33-case `6d8208d` comparison and the cancelled `4caf525f` integration keep their
+recorded status. This change produces no new comparison evidence.
+
+## Native complete positive control (evaluator10 item 2, 2026-10-30)
+
+`Comparison.test_complete_seed_free_comparison_reports_exports_and_verifies_copied_natively`
+adds the missing positive control. Its private fixture Git authority declares only
+`canonical_serialize_small` and `canonical_validate_small`, with the shipped pair counts,
+sentinels, policies and execution bounds. The unused release tier is omitted and the private
+adapter registry names just those two contracts and the sentinel. No shipped registry changes.
+The real planner freezes that entire fixture family into two serial partitions, `[[0], [1]]`.
+The synthetic runner writes the later shard's samples inside the executor's actual sealed
+partition window before evaluation and original sealing; it changes no retained verdict,
+aggregate, build receipt or window. This fills the old synthetic runner's window gap as well
+as avoiding its deliberately absent seed evidence.
+
+Both core originals pass the real `executor.verify_original`. The real aggregate writer,
+`read_aggregate`, `aggregate_claims`, `overview._core`, verdict evaluation and offline core
+admission remain active. Coverage is exactly 208 required and 208 observed, zero failed and
+zero missing; both partitions are included and verified, and the assembled run carries the
+later original's execution authority byte for byte. The public `comparison-report` and
+`comparison-export` commands exit 0 with `complete`/`verified`. After copying the export and
+removing both the export's original directory and the journal, public `comparison-verify`
+exits 0 with `complete`/`verified`, and native offline derivation equals the local report.
+Every lane is complete, reasons are empty, but the core performance verdict is `fail` and
+calibration eligibility is false: complete evidence can prove a regression.
+
+Build/shard execution and diagnostic children retain the established synthetic seams. The
+local admission adapter forwards every core request to the real verifier and substitutes only
+telemetry/profile admission; profile usability still checks the stand-in trace/CPU evidence.
+Telemetry coverage is read natively from the retained synthetic telemetry bundle, whose copied
+admission also remains native. Diagnostic child admission is the existing stand-in, independently
+covered by `tests.test_report_diagnostics`. No aggregate claims, core derivation or verdict is
+injected. This is deterministic test evidence, never a new comparison, benchmark or product
+performance claim. The existing forged-complete refusal, identity/inclusion negatives and
+honest-incomplete assertions are preserved.
+
+The full 33-case `6d8208d` report remains complete and the cancelled `4caf525f` integration
+remains incomplete. Historical Claw and CI receipts, including CI717 on the earlier source,
+are not validation of this test-only candidate. The independent verification Task and operator
+own final-source gate/CI acceptance; no fresh VM, complete comparison or manual benchmark was
+run here. No production Python, Rust, schema, runner, gate, budget or quarantine changes.
+
+**Native harness validation.** After the final protected test edit, using
+`/opt/homebrew/bin/python3.14` (Python 3.14.7):
+
+```sh
+python3.14 -I -B scripts/performance/cli.py harness-digest --write
+python3.14 -I -B scripts/performance/cli.py harness-digest --check
+```
+
+On 2026-10-30, `--write` ran from 18:31:41.434035 to 18:31:43.739077 UTC (2.305 s),
+and `--check` from 18:31:43.739142 to 18:31:45.801737 UTC (2.063 s), both exit 0.
+Both generated native fixtures agree on 722 protected files and
+`sha256:db4485669fd3781a761369575c4ed85b185db19ca5e4589fcde31fefbcacc4ee`.
+
+`python3.14 -I scripts/test-classes.py audit` and
+`python3.14 -I -B scripts/changelog-notes.py --check` pass. The gate gains exactly one perf
+unittest in its existing module, measured alone at 20.958 s on this shared host; no new fast
+validation test, process wait or production startup/replay work is added.
+`cargo fmt --all` and `cargo clippy --workspace --all-targets -- -D warnings` could not run:
+Rustup could not create the supplied private HOME's `.rustup` directory (`Operation not
+permitted`). No Rust source changed and no full Cargo gate was duplicated. `markdownlint:
+not run`: the offline `npx --offline --yes markdownlint-cli2@0.22.1` invocation for the two
+changed Markdown files returned `ENOTCACHED`; no network fallback was attempted. No flake was
+rerun. Development-only fixture construction failures were fixed before the stable focused run.
+
+**Focused validation of the positive-control candidate.** The two modules were run once on
+stable test source with `/opt/homebrew/bin/python3.14`, Python 3.14.7 (Clang 21.0.0), from
+the repository root, offline:
+
+```sh
+python3.14 -I -B -c 'import datetime,sys,unittest; print("START UTC",datetime.datetime.now(datetime.timezone.utc).isoformat(),flush=True); print(sys.version,flush=True); sys.path.insert(0,"scripts/performance"); suite=unittest.defaultTestLoader.loadTestsFromNames(["tests.test_comparison","tests.test_report_diagnostics"]); result=unittest.TextTestRunner(verbosity=1).run(suite); print("END UTC",datetime.datetime.now(datetime.timezone.utc).isoformat(),flush=True); raise SystemExit(not result.wasSuccessful())'
+```
+
+2026-10-30 18:27:17.389419–18:36:59.980194 UTC: **51 tests, OK, 581.287 seconds**, exit 0.
+This is the previous 50 tests plus the new positive control. In particular, the existing
+`test_full_comparison_partitions_aggregates_diagnoses_reports_and_exports` still refuses its
+forged-complete bundle without its explicit injections;
+`test_an_aggregate_of_another_identity_or_excluding_an_admitted_partition_is_refused`,
+`test_failed_partition_and_lost_controller_leave_the_family_incomplete` and
+`test_a_failed_telemetry_export_verifies_incomplete_and_never_relabelled_complete` all pass.
+The new test had already passed alone before this run (1 test, OK, 20.958 seconds):
+
+```sh
+python3.14 -I -B -c 'import sys,unittest; sys.path.insert(0,"scripts/performance"); suite=unittest.defaultTestLoader.loadTestsFromName("tests.test_comparison.Comparison.test_complete_seed_free_comparison_reports_exports_and_verifies_copied_natively"); result=unittest.TextTestRunner(verbosity=2).run(suite); raise SystemExit(not result.wasSuccessful())'
+```

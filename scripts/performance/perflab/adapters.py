@@ -1,16 +1,19 @@
-"""Native probe adapters (`fixtures/performance/adapters.toml`, `af.perf-adapters/1`, ADR-0166).
+"""Native probe adapters (`fixtures/performance/adapters.toml`, `af.perf-adapters/2`, ADR-0166).
 
 An adapter is a reviewed set of authority example files that a build copies onto a measured
 source, at the same paths, before compiling that source's own package. Adapters are tried in
 their fixed priority order and the first one that compiles is chosen; nothing at runtime ever
 selects another. A contract has at most four adapters. The closure an adapter declares must be
 the complete set of files its example compiles from in the authority tree, so a build never
-copies an entry point without the helper modules it includes.
+copies an entry point without the helper modules it includes. Each adapter declares the first
+AF release it covers (`min_version`): a submission admits a side's library workload only when
+an adapter covering its release serves every native contract the plan runs (`coverage`),
+before any claim or build; the compile still chooses among the adapters at the build.
 """
 import os
 import stat
 
-from . import contracts, tomlfile
+from . import contracts, gitrefs, tomlfile
 from .values import ContractError, canonical_digest, require, sha256_bytes
 
 ADAPTERS_PATH = "fixtures/performance/adapters.toml"
@@ -53,6 +56,27 @@ def check_registry(doc, suite_doc, where=ADAPTERS_PATH):
     require(not missing, where + ": no adapter serves " + ", ".join(missing))
     require(not extra, where + ": adapters serve undeclared contracts " + ", ".join(extra))
     return doc
+
+
+def coverage(doc, version, needed):
+    """(adapter ID, None) of the first adapter by priority whose declared releases include AF
+    `version` and that serves every contract of `needed` ({contract: what runs it}), or
+    (None, why not)."""
+    key = gitrefs.version_key(gitrefs.parse_version(version))
+    covering = [(adapter_id, entry) for adapter_id, entry in ordered(doc)
+                if key >= gitrefs.version_key(gitrefs.parse_version(entry["min_version"]))]
+    if not covering:
+        return None, "no declared native probe adapter covers AF %s" % version
+    for adapter_id, entry in covering:
+        if set(needed) <= set(entry["contracts"]):
+            return adapter_id, None
+    missing = sorted(contract for contract in needed
+                     if not any(contract in entry["contracts"] for _, entry in covering))
+    if missing:
+        return None, ("no native probe adapter declared for AF %s serves %s" % (
+            version, ", ".join("%s (%s)" % (contract, needed[contract]) for contract in missing)))
+    return None, ("no single native probe adapter declared for AF %s serves all of %s"
+                  % (version, ", ".join(sorted(needed))))
 
 
 def ordered(doc):

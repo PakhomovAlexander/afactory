@@ -63,6 +63,9 @@ class Supervisor(object):
         self.grace_ms = grace_ms
 
     scratch = None
+    # The name of the container a contained request runs in while it runs, for the trusted
+    # host observer's identity check (`hostobserver.inspect`); a host request has none.
+    active = None
 
     def reserve(self):
         """Seconds a request keeps before the deadline for its cancellation and start."""
@@ -123,11 +126,15 @@ class Contained(Supervisor):
         self.requests += 1
         name = "af-perf-diag-%s-%d-%s" % (self.label[-12:], self.requests,
                                           os.urandom(4).hex())
-        contained = supervise.run_contained(
-            self.docker, name, self.image, self.environment, self.path, {}, self.scratch_root,
-            self.uid, self.gid, self.cpus, request_doc, deadline=deadline, clock=clock,
-            binds=binds, file_bytes=file_bytes, started=started,
-            extra=(supervise.DIAGNOSTIC_DIRECTORY,))
+        self.active = name
+        try:
+            contained = supervise.run_contained(
+                self.docker, name, self.image, self.environment, self.path, {},
+                self.scratch_root, self.uid, self.gid, self.cpus, request_doc,
+                deadline=deadline, clock=clock, binds=binds, file_bytes=file_bytes,
+                started=started, extra=(supervise.DIAGNOSTIC_DIRECTORY,))
+        finally:
+            self.active = None
         problems = []
         if not contained.removed:
             problems.append(contained.removal)
@@ -367,11 +374,14 @@ def _fill(result, supervised):
 
 def request(supervisor, argv, env, timeout_seconds, output_cap, stdin=b"", cwd=None,
             deadline=None, clock=time.monotonic, stdout_path=None, setup=None, patterns=(),
-            selectors=()):
+            selectors=(), log_cap=None):
     """The supervisor request of one run, bounded by `timeout_seconds` and by the time left
     before `deadline` less the supervisor's reserve; None when no time is left. `setup`,
     `patterns` and `selectors` are a CLI command's untimed fixture step, its stdout patterns and
-    its streamed JSON observation (`supervise.request`)."""
+    its streamed JSON observation (`supervise.request`). The retained log is `output_cap` of
+    stdout and `STDERR_CAP_BYTES` of stderr, or, with `log_cap`, exactly that total: a CLI
+    command's sample log, whose `output_cap` already leaves its stderr reserve
+    (`clicases.stdout_bytes`)."""
     seconds = timeout_seconds
     if deadline is not None:
         seconds = min(seconds, deadline - clock() - supervisor.reserve())
@@ -383,7 +393,15 @@ def request(supervisor, argv, env, timeout_seconds, output_cap, stdin=b"", cwd=N
             TIMEOUT_MS_MAX // 1000))
     if isinstance(stdin, bytes):
         stdin = stdin.decode("utf-8")
-    stdout_cap = max(1, min(output_cap, limits.SAMPLE_LOG_BYTES_MAX - STDERR_CAP_BYTES))
+    if log_cap is None:
+        stdout_cap = max(1, min(output_cap, limits.SAMPLE_LOG_BYTES_MAX - STDERR_CAP_BYTES))
+        log_cap = stdout_cap + STDERR_CAP_BYTES
+    else:
+        if not 1 <= output_cap < log_cap <= limits.SAMPLE_LOG_BYTES_MAX:
+            raise ContractError("a supervised run's %d-byte stdout must leave stderr room within "
+                                "its total log of %d of at most %d bytes" % (
+                                    output_cap, log_cap, limits.SAMPLE_LOG_BYTES_MAX))
+        stdout_cap = output_cap
     if setup is not None:
         setup_argv, setup_env, setup_cwd, setup_seconds = setup
         setup_ms = int(min(setup_seconds, seconds) * 1000)
@@ -392,21 +410,21 @@ def request(supervisor, argv, env, timeout_seconds, output_cap, stdin=b"", cwd=N
         setup = (setup_argv, setup_env, setup_cwd, setup_ms)
     return supervise.request(
         command(argv, stdout_path), env, cwd or "/", stdin, timeout_ms, stdout_cap,
-        stdout_cap + STDERR_CAP_BYTES, containment=supervisor.containment,
+        log_cap, containment=supervisor.containment,
         scratch=supervisor.scratch, grace_ms=supervisor.grace_ms, setup=setup,
         patterns=patterns, selectors=selectors)
 
 
 def start(supervisor, argv, env, timeout_seconds, output_cap, stdin=b"", cwd=None,
           deadline=None, clock=time.monotonic, stdout_path=None, file_bytes=None, watch=None,
-          binds=(), setup=None, patterns=(), selectors=()):
+          binds=(), setup=None, patterns=(), selectors=(), log_cap=None):
     """Start one supervised run; a `Running`, or a launch-refused `Result` when the deadline
     leaves no time for it. `binds` are the (host path, writable) pairs a contained supervisor
     binds into the run's container."""
     argv = list(argv)
     try:
         doc = request(supervisor, argv, env, timeout_seconds, output_cap, stdin, cwd,
-                      deadline, clock, stdout_path, setup, patterns, selectors)
+                      deadline, clock, stdout_path, setup, patterns, selectors, log_cap)
     except ContractError as error:
         return Result(argv, launch_error=str(error))
     if doc is None:
@@ -420,10 +438,11 @@ def start(supervisor, argv, env, timeout_seconds, output_cap, stdin=b"", cwd=Non
 
 def run(supervisor, argv, env, timeout_seconds, output_cap, stdin=b"", cwd=None,
         deadline=None, clock=time.monotonic, stdout_path=None, file_bytes=None, watch=None,
-        binds=(), setup=None, patterns=(), selectors=()):
+        binds=(), setup=None, patterns=(), selectors=(), log_cap=None):
     """Run `argv` once under `supervisor`, within `timeout_seconds` and before `deadline`."""
     started = start(supervisor, argv, env, timeout_seconds, output_cap, stdin, cwd, deadline,
-                    clock, stdout_path, file_bytes, watch, binds, setup, patterns, selectors)
+                    clock, stdout_path, file_bytes, watch, binds, setup, patterns, selectors,
+                    log_cap)
     if isinstance(started, Result):
         return started
     return started.wait()

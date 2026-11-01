@@ -557,6 +557,12 @@ class Container(TempDir):
         self.assertEqual(writable, [
             "type=bind,src=/srv/perf-scratch/sample,dst=/perf/scratch",
             "type=bind,src=/srv/perf-scratch/seeds/baseline-task_state,dst=/perf/seed-out"])
+        # Its one further writable path is its bounded, memory-backed preparation directory,
+        # owned by the container user and inside the memory limit; a sample has none.
+        tmpfs = [argv[index + 1] for index, item in enumerate(argv) if item == "--tmpfs"]
+        self.assertEqual(tmpfs, ["/perf/prep:rw,nosuid,nodev,noexec,size=%d,mode=0700,"
+                                 "uid=1000,gid=1000" % supervise.FIXTURE_PREP_BYTES])
+        self.assertLessEqual(supervise.FIXTURE_PREP_BYTES * 2, self.env["memory_limit_bytes"])
         for elsewhere in ("/srv/perf-scratch", "/srv/other/seeds/x",
                           "/srv/perf-scratch/seeds", "/srv/perf-scratch/sample/x"):
             with self.subTest(seed_output=elsewhere):

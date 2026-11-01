@@ -258,10 +258,15 @@ class Parity(unittest.TestCase):
         # cache, shipping/3 one target per product identity and environment group with its
         # distribution, and activation-verification/3 a fetched bridge run's producer
         # (ADR-0185); readiness/6 binds each case to its observed shard CPU group
-        # (ADR-0194). executor-request/2 adds the nightly submission and executor-result/3 the
-        # measured binaries; their previous versions stay readable for a journal's immutable
-        # originals and every older one is refused (ADR-0266). Nothing else reads an earlier
-        # version.
+        # (ADR-0194); executor/3 names the diagnostic perf and Inferno tools and a
+        # parent-selected profile, and executor/4 a core plan's declared run windows
+        # (ADR-0269); profiles/7 lists a repeated capture's recordings by its
+        # repetition index. executor-request/2 adds the nightly submission and
+        # executor-result/3 the measured binaries; their previous versions stay readable for a
+        # journal's immutable originals and every older one is refused (ADR-0266).
+        # executor-request/3 adds a profile's verified parent comparison and a comparison
+        # core child's partition (ADR-0269), and request/2 stays the nightly shape without
+        # them. Nothing else reads an earlier version.
         changed = ("run", "capabilities", "tui-open", "builds", "verdict", "sample",
                    "shard", "supervisor-request",
                    "supervisor-result", "probe-request", "golden", "cohort",
@@ -269,15 +274,17 @@ class Parity(unittest.TestCase):
                    "shipping", "profiles", "executor", "executor-state", "executor-result",
                    "executor-request")
         self.assertEqual([contracts.schema_version(name) for name in changed],
-                         [7, 3, 1, 6, 2, 2, 4, 4, 5, 2, 2, 4, 2, 6, 3, 3, 3, 6, 2, 2, 3, 2])
+                         [7, 3, 1, 6, 2, 2, 4, 4, 5, 2, 2, 4, 2, 6, 3, 3, 3, 7, 4, 2, 3, 3])
         self.assertEqual(dict((name, sorted(versions)) for name, versions
                               in contracts.READABLE.items()),
-                         {"executor-request": ["af.perf-executor-request/1"],
+                         {"executor-request": ["af.perf-executor-request/1",
+                                               "af.perf-executor-request/2"],
                           "executor-result": ["af.perf-executor-result/2"]})
         self.assertEqual(contracts.schema_version("activation"), 3)
-        # profiles/6 binds retained archives (ADR-0224); report/3 keeps telemetry (ADR-0214).
+        # profiles/6 bound retained archives (ADR-0224) and profiles/7 indexes a repeated
+        # capture's recordings; report/3 keeps telemetry (ADR-0214).
         self.assertEqual((contracts.schema_version("profiles"), contracts.schema_version("report")),
-                         (6, 3))
+                         (7, 3))
         self.assertEqual((contracts.schema_version("cli"), contracts.schema_version("suite")),
                          (6, 4))
         valid = dict((entry["contract"], entry) for entry in self.index if entry["valid"]
@@ -293,7 +300,7 @@ class Parity(unittest.TestCase):
                 self.assertIn("expected %s" % contracts.CONTRACTS[contract][0],
                               str(caught.exception))
         # Only the laboratory's own files: another family's schema may share a suffix
-        # (`telemetry-invocation-cost-v1.json` ends in `cost-v1.json`).
+        # (`telemetry-invocation-cost-v2.json` ends in `cost-v1.json`).
         self.assertFalse(any(name.startswith("performance-")
                              and name.endswith(("run-v1.json", "run-v2.json", "run-v3.json",
                                                 "run-v4.json", "run-v5.json", "readiness-v4.json",
@@ -340,3 +347,17 @@ class Parity(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class TelemetryLabVersion(unittest.TestCase):
+    def test_the_registry_is_read_at_v3_and_its_previous_version_refused(self):
+        # The accepted document identities moved to @2, so the registry is af.perf-telemetry-lab/3;
+        # the /2 registry, which named other documents, is refused with no adapter.
+        path = os.path.join(ROOT, "fixtures/performance/telemetry.toml")
+        doc = tomlfile.loads(read(path), path)
+        self.assertEqual(doc["schema"], "af.perf-telemetry-lab/3")
+        contracts.validate_telemetry_lab(doc, path)
+        self.assertEqual(contracts.schema_file("telemetry-lab"), "performance-telemetry-lab-v3.json")
+        doc["schema"] = "af.perf-telemetry-lab/2"
+        with self.assertRaisesRegex(ContractError, "schema"):
+            contracts.validate_telemetry_lab(doc, path)
