@@ -15,6 +15,7 @@ import shutil
 import subprocess
 import sys
 import tempfile
+import tomllib
 import unittest
 
 sys.dont_write_bytecode = True
@@ -35,6 +36,11 @@ triage = load()
 SCHEMA = triage.validator()
 BODY = 'ab' * 32
 MAIN = '26d8a6da' + '0' * 32
+DOCUMENT_ID = 'sha256:' + '1' * 64
+# Every identity a publishable record needs, by key (`triage.IDENTITIES`).
+IDENTITY = {'task_id': 'triage-432', 'document_id': DOCUMENT_ID, 'evaluation_id': 'sha256:' + '6' * 64,
+            'bundle_sha256': '7' * 64, 'main': MAIN, 'policy_version': 'triage-runner/1',
+            'event_id': 'issues-opened-1'}
 
 
 def doc(**fields):
@@ -55,7 +61,7 @@ def evaluation(outcome='passed', block=None):
     summary = 'crates/review-core/src/task/state.rs:483 says what the report claims.'
     if block is not None:
         summary += '\n\n```json\n' + json.dumps(block, indent=2) + '\n```'
-    return {'document_id': 'sha256:' + '1' * 64, 'sources_id': 'sha256:' + '2' * 64,
+    return {'document_id': DOCUMENT_ID, 'sources_id': 'sha256:' + '2' * 64,
             'requirements_id': 'sha256:' + '3' * 64, 'check_receipt_id': 'sha256:' + '4' * 64,
             'source_snapshot_id': 'sha256:' + '5' * 64, 'outcome': outcome, 'summary': summary}
 
@@ -89,7 +95,15 @@ class Reach:
         return self.pulls is not None and number in self.pulls
 
 
-def run_check(author, verifier_block=None, outcome='passed', labels=(), reach=None, **kwargs):
+AS_AUTHOR = object()
+
+
+def run_check(author, verifier_block=AS_AUTHOR, outcome='passed', labels=(), reach=None, **kwargs):
+    """`check` on an evaluation whose summary ends with `verifier_block` (by default the verifier's
+    own copy of the author's document; None for none), with every identity unless overridden."""
+    if verifier_block is AS_AUTHOR:
+        verifier_block = copy.deepcopy(author)
+    kwargs.setdefault('identity', IDENTITY)
     return triage.check(author, evaluation(outcome, verifier_block), list(labels), reach or Reach(), **kwargs)
 
 
@@ -157,10 +171,26 @@ class Documents(unittest.TestCase):
                               {'heading': 'Rationale', 'body': 'Why.'}]}
         self.assertEqual(triage.author_document(draft=draft), doc())
 
+    def test_the_canonical_escapes_are_read_back(self):
+        # The escapes of `markdown_text` (crates/review-pipeline/src/task/document.rs); the Rust
+        # test task_triage feeds the real renderer's bytes through the script.
+        for written, authored in (('\\`\\`\\`json', '```json'), ('\\~\\~\\~', '~~~'),
+                                  ('"schema": `"af/issue-triage@1",`', '"schema": "af/issue-triage@1",'),
+                                  ('\\`\\``a@b`\\`', '``a@b`'), ('`a\\`\\``@`', 'a\\`@'),
+                                  ('"x\\\\"y"', '"x\\"y"'), ('\\*x\\_ \\&amp; 1\\. \\#', '*x_ &amp; 1. #'),
+                                  ('a\\b', 'a\\b'), ('` unclosed', '` unclosed')):
+            with self.subTest(written):
+                self.assertEqual(triage.canonical_text(written), authored)
+        # A Triage section without a fence is the canonical bytes: its escaped fence is read back.
+        escaped = rendered(doc()).replace('```', '\\`\\`\\`')
+        self.assertEqual(triage.author_document(document=escaped), doc())
+
     def test_a_report_without_one_parsable_block_or_a_rationale_is_refused(self):
         block = '```json\n' + json.dumps(doc()) + '\n```'
         cases = {
-            'canonical markdown escapes the fence': rendered(doc()).replace('```', '\\`\\`\\`'),
+            'canonical bytes with two blocks': rendered(doc()).replace('```', '\\`\\`\\`').replace(
+                '## Rationale', block.replace('```', '\\`\\`\\`') + '\n\n## Rationale'),
+            'canonical bytes not json': rendered(doc()).replace('```', '\\`\\`\\`').replace('"schema"', 'schema'),
             'two blocks': rendered(doc()).replace('## Rationale', block + '\n\n## Rationale'),
             'no rationale': rendered(doc()).replace('## Rationale', '## Reasoning'),
             'not json': rendered(doc()).replace('"schema"', 'schema'),
@@ -174,6 +204,7 @@ class Documents(unittest.TestCase):
     def test_the_verifier_block_is_one_json_fence_of_the_summary(self):
         self.assertEqual(triage.verifier_document(evaluation('failed', doc(size='L')), SCHEMA),
                          ('failed', doc(size='L')))
+        # The summary of any outcome may lack the block here; `check` refuses it (Identities).
         self.assertEqual(triage.verifier_document(evaluation('passed'), SCHEMA), ('passed', None))
         twice = evaluation('failed', doc())
         twice['summary'] += '\n\n```json\n{}\n```'
@@ -188,7 +219,7 @@ class Documents(unittest.TestCase):
 
 
 class HardRules(unittest.TestCase):
-    def refused(self, rule, author, block=None, **kwargs):
+    def refused(self, rule, author, block=AS_AUTHOR, **kwargs):
         with self.assertRaises(triage.Refusal) as refused:
             run_check(author, block, **kwargs)
         self.assertEqual(refused.exception.rule, rule, str(refused.exception))
@@ -230,24 +261,46 @@ class HardRules(unittest.TestCase):
         self.refused('issue-identity', doc(), doc(issue=433))
 
     def test_security_from_either_triager_holds_before_any_other_rule(self):
-        for author, block in ((doc(**{'class': 'security'}), doc()), (doc(), doc(**{'class': 'security'})),
-                              (doc(**{'class': 'security', 'size': 'S', 'adr': 'new ADR: x'}), None)):
-            record, code = run_check(author, block, outcome='failed' if block else 'passed')
-            self.assertEqual((code, record['verdict'], record['labels']), (triage.EXIT_HELD, 'held', []))
-            self.assertIsNone(record['class'])
+        for author, block, who in ((doc(**{'class': 'security'}), doc(), 'author'),
+                                   (doc(), doc(**{'class': 'security'}), 'verifier'),
+                                   (doc(**{'class': 'security', 'size': 'S', 'adr': 'new ADR: x'}), None, 'author')):
+            record, code = run_check(author, block, outcome='failed' if block else 'passed', identity={})
+            self.assertEqual((code, record['schema'], record['security_triagers']), (triage.EXIT_HELD, triage.HOLD, [who]))
+            self.assertEqual(SCHEMA.errors(record, 'urn:af:schema:issue-triage-hold:1'), [])
+
+    def test_a_marked_commit_reference_counts_whatever_its_digit_and_letter_mix(self):
+        cases = {
+            'commit 1234567': ['1234567'], 'see Commit abcdefa on main': ['abcdefa'], 'fixed by `7654321`': ['7654321'],
+            '`deadbee`': ['deadbee'], ' 1234567 ': ['1234567'], 'facade0': ['facade0'], 'abcdefab': ['abcdefab'],
+            'fixed in d0b49e57 on main': ['d0b49e57'],
+            # Unmarked in prose, an all-digit run is a number and an all-letter one a word.
+            'the gate took 1200000 ms': [], 'a defaced page': [], 'PR #356': [],
+        }
+        for entry, commits in cases.items():
+            with self.subTest(entry):
+                self.assertEqual(triage.references([entry])[0], commits)
+        for sha in ('1234567', 'abcdefa'):
+            with self.subTest(sha):
+                claim = doc(resolution={'state': 'fixed_candidate', 'evidence': [f'commit {sha}']})
+                record, code = run_check(claim, reach=Reach(commits={sha}))
+                self.assertEqual((code, record['evidence_check']['commits']), (0, [sha]))
+                self.assertIn(sha, self.refused('resolution-evidence', claim))
 
 
 class Merge(unittest.TestCase):
-    def merged(self, author, verifier, labels=(), **kwargs):
-        return triage.merge(author, verifier, list(labels), **kwargs)
+    def merged(self, author, verifier, **kwargs):
+        return triage.merge(author, verifier, **kwargs)
 
     def test_agreement_sets_class_size_and_the_pipeline_the_size_names(self):
         for size, pipeline in (('S', 'light'), ('M', 'default'), ('L', 'design'), ('XL', 'design')):
             record = self.merged(doc(size=size, pipeline='hand'), doc(size=size))
             self.assertEqual((record['verdict'], record['pipeline']), ('agreed', pipeline))
             self.assertEqual(record['labels'], ['class/bug', f'size/{size}', f'pipeline/{pipeline}'])
-        # A passed evaluation without a block stands for the author's document.
-        self.assertEqual(self.merged(doc(), None)['verdict'], 'agreed')
+        # No outcome stands for the verifier's document: the author's is never substituted.
+        for outcome in ('passed', 'failed', 'inconclusive'):
+            with self.subTest(outcome), self.assertRaises(triage.Refusal) as refused:
+                self.merged(doc(), None, outcome=outcome)
+            self.assertEqual(refused.exception.rule, 'verifier-block')
 
     def test_a_difference_in_class_size_resolution_or_duplicates_is_a_dispute(self):
         cases = {
@@ -272,7 +325,7 @@ class Merge(unittest.TestCase):
         cases = [(doc(needs_info=['Which group?']), doc(), 'passed'),
                  (doc(), doc(needs_info=['Is the group additive?']), 'failed'),
                  (doc(confidence=0.59), doc(), 'passed'),
-                 (doc(), None, 'inconclusive')]
+                 (doc(), doc(), 'inconclusive')]
         for author, verifier, outcome in cases:
             with self.subTest(outcome=outcome, author=author['needs_info'], confidence=author['confidence']):
                 record = self.merged(author, verifier, outcome=outcome)
@@ -284,14 +337,45 @@ class Merge(unittest.TestCase):
                          'needs-info')
 
     def test_a_hold_label_or_security_holds_before_anything_else(self):
-        for labels, author, verifier in (
-                (['class/security'], doc(), doc()), (['triage/held', 'bug'], doc(needs_info=['?']), doc()),
-                ([], doc(**{'class': 'security'}), doc()), ([], doc(), doc(**{'class': 'security'}))):
-            with self.subTest(labels=labels):
-                record = self.merged(author, verifier, labels, outcome='failed')
-                self.assertEqual((record['verdict'], record['labels']), ('held', []))
-        record, code = run_check(doc(), doc(), labels=['triage/held'])
-        self.assertEqual((code, record['verdict']), (triage.EXIT_HELD, 'held'))
+        class NoGit:
+            """Reachability that fails the test when the check consults it."""
+
+            @property
+            def main(self):
+                raise AssertionError('a hold resolved the captured main')
+
+            def commit(self, sha):
+                raise AssertionError('a hold checked a commit')
+
+        invalid = doc(size='S', adr='new ADR: x', resolution={'state': 'fixed_candidate'})
+        cases = [
+            (['class/security'], (), doc(), ['class/security'], []),
+            (['triage/held', 'bug'], (), doc(needs_info=['?']), ['triage/held'], []),
+            # An owner's hold label holds without a duplicate --label.
+            ([], ['class/security'], invalid, ['class/security'], []),
+            ([], ['triage/held'], invalid, ['triage/held'], []),
+            (['triage/held'], ['class/security', 'size/S'], invalid, ['triage/held', 'class/security'], []),
+            ([], (), doc(**{'class': 'security'}), [], ['author']),
+        ]
+        for labels, owner_labels, author, held, triagers in cases:
+            with self.subTest(labels=labels, owner_labels=owner_labels):
+                record, code = triage.check(author, evaluation('failed', None), labels, NoGit(),
+                                            owner_labels=owner_labels)
+                self.assertEqual(code, triage.EXIT_HELD)
+                self.assertEqual(record, {'schema': 'af/issue-triage-hold@1', 'issue': 432,
+                                          'reasons': record['reasons'], 'held_labels': held,
+                                          'security_triagers': triagers, 'generation': None})
+                self.assertEqual(SCHEMA.errors(record, 'urn:af:schema:issue-triage-hold:1'), [])
+        # Unreadable documents are held by a label alone; the generation is kept as given.
+        record, code = triage.check(None, None, [], NoGit(), owner_labels=['triage/held'],
+                                    identity={'main': 'main', 'event_id': 'opened-1'})
+        self.assertEqual((code, record['issue'], record['generation']),
+                         (triage.EXIT_HELD, None, {'bundle_sha256': None, 'main': 'main', 'policy_version': None,
+                                                   'event_id': 'opened-1'}))
+        self.assertEqual(SCHEMA.errors(record, 'urn:af:schema:issue-triage-hold:1'), [])
+        # A held merged record is no longer a shape: the merged schema refuses the verdict.
+        merged = run_check(doc(), doc())[0]
+        self.assertNotEqual(SCHEMA.errors(dict(merged, verdict='held'), 'urn:af:schema:issue-triage-merged:1'), [])
 
     def test_an_agreed_duplicate_sets_triage_duplicate_instead_of_class_labels(self):
         record = self.merged(doc(duplicates=[376]), doc(duplicates=[376]))
@@ -315,6 +399,49 @@ class Merge(unittest.TestCase):
             with self.subTest(labels), self.assertRaises(triage.Refusal) as refused:
                 triage.owner_overrides(labels)
             self.assertEqual(refused.exception.rule, 'owner-override')
+
+
+class Identities(unittest.TestCase):
+    """What a publishable record must carry: the verifier's own document and every identity."""
+
+    def test_every_outcome_needs_the_verifiers_own_block(self):
+        for outcome in ('passed', 'failed', 'inconclusive'):
+            with self.subTest(outcome), self.assertRaises(triage.Refusal) as refused:
+                run_check(doc(), None, outcome)
+            self.assertEqual(refused.exception.rule, 'verifier-block')
+
+    def test_agreement_compares_two_independently_supplied_documents(self):
+        # A passed evaluation whose own document sizes the issue differently is no agreement.
+        record, code = run_check(doc(), doc(size='L', pipeline='design'), 'passed')
+        self.assertEqual((code, record['verdict'], record['labels']), (0, 'disputed', ['triage/disputed']))
+        self.assertEqual((record['author']['size'], record['verifier']['size']), ('M', 'L'))
+        record, _ = run_check(doc(), doc(rationale='The verifier read state.rs:483 itself.'), 'passed')
+        self.assertEqual((record['verdict'], record['verifier']['rationale']),
+                         ('agreed', 'The verifier read state.rs:483 itself.'))
+
+    def test_each_missing_identity_is_a_usage_error(self):
+        for flag, key in triage.IDENTITIES:
+            for value in (None, ''):
+                with self.subTest(flag, value=value), self.assertRaises(triage.Usage) as usage:
+                    run_check(doc(), identity=dict(IDENTITY, **{key: value}))
+                self.assertIn(flag, str(usage.exception))
+
+    def test_the_merged_schema_refuses_a_null_identity_or_verifier(self):
+        record, code = run_check(doc())
+        self.assertEqual((code, SCHEMA.errors(record, 'urn:af:schema:issue-triage-merged:1')), (0, []))
+        for section, key in (('generation', 'bundle_sha256'), ('generation', 'policy_version'),
+                             ('generation', 'event_id'), ('sources', 'task_id'), ('sources', 'document_id'),
+                             ('sources', 'evaluation_id')):
+            with self.subTest(key):
+                broken = copy.deepcopy(record)
+                broken[section][key] = None
+                self.assertNotEqual(SCHEMA.errors(broken, 'urn:af:schema:issue-triage-merged:1'), [])
+        self.assertNotEqual(SCHEMA.errors(dict(record, verifier=None), 'urn:af:schema:issue-triage-merged:1'), [])
+
+    def test_the_document_id_is_the_one_the_evaluation_judged(self):
+        with self.assertRaises(triage.Refusal) as refused:
+            run_check(doc(), identity=dict(IDENTITY, document_id='sha256:' + '9' * 64))
+        self.assertEqual(refused.exception.rule, 'document-identity')
 
 
 class HandTriage(unittest.TestCase):
@@ -367,9 +494,17 @@ class HandTriage(unittest.TestCase):
 
 
 def git(repo, *args):
-    env = dict(os.environ, GIT_CONFIG_GLOBAL=os.devnull, GIT_CONFIG_NOSYSTEM='1')
+    # Fixed identity and dates, so each commit has the id the tests name.
+    env = dict(os.environ, GIT_CONFIG_GLOBAL=os.devnull, GIT_CONFIG_NOSYSTEM='1',
+               GIT_AUTHOR_DATE='2026-10-30T12:00:00+00:00', GIT_COMMITTER_DATE='2026-10-30T12:00:00+00:00')
     return subprocess.run(['git', '-C', str(repo), '-c', 'user.name=Fixture', '-c', 'user.email=fixture@example.invalid',
                            *args], capture_output=True, text=True, check=True, env=env).stdout.strip()
+
+
+# The commits of the fixture repository: `fix` and `main` on main, `unmerged` on a side branch.
+FIX = '374f34b5b3e3591cea278166e9c9f741f7681f68'
+SIDE = '8edf07b76ad7df4ae9255a71e07c617bee3889d0'
+FIXTURE_MAIN = '3290981fad7181523316de8de191c5686a670ceb'
 
 
 class Cli(unittest.TestCase):
@@ -381,22 +516,26 @@ class Cli(unittest.TestCase):
         cls.dir = Path(cls.tmp.name)
         cls.repo = cls.dir / 'repo'
         cls.repo.mkdir()
-        git(cls.repo, 'init', '-q', '-b', 'main')
+        git(cls.repo, 'init', '-q', '-b', 'main', '--object-format=sha1')
         git(cls.repo, 'commit', '-q', '--allow-empty', '-m', 'fix')
-        cls.fix = git(cls.repo, 'rev-parse', 'HEAD')
         git(cls.repo, 'checkout', '-q', '-b', 'side')
         git(cls.repo, 'commit', '-q', '--allow-empty', '-m', 'unmerged')
-        cls.side = git(cls.repo, 'rev-parse', 'HEAD')
         git(cls.repo, 'checkout', '-q', 'main')
         git(cls.repo, 'commit', '-q', '--allow-empty', '-m', 'main')
-        cls.main = git(cls.repo, 'rev-parse', 'HEAD')
         (cls.dir / 'pulls.json').write_text('[356, 438]')
 
     @classmethod
     def tearDownClass(cls):
         cls.tmp.cleanup()
 
-    def run_cli(self, author, verifier_block=None, outcome='passed', *extra, draft=False):
+    def test_the_fixture_commits_have_the_ids_the_tests_name(self):
+        self.assertEqual([git(self.repo, 'rev-parse', ref) for ref in ('main~1', 'side', 'main')],
+                         [FIX, SIDE, FIXTURE_MAIN])
+
+    def run_cli(self, author, verifier_block=AS_AUTHOR, outcome='passed', *extra, draft=False, omit=()):
+        """The script's exit code, stdout and stderr, with every identity flag but those in `omit`."""
+        if verifier_block is AS_AUTHOR:
+            verifier_block = copy.deepcopy(author)
         path = self.dir / ('author.json' if draft else 'report.md')
         if draft:
             path.write_text(json.dumps({'schema': 'af.document-draft/2', 'title': 't', 'citations': [], 'sections': [
@@ -405,26 +544,30 @@ class Cli(unittest.TestCase):
         else:
             path.write_text(rendered(author))
         (self.dir / 'evaluation.json').write_text(json.dumps(evaluation(outcome, verifier_block)))
+        identities = [arg for flag, key in triage.IDENTITIES if flag not in omit
+                      for arg in (flag, 'main' if key == 'main' else IDENTITY[key])]
         out, err = io.StringIO(), io.StringIO()
         with contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
             code = triage.main(['--draft' if draft else '--document', str(path), '--evaluation',
-                                str(self.dir / 'evaluation.json'), '--repo', str(self.repo), '--main', 'main', *extra])
+                                str(self.dir / 'evaluation.json'), '--repo', str(self.repo), *identities, *extra])
         return code, out.getvalue(), err.getvalue()
 
     def test_a_reachable_commit_merges_and_the_record_validates(self):
-        claim = doc(resolution={'state': 'fixed_candidate', 'evidence': [f'commit {self.fix[:10]}']})
-        code, out, _ = self.run_cli(claim, claim, 'passed', '--task-id', 'triage-432', '--event-id', 'opened-1')
+        claim = doc(resolution={'state': 'fixed_candidate', 'evidence': [f'commit {FIX[:10]}']})
+        code, out, _ = self.run_cli(claim)
         self.assertEqual(code, 0)
         record = json.loads(out)
         self.assertEqual(SCHEMA.errors(record, 'urn:af:schema:issue-triage-merged:1'), [])
         self.assertEqual((record['verdict'], record['labels'][-1]), ('agreed', 'triage/maybe-fixed'))
-        self.assertEqual(record['evidence_check']['commits'], [self.fix[:10]])
-        self.assertEqual(record['generation']['main_commit'], self.main)
-        self.assertEqual(record['sources']['task_id'], 'triage-432')
-        self.assertEqual(record['sources']['document_id'], 'sha256:' + '1' * 64)
+        self.assertEqual(record['evidence_check']['commits'], [FIX[:10]])
+        self.assertEqual(record['generation'], {'issue': 432, 'bundle_sha256': IDENTITY['bundle_sha256'],
+                                                'main_commit': FIXTURE_MAIN,
+                                                'policy_version': IDENTITY['policy_version'],
+                                                'event_id': IDENTITY['event_id']})
+        self.assertEqual(record['sources'], {key: IDENTITY[key] for key in ('task_id', 'document_id', 'evaluation_id')})
 
     def test_an_unreachable_or_unknown_commit_is_refused_with_exit_1(self):
-        for sha in (self.side[:12], 'deadbeef1'):
+        for sha in (SIDE[:12], 'deadbeef1'):
             with self.subTest(sha):
                 claim = doc(resolution={'state': 'partial', 'evidence': [sha], 'remaining': ['the rest']})
                 code, out, err = self.run_cli(claim, claim, 'passed', '--pulls', str(self.dir / 'pulls.json'))
@@ -450,20 +593,44 @@ class Cli(unittest.TestCase):
         self.assertEqual((code, record['verdict'], record['labels']), (0, 'disputed', ['triage/disputed']))
         self.assertEqual((record['author']['class'], record['verifier']['class']), ('bug', 'aix'))
 
-    def test_a_security_hold_exits_3_and_sets_no_label(self):
-        code, out, err = self.run_cli(doc(**{'class': 'security'}), None, 'passed', '--owner-label', 'size/S')
-        record = json.loads(out)
-        self.assertEqual((code, record['verdict'], record['labels']), (3, 'held', []))
-        self.assertIn('held:', err)
-        code, out, _ = self.run_cli(doc(), doc(), 'passed', '--label', 'class/security')
-        self.assertEqual((code, json.loads(out)['verdict']), (3, 'held'))
+    def test_a_missing_identity_is_a_usage_error_before_anything_is_printed(self):
+        for flag, _ in triage.IDENTITIES:
+            with self.subTest(flag):
+                code, out, err = self.run_cli(doc(), omit=(flag,))
+                self.assertEqual((code, out), (2, ''))
+                self.assertIn('usage:', err)
+                self.assertIn(f'needs {flag}', err)
+
+    def test_a_passed_evaluation_without_the_verifier_block_is_refused(self):
+        code, out, err = self.run_cli(doc(), None, 'passed')
+        self.assertEqual((code, out), (1, ''))
+        self.assertIn('refused: verifier-block:', err)
+
+    def test_a_security_hold_exits_3_and_prints_only_the_private_hold(self):
+        def held(*args, **kwargs):
+            code, out, err = self.run_cli(*args, **kwargs)
+            self.assertEqual(code, 3, err)
+            self.assertIn('held:', err)
+            record = json.loads(out)
+            self.assertEqual((record['schema'], SCHEMA.errors(record, 'urn:af:schema:issue-triage-hold:1')),
+                             (triage.HOLD, []))
+            return record
+
+        every = tuple(flag for flag, _ in triage.IDENTITIES)
+        record = held(doc(**{'class': 'security'}), None, 'passed', '--owner-label', 'size/S', omit=every)
+        self.assertEqual((record['security_triagers'], record['generation']), (['author'], None))
+        self.assertEqual(held(doc(), doc(), 'passed', '--label', 'class/security')['held_labels'], ['class/security'])
+        for label in ('class/security', 'triage/held'):
+            with self.subTest(label):
+                record = held(doc(), doc(), 'passed', '--owner-label', label, omit=every)
+                self.assertEqual(record['held_labels'], [label])
         # An issue already held stays held even when its documents cannot be read.
-        code, out, _ = self.run_cli(doc(), doc(), 'passed', '--label', 'triage/held',
-                                    '--evaluation', str(self.dir / 'absent.json'))
-        self.assertEqual((code, json.loads(out)['labels']), (3, []))
+        record = held(doc(), doc(), 'passed', '--label', 'triage/held', '--evaluation', str(self.dir / 'absent.json'))
+        self.assertEqual(record['generation']['main'], 'main')
 
     def test_an_unknown_main_is_refused(self):
-        _, _, err = self.run_cli(doc(), doc(), 'passed', '--main', 'nonexistent')
+        code, _, err = self.run_cli(doc(), doc(), 'passed', '--main', 'nonexistent')
+        self.assertEqual(code, 1)
         self.assertIn('refused: main:', err)
 
 
@@ -491,7 +658,19 @@ class Staged(unittest.TestCase):
         self.assertEqual((task['schema'], task['kind'], task['pipeline']),
                          ('af.task-file/1', 'triage', {'name': 'backlog/triage', 'fallback': 'refuse'}))
         self.assertEqual(task['report_sources'], 'fixtures/issue-triage/example/sources.json')
-        self.assertEqual(task['limits']['max_attempts'], 8)
+        # §6.1's budget, unraised: 150k tokens, 20 minutes, the report pipeline's 8 Attempts.
+        self.assertEqual({key: task['limits'][key] for key in ('tokens', 'wall_ms', 'max_attempts')},
+                         {'tokens': 150_000, 'wall_ms': 1_200_000, 'max_attempts': 8})
+
+    def test_the_worker_allowances_fit_the_task_budget(self):
+        contracts = json.loads((STAGED / 'contracts.json').read_text(encoding='utf-8'))
+        for worker in ('triage-author', 'triage-verifier'):
+            with self.subTest(worker):
+                manifest = tomllib.loads((STAGED / 'task-packages' / 'backlog' / worker / 'worker.toml')
+                                         .read_text(encoding='utf-8'))
+                self.assertEqual(manifest['signature']['attempt'], {'tokens': 40_000, 'wall_ms': 500_000})
+                self.assertEqual(contracts['workers'][f'backlog/{worker}']['attempt'],
+                                 {'tokens': 40_000, 'wall_ms': 500_000})
 
     def test_both_triagers_quote_the_rubric_and_the_precedence_verbatim(self):
         design = (ROOT / 'docs' / 'design' / 'issue-triage.md').read_text(encoding='utf-8')

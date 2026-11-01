@@ -130,10 +130,11 @@ violation.
   `XL`: the check refuses such a phrase with a smaller size unless it is negated as
   `no contract change`, `not a contract change` or `without a contract change`.
 - `resolution.state` is `open`, `partial` or `fixed_candidate`. A state other than `open` needs
-  `evidence` naming the commits (7 to 40 hexadecimal digits) or pull requests (`PR #NNN`) on
-  `main` that shipped the change, taken from the captured sources or the Snapshot; the check
-  refuses such a state when no named commit is reachable from the captured `main` and no named
-  pull request is a merged one, and it refuses any named commit that is not reachable. A
+  `evidence` naming the commits (7 to 40 lowercase hexadecimal digits, each written as
+  `commit <sha>`) or pull requests (`PR #NNN`) on `main` that shipped the change, taken from the
+  captured sources or the Snapshot; the check refuses such a state when no named commit is
+  reachable from the captured `main` and no named pull request is a merged one, and it refuses
+  any named commit that is not reachable. A
   reachable commit proves neither full nor partial completion: `addressed` names each
   acceptance item of the issue the evidence covers, `remaining` each one it does not, and
   `fixed_candidate` means nothing remains.
@@ -151,7 +152,8 @@ Return one `af.document-draft/2` draft:
 - `sections`, in this order:
   - `Triage`: exactly one fenced block and nothing else: a line holding three backticks and
     `json`, the `af/issue-triage@1` document, and a line holding three backticks. The kernel
-    keeps such a fence as an example when it renders the report, and the check reads it there.
+    escapes the fence in the report's recorded bytes and keeps it as an example in the report
+    it presents; the check reads the document from either.
   - `Rationale`: plain text, the reasoning of the document's `rationale` at more length, with the
     evidence behind the resolution.
   - every other heading the report policy appended below requires, in plain text. This

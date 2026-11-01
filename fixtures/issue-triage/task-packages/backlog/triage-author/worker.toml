@@ -69,8 +69,8 @@ input = "source"
 draft = ["comparison", "measurements", "requirements", "source", "sources"]
 
 [signature.attempt]
-tokens = 60000
-wall_ms = 600000
+tokens = 40000
+wall_ms = 500000
 
 [runner]
 kind = "model"

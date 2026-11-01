@@ -2,14 +2,19 @@
 """Check one issue-triage Task's two documents and merge them (docs/design/issue-triage.md §6.3).
 
 Reads the author's `af/issue-triage@1` document from the `Triage` section of its report (the
-Markdown `af task output --port report --format markdown` writes, or the `af.document-draft/2`
-draft) and the verifier's from the one fenced json block of its `af/ReportEvaluation@1` summary,
-validates both against `schemas/issue-triage-v1.json`, applies the hard rules and the merge rule,
-and prints one `af/issue-triage-merged@1` record on stdout.
+Markdown `af task output --port report` writes with `--format markdown` or `--format
+canonical-markdown`, or the `af.document-draft/2` draft) and the verifier's from the one fenced
+json block of its `af/ReportEvaluation@1` summary, validates both against
+`schemas/issue-triage-v1.json`, applies the hard rules and the merge rule, and prints one
+`af/issue-triage-merged@1` record on stdout.
 
 Exit 0: a merged record (verdict agreed, duplicate, disputed or needs-info). Exit 1: a refusal,
-one line on stderr naming the rule. Exit 3: a security hold; the record on stdout has the verdict
-`held` and sets no label, and nothing about the issue may be published.
+one line on stderr naming the rule. Exit 2: a usage error, such as a missing identity flag; the
+runner publishes nothing. Exit 3: a security hold, decided before anything else from a
+`class/security` or `triage/held` label (`--label` or `--owner-label`) or a `security` class from
+either triager: stdout holds the private `af/issue-triage-hold@1` record
+(`schemas/issue-triage-hold-v1.json`), no label is set, and nothing about the issue may be
+published.
 
 Documents are data: nothing in them is executed or followed. The only process this script starts
 is `git -C REPO` with fixed arguments, to resolve the captured main and to test that a commit
@@ -27,10 +32,12 @@ sys.dont_write_bytecode = True
 ROOT = Path(__file__).resolve().parent.parent
 TRIAGE_SCHEMA = ROOT / 'schemas' / 'issue-triage-v1.json'
 MERGED_SCHEMA = ROOT / 'schemas' / 'issue-triage-merged-v1.json'
+HOLD_SCHEMA = ROOT / 'schemas' / 'issue-triage-hold-v1.json'
 EVALUATION_SCHEMA = ROOT / 'schemas' / 'report-evaluation-v1.json'
 
 TRIAGE = 'af/issue-triage@1'
 MERGED = 'af/issue-triage-merged@1'
+HOLD = 'af/issue-triage-hold@1'
 PIPELINE_BY_SIZE = {'S': 'light', 'M': 'default', 'L': 'design', 'XL': 'design'}
 SIZE_ORDER = ['S', 'M', 'L', 'XL']
 NAMESPACES = {
@@ -43,7 +50,13 @@ HOLD_LABELS = ('class/security', 'triage/held')
 CONFIDENCE_FLOOR = 0.6
 
 EXIT_REFUSED = 1
+EXIT_USAGE = 2
 EXIT_HELD = 3
+
+# The identities a publishable record carries (§6.3, §6.5): the flag that gives each, its key.
+IDENTITIES = (('--task-id', 'task_id'), ('--document-id', 'document_id'), ('--evaluation-id', 'evaluation_id'),
+              ('--bundle-sha256', 'bundle_sha256'), ('--main', 'main'), ('--policy-version', 'policy_version'),
+              ('--event-id', 'event_id'))
 
 
 class Refusal(Exception):
@@ -52,6 +65,10 @@ class Refusal(Exception):
     def __init__(self, rule, message):
         super().__init__(f'{rule}: {message}')
         self.rule = rule
+
+
+class Usage(Exception):
+    """The runner called the check without what a publishable record needs (exit 2)."""
 
 
 # --- A JSON Schema subset: the keywords this repository's schemas use, nothing more. ----------
@@ -186,7 +203,7 @@ def _same(a, b):
 
 
 def validator():
-    return Validator(TRIAGE_SCHEMA, MERGED_SCHEMA, EVALUATION_SCHEMA)
+    return Validator(TRIAGE_SCHEMA, MERGED_SCHEMA, HOLD_SCHEMA, EVALUATION_SCHEMA)
 
 
 # --- Reading the two documents. --------------------------------------------------------------
@@ -232,6 +249,34 @@ def markdown_sections(text):
     return {heading: '\n'.join(lines).strip('\n') for heading, lines in sections.items()}
 
 
+ASCII_PUNCTUATION = frozenset('!"#$%&\'()*+,-./:;<=>?@[\\]^_`{|}~')
+
+
+def canonical_text(text):
+    """The authored text of a section body as the canonical renderer wrote it
+    (`markdown_text` in crates/review-pipeline/src/task/document.rs, the bytes of
+    `--format canonical-markdown`): it escapes every backtick, `~` and other markup character with
+    a backslash, and writes a word a GFM autolink could claim (`@`, `://`, `www.`) as inert code
+    spans, each backtick of the word an escaped backtick between them. So a backslash before ASCII
+    punctuation is that character, and a code span is its content verbatim. The padding the
+    renderer trims from each line stays trimmed. Nothing in the text is evaluated."""
+    out, i = [], 0
+    while i < len(text):
+        c = text[i]
+        if c == '\\' and i + 1 < len(text) and text[i + 1] in ASCII_PUNCTUATION:
+            out.append(text[i + 1])
+            i += 2
+            continue
+        end = text.find('`', i + 1) if c == '`' else -1
+        if end > 0 and '\n' not in text[i + 1:end]:
+            out.append(text[i + 1:end])
+            i = end + 1
+            continue
+        out.append(c)
+        i += 1
+    return ''.join(out)
+
+
 def one_json_block(text, where, rule, required):
     """The one fenced `json` block of `text`, parsed; None when absent and not required."""
     blocks = [body for info, body in fenced_blocks(text) if info == 'json']
@@ -249,7 +294,11 @@ def one_json_block(text, where, rule, required):
 
 def author_document(*, document=None, draft=None):
     """The author's `af/issue-triage@1` from its rendered report or its draft; both need a
-    nonblank `Rationale` section and a `Triage` section holding exactly one json block."""
+    nonblank `Rationale` section and a `Triage` section holding exactly one json block. The
+    report is either form `af task output` writes: the presentation (`--format markdown`) keeps
+    an authored closed fence as a fenced example; the canonical bytes (`--format
+    canonical-markdown`) escape every fence, so a `Triage` section without a fence is read
+    through `canonical_text` first."""
     if draft is not None:
         if not isinstance(draft, dict) or draft.get('schema') != 'af.document-draft/2':
             raise Refusal('author-draft', 'the draft is not an af.document-draft/2 document')
@@ -261,6 +310,8 @@ def author_document(*, document=None, draft=None):
                 sections[section['heading']] = section.get('body') or ''
     else:
         sections = markdown_sections(document)
+        if 'Triage' in sections and not fenced_blocks(sections['Triage']):
+            sections['Triage'] = canonical_text(sections['Triage'])
     for heading in ('Triage', 'Rationale'):
         if not (sections.get(heading) or '').strip():
             raise Refusal('author-draft', f'the report has no nonblank {heading} section')
@@ -269,7 +320,7 @@ def author_document(*, document=None, draft=None):
 
 def verifier_document(evaluation, check):
     """The evaluation's outcome and the verifier's own `af/issue-triage@1`, or None when its
-    summary holds none."""
+    summary holds none (which `check` refuses unless the issue is held)."""
     errors = check.errors(evaluation, 'urn:af:schema:report-evaluation:1')
     if errors:
         raise Refusal('evaluation-schema', '; '.join(errors[:5]))
@@ -282,6 +333,9 @@ def verifier_document(evaluation, check):
 CHANGE = re.compile(r'(?i)(?<![\w-])(?:(no|not\s+a|without\s+a|without)\s+)?'
                     r'(contract|schema[- ]version|budget|sandbox[- ]boundary)\s+change\b')
 COMMIT = re.compile(r'(?<![0-9A-Za-z#._:-])[0-9a-f]{7,40}(?![0-9A-Za-z_-])')
+# A marked commit reference: `commit <hex>`, or `<hex>` as a code span.
+MARKED_COMMIT = re.compile(r'(?i:\bcommit\s+)([0-9a-f]{7,40})(?![0-9A-Za-z_-])|`([0-9a-f]{7,40})`')
+ALONE_COMMIT = re.compile(r'[0-9a-f]{7,40}')
 PULL = re.compile(r'#([1-9][0-9]*)\b')
 
 
@@ -292,13 +346,21 @@ def proposed_changes(rationale):
 
 
 def references(evidence, issue=None):
-    """The commits (7 to 40 lowercase hexadecimal digits mixing digits and letters: an all-digit run
-    is a number and an all-letter one a word) and pull requests (`PR #N`, `#N`) the evidence names;
-    the triaged issue's own number is not a pull request."""
+    """The commits and pull requests (`PR #N`, `#N`) the evidence names; the triaged issue's own
+    number is not a pull request. A commit is 7 to 40 lowercase hexadecimal digits. A marked one,
+    `commit <hex>`, `<hex>` as a code span or an entry that is the hex string alone, is a commit
+    whatever its mix of digits and letters, and Git decides whether it is reachable. An unmarked
+    run in prose is a commit only when it mixes digits and letters: an all-digit run there is a
+    number and an all-letter one a word."""
     commits, pulls = [], []
     for entry in evidence:
-        for token in COMMIT.findall(entry):
-            if re.search('[a-f]', token) and re.search('[0-9]', token) and token not in commits:
+        marked = [a or b for a, b in MARKED_COMMIT.findall(entry)]
+        if ALONE_COMMIT.fullmatch(entry.strip()):
+            marked.append(entry.strip())
+        unmarked = [token for token in COMMIT.findall(MARKED_COMMIT.sub(' ', entry))
+                    if re.search('[a-f]', token) and re.search('[0-9]', token)]
+        for token in marked + unmarked:
+            if token not in commits:
                 commits.append(token)
         for number in PULL.findall(entry):
             if int(number) not in pulls and int(number) != issue:
@@ -308,14 +370,20 @@ def references(evidence, issue=None):
 
 class GitReach:
     """Reachability from the captured main of `repo`, and the merged pull requests the runner
-    listed; None for `pulls` means no list was given, so no pull request is verified."""
+    listed; None for `pulls` means no list was given, so no pull request is verified. `main` is
+    resolved on first use, so a hold never runs Git."""
 
     def __init__(self, repo, main, pulls=None):
-        self.repo, self.pulls = repo, pulls
-        result = self._git('rev-parse', '--verify', '--end-of-options', f'{main}^{{commit}}')
-        if result.returncode:
-            raise Refusal('main', f'{main!r} is not a commit of {repo}: {result.stderr.strip()}')
-        self.main = result.stdout.strip()
+        self.repo, self.pulls, self._main, self._resolved = repo, pulls, main, None
+
+    @property
+    def main(self):
+        if self._resolved is None:
+            result = self._git('rev-parse', '--verify', '--end-of-options', f'{self._main}^{{commit}}')
+            if result.returncode:
+                raise Refusal('main', f'{self._main!r} is not a commit of {self.repo}: {result.stderr.strip()}')
+            self._resolved = result.stdout.strip()
+        return self._resolved
 
     def _git(self, *args):
         return subprocess.run(['git', '-C', str(self.repo), *args], capture_output=True, text=True)
@@ -382,30 +450,23 @@ def owner_overrides(labels):
     return override or None
 
 
-def merge(author, verifier, labels, *, outcome='passed', owner_override=None):
-    """The merge rule of §6.3, in its order, as a pure function of the two documents, the issue's
-    current labels, the evaluation's outcome and the owner's overrides (namespace -> label).
+def merge(author, verifier, *, outcome='passed', owner_override=None):
+    """Steps 2 to 4 of the merge rule of §6.3, in their order, as a pure function of the two
+    documents, the evaluation's outcome and the owner's overrides (namespace -> label). Step 1,
+    the hold, is `hold_triggers`, which `check` applies before anything else.
 
-    `verifier` is the verifier's own document, or None when its summary held none: a passed
-    evaluation then stands for the author's document, an inconclusive one for no position.
-    Returns the record's merge fields: verdict, the agreed fields, needs_info, reasons, labels."""
+    `verifier` is the verifier's own document, which every outcome carries; the author's is
+    never substituted for it. Returns the record's merge fields: verdict, the agreed fields,
+    needs_info, reasons, labels."""
+    if not isinstance(verifier, dict):
+        raise Refusal('verifier-block', f'the evaluation summary must end with the verifier\'s own {TRIAGE} block')
     override = owner_override or {}
-    held = [label for label in labels if label in HOLD_LABELS]
-    security = [who for who, doc in (('author', author), ('verifier', verifier))
-                if isinstance(doc, dict) and doc.get('class') == 'security']
-    if held or security:
-        return {'verdict': 'held', 'class': None, 'size': None, 'pipeline': None, 'adr': None,
-                'resolution': None, 'duplicates': [], 'needs_info': [], 'labels': [],
-                'reasons': [f'existing label {label}' for label in held]
-                + [f'the {who} classified security' for who in security]}
-    if verifier is None and outcome == 'passed':
-        verifier = author
     effective = {name: override[name].split('/', 1)[1] for name in ('class', 'size', 'pipeline') if name in override}
     record = {'class': effective.get('class'), 'size': effective.get('size'),
               'pipeline': effective.get('pipeline'), 'adr': None, 'resolution': None, 'duplicates': [],
               'needs_info': [], 'reasons': []}
 
-    questions = _union(author['needs_info'], (verifier or {}).get('needs_info', []))
+    questions = _union(author['needs_info'], verifier['needs_info'])
     reasons = []
     if questions:
         reasons.append('a triager has open questions')
@@ -416,9 +477,6 @@ def merge(author, verifier, labels, *, outcome='passed', owner_override=None):
     if reasons:
         return _labelled(dict(record, verdict='needs-info', needs_info=questions, reasons=reasons), override)
 
-    if verifier is None:
-        raise Refusal('verifier-block', 'a failed evaluation must end its summary with the verifier\'s own '
-                                        f'{TRIAGE} block')
     for field in ('class', 'size'):
         if field not in effective and author[field] != verifier[field]:
             reasons.append(f'{field}: the author says {author[field]}, the verifier {verifier[field]}')
@@ -462,65 +520,101 @@ def _labelled(record, override):
     return record
 
 
-def check(author, evaluation, labels, reach, *, owner_labels=(), sources=None, generation=None,
-          hand_triage=None):
-    """Validate, apply the hard rules and merge: the `af/issue-triage-merged@1` record and its
-    exit code (0, or 3 for a hold). Raises Refusal for anything the runner must not publish."""
+def hold_triggers(labels, owner_labels, author, verifier):
+    """Step 1 of the merge rule (§6.3, §7): the hold labels among the issue's labels and the
+    owner's, and the triagers whose document names `security`. Either holds the issue."""
+    held = _union([label for label in [*labels, *owner_labels] if label in HOLD_LABELS])
+    triagers = [who for who, doc in (('author', author), ('verifier', verifier))
+                if isinstance(doc, dict) and doc.get('class') == 'security']
+    return held, triagers
+
+
+def hold_record(author, held, triagers, identity):
+    """The private `af/issue-triage-hold@1`: the issue when the author's document names one, why,
+    what triggered the hold, and the generation identities the runner gave, as given."""
+    issue = author.get('issue') if isinstance(author, dict) else None
+    if not (isinstance(issue, int) and not isinstance(issue, bool) and issue >= 1):
+        issue = None
+    generation = {key: identity.get(key) or None
+                  for key in ('bundle_sha256', 'main', 'policy_version', 'event_id')}
+    record = {
+        'schema': HOLD, 'issue': issue,
+        'reasons': [f'the issue carries {label}' for label in held]
+        + [f'the {who} classified security' for who in triagers],
+        'held_labels': held, 'security_triagers': triagers,
+        'generation': generation if any(generation.values()) else None,
+    }
+    errors = validator().errors(record, 'urn:af:schema:issue-triage-hold:1')
+    if errors:
+        raise Refusal('hold-schema', '; '.join(errors[:5]))
+    return record
+
+
+def check(author, evaluation, labels, reach, *, owner_labels=(), identity=None, hand_triage=None):
+    """Hold, validate, apply the hard rules and merge: the `af/issue-triage-hold@1` record with
+    exit code 3, or the `af/issue-triage-merged@1` record with 0. `author` or `evaluation` is None
+    when it could not be read: only a hold label then gives a result. `identity` holds the values
+    of IDENTITIES by key. Raises Usage when a publishable record would lack an identity, and
+    Refusal for anything else the runner must not publish."""
     schema = validator()
-    held = [label for label in labels if label in HOLD_LABELS]
+    identity = identity or {}
+    # A hold label decides before anything else: no document is read further.
+    held, _ = hold_triggers(labels, owner_labels, None, None)
+    if held:
+        return hold_record(author, held, [], identity), EXIT_HELD
+    if author is None:
+        raise Refusal('author-draft', 'the author\'s report could not be read')
     try:
-        outcome, verifier = verifier_document(evaluation, schema)
-    except Refusal:
-        # An issue already held is held whatever its documents say.
-        if not held:
-            raise
-        outcome, verifier = None, None
-    documents = [('author', author)] + ([('verifier', verifier)] if verifier is not None else [])
-    # A hold stops every other step (§6.3 step 1): a document that names security, or an issue
-    # already held, is neither validated nor checked further, so nothing about it is published.
-    hold = bool(held) or any(isinstance(doc, dict) and doc.get('class') == 'security' for _, doc in documents)
-    override = None
+        outcome, verifier, unreadable = *verifier_document(evaluation, schema), None
+    except Refusal as refusal:
+        outcome, verifier, unreadable = None, None, refusal
+    # A document that names security holds the issue unvalidated, so nothing about it is published.
+    _, triagers = hold_triggers((), (), author, verifier)
+    if triagers:
+        return hold_record(author, [], triagers, identity), EXIT_HELD
+    if unreadable is not None:
+        raise unreadable
+    if verifier is None:
+        raise Refusal('verifier-block', f'the {outcome} evaluation\'s summary holds no {TRIAGE} block; every '
+                                        'outcome must end with the verifier\'s own document')
+    missing = [flag for flag, key in IDENTITIES if not identity.get(key)]
+    if missing:
+        raise Usage(f'a publishable record needs {", ".join(missing)}')
+    if identity['document_id'] != evaluation['document_id']:
+        raise Refusal('document-identity', f'--document-id {identity["document_id"]} is not the Document the '
+                                           f'evaluation judged, {evaluation["document_id"]}')
+    for who, doc in (('author', author), ('verifier', verifier)):
+        errors = schema.errors(doc, 'urn:af:schema:issue-triage:1')
+        if errors:
+            raise Refusal('triage-schema', f'the {who}\'s document: ' + '; '.join(errors[:5]))
+    if (verifier['issue'], verifier['body_sha256']) != (author['issue'], author['body_sha256']):
+        raise Refusal('issue-identity', 'the verifier triaged another issue or body than the author')
+    override = owner_overrides(owner_labels)
     evidence = {'commits': [], 'pulls': [], 'unverified': []}
-    if not hold:
-        for who, doc in documents:
-            errors = schema.errors(doc, 'urn:af:schema:issue-triage:1')
-            if errors:
-                raise Refusal('triage-schema', f'the {who}\'s document: ' + '; '.join(errors[:5]))
-        if verifier is not None and (verifier['issue'], verifier['body_sha256']) != (author['issue'],
-                                                                                     author['body_sha256']):
-            raise Refusal('issue-identity', 'the verifier triaged another issue or body than the author')
-        override = owner_overrides(owner_labels)
-        for who, doc in documents:
-            checked = check_rules(doc, who, reach)
-            for key in evidence:
-                evidence[key] = _union(evidence[key], checked[key])
-    merged = merge(author, verifier, labels, outcome=outcome, owner_override=override)
+    for who, doc in (('author', author), ('verifier', verifier)):
+        checked = check_rules(doc, who, reach)
+        for key in evidence:
+            evidence[key] = _union(evidence[key], checked[key])
+    merged = merge(author, verifier, outcome=outcome, owner_override=override)
     if hand_triage is not None and merged['verdict'] == 'agreed':
         recorded = hand_triage.get('issues', {}).get(str(author['issue']))
         if recorded and recorded['state'] != merged['resolution']['state']:
             raise Refusal('hand-triage', f'issue #{author["issue"]} was verified by hand as {recorded["state"]} '
                                          f'on {hand_triage.get("verified_on")}; the triagers agreed on '
                                          f'{merged["resolution"]["state"]}')
-    sources = sources or {}
-    generation = generation or {}
-    identity = author if isinstance(author, dict) else {}
     record = {
-        'schema': MERGED, 'issue': identity.get('issue'), 'body_sha256': identity.get('body_sha256'),
+        'schema': MERGED, 'issue': author['issue'], 'body_sha256': author['body_sha256'],
         'verdict': merged['verdict'],
         **{key: merged[key] for key in ('class', 'size', 'pipeline', 'adr', 'resolution', 'duplicates',
                                         'needs_info', 'reasons', 'labels')},
         'evidence_check': {'commits': evidence['commits'], 'pulls': evidence['pulls'],
                            'unverified': [f'#{number}' for number in evidence['unverified']]},
-        'generation': {'issue': identity.get('issue'), 'bundle_sha256': generation.get('bundle_sha256'),
-                       'main_commit': reach.main, 'policy_version': generation.get('policy_version'),
-                       'event_id': generation.get('event_id')},
-        'sources': {'task_id': sources.get('task_id'),
-                    'document_id': evaluation.get('document_id') if isinstance(evaluation, dict) else None,
-                    'evaluation_id': sources.get('evaluation_id')},
+        'generation': {'issue': author['issue'], 'bundle_sha256': identity['bundle_sha256'],
+                       'main_commit': reach.main, 'policy_version': identity['policy_version'],
+                       'event_id': identity['event_id']},
+        'sources': {key: identity[key] for key in ('task_id', 'document_id', 'evaluation_id')},
         'author': author, 'verifier': verifier, 'owner_override': override,
     }
-    if merged['verdict'] == 'held':
-        return record, EXIT_HELD
     errors = schema.errors(record, 'urn:af:schema:issue-triage-merged:1')
     if errors:
         raise Refusal('merged-schema', '; '.join(errors[:5]))
@@ -534,14 +628,23 @@ def _load_json(path, what):
         raise Refusal('input', f'{what} {path}: {error}') from None
 
 
+def _read_author(args):
+    if args.document is not None:
+        try:
+            text = Path(args.document).read_text(encoding='utf-8')
+        except (OSError, UnicodeDecodeError) as error:
+            raise Refusal('input', f'document {args.document}: {error}') from None
+        return author_document(document=text)
+    return author_document(draft=_load_json(args.draft, 'draft'))
+
+
 def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     author = parser.add_mutually_exclusive_group(required=True)
-    author.add_argument('--document', help='the author\'s report as `af task output --port report --format markdown` '
-                                           'writes it')
+    author.add_argument('--document', help='the author\'s report as `af task output TASK --port report` writes it '
+                                           'with --format markdown or --format canonical-markdown')
     author.add_argument('--draft', help='the author\'s af.document-draft/2 JSON')
     parser.add_argument('--evaluation', required=True, help='the verifier\'s af/ReportEvaluation@1 JSON payload')
-    parser.add_argument('--main', required=True, help='the captured main commit the Task\'s Snapshot was built from')
     parser.add_argument('--repo', default='.', help='the Git repository holding --main (default: .)')
     parser.add_argument('--pulls', help='a JSON list of the merged pull request numbers, written by the runner')
     parser.add_argument('--label', action='append', default=[], help='a label the issue carries now (repeatable)')
@@ -549,23 +652,20 @@ def main(argv=None):
                         help='a label the owner set in a runner namespace: an override (repeatable)')
     parser.add_argument('--hand-triage', help='a hand-verified af.hand-triage/1 file whose recorded resolution '
                                               'state an agreed record must reach')
-    parser.add_argument('--task-id')
-    parser.add_argument('--evaluation-id', help='the evaluation\'s artifact id')
-    parser.add_argument('--bundle-sha256', help='the sha256 of the Task\'s input bundle (§6.5)')
-    parser.add_argument('--policy-version')
-    parser.add_argument('--event-id')
+    identities = parser.add_argument_group('identities', 'required for every record but a hold (§6.3, §6.5)')
+    identities.add_argument('--task-id', help='the triage Task\'s id')
+    identities.add_argument('--document-id', help='the author\'s af/Document@1 artifact id, the one the evaluation '
+                                                  'judged')
+    identities.add_argument('--evaluation-id', help='the evaluation\'s artifact id')
+    identities.add_argument('--bundle-sha256', help='the sha256 of the Task\'s input bundle')
+    identities.add_argument('--main', help='the captured main commit the Task\'s Snapshot was built from')
+    identities.add_argument('--policy-version', help='the runner\'s policy version')
+    identities.add_argument('--event-id', help='the id of the event that triggered this generation')
     args = parser.parse_args(argv)
-    held = any(label in HOLD_LABELS for label in args.label)
+    held = any(label in HOLD_LABELS for label in [*args.label, *args.owner_label])
     try:
         try:
-            if args.document is not None:
-                try:
-                    text = Path(args.document).read_text(encoding='utf-8')
-                except (OSError, UnicodeDecodeError) as error:
-                    raise Refusal('input', f'document {args.document}: {error}') from None
-                document = author_document(document=text)
-            else:
-                document = author_document(draft=_load_json(args.draft, 'draft'))
+            document = _read_author(args)
         except Refusal:
             # An issue already held is held whatever its documents say.
             if not held:
@@ -578,19 +678,21 @@ def main(argv=None):
                 raise
             evaluation = None
         pulls = None
-        if args.pulls is not None:
+        if args.pulls is not None and not held:
             pulls = _load_json(args.pulls, 'pulls')
             if not isinstance(pulls, list) or not all(isinstance(n, int) and not isinstance(n, bool) and n > 0
                                                       for n in pulls):
                 raise Refusal('input', f'pulls {args.pulls}: not a JSON list of pull request numbers')
             pulls = set(pulls)
-        hand = _load_json(args.hand_triage, 'hand triage') if args.hand_triage else None
+        hand = _load_json(args.hand_triage, 'hand triage') if args.hand_triage and not held else None
         record, code = check(
             document, evaluation, args.label, GitReach(args.repo, args.main, pulls),
             owner_labels=args.owner_label, hand_triage=hand,
-            sources={'task_id': args.task_id, 'evaluation_id': args.evaluation_id},
-            generation={'bundle_sha256': args.bundle_sha256, 'policy_version': args.policy_version,
-                        'event_id': args.event_id})
+            identity={key: getattr(args, flag[2:].replace('-', '_')) for flag, key in IDENTITIES})
+    except Usage as usage:
+        parser.print_usage(sys.stderr)
+        print(f'backlog-check-triage: error: {usage}', file=sys.stderr)
+        return EXIT_USAGE
     except Refusal as refusal:
         print(f'backlog-check-triage: refused: {refusal}', file=sys.stderr)
         return EXIT_REFUSED

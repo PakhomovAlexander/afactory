@@ -188,6 +188,8 @@ check, and one independent verifier reading the same Snapshot (ADR-0133, decisio
   `af/issue-triage@1` document in one fenced `json` block, §6.3) and `Rationale`, beside the
   sections the installed report policy requires of every report (`Findings` and
   `Recommendation` in this repository), and `repository_citations` for every file it relied on.
+  Owner decision, 2026-10-30: the installed report policy's required sections apply in addition
+  to `Triage` and `Rationale`, so in this repository a triage draft has four.
 - `report_seal` and `report_check` are the kernel's: the Document is bound to the exact source
   Snapshot of `main`, and every citation is resolved against that Manifest, so a path the issue
   invented, a symlink or a binary fails the check and suppresses the verifier (ADR-0133,
@@ -195,11 +197,11 @@ check, and one independent verifier reading the same Snapshot (ADR-0133, decisio
 - The **verifier** slot is the second triager: Claude Opus 5.5, effort medium, Provider
   `claude-personal`, `read-source`. Its requirements say: classify the issue yourself by §4 and
   §5 before reading the author's `Triage` section, then return `af/ReportEvaluation@1` with
-  `verified` only when your class and size equal the author's, and otherwise your own class,
-  size and reason in the evaluation's text as a second `Triage` block in the same JSON shape
-  (decision 8), which the check parses. A verified Task is agreement; a `changes_requested` Task
-  whose evaluation names a different class or size is a dispute; a failed check is a failed
-  Attempt, never a guessed label.
+  `verified` only when your class and size equal the author's, and in every outcome your own
+  class, size and reason in the evaluation's text as a second `Triage` block in the same JSON
+  shape (decision 8), which the check parses and requires. A verified Task whose two documents
+  agree is agreement; a `changes_requested` Task whose evaluation names a different class or
+  size is a dispute; a failed check is a failed Attempt, never a guessed label.
 - The runner reads `af task output --port report` and `af task show --json` after the Task
   finishes and runs `scripts/backlog-check-triage.py` on both (§6.3) before any write to GitHub.
 
@@ -207,10 +209,12 @@ Both replies go through the typed paths (ADR-0103 for Claude, ADR-0208 for Codex
 does not parse is a failed Attempt. Budget per Task: 150k chargeable tokens, `max_attempts`
 as the report pipeline's 8 (two model Attempts, two admissions, room for one retry each),
 `wall_ms` 20 minutes. A Task that exhausts its budget leaves the issue `triage/pending` for the
-next run, at most three times, then `triage/needs-info` with the reason. (The packages staged in
-step 2 give each triager 60,000 tokens and 10 minutes per Attempt; with both Provider admissions
-and the report check the planner admits a Task only from 185,536 tokens and 1,355,000 ms, so
-the example plan uses those limits; §8 step 2.)
+next run, at most three times, then `triage/needs-info` with the reason. Owner decision,
+2026-10-30: this budget stands, and each triager's Attempt allowance is lowered to fit it,
+40,000 tokens and 500,000 ms. The planner reserves two Attempts per triager and both Provider
+admissions (2 × 40,000 + 2 × 32,768 = 145,536 tokens; 2 × 500,000 ms, two 45,000 ms
+admissions, the report policy's 60,000 ms check and 5,000 ms to start the run, 1,155,000 ms);
+a triager call in the backfill of 2026-10-30 cost about 20,000 tokens and 20 seconds.
 
 The rollout (§8) proves this shape with a compiling example plan before any runner code.
 
@@ -292,7 +296,9 @@ these refuses the Task's output and the runner records why.
 
 The merged record is `af/issue-triage-merged@1`: the agreed fields, the verdict, both source
 documents' identities (the Task id, the Document id, the evaluation id) and the generation key
-(§6.5).
+(§6.5), every identity required. A hold prints instead the private `af/issue-triage-hold@1`:
+the issue, why, the label or triager that triggered it and the generation identities the runner
+gave, none of them required.
 
 ### 6.4 What the runner writes back
 
@@ -385,10 +391,10 @@ sweep would have written.
   Provider; the author has no shell.
 - **Security hold.** An existing `class/security` label, a `triage/held` label, or `security`
   from either triager stops every public effect for that issue: no label, no comment, no
-  needs-info. The runner writes a private hold record in its journal and notifies the owner
-  through the nightly's existing channel. The runner and the sweep skip held issues until the
-  owner removes `triage/held` by hand. Only the owner creates the advisory and closes the public
-  issue.
+  needs-info. The runner writes the private hold record (`af/issue-triage-hold@1`, §6.3) in its
+  journal and notifies the owner through the nightly's existing channel. The runner and the
+  sweep skip held issues until the owner removes `triage/held` by hand. Only the owner creates
+  the advisory and closes the public issue.
 
 ## 8. Rollout
 
@@ -411,12 +417,11 @@ sweep would have written.
    `backlog/triage-verifier` under `task-packages/backlog/`, their shared catalog and contract
    fixtures, the install steps, and an example Task for #432 with its hand-built sources;
    `schemas/issue-triage-v1.json`, `schemas/issue-triage-merged-v1.json`,
+   `schemas/issue-triage-hold-v1.json` (all three shown by `af schema show`),
    `scripts/backlog-check-triage.py` and `scripts/test-backlog-check-triage.py`. The Rust test
-   `task_triage` installs the packages on a copy of `.af/` and plans the example with zero
-   Attempts. Two departures from the text above: the example plans with 185,536 tokens and
-   1,355,000 ms, not 150k and 20 minutes (§6.1), and the author's draft also carries the
-   installed report policy's `Findings` and `Recommendation` sections. Installing is the
-   owner's hand step.
+   `task_triage` installs the packages on a copy of `.af/`, plans the example with zero
+   Attempts within §6.1's budget, and feeds the report renderer's bytes to the check.
+   Installing is the owner's hand step.
 3. **Runner** (`size/M`, `default`): `scripts/backlog-triage.py`: sources assembly, the
    journal, the generation key, the lease and ledger, write-back, the sweep, and the cron unit
    on `claw-3`. Dry-run mode prints the labels and comment and writes nothing; the first week

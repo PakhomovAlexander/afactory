@@ -3,7 +3,8 @@
 //! this repository's `.af/` the test performs the install steps of that directory's README, runs
 //! the staged catalog's contract test and plans the example Task for issue #432 with zero
 //! Attempts: the business kind `triage` runs on the installed report profile with the two staged
-//! model Workers. Isolated fake Providers serve only catalog and identity probes.
+//! model Workers. Isolated fake Providers serve only catalog and identity probes. A second test
+//! feeds the report renderer's own bytes to `scripts/backlog-check-triage.py`.
 
 use review_store::Cas;
 use serde_json::{Value, json};
@@ -237,19 +238,35 @@ fn the_staged_triage_packages_install_pass_their_catalog_test_and_plan_the_examp
             "{worker}"
         );
     }
+    // Two Attempts of each Worker, two Provider admissions and the report check fit §6.1's
+    // budget: 2 × 40,000 + 2 × 32,768 tokens, 2 × 500,000 + 90,000 + 65,000 ms.
     for node in ["root.nodes.author", "root.nodes.verify"] {
         let allowance = &graph["allowances"][node];
-        assert_eq!(allowance["tokens_per_attempt"], 60_000, "{node}");
-        assert_eq!(allowance["wall_ms_per_attempt"], 600_000, "{node}");
+        assert_eq!(allowance["tokens_per_attempt"], 40_000, "{node}");
+        assert_eq!(allowance["wall_ms_per_attempt"], 500_000, "{node}");
         assert_eq!(allowance["max_attempts"], 2, "{node}");
     }
 
-    // The Task's business kind is `triage`, and it captured the six entries of §6.2.
+    // The Task's business kind is `triage`, its caps are §6.1's unraised, and it captured the
+    // six entries of §6.2.
     let cas = Cas::open_existing(state.join("cas")).unwrap();
     let revision = cas
         .get_json(planned["revision_id"].as_str().unwrap())
         .unwrap();
     assert_eq!(revision["payload"]["kind"], "triage");
+    // The revision keeps the wall as its deadline; the Task file the planner admitted names it.
+    let limits = &revision["payload"]["limits"];
+    assert_eq!(limits["tokens"], 150_000, "{limits}");
+    assert_eq!(limits["max_attempts"], 8, "{limits}");
+    let file: Value = serde_json::from_slice(
+        &std::fs::read(repo.join(STAGED).join("example/task.json")).unwrap(),
+    )
+    .unwrap();
+    assert_eq!(
+        file["limits"],
+        json!({"tokens": 150_000, "max_attempts": 8, "wall_ms": 1_200_000,
+               "verification": {"tokens": 72_768, "attempts": 3, "wall_ms": 605_000}})
+    );
     let sources = &planned["plan"]["inputs"]["sources"];
     assert_eq!(sources["artifact_type"], "af/ReportSources@1");
     let captured = cas
@@ -270,5 +287,104 @@ fn the_staged_triage_packages_install_pass_their_catalog_test_and_plan_the_examp
             "pulls",
             "rubric"
         ]
+    );
+}
+
+/// The author's `Triage` block survives the report renderer: the canonical bytes
+/// (`af task output --port report --format canonical-markdown`, the text the checks and the
+/// verifier judged) escape every backtick of the fence, and `--document` reads the block back
+/// exactly, through the real renderer and the real script.
+#[test]
+fn the_check_reads_the_triage_block_from_the_report_renderers_bytes() {
+    use review_core::task::document::DocumentDraftV2;
+    use review_pipeline::task::report_task::{ReportDraft, render_report};
+
+    let directory = tempfile::tempdir().unwrap();
+    let root = directory.path().canonicalize().unwrap();
+    let triage = json!({
+        "schema": "af/issue-triage@1", "issue": 432, "body_sha256": "ab".repeat(32),
+        "class": "aix", "size": "M", "pipeline": "default", "adr": null, "confidence": 0.86,
+        "rationale": "1. `TaskAttentionV1::of` puts *every* waiting Task under ```approval```; \
+                      a_b _c_ [x] <y> ~z~ | $ & &amp; # \\ \"q\" www.example.com \
+                      https://example.com/a?b=c fixture@example.invalid `a@b`.",
+        "resolution": {"state": "open", "evidence": [], "addressed": [], "remaining": []},
+        "duplicates": [], "needs_info": [],
+        "acceptance": "- af task list --attention shows it under its own group.",
+    });
+    let block = format!(
+        "```json\n{}\n```",
+        serde_json::to_string_pretty(&triage).unwrap()
+    );
+    let draft: DocumentDraftV2 = serde_json::from_value(json!({
+        "schema": "af.document-draft/2",
+        "title": "Triage of issue #432",
+        "sections": [
+            {"heading": "Triage", "body": block},
+            {"heading": "Rationale", "body": "The approval group is named for a plan to confirm."},
+            {"heading": "Findings", "body": "state.rs:483 puts every waiting Task in one group."},
+            {"heading": "Recommendation", "body": "Take it on the default pipeline."},
+        ],
+        "citations": ["issue"],
+        "repository_citations": [{"path": "crates/review-core/src/task/state.rs", "line": 483}],
+    }))
+    .unwrap();
+    let sources = serde_json::from_slice(
+        &std::fs::read(workspace().join(STAGED).join("example/sources.json")).unwrap(),
+    )
+    .unwrap();
+    let rendered = render_report(&ReportDraft::V2(draft), &sources).unwrap();
+    assert!(
+        rendered.contains("\n\\`\\`\\`json\n") && !rendered.contains("\n```"),
+        "the renderer escapes the authored fence: {rendered}"
+    );
+    std::fs::write(root.join("report.md"), &rendered).unwrap();
+
+    let document_id = format!("sha256:{}", "1".repeat(64));
+    let evaluation = json!({
+        "document_id": document_id, "sources_id": format!("sha256:{}", "2".repeat(64)),
+        "requirements_id": format!("sha256:{}", "3".repeat(64)),
+        "check_receipt_id": format!("sha256:{}", "4".repeat(64)),
+        "source_snapshot_id": format!("sha256:{}", "5".repeat(64)),
+        "outcome": "passed",
+        "summary": format!("state.rs:483 says what the report claims.\n\n{block}"),
+    });
+    std::fs::write(root.join("evaluation.json"), evaluation.to_string()).unwrap();
+    let repo = root.join("repo");
+    std::fs::create_dir(&repo).unwrap();
+    git(&repo, &["init", "-q", "-b", "main"]);
+    git(&repo, &["commit", "-q", "--allow-empty", "-m", "main"]);
+
+    let checked = std::process::Command::new("python3")
+        .arg("-I")
+        .arg(workspace().join("scripts/backlog-check-triage.py"))
+        .arg("--document")
+        .arg(root.join("report.md"))
+        .arg("--evaluation")
+        .arg(root.join("evaluation.json"))
+        .arg("--repo")
+        .arg(&repo)
+        .args(["--main", "main", "--task-id", "triage-432", "--document-id"])
+        .arg(&document_id)
+        .arg("--evaluation-id")
+        .arg(format!("sha256:{}", "6".repeat(64)))
+        .args(["--bundle-sha256", &"7".repeat(64)])
+        .args([
+            "--policy-version",
+            "triage-runner/1",
+            "--event-id",
+            "opened-1",
+        ])
+        .env("HOME", &root)
+        .env("GIT_CONFIG_GLOBAL", "/dev/null")
+        .env("GIT_CONFIG_NOSYSTEM", "1")
+        .output()
+        .unwrap();
+    assert_eq!(checked.status.code(), Some(0), "{}", text(&checked));
+    let record: Value = serde_json::from_slice(&checked.stdout).unwrap();
+    assert_eq!(record["author"], triage);
+    assert_eq!(record["verdict"], "agreed");
+    assert_eq!(
+        record["labels"],
+        json!(["class/aix", "size/M", "pipeline/default"])
     );
 }

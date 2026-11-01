@@ -174,8 +174,8 @@
       "worker_input_type": "af/ReportInput@1",
       "worker_output_type": "af/DocumentDraft@2",
       "attempt": {
-        "tokens": 60000,
-        "wall_ms": 600000
+        "tokens": 40000,
+        "wall_ms": 500000
       }
     },
     "backlog/triage-verifier": {
@@ -282,8 +282,8 @@
       "worker_output_type": "af/ReportEvaluation@1",
       "outcome_port": "result",
       "attempt": {
-        "tokens": 60000,
-        "wall_ms": 600000
+        "tokens": 40000,
+        "wall_ms": 500000
       }
     }
   },

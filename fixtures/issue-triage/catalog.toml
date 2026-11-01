@@ -6,7 +6,7 @@ path = "fixtures/issue-triage/task-packages/backlog/triage"
 version = "1.0.0"
 
 [packages."backlog/triage-author"]
-digest = "sha256:3a1a8d028cc8b091248b52bf0e96cd291e18d270ad0d200002e7a964b3803419"
+digest = "sha256:1e5e71c1dc278159477b9a5a5febf35b3a96347e201d32783078b78357300225"
 path = "fixtures/issue-triage/task-packages/backlog/triage-author"
 version = "1.0.0"
 
@@ -16,6 +16,6 @@ path = "fixtures/issue-triage/task-packages/backlog/triage-kind"
 version = "1.0.0"
 
 [packages."backlog/triage-verifier"]
-digest = "sha256:5c0ed090790b4b588d8cd17372f819b181f1c9db82d20dd456d5eca1ec05ac42"
+digest = "sha256:8641e681d040e27e66027ae85e71bfc4c4d953eb7e5d8fcd8802ad3de8957a8a"
 path = "fixtures/issue-triage/task-packages/backlog/triage-verifier"
 version = "1.0.0"

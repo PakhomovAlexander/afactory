@@ -44,8 +44,9 @@ or is `null`, and is never set with size `S`; `rationale` is at most 2,000 chara
 the change needs a contract, schema-version, budget or sandbox-boundary change, says so with one
 of the exact phrases `contract change`, `schema-version change`, `budget change` or
 `sandbox-boundary change`, with size `L` or `XL`; a `resolution.state` other than `open` names
-the commits (7 to 40 hexadecimal digits) or pull requests (`PR #NNN`) on `main` that shipped
-the change, and every named commit must be reachable from that `main`; `duplicates` names open
+the commits (7 to 40 lowercase hexadecimal digits, each written as `commit <sha>`) or pull
+requests (`PR #NNN`) on `main` that shipped the change, and every named commit must be
+reachable from that `main`; `duplicates` names open
 issues from the `neighbours` source with the same subject; `needs_info` names the questions
 without whose answers no class or size can be reached. `scripts/backlog-check-triage.py`
 validates your document against `schemas/issue-triage-v1.json` exactly as the author's.
@@ -131,6 +132,6 @@ Return the reply envelope the request describes with one `result` payload in the
 `source_snapshot_id` from the check receipt, then `outcome` and a `summary`. The `summary`
 names the files and lines behind the decision in plain text, then ends with your own
 `af/issue-triage@1` document as the one fenced block it holds: a line holding three backticks
-and `json`, the document, and a line holding three backticks. Write it whatever the outcome;
-the check refuses a `failed` evaluation without it, and reads your class, size, resolution,
-duplicates and questions from it.
+and `json`, the document, and a line holding three backticks. Write it whatever the outcome,
+`passed` included: the check refuses every evaluation without it, never stands the author's
+document in for yours, and reads your class, size, resolution, duplicates and questions from it.
