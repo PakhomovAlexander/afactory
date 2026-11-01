@@ -581,6 +581,42 @@ impl Run {
         .ok_or("Binding refers to missing, skipped or incomplete evidence")?;
         Ok(value.clone())
     }
+    /// Resolve the producing Decision invocation, following only the pinned port bindings.
+    /// Bundle validation gives this invocation at most one publication consumer; the signed
+    /// pin therefore binds its exact Action step and grant, including through child ports.
+    fn decision_source(&self, path: &str, binding: &Binding) -> Result<String> {
+        let definition = &self.pin.bundle.definitions[&self.frames[path].scenario];
+        match binding {
+            Binding::Input { port } => {
+                let (parent, invocation) =
+                    path.rsplit_once('/').ok_or("No root Decision source")?;
+                let parent_definition = &self.pin.bundle.definitions[&self.frames[parent].scenario];
+                let step = parent_definition
+                    .steps
+                    .iter()
+                    .find(|s| s.id == invocation)
+                    .ok_or("Missing child invocation")?;
+                self.decision_source(parent, &step.inputs[port])
+            }
+            Binding::Step { step, port } => {
+                let source = definition
+                    .steps
+                    .iter()
+                    .find(|s| s.id == *step)
+                    .ok_or("Missing Decision source")?;
+                let full = format!("{path}/{step}");
+                match &source.operation {
+                    Kind::Decision { .. } => Ok(full),
+                    Kind::Scenario { scenario } => self.decision_source(
+                        &full,
+                        &self.pin.bundle.definitions[scenario].result[port],
+                    ),
+                    _ => Err("Invalid Decision source".into()),
+                }
+            }
+            _ => Err("Invalid Decision binding".into()),
+        }
+    }
     pub fn fail(&mut self, why: String) {
         self.status = Status::Failed;
         self.failure = Some(why);
@@ -770,6 +806,8 @@ impl Run {
                         d.request.run_id == self.id
                             && d.request.execution_id == self.execution_id
                             && d.request.pin_id == self.pin.revision
+                            && d.request.step
+                                == self.decision_source(path, &step.inputs["decision"])?
                             && d.request.approve
                             && d.request.subject == subject
                             && d.request.revision == revision

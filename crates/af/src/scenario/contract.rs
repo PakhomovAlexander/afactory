@@ -455,6 +455,30 @@ pub(super) struct Bundle {
     pub root: String,
     pub definitions: BTreeMap<String, Scenario>,
 }
+
+/// Decision provenance and publication uses at a definition's boundary. Internal receipts
+/// which are not exported need not escape the summary. Memoization avoids expanding a shared
+/// child definition once for every possible invocation path.
+#[derive(Clone, Default)]
+struct DecisionFlow {
+    uses: BTreeMap<String, u8>,
+    outputs: BTreeMap<String, String>,
+}
+
+fn decision_origin(
+    binding: &Binding,
+    inputs: &BTreeMap<String, String>,
+    previous: &BTreeMap<String, BTreeMap<String, String>>,
+) -> Result<String> {
+    match binding {
+        Binding::Input { port } => inputs.get(port),
+        Binding::Step { step, port } => previous.get(step).and_then(|p| p.get(port)),
+        _ => None,
+    }
+    .cloned()
+    .ok_or_else(|| "Publication requires a pinned Decision source".into())
+}
+
 impl Bundle {
     pub fn validate(&self) -> Result<()> {
         require(
@@ -479,7 +503,86 @@ impl Bundle {
             name(id)?;
             definition.validate(self)?;
         }
+        self.publication_decisions(&self.root, &mut BTreeMap::new())?;
         Ok(())
+    }
+    fn publication_decisions(
+        &self,
+        id: &str,
+        summaries: &mut BTreeMap<String, DecisionFlow>,
+    ) -> Result<DecisionFlow> {
+        if let Some(summary) = summaries.get(id) {
+            return Ok(summary.clone());
+        }
+        let definition = &self.definitions[id];
+        let inputs: BTreeMap<_, _> = definition
+            .inputs
+            .iter()
+            .filter(|(_, p)| **p == Port::Decision)
+            .map(|(port, _)| (port.clone(), format!("input/{port}")))
+            .collect();
+        let mut flow = DecisionFlow::default();
+        for origin in inputs.values() {
+            flow.uses.insert(origin.clone(), 0);
+        }
+        let mut previous = BTreeMap::new();
+        for step in &definition.steps {
+            let mut outputs = BTreeMap::new();
+            match &step.operation {
+                Kind::Decision { .. } => {
+                    let origin = format!("step/{}", step.id);
+                    flow.uses.insert(origin.clone(), 0);
+                    outputs.insert("result".into(), origin);
+                }
+                Kind::Scenario { scenario } => {
+                    let child = self.publication_decisions(scenario, summaries)?;
+                    let mut origins = BTreeMap::new();
+                    for (origin, count) in child.uses {
+                        let source = if let Some(port) = origin.strip_prefix("input/") {
+                            decision_origin(&step.inputs[port], &inputs, &previous)?
+                        } else {
+                            format!("step/{}/{origin}", step.id)
+                        };
+                        let uses = flow.uses.entry(source.clone()).or_default();
+                        *uses += count;
+                        require(
+                            *uses <= 1,
+                            "Publication decision has multiple Action consumers",
+                        )?;
+                        origins.insert(origin, source);
+                    }
+                    for (port, origin) in child.outputs {
+                        outputs.insert(port, origins[&origin].clone());
+                    }
+                }
+                Kind::Action { grant, .. }
+                    if matches!(grant.operation, Operation::PublishPr | Operation::Followup) =>
+                {
+                    let origin = decision_origin(&step.inputs["decision"], &inputs, &previous)?;
+                    let uses = flow.uses.entry(origin).or_default();
+                    *uses += 1;
+                    require(
+                        *uses <= 1,
+                        "Publication decision has multiple Action consumers",
+                    )?;
+                }
+                _ => {}
+            }
+            previous.insert(step.id.clone(), outputs);
+        }
+        for (port, kind) in &definition.outputs {
+            if *kind == Port::Decision {
+                flow.outputs.insert(
+                    port.clone(),
+                    decision_origin(&definition.result[port], &inputs, &previous)?,
+                );
+            }
+        }
+        flow.uses.retain(|origin, _| {
+            origin.starts_with("input/") || flow.outputs.values().any(|o| o == origin)
+        });
+        summaries.insert(id.into(), flow.clone());
+        Ok(flow)
     }
     fn visit(
         &self,

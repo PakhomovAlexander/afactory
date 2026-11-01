@@ -51,13 +51,17 @@ scheduler invocation and testing. The caller must supply nondecreasing times. St
 outside the checkout and defaults to `$XDG_STATE_HOME/af/scenarios`. Its journal lives under
 `runs/` in the ordinary private registered Store infrastructure, so the machine Storage Budget
 counts its bytes as Store remainder. Durable records are retained with a 16 MiB document bound.
+`scenario start --execute`, `scenario resume`, and `ant tick` install the machine Storage Budget
+before execution and sweep it afterwards, including when the Run contains only orchestration
+steps. The sweep enforces the byte budget; age-based collection also runs when `auto_gc` is on.
 Each admitted Run receives an opaque execution identity, so equal labels in separate Stores
 cannot share action idempotency keys or human decisions. The private SQLite journal
 checks its version, release, checksum, transitive pins, signatures, accounting and progress when
 read. Missing or corrupt state fails closed. `show` retains the full pinned definitions,
 receipts, child frames, intents, waiting reason and final evidence. `list` enumerates records.
 Successful command execution returns 0; Run status is data, including `waiting` and `failed`.
-Refusals return 1 with the common JSON error document when `--json` is given.
+After startup, refusals return 1 with the common JSON error document when `--json` is given.
+A Storage Budget setup failure returns 1 with a diagnostic on stderr before the command starts.
 
 ## Steps and recovery
 
@@ -93,6 +97,13 @@ Refusals return 1 with the common JSON error document when `--json` is given.
   `required_condition` adds an `evidence` observation input with that exact condition. Both must
   match the same object and revision. Publication (`publish_pr`, `followup`) always requires a
   signed human decision. No Task delivery, commit, push, merge or blanket shell grant follows.
+
+A Decision receipt may authorize at most one publication Action in the pinned bundle, including
+uses through child inputs and outputs. Admission rejects a second publication consumer even if
+it is conditional or uses the same grant. Dispatch checks the producing Decision invocation;
+the signed pin binds that consumer's exact step, adapter, operation and destination. Changing
+any grant changes the pin and invalidates the approval. Use separate Decisions for separate
+publication Actions; ordinary receipt projections and child forwarding remain available.
 
 Limits bound tokens, elapsed time including waits, and dispatch count. Task allowances are reserved
 before dispatch; terminal Tasks settle their exact recorded charge, including failed Tasks.
@@ -180,5 +191,8 @@ downtime; longer downtime requires bounded intermediate ticks. Each occurrence h
 bound to Ant revision and local calendar date and a `started` or named `skipped` receipt.
 
 Paused and disabled periods are retained as timed state transitions, so enabling later cannot
-launch an occurrence that was paused when due. Pausing does not cancel or release an active Run.
+launch an occurrence that was paused when due. Launch also requires the Ant to be enabled at
+tick time: pausing or disabling after due time but before the first tick prevents that launch.
+Historical due-time modes and missed occurrences keep their original skipped outcomes.
+Pausing does not cancel or release an active Run.
 No real definitions, schedules, credentials or publication grants ship enabled in Afactory.

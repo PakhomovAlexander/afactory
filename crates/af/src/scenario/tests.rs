@@ -64,6 +64,59 @@ fn simple() -> (Bundle, Policy) {
         policy,
     )
 }
+
+fn publication_step(id: &str, decision: Binding, grant: Grant) -> Step {
+    Step {
+        id: id.into(),
+        inputs: BTreeMap::from([
+            ("subject".into(), lit(Datum::Text("issue-1".into()))),
+            ("revision".into(), lit(Datum::Text("head-1".into()))),
+            ("body".into(), lit(Datum::Text("publication".into()))),
+            ("decision".into(), decision),
+        ]),
+        outputs: BTreeMap::from([("result".into(), Port::Action)]),
+        when: None,
+        max_attempts: 1,
+        timeout_ms: DAY,
+        on_timeout: Timeout::Fail,
+        operation: Kind::Action {
+            grant,
+            requires_decision: true,
+            required_condition: None,
+        },
+    }
+}
+
+fn publication() -> (Bundle, Policy) {
+    let (mut bundle, mut policy) = simple();
+    let grant = Grant {
+        adapter: "publisher".into(),
+        operation: Operation::PublishPr,
+        destination: "fixture:repository".into(),
+    };
+    policy.adapters.insert(
+        "publisher".into(),
+        Adapter {
+            executable: "/installed/publisher".into(),
+            digest: digest(b"publisher"),
+            operations: [Operation::PublishPr, Operation::Followup].into(),
+            destinations: ["fixture:repository".into(), "fixture:other".into()].into(),
+            max_wall_ms: 1000,
+            max_output_bytes: 4096,
+        },
+    );
+    let definition = bundle.definitions.get_mut("main").unwrap();
+    definition.authority.grants.insert(grant.clone());
+    definition.steps.push(publication_step(
+        "publish",
+        Binding::Step {
+            step: "review".into(),
+            port: "result".into(),
+        },
+        grant,
+    ));
+    (bundle, policy)
+}
 fn ant(timezone: &str, hour: u8, minute: u8) -> AntState {
     let (scenario, policy) = simple();
     let definition = Ant {
@@ -321,6 +374,324 @@ fn signed_decisions_bind_exact_revision_owner_pin_and_deadline() {
 }
 
 #[test]
+fn publication_approval_cannot_feed_a_second_action_even_through_child_ports() {
+    let (bundle, policy) = publication();
+    Pin::new(bundle.clone(), policy.clone()).unwrap();
+    for (operation, destination) in [
+        (Operation::PublishPr, "fixture:repository"),
+        (Operation::Followup, "fixture:other"),
+    ] {
+        let mut fanout = bundle.clone();
+        let definition = fanout.definitions.get_mut("main").unwrap();
+        let mut second = definition.steps[1].clone();
+        second.id = "second".into();
+        let Kind::Action { grant, .. } = &mut second.operation else {
+            unreachable!()
+        };
+        grant.operation = operation;
+        grant.destination = destination.into();
+        definition.authority.grants.insert(grant.clone());
+        definition.steps.push(second);
+        assert!(
+            Pin::new(fanout, policy.clone())
+                .unwrap_err()
+                .contains("multiple Action consumers")
+        );
+    }
+    // A parent approval passed into a child cannot authorize a second publication there.
+    let mut nested = bundle.clone();
+    let mut child = nested.definitions["main"].clone();
+    child.inputs = BTreeMap::from([("approval".into(), Port::Decision)]);
+    child.steps.remove(0);
+    child.steps[0].inputs.insert(
+        "decision".into(),
+        Binding::Input {
+            port: "approval".into(),
+        },
+    );
+    let mut invoke = child.steps[0].clone();
+    invoke.id = "child".into();
+    invoke.operation = Kind::Scenario {
+        scenario: "child".into(),
+    };
+    invoke.inputs = BTreeMap::from([(
+        "approval".into(),
+        Binding::Step {
+            step: "review".into(),
+            port: "result".into(),
+        },
+    )]);
+    invoke.outputs = child.outputs.clone();
+    nested.definitions.insert("child".into(), child);
+    nested
+        .definitions
+        .get_mut("main")
+        .unwrap()
+        .steps
+        .push(invoke);
+    assert!(
+        Pin::new(nested.clone(), policy.clone())
+            .unwrap_err()
+            .contains("multiple Action consumers")
+    );
+    // Only the child's Action consumes it now: receipt forwarding remains supported.
+    nested.definitions.get_mut("main").unwrap().steps.remove(1);
+    Pin::new(nested.clone(), policy.clone()).unwrap();
+    let mut aliased = nested;
+    let child = aliased.definitions.get_mut("child").unwrap();
+    child.inputs.insert("alias".into(), Port::Decision);
+    let mut second = child.steps[0].clone();
+    second.id = "second".into();
+    second.inputs.insert(
+        "decision".into(),
+        Binding::Input {
+            port: "alias".into(),
+        },
+    );
+    child.steps.push(second);
+    let invocation = &mut aliased.definitions.get_mut("main").unwrap().steps[1];
+    invocation
+        .inputs
+        .insert("alias".into(), invocation.inputs["approval"].clone());
+    assert!(
+        Pin::new(aliased, policy.clone())
+            .unwrap_err()
+            .contains("multiple Action consumers")
+    );
+
+    // Exporting a child's already-consumed approval does not reset its publication use.
+    let mut exported = bundle.clone();
+    let child = exported.definitions.get_mut("main").unwrap();
+    child.outputs.insert("approval".into(), Port::Decision);
+    child.result.insert(
+        "approval".into(),
+        Binding::Step {
+            step: "review".into(),
+            port: "result".into(),
+        },
+    );
+    let mut root = child.clone();
+    let mut invoke = root.steps[0].clone();
+    invoke.id = "child".into();
+    invoke.operation = Kind::Scenario {
+        scenario: "main".into(),
+    };
+    invoke.inputs.clear();
+    invoke.outputs = child.outputs.clone();
+    let mut second = root.steps[1].clone();
+    second.inputs.insert(
+        "decision".into(),
+        Binding::Step {
+            step: "child".into(),
+            port: "approval".into(),
+        },
+    );
+    root.outputs.remove("approval");
+    root.result.remove("approval");
+    root.steps = vec![invoke, second];
+    exported.root = "parent".into();
+    exported.definitions.insert("parent".into(), root);
+    assert!(
+        Pin::new(exported.clone(), policy.clone())
+            .unwrap_err()
+            .contains("multiple Action consumers")
+    );
+    // Reusing a definition creates distinct Decision invocations, each with its own consumer.
+    let root = exported.definitions.get_mut("parent").unwrap();
+    let mut second_child = root.steps[0].clone();
+    second_child.id = "second-child".into();
+    root.steps[1] = second_child;
+    Pin::new(exported, policy).unwrap();
+}
+
+#[test]
+fn publication_dispatch_preserves_decision_forwarding_into_and_out_of_children() {
+    for into_child in [true, false] {
+        let (mut bundle, mut policy) = publication();
+        let key = minisign::KeyPair::generate_unencrypted_keypair().unwrap();
+        policy
+            .decision_keys
+            .insert("owner".into(), key.pk.to_box().unwrap().into_string());
+        let mut child = bundle.definitions["main"].clone();
+        let root = bundle.definitions.get_mut("main").unwrap();
+        let mut invoke = root.steps[0].clone();
+        invoke.id = "child".into();
+        invoke.operation = Kind::Scenario {
+            scenario: "child".into(),
+        };
+        invoke.inputs.clear();
+        if into_child {
+            child.inputs.insert("approval".into(), Port::Decision);
+            child.steps.remove(0);
+            child.steps[0].inputs.insert(
+                "decision".into(),
+                Binding::Input {
+                    port: "approval".into(),
+                },
+            );
+            invoke.inputs.insert(
+                "approval".into(),
+                Binding::Step {
+                    step: "review".into(),
+                    port: "result".into(),
+                },
+            );
+            invoke.outputs = child.outputs.clone();
+            root.steps[1] = invoke;
+        } else {
+            child.steps.pop();
+            child.outputs = BTreeMap::from([("approval".into(), Port::Decision)]);
+            child.result = BTreeMap::from([(
+                "approval".into(),
+                Binding::Step {
+                    step: "review".into(),
+                    port: "result".into(),
+                },
+            )]);
+            invoke.outputs = child.outputs.clone();
+            root.steps[0] = invoke;
+            root.steps[1].inputs.insert(
+                "decision".into(),
+                Binding::Step {
+                    step: "child".into(),
+                    port: "approval".into(),
+                },
+            );
+        }
+        bundle.definitions.insert("child".into(), child);
+        let mut run = Run::new(
+            "forwarded".into(),
+            Pin::new(bundle, policy).unwrap(),
+            BTreeMap::new(),
+            limits(),
+            START,
+            None,
+        )
+        .unwrap();
+        run.prepare(START).unwrap();
+        let Some(Waiting::Decision { request, .. }) = &run.waiting else {
+            panic!("missing decision")
+        };
+        let request = request.clone();
+        assert_eq!(
+            request.step,
+            if into_child {
+                "root/review"
+            } else {
+                "root/child/review"
+            }
+        );
+        let signature = minisign::sign(
+            Some(&key.pk),
+            &key.sk,
+            request.signing_bytes().unwrap().as_slice(),
+            None,
+            None,
+        )
+        .unwrap()
+        .into_string();
+        run.apply_decision(
+            DecisionReceipt {
+                schema: "af/scenario-signed-decision@1".into(),
+                request,
+                signature,
+            },
+            START,
+        )
+        .unwrap();
+        let dispatch = (0..4)
+            .find_map(|_| run.prepare(START).unwrap())
+            .expect("publication dispatch after completing the Decision and child frame");
+        assert_eq!(dispatch.step, "publish");
+        assert_eq!(
+            dispatch.frame,
+            if into_child { "root/child" } else { "root" }
+        );
+        run.validate().unwrap();
+    }
+}
+
+#[test]
+fn publication_dispatch_checks_decision_source_and_changed_grants_invalidate_approval() {
+    let (bundle, mut policy) = publication();
+    let key = minisign::KeyPair::generate_unencrypted_keypair().unwrap();
+    policy
+        .decision_keys
+        .insert("owner".into(), key.pk.to_box().unwrap().into_string());
+    policy.adapters.insert(
+        "other-publisher".into(),
+        policy.adapters["publisher"].clone(),
+    );
+    let mut run = Run::new(
+        "publication".into(),
+        Pin::new(bundle.clone(), policy.clone()).unwrap(),
+        BTreeMap::new(),
+        limits(),
+        START,
+        None,
+    )
+    .unwrap();
+    run.prepare(START).unwrap();
+    let Some(Waiting::Decision { request, .. }) = &run.waiting else {
+        panic!("missing decision")
+    };
+    let sign = |request: DecisionRequest| {
+        let signature = minisign::sign(
+            Some(&key.pk),
+            &key.sk,
+            request.signing_bytes().unwrap().as_slice(),
+            None,
+            None,
+        )
+        .unwrap()
+        .into_string();
+        DecisionReceipt {
+            schema: "af/scenario-signed-decision@1".into(),
+            request,
+            signature,
+        }
+    };
+    let receipt = sign(request.clone());
+    run.apply_decision(receipt.clone(), START).unwrap();
+    run.prepare(START).unwrap();
+    let mut wrong_source = run.clone();
+    let mut unrelated = receipt.request.clone();
+    unrelated.step = "root/another-decision".into();
+    wrong_source.frames.get_mut("root").unwrap().steps[0]
+        .outputs
+        .insert("result".into(), Datum::Decision(sign(unrelated)));
+    assert!(
+        wrong_source
+            .prepare(START)
+            .unwrap_err()
+            .contains("unrelated human decision")
+    );
+    for field in ["adapter", "operation", "destination"] {
+        let mut changed = json!(bundle);
+        let grant = &mut changed["definitions"]["main"]["steps"][1]["operation"]["grant"];
+        grant[field] = json!(match field {
+            "adapter" => "other-publisher",
+            "operation" => "followup",
+            _ => "fixture:other",
+        });
+        let grant = grant.clone();
+        changed["definitions"]["main"]["authority"]["grants"] = json!([grant]);
+        let pin = Pin::new(serde_json::from_value(changed).unwrap(), policy.clone()).unwrap();
+        assert_ne!(pin.revision, run.pin.revision);
+        let mut changed_run = run.clone();
+        changed_run.pin = pin;
+        assert!(
+            changed_run
+                .prepare(START)
+                .unwrap_err()
+                .contains("unrelated"),
+            "accepted changed {field}"
+        );
+    }
+    assert_eq!(run.prepare(START).unwrap().unwrap().step, "publish");
+}
+
+#[test]
 fn timezone_due_time_duplicate_ticks_and_waits_count_as_active() {
     let mut ant = ant("+03:00", 9, 0);
     let mut runs = BTreeMap::new();
@@ -418,6 +789,54 @@ fn missed_occurrences_pause_and_disable_never_create_a_catchup_burst() {
         OccurrenceOutcome::SkippedDisabled
     );
     assert_eq!(ant.occurrences[6].outcome, OccurrenceOutcome::SkippedBusy);
+    ant.validate(&runs).unwrap();
+}
+
+#[test]
+fn pause_or_disable_after_due_time_before_first_tick_prevents_launch() {
+    let due = START + 12 * 3_600_000;
+    for (mode, expected) in [
+        (AntMode::Paused, OccurrenceOutcome::SkippedPaused),
+        (AntMode::Disabled, OccurrenceOutcome::SkippedDisabled),
+    ] {
+        let mut ant = ant("UTC", 12, 0);
+        let mut runs = BTreeMap::new();
+        ant.change(mode, due + 100).unwrap();
+        assert!(ant.tick(due + 200, &mut runs).unwrap().is_empty());
+        assert!(runs.is_empty());
+        assert_eq!(ant.occurrences[0].outcome, expected);
+        assert!(ant.tick(due + 200, &mut runs).unwrap().is_empty());
+        ant.validate(&runs).unwrap();
+        // Enabling later does not resurrect the skipped occurrence.
+        ant.change(AntMode::Enabled, due + 300).unwrap();
+        assert!(ant.tick(due + 400, &mut runs).unwrap().is_empty());
+        assert_eq!(ant.occurrences.len(), 1);
+        assert_eq!(ant.tick(due + DAY, &mut runs).unwrap().len(), 1);
+        ant.validate(&runs).unwrap();
+    }
+}
+
+#[test]
+fn tick_retains_historical_due_modes_and_missed_outcomes_after_mode_changes() {
+    let due = START + 12 * 3_600_000;
+    for (mode, expected) in [
+        (AntMode::Paused, OccurrenceOutcome::SkippedPaused),
+        (AntMode::Disabled, OccurrenceOutcome::SkippedDisabled),
+    ] {
+        let mut ant = ant("UTC", 12, 0);
+        let mut runs = BTreeMap::new();
+        ant.change(mode, due - 100).unwrap();
+        ant.change(AntMode::Enabled, due + 100).unwrap();
+        assert!(ant.tick(due + 200, &mut runs).unwrap().is_empty());
+        assert_eq!(ant.occurrences[0].outcome, expected);
+        ant.validate(&runs).unwrap();
+    }
+    let mut ant = ant("UTC", 12, 0);
+    ant.change(AntMode::Paused, due + 100).unwrap();
+    let mut runs = BTreeMap::new();
+    assert!(ant.tick(due + DAY, &mut runs).unwrap().is_empty());
+    assert_eq!(ant.occurrences[0].outcome, OccurrenceOutcome::SkippedMissed);
+    assert_eq!(ant.occurrences[1].outcome, OccurrenceOutcome::SkippedPaused);
     ant.validate(&runs).unwrap();
 }
 
