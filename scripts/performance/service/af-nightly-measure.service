@@ -1,4 +1,4 @@
-# Step 2 of the nightly chain (ADR-0266, ADR-0272, docs/nightly.md#the-nightly-chain): submit
+# Step 2 of the nightly chain (ADR-0266, ADR-0273, docs/nightly.md#the-nightly-chain): submit
 # the night's core and telemetry originals to the nightly executor (/etc/af-nightly/executor.toml)
 # and cycle it until both end or [measure] deadline_minutes pass. This unit alone submits to
 # and cycles that configuration: never run an af-perf-executor@ unit on it.

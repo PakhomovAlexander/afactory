@@ -1,5 +1,5 @@
 """The nightly measurement (scripts/nightly/measure.py) and the systemd chain's units
-(scripts/performance/service/af-nightly*, ADR-0272) with injected fakes.
+(scripts/performance/service/af-nightly*, ADR-0273) with injected fakes.
 
 A night's record is written into a temporary builds root from the nightly-build fixtures; the
 nightly executor is a fake runner that answers `submit`, `status` and `cycle` as told and
@@ -236,7 +236,7 @@ class BuiltNight(Night):
 
 
 class NightOfTheBuildUnit(Night):
-    """`--night-of UNIT`: the night is the UTC date systemd last started UNIT (ADR-0272)."""
+    """`--night-of UNIT`: the night is the UTC date systemd last started UNIT (ADR-0273)."""
 
     def show(self, answer, code=0):
         asked = []

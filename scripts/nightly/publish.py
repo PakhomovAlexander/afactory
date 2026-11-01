@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Publish a built nightly as a GitHub pre-release, tell the owner, prune old nights (ADR-0271).
+"""Publish a built nightly as a GitHub pre-release, tell the owner, prune old nights (ADR-0272).
 
     python3 -I scripts/nightly/publish.py publish --config PATH
                                                   [--date YYYY-MM-DD | --night-of UNIT]
@@ -8,7 +8,7 @@
 
 Without --date the night is the UTC date systemd last started UNIT, or else today's UTC date;
 without --report the report is the newest of ROOT/DATE and ROOT/DATE.<k> (the highest k), ROOT
-being --report-root or the configuration's reports_root (ADR-0272); every default is printed
+being --report-root or the configuration's reports_root (ADR-0273); every default is printed
 on stderr. For a `built` night (builds_root/<date>/nightly.json) `publish` verifies the night
 as `build` left it, creates the pre-release of tag nightly-YYYY.MM.DD at its head_sha with
 digest.md as its notes, uploads the two archives, SHA256SUMS, SHA256SUMS.minisig,

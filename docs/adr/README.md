@@ -259,6 +259,7 @@ future readers need.
   registered](0141-list-a-logged-out-default-context-only-until-its-kind-is-registered.md)
 - [0142 — Carry the `af task report` of its Tasks in every pull
   request](0142-carry-the-af-task-report-in-every-pull-request.md)
+  (superseded in part by [ADR-0270](0270-let-ci-maintain-the-lines-added-block.md))
 - [0143 — Charge zero and record unknown usage when no usage is
   reported](0143-charge-zero-and-record-unknown-usage-when-no-usage-is-reported.md)
 - [0144 — Hold af's disk use to a machine budget](0144-hold-afs-disk-use-to-a-machine-budget.md)
@@ -364,6 +365,7 @@ future readers need.
   group](0194-bind-calibration-to-each-cases-observed-shard-cpu-group.md)
 - [0195 — State the lines a pull request adds per directory, and check
   them](0195-state-the-lines-a-pull-request-adds-per-directory-and-check-them.md)
+  (superseded in part by [ADR-0270](0270-let-ci-maintain-the-lines-added-block.md))
 - [0196 — Skip pull request measurements only for an explicit `no-perf`
   label](0196-skip-pull-request-measurements-only-for-an-explicit-no-perf-label.md)
 - [0197 — Validate on one latest stable Python](0197-validate-on-one-latest-stable-python.md)
@@ -508,9 +510,13 @@ future readers need.
   self](0267-offer-a-nightly-channel-in-af-self.md)
 - [0268 — Quarantine flaky tests on gate evidence and confirm them on
   Claw](0268-quarantine-flaky-tests-on-gate-evidence-and-confirm-them-on-claw.md)
-- [0270 — Compose the nightly report from the night's record and the executor
-  journal](0270-compose-the-nightly-report-from-the-nights-record-and-the-executor-journal.md)
-- [0271 — Publish nightlies as pre-releases and prune
-  them](0271-publish-nightlies-as-pre-releases-and-prune-them.md)
-- [0272 — Run the nightly chain as systemd units on the owner's
-  VM](0272-run-the-nightly-chain-as-systemd-units-on-the-owners-vm.md)
+- [0269 — Bind comparison partition execution to reused build
+  artifacts](0269-bind-comparison-partition-execution-to-reused-build-artifacts.md)
+- [0270 — Let CI maintain the lines added
+  block](0270-let-ci-maintain-the-lines-added-block.md)
+- [0271 — Compose the nightly report from the night's record and the executor
+  journal](0271-compose-the-nightly-report-from-the-nights-record-and-the-executor-journal.md)
+- [0272 — Publish nightlies as pre-releases and prune
+  them](0272-publish-nightlies-as-pre-releases-and-prune-them.md)
+- [0273 — Run the nightly chain as systemd units on the owner's
+  VM](0273-run-the-nightly-chain-as-systemd-units-on-the-owners-vm.md)

@@ -122,7 +122,7 @@ fn refuses_unnamed(validator: &jsonschema::Validator, document: &Value, pointers
 /// Design §12 and §15 P5, the one-pair smoke `make check` runs: one pair of every bench fixture
 /// at `--scale smoke` through the real binary. Every run exits as its fixture expects, leaves no
 /// telemetry at `off` and a sealed segment at `spans`; the dense fixture yields its drain
-/// latency; the document validates against `af/telemetry-overhead@1`, is `not_judged` (one pair,
+/// latency; the document validates against `af/telemetry-overhead@2`, is `not_judged` (one pair,
 /// smoke scale), and `--judge` recomputes exactly the figures it printed.
 #[test]
 fn telemetry_overhead_smoke() {
@@ -144,9 +144,9 @@ fn telemetry_overhead_smoke() {
     );
     assert_eq!(output.status.code(), Some(0), "{}", text(&output));
     let measured = document(&output);
-    let validator = schemas::validator("telemetry-overhead-v1.json");
+    let validator = schemas::validator("telemetry-overhead-v2.json");
     schemas::valid(&validator, &measured);
-    every_property_required(&schema_document("telemetry-overhead-v1.json"));
+    every_property_required(&schema_document("telemetry-overhead-v2.json"));
     let names: Vec<&str> = measured["fixtures"]
         .as_array()
         .unwrap()
@@ -175,6 +175,28 @@ fn telemetry_overhead_smoke() {
     }
     assert_eq!(measured["drain"]["fixture"], "telemetry-bench-dense");
     assert_eq!(measured["drain"]["pairs"].as_array().unwrap().len(), 1);
+    // Both ends of a drain are readings of the one CLOCK_MONOTONIC, the harness's last write
+    // before the command's observed exit, so a run's physical drain through the real binary is
+    // never negative.
+    assert_eq!(
+        measured["drain"]["boundary"],
+        "harness_last_write_to_command_exit"
+    );
+    assert_eq!(measured["drain"]["clock"], "CLOCK_MONOTONIC");
+    // The binary under test is the current tree: its workload is the committed one, every
+    // package pinned as committed and computed by its own `af catalog digest`.
+    assert_eq!(measured["fixture_contract"]["name"], "check-receipt@2");
+    assert_eq!(
+        measured["fixture_contract"]["fixtures"]
+            .as_array()
+            .unwrap()
+            .len(),
+        FIXTURES.len()
+    );
+    for level in ["off_ms", "spans_ms"] {
+        let drain = measured["drain"]["pairs"][0][level].as_f64().unwrap();
+        assert!(drain >= 0.0, "{level}: {measured}");
+    }
     assert_eq!(measured["protocol"]["scale"], "smoke");
     assert_eq!(measured["gate"]["verdict"], "not_judged", "{measured}");
     // The work directory held every run, each removed once measured.
@@ -207,6 +229,8 @@ fn telemetry_overhead_smoke() {
             "/fixtures/0",
             "/fixtures/0/pairs/0",
             "/fixtures/0/pairs/0/off",
+            "/fixture_contract",
+            "/fixture_contract/fixtures/0",
             "/drain",
             "/drain/pairs/0",
             "/gate",
@@ -255,7 +279,8 @@ fn telemetry_overhead_copy_is_writable_from_a_read_only_source() {
          spec.loader.exec_module(overhead)\n\
          overhead.FIXTURES_DIR = pathlib.Path(sys.argv[2])\n\
          work = pathlib.Path(sys.argv[3])\n\
-         pristine = overhead.prepare('telemetry-bench-dense', 'smoke', work)\n\
+         pristine, _ = overhead.prepare('telemetry-bench-dense', 'smoke', work, sys.argv[4],\n\
+                                        'check-receipt@2')\n\
          overhead.copy_writable(pristine, work / 'run' / 'repo')\n\
          (work / 'run' / 'repo' / 'bench.json').write_text('{}')\n\
          print(pristine)\n";
@@ -266,6 +291,7 @@ fn telemetry_overhead_copy_is_writable_from_a_read_only_source() {
         .arg(workspace().join("scripts/telemetry-overhead.py"))
         .arg(&fixtures)
         .arg(&work)
+        .arg(crate::common::af_binary())
         .current_dir(&machine.root)
         .env("HOME", machine.root.join("home"))
         .env("XDG_CONFIG_HOME", machine.root.join("config"))
@@ -330,7 +356,8 @@ fn telemetry_overhead_prepare_runs_no_background_git() {
          overhead = importlib.util.module_from_spec(spec)\n\
          spec.loader.exec_module(overhead)\n\
          work = pathlib.Path(sys.argv[2])\n\
-         pristine = overhead.prepare('telemetry-bench-dense', 'smoke', work)\n\
+         pristine, _ = overhead.prepare('telemetry-bench-dense', 'smoke', work, sys.argv[3],\n\
+                                        'check-receipt@2')\n\
          overhead.copy_writable(pristine, work / 'run' / 'repo')\n";
     let output = Command::new("python3")
         .arg("-I")
@@ -338,6 +365,7 @@ fn telemetry_overhead_prepare_runs_no_background_git() {
         .arg(program)
         .arg(workspace().join("scripts/telemetry-overhead.py"))
         .arg(&work)
+        .arg(crate::common::af_binary())
         .current_dir(&machine.root)
         .env("HOME", machine.root.join("home"))
         .env("XDG_CONFIG_HOME", machine.root.join("config"))
@@ -504,8 +532,10 @@ fn recorded(fixtures: &[(&str, &[(f64, f64)])], drain: &[(f64, f64)], scale: &st
         })
         .collect();
     json!({
-        "schema": "af/telemetry-overhead@1",
-        "af": {"path": "/recorded/af", "version": "af 0.12.0"},
+        "schema": "af/telemetry-overhead@2",
+        "af": {"path": "/recorded/af", "version": "af 0.14.0-rc.1"},
+        "fixture_contract": {"name": "check-receipt@2", "release": "0.14.0-rc.1",
+                             "check_receipt": "af/TaskCheckReceipt@2", "fixtures": []},
         "machine": {"os": "darwin", "arch": "arm64", "cpus": 14, "load1": 2.5},
         "protocol": {"pairs": 20, "scale": scale, "seed": 20261021, "resamples": 10000,
                      "median_bound_pct": 2.0, "upper_bound_pct": 3.0},
@@ -513,6 +543,8 @@ fn recorded(fixtures: &[(&str, &[(f64, f64)])], drain: &[(f64, f64)], scale: &st
         "drain": {
             "fixture": "telemetry-bench-dense",
             "bound_ms": 10.0,
+            "boundary": "harness_last_write_to_command_exit",
+            "clock": "CLOCK_MONOTONIC",
             "pairs": drain.iter().map(|(off, spans)| json!({
                 "off_ms": off, "spans_ms": spans, "difference_ms": 0.0
             })).collect::<Vec<_>>(),
@@ -562,7 +594,7 @@ fn round3(value: f64) -> f64 {
 #[test]
 fn telemetry_overhead_gate_rule() {
     let machine = Machine::new();
-    let validator = schemas::validator("telemetry-overhead-v1.json");
+    let validator = schemas::validator("telemetry-overhead-v2.json");
     let all = |concurrent: &[(f64, f64)], dense: &[(f64, f64)], store: &[(f64, f64)]| {
         vec![
             ("telemetry-bench-concurrent", concurrent.to_vec()),
@@ -682,6 +714,26 @@ fn telemetry_overhead_gate_rule() {
     );
     assert_eq!(judged["gate"]["verdict"], "fail");
 
+    // A negative physical drain (the clocks' order violated) is kept as measured, never
+    // clamped or dropped, and leaves the gate unjudged; the signed pair difference stays signed.
+    let mut disordered = DRAIN.to_vec();
+    disordered[0] = (-0.126, 0.5);
+    let (code, judged) = judge(
+        &machine,
+        &build(all(&CONCURRENT, &DENSE, &STORE), &disordered, "full"),
+    );
+    assert_eq!(code, Some(0), "{judged}");
+    assert_eq!(judged["gate"]["verdict"], "not_judged", "{judged}");
+    assert_eq!(judged["drain"]["pairs"][0]["off_ms"], -0.126, "{judged}");
+    assert_eq!(
+        judged["drain"]["pairs"][0]["difference_ms"], 0.626,
+        "{judged}"
+    );
+    assert_eq!(
+        judged["gate"]["reasons"][0],
+        "drain latency: 1 negative physical duration, kept as measured and not judged"
+    );
+
     // Fewer than 20 pairs, the smoke scale or a missing fixture is never judged, even when a
     // figure is past its bound: the exit is 0 and the reasons say why.
     for (document, why) in [
@@ -730,10 +782,14 @@ fn telemetry_overhead_gate_rule() {
     let mut looser = build(all(&CONCURRENT, &DENSE, &STORE), &late, "full");
     looser["drain"]["bound_ms"] = json!(20.0);
     assert_eq!(judge(&machine, &looser).0, Some(1));
+    // A drain read between other boundaries (the superseded file timestamps) is refused.
+    let mut timestamps = build(all(&CONCURRENT, &DENSE, &STORE), &DRAIN, "full");
+    timestamps["drain"]["clock"] = json!("filesystem");
+    assert_eq!(judge(&machine, &timestamps).0, Some(1));
 
-    // A document of another shape is refused, never judged.
+    // A document of another shape, the superseded `@1` included, is refused, never judged.
     let mut foreign = build(all(&CONCURRENT, &DENSE, &STORE), &DRAIN, "full");
-    foreign["schema"] = json!("af/telemetry-overhead@2");
+    foreign["schema"] = json!("af/telemetry-overhead@1");
     assert_eq!(judge(&machine, &foreign).0, Some(1));
     assert!(!validator.is_valid(&foreign));
 }
@@ -978,7 +1034,7 @@ fn invocation_run(wall_ms: f64, peak_rss_bytes: u64, stdout_bytes: u64) -> Value
            "drain_ms": null, "stdout_bytes": stdout_bytes})
 }
 
-/// An `af/telemetry-invocation-cost@1` document over every case at full scale, 20 pairs each,
+/// An `af/telemetry-invocation-cost@2` document over every case at full scale, 20 pairs each,
 /// whose `stream-json` runs at `off` cost `wall` more than `json` and `rss` more bytes.
 fn invocation_document(wall: f64, rss: u64) -> Value {
     let mut cases = Vec::new();
@@ -1006,8 +1062,12 @@ fn invocation_document(wall: f64, rss: u64) -> Value {
                                              "attempts": 3, "usage": []}}));
         }
     }
-    json!({"schema": "af/telemetry-invocation-cost@1",
-           "af": {"path": "af", "version": "af 0.0.0"},
+    json!({"schema": "af/telemetry-invocation-cost@2",
+           "af": {"path": "af", "version": "af 0.14.0-rc.1"},
+           "fixture_contract": {"name": "check-receipt@2", "release": "0.14.0-rc.1",
+                                "check_receipt": "af/TaskCheckReceipt@2", "fixtures": []},
+           "drain": {"boundary": "harness_last_write_to_command_exit",
+                     "clock": "CLOCK_MONOTONIC"},
            "machine": {"os": "test", "arch": "test", "cpus": 1, "load1": null},
            "protocol": {"pairs": 20, "scale": "full", "seed": 1, "resamples": 10000,
                         "wall_bound_pct": 2.0, "rss_slack_bytes": 16 << 20},
@@ -1017,7 +1077,7 @@ fn invocation_document(wall: f64, rss: u64) -> Value {
 /// Design §12 and §15 P6, the invocation-cost gate: the measurement runs on the invocation
 /// fixtures (a one-pair smoke through the real binary, every case at smoke scale, the
 /// accounting the same under both shapes and at both levels, `not_judged`), its document matches
-/// `af/telemetry-invocation-cost@1`, `--judge` recomputes exactly what it printed, and the rule —
+/// `af/telemetry-invocation-cost@2`, `--judge` recomputes exactly what it printed, and the rule —
 /// at `off`, median wall within 2% of `json` and median peak RSS at most the stream's bytes plus
 /// 16 MiB above it — passes a cheap stream (one invocation shape) and fails a costly one (the
 /// fallback's two shapes), on recorded distributions.
@@ -1041,9 +1101,9 @@ fn telemetry_stream_json_cost_gate() {
     );
     assert_eq!(output.status.code(), Some(0), "{}", text(&output));
     let measured = document(&output);
-    let validator = schemas::validator("telemetry-invocation-cost-v1.json");
+    let validator = schemas::validator("telemetry-invocation-cost-v2.json");
     schemas::valid(&validator, &measured);
-    every_property_required(&schema_document("telemetry-invocation-cost-v1.json"));
+    every_property_required(&schema_document("telemetry-invocation-cost-v2.json"));
     let cases = measured["cases"].as_array().unwrap();
     assert_eq!(
         cases.len(),
@@ -1064,6 +1124,15 @@ fn telemetry_stream_json_cost_gate() {
             assert_eq!(segments == 0, level == "off", "{pair}");
         }
     }
+    // The one-Attempt runs' drains are ordered readings of CLOCK_MONOTONIC: never negative.
+    assert_eq!(measured["drain"]["clock"], "CLOCK_MONOTONIC");
+    assert_eq!(measured["fixture_contract"]["name"], "check-receipt@2");
+    for level in ["off", "spans"] {
+        let pair = &cases[0]["levels"][level]["pairs"][0];
+        for shape in ["json", "stream-json"] {
+            assert!(pair[shape]["drain_ms"].as_f64().unwrap() >= 0.0, "{pair}");
+        }
+    }
     assert_eq!(measured["gate"]["verdict"], "not_judged", "{measured}");
     assert_eq!(measured["decision"], "not_judged");
     let recorded = machine.root.join("work/invocation-smoke.json");
@@ -1079,6 +1148,8 @@ fn telemetry_stream_json_cost_gate() {
         &measured,
         &[
             "",
+            "/fixture_contract",
+            "/drain",
             "/protocol",
             "/cases/0",
             "/cases/0/levels",
@@ -1106,4 +1177,25 @@ fn telemetry_stream_json_cost_gate() {
         assert_eq!(judged["gate"]["verdict"], verdict, "{judged}");
         assert_eq!(judged["decision"], decision);
     }
+    // A negative physical drain of one run is kept as measured and leaves a passing rule unjudged.
+    let mut disordered = invocation_document(0.01, 1 << 20);
+    disordered["cases"][0]["levels"]["off"]["pairs"][0]["json"]["drain_ms"] = json!(-0.589);
+    disordered["cases"][0]["levels"]["off"]["pairs"][0]["stream-json"]["drain_ms"] = json!(1.0);
+    let path = machine.root.join("work/rule-negative-drain.json");
+    std::fs::write(&path, disordered.to_string()).unwrap();
+    let judged = machine.script(
+        "telemetry-invocation-cost.py",
+        &["--judge", path.to_str().unwrap(), "--json"],
+    );
+    assert_eq!(judged.status.code(), Some(0), "{}", text(&judged));
+    let judged = document(&judged);
+    assert_eq!(judged["gate"]["verdict"], "not_judged", "{judged}");
+    assert_eq!(
+        judged["cases"][0]["levels"]["off"]["pairs"][0]["json"]["drain_ms"],
+        -0.589
+    );
+    assert_eq!(
+        judged["gate"]["reasons"][0],
+        "drain latency: 1 negative physical duration, kept as measured and not judged"
+    );
 }

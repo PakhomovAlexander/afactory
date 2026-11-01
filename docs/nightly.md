@@ -3,11 +3,11 @@
 The owner's Linux VM builds a signed nightly af from the newest green commit of main
 ([ADR-0265](adr/0265-build-nightlies-from-the-newest-green-main-on-the-owners-vm.md)),
 composes its [daily report](#the-daily-report)
-([ADR-0270](adr/0270-compose-the-nightly-report-from-the-nights-record-and-the-executor-journal.md))
+([ADR-0271](adr/0271-compose-the-nightly-report-from-the-nights-record-and-the-executor-journal.md))
 and publishes it as a GitHub pre-release
-([ADR-0271](adr/0271-publish-nightlies-as-pre-releases-and-prune-them.md)), every night, as four
+([ADR-0272](adr/0272-publish-nightlies-as-pre-releases-and-prune-them.md)), every night, as four
 systemd units that hand over to each other
-([ADR-0272](adr/0272-run-the-nightly-chain-as-systemd-units-on-the-owners-vm.md)). This page
+([ADR-0273](adr/0273-run-the-nightly-chain-as-systemd-units-on-the-owners-vm.md)). This page
 covers the build step, `scripts/nightly/build.py`, the measure step, `scripts/nightly/measure.py`,
 which submits the night to the [nightly executor](performance-local-executor.md#nightly-originals)
 and waits for it, the report step, `scripts/nightly/report.py`, the publish step,

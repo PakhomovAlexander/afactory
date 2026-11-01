@@ -2,7 +2,7 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "urn:af:schema:performance-nightly-publish:1",
   "title": "af.nightly-publish/1",
-  "description": "What publishing one night did, builds_root/<date>/publish.json (ADR-0271): the pre-release of its tag with each asset's name, size and digest as GitHub reports them, or nothing for a skipped night; the Telegram message id or why there is none; the nightly pre-releases pruned, each whose release went but whose tag deletion failed, and the nightly-named releases refused as foreign; how many times the night was amended and when.",
+  "description": "What publishing one night did, builds_root/<date>/publish.json (ADR-0272): the pre-release of its tag with each asset's name, size and digest as GitHub reports them, or nothing for a skipped night; the Telegram message id or why there is none; the nightly pre-releases pruned, each whose release went but whose tag deletion failed, and the nightly-named releases refused as foreign; how many times the night was amended and when.",
   "type": "object",
   "additionalProperties": false,
   "properties": {

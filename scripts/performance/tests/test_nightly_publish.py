@@ -1,4 +1,4 @@
-"""Publishing a nightly (scripts/nightly/publish.py, ADR-0271) with injected fakes.
+"""Publishing a nightly (scripts/nightly/publish.py, ADR-0272) with injected fakes.
 
 A night is built in a temporary builds root from the nightly-build fixture; GitHub is an
 in-memory repository behind the transport's `send`, Telegram a recorder of `sendMessage`, and
@@ -799,7 +799,7 @@ class ReportIdentity(Night):
 
 class ReportRoot(Night):
     """`--report-root` and the configuration's `reports_root`, and the night defaulted to
-    today's UTC date (ADR-0272)."""
+    today's UTC date (ADR-0273)."""
 
     def run_main(self, *argv, clock=1793286000000):
         out, err = io.StringIO(), io.StringIO()

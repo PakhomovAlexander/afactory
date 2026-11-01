@@ -1,4 +1,4 @@
-"""The owner's daily nightly report (scripts/nightly/report.py, ADR-0270) with injected fakes.
+"""The owner's daily nightly report (scripts/nightly/report.py, ADR-0271) with injected fakes.
 
 Each test builds a builds root and a nightly executor journal in its own temporary directory
 from the laboratory's valid schema fixtures (the night's record, the executor request, result
@@ -157,7 +157,7 @@ class Journal:
                                            "work": work})[7:55]
         sources = {"baseline_sha": baseline, "candidate_sha": candidate,
                    "control_sha": CONTROL, "authority_sha": CONTROL}
-        request = fixture("executor-request/valid-nightly.json")
+        request = fixture("executor-request/valid-nightly-v3.json")
         request.update(request_id=ident, sources=sources, work=work,
                        plan_sha256=None if plan is None
                        else sha256_bytes(contracts.write_bytes(plan, "run")),
@@ -812,7 +812,7 @@ class NightWithoutCoreResult(Night):
 
 class ReportRoot(Night):
     """`--output-root` and the configuration's `reports_root`, and the night defaulted to
-    today's UTC date (ADR-0272)."""
+    today's UTC date (ADR-0273)."""
 
     def run_main(self, *argv, clock=COMPOSED_MS):
         out, err = io.StringIO(), io.StringIO()

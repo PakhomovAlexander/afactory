@@ -1,4 +1,4 @@
-# The owner's nightly chain (ADR-0272, docs/nightly.md#the-nightly-chain): every evening at
+# The owner's nightly chain (ADR-0273, docs/nightly.md#the-nightly-chain): every evening at
 # 22:05 UTC this timer starts the build; each step hands over to the next itself
 # (af-nightly-build -> af-nightly-measure -> af-nightly-report -> af-nightly-publish).
 # Every step works on the night the build unit started (--night-of af-nightly-build.service:

@@ -11,4 +11,4 @@
   publishes the newest, and the configuration's new `reports_root` is the default root of both.
   The build also reads the key's passphrase from the systemd credential
   `af-nightly-sign-password`. [`docs/nightly.md`](docs/nightly.md#the-nightly-chain) is the
-  runbook ([ADR-0272](docs/adr/0272-run-the-nightly-chain-as-systemd-units-on-the-owners-vm.md)).
+  runbook ([ADR-0273](docs/adr/0273-run-the-nightly-chain-as-systemd-units-on-the-owners-vm.md)).

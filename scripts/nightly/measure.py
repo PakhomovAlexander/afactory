@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """Submit a night's two nightly originals to the nightly executor and cycle it until both end
-(ADR-0266, ADR-0272).
+(ADR-0266, ADR-0273).
 
     python3 -I -B scripts/nightly/measure.py submit --config PATH
                                                [--date YYYY-MM-DD | --night-of UNIT]

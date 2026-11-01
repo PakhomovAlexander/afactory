@@ -1,4 +1,4 @@
-# Step 3 of the nightly chain (ADR-0270, ADR-0272, docs/nightly.md#the-nightly-chain): compose
+# Step 3 of the nightly chain (ADR-0271, ADR-0273, docs/nightly.md#the-nightly-chain): compose
 # the night's report into a new directory below /var/lib/af-nightly/reports (<date>, or
 # <date>.<k> when one exists) from the night's record and the nightly executor's journal, which
 # this account owns. Only a composed report is published; a refused compose (no nightly.json, a

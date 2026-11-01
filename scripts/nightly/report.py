@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """Compose the owner's daily nightly report from the night's record and the executor journal
-(ADR-0270).
+(ADR-0271).
 
     python3 -I -B scripts/nightly/report.py compose --config PATH
                                                 [--date YYYY-MM-DD | --night-of UNIT]
@@ -8,7 +8,7 @@
 
 Without --date the night is the UTC date systemd last started UNIT, or else today's UTC date;
 without --output the directory is ROOT/DATE, or ROOT/DATE.K with the smallest K >= 2 free, ROOT
-being --output-root or the configuration's reports_root (ADR-0272). Every default is printed on
+being --output-root or the configuration's reports_root (ADR-0273). Every default is printed on
 stderr, the directory written on stdout.
 `compose` reads builds_root/DATE/nightly.json (af.nightly-build/1), the nightly executor's
 journal (the originals keyed nightly:TAG:core and nightly:TAG:telemetry and the earlier nights'
@@ -1168,7 +1168,7 @@ _after_mkdir = None
 
 def report_names(date):
     """The names a night's report directory takes below a reports root, in the order they are
-    tried: `DATE`, then `DATE.2`, `DATE.3` and on (ADR-0272)."""
+    tried: `DATE`, then `DATE.2`, `DATE.3` and on (ADR-0273)."""
     return [date] + ["%s.%d" % (date, k) for k in range(2, REPORTS_PER_NIGHT_MAX + 1)]
 
 

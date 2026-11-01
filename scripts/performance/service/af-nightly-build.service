@@ -1,4 +1,4 @@
-# Step 1 of the nightly chain (ADR-0265, ADR-0272, docs/nightly.md#the-nightly-chain): build
+# Step 1 of the nightly chain (ADR-0265, ADR-0273, docs/nightly.md#the-nightly-chain): build
 # the night of the UTC date this unit started from the newest green main. A built night (exit
 # 0) or a skipped one (exit 3, main has not moved) hands over to the measurement; a refused
 # build (exit 1) ends the chain, because the later steps need the night's nightly.json.

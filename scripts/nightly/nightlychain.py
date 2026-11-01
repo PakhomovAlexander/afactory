@@ -1,4 +1,4 @@
-"""What the steps of the nightly chain share (ADR-0272): the night a step works on.
+"""What the steps of the nightly chain share (ADR-0273): the night a step works on.
 
 A step is given its night by `--date YYYY-MM-DD`, or by `--night-of UNIT`: the UTC date at
 which systemd last started UNIT's main process, so the four units of one chain agree on the

@@ -1,4 +1,4 @@
-# Step 4 of the nightly chain (ADR-0271, ADR-0272, docs/nightly.md#the-nightly-chain): publish
+# Step 4 of the nightly chain (ADR-0272, ADR-0273, docs/nightly.md#the-nightly-chain): publish
 # the night's pre-release with its newest report below /var/lib/af-nightly/reports, send the
 # digest and prune old nightlies; a skipped night sends one line. Started only by a composed
 # report.

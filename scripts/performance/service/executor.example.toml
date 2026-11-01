@@ -1,6 +1,6 @@
 # Replace control/image placeholders with the accepted installed commit and verified registry
 # digests before use. These zeros identify no deployment and are deliberately unusable.
-schema = "af.perf-executor/2"
+schema = "af.perf-executor/4"
 backend = "local" # Or github_actions; no fallback. Stop/drain the old producer first.
 root = "/var/lib/af-perf-executor/journal"
 repository_path = "/var/lib/af-perf-executor/source.git"
@@ -25,7 +25,12 @@ poll_main = true
 [core]
 tier = "quick"
 environment = "linux_x86_64_gnu_claw"
-shards = 16
+# The local backend runs shards one after another: build_minutes + shards x
+# shard_sampling_minutes + the finish reserve must fit run_total_minutes (quick: 20 + 1 x 25
+# of 60; nightly/release: 20 + 2 x 45 of 120). `cli.py executor preflight` prints the bounds,
+# and a submission past them is refused before any claim or build. A whole family that does
+# not fit is a native comparison (`comparison-launch`), partitioned into bounded originals.
+shards = 1
 cases = [] # Full bootstrap family; a finite selection makes a partial-scope experiment.
 
 [telemetry]
@@ -39,7 +44,18 @@ rounds = 2
 
 [diagnostic]
 recipe = "linux_gnu_trace"
+# Named cases are an explicit selection. Leave `cases = []` to select the regressed (then
+# inconclusive) cases of a verified parent core original: `submit --work profile --parent
+# REQUEST_ID`, at most `max_cases` of them (default 3, at most 8).
 cases = ["canonical_serialize_small__package_small_envelope"]
+# max_cases = 3
+# CPU-profile recipes (linux_gnu_cpu_profile, linux_musl_cpu_profile) need the explicitly
+# configured host tools; nothing is searched for on PATH. Each must be an executable file.
+# perf = "/opt/af-perf/tools/perf-7.0.14/bin/perf"
+# inferno_bin = "/opt/af-perf/tools/inferno-0.12.8/bin"
+# The trusted host observer of the contained child: perf (root-owned, cap_perfmon) runs on the
+# host attached to the owned contained process; unset, perf runs inside the container.
+# observer = "host_perf"
 total_minutes = 30
 duration_seconds = 10
 frequency_hz = 99

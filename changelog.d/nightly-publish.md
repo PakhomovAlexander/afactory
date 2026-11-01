@@ -9,5 +9,5 @@
   Publishing a night again replaces only its notes and report and never its shipped bytes; a
   skipped night sends one line, once, and publishes nothing. `nightly.toml` gains a `[publish]` table
   naming a separate write token, the optional Telegram bot and chat, and `keep_nights`
-  ([ADR-0271](docs/adr/0271-publish-nightlies-as-pre-releases-and-prune-them.md),
+  ([ADR-0272](docs/adr/0272-publish-nightlies-as-pre-releases-and-prune-them.md),
   [`docs/nightly.md`](docs/nightly.md#publishing)).

@@ -2,7 +2,7 @@
 #
 # An example for the owner's Linux VM; nothing installs it. Copy it to
 # /etc/af-nightly/nightly.toml, set the paths, run one night by hand first, then let the
-# systemd chain run every night (docs/nightly.md, ADR-0272). Each step without --date works on
+# systemd chain run every night (docs/nightly.md, ADR-0273). Each step without --date works on
 # today's UTC date and prints it:
 #
 #   python3 -I -B scripts/nightly/build.py build --config nightly.toml
@@ -14,8 +14,8 @@
 # builds_root/<date>/ and the Cargo cache builds_root/cache/, and never pushes or publishes.
 # The measurement submits the night's two originals to the nightly executor and cycles it.
 # The report reads the night's record, the nightly executor's journal, GitHub and three host
-# facts, and writes only a new directory below reports_root (ADR-0270).
-# Only publish.py writes to GitHub and Telegram, with the [publish] table's tokens (ADR-0271).
+# facts, and writes only a new directory below reports_root (ADR-0271).
+# Only publish.py writes to GitHub and Telegram, with the [publish] table's tokens (ADR-0272).
 
 schema = "af.nightly-config/1"
 # The repository whose check runs decide which main commit is green.
@@ -51,7 +51,7 @@ max_walk = 20
 # names neither a directory nor a root. Apart from builds_root and mirror.
 reports_root = "/var/lib/af-nightly/reports"
 
-# How `measure.py` waits for the night's core and telemetry originals (ADR-0272); `build.py`,
+# How `measure.py` waits for the night's core and telemetry originals (ADR-0273); `build.py`,
 # `report.py` and `publish.py` ignore it.
 [measure]
 # How long it cycles the nightly executor before it gives up on what is still queued or running
@@ -61,7 +61,7 @@ deadline_minutes = 300
 # another process holds the journal (10 to 600, default 60).
 poll_seconds = 60
 
-# What `report.py compose` reads besides the night's record (ADR-0270); `build.py` ignores it.
+# What `report.py compose` reads besides the night's record (ADR-0271); `build.py` ignores it.
 [report]
 # The nightly executor's configuration (docs/performance-local-executor.md#nightly-originals):
 # its `root` is the journal whose nightly:<tag>:core and nightly:<tag>:telemetry originals the
@@ -75,7 +75,7 @@ history_nights = 14
 headline_instances = ["cli_discovery__command_version", "tui_open__registry_stores_20x10000",
                       "source_capture__files_10000_tree_source_files_128b",
                       "state_projection__log_events_10000_projection_application_cold"]
-# Publishing (scripts/nightly/publish.py, ADR-0271); the build never reads this table.
+# Publishing (scripts/nightly/publish.py, ADR-0272); the build never reads this table.
 [publish]
 # A file holding a GitHub token with contents write on the repository, separate from the
 # read-only github_token_file above; it creates, amends and prunes the nightly pre-releases.

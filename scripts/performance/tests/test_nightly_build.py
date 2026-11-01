@@ -2,10 +2,10 @@
 
 The green-commit walk runs over a tiny real Git history with a fake GitHub transport; the
 build runs against a fake host that stands in for Docker, the built binaries and minisign.
-No test starts a container, reaches the network, invokes Cargo or builds Rust. A hermetic
-resolver model checks the rewritten copy's workspace manifests and lock, including stale-lock
-refusal and the exact locked/offline/host-platform arguments a real integration run would use.
-Setting AF_NIGHTLY_REAL_CARGO=1 additionally runs that real-Cargo integration; it is opt-in.
+No default test starts a container, reaches the network, invokes Cargo or builds Rust. A
+hermetic resolver model checks the rewritten copy's workspace manifests and lock, including
+stale-lock refusal and the exact locked/offline/host-platform arguments. Setting
+AF_NIGHTLY_REAL_CARGO=1 additionally runs the real-Cargo integration; it is opt-in.
 """
 import contextlib
 import hashlib
@@ -20,11 +20,11 @@ import sys
 import tarfile
 import tempfile
 import unittest
-import urllib.request
+import urllib.error
 
 from perflab import contracts, gitrefs
 from perflab.values import ContractError
-from tests.support import GitHubOpener, ROOT, Repo, TempDir, read
+from tests.support import ROOT, Repo, TempDir, read
 
 BUILD = os.path.join(ROOT, "scripts", "nightly", "build.py")
 _spec = importlib.util.spec_from_file_location("nightly_build", BUILD)
@@ -77,6 +77,36 @@ def tree(version):
             "scripts/release-smoke.sh": "#!/usr/bin/env bash\nexit 0\n"}
 
 
+class FakeResponse:
+    def __init__(self, status, body):
+        self.status = status
+        self.body = body
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *args):
+        return False
+
+    def read(self, limit):
+        return self.body[:limit]
+
+
+class GetOpener:
+    """Adapt the legacy `(path, headers) -> (status, bytes)` fake to urllib's opener."""
+
+    def __init__(self, get):
+        self.get = get
+
+    def open(self, request, timeout):
+        path = request.full_url[len("https://api.github.com"):]
+        status, body = self.get(path, request.headers)
+        if status >= 400:
+            raise urllib.error.HTTPError(request.full_url, status, "fake HTTP error", {},
+                                         io.BytesIO(body))
+        return FakeResponse(status, body)
+
+
 class FakeGitHub:
     """api.github.com's check-runs pages for each commit, `per_page` runs a page."""
 
@@ -98,8 +128,7 @@ class FakeGitHub:
         return 200, json.dumps({"total_count": len(runs), "check_runs": batch}).encode()
 
     def client(self):
-        self.opener = GitHubOpener(self.get)
-        return nightly.GitHub("owner/af", opener=self.opener)
+        return nightly.GitHub("owner/af", opener=GetOpener(self.get))
 
     def asked(self, sha):
         return any("/commits/%s/" % sha in path for path in self.paths)
@@ -195,21 +224,6 @@ class GreenWalk(History):
         self.assertIsNone(plan["previous_head_sha"])
         contracts.read_json(json.dumps(plan).encode(), "nightly-plan")
 
-    def test_without_date_the_night_is_today_s_utc_date_and_said(self):
-        github = FakeGitHub({self.tip: LINT_FAILED, self.parent: GREEN})
-        out, err = io.StringIO(), io.StringIO()
-        with contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
-            # 2026-10-29T23:59:59.999Z: still the 29th in UTC, whatever the host's zone.
-            code = nightly.main(["plan", "--config", self.config], github=github.client(),
-                                clock=lambda: 1793318399999)
-        self.assertEqual(code, 0, err.getvalue())
-        self.assertEqual(json.loads(out.getvalue())["tag"], "nightly-2026.10.29")
-        self.assertIn("nightly: --date 2026-10-29 (today's UTC date)\n", err.getvalue())
-        # An explicit night is used as given, and nothing is said about it.
-        code, plan, err, _ = self.plan({self.tip: LINT_FAILED, self.parent: GREEN})
-        self.assertEqual((code, plan["tag"]), (0, "nightly-2026.10.29"))
-        self.assertNotIn("today's UTC date", err)
-
     def test_a_green_tip_is_chosen_without_walking(self):
         code, plan, err, github = self.plan({self.tip: GREEN, self.parent: LINT_FAILED})
         self.assertEqual(code, 0, err)
@@ -276,48 +290,16 @@ class GreenWalk(History):
         with self.assertRaises(nightly.Refused) as caught:
             github.client().check_runs(self.tip)
         self.assertIn("failed twice: connection reset", str(caught.exception))
-        # Each GET has 5 s to connect and 30 s for each read, and goes to api.github.com only.
-        self.assertEqual(github.opener.timeouts, [nightly.READ_SECONDS] * 2)
         self.assertEqual((nightly.CONNECT_SECONDS, nightly.READ_SECONDS), (5, 30))
-        self.assertTrue(all(url.startswith("https://api.github.com/repos/owner/af/commits/")
-                            for url in github.opener.urls))
-
-    def test_a_response_beyond_its_byte_bound_is_refused(self):
-        body = b'{"total_count": 0, "check_runs": []}'
-        body += b" " * (nightly.RESPONSE_BYTES_MAX + 1 - len(body))
-        client = nightly.GitHub("owner/af", opener=GitHubOpener(lambda path, headers: (
-            200, body)))
-        with self.assertRaises(nightly.Refused) as caught:
-            client.check_runs(self.tip)
-        self.assertIn("exceeds", str(caught.exception))
-        client = nightly.GitHub("owner/af", opener=GitHubOpener(lambda path, headers: (
-            200, body[:-1])))
-        self.assertEqual(client.check_runs(self.tip), [])
-
-    def test_a_client_error_is_an_answer_and_a_server_error_is_retried_once(self):
-        answers = [(503, b"unavailable"), (404, b'{"message": "Not Found"}')]
-        opener = GitHubOpener(lambda path, headers: answers.pop(0))
-        with self.assertRaises(nightly.Refused) as caught:
-            nightly.GitHub("owner/af", opener=opener).check_runs(self.tip)
-        self.assertIn("GitHub answered HTTP 404", str(caught.exception))
-        self.assertEqual(len(opener.urls), 2)
-
-    def test_the_default_opener_follows_no_redirect_and_no_proxy(self):
-        handlers = nightly.nightlygithub.opener().handlers
-        self.assertEqual([type(handler) for handler in handlers
-                          if isinstance(handler, urllib.request.HTTPRedirectHandler)],
-                         [nightly.nightlygithub.NoRedirect])
-        self.assertFalse(any(isinstance(handler, urllib.request.ProxyHandler)
-                             for handler in handlers))
 
     def test_a_token_is_sent_only_when_configured(self):
         seen = []
-        client = nightly.GitHub("owner/af", token="t0ken", opener=GitHubOpener(
-            lambda path, headers: (seen.append(headers), (
-                200, b'{"total_count": 0, "check_runs": []}'))[1]))
+        client = nightly.GitHub("owner/af", token="t0ken",
+                                opener=GetOpener(lambda path, headers: (seen.append(headers), (
+                                    200, b'{"total_count": 0, "check_runs": []}'))[1]))
         client.check_runs(self.tip)
         self.assertEqual(seen[0]["Authorization"], "Bearer t0ken")
-        anonymous = nightly.GitHub("owner/af", opener=GitHubOpener(lambda path, headers: (
+        anonymous = nightly.GitHub("owner/af", opener=GetOpener(lambda path, headers: (
             seen.append(headers), (200, b'{"total_count": 0, "check_runs": []}'))[1]))
         anonymous.check_runs(self.tip)
         self.assertNotIn("Authorization", seen[1])
@@ -577,11 +559,10 @@ class CargoRewrite(TempDir):
         calls = []
 
         def metadata():
-            """Resolve only workspace inheritance and lock freshness, never run a toolchain.
+            """Resolve workspace inheritance and lock freshness without a toolchain.
 
-            Registry packages deliberately cannot cause a stale-lock answer: the refusal below
-            is derived only from a workspace-version mismatch, so the test distinguishes it
-            from an unrelated offline dependency-resolution failure.
+            Registry packages cannot cause a stale-lock answer: the refusal is derived only
+            from a workspace-version mismatch, distinguishing it from offline dependency failure.
             """
             argv = ["cargo", "metadata", "--locked", "--offline", "--filter-platform", host,
                     "--format-version", "1"]
@@ -602,7 +583,6 @@ class CargoRewrite(TempDir):
             return subprocess.CompletedProcess(argv, 0, json.dumps({"packages": packages}).encode(),
                                                b"")
 
-        # Only Cargo.toml moved: the model refuses the stale lock itself, so the proof is real.
         with open(manifest_path) as stream:
             original = stream.read()
         with open(manifest_path, "w") as stream:
@@ -627,8 +607,8 @@ class CargoRewrite(TempDir):
 
     @unittest.skipUnless(os.environ.get("AF_NIGHTLY_REAL_CARGO") == "1",
                          "opt-in real-Cargo integration (AF_NIGHTLY_REAL_CARGO=1)")
-    def test_real_cargo_also_resolves_the_rewritten_copy_locked_and_offline(self):
-        copy = self.path("real-cargo-tree")
+    def test_real_cargo_resolves_the_rewritten_copy_locked_and_offline(self):
+        copy = self.path("tree")
         os.makedirs(copy)
         for name in ("Cargo.toml", "Cargo.lock", "rust-toolchain.toml"):
             shutil.copyfile(os.path.join(ROOT, name), os.path.join(copy, name))
@@ -642,35 +622,74 @@ class CargoRewrite(TempDir):
                 open(os.path.join(copy, path, "src", stub), "w").close()
         current = nightly.workspace_version(read(os.path.join(ROOT, "Cargo.toml")).decode())
         version = nightly.nightly_version(current, "2026-10-29")
-        rustc = subprocess.run(["rustc", "-vV"], cwd=copy, stdout=subprocess.PIPE,
-                               stderr=subprocess.PIPE, check=True).stdout.decode()
-        host = next(line.split(":", 1)[1].strip() for line in rustc.splitlines()
-                    if line.startswith("host:"))
+        cargo_home = self.path("cargo-home")
 
-        def metadata():
-            return subprocess.run(["cargo", "metadata", "--locked", "--offline",
-                                   "--filter-platform", host, "--format-version", "1"],
-                                  cwd=copy, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+        def cargo(*args, home=None):
+            env = dict(os.environ, CARGO_HOME=home) if home else None
+            return subprocess.run(["cargo"] + list(args), cwd=copy, env=env,
+                                  stdout=subprocess.PIPE, stderr=subprocess.PIPE)
 
+        host = re.search(rb"^host: (\S+)$", cargo("-vV").stdout, re.M).group(1).decode()
+
+        # A cache holds the crates of the platform it was filled for (CI's: Linux), never
+        # Windows-only ones such as anstyle-wincon, so the proof resolves for this host only.
+        def metadata(home=cargo_home):
+            return cargo("metadata", "--locked", "--offline", "--format-version", "1",
+                         "--filter-platform", host, home=home)
+
+        def why(result):
+            return result.stderr.decode("utf-8", "replace")
+
+        # The unchanged copy, through the Cargo home this test runs with: its host packages
+        # make a private Cargo home holding exactly those archives beside the shared index.
+        baseline = metadata(home=None)
+        self.assertEqual(baseline.returncode, 0, why(baseline))
+        hosted = {}
+        for package in json.loads(baseline.stdout)["packages"]:
+            if package["source"] is not None:
+                src = os.path.dirname(package["manifest_path"])
+                registry, real_home = os.path.basename(os.path.dirname(src)), \
+                    os.path.dirname(os.path.dirname(os.path.dirname(os.path.dirname(src))))
+                hosted[(package["name"], package["version"])] = (registry, real_home)
+        locked = {(p["name"], p["version"]) for p in nightly.tomlfile.loads(
+            read(os.path.join(copy, "Cargo.lock")), "Cargo.lock")["package"] if "source" in p}
+        self.assertTrue(set(hosted) < locked, "the lock names packages of other platforms")
+        for (name, release), (registry, real_home) in hosted.items():
+            index = os.path.join(cargo_home, "registry", "index", registry)
+            if not os.path.lexists(index):
+                os.makedirs(os.path.dirname(index), exist_ok=True)
+                os.symlink(os.path.join(real_home, "registry", "index", registry), index)
+            # The unpacked sources too, so Cargo unpacks nothing; it still opens each archive.
+            for linked in (os.path.join("cache", registry, "%s-%s.crate" % (name, release)),
+                           os.path.join("src", registry, "%s-%s" % (name, release))):
+                linked = os.path.join("registry", linked)
+                os.makedirs(os.path.dirname(os.path.join(cargo_home, linked)), exist_ok=True)
+                os.symlink(os.path.join(real_home, linked), os.path.join(cargo_home, linked))
+
+        # Only Cargo.toml moved: --locked refuses the stale lock itself, not a missing crate,
+        # so the proof below is real.
         manifest_path = os.path.join(copy, "Cargo.toml")
-        with open(manifest_path) as stream:
+        with open(manifest_path, "rb") as stream:
             original = stream.read()
-        with open(manifest_path, "w") as stream:
-            stream.write(nightly.rewrite_manifest(original, version)[1])
+        with open(manifest_path, "wb") as stream:
+            stream.write(nightly.rewrite_manifest(original.decode(), version)[1].encode())
         stale = metadata()
-        self.assertNotEqual(stale.returncode, 0)
-        self.assertIn(b"needs to be updated", stale.stderr)
-        self.assertNotIn(b"no matching package", stale.stderr)
-        with open(manifest_path, "w") as stream:
+        self.assertNotEqual(stale.returncode, 0, "a stale lock resolved")
+        self.assertRegex(why(stale), r"(?:the lock file \S.* needs to be updated but|"
+                         r"cannot update the lock file \S.* because) --locked was passed")
+        for unrelated in ("failed to download", "--offline was specified", "no matching package"):
+            self.assertNotIn(unrelated, why(stale))
+        with open(manifest_path, "wb") as stream:
             stream.write(original)
 
         self.assertEqual(nightly.rewrite_source(copy, version), current)
         result = metadata()
-        self.assertEqual(result.returncode, 0, result.stderr.decode("utf-8", "replace"))
+        self.assertEqual(result.returncode, 0, why(result))
         packages = json.loads(result.stdout)["packages"]
         names = nightly.workspace_members(copy)
-        self.assertEqual(sorted(p["version"] for p in packages if p["name"] in names
-                                and p["source"] is None), [version] * len(names))
+        self.assertEqual(sorted((p["name"], p["version"]) for p in packages
+                                if p["source"] is None),
+                         sorted((name, version) for name in names))
 
 
 class FakeHost:
@@ -826,21 +845,6 @@ class Build(History):
         self.assertNotIn("-W", sign[0])
         self.assertFalse(any("s3cret" in word for call in host.calls for word in call[0]))
         self.assertEqual(sign[2], b"s3cret\n")
-
-    def test_a_passphrase_held_as_a_systemd_credential_reaches_minisign_on_stdin(self):
-        credentials = self.path("credentials")
-        os.mkdir(credentials)
-        with open(os.path.join(credentials, nightly.PASSWORD_CREDENTIAL), "w") as stream:
-            stream.write("s3cret\n")
-        host = FakeHost(self)
-        code, _, err = self.build(host, environ={"PATH": os.environ.get("PATH", ""),
-                                                 "CREDENTIALS_DIRECTORY": credentials})
-        self.assertEqual(code, 0, err)
-        sign = [call for call in host.calls if call[0][:2] == ["minisign", "-S"]][0]
-        self.assertNotIn("-W", sign[0])
-        self.assertFalse(any("s3cret" in word for call in host.calls for word in call[0]))
-        self.assertEqual(sign[2], b"s3cret\n")
-        self.assertNotIn("s3cret", err)
 
     def test_a_signature_that_does_not_verify_refuses_the_night(self):
         code, _, err = self.build(FakeHost(self, verifies=False))

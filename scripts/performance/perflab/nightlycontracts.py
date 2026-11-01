@@ -1,8 +1,8 @@
 """Closed contracts of the owner's nightly build (ADR-0265), the daily report composed
-from the night's record and the executor journal (ADR-0270) and the publication
-(ADR-0271): the configuration, the plan `build` prints, the record each night leaves in
+from the night's record and the executor journal (ADR-0271) and the publication
+(ADR-0272): the configuration, the plan `build` prints, the record each night leaves in
 its directory, the report record and the receipt `publish` writes beside it. The systemd chain
-(ADR-0272) adds the configuration's `reports_root` and `[measure]` table, and the UTC date a
+(ADR-0273) adds the configuration's `reports_root` and `[measure]` table, and the UTC date a
 step without `--date` works on.
 
 A nightly is a separate train from the releases: its tag is `nightly-YYYY.MM.DD` and its
@@ -37,7 +37,7 @@ SHIPPED_FILES = ("SHA256SUMS", "SHA256SUMS.minisig", "nightly.json")
 REPORT_FILES = ("daily.json", "report.html")
 KEEP_NIGHTS_DEFAULT = 14
 # How long `measure.py` cycles the nightly executor before it gives up on the night's originals,
-# and how long it waits after a `busy` or `idle` cycle (ADR-0272).
+# and how long it waits after a `busy` or `idle` cycle (ADR-0273).
 DEADLINE_MINUTES_DEFAULT, DEADLINE_MINUTES_MIN, DEADLINE_MINUTES_MAX = 300, 30, 600
 POLL_SECONDS_DEFAULT, POLL_SECONDS_MIN, POLL_SECONDS_MAX = 60, 10, 600
 TELEGRAM_CHAT_PATTERN = r"^(-?[1-9][0-9]{0,19}|@[A-Za-z][A-Za-z0-9_]{4,31})$"
@@ -51,7 +51,7 @@ RELEASE_JOB_PREFIX = "build "
 CHECK_PREFIX = "check /"
 DAILY_SCHEMA = "af.nightly-daily/1"
 # The daily report's sections, in the order the page shows them after its headline; each has
-# one completeness entry (ADR-0270).
+# one completeness entry (ADR-0271).
 SECTIONS = ("build", "baseline", "performance", "telemetry", "trend", "since_last_night",
             "backlog", "machine")
 LABELS = ("PASS", "FAIL", "INCOMPLETE", "UNAVAILABLE")
@@ -114,7 +114,7 @@ def night_date(text, where="date"):
 
 def utc_date(unix_ms):
     """The UTC calendar date, YYYY-MM-DD, of the instant `unix_ms`: the night a step without
-    `--date` works on (ADR-0272)."""
+    `--date` works on (ADR-0273)."""
     return datetime.datetime.fromtimestamp(unix_ms // 1000, datetime.timezone.utc).strftime(
         "%Y-%m-%d")
 
@@ -159,7 +159,7 @@ def asset_name(tag, target):
 
 
 def daily_node(c):
-    """The shape of `af.nightly-daily/1`, one night's daily report record (ADR-0270)."""
+    """The shape of `af.nightly-daily/1`, one night's daily report record (ADR-0271)."""
     tag = Str(pattern=TAG_PATTERN, max_len=19)
     reason = Str(min_len=1, max_len=2048)
     text = Str(max_len=1024)
@@ -368,21 +368,21 @@ def register(c):
         Field("max_walk", Int(1, 200), required=False),
         Field("github_token_file", path, required=False),
         # Where `compose` writes and `publish` reads a night's report directories when the
-        # command line names neither a directory nor a root (ADR-0272).
+        # command line names neither a directory nor a root (ADR-0273).
         Field("reports_root", path, required=False),
-        # How `measure.py` waits for the night's originals (ADR-0272).
+        # How `measure.py` waits for the night's originals (ADR-0273).
         Field("measure", Obj(
             Field("deadline_minutes", Int(DEADLINE_MINUTES_MIN, DEADLINE_MINUTES_MAX),
                   required=False),
             Field("poll_seconds", Int(POLL_SECONDS_MIN, POLL_SECONDS_MAX), required=False)),
               required=False),
-        # What `report.py compose` reads besides the night's record (ADR-0270).
+        # What `report.py compose` reads besides the night's record (ADR-0271).
         Field("report", Obj(Field("executor_config", path),
                             Field("history_nights", Int(1, HISTORY_NIGHTS_MAX), required=False),
                             Field("headline_instances",
                                   Arr(ID, 1, HEADLINE_INSTANCES_MAX, unique=True))),
               required=False),
-        # Publishing (ADR-0271); the build never reads this table.
+        # Publishing (ADR-0272); the build never reads this table.
         Field("publish", Obj(
             Field("github_token_file", path),
             Field("telegram_token_file", path, required=False),
@@ -558,8 +558,8 @@ def register(c):
         "the bare mirror and builds root, the pinned musl build image, the aarch64 user-mode "
         "runner, the nightly signing key pair, the check runs a green commit must carry and "
         "how far back the walk may go, the report's executor configuration and trend "
-        "(ADR-0270), and, for publishing (ADR-0271), the write token, the optional Telegram "
-        "bot and chat and how many nightly releases stay; for the systemd chain (ADR-0272), "
+        "(ADR-0271), and, for publishing (ADR-0272), the write token, the optional Telegram "
+        "bot and chat and how many nightly releases stay; for the systemd chain (ADR-0273), "
         "the root of the report directories and how long the measurement waits.")
     c.CONTRACTS["nightly-plan"] = (
         PLAN_SCHEMA, plan, validate_plan,
@@ -574,14 +574,14 @@ def register(c):
         "the night was skipped.")
     c.CONTRACTS["nightly-daily"] = (
         DAILY_SCHEMA, daily, validate_daily,
-        "One night's daily report record, daily.json (ADR-0270): the build, its stable "
+        "One night's daily report record, daily.json (ADR-0271): the build, its stable "
         "baseline, the verified core verdict per instance with exact rationals and their "
         "three-significant-digit text, the telemetry figures, the trend of the headline "
         "instances across nights, what changed since the previous night, the GitHub backlog, "
         "the machine, and which sections are available and why not.")
     c.CONTRACTS["nightly-publish"] = (
         PUBLISH_SCHEMA, receipt, validate_receipt,
-        "What publishing one night did, builds_root/<date>/publish.json (ADR-0271): the "
+        "What publishing one night did, builds_root/<date>/publish.json (ADR-0272): the "
         "pre-release of its tag with each asset's name, size and digest as GitHub reports "
         "them, or nothing for a skipped night; the Telegram message id or why there is none; "
         "the nightly pre-releases pruned, each whose release went but whose tag deletion "

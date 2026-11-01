@@ -1,0 +1,82 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:af:schema:performance-comparison-export:1",
+  "title": "af.perf-comparison-export/1",
+  "description": "Independent performance executor: comparison-export (ADR-0240).",
+  "type": "object",
+  "additionalProperties": false,
+  "properties": {
+    "schema": {
+      "const": "af.perf-comparison-export/1"
+    },
+    "comparison_id": {
+      "$ref": "#/$defs/id"
+    },
+    "comparison_digest": {
+      "$ref": "#/$defs/digest"
+    },
+    "report_sha256": {
+      "$ref": "#/$defs/digest"
+    },
+    "status": {
+      "type": "string",
+      "enum": [
+        "complete",
+        "incomplete",
+        "running"
+      ]
+    },
+    "files": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "path": {
+            "$ref": "#/$defs/relative_path"
+          },
+          "size": {
+            "type": "integer",
+            "minimum": 0,
+            "maximum": 1099511627776
+          },
+          "sha256": {
+            "$ref": "#/$defs/digest"
+          }
+        },
+        "required": [
+          "path",
+          "size",
+          "sha256"
+        ]
+      },
+      "minItems": 1,
+      "maxItems": 16384
+    }
+  },
+  "required": [
+    "schema",
+    "comparison_id",
+    "comparison_digest",
+    "report_sha256",
+    "status",
+    "files"
+  ],
+  "$defs": {
+    "digest": {
+      "type": "string",
+      "maxLength": 71,
+      "pattern": "^sha256:[0-9a-f]{64}$"
+    },
+    "id": {
+      "type": "string",
+      "maxLength": 64,
+      "pattern": "^[a-z][a-z0-9_]{0,63}$"
+    },
+    "relative_path": {
+      "type": "string",
+      "maxLength": 1024,
+      "pattern": "^[A-Za-z0-9._-]+(?:/[A-Za-z0-9._-]+)*$"
+    }
+  }
+}

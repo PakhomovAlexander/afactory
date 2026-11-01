@@ -7,7 +7,7 @@
                                               [--previous PATH] [--only-plan]
 
 Without --date the night is the UTC date systemd last started UNIT, or else today's UTC date,
-printed on stderr (ADR-0272, scripts/nightly/nightlychain.py). `plan` walks the first parents
+printed on stderr (ADR-0273, scripts/nightly/nightlychain.py). `plan` walks the first parents
 of the mirror's refs/heads/main from its tip and prints, as an af.nightly-plan/1 document, the
 newest commit whose `check /` check runs are all green, every red commit it walked over, the
 previous night and the stable baseline. `build` builds that
@@ -40,7 +40,7 @@ sys.path.insert(0, HERE)
 
 import nightlychain  # noqa: E402
 import nightlygithub  # noqa: E402
-# The bounds of each GitHub request (ADR-0265, amended by ADR-0270).
+# The bounds of each GitHub request (ADR-0265, amended by ADR-0271).
 from nightlygithub import CONNECT_SECONDS, READ_SECONDS, RESPONSE_BYTES_MAX  # noqa: E402,F401
 from perflab import contracts, gitrefs, tomlfile  # noqa: E402
 from perflab.nightlycontracts import (CHECK_PREFIX, DATE_PATTERN, RELEASE_JOB_PREFIX,  # noqa: E402
@@ -52,7 +52,7 @@ EXIT_BUILT, EXIT_REFUSED, EXIT_SKIPPED = 0, 1, 3
 MAX_WALK_DEFAULT = 20
 GREEN = ("success", "skipped")
 PASSWORD_ENV = "AF_NIGHTLY_SIGN_PASSWORD"
-# The systemd credential the build unit may hold the passphrase as instead (ADR-0272).
+# The systemd credential the build unit may hold the passphrase as instead (ADR-0273).
 PASSWORD_CREDENTIAL = "af-nightly-sign-password"
 SHELLS = ("bash", "zsh", "fish", "elvish", "powershell")
 # Bounds of each external step, in seconds.

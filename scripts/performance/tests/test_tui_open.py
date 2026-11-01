@@ -16,7 +16,7 @@ import unittest
 
 from perflab import clicases
 from perflab.values import ContractError
-from tests.support import ROOT
+from tests.support import HELD_CHILD, ROOT
 
 DRIVER = os.path.join(ROOT, "fixtures/performance/cli/tui-open.py")
 SETUP = os.path.join(ROOT, "fixtures/performance/cli/setup.sh")
@@ -44,7 +44,7 @@ BROWSER = (
     "def ready(*pids):\n"
     "    with open(sys.argv[2], 'w') as fifo:\n"
     "        fifo.write(' '.join(str(pid) for pid in pids) + '\\n')\n"
-    "if mode not in ('late', 'escape-first'):\n"
+    "if mode not in ('late', 'escape-first', 'hidden-first'):\n"
     "    paint(b'splash')\n"
     "if mode == 'paint':\n"
     "    paint(b'\\x1b[2J')\n"
@@ -73,14 +73,14 @@ BROWSER = (
     "        os._exit(0)\n"
     "    ready(os.getpid(), stray)\n"
     "    time.sleep(30)\n"
-    "elif mode in ('escape', 'hidden', 'escape-first'):\n"
+    "elif mode in ('escape', 'hidden', 'escape-first', 'hidden-first'):\n"
     "    done_r, done_w = os.pipe()\n"
     "    escaped = os.fork()\n"
     "    if escaped == 0:\n"
     "        os.setsid()\n"
     "        os.closerange(0, done_w)\n"
     "        os.closerange(done_w + 1, 1024)\n"
-    "        if mode == 'hidden':\n"
+    "        if mode in ('hidden', 'hidden-first'):\n"
     "            import ctypes\n"
     "            assert ctypes.CDLL(None).prctl(4, 0, 0, 0, 0) == 0\n"
     "        os.write(done_w, b'x')\n"
@@ -417,18 +417,9 @@ class TuiOpen(unittest.TestCase):
         self.assertIn("outlived it; it was killed", stderr)
         self.assertGreaterEqual(len(probes), 2)
 
-    def test_a_session_whose_exit_cannot_be_watched_is_still_ended_and_cleared(self):
-        # The watcher of the leader's exit is refused (a kqueue the process limit denies, say):
-        # the session is killed all the same, its group settled with the leader among the live
-        # members until it exits, the leader reaped, and what left the session found by its
-        # token and killed. The refusal is the ordinary failure, with no document, and nothing
-        # of the browser's is left. The refusal waits for the browser's readiness, within 10 s
-        # and while the browser runs (the real watcher says whether it exited), so that the
-        # descendant that left its session exists when the cleanup begins; the browser paints
-        # nothing before it (`escape-first`), since `tcdrain` on this platform's terminal
-        # waits for a read of the driver's that comes after the watcher.
-        driver = self.loaded()
-        pids = []
+    def refuse_watcher(self, driver, pids):
+        """Patch `driver` so that the watcher of the browser's exit is refused (EMFILE) once
+        the browser is ready, within 10 s and while it runs; its ready pids land in `pids`."""
         fifo = os.open(self.fifo, os.O_RDONLY | os.O_NONBLOCK)
         self.addCleanup(os.close, fifo)
 
@@ -448,6 +439,20 @@ class TuiOpen(unittest.TestCase):
                 raise OSError(errno.EMFILE, "too many open files")
 
         driver.Exit = Refused
+
+    def test_a_session_whose_exit_cannot_be_watched_is_still_ended_and_cleared(self):
+        # The watcher of the leader's exit is refused (a kqueue the process limit denies, say):
+        # the session is killed all the same, its group settled with the leader among the live
+        # members until it exits, the leader reaped, and what left the session found by its
+        # token and killed. The refusal is the ordinary failure, with no document, and nothing
+        # of the browser's is left. The refusal waits for the browser's readiness, within 10 s
+        # and while the browser runs (the real watcher says whether it exited), so that the
+        # descendant that left its session exists when the cleanup begins; the browser paints
+        # nothing before it (`escape-first`), since `tcdrain` on this platform's terminal
+        # waits for a read of the driver's that comes after the watcher.
+        driver = self.loaded()
+        pids = []
+        self.refuse_watcher(driver, pids)
         code, stdout, stderr = self.run_main(driver, "escape-first")
         self.assertEqual(code, 1, stderr)
         self.assertEqual(stdout, "")
@@ -455,6 +460,98 @@ class TuiOpen(unittest.TestCase):
         self.assertEqual(len(pids), 2, pids)
         browser, escaped = pids
         self.assert_not_running(escaped)
+        self.assert_not_running(browser)
+
+    def test_a_refused_watcher_keeps_the_browsers_birth_for_the_listing(self):
+        # The browser's start is read before its watcher is made: a watcher refused at once
+        # still hands the cleanup's listing the birth that leaves older processes out of it.
+        driver = self.loaded()
+        actual_birth, actual_settle = driver.birth, driver.settle_listed
+        births, listed, browsers = [], [], []
+
+        def birth(pid):
+            browsers.append(pid)
+            value = actual_birth(pid)
+            births.append(4242 if value is None else value)  # no `/proc` here: a stand-in
+            return births[-1]
+
+        def settle_listed(token, exclude, seconds, born, wait):
+            listed.append(born)
+            return actual_settle(token, exclude, seconds, born, wait)
+
+        class Refused(driver.Exit):
+            def __init__(self, pid):
+                raise OSError(errno.EMFILE, "too many open files")
+
+        driver.birth, driver.settle_listed, driver.Exit = birth, settle_listed, Refused
+        code, stdout, stderr = self.run_main(driver, "paint")
+        self.assertEqual(code, 1, stderr)
+        self.assertEqual(stdout, "")
+        self.assertIn("too many open files", stderr)
+        self.assertEqual(len(births), 1)
+        self.assertEqual(listed, births)
+        self.assert_not_running(browsers[0])
+
+    def undumpable_sentinel(self):
+        """An older process of this user's that made itself undumpable, so that its `/proc`
+        environment is root's to read: this test's own child, ended by its release file and
+        reaped by the test, never signalled. Its pid, once it is ready."""
+        marker = os.path.join(self.root, "sentinel")
+        source = ("import ctypes, os, sys, time\n"
+                  "assert ctypes.CDLL(None).prctl(4, 0, 0, 0, 0) == 0\n" + HELD_CHILD)
+        sentinel = subprocess.Popen([sys.executable, "-I", "-c", source, marker],
+                                    stdin=subprocess.DEVNULL)
+        self.addCleanup(self.reap_within, sentinel.pid, 10)
+        self.addCleanup(lambda: open(marker + ".release", "w").close())
+        deadline = time.monotonic() + 10
+        while not os.path.exists(marker):
+            if sentinel.poll() is not None or time.monotonic() >= deadline:
+                self.fail("the undumpable sentinel was not ready within 10 s")
+            time.sleep(0.01)
+        return sentinel
+
+    @unittest.skipUnless(sys.platform.startswith("linux"),
+                         "an undumpable process keeps its environment from its user on Linux")
+    def test_a_refused_watcher_leaves_an_older_unreadable_process_untouched_and_certain(self):
+        # The CI host's case: an older process of this user's whose environment cannot be read
+        # started before the browser, so it is none of the browser's doing. With the watcher
+        # refused, the session still ends (the ordinary failure, not an unconfirmed cleanup),
+        # the browser and its escaped descendant are gone, and the sentinel was never signalled.
+        if os.geteuid() == 0:
+            self.skipTest("root reads every environment")
+        sentinel = self.undumpable_sentinel()
+        driver = self.loaded()
+        pids = []
+        self.refuse_watcher(driver, pids)
+        code, stdout, stderr = self.run_main(driver, "escape-first")
+        self.assertEqual(code, 1, stderr)
+        self.assertEqual(stdout, "")
+        self.assertIn("too many open files", stderr)
+        browser, escaped = pids
+        self.assert_not_running(escaped)
+        self.assert_not_running(browser)
+        self.assertIsNone(sentinel.poll())
+        self.assertNotIn(self.state(sentinel.pid), ("", "Z"))
+
+    @unittest.skipUnless(sys.platform.startswith("linux"),
+                         "an undumpable process keeps its environment from its user on Linux")
+    def test_a_refused_watcher_still_fences_a_newer_unreadable_descendant(self):
+        # The browser's own undumpable descendant started after it: with the watcher refused
+        # the birth still dates it, so the cleanup is unconfirmed, with no document. The
+        # browser paints nothing before its readiness (`hidden-first`), as `escape-first`.
+        if os.geteuid() == 0:
+            self.skipTest("root reads every environment")
+        driver = self.loaded()
+        pids = []
+        self.refuse_watcher(driver, pids)
+        code, stdout, stderr = self.run_main(driver, "hidden-first")
+        browser, hidden = pids
+        self.addCleanup(self.release, hidden)
+        self.assertEqual(code, 3, stderr)
+        self.assertEqual(stdout, "")
+        self.assertIn("process %d, this user's, cannot be read" % hidden, stderr)
+        self.release(hidden)
+        self.assert_not_running(hidden)
         self.assert_not_running(browser)
 
     def test_a_watcher_that_fails_once_the_browser_ran_still_ends_and_clears_the_session(self):

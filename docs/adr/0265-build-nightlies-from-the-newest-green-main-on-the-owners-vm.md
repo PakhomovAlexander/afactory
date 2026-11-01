@@ -3,7 +3,7 @@
 **Status:** proposed (2026-10-29).
 
 **Amended 2026-10-30**
-([ADR-0270](0270-compose-the-nightly-report-from-the-nights-record-and-the-executor-journal.md)).
+([ADR-0271](0271-compose-the-nightly-report-from-the-nights-record-and-the-executor-journal.md)).
 The check-run reads go through the nightly scripts' shared reader, which opens each GET with
 `urllib.request`: 5 s to connect and 30 s for each read, at most 16 MiB a response, no proxy
 or redirect, each request retried once.

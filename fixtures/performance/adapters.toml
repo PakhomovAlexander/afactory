@@ -7,9 +7,12 @@
 # Each contract has at most four adapters. Adapters that measure the same workload, timing
 # boundary, oracle and policy share an equivalence group; a comparison across different groups
 # is incompatible build evidence. A source no adapter compiles against has unavailable native
-# coverage.
+# coverage. Each adapter declares the first AF release it covers (`min_version`); a submission
+# refuses, before any claim or build, a side whose release no adapter declares or whose plan
+# runs a contract no declared adapter serves. The public-API probe's first declared release is
+# 0.12.0-rc.3, the implementation base whose real builds compiled it (ADR-0168, ADR-0169).
 
-schema = "af.perf-adapters/1"
+schema = "af.perf-adapters/2"
 description = "Native public-API probe adapters, by fixed priority."
 
 [adapters.native_probe_public_api_v1]
@@ -17,6 +20,7 @@ kind = "native_probe"
 description = "The authority's perf-probe example and its complete helper-module closure, built in the measured source's review-pipeline package."
 priority = 1
 equivalence_group = "native_probe_public_api_v1"
+min_version = "0.12.0-rc.3"
 package = "review-pipeline"
 example = "perf-probe"
 contracts = [

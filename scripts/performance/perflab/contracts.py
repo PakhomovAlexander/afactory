@@ -1177,11 +1177,14 @@ def validate_verdict(doc, where="verdict.json"):
     return doc
 
 
-# af.perf-profiles/6 (ADR-0224), af.perf-trace/1 and af.perf-diagnostics/1 (ADR-0174) -----
+# af.perf-profiles/7 (ADR-0224), af.perf-repetitions/1, af.perf-trace/1 and
+# af.perf-diagnostics/1 (ADR-0174) -----------------------------------------------------------
 
 PROFILES_SCHEMA = diagcontracts.PROFILES_SCHEMA
 PROFILES = diagcontracts.PROFILES
 validate_profiles = diagcontracts.validate_profiles
+REPETITIONS_SCHEMA = diagcontracts.REPETITIONS_SCHEMA
+validate_repetitions = diagcontracts.validate_repetitions
 TRACE_SCHEMA = diagcontracts.TRACE_SCHEMA
 validate_trace = diagcontracts.validate_trace
 DIAGNOSTICS_SCHEMA = diagcontracts.DIAGNOSTICS_SCHEMA
@@ -2382,18 +2385,22 @@ def validate_golden(doc, where="golden"):
     return doc
 
 
-# af.perf-adapters/1 ------------------------------------------------------------------------
+# af.perf-adapters/2 ------------------------------------------------------------------------
 
-ADAPTERS_SCHEMA = "af.perf-adapters/1"
+ADAPTERS_SCHEMA = "af.perf-adapters/2"
 ADAPTERS_PER_CONTRACT_MAX = 4
 # An adapter overlays only example sources of an existing package: it never replaces a product
 # manifest, a crate's own sources or its dependency lock.
 ADAPTER_PATH = r"^crates/[a-z0-9-]+/examples/[A-Za-z0-9._/-]+\.rs$"
+SEMVER_TEXT = Str(pattern=r"^[0-9]+\.[0-9]+\.[0-9]+(?:-[0-9A-Za-z.-]+)?$", max_len=64)
 ADAPTER = Obj(
     Field("kind", Const("native_probe")),
     Field("description", TEXT),
     Field("priority", Int(1, ADAPTERS_PER_CONTRACT_MAX)),
     Field("equivalence_group", ID),
+    # The first AF release whose public API the adapter is declared to cover; a release
+    # before it has no declared native coverage and is refused before any build.
+    Field("min_version", SEMVER_TEXT),
     Field("package", Str(pattern=r"^[a-z0-9-]{1,64}$", max_len=64)),
     Field("example", Str(pattern=r"^[a-z0-9-]{1,64}$", max_len=64)),
     Field("contracts", Arr(ID, 1, 64, unique=True)),
@@ -2537,7 +2544,6 @@ CLI_COMMAND = Obj(
     Field("pending", Str(min_len=1, max_len=512), required=False),
     Field("description", TEXT),
 )
-SEMVER_TEXT = Str(pattern=r"^[0-9]+\.[0-9]+\.[0-9]+(?:-[0-9A-Za-z.-]+)?$", max_len=64)
 CLI_ADAPTER = Obj(
     Field("description", TEXT), Field("priority", Int(1, 4)),
     Field("min_version", SEMVER_TEXT),
@@ -4232,13 +4238,13 @@ def validate_enforcement(doc, where="enforcement.toml"):
 
 
 # Telemetry experiments (ADR-0214) ----------------------------------------------------------
-# af.perf-telemetry-lab/2 is fixtures/performance/telemetry.toml; af.perf-telemetry-result/2 one
+# af.perf-telemetry-lab/3 is fixtures/performance/telemetry.toml; af.perf-telemetry-result/3 one
 # experiment run of a baseline and a candidate binary on one host with this checkout's scripts
 # and fixtures; af.perf-telemetry-history/2 the compatible series across results. Advisory: no
 # verdict, sample or required check reads any of them.
 
-TELEMETRY_LAB_SCHEMA = "af.perf-telemetry-lab/2"
-TELEMETRY_RESULT_SCHEMA = "af.perf-telemetry-result/2"
+TELEMETRY_LAB_SCHEMA = "af.perf-telemetry-lab/3"
+TELEMETRY_RESULT_SCHEMA = "af.perf-telemetry-result/3"
 TELEMETRY_HISTORY_SCHEMA = "af.perf-telemetry-history/2"
 # A separate immutable Actions planning artifact, emitted before any candidate execution.
 TELEMETRY_BINDING_SCHEMA = "af.perf-telemetry-binding/1"
@@ -4259,10 +4265,10 @@ def validate_telemetry_binding(doc, where="binding.json"):
 
 TELEMETRY_EXPERIMENTS = ("overhead", "invocation_cost", "read_latency")
 TELEMETRY_PROFILES = ("pr", "nightly", "release", "manual")
-TELEMETRY_DOCUMENTS = {"overhead": ("af/telemetry-overhead@1", "telemetry-overhead-v1.json",
+TELEMETRY_DOCUMENTS = {"overhead": ("af/telemetry-overhead@2", "telemetry-overhead-v2.json",
                                     "scripts/telemetry-overhead.py", ("off", "spans")),
-                       "invocation_cost": ("af/telemetry-invocation-cost@1",
-                                           "telemetry-invocation-cost-v1.json",
+                       "invocation_cost": ("af/telemetry-invocation-cost@2",
+                                           "telemetry-invocation-cost-v2.json",
                                            "scripts/telemetry-invocation-cost.py",
                                            ("off", "spans")),
                        "read_latency": ("af/telemetry-read-latency@2",
@@ -4399,11 +4405,13 @@ def validate_telemetry_owner(doc, where="telemetry ownership"):
     return doc
 
 
-TELEMETRY_BUILD_SCHEMA = "af.perf-telemetry-build/1"
+TELEMETRY_BUILD_SCHEMA = "af.perf-telemetry-build/2"
 TELEMETRY_BUILD = Obj(
     Field("schema", Const(TELEMETRY_BUILD_SCHEMA)), Field("side", Str(enum=SIDES)),
     Field("source_sha", GIT_SHA), Field("binary_sha256", DIGEST),
-    Field("image", Str(pattern=r"^[^\s@]+@sha256:[0-9a-f]{64}$", max_len=512)),
+    # The build image exactly as its build admission took it (ADR-0170): a local image ID
+    # `sha256:<64 hex>` or a manifest digest `name@sha256:<64 hex>`, never a tag.
+    Field("image", images.REFERENCE),
     Field("rustc", Str(min_len=1, max_len=512)), Field("cargo", Str(min_len=1, max_len=512)),
     Field("command", Str(min_len=1, max_len=512)))
 
@@ -4795,7 +4803,15 @@ CONTRACTS = {
                  "and symbols; baseline, candidate and both-direction difference flamegraphs, "
                  "original and sanitized; phase traces with their region's coverage and "
                  "measured overhead; counters as explanatory proxies; and every omission with "
-                 "its reason and reproduction."),
+                 "its reason and reproduction. A capture of fresh processes lists its own "
+                 "files and names its repetition index for the per-repetition ones."),
+    "repetitions": (REPETITIONS_SCHEMA, diagcontracts.REPETITIONS, validate_repetitions,
+                    "The repetition index of one capture of fresh processes, repetitions.json: "
+                    "every repetition once and in order with its raw recording, its host "
+                    "observer record and the region time it contributed, and the boundary that "
+                    "time was measured at (the gated command's exec to its exit decoded from "
+                    "the trusted host recording, the supervised child's wall, or samply's "
+                    "driver wall). Every listed file is bound by its size and SHA256."),
     "trace": (TRACE_SCHEMA, diagcontracts.TRACE, validate_trace,
               "The metadata-only phase spans a perf-trace diagnostic build exports (ADR-0174): "
               "the process, the recorder's monotonic clock and wall epoch, its capacity, the "
@@ -4997,7 +5013,9 @@ CONTRACTS = {
     "telemetry-build": (TELEMETRY_BUILD_SCHEMA, TELEMETRY_BUILD, validate_telemetry_build,
                         "How one side's AF binary of a telemetry experiment was built "
                         "(ADR-0215): its side, source commit, the binary's SHA-256, the "
-                        "pinned image, the toolchain identities and the command."),
+                        "build image pinned by digest in its canonical form (a local image "
+                        "ID or a manifest digest, ADR-0170), the toolchain identities and "
+                        "the command."),
     "telemetry-collector": (TELEMETRY_COLLECTOR_SCHEMA, TELEMETRY_COLLECTOR,
                             validate_telemetry_collector,
                             "The trusted telemetry collector's configuration as parsed TOML "
