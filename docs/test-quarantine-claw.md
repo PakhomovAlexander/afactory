@@ -43,44 +43,87 @@ build of the test binaries comes before that.
 ## Run it on Claw
 
 Claw is `ssh claw-3`: Linux x86_64, 12 vCPU, Docker 29, and no Rust toolchain on the host, so
-the run happens in a container. The image is the Rust image of `rust-toolchain.toml`'s version,
-`rust:1.88.0`; cargo-nextest is installed in it. The source is a fresh clone of the commit to
-confirm, mounted in, so the report's commit is that commit. On the owner's machine, pick the
-commit (the `main` commit whose `.config/test-quarantine.json` holds the entries):
+the run happens in a container. The image is built once on Claw from the Rust image of
+`rust-toolchain.toml`'s version, `rust:1.88.0`. It adds Python, git and the prebuilt
+cargo-nextest 0.9.132 release binary: `cargo install cargo-nextest` does not work there, because
+current cargo-nextest releases require a newer rustc than 1.88.0. It also adds the unprivileged
+user `tester` (uid 1000), and the clone and the confirmation run as that user, never as root:
+tests run as root behave differently, for example root ignores the read-only fixtures. Build it
+once, tagged `af-quarantine-confirm:1.88.0`:
+
+```sh
+ssh claw-3 bash -s <<'CLAW'
+set -e
+docker build -t af-quarantine-confirm:1.88.0 - <<'DOCKERFILE'
+FROM rust:1.88.0
+RUN apt-get update && apt-get install -y --no-install-recommends python3 git curl ca-certificates && rm -rf /var/lib/apt/lists/*
+RUN curl -LsSf https://get.nexte.st/0.9.132/linux | tar zxf - -C /usr/local/cargo/bin && cargo-nextest nextest --version
+RUN useradd -m -u 1000 tester
+USER tester
+DOCKERFILE
+CLAW
+```
+
+The source is a fresh clone of the commit to confirm, mounted in, so the report's commit is that
+commit. On the owner's machine, pick the commit (the `main` commit whose
+`.config/test-quarantine.json` holds the entries):
 
 ```sh
 COMMIT=$(git rev-parse origin/main)
 ```
 
-Then run the confirmation on Claw. The commit is passed to the remote shell, which reads the
-commands from the quoted here-document, so nothing in it is expanded on the owner's machine:
+Then start the confirmation on Claw. The commit is passed to the remote shell, which reads the
+commands from the quoted here-document, so nothing in it is expanded on the owner's machine. The
+mounted directory `$WORK/run` must be owned by uid 1000 (use `sudo chown` when the ssh user is
+not uid 1000), and the host's `git` needs `-c safe.directory='*'` to read a clone another uid
+owns:
 
 ```sh
 ssh claw-3 COMMIT="$COMMIT" bash -s <<'CLAW'
 set -e
 WORK="$HOME/af-quarantine-$COMMIT"
-mkdir -p "$WORK"
-docker run --rm -v "$WORK":/work -w /work rust:1.88.0 sh -c "
+mkdir -p "$WORK/run" && chown 1000:1000 "$WORK/run"
+docker run --rm -v "$WORK/run":/work -w /work af-quarantine-confirm:1.88.0 sh -c "
   git clone https://github.com/PakhomovAlexander/afactory.git src &&
   git -C src checkout --detach $COMMIT"
-test "$(git -C "$WORK/src" rev-parse HEAD)" = "$COMMIT"
-docker run --rm -v "$WORK":/work -w /work/src rust:1.88.0 sh -c '
-  set -e
-  apt-get update && apt-get install -y python3 git
-  cargo install cargo-nextest --locked
-  python3 scripts/test-quarantine.py confirm --report /work/confirm.json'
+test "$(git -c safe.directory='*' -C "$WORK/run/src" rev-parse HEAD)" = "$COMMIT"
+nohup flock -n /tmp/af-perf-machine.lock docker run --rm --name afq-confirm \
+    -v "$WORK/run":/work -w /work/src af-quarantine-confirm:1.88.0 \
+    python3 scripts/test-quarantine.py confirm --report /work/confirm.json \
+    > "$WORK/confirm.log" 2>&1 &
 CLAW
 ```
 
-Back on the owner's machine, copy the report:
+Claw also hosts the performance laboratory, whose experiments take a non-blocking exclusive
+`flock` on `/tmp/af-perf-machine.lock` (`scripts/performance/perflab/hostlock.py`,
+[`performance-local-executor.md`](performance-local-executor.md)). The confirmation holds that
+lock for its whole run, so an experiment started meanwhile refuses to start rather than measure
+under load, and the confirmation does not start while an experiment holds the lock: `flock -n`
+then exits 1 at once, no `afq-confirm` container appears and `confirm.log` stays empty; start it
+again later. `nohup` and the background job detach the confirmation, so an ssh disconnect does
+not kill it. Wait until `docker ps --filter name=afq-confirm` no longer lists the container,
+then read the end of the log:
 
 ```sh
-scp "claw-3:af-quarantine-$COMMIT/confirm.json" "$TMPDIR/confirm.json"
+ssh claw-3 'docker ps --filter name=afq-confirm'
+ssh claw-3 "tail -n 20 af-quarantine-$COMMIT/confirm.log"
 ```
 
-`confirm` prints each identity's classification and `confirm: wrote /work/confirm.json`. It
-exits 1, with no report, when the file fails a guard, a run lacks a result, or the report file
-exists.
+Back on the owner's machine, copy the report and the log:
+
+```sh
+scp "claw-3:af-quarantine-$COMMIT/run/confirm.json" "$TMPDIR/confirm.json"
+scp "claw-3:af-quarantine-$COMMIT/confirm.log" "$TMPDIR/confirm.log"
+```
+
+`confirm` prints each identity's classification and `confirm: wrote /work/confirm.json`, which
+is `run/confirm.json` on Claw. It exits 1, with no report, when the file fails a guard, a run
+lacks a result, or the report file exists.
+
+The first run on Claw (12 vCPU, 2026-10-30, `main` 10b6db0f) built the test binaries in 1 min
+35 s. Its 50 runs of nine tests, with the functional class looping beside them for 6 load runs,
+then finished within minutes, because the slowest of the nine took 6.6 s. All nine were clean on
+Linux, so ADR-0268's platform rule kept every entry with macOS evidence `quarantined`.
 
 ## Apply the report
 
