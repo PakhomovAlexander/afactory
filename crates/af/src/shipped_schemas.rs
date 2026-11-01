@@ -2,7 +2,8 @@
 //! lists (ADR-0247).
 //!
 //! Each schema is the file under `schemas/` compiled into the binary, so `af schema show ID`
-//! prints exactly the bytes the repository publishes for the documents this release prints. A
+//! prints exactly the bytes the repository publishes for the documents this release prints, and
+//! for those of the repository's issue-triage check (`scripts/backlog-check-triage.py`). A
 //! unit test holds this table to the ids the `json` topic names, both ways, and every schema to
 //! the `schema` constant of its id.
 
@@ -31,6 +32,9 @@ pub(crate) const SCHEMAS: &[(&str, &str, &str)] = &[
     schema!("error", 2),
     schema!("findings-sarif", 1),
     schema!("help-topic", 1),
+    schema!("issue-triage-hold", 1),
+    schema!("issue-triage-merged", 1),
+    schema!("issue-triage", 1),
     schema!("provider-detect", 4),
     schema!("provider-models", 1),
     schema!("provider-setup", 2),

@@ -91,6 +91,7 @@ mod task_research_chain;
 mod task_selection;
 mod task_starters;
 mod task_structured_acceptance;
+mod task_triage;
 mod task_warm_checks;
 mod telemetry;
 mod telemetry_bench;

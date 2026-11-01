@@ -185,3 +185,6 @@ type is refused, and an existing file is never overwritten.
 This repository's `kernel/report` Pipeline, with `kernel/analyst` (Claude Opus 5.5) and
 `kernel/report-verifier` (GPT-6 Sol), is staged under
 [`fixtures/kernel-report/`](../../fixtures/kernel-report/README.md) with its install steps.
+Its issue-triage Task, the kind `triage` on this profile with the `backlog/triage` Pipeline
+of [`docs/design/issue-triage.md`](../design/issue-triage.md), is staged the same way under
+[`fixtures/issue-triage/`](../../fixtures/issue-triage/README.md).
