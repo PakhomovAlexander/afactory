@@ -1,0 +1,5 @@
+schema = "af.task-kind/1"
+name = "backlog/triage-kind"
+version = "1.0.0"
+kind = "triage"
+profile = "report"
