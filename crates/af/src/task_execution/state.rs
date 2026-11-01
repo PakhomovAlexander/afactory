@@ -413,7 +413,7 @@ fn gate_next_action(id: &str, retry: &GateRetry) -> String {
 /// a shell takes as one word.
 fn failed_provider(cas: &Cas, state: &TaskProjection) -> Option<String> {
     let execution = state.execution.as_ref()?;
-    let plan: ExecutionPlanV1 = artifact(cas, state.plan_id.as_deref()?, EXECUTION_PLAN_V1).ok()?;
+    let plan: ExecutionPlanV2 = artifact(cas, state.plan_id.as_deref()?, EXECUTION_PLAN_V2).ok()?;
     execution
         .attempt_accounting()
         .iter()
@@ -422,7 +422,7 @@ fn failed_provider(cas: &Cas, state: &TaskProjection) -> Option<String> {
             let node = execution.graph.nodes.get(&attempt.reservation.node)?;
             let slot = node_slot(&node.operator)?;
             match &plan.bindings.get(slot)?.execution {
-                WorkerExecutionV1::Model { provider, .. } if is_name(provider) => {
+                WorkerExecutionV2::Model { provider, .. } if is_name(provider) => {
                     Some(provider.clone())
                 }
                 _ => None,

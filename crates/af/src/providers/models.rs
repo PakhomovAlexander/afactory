@@ -114,6 +114,7 @@ pub(crate) struct ProviderCatalog {
 
 fn rule_kind(kind: ProviderKind) -> Kind {
     match kind {
+        ProviderKind::Pi => Kind::Pi,
         ProviderKind::Claude => Kind::Claude,
         ProviderKind::Codex => Kind::Codex,
     }
@@ -175,6 +176,32 @@ fn probe_spec(spec: &ProviderSpec, cancelled: &AtomicBool, check_cli: bool) -> C
     if let Err(error) = availability::check(spec) {
         return CatalogOutcome::Unavailable(error);
     }
+    if spec.kind == ProviderKind::Pi {
+        return match super::pi::probe(spec, cancelled, PROBE_TIMEOUT) {
+            Ok((_, ready)) => CatalogOutcome::Listed(CatalogReport {
+                source: "AF Pi SDK host catalog",
+                version: Some("1.4.0".into()),
+                fetched_at: None,
+                catalog: Catalog {
+                    models: ready
+                        .models
+                        .into_iter()
+                        .map(|m| CatalogModel {
+                            display_name: m.id.clone(),
+                            id: m.id,
+                            efforts: m.efforts,
+                            other_names: vec![],
+                            aliases: vec![],
+                            default_effort: None,
+                            hidden: false,
+                        })
+                        .collect(),
+                },
+                skipped: 0,
+            }),
+            Err(error) => CatalogOutcome::Unavailable(error),
+        };
+    }
     let program = match locate_cli(spec) {
         Ok(program) => program,
         Err(failure) => return CatalogOutcome::CliRefused(failure.message()),
@@ -188,6 +215,7 @@ fn probe_spec(spec: &ProviderSpec, cancelled: &AtomicBool, check_cli: bool) -> C
         }
     }
     let listed = match spec.kind {
+        ProviderKind::Pi => unreachable!("Pi catalog uses the SDK host"),
         ProviderKind::Claude => claude_catalog(&program, spec, &probe_path, cancelled),
         ProviderKind::Codex => codex_catalog(&program, spec, &probe_path, cancelled),
     };
@@ -922,7 +950,7 @@ pub(crate) fn configuration(
     // A TOML basic string, as the repository's own manifests spell them.
     let quoted = |value: &str| format!("\"{}\"", value.replace('\\', "\\\\").replace('"', "\\\""));
     let args: Vec<String> = match kind {
-        Kind::Claude => vec![
+        Kind::Pi | Kind::Claude => vec![
             "--model".into(),
             model.into(),
             "--effort".into(),
@@ -1146,7 +1174,7 @@ fn resolution_lines(catalog: &ProviderCatalog, request: &ResolveRequest) -> Vec<
     lines
 }
 
-/// The versioned `af/provider-models@1` document.
+/// The versioned `af/provider-models@2` document.
 pub(crate) fn document(
     catalogs: &[ProviderCatalog],
     resolve: Option<&ResolveRequest>,
@@ -1168,6 +1196,7 @@ pub(crate) fn document(
                 "kind": catalog.kind.name(),
                 "state": state,
                 "source": match catalog.kind {
+                    Kind::Pi => "AF Pi SDK host catalog",
                     Kind::Claude => CLAUDE_SOURCE,
                     Kind::Codex => CODEX_SOURCE,
                 },
@@ -1196,7 +1225,7 @@ pub(crate) fn document(
         })
         .collect();
     serde_json::json!({
-        "schema": "af/provider-models@1",
+        "schema": "af/provider-models@2",
         "exit_code": exit_code,
         "token_free": true,
         "proves": PROOF,

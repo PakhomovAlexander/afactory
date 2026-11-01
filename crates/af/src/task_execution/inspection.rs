@@ -56,7 +56,7 @@ pub(super) fn explain_plan(
     if recorded_event_ids.is_empty() {
         return Err("The requested plan is not recorded in this Task".into());
     }
-    let plan: ExecutionPlanV1 = artifact(cas, plan_id, EXECUTION_PLAN_V1)?;
+    let plan: ExecutionPlanV2 = artifact(cas, plan_id, EXECUTION_PLAN_V2)?;
     plan.validate()?;
     let revision: TaskRevisionV1 = artifact(cas, &plan.task_revision_id, TASK_REVISION_V1)?;
     revision.validate()?;

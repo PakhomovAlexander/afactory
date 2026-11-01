@@ -45,6 +45,8 @@ pub(crate) mod compatibility;
 pub mod detect;
 mod installation;
 pub mod models;
+mod pi;
+pub use pi::setup as setup_pi;
 pub mod task;
 
 use compatibility::{CliIncompatibility, CliRefusal, DeniedProbe, check_invocation};
@@ -185,6 +187,7 @@ impl UsageState {
 
 #[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Debug)]
 enum ProviderKind {
+    Pi,
     Claude,
     Codex,
 }
@@ -192,6 +195,7 @@ enum ProviderKind {
 impl ProviderKind {
     fn parse(value: &str) -> Result<Self, String> {
         match value {
+            "pi" => Ok(Self::Pi),
             "claude" => Ok(Self::Claude),
             "codex" => Ok(Self::Codex),
             _ => Err(format!("unsupported provider kind `{value}`")),
@@ -200,13 +204,18 @@ impl ProviderKind {
 
     fn name(self) -> &'static str {
         match self {
+            Self::Pi => "pi",
             Self::Claude => "claude",
             Self::Codex => "codex",
         }
     }
 
     fn command(self) -> &'static str {
-        self.name()
+        if self == Self::Pi {
+            "node"
+        } else {
+            self.name()
+        }
     }
 }
 
@@ -215,6 +224,7 @@ struct ProviderSpec {
     id: String,
     kind: ProviderKind,
     auth_dir: Option<PathBuf>,
+    pi: Option<review_runner_pi::PiConfig>,
     explicit_selector: bool,
     registry_declared: bool,
     source: String,
@@ -538,6 +548,7 @@ pub(crate) fn telemetry_registry() -> (Result<Vec<NamedValue>, String>, Vec<Name
             .iter()
             .map(|spec| {
                 let grant = match spec.kind {
+                    ProviderKind::Pi => "<grant:Pi AuthStorage>",
                     ProviderKind::Claude => "<grant:CLAUDE_CONFIG_DIR>",
                     ProviderKind::Codex => "<grant:CODEX_HOME>",
                 };
@@ -574,7 +585,7 @@ pub(crate) fn registry_location() -> Option<PathBuf> {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) struct Declared {
     pub(crate) id: String,
-    /// `claude` or `codex`.
+    /// `claude`, `codex` or explicitly registered `pi`.
     pub(crate) kind: &'static str,
     pub(crate) auth_dir: Option<PathBuf>,
 }
@@ -781,7 +792,7 @@ fn status_document(
         .map(|dir| dir.display().to_string())
         .collect();
     serde_json::json!({
-        "schema": "af/provider-status@4",
+        "schema": "af/provider-status@5",
         "exit_code": exit_code,
         "usage_requested": usage == UsageProbe::Probe,
         "registry": {
@@ -848,7 +859,9 @@ fn credential_name(kind: &str, auth_type: &str) -> &'static str {
     match (kind, method) {
         (_, "-" | "") => "none",
         ("claude", "api_key") | ("codex", "API key") => "api_key",
-        ("claude", "claude.ai" | "oauth") | ("codex", "ChatGPT") => "subscription",
+        ("claude", "claude.ai" | "oauth") | ("codex", "ChatGPT") | ("pi", "OAuth") => {
+            "subscription"
+        }
         _ => "other",
     }
 }
@@ -883,6 +896,9 @@ pub(crate) fn available_provider_id(kind: &str, ids: &BTreeSet<String>) -> Strin
 pub fn add(id: &str, kind: &str, auth_dir: Option<&Path>, unverified: bool) -> Result<i32, String> {
     validate_explicit_id(id)?;
     let kind = ProviderKind::parse(kind)?;
+    if kind == ProviderKind::Pi {
+        return Err("Pi registration requires `af provider setup --kind pi` with explicit --backend, --auth-dir and installed SDK authority".into());
+    }
     let auth_dir = resolve_auth_dir(kind, auth_dir, MissingAuthDir::Inspect)?;
     let path = registry_path()?.ok_or("no provider registry path is available")?;
     if !unverified && let Some(code) = refuse_unauthenticated_add(id, kind, &auth_dir) {
@@ -926,6 +942,7 @@ pub fn add(id: &str, kind: &str, auth_dir: Option<&Path>, unverified: bool) -> R
 /// exit code of the refusal it printed on stderr.
 fn refuse_unauthenticated_add(id: &str, kind: ProviderKind, auth_dir: &Path) -> Option<i32> {
     let spec = ProviderSpec {
+        pi: None,
         id: id.to_string(),
         kind,
         auth_dir: Some(auth_dir.to_path_buf()),
@@ -1131,6 +1148,9 @@ pub fn setup(
     validate_explicit_id(id)?;
     availability::check_id(id)?;
     let kind = ProviderKind::parse(kind)?;
+    if kind == ProviderKind::Pi {
+        return Err("Pi setup requires explicit backend and installed SDK authority".into());
+    }
     let path = registry_path()?.ok_or("no provider registry path is available")?;
     // A login needs a home, so only `--login` creates a missing directory; without it a typo
     // would leave an empty directory behind (ADR-0206).
@@ -1162,6 +1182,7 @@ pub fn setup(
         }
     };
     let spec = ProviderSpec {
+        pi: None,
         id: id.to_string(),
         kind,
         auth_dir: Some(auth_dir.clone()),
@@ -2244,6 +2265,11 @@ fn authentication_ready(spec: &ProviderSpec) -> Result<bool, AuthenticationProbe
         return Err(AuthenticationProbe::CliCannotStart(failure));
     }
     let (status, _, detail) = match spec.kind {
+        ProviderKind::Pi => (
+            "unknown".into(),
+            "unknown".into(),
+            "Pi uses the SDK host".into(),
+        ),
         ProviderKind::Claude => parse_claude_status(output.status.success(), &output.stdout),
         ProviderKind::Codex => parse_codex_status(output.status.success(), &output.stdout),
     };
@@ -2317,6 +2343,9 @@ fn run_interactive_login(spec: &ProviderSpec) -> Result<(), String> {
         }
     }
     match spec.kind {
+        ProviderKind::Pi => {
+            return Err("Pi login must be completed with Pi at a private terminal".into());
+        }
         ProviderKind::Claude => {
             command.args(["auth", "login", "--claudeai"]);
             command.env("CLAUDE_CONFIG_DIR", auth_dir);
@@ -2339,6 +2368,7 @@ fn run_interactive_login(spec: &ProviderSpec) -> Result<(), String> {
 
 fn default_auth_dir(kind: ProviderKind) -> Result<PathBuf, String> {
     let variable = match kind {
+        ProviderKind::Pi => "AF_PI_AUTH_DIR_NOT_AMBIENT",
         ProviderKind::Claude => "CLAUDE_CONFIG_DIR",
         ProviderKind::Codex => "CODEX_HOME",
     };
@@ -2359,6 +2389,7 @@ fn default_auth_dir(kind: ProviderKind) -> Result<PathBuf, String> {
         return Err("HOME must be absolute; pass --auth-dir".into());
     }
     Ok(home.join(match kind {
+        ProviderKind::Pi => return Err("Pi requires explicit --auth-dir".into()),
         ProviderKind::Claude => ".claude",
         ProviderKind::Codex => ".codex",
     }))
@@ -2391,6 +2422,17 @@ fn add_to_registry_locked(
     auth_dir: &Path,
     exact_is_success: bool,
 ) -> Result<RegistryAdd, String> {
+    add_to_registry_with_pi(path, id, kind, auth_dir, exact_is_success, None)
+}
+
+fn add_to_registry_with_pi(
+    path: &Path,
+    id: &str,
+    kind: ProviderKind,
+    auth_dir: &Path,
+    exact_is_success: bool,
+    pi_config: Option<&review_runner_pi::PiConfig>,
+) -> Result<RegistryAdd, String> {
     // A prior first-file publication may have crashed after creating its marker but before the
     // registry appeared. Never treat that recovery state as an empty registry.
     ensure_no_registry_transaction(path)?;
@@ -2421,6 +2463,7 @@ fn add_to_registry_locked(
             if let Some(existing) = specs.iter().find(|spec| spec.id == id) {
                 if exact_is_success
                     && existing.kind == kind
+                    && existing.pi.as_ref() == pi_config
                     && existing.auth_dir.as_deref() == Some(auth_dir)
                 {
                     return Ok(RegistryAdd::AlreadyPresent);
@@ -2451,7 +2494,7 @@ fn add_to_registry_locked(
         }
         None => {
             let mut document = DocumentMut::new();
-            document["version"] = value(1);
+            document["version"] = value(2);
             document
         }
     };
@@ -2473,6 +2516,14 @@ fn add_to_registry_locked(
             auth_dir.display()
         )
     })?);
+    if let Some(pi) = pi_config {
+        provider["backend"] = value(&pi.backend);
+        provider["sdk_entrypoint"] = value(
+            pi.sdk_entrypoint
+                .to_str()
+                .ok_or("Pi SDK path must be UTF-8")?,
+        );
+    }
     providers.push(provider);
     let bytes = document.to_string();
     if bytes.len() as u64 > MAX_REGISTRY_BYTES {
@@ -2539,9 +2590,9 @@ fn remove_from_registry_locked(
     let mut document = existing
         .parse::<DocumentMut>()
         .map_err(|error| format!("provider registry {}: {error}", path.display()))?;
-    if document.get("version").and_then(Item::as_integer) != Some(1) {
+    if document.get("version").and_then(Item::as_integer) != Some(2) {
         return Err(format!(
-            "provider registry {} must declare version = 1",
+            "provider registry {} must declare version = 2",
             path.display()
         ));
     }
@@ -3762,7 +3813,7 @@ fn load_specs() -> (Vec<ProviderSpec>, Option<PathBuf>, Option<String>) {
                 Err(_) => (
                     Vec::new(),
                     Some(format!(
-                        "provider registry {} is invalid; expected version 1 and [[providers]] entries with id, kind, and auth_dir",
+                        "provider registry {} is invalid; expected version 2 and [[providers]] entries with id, kind, and auth_dir",
                         path.display()
                     )),
                 ),
@@ -3996,6 +4047,7 @@ fn implicit_defaults() -> Vec<ProviderSpec> {
     if resolve_program("claude").is_some() {
         let configured_home = std::env::var_os("CLAUDE_CONFIG_DIR").map(PathBuf::from);
         defaults.push(ProviderSpec {
+            pi: None,
             id: "claude-ambient".to_string(),
             kind: ProviderKind::Claude,
             auth_dir: canonical_if_present(
@@ -4011,6 +4063,7 @@ fn implicit_defaults() -> Vec<ProviderSpec> {
     if resolve_program("codex").is_some() {
         let configured_home = std::env::var_os("CODEX_HOME").map(PathBuf::from);
         defaults.push(ProviderSpec {
+            pi: None,
             id: "codex-ambient".to_string(),
             kind: ProviderKind::Codex,
             auth_dir: canonical_if_present(
@@ -4057,9 +4110,9 @@ fn parse_registry(text: &str, path: &Path) -> Result<Vec<ProviderSpec>, String> 
         &["version", "providers"],
         "registry",
     )?;
-    if root.get("version").and_then(toml::Value::as_integer) != Some(1) {
+    if root.get("version").and_then(toml::Value::as_integer) != Some(2) {
         return Err(format!(
-            "provider registry {} must declare version = 1",
+            "provider registry {} must declare version = 2",
             path.display()
         ));
     }
@@ -4096,7 +4149,7 @@ fn parse_registry(text: &str, path: &Path) -> Result<Vec<ProviderSpec>, String> 
         })?;
         reject_unknown(
             table.keys().map(String::as_str),
-            &["id", "kind", "auth_dir"],
+            &["id", "kind", "auth_dir", "backend", "sdk_entrypoint"],
             "provider entry",
         )?;
         let id = table
@@ -4117,6 +4170,7 @@ fn parse_registry(text: &str, path: &Path) -> Result<Vec<ProviderSpec>, String> 
             .and_then(toml::Value::as_str)
             .ok_or_else(|| format!("provider `{id}` has no string `kind`"))
             .and_then(ProviderKind::parse)?;
+        let pi = pi::registry_config(kind, table)?;
         let auth_dir = table
             .get("auth_dir")
             .and_then(toml::Value::as_str)
@@ -4165,6 +4219,7 @@ fn parse_registry(text: &str, path: &Path) -> Result<Vec<ProviderSpec>, String> 
         specs.push(ProviderSpec {
             id: id.to_string(),
             kind,
+            pi,
             auth_dir: Some(auth_dir),
             explicit_selector: true,
             registry_declared: true,
@@ -4215,6 +4270,9 @@ fn probe_provider_answer(
     cancelled: &AtomicBool,
     usage: UsageProbe,
 ) -> (ProviderStatus, String) {
+    if spec.kind == ProviderKind::Pi {
+        return pi::status(&spec, cancelled, usage);
+    }
     match availability::until(&spec.id) {
         Ok(Some(expiry)) => {
             let mut status = unprobed_status(&spec);
@@ -4304,6 +4362,11 @@ fn probe_checked(
         return (installation_failed_status(&spec, &failure), output.stdout);
     }
     let (status, auth_type, mut detail) = match spec.kind {
+        ProviderKind::Pi => (
+            "unknown".into(),
+            "unknown".into(),
+            "Pi uses the SDK host".into(),
+        ),
         ProviderKind::Claude => parse_claude_status(output.status.success(), &output.stdout),
         ProviderKind::Codex => parse_codex_status(output.status.success(), &output.stdout),
     };
@@ -4311,6 +4374,7 @@ fn probe_checked(
         detail = logged_out_detail(&spec, setup_id);
     }
     let mut subscription = match spec.kind {
+        ProviderKind::Pi => "unsupported".into(),
         ProviderKind::Claude => claude_subscription(&output.stdout),
         ProviderKind::Codex if auth_type == "API key" => "API billing".to_string(),
         ProviderKind::Codex if auth_type == "ChatGPT" => "ChatGPT (plan unavailable)".to_string(),
@@ -4991,6 +5055,7 @@ fn configure_probe_environment(
     {
         command.env(
             match spec.kind {
+                ProviderKind::Pi => "AF_PI_AUTH_DIR_NOT_AMBIENT",
                 ProviderKind::Claude => "CLAUDE_CONFIG_DIR",
                 ProviderKind::Codex => "CODEX_HOME",
             },
@@ -5597,6 +5662,7 @@ fn setup_login_command(spec: &ProviderSpec) -> String {
 /// land in a different directory than the one `af` reads for this Provider.
 fn login_command(spec: &ProviderSpec) -> String {
     let (selector, login) = match spec.kind {
+        ProviderKind::Pi => return "Use Pi at a private terminal to log in, then run af provider setup --kind pi with explicit --backend and --auth-dir".into(),
         ProviderKind::Claude => ("CLAUDE_CONFIG_DIR", "claude auth login"),
         ProviderKind::Codex => ("CODEX_HOME", "codex login"),
     };
@@ -5621,6 +5687,7 @@ fn login_command(spec: &ProviderSpec) -> String {
 /// harness's own login command is shown only by `af provider status --verbose`.
 fn logged_out_detail(spec: &ProviderSpec, setup_id: &str) -> String {
     let harness = match spec.kind {
+        ProviderKind::Pi => "Pi SDK",
         ProviderKind::Claude => "Claude",
         ProviderKind::Codex => "Codex",
     };
@@ -5737,6 +5804,7 @@ fn run_probe_capped(
     let directory = ProbeDirectory::new(spec)?;
     let mut command = Command::new(program);
     match spec.kind {
+        ProviderKind::Pi => return Err("Pi probes require the SDK host".into()),
         ProviderKind::Claude => {
             command.args(["auth", "status", "--json"]);
         }
@@ -5763,6 +5831,7 @@ fn run_probe_capped(
     let mut discarded = Vec::new();
     let mut exceeded = false;
     let timeout = probe_timeout(match spec.kind {
+        ProviderKind::Pi => PROBE_TIMEOUT,
         ProviderKind::Claude => CLAUDE_STRUCTURAL_TIMEOUT,
         ProviderKind::Codex => PROBE_TIMEOUT,
     });
@@ -5887,7 +5956,7 @@ fn drain_probe_streams(
     exceeded: &mut bool,
 ) -> Result<bool, String> {
     let (stdout_read, stderr_read) = match kind {
-        ProviderKind::Claude => (
+        ProviderKind::Pi | ProviderKind::Claude => (
             drain_available(stdout, captured, exceeded)?,
             drain_available(stderr, discarded, exceeded)?,
         ),
@@ -6150,8 +6219,23 @@ fn is_executable(path: &Path) -> bool {
 mod tests {
     use super::*;
 
-    /// A login process writes no core file and, on Linux, is non-dumpable (audit L15); the
-    /// protection holds for a second login in the same process too.
+    #[test]
+    fn pi_registry_requires_supported_backend_and_explicit_sdk() {
+        for backend in [
+            "",
+            "backend = \"anthropic\"\n",
+            "backend = \"openai-codex\"\n",
+        ] {
+            let text = format!(
+                "version = 2\n[[providers]]\nid = \"pi-personal\"\nkind = \"pi\"\nauth_dir = \"/nonexistent-pi-profile\"\n{backend}"
+            );
+            assert!(parse_registry(&text, Path::new("providers.toml")).is_err());
+        }
+        assert!(
+            parse_registry("version = 1\nproviders = []\n", Path::new("providers.toml")).is_err()
+        );
+    }
+
     #[test]
     fn a_login_keeps_its_memory_out_of_core_dumps() {
         use nix::sys::resource::{Resource, getrlimit};
@@ -6198,8 +6282,8 @@ mod tests {
     fn conditional_registry_replace_preserves_a_noncooperating_replacement() {
         let root = tempfile::tempdir().unwrap();
         let path = root.path().join("providers.toml");
-        let original = "version = 1\nproviders = []\n";
-        let external = "version = 1\n# external change\nproviders = []\n";
+        let original = "version = 2\nproviders = []\n";
+        let external = "version = 2\n# external change\nproviders = []\n";
         fs::write(&path, external).unwrap();
         assert!(write_registry(&path, b"version = 1\n", Some(original)).is_err());
         assert_eq!(fs::read_to_string(&path).unwrap(), external);
@@ -6231,7 +6315,7 @@ mod tests {
         let root = tempfile::tempdir().unwrap();
         let path = root.path().join("providers.toml");
         let transaction = registry_transaction_path(&path);
-        fs::write(&path, "version = 1\nproviders = []\n").unwrap();
+        fs::write(&path, "version = 2\nproviders = []\n").unwrap();
 
         ensure_no_registry_transaction(&path).unwrap();
         let tentative = read_registry_unchecked(&path).unwrap();
@@ -6249,7 +6333,7 @@ mod tests {
         let root = tempfile::tempdir().unwrap();
         let path = root.path().join("providers.toml");
         let alias = root.path().join("providers-alias.toml");
-        fs::write(&path, "version = 1\nproviders = []\n").unwrap();
+        fs::write(&path, "version = 2\nproviders = []\n").unwrap();
         symlink(&path, &alias).unwrap();
         fs::write(registry_transaction_path(&path), "version = 1\n").unwrap();
 
@@ -6269,8 +6353,8 @@ mod tests {
         let first = root.path().join("providers-first.toml");
         let second = root.path().join("providers-second.toml");
         let alias = root.path().join("providers-alias.toml");
-        fs::write(&first, "version = 1\n# first\nproviders = []\n").unwrap();
-        fs::write(&second, "version = 1\n# second\nproviders = []\n").unwrap();
+        fs::write(&first, "version = 2\n# first\nproviders = []\n").unwrap();
+        fs::write(&second, "version = 2\n# second\nproviders = []\n").unwrap();
         symlink(&first, &alias).unwrap();
         let second_transaction = registry_transaction_path(&second);
         fs::write(&second_transaction, "version = 1\n").unwrap();
@@ -6301,8 +6385,8 @@ mod tests {
         let path = root.path().join("providers.toml");
         let stage = root.path().join("stage");
         let transaction = registry_transaction_path(&path);
-        fs::write(&path, "version = 1\n# original\nproviders = []\n").unwrap();
-        fs::write(&stage, "version = 1\n# candidate\nproviders = []\n").unwrap();
+        fs::write(&path, "version = 2\n# original\nproviders = []\n").unwrap();
+        fs::write(&stage, "version = 2\n# candidate\nproviders = []\n").unwrap();
 
         let result = read_registry_with_hooks(
             &path,
@@ -6360,8 +6444,8 @@ mod tests {
 
         let root = tempfile::tempdir().unwrap();
         let path = root.path().join("providers.toml");
-        let original = "version = 1\nproviders = []\n";
-        let candidate = "version = 1\n# candidate\nproviders = []\n";
+        let original = "version = 2\nproviders = []\n";
+        let candidate = "version = 2\n# candidate\nproviders = []\n";
         fs::write(&path, original).unwrap();
         let mut displaced = OpenOptions::new()
             .read(true)
@@ -6377,7 +6461,7 @@ mod tests {
                 .unwrap();
 
         renameat_with(CWD, &stage_path, CWD, &path, RenameFlags::EXCHANGE).unwrap();
-        let external = "version = 1\n# second replacement\nproviders = []\n";
+        let external = "version = 2\n# second replacement\nproviders = []\n";
         let second = root.path().join("second");
         fs::write(&second, external).unwrap();
         fs::rename(&second, &stage_path).unwrap();
@@ -6394,8 +6478,8 @@ mod tests {
     fn successful_replace_records_and_preserves_recovery_versions() {
         let root = tempfile::tempdir().unwrap();
         let path = root.path().join("providers.toml");
-        let original = "version = 1\nproviders = []\n";
-        let candidate = "version = 1\n# candidate\nproviders = []\n";
+        let original = "version = 2\nproviders = []\n";
+        let candidate = "version = 2\n# candidate\nproviders = []\n";
         fs::write(&path, original).unwrap();
 
         let preserved = write_registry(&path, candidate.as_bytes(), Some(original))
@@ -6419,8 +6503,8 @@ mod tests {
     fn recovery_archives_only_a_hash_validated_precommit_marker() {
         let root = tempfile::tempdir().unwrap();
         let path = root.path().join("providers.toml");
-        let original = "version = 1\nproviders = []\n";
-        let candidate = "version = 1\n# candidate\nproviders = []\n";
+        let original = "version = 2\nproviders = []\n";
+        let candidate = "version = 2\n# candidate\nproviders = []\n";
         fs::write(&path, original).unwrap();
         let mut stage = tempfile::NamedTempFile::new_in(root.path()).unwrap();
         stage.write_all(candidate.as_bytes()).unwrap();
@@ -6454,8 +6538,8 @@ mod tests {
 
         let root = tempfile::tempdir().unwrap();
         let path = root.path().join("providers.toml");
-        let original = "version = 1\nproviders = []\n";
-        let candidate = "version = 1\n# candidate\nproviders = []\n";
+        let original = "version = 2\nproviders = []\n";
+        let candidate = "version = 2\n# candidate\nproviders = []\n";
         fs::write(&path, original).unwrap();
         let mut stage = tempfile::NamedTempFile::new_in(root.path()).unwrap();
         stage.write_all(candidate.as_bytes()).unwrap();
@@ -6479,8 +6563,8 @@ mod tests {
     fn recovery_revalidates_held_files_immediately_before_archival() {
         let root = tempfile::tempdir().unwrap();
         let path = root.path().join("providers.toml");
-        let original = "version = 1\nproviders = []\n";
-        let candidate = "version = 1\n# candidate\nproviders = []\n";
+        let original = "version = 2\nproviders = []\n";
+        let candidate = "version = 2\n# candidate\nproviders = []\n";
         fs::write(&path, original).unwrap();
         let mut stage = tempfile::NamedTempFile::new_in(root.path()).unwrap();
         stage.write_all(candidate.as_bytes()).unwrap();
@@ -6510,8 +6594,8 @@ mod tests {
     fn recovery_revalidates_marker_bytes_immediately_before_archival() {
         let root = tempfile::tempdir().unwrap();
         let path = root.path().join("providers.toml");
-        let original = "version = 1\nproviders = []\n";
-        let candidate = "version = 1\n# candidate\nproviders = []\n";
+        let original = "version = 2\nproviders = []\n";
+        let candidate = "version = 2\n# candidate\nproviders = []\n";
         fs::write(&path, original).unwrap();
         let mut stage = tempfile::NamedTempFile::new_in(root.path()).unwrap();
         stage.write_all(candidate.as_bytes()).unwrap();
@@ -6543,8 +6627,8 @@ mod tests {
         let displaced_parent = root.path().join("registry-held");
         fs::create_dir(&parent).unwrap();
         let path = parent.join("providers.toml");
-        let original = "version = 1\nproviders = []\n";
-        let candidate = "version = 1\n# candidate\nproviders = []\n";
+        let original = "version = 2\nproviders = []\n";
+        let candidate = "version = 2\n# candidate\nproviders = []\n";
         fs::write(&path, original).unwrap();
         let mut stage = tempfile::NamedTempFile::new_in(&parent).unwrap();
         stage.write_all(candidate.as_bytes()).unwrap();
@@ -6573,8 +6657,8 @@ mod tests {
         let root = tempfile::tempdir().unwrap();
         let path = root.path().join("providers.toml");
         let alias = root.path().join("providers-alias.toml");
-        let original = "version = 1\nproviders = []\n";
-        let candidate = "version = 1\n# candidate\nproviders = []\n";
+        let original = "version = 2\nproviders = []\n";
+        let candidate = "version = 2\n# candidate\nproviders = []\n";
         fs::write(&path, original).unwrap();
         symlink(&path, &alias).unwrap();
         let mut stage = tempfile::NamedTempFile::new_in(root.path()).unwrap();
@@ -6607,8 +6691,8 @@ mod tests {
         symlink(&directory, &alias_directory).unwrap();
         let path = directory.join("providers.toml");
         let alias = alias_directory.join("providers.toml");
-        let original = "version = 1\nproviders = []\n";
-        let candidate = "version = 1\n# candidate\nproviders = []\n";
+        let original = "version = 2\nproviders = []\n";
+        let candidate = "version = 2\n# candidate\nproviders = []\n";
         fs::write(&path, original).unwrap();
         let mut stage = tempfile::NamedTempFile::new_in(&directory).unwrap();
         stage.write_all(candidate.as_bytes()).unwrap();
@@ -6664,7 +6748,7 @@ mod tests {
         let root = tempfile::tempdir().unwrap();
         let path = root.path().join("providers.toml");
         let alias = root.path().join("providers-alias.toml");
-        fs::write(&path, "version = 1\nproviders = []\n").unwrap();
+        fs::write(&path, "version = 2\nproviders = []\n").unwrap();
         symlink(&path, &alias).unwrap();
         fs::write(registry_transaction_path(&path), "version = 1\n").unwrap();
         fs::write(registry_transaction_path(&alias), "version = 1\n").unwrap();
@@ -6682,8 +6766,8 @@ mod tests {
         for tamper in [false, true] {
             let root = tempfile::tempdir().unwrap();
             let path = root.path().join("providers.toml");
-            let original = "version = 1\nproviders = []\n";
-            let candidate = "version = 1\n# candidate\nproviders = []\n";
+            let original = "version = 2\nproviders = []\n";
+            let candidate = "version = 2\n# candidate\nproviders = []\n";
             fs::write(&path, original).unwrap();
             let mut stage = tempfile::NamedTempFile::new_in(root.path()).unwrap();
             stage.write_all(candidate.as_bytes()).unwrap();
@@ -6703,7 +6787,7 @@ mod tests {
             drop(marker_file);
             renameat_with(CWD, &stage_path, CWD, &path, RenameFlags::EXCHANGE).unwrap();
             if tamper {
-                fs::write(&path, "version = 1\n# unknown\nproviders = []\n").unwrap();
+                fs::write(&path, "version = 2\n# unknown\nproviders = []\n").unwrap();
                 let error = recover_registry(&path).unwrap_err();
                 assert!(
                     error.contains("matches neither transaction hash"),
@@ -6753,7 +6837,7 @@ mod tests {
     fn first_registry_publication_never_clobbers_an_external_file() {
         let root = tempfile::tempdir().unwrap();
         let path = root.path().join("providers.toml");
-        let external = "version = 1\n# external creation\nproviders = []\n";
+        let external = "version = 2\n# external creation\nproviders = []\n";
         fs::write(&path, external).unwrap();
         assert!(write_registry(&path, b"version = 1\n", None).is_err());
         assert_eq!(fs::read_to_string(&path).unwrap(), external);
@@ -6876,7 +6960,7 @@ mod tests {
 
     #[test]
     fn registry_allows_multiple_accounts_of_one_kind() {
-        let registry = r#"version = 1
+        let registry = r#"version = 2
 [[providers]]
 id = "claude-work"
 kind = "claude"
@@ -6908,7 +6992,7 @@ auth_dir = "/profiles/claude-personal"
         let root = tempfile::tempdir().unwrap();
         for (id, kind) in [("claude-ambient", "claude"), ("codex-ambient", "codex")] {
             let registry = format!(
-                "version = 1\n[[providers]]\nid = {id:?}\nkind = {kind:?}\nauth_dir = {:?}\n",
+                "version = 2\n[[providers]]\nid = {id:?}\nkind = {kind:?}\nauth_dir = {:?}\n",
                 root.path().to_str().unwrap()
             );
             let error = match parse_registry(&registry, Path::new("/registry.toml")) {
@@ -6929,7 +7013,7 @@ auth_dir = "/profiles/claude-personal"
         fs::create_dir(&target).unwrap();
         symlink(&target, &linked).unwrap();
         let registry = format!(
-            "version = 1\n[[providers]]\nid = \"codex-main\"\nkind = \"codex\"\nauth_dir = {:?}\n",
+            "version = 2\n[[providers]]\nid = \"codex-main\"\nkind = \"codex\"\nauth_dir = {:?}\n",
             linked.to_str().unwrap()
         );
 
@@ -6942,7 +7026,7 @@ auth_dir = "/profiles/claude-personal"
 
     #[test]
     fn registry_rejects_duplicate_ids_and_contexts() {
-        let duplicate_id = r#"version = 1
+        let duplicate_id = r#"version = 2
 [[providers]]
 id = "work"
 kind = "claude"
@@ -6957,7 +7041,7 @@ auth_dir = "/profiles/two"
         let shared = root.path().join("shared");
         fs::create_dir_all(&shared).unwrap();
         let duplicate_context = format!(
-            r#"version = 1
+            r#"version = 2
 [[providers]]
 id = "one"
 kind = "codex"
@@ -7051,6 +7135,7 @@ auth_dir = "{}"
         };
         let mut provider = unavailable_status(
             &ProviderSpec {
+                pi: None,
                 id: "codex-main".into(),
                 kind: ProviderKind::Codex,
                 auth_dir: None,
@@ -7156,6 +7241,7 @@ auth_dir = "{}"
         permissions.set_mode(0o755);
         fs::set_permissions(&program, permissions).unwrap();
         let spec = ProviderSpec {
+            pi: None,
             id: "claude-test".to_string(),
             kind: ProviderKind::Claude,
             auth_dir: None,
@@ -7188,6 +7274,7 @@ auth_dir = "{}"
         permissions.set_mode(0o755);
         fs::set_permissions(&program, permissions).unwrap();
         let spec = ProviderSpec {
+            pi: None,
             id: "claude-cache-test".to_string(),
             kind: ProviderKind::Claude,
             auth_dir: Some(directory.path().to_path_buf()),
@@ -7306,6 +7393,7 @@ auth_dir = "{}"
         fs::write(&program, script).unwrap();
         fs::set_permissions(&program, fs::Permissions::from_mode(0o755)).unwrap();
         let spec = ProviderSpec {
+            pi: None,
             id: "codex-test".to_string(),
             kind: ProviderKind::Codex,
             auth_dir: None,
@@ -7370,6 +7458,7 @@ auth_dir = "{}"
         permissions.set_mode(0o755);
         fs::set_permissions(&program, permissions).unwrap();
         let spec = ProviderSpec {
+            pi: None,
             id: "codex-test".to_string(),
             kind: ProviderKind::Codex,
             auth_dir: None,
@@ -7615,6 +7704,7 @@ auth_dir = "{}"
         use std::os::unix::fs::PermissionsExt;
         let directory = tempfile::tempdir().unwrap();
         let spec = ProviderSpec {
+            pi: None,
             id: "codex-test".to_string(),
             kind: ProviderKind::Codex,
             auth_dir: None,
@@ -7731,6 +7821,7 @@ auth_dir = "{}"
         let directory = tempfile::tempdir().unwrap();
         let program = directory.path().join("codex");
         let spec = ProviderSpec {
+            pi: None,
             id: "codex-test".to_string(),
             kind: ProviderKind::Codex,
             auth_dir: None,
@@ -7830,6 +7921,7 @@ auth_dir = "{}"
     #[test]
     fn logged_out_rows_name_the_context_and_the_one_setup_command_that_fixes_it() {
         let declared = ProviderSpec {
+            pi: None,
             id: "claude-personal".to_string(),
             kind: ProviderKind::Claude,
             auth_dir: Some(PathBuf::from("/profiles/claude-personal")),
@@ -7842,6 +7934,7 @@ auth_dir = "{}"
             "no Claude login in /profiles/claude-personal; fix: af provider setup claude-personal --kind claude --auth-dir /profiles/claude-personal --login"
         );
         let ambient = ProviderSpec {
+            pi: None,
             id: "claude-ambient".to_string(),
             kind: ProviderKind::Claude,
             auth_dir: None,
@@ -7854,6 +7947,7 @@ auth_dir = "{}"
             "no Claude login in the CLI default directory; fix: af provider setup claude-main --kind claude --login"
         );
         let codex = ProviderSpec {
+            pi: None,
             id: "codex-ambient".to_string(),
             kind: ProviderKind::Codex,
             auth_dir: Some(PathBuf::from("/profiles/codex")),

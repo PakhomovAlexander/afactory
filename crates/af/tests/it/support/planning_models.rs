@@ -15,7 +15,7 @@ impl Providers {
             crate::fake_models::install(kind, &root.join("bin"), &root.join(kind));
         }
         std::fs::create_dir_all(root.join("home")).unwrap();
-        let registry = serde_json::json!({"version": 1, "providers": [
+        let registry = serde_json::json!({"version": 2, "providers": [
             {"id": "fixture-claude", "kind": "claude", "auth_dir": root.join("claude")},
             {"id": "fixture-codex", "kind": "codex", "auth_dir": root.join("codex")},
         ]});

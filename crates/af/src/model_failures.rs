@@ -5,9 +5,9 @@
 //! Provider ID and kind, the bound model and effort, then the hint its diagnostic starts with,
 //! which names the classification and the next step. `af task show` keeps the full diagnostic.
 
-use review_core::task::EXECUTION_PLAN_V1;
+use review_core::task::EXECUTION_PLAN_V2;
 use review_core::task::execution::TaskAttemptResultV1;
-use review_core::task::plan::{ExecutionPlanV1, WorkerExecutionV1};
+use review_core::task::plan::{ExecutionPlanV2, WorkerExecutionV2};
 use review_graph::task::{CompiledNode, CompiledOperator, ReviewOperation};
 use review_runner_claude::hint;
 use review_store::store::task::TaskProjection;
@@ -34,8 +34,8 @@ pub(crate) fn lines(cas: &Cas, state: &TaskProjection, since_unix_ms: u64) -> Ve
     };
     let plan = state.plan_id.as_deref().and_then(|id| {
         let frame = cas.get_artifact(id).ok()?;
-        (frame.artifact_type == EXECUTION_PLAN_V1)
-            .then(|| serde_json::from_value::<ExecutionPlanV1>(frame.payload).ok())
+        (frame.artifact_type == EXECUTION_PLAN_V2)
+            .then(|| serde_json::from_value::<ExecutionPlanV2>(frame.payload).ok())
             .flatten()
     });
     let mut failed: Vec<_> = execution
@@ -66,7 +66,7 @@ pub(crate) fn lines(cas: &Cas, state: &TaskProjection, since_unix_ms: u64) -> Ve
             .and_then(|resolved| slot(&resolved.definition).map(str::to_owned))
             .and_then(|slot| Some(plan.as_ref()?.bindings.get(&slot)?.execution.clone()));
         let (provider, kind, model, effort) = match &execution {
-            Some(WorkerExecutionV1::Model {
+            Some(WorkerExecutionV2::Model {
                 provider,
                 provider_kind,
                 model,

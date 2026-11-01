@@ -1397,7 +1397,7 @@ unavailable, 8 a host-denied probe.",
         after_long_help = "Examples:\n  af provider status\n  af provider status --json\n  af provider status --usage\n  af provider status --verbose"
     )]
     Status {
-        /// Emit the versioned `af/provider-status@4` document instead of the table
+        /// Emit the versioned `af/provider-status@5` document instead of the table
         #[arg(long)]
         json: bool,
         /// Also probe subscription and quota windows (slower, and may be unavailable)
@@ -1414,7 +1414,8 @@ For every registered Provider, or the named ones, af reads the catalog its harne
 through the harness's own local protocol, under that Provider's auth directory and the bounded \
 probe environment `af provider status` uses, and never starts a turn: Claude Code answers the \
 `list_models` control request of a stream-json session af closes before any turn, Codex answers \
-`model/list` on a bare `codex app-server`. Each Provider gets a header with the source, the \
+`model/list` on a bare `codex app-server`. Pi's AF host reads the pinned SDK's static catalog \
+without model networking. Each Provider gets a header with the source, the \
 harness version and the freshness (Codex: `fetched_at` of `models_cache.json` when readable, \
 else live), one row per exact model ID with its display name, the aliases that resolve to it \
 and its effort levels with the default marked, and a sentence saying what the list proves: af \
@@ -1425,7 +1426,8 @@ version such as `Fable 5.1` or `GPT-6 Sol`) with an optional /EFFORT, says what 
 and whether the effort level is listed, and prints the configuration to copy: the reviewer.toml \
 [runner] args, the worker.toml [runner] block and the bindings line. af binds exact IDs: an alias \
 is never bound, and an effort level a model does not list is never substituted.\n\n\
-Spends no model tokens and reads no credential.\n\n\
+Spends no model tokens. The Rust kernel reads no raw credential; Pi AuthStorage stays inside \
+its host.\n\n\
 Exit codes: 0 every catalog listed, 4 a Provider CLI cannot start or is incompatible, 7 a \
 catalog is unavailable (the static rules are printed and nothing is invented).",
         after_long_help = "Examples:\n  af provider models\n  \
@@ -1437,7 +1439,7 @@ catalog is unavailable (the static rules are printed and nothing is invented).",
         /// Provider IDs to list (default: every registered Provider)
         #[arg(value_name = "ID")]
         ids: Vec<String>,
-        /// Emit the versioned `af/provider-models@1` document instead of the table
+        /// Emit the versioned `af/provider-models@2` document instead of the table
         #[arg(long)]
         json: bool,
         /// Resolve a human model spelling, with an optional /EFFORT, to an exact ID
@@ -1448,8 +1450,8 @@ catalog is unavailable (the static rules are printed and nothing is invented).",
     #[command(
         long_about = "Register one named machine-local Provider, optionally opting in to its \
 official login.\n\n\
-Verifies that the chosen auth directory is authenticated and records only its kind and path in \
-the machine-local registry; credentials remain owned by the Provider CLI. An already \
+Verifies that the chosen auth directory is authenticated and records non-secret configuration in \
+the machine-local registry; credentials remain owned by the Provider CLI or Pi SDK host. An already \
 authenticated context is registered without starting any login.\n\n\
 Without --login, a context that has no login is never logged in for you: setup prints the \
 human-action-required result and the exact command to run. With --login, setup starts the \
@@ -1458,6 +1460,10 @@ stdout and stderr, because the OAuth URL and authorization code that login print
 credentials in transit and must never reach a pipe, chat, an agent transcript, or logs.\n\n\
 --auth-dir names an existing directory; only --login creates a missing one, because a login \
 needs a home.\n\n\
+Pi requires --backend openai-codex, an existing stored OAuth login with accountId, Node >=22.19 \
+and the official Pi SDK 1.4.0 outside a repository. Pass --sdk-entrypoint to its dist/index.js \
+when its installed launcher cannot resolve it. Pi uses an embedded AF SDK host and confined file \
+tools, no shell or ambient resources. Pi setup never starts login; --login is unavailable.\n\n\
 Exit codes: 0 registered, 3 human action required, 4 Provider CLI missing, cannot start or \
 incompatible, 5 \
 registry conflict, 6 authentication failed, 8 host-denied capability probe. Re-running setup \
@@ -1474,13 +1480,19 @@ af provider setup claude-work --kind claude --auth-dir /secure/claude-work \\\n 
         /// Provider CLI family
         #[arg(long, value_enum)]
         kind: ProviderKindArg,
+        /// Pi upstream backend (openai-codex); required for --kind pi
+        #[arg(long)]
+        backend: Option<String>,
+        /// Absolute installed Pi 1.4.0 SDK dist/index.js (never a repository module)
+        #[arg(long)]
+        sdk_entrypoint: Option<PathBuf>,
         /// Auth directory (defaults to the active CLI directory)
         #[arg(long, value_name = "DIR")]
         auth_dir: Option<PathBuf>,
         /// Opt in to starting the official Provider CLI login in this private terminal
         #[arg(long)]
         login: bool,
-        /// Emit the versioned non-interactive `af/provider-setup@2` document
+        /// Emit `af/provider-setup@2` (Pi: `af/pi-provider-setup@1`)
         #[arg(long, conflicts_with = "login")]
         json: bool,
     },
@@ -1619,6 +1631,7 @@ pub(crate) enum ProviderAuthCommand {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
 pub(crate) enum ProviderKindArg {
+    Pi,
     Claude,
     Codex,
 }

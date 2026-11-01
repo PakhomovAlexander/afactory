@@ -446,7 +446,7 @@ fn registered_machine(home: &Path) -> String {
     std::fs::write(
         &registry,
         format!(
-            "version = 1\n[[providers]]\nid = \"codex-fixture\"\nkind = \"codex\"\nauth_dir = {:?}\n",
+            "version = 2\n[[providers]]\nid = \"codex-fixture\"\nkind = \"codex\"\nauth_dir = {:?}\n",
             auth.canonicalize().unwrap().to_str().unwrap()
         ),
     )

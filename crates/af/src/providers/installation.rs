@@ -138,6 +138,7 @@ pub(super) fn probe_gave_up(error: &str) -> bool {
 /// Whether a status probe's captured output is an answer af recognizes, whatever its exit code.
 pub(super) fn status_answered(kind: ProviderKind, captured: &str) -> bool {
     match kind {
+        ProviderKind::Pi => false,
         ProviderKind::Claude => serde_json::from_str::<serde_json::Value>(captured).is_ok(),
         ProviderKind::Codex => {
             captured
@@ -379,6 +380,7 @@ mod tests {
 
     fn spec(directory: &Path) -> ProviderSpec {
         ProviderSpec {
+            pi: None,
             id: "codex-main".into(),
             kind: ProviderKind::Codex,
             auth_dir: Some(directory.to_path_buf()),

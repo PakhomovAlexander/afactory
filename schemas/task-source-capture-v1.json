@@ -38,7 +38,7 @@
       "pattern": "^[^\\u0000-\\u001f\\u007f]+$"
     },
     "raw_source_id": {
-      "$ref": "urn:af:schema:task-contracts:1#/$defs/digest"
+      "$ref": "urn:af:schema:task-contracts:2#/$defs/digest"
     },
     "fields": {
       "type": "object",
@@ -58,10 +58,10 @@
         "additionalProperties": false,
         "properties": {
           "value_id": {
-            "$ref": "urn:af:schema:task-contracts:1#/$defs/digest"
+            "$ref": "urn:af:schema:task-contracts:2#/$defs/digest"
           },
           "text_id": {
-            "$ref": "urn:af:schema:task-contracts:1#/$defs/digest"
+            "$ref": "urn:af:schema:task-contracts:2#/$defs/digest"
           }
         },
         "required": [

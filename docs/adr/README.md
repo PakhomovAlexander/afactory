@@ -510,3 +510,5 @@ future readers need.
   Claw](0268-quarantine-flaky-tests-on-gate-evidence-and-confirm-them-on-claw.md)
 - [0269 — Bind comparison partition execution to reused build
   artifacts](0269-bind-comparison-partition-execution-to-reused-build-artifacts.md)
+- [0271 — Own the Pi SDK host and confine its
+  tools](0271-own-the-pi-sdk-host-and-confine-its-tools.md) (proposed)

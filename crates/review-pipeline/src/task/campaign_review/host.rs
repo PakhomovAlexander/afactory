@@ -6,7 +6,7 @@ use std::sync::Mutex;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use review_core::task::execution::{TaskInvocationV1, TaskOutputV1};
-use review_core::task::plan::{ExecutionPlanV1, WorkerExecutionV1};
+use review_core::task::plan::{ExecutionPlanV2, WorkerExecutionV2};
 use review_core::task::{ArtifactInputV1, TaskResultV1, TaskRevisionV1};
 use review_core::{EventType, NodeInvocationPayloadV1, NodeOutputReceiptPayloadV1, Producer};
 use review_graph::task::{CompiledOperator, ReviewOperation};
@@ -36,7 +36,7 @@ pub struct CampaignReviewTaskHost<'store, 'host> {
     compiler: &'host CampaignReviewPlanCompiler,
     captured: CapturedReviewCompilation,
     task: TaskRevisionV1,
-    plan: ExecutionPlanV1,
+    plan: ExecutionPlanV2,
     plan_id: String,
     lease: TaskLease,
     // The same adapter object handles admission and Review for one effective slot binding.
@@ -69,7 +69,7 @@ impl<'store, 'host> CampaignReviewTaskHost<'store, 'host> {
             .plan_id
             .clone()
             .ok_or("Review Task has no admitted plan")?;
-        let plan: ExecutionPlanV1 = serde_json::from_value(
+        let plan: ExecutionPlanV2 = serde_json::from_value(
             cas.get_artifact(&plan_id)
                 .map_err(|e| e.to_string())?
                 .payload,
@@ -886,7 +886,7 @@ impl TaskDomain for CampaignReviewTaskHost<'_, '_> {
         &self,
         cas: &Cas,
         task: &TaskRevisionV1,
-        plan: &ExecutionPlanV1,
+        plan: &ExecutionPlanV2,
         phase: &review_core::task::review_integration::TaskReviewIntegrationPhaseV1,
         evidence: &review_store::store::task::review_integration::TaskReviewIntegrationEvidence,
     ) -> Result<(), String> {
@@ -896,7 +896,7 @@ impl TaskDomain for CampaignReviewTaskHost<'_, '_> {
         &self,
         cas: &Cas,
         task: &TaskRevisionV1,
-        plan: &ExecutionPlanV1,
+        plan: &ExecutionPlanV2,
         phase: &review_core::task::review_integration::TaskReviewIntegrationPhaseV1,
         _report: &review_core::task::report::TaskRunReportV1,
         _events: &[NewEvent],
@@ -911,7 +911,7 @@ impl TaskDomain for CampaignReviewTaskHost<'_, '_> {
         &self,
         cas: &Cas,
         task: &TaskRevisionV1,
-        plan: &ExecutionPlanV1,
+        plan: &ExecutionPlanV2,
         parent: &TaskInvocationV1,
         children: &review_core::task::owned_children::TaskOwnedChildSetV1,
     ) -> Result<(), String> {
@@ -925,7 +925,7 @@ impl TaskDomain for CampaignReviewTaskHost<'_, '_> {
         &self,
         cas: &Cas,
         task: &TaskRevisionV1,
-        plan: &ExecutionPlanV1,
+        plan: &ExecutionPlanV2,
         parent: &TaskInvocationV1,
         children: &review_core::task::owned_children::TaskOwnedChildSetV1,
         facts: &[review_store::store::task::execution::owned::TaskOwnedChildEvidence],
@@ -966,7 +966,7 @@ impl TaskDomain for CampaignReviewTaskHost<'_, '_> {
         &self,
         cas: &Cas,
         task: &TaskRevisionV1,
-        plan: &ExecutionPlanV1,
+        plan: &ExecutionPlanV2,
         input: &TaskInvocationV1,
         output: &TaskOutputV1,
         definition: &review_graph::task::CompiledNode,
@@ -1035,8 +1035,8 @@ impl TaskDomain for CampaignReviewTaskHost<'_, '_> {
         cas: &Cas,
         previous: &TaskRevisionV1,
         next: &TaskRevisionV1,
-        previous_plan: &ExecutionPlanV1,
-        next_plan: &ExecutionPlanV1,
+        previous_plan: &ExecutionPlanV2,
+        next_plan: &ExecutionPlanV2,
         handoff: &review_core::task::review_handoff::TaskReviewHandoffV1,
     ) -> Result<(), String> {
         // CapturedTaskAuthority has recompiled the successor with its successor compiler.

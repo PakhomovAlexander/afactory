@@ -1,0 +1,42 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:af:schema:pi-provider-setup:1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema",
+    "id",
+    "kind",
+    "backend",
+    "outcome",
+    "detail"
+  ],
+  "properties": {
+    "schema": {
+      "const": "af/pi-provider-setup@1"
+    },
+    "id": {
+      "type": "string",
+      "minLength": 1
+    },
+    "kind": {
+      "const": "pi"
+    },
+    "backend": {
+      "const": "openai-codex"
+    },
+    "outcome": {
+      "enum": [
+        "registered",
+        "already_registered",
+        "registry_conflict",
+        "human_action_required"
+      ]
+    },
+    "detail": {
+      "type": "string",
+      "minLength": 1
+    }
+  },
+  "title": "Pi Provider setup @1"
+}

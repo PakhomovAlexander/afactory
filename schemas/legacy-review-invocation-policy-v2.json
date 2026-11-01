@@ -1,7 +1,7 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "$id": "urn:af:schema:legacy-review-invocation-policy:1",
-  "title": "legacy-review-invocation-policy@1",
+  "$id": "urn:af:schema:legacy-review-invocation-policy:2",
+  "title": "legacy-review-invocation-policy@2",
   "type": "object",
   "additionalProperties": false,
   "required": [
@@ -16,26 +16,26 @@
   ],
   "properties": {
     "task_policy_id": {
-      "$ref": "urn:af:schema:task-contracts:1#/$defs/digest"
+      "$ref": "urn:af:schema:task-contracts:2#/$defs/digest"
     },
     "dependency_id": {
-      "$ref": "urn:af:schema:task-contracts:1#/$defs/digest"
+      "$ref": "urn:af:schema:task-contracts:2#/$defs/digest"
     },
     "review_node": {
       "type": "string",
       "minLength": 1
     },
     "runner_digest": {
-      "$ref": "urn:af:schema:task-contracts:1#/$defs/digest"
+      "$ref": "urn:af:schema:task-contracts:2#/$defs/digest"
     },
     "execution_policy_digest": {
-      "$ref": "urn:af:schema:task-contracts:1#/$defs/digest"
+      "$ref": "urn:af:schema:task-contracts:2#/$defs/digest"
     },
     "execution": {
-      "$ref": "urn:af:schema:task-contracts:1#/$defs/workerExecution"
+      "$ref": "urn:af:schema:task-contracts:2#/$defs/workerExecution"
     },
     "result_type": {
-      "$ref": "urn:af:schema:task-contracts:1#/$defs/artifactType"
+      "$ref": "urn:af:schema:task-contracts:2#/$defs/artifactType"
     },
     "timeout_ms": {
       "type": "integer",

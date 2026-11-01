@@ -532,7 +532,7 @@ class SealedEvidence(unittest.TestCase):
         # Keep the actual wrapper, Make graph and receipt writer. Only expensive payloads
         # are stand-ins; never run a nested real gate from this preflight regression.
         preflight = ['task-preflight', 'prereqs', 'gate-owner', 'nextest-gate', 'stress-proof',
-                     'test-time-report', 'provider-auth-host', 'pr-report', 'pr-lines',
+                     'test-time-report', 'provider-auth-host', 'pi-host', 'pr-report', 'pr-lines',
                      'test-classes', 'test-catalog', 'performance-schemas',
                      'performance-kernel-harness']
         lint = ['fmt', 'lint', 'lint-diagnostic-features']
@@ -554,7 +554,7 @@ class SealedEvidence(unittest.TestCase):
             payloads = ['test-task-preflight.py', 'test-prereqs.py', 'test-gate-owner.py',
                         'test-nextest-gate.py', 'test-stress-proof.py',
                         'test-test-time-report.py',
-                        'test-provider-auth-host.py', 'test-check-pr-report.py',
+                        'test-provider-auth-host.py', 'test-pi-host.py', 'test-check-pr-report.py',
                         'test-pr-lines.py', 'test-class-python.py', 'test-classes.py',
                         'test-performance.py', 'performance/schemas.py', 'performance/cli.py',
                         'nextest-gate.py', 'changelog-notes.py', 'af-pin.py',

@@ -276,7 +276,7 @@ fn documents_redact_identity_and_provider_output() {
         &["provider", "status", "--json", "--usage"],
     );
     let reported = document(&status);
-    valid("provider-status-v4.json", &reported);
+    valid("provider-status-v5.json", &reported);
 
     for rendered in [out(&setup), out(&status)] {
         for leaked in [
@@ -500,7 +500,7 @@ exit 64
     let fast = run(&["provider", "status", "--json"]);
     assert_eq!(code(&fast), 0, "{}", err(&fast));
     let reported = document(&fast);
-    valid("provider-status-v4.json", &reported);
+    valid("provider-status-v5.json", &reported);
     assert_eq!(reported["usage_requested"], false);
     let provider = reported["providers"][0].clone();
     assert_eq!(provider["id"], "codex-main");
@@ -515,7 +515,7 @@ exit 64
     let probed = run(&["provider", "status", "--json", "--usage"]);
     assert_eq!(code(&probed), 7, "{}", err(&probed));
     let reported = document(&probed);
-    valid("provider-status-v4.json", &reported);
+    valid("provider-status-v5.json", &reported);
     assert_eq!(reported["usage_requested"], true);
     assert_eq!(reported["exit_code"], 7);
     let provider = reported["providers"][0].clone();
@@ -526,4 +526,125 @@ exit 64
     assert!(auth.join("usage-probe-log").is_file());
     let stderr = err(&probed);
     assert!(stderr.contains("authentication is unaffected"), "{stderr}");
+}
+
+#[test]
+fn pi_setup_status_and_exact_model_catalog_are_token_free_and_secret_free() {
+    let root = tempfile::tempdir().unwrap();
+    let work = root.path().join("work");
+    std::fs::create_dir(&work).unwrap();
+    let auth = root.path().join("auth");
+    let (sdk, path, state) = crate::fake_models::install_pi(root.path(), &auth, "review");
+    let invoke = |args: &[&str]| {
+        crate::common::af()
+            .args(args)
+            .current_dir(&work)
+            .env("HOME", root.path())
+            .env("XDG_CONFIG_HOME", root.path().join("config"))
+            .env("PATH", &path)
+            .env("AF_PROVIDERS_FILE", root.path().join("providers.toml"))
+            .env("NODE_OPTIONS", "--import=/DO_NOT_LOAD")
+            .env("OPENAI_API_KEY", "DO_NOT_USE_AMBIENT")
+            .output()
+            .unwrap()
+    };
+    let setup = invoke(&[
+        "provider",
+        "setup",
+        "pi-personal",
+        "--kind",
+        "pi",
+        "--backend",
+        "openai-codex",
+        "--auth-dir",
+        auth.to_str().unwrap(),
+        "--sdk-entrypoint",
+        sdk.to_str().unwrap(),
+        "--json",
+    ]);
+    assert!(
+        setup.status.success(),
+        "{}\n{}",
+        String::from_utf8_lossy(&setup.stdout),
+        String::from_utf8_lossy(&setup.stderr)
+    );
+    let value: Value = serde_json::from_slice(&setup.stdout).unwrap();
+    valid("pi-provider-setup-v1.json", &value);
+    for (args, schema) in [
+        (
+            vec!["provider", "status", "--json"],
+            "provider-status-v5.json",
+        ),
+        (
+            vec!["provider", "models", "pi-personal", "--json"],
+            "provider-models-v2.json",
+        ),
+        (
+            vec![
+                "provider",
+                "models",
+                "pi-personal",
+                "--resolve",
+                "o3/high",
+                "--json",
+            ],
+            "provider-models-v2.json",
+        ),
+    ] {
+        let out = invoke(&args);
+        assert!(
+            out.status.success(),
+            "{}\n{}",
+            String::from_utf8_lossy(&out.stdout),
+            String::from_utf8_lossy(&out.stderr)
+        );
+        valid(
+            schema,
+            &serde_json::from_slice::<Value>(&out.stdout).unwrap(),
+        );
+        let text = String::from_utf8(out.stdout).unwrap();
+        for secret in [
+            "synthetic-account",
+            "SYNTHETIC_ACCESS",
+            "SYNTHETIC_REFRESH",
+            "DO_NOT_USE_AMBIENT",
+        ] {
+            assert!(!text.contains(secret));
+        }
+    }
+    assert!(
+        !state.with_extension("json.calls").exists(),
+        "token-free command started inference"
+    );
+    let unsupported = invoke(&[
+        "provider",
+        "setup",
+        "pi-other",
+        "--kind",
+        "pi",
+        "--backend",
+        "anthropic",
+        "--auth-dir",
+        auth.to_str().unwrap(),
+        "--sdk-entrypoint",
+        sdk.to_str().unwrap(),
+        "--json",
+    ]);
+    assert!(!unsupported.status.success());
+    // Losing one optional SDK installation leaves the registry readable and removable.
+    std::fs::remove_file(&sdk).unwrap();
+    let status = invoke(&["provider", "status", "--json"]);
+    let value: Value = serde_json::from_slice(&status.stdout).unwrap();
+    valid("provider-status-v5.json", &value);
+    assert!(value["registry"]["warning"].is_null());
+    assert_ne!(value["providers"][0]["auth"], "authenticated");
+    assert!(!String::from_utf8_lossy(&status.stderr).contains("registry"));
+    let text = invoke(&["provider", "status"]);
+    assert!(String::from_utf8_lossy(&text.stdout).contains("Pi installation is missing"));
+    let removed = invoke(&["provider", "remove", "pi-personal"]);
+    assert!(
+        removed.status.success(),
+        "{}",
+        String::from_utf8_lossy(&removed.stderr)
+    );
 }

@@ -14,16 +14,16 @@
   ],
   "properties": {
     "task_id": {
-      "$ref": "urn:af:schema:task-contracts:1#/$defs/name"
+      "$ref": "urn:af:schema:task-contracts:2#/$defs/name"
     },
     "task_revision_id": {
-      "$ref": "urn:af:schema:task-contracts:1#/$defs/digest"
+      "$ref": "urn:af:schema:task-contracts:2#/$defs/digest"
     },
     "plan_id": {
-      "$ref": "urn:af:schema:task-contracts:1#/$defs/digest"
+      "$ref": "urn:af:schema:task-contracts:2#/$defs/digest"
     },
     "task_report_id": {
-      "$ref": "urn:af:schema:task-contracts:1#/$defs/digest"
+      "$ref": "urn:af:schema:task-contracts:2#/$defs/digest"
     },
     "through_sequence": {
       "type": "integer",

@@ -738,6 +738,22 @@ impl Sandbox {
         root
     }
 
+    /// Read authority for native confined tools: only the source and an actually attached
+    /// base. A neighboring directory's existence never grants access to it.
+    pub fn readable_roots(&self) -> Vec<PathBuf> {
+        let mut roots = vec![self.root.clone()];
+        if self
+            .attached
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .is_some()
+            && let Some(directory) = &self._dir
+        {
+            roots.push(directory.path().join("base"));
+        }
+        roots
+    }
+
     /// The base attached beside the tree, taken out of the handle for sealing.
     pub(crate) fn take_attached(&self) -> Option<AttachedBase> {
         self.attached

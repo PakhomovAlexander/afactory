@@ -376,7 +376,7 @@ pub(super) fn selected_prior_sets(
     round: &CampaignReviewRoundV1,
     report: &task::report::TaskRunReportV1,
 ) -> Result<(String, String), StoreError> {
-    let plan: ExecutionPlanV1 = payload(cas, predecessor_plan_id, task::EXECUTION_PLAN_V1)?;
+    let plan: ExecutionPlanV2 = payload(cas, predecessor_plan_id, task::EXECUTION_PLAN_V2)?;
     let graph: CompiledTask = payload(cas, &plan.compiled_graph_id, "af/CompiledTask@1")?;
     let mut sets = BTreeMap::<String, BTreeSet<String>>::new();
     for (node, definition) in &graph.nodes {

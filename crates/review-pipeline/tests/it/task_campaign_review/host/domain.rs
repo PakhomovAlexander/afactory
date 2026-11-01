@@ -93,7 +93,7 @@ pub(super) fn admit_source(
         .map(|node| {
             (
                 (*node).to_owned(),
-                review_core::task::plan::WorkerExecutionV1::Command {},
+                review_core::task::plan::WorkerExecutionV2::Command {},
             )
         })
         .collect();
@@ -111,7 +111,7 @@ pub(super) fn admit_source(
         .unwrap();
     let revision = plan::artifact(cas, review_core::task::TASK_REVISION_V1, &task);
     let (compiled, _) = compiler.compile(cas, &revision).unwrap();
-    let plan_id = plan::artifact(cas, review_core::task::EXECUTION_PLAN_V1, &compiled);
+    let plan_id = plan::artifact(cas, review_core::task::EXECUTION_PLAN_V2, &compiled);
     let authority = CapturedTaskAuthority::for_campaign_review(
         &compiler,
         &plan::RefuseExecution,

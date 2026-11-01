@@ -7,7 +7,7 @@ use review_core::Producer;
 use review_core::task::document::*;
 use review_core::task::execution::{TaskInvocationV1, TaskOutputV1};
 use review_core::task::pipeline::*;
-use review_core::task::plan::ExecutionPlanV1;
+use review_core::task::plan::ExecutionPlanV2;
 use review_core::task::{
     ArtifactInputV1, TaskAcceptanceV1, TaskExecutionV1, TaskResultV1, TaskRevisionV1,
 };
@@ -930,7 +930,7 @@ impl TaskDomain for DocumentTaskDomain {
         &self,
         cas: &Cas,
         _: &TaskRevisionV1,
-        _: &ExecutionPlanV1,
+        _: &ExecutionPlanV2,
         input: &TaskInvocationV1,
         output: &TaskOutputV1,
         _definition: &review_graph::task::CompiledNode,

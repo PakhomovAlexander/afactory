@@ -17,19 +17,19 @@
   ],
   "properties": {
     "policy_id": {
-      "$ref": "urn:af:schema:task-contracts:1#/$defs/digest"
+      "$ref": "urn:af:schema:task-contracts:2#/$defs/digest"
     },
     "subject_id": {
-      "$ref": "urn:af:schema:task-contracts:1#/$defs/digest"
+      "$ref": "urn:af:schema:task-contracts:2#/$defs/digest"
     },
     "snapshot_id": {
-      "$ref": "urn:af:schema:task-contracts:1#/$defs/digest"
+      "$ref": "urn:af:schema:task-contracts:2#/$defs/digest"
     },
     "finding_set_id": {
-      "$ref": "urn:af:schema:task-contracts:1#/$defs/digest"
+      "$ref": "urn:af:schema:task-contracts:2#/$defs/digest"
     },
     "demand_set_id": {
-      "$ref": "urn:af:schema:task-contracts:1#/$defs/digest"
+      "$ref": "urn:af:schema:task-contracts:2#/$defs/digest"
     },
     "invocation": {
       "$ref": "urn:af:schema:task-invocation:1"
@@ -58,10 +58,10 @@
       "type": "object",
       "maxProperties": 64,
       "propertyNames": {
-        "$ref": "urn:af:schema:task-contracts:1#/$defs/name"
+        "$ref": "urn:af:schema:task-contracts:2#/$defs/name"
       },
       "additionalProperties": {
-        "$ref": "urn:af:schema:task-contracts:1#/$defs/digest"
+        "$ref": "urn:af:schema:task-contracts:2#/$defs/digest"
       }
     },
     "missing_reviewers": {
@@ -69,7 +69,7 @@
       "maxItems": 64,
       "uniqueItems": true,
       "items": {
-        "$ref": "urn:af:schema:task-contracts:1#/$defs/name"
+        "$ref": "urn:af:schema:task-contracts:2#/$defs/name"
       }
     }
   },

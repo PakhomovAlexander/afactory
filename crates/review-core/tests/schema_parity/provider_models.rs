@@ -1,4 +1,4 @@
-//! The agent-facing `af/provider-models@1` document (ADR-0148).
+//! The agent-facing `af/provider-models@2` document (ADR-0148).
 //!
 //! Like the onboarding documents it carries no Rust type: `af provider models` builds it from
 //! what each harness's own protocol answered. The schema is the contract, and these cases pin
@@ -9,7 +9,7 @@
 use super::{assert_invalid, assert_valid};
 use serde_json::{Value, json};
 
-const SCHEMA: &str = "provider-models-v1.json";
+const SCHEMA: &str = "provider-models-v2.json";
 
 fn fable() -> Value {
     json!({
@@ -24,7 +24,7 @@ fn fable() -> Value {
 
 fn listed() -> Value {
     json!({
-        "schema": "af/provider-models@1",
+        "schema": "af/provider-models@2",
         "exit_code": 0,
         "token_free": true,
         "proves": "af recognises these spellings for this Provider",

@@ -2,8 +2,8 @@ use super::{assert_invalid, assert_valid, workspace_root};
 use review_core::task::{
     ArtifactInputV1, TaskAcceptanceV1, TaskExecutionV1, TaskPhaseV1,
     plan::{
-        EffectiveWorkerBindingV1, ExecutionPlanV1, IndependencePolicyV1, PlanDecisionV1,
-        WorkerExecutionV1, validate_independent_bindings,
+        EffectiveWorkerBindingV2, ExecutionPlanV2, IndependencePolicyV1, PlanDecisionV1,
+        WorkerExecutionV2, validate_independent_bindings,
     },
     review::{RepairAssessmentV1, ReviewConclusionV1, ReviewHistoryV1, VerificationContinuationV1},
 };
@@ -302,7 +302,7 @@ fn task_inspection_12_pairs_each_execution_record_type_with_its_own_generation()
     // it prints; a binding record rides beside it and is checked by its own schema.
     let record = settled(json!("7"));
     let document = |bindings: Value| {
-        json!({"schema":"af/task-inspection@14","task_id":"chain-history","revision_id":id('1'),
+        json!({"schema":"af/task-inspection@15","task_id":"chain-history","revision_id":id('1'),
             "phase":{"kind":"running"}, "state":{"phase":"running","outcome":null,"cause":null,"next_action":null}, "clock":{"wall_ms":60000,"started_unix_ms":1,"deadline_unix_ms":60001},"plan_id":id('2'),"chargeable_tokens":"7","attempts":1,
             "history":[],"run_reports":[],
             "execution_records":[{"artifact_id":id('3'),
@@ -310,17 +310,17 @@ fn task_inspection_12_pairs_each_execution_record_type_with_its_own_generation()
             "input_bindings":bindings})
     };
     assert_valid(
-        "task-inspection-v14.json",
+        "task-inspection-v15.json",
         &document(json!({"schema":"af.task-input-bindings/1",
             "bindings":{"history":{"artifact_id":id('a')}}})),
     );
     assert_invalid(
-        "task-inspection-v14.json",
+        "task-inspection-v15.json",
         &document(json!({"schema":"af.task-input-bindings/1","bindings":{}})),
         "a binding record with no bindings",
     );
     assert_invalid(
-        "task-inspection-v14.json",
+        "task-inspection-v15.json",
         &document(json!({"schema":"af.task-input-bindings/1",
             "bindings":{"history":{"artifact_id":id('a'),"surprise":true}}})),
         "an unknown binding field",
@@ -716,11 +716,17 @@ fn typed(contract: &str, value: Value) -> Result<(), String> {
 
 #[test]
 fn task_contract_positive_and_negative_fixtures() {
+    let schema = |contract: &str| {
+        format!(
+            "{contract}-v{}.json",
+            if contract == "execution-plan" { 2 } else { 1 }
+        )
+    };
     let manifest = fixture("content-ids");
     for name in manifest.as_object().unwrap().keys() {
         let contract = name.strip_suffix(".json").unwrap();
         let value = fixture(contract);
-        assert_valid(&format!("{contract}-v1.json"), &value);
+        assert_valid(&schema(contract), &value);
         typed(contract, value).unwrap_or_else(|e| panic!("{contract}: {e}"));
     }
     for case in fixture("negative").as_array().unwrap() {
@@ -728,8 +734,8 @@ fn task_contract_positive_and_negative_fixtures() {
         let why = case["why"].as_str().unwrap();
         let value = corpus::expand(&fixture(contract), case);
         match case["layer"].as_str() {
-            Some("shape") => assert_invalid(&format!("{contract}-v1.json"), &value, why),
-            Some("semantic") => assert_valid(&format!("{contract}-v1.json"), &value),
+            Some("shape") => assert_invalid(&schema(contract), &value, why),
+            Some("semantic") => assert_valid(&schema(contract), &value),
             _ => panic!("unknown negative fixture layer"),
         }
         assert!(
@@ -774,7 +780,7 @@ fn empty_tagged_variants_reject_hidden_fields() {
             .is_err()
     );
     assert!(
-        serde_json::from_value::<WorkerExecutionV1>(json!({"kind":"command","model":"hidden"}))
+        serde_json::from_value::<WorkerExecutionV2>(json!({"kind":"command","model":"hidden"}))
             .is_err()
     );
 }
@@ -825,7 +831,7 @@ fn output_affinity_can_reference_an_input_with_the_same_name() {
 
 #[test]
 fn approval_matches_only_exact_revision_plan_and_policy_and_never_dispatches() {
-    let mut plan: ExecutionPlanV1 = serde_json::from_value(fixture("execution-plan")).unwrap();
+    let mut plan: ExecutionPlanV2 = serde_json::from_value(fixture("execution-plan")).unwrap();
     let approval: PlanDecisionV1 = serde_json::from_value(fixture("plan-decision")).unwrap();
     assert!(plan.requires_developer_approval());
     assert!(approval.approves(&approval.plan_id, &plan));
@@ -839,13 +845,14 @@ fn approval_matches_only_exact_revision_plan_and_policy_and_never_dispatches() {
 
 #[test]
 fn provider_aliases_and_multi_role_packages_cannot_bypass_independence() {
-    let plan: ExecutionPlanV1 = serde_json::from_value(fixture("execution-plan")).unwrap();
-    let mut a: EffectiveWorkerBindingV1 = plan.bindings["author"].clone();
-    a.execution = WorkerExecutionV1::Model {
+    let plan: ExecutionPlanV2 = serde_json::from_value(fixture("execution-plan")).unwrap();
+    let mut a: EffectiveWorkerBindingV2 = plan.bindings["author"].clone();
+    a.execution = WorkerExecutionV2::Model {
         provider: "personal".into(),
         provider_kind: "claude".into(),
         principal_id: "account:one".into(),
         model: "fable".into(),
+        pi: None,
         effort: "high".into(),
     };
     let mut b = a.clone();
@@ -865,7 +872,7 @@ fn provider_aliases_and_multi_role_packages_cannot_bypass_independence() {
         .is_err()
     );
     b.package_digest = plan.engine_id.clone();
-    if let WorkerExecutionV1::Model { provider, .. } = &mut b.execution {
+    if let WorkerExecutionV2::Model { provider, .. } = &mut b.execution {
         *provider = "alias".into();
     }
     assert!(validate_independent_bindings(&a, &b, policy).is_err());
@@ -880,13 +887,13 @@ fn provider_aliases_and_multi_role_packages_cannot_bypass_independence() {
         )
         .is_ok()
     );
-    if let WorkerExecutionV1::Model { principal_id, .. } = &mut b.execution {
+    if let WorkerExecutionV2::Model { principal_id, .. } = &mut b.execution {
         *principal_id = "account:two".into();
     }
     assert!(validate_independent_bindings(&a, &b, policy).is_ok());
-    b.execution = WorkerExecutionV1::Command {};
+    b.execution = WorkerExecutionV2::Command {};
     assert!(validate_independent_bindings(&a, &b, policy).is_ok());
-    a.execution = WorkerExecutionV1::Command {};
+    a.execution = WorkerExecutionV2::Command {};
     assert!(validate_independent_bindings(&a, &b, policy).is_ok());
     assert!(
         validate_independent_bindings(
@@ -1233,7 +1240,7 @@ fn repair_context_and_decisions_bind_every_current_view_and_keep_original_proven
 fn fixed_planning_preparation_cannot_claim_business_acceptance_or_generated_authority() {
     use review_core::task::plan::PlanPreparationV1;
     let original = fixture("execution-plan");
-    let mut plan: ExecutionPlanV1 = serde_json::from_value(original.clone()).unwrap();
+    let mut plan: ExecutionPlanV2 = serde_json::from_value(original.clone()).unwrap();
     assert!(plan.preparation.is_none());
     assert_eq!(
         serde_json::to_value(&plan).unwrap(),
@@ -1247,27 +1254,27 @@ fn fixed_planning_preparation_cannot_claim_business_acceptance_or_generated_auth
     plan.generated_origins.clear();
     plan.validate().unwrap();
     let valid = serde_json::to_value(&plan).unwrap();
-    assert_valid("execution-plan-v1.json", &valid);
+    assert_valid("execution-plan-v2.json", &valid);
     let mut invalid = valid.clone();
     invalid["preparation"] = Value::Null;
     assert_invalid(
-        "execution-plan-v1.json",
+        "execution-plan-v2.json",
         &invalid,
         "Present preparation cannot be null",
     );
-    assert!(serde_json::from_value::<ExecutionPlanV1>(invalid).is_err());
+    assert!(serde_json::from_value::<ExecutionPlanV2>(invalid).is_err());
     let mut invalid = valid;
     invalid["preparation"]["auto_approved"] = json!(true);
     assert_invalid(
-        "execution-plan-v1.json",
+        "execution-plan-v2.json",
         &invalid,
         "Preparation cannot smuggle approval",
     );
-    assert!(serde_json::from_value::<ExecutionPlanV1>(invalid).is_err());
+    assert!(serde_json::from_value::<ExecutionPlanV2>(invalid).is_err());
     plan.acceptance = original_coverage;
     assert!(plan.validate().is_err());
     assert_invalid(
-        "execution-plan-v1.json",
+        "execution-plan-v2.json",
         &serde_json::to_value(&plan).unwrap(),
         "Preparation cannot certify business acceptance",
     );
@@ -1276,7 +1283,7 @@ fn fixed_planning_preparation_cannot_claim_business_acceptance_or_generated_auth
     assert!(!plan.generated_origins.is_empty());
     assert!(plan.validate().is_err());
     assert_invalid(
-        "execution-plan-v1.json",
+        "execution-plan-v2.json",
         &serde_json::to_value(&plan).unwrap(),
         "Bootstrap is fixed, never generated",
     );
@@ -1328,4 +1335,107 @@ fn proposals_are_bounded_pipeline_toml_and_never_worker_installation_or_approval
         &serde_json::to_value(invalid).unwrap(),
         "Generated code cannot shadow captured package names",
     );
+}
+
+#[test]
+fn pi_authority_is_closed_versioned_and_required_only_for_pi_models() {
+    use review_core::task::plan::{PiAuthorityV1, WorkerExecutionV2};
+    let authority = PiAuthorityV1 {
+        backend: "openai-codex".into(),
+        auth_method: "oauth".into(),
+        sdk_version: "1.4.0".into(),
+        sdk_entrypoint: "/installed/sdk/dist/index.js".into(),
+        node_program: "/installed/node".into(),
+        auth_context_id: format!("sha256:{}", "a".repeat(64)),
+        model_config_id: format!("sha256:{}", "b".repeat(64)),
+        adapter_policy_id: format!("sha256:{}", "c".repeat(64)),
+    };
+    let execution = WorkerExecutionV2::Model {
+        provider: "pi-personal".into(),
+        provider_kind: "pi".into(),
+        principal_id: format!("sha256:{}", "d".repeat(64)),
+        model: "o3".into(),
+        effort: "high".into(),
+        pi: Some(Box::new(authority)),
+    };
+    execution.validate().unwrap();
+    let value = serde_json::to_value(execution).unwrap();
+    let valid = |v: &Value| {
+        super::validator("task-provider-admission-v2.json").is_valid(&json!({
+        "plan_id":format!("sha256:{}","e".repeat(64)),"invocation_policy_id":format!("sha256:{}","f".repeat(64)),
+        "bindings":["root.pi"],"execution":v,"outcome":"passed"}))
+    };
+    assert!(valid(&value));
+    for (field, wrong) in [
+        ("backend", json!("anthropic")),
+        ("auth_method", json!("api_key")),
+        ("sdk_version", json!("1.5.0")),
+        ("model_config_id", json!("unknown")),
+    ] {
+        let mut bad = value.clone();
+        bad["pi"][field] = wrong;
+        assert!(!valid(&bad), "{field}");
+        assert!(
+            serde_json::from_value::<WorkerExecutionV2>(bad)
+                .unwrap()
+                .validate()
+                .is_err()
+        );
+    }
+    let mut missing = value.clone();
+    missing.as_object_mut().unwrap().remove("pi");
+    assert!(!valid(&missing));
+    assert!(
+        serde_json::from_value::<WorkerExecutionV2>(missing)
+            .unwrap()
+            .validate()
+            .is_err()
+    );
+    let mut exposed = value.clone();
+    exposed["principal_id"] = json!("unhashed-account");
+    assert!(!valid(&exposed));
+    assert!(
+        serde_json::from_value::<WorkerExecutionV2>(exposed)
+            .unwrap()
+            .validate()
+            .is_err()
+    );
+    let mut bad = value.clone();
+    bad["provider_kind"] = json!("codex");
+    assert!(!valid(&bad));
+    assert!(
+        serde_json::from_value::<WorkerExecutionV2>(bad)
+            .unwrap()
+            .validate()
+            .is_err()
+    );
+}
+
+#[test]
+fn pi_host_and_setup_protocols_reject_old_shapes_and_secret_fields() {
+    let ready = json!({"schema":"af.pi-host/1","type":"ready","principal":format!("sha256:{}","a".repeat(64)),
+        "backend":"openai-codex","auth_method":"oauth","version":"1.4.0","models":[{"id":"o3","efforts":["high"],"identity":format!("sha256:{}","b".repeat(64))}]});
+    assert_valid("pi-host-v1.json", &ready);
+    for (field, wrong) in [
+        ("schema", json!("af.pi-host/0")),
+        ("version", json!("1.5.0")),
+        ("backend", json!("anthropic")),
+        ("access", json!("secret")),
+    ] {
+        let mut bad = ready.clone();
+        bad[field] = wrong;
+        assert_invalid("pi-host-v1.json", &bad, field);
+    }
+    let usage = json!({"schema":"af.pi-host/1","type":"usage","inference":1,"complete":false,"input":null,"output":2,"cache_read":null,"cache_write":null,"reasoning":null});
+    assert_valid("pi-host-v1.json", &usage);
+    let mut missing = usage;
+    missing.as_object_mut().unwrap().remove("input");
+    assert_invalid("pi-host-v1.json", &missing, "missing counter");
+    let setup = json!({"schema":"af/pi-provider-setup@1","id":"pi-personal","kind":"pi","backend":"openai-codex","outcome":"registered","detail":"Pi SDK 1.4.0 registered"});
+    assert_valid("pi-provider-setup-v1.json", &setup);
+    let registry = json!({"version":2,"providers":[{"id":"pi-personal","kind":"pi","auth_dir":"/private/profile","backend":"openai-codex","sdk_entrypoint":"/installed/sdk/dist/index.js"}]});
+    assert_valid("provider-registry-v2.json", &registry);
+    let mut old = registry;
+    old["version"] = json!(1);
+    assert_invalid("provider-registry-v2.json", &old, "old registry");
 }

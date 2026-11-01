@@ -68,3 +68,8 @@ and an ADR disagree, the ADR wins. Shared vocabulary is defined in
   document. Accepted 2026-10-30; rollout step 1, the raw issue template, the loosened bug
   template, `scripts/backlog-labels.py` and the filing rule in [`AGENTS.md`](../../AGENTS.md),
   ships; steps 2 to 5 (the kind and schema, the runner, the backfill, the plugin) follow.
+- [`pi-provider.md`](pi-provider.md) — native Pi Provider through AF's embedded SDK host:
+  Pi 1.4.0, Node >=22.19 and explicitly registered `openai-codex` stored OAuth, exact account
+  and model admission, confined file tools and partial accounting. Token-free real SDK and
+  hermetic runtime fixtures cover the boundaries; paid live smoke was not run. Architecture
+  adjustment: proposed [ADR-0271](../adr/0271-own-the-pi-sdk-host-and-confine-its-tools.md).

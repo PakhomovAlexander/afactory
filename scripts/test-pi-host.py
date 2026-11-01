@@ -1,0 +1,401 @@
+#!/usr/bin/env python3
+"""Token-free tests of AF's embedded Pi host; official SDK is optional in CI."""
+import os
+import json
+import shlex
+import base64
+from pathlib import Path
+import shutil
+import subprocess
+import tempfile
+import unittest
+from unittest.mock import patch
+
+ROOT = Path(__file__).resolve().parent.parent
+HOST = ROOT / 'crates/review-runner-pi/src/host.mjs'
+SDK_PACKAGE = Path('node_modules/@earendil-works/pi-coding-agent/dist/index.js')
+
+
+def installed_sdk():
+    """Find a trusted external installation without executing a launcher or npm.
+
+    An explicit test SDK is authoritative: a bad path fails instead of silently
+    substituting fixture coverage. The host checks package identity and version.
+    """
+    if os.environ.get('AF_PI_TEST_HERMETIC') == '1':
+        return None
+    explicit = os.environ.get('AF_PI_TEST_SDK')
+    if explicit:
+        candidates = [Path(explicit).expanduser()]
+        if not candidates[0].is_absolute():
+            raise ValueError('AF_PI_TEST_SDK must be an absolute installed SDK entrypoint')
+    else:
+        candidates = [Path.home() / '.pi/agent/install/releases/1.4.0' / SDK_PACKAGE]
+        launcher = shutil.which('pi')
+        if launcher:
+            resolved = Path(launcher).resolve()
+            candidates += [resolved.parent.parent / 'index.js',
+                           resolved.parent.parent / 'install/releases/1.4.0' / SDK_PACKAGE]
+    for candidate in candidates:
+        entry = candidate.resolve()
+        repository_owned = (entry.is_relative_to(ROOT) or any(
+            (parent / '.git').exists() or (parent / '.af').is_dir()
+            for parent in entry.parents))
+        if entry.is_file() and not repository_owned:
+            return str(entry)
+        if explicit:
+            raise ValueError('AF_PI_TEST_SDK must name an existing SDK outside repositories')
+    return None
+
+
+class HostTests(unittest.TestCase):
+    def test_sdk_discovery_is_portable_explicit_and_never_executes_a_launcher(self):
+        with tempfile.TemporaryDirectory() as directory:
+            home = Path(directory)
+            entry = home / '.pi/agent/install/releases/1.4.0' / SDK_PACKAGE
+            entry.parent.mkdir(parents=True)
+            entry.write_text('not executed by discovery')
+            launcher = home / '.pi/agent/bin/pi'
+            launcher.parent.mkdir(parents=True)
+            launcher.write_text('not executed by discovery')
+            with patch.dict(os.environ, {}, clear=True), patch.object(Path, 'home', return_value=home), \
+                    patch.object(shutil, 'which', return_value=None):
+                self.assertEqual(installed_sdk(), str(entry.resolve()))
+                with patch.object(Path, 'home', return_value=home / 'empty'), \
+                        patch.object(shutil, 'which', return_value=str(launcher)):
+                    self.assertEqual(installed_sdk(), str(entry.resolve()))
+                bundled_cli = entry.parent / 'bundle/cli.js'
+                bundled_cli.parent.mkdir()
+                bundled_cli.write_text('not executed by discovery')
+                with patch.object(Path, 'home', return_value=home / 'empty'), \
+                        patch.object(shutil, 'which', return_value=str(bundled_cli)):
+                    self.assertEqual(installed_sdk(), str(entry.resolve()))
+                with patch.dict(os.environ, {'AF_PI_TEST_SDK': str(entry)}):
+                    self.assertEqual(installed_sdk(), str(entry.resolve()))
+                for invalid in ['relative/index.js', str(home / 'missing'), str(HOST)]:
+                    with patch.dict(os.environ, {'AF_PI_TEST_SDK': invalid}):
+                        with self.assertRaises(ValueError):
+                            installed_sdk()
+                with patch.dict(os.environ, {'AF_PI_TEST_HERMETIC': '1'}):
+                    self.assertIsNone(installed_sdk())
+                entry.unlink()
+                self.assertIsNone(installed_sdk())
+
+    def test_host_entrypoint_probe_and_safe_auth_refusal(self):
+        node = shutil.which('node')
+        self.assertIsNotNone(node)
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            sdk = installed_sdk()
+            official = bool(sdk)
+            if not sdk:
+                package = root / 'installed/node_modules/@earendil-works/pi-coding-agent'
+                (package / 'dist/core').mkdir(parents=True)
+                (package / 'package.json').write_text(json.dumps({
+                    'name': '@earendil-works/pi-coding-agent', 'version': '1.4.0',
+                    'type': 'module'}))
+                state = root / 'state.json'
+                state.write_text('{"mode":"review"}')
+                source = (ROOT / 'fixtures/pi-sdk/index.mjs').read_text()
+                (package / 'dist/index.js').write_text(source.replace(
+                    'AF_FIXTURE_STATE', json.dumps(str(state))))
+                shutil.copyfile(ROOT / 'fixtures/pi-sdk/auth-storage.mjs',
+                                package / 'dist/core/auth-storage.js')
+                for dependency in ('pi-ai', 'pi-agent-core'):
+                    target = package.parent / dependency
+                    (target / 'dist').mkdir(parents=True)
+                    (target / 'package.json').write_text(json.dumps({
+                        'name': '@earendil-works/' + dependency, 'version': '1.4.0',
+                        'type': 'module'}))
+                (package.parent / 'pi-ai/dist/models.js').write_text(
+                    "export const getSupportedThinkingLevels=()=>['high'];")
+                sdk = str(package / 'dist/index.js')
+            auth = root / 'auth'
+            auth.mkdir()
+            request = {'schema': 'af.pi-host/1', 'type': 'init', 'backend': 'openai-codex',
+                       'sdk': sdk, 'auth_dir': str(auth), 'principal': None,
+                       'cwd': directory, 'home': directory, 'readable': [],
+                       'writable': [], 'probe': True}
+            claims = json.dumps({'https://api.openai.com/auth': {'chatgpt_account_id': 'SYNTHETIC_ACCOUNT'}}).encode()
+            access = 'e30.' + base64.urlsafe_b64encode(claims).decode().rstrip('=') + '.synthetic'
+            credential = {'type': 'oauth', 'accountId': 'SYNTHETIC_ACCOUNT',
+                          'access': access, 'refresh': 'PRIVATE_REFRESH',
+                          'expires': 9999999999999}
+            for value, expected in [(credential, 'ready'),
+                                    ({'type': 'api_key', 'key': '!touch ' + shlex.quote(str(root / 'helper-ran'))}, 'error'),
+                                    ({**credential, 'accountId': ''}, 'error')]:
+                original = json.dumps({'openai-codex': value})
+                (auth / 'auth.json').write_text(original)
+                result = subprocess.run([node, '--no-addons', str(HOST)],
+                                        input=json.dumps(request) + '\n', text=True,
+                                        capture_output=True, cwd=root,
+                                        env={'HOME': directory, 'PI_OFFLINE': '1',
+                                             'PI_TELEMETRY': 'off'}, timeout=30, check=False)
+                self.assertFalse((root / 'helper-ran').exists(), 'credential helper executed')
+                self.assertEqual((auth / 'auth.json').read_text(), original, 'probe edited auth')
+                records = [json.loads(line) for line in result.stdout.splitlines()]
+                self.assertEqual(len(records), 1, result.stderr)
+                self.assertEqual(records[0]['type'], expected)
+                if expected == 'ready':
+                    ready = records[0]
+                self.assertEqual(result.returncode, 0 if expected == 'ready' else 1)
+                if expected == 'error':
+                    self.assertEqual(records[0]['code'], 'unsupported_auth')
+                for secret in [access, 'PRIVATE_REFRESH', 'SYNTHETIC_ACCOUNT',
+                               '!credential-helper']:
+                    self.assertNotIn(secret, result.stdout + result.stderr)
+
+            # Exercise the real SDK's inference/event/tool loop with an in-process HTTP
+            # response, never a service call. CI drives the same host via its SDK fixture.
+            wrapper = root / 'invoke.mjs'
+            wrapper.write_text(r'''
+import assert from 'node:assert/strict';
+import fs from 'node:fs';
+import {pathToFileURL} from 'node:url';
+import {zstdDecompressSync} from 'node:zlib';
+let calls=0; let websockets=0;
+const reply = {schema:'af.worker-reply/1',outputs:{report:[{summary:'SDK_RESULT'}]}};
+globalThis.WebSocket = class { constructor() { websockets++; throw Error('WebSocket forbidden'); } };
+globalThis.fetch = async (url, options) => {
+  assert.equal(String(url),'https://chatgpt.com/backend-api/codex/responses');
+  const headers = new Headers(options.headers);
+  assert.equal(headers.get('chatgpt-account-id'),'SYNTHETIC_ACCOUNT');
+  assert(headers.get('authorization').startsWith('Bearer e30.'));
+  assert(++calls <= 2, 'hidden inference or HTTP retry');
+  const body = headers.get('content-encoding')==='zstd'
+    ? zstdDecompressSync(options.body).toString('utf8') : String(options.body);
+  if (calls===2) {
+    assert(body.includes('CONFINED_SDK_TOOL_RESULT'), 'read result missing from SDK turn');
+    assert.equal(fs.readFileSync('turn-created/nested/file','utf8'),'SDK_NESTED_WRITE');
+    const outputs = JSON.parse(body).input.filter(item=>item.type==='function_call_output');
+    assert.equal(outputs.length,2, 'SDK must dispatch both registered tool schemas');
+    assert(outputs.some(item=>JSON.stringify(item.output).includes('written')), 'write result missing from SDK turn');
+  }
+  const items = calls===1
+    ? [{type:'function_call',id:'fc_1',call_id:'call_1',name:'read',arguments:'{"path":"inside"}'},
+       {type:'function_call',id:'fc_2',call_id:'call_2',name:'write',arguments:'{"path":"turn-created/nested/file","content":"SDK_NESTED_WRITE"}'}]
+    : [{type:'message',id:'msg_2',role:'assistant',status:'completed',content:[{type:'output_text',text:JSON.stringify(reply),annotations:[]}]}];
+  const events = [
+    ...items.flatMap((item,output_index)=>[
+      {type:'response.output_item.added',output_index,item},
+      {type:'response.output_item.done',output_index,item}]),
+    {type:'response.completed',response:{id:'resp_'+calls,status:'completed',output:items,usage:{input_tokens:12,output_tokens:3,input_tokens_details:{cached_tokens:2},output_tokens_details:{reasoning_tokens:1}}}},
+  ];
+  if (process.argv[4]==='invalid' && calls===2) events.at(-1).response.usage.input_tokens=-1;
+  return new Response(events.map(e=>'data: '+JSON.stringify(e)+'\n\n').join(''),
+    {status:200,headers:{'content-type':'text/event-stream'}});
+};
+const host = await import(pathToFileURL(process.argv[2]).href);
+await host.main();
+assert.equal(websockets,0);
+if (process.argv[3]==='official') assert.equal(calls,2);
+''')
+            (auth / 'auth.json').write_text(json.dumps({'openai-codex': credential}))
+            (root / 'inside').write_text('CONFINED_SDK_TOOL_RESULT')
+            selected = next(model for model in ready['models'] if 'high' in model['efforts'])
+            invocation = {**request, 'probe': False, 'principal': ready['principal'],
+                          'readable': [directory], 'writable': [directory]}
+            prepare = {'schema': 'af.pi-host/1', 'type': 'prepare',
+                       'model': selected['id'], 'effort': 'high',
+                       'model_identity': selected['identity']}
+            prompt = {'schema': 'af.pi-host/1', 'type': 'prompt',
+                      'text': 'Read inside, write turn-created/nested/file, then return the typed reply.'}
+            result = subprocess.run([node, '--no-addons', str(wrapper), str(HOST),
+                                     'official' if official else 'fixture'],
+                                    input=''.join(json.dumps(record) + '\n' for record in
+                                                  [invocation, prepare, prompt]),
+                                    text=True, capture_output=True, cwd=root,
+                                    env={'HOME': directory, 'PI_OFFLINE': '1',
+                                         'PI_TELEMETRY': 'off'}, timeout=30, check=False)
+            self.assertEqual(result.returncode, 0, result.stderr)
+            records = [json.loads(line) for line in result.stdout.splitlines()]
+            self.assertEqual(records[-1]['type'], 'settled', records)
+            self.assertFalse(any(record['type'] == 'error' for record in records), records)
+            finalized = [record for record in records if record['type'] == 'usage'
+                         and record['complete']]
+            self.assertEqual([record['inference'] for record in finalized],
+                             [1, 2] if official else [1])
+            if official:
+                self.assertEqual(json.loads(records[-2]['text']), {
+                    'schema': 'af.worker-reply/1', 'outputs': {'report': [{'summary': 'SDK_RESULT'}]}})
+                self.assertEqual((root / 'turn-created/nested/file').read_text(), 'SDK_NESTED_WRITE')
+                self.assertTrue(all(record['input'] == 12 and record['cache_read'] == 2
+                                    and record['output'] == 3 and record['reasoning'] == 1
+                                    and record['cache_write'] is None for record in finalized))
+                self.assertEqual(sum(record['input'] - record['cache_read'] + record['output']
+                                     for record in finalized), 26)
+            print('official Pi SDK agent turn/read/nested write/typed reply/native usage: ' +
+                  ('passed (mocked transport; no paid call)' if official else
+                   'not run (SDK absent or hermetic mode; fixture protocol passed)'))
+            for secret in [access, 'PRIVATE_REFRESH', 'SYNTHETIC_ACCOUNT']:
+                self.assertNotIn(secret, result.stdout + result.stderr)
+            if official:
+                invalid = subprocess.run([node, '--no-addons', str(wrapper), str(HOST),
+                                          'official', 'invalid'],
+                                         input=''.join(json.dumps(record) + '\n' for record in
+                                                       [invocation, prepare, prompt]),
+                                         text=True, capture_output=True, cwd=root,
+                                         env={'HOME': directory, 'PI_OFFLINE': '1',
+                                              'PI_TELEMETRY': 'off'}, timeout=30, check=False)
+                self.assertEqual(invalid.returncode, 0, invalid.stderr)
+                records = [json.loads(line) for line in invalid.stdout.splitlines()]
+                self.assertEqual(records[-1], {'schema': 'af.pi-host/1', 'type': 'error',
+                                               'code': 'inference_failed'})
+                self.assertFalse(any(record['type'] == 'settled' for record in records))
+                observed = [record for record in records if record['type'] == 'usage']
+                self.assertEqual(observed[-1]['output'], 3)
+                self.assertIsNone(observed[-1]['input'])
+                self.assertFalse(observed[-1]['complete'])
+                for secret in [access, 'PRIVATE_REFRESH', 'SYNTHETIC_ACCOUNT']:
+                    self.assertNotIn(secret, invalid.stdout + invalid.stderr)
+
+    def test_confined_tools_identity_rotation_and_resource_contract(self):
+        node = shutil.which('node')
+        self.assertIsNotNone(node, 'host fixture requires Node, also used by markdownlint')
+        with tempfile.TemporaryDirectory() as directory:
+            script = Path(directory) / 'test.mjs'
+            script.write_text(r'''
+import assert from 'node:assert/strict';
+import fs from 'node:fs';
+import path from 'node:path';
+import {pathToFileURL} from 'node:url';
+globalThis.fetch = async () => { throw Error('Network forbidden during SDK construction/tools'); };
+globalThis.WebSocket = class { constructor() { throw Error('WebSocket forbidden'); } };
+const host = await import(pathToFileURL(process.argv[2]).href);
+const root = path.dirname(process.argv[1]);
+const work = path.join(root, 'work'); fs.mkdirSync(work);
+const base = path.join(root, 'base'); fs.mkdirSync(base);
+fs.writeFileSync(path.join(root,'outside'),'SECRET_MARKER');
+fs.writeFileSync(path.join(base,'before'),'base');
+fs.symlinkSync(path.join(root,'outside'),path.join(work,'link'));
+fs.symlinkSync(root,path.join(work,'dirlink'));
+fs.writeFileSync(path.join(work,'inside'),'safe');
+const tools = host.confinedTools(work,[work,base],[work]);
+const run = (name,args) => tools.find(t=>t.name===name).execute('test',args);
+await assert.rejects(run('write',{path:'.',content:'bad'}));
+for (const target of [path.join(root,'outside'),'../outside','link','dirlink/outside']) {
+  for (const name of ['read','write','edit','grep','find','ls']) {
+    await assert.rejects(run(name,{path:target,content:'bad',oldText:'SECRET',newText:'bad',pattern:'SECRET'}));
+  }
+}
+assert.equal(fs.readFileSync(path.join(root,'outside'),'utf8'),'SECRET_MARKER');
+assert.equal((await run('read',{path:'../base/before'})).content[0].text,'base');
+assert.equal((await run('read',{path:path.join(work,'inside')})).content[0].text,'safe');
+await assert.rejects(run('write',{path:'../base/before',content:'bad'}));
+await run('write',{path:'new',content:'first'});
+await run('write',{path:'new-directory/nested/file',content:'created inside grant'});
+assert.equal(fs.readFileSync(path.join(work,'new-directory/nested/file'),'utf8'),'created inside grant');
+await run('edit',{path:'new',oldText:'first',newText:'next'});
+assert.equal((await run('read',{path:'new'})).content[0].text,'next');
+assert((await run('grep',{path:'.',pattern:'safe'})).content[0].text.includes('inside'));
+assert(!(await run('ls',{path:'.'})).content[0].text.includes('link'));
+assert.deepEqual(host.confinedTools(work,[work],[]).map(t=>t.name).sort(),['find','grep','ls','read']);
+assert(!tools.some(t=>['bash','shell','codemode','tool_search'].includes(t.name)));
+const controller = new AbortController(); controller.abort();
+await assert.rejects(tools[0].execute('test',{path:'inside'},controller.signal));
+const token = (account,nonce='original') => 'e30.' + Buffer.from(JSON.stringify({'https://api.openai.com/auth':{chatgpt_account_id:account},nonce})).toString('base64url') + '.synthetic';
+const credential = {type:'oauth',accountId:'synthetic-account',access:token('synthetic-account'),refresh:'PRIVATE_REFRESH',expires:100};
+const id = host.principal(credential);
+assert(!id.includes('PRIVATE')); assert.equal(id,host.principal({...credential,access:token('synthetic-account','rotation')}));
+assert.notEqual(id,host.principal({...credential,accountId:'replacement',access:token('replacement')}));
+assert.throws(()=>host.principal({...credential,access:token('replacement')}));
+for (const bad of [undefined,{type:'api_key',key:'!echo secret'},{...credential,accountId:''}]) assert.throws(()=>host.principal(bad));
+let current = credential;
+const storage = {read:async()=>{throw Error('helper-capable read forbidden');}, modify:async(_id,fn)=>{const next=await fn(current); if(next!==undefined)current=next; return current;}};
+const guarded = host.guardedCredentials(storage,id);
+await guarded.read('openai-codex');
+await guarded.modify('openai-codex',async(c)=>({...c,access:token('synthetic-account','rotation')}));
+assert.equal(current.access,token('synthetic-account','rotation'));
+await guarded.modify('openai-codex',async()=>undefined);
+assert.equal(current.access,token('synthetic-account','rotation'));
+await assert.rejects(guarded.modify('openai-codex',async(c)=>({...c,accountId:'replacement'})));
+current={...credential,accountId:'replacement',access:token('replacement')};
+await assert.rejects(guarded.read('openai-codex'));
+assert.equal(await guarded.read('anthropic'),undefined);
+let options;
+const model = {id:'fixture',provider:'openai-codex',api:'openai-codex-responses',baseUrl:'https://chatgpt.com/backend-api'};
+const sdk = {
+  createExtensionRuntime:()=>({}),
+  SettingsManager:{inMemory:(settings,opts)=>({settings,opts})},
+  SessionManager:{inMemory:(cwd)=>({cwd})},
+  createAgentSession:async(o)=>{
+    options=o;
+    return {session:{model,thinkingLevel:'high',getActiveToolNames:()=>o.tools,
+      setAutoRetryEnabled:()=>{},setAutoCompactionEnabled:()=>{},dispose:()=>{}}};
+  },
+};
+await host.createSession(sdk,{},model,'high',work,[work],[],root);
+assert.equal(options.noTools,'all');
+assert.equal(options.settingsManager.settings.retry.provider.maxRetries,0);
+assert.equal(options.settingsManager.settings.retry.enabled,false);
+assert.equal(options.settingsManager.settings.compaction.enabled,false);
+assert.equal(options.settingsManager.settings.cacheWarming,'off');
+assert.equal(options.settingsManager.opts.projectTrusted,false);
+assert.deepEqual(options.resourceLoader.getExtensions().extensions,[]);
+assert.deepEqual(options.resourceLoader.getAgentsFiles().agentsFiles,[]);
+assert.deepEqual(options.resourceLoader.getSkills().skills,[]);
+assert.deepEqual(options.resourceLoader.getPrompts().prompts,[]);
+assert.deepEqual(options.resourceLoader.getThemes().themes,[]);
+assert.throws(()=>options.resourceLoader.extendResources({}));
+let disposed = false;
+const changedSdk = {...sdk, createAgentSession:async(o)=>{
+  const result = await sdk.createAgentSession(o);
+  result.session.model = {...model,baseUrl:'https://refused.invalid'};
+  result.session.dispose = ()=>{disposed=true;};
+  return result;
+}};
+await assert.rejects(host.createSession(changedSdk,{},model,'high',work,[work],[],root));
+assert(disposed, 'SDK endpoint drift must dispose before private input');
+// Real SDK creation exercises the actual runtime and wrapped tool registry with no auth or call.
+if (process.argv[3]) {
+  const real = await host.loadSdk(process.argv[3]);
+  const runtime = await host.createRuntime(real,real.AuthStorage.inMemory());
+  const selected = runtime.getModels('openai-codex')[0];
+  const result = await host.createSession(real,runtime,selected,'high',work,[work,base],[work],root);
+  assert.equal(result.settings.getProviderRetrySettings().maxRetries,0);
+  assert.equal(result.settings.getCompactionEnabled(),false);
+  assert.equal(result.settings.getRetryEnabled(),false);
+  assert.equal(result.settings.getCacheWarmingMode(),'off');
+  assert.deepEqual(result.session.resourceLoader.getAgentsFiles().agentsFiles,[]);
+  const active = result.session.agent.state.tools;
+  assert.deepEqual(active.map(t=>t.name).sort(),['edit','find','grep','ls','read','write']);
+  const read = active.find(t=>t.name==='read');
+  assert.equal((await read.execute('test',{path:'inside'})).content[0].text,'safe');
+  assert.equal((await read.execute('test',{path:'../base/before'})).content[0].text,'base');
+  await assert.rejects(read.execute('test',{path:'../outside'}));
+  await assert.rejects(read.execute('test',{path:'link'}));
+  const write = active.find(t=>t.name==='write');
+  await assert.rejects(write.execute('test',{path:'../outside',content:'bad'}));
+  await assert.rejects(write.execute('test',{path:'../base/new/nested/file',content:'bad'}));
+  await assert.rejects(write.execute('test',{path:'dirlink/new/nested/file',content:'bad'}));
+  await write.execute('test',{path:'sdk-created/nested/file',content:'confined'});
+  assert.equal(fs.readFileSync(path.join(work,'sdk-created/nested/file'),'utf8'),'confined');
+  result.session.dispose();
+  const readonly = await host.createSession(real,runtime,selected,'high',work,[work,base],[],root);
+  assert.deepEqual(readonly.session.getActiveToolNames().sort(),['find','grep','ls','read']);
+  readonly.session.dispose();
+}
+''')
+            sdk = installed_sdk()
+            env = {'HOME': directory, 'PI_OFFLINE': '1', 'PI_TELEMETRY': 'off'}
+            # Synthetic ambient customizations must remain unobserved by session construction.
+            agent = Path(directory) / '.pi/agent'
+            agent.mkdir(parents=True)
+            (agent / 'settings.json').write_text('{"extensions":["./sentinel.mjs"],'
+                                               '"mcpServers":{"bad":{"command":"false"}}}')
+            (agent / 'sentinel.mjs').write_text('throw new Error("AMBIENT_EXTENSION");')
+            (agent / 'models.json').write_text('INVALID_AMBIENT_MODEL_OVERRIDE')
+            (agent / 'auth.json').write_text('{"openai-codex":{"type":"api_key",'
+                                            '"key":"!echo AMBIENT_HELPER"}}')
+            (Path(directory) / 'AGENTS.md').write_text('AMBIENT_CONTEXT')
+            result = subprocess.run([node, '--no-addons', str(script), str(HOST)] +
+                                    ([sdk] if sdk else []), env=env, capture_output=True,
+                                    text=True, timeout=30, check=False)
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertNotIn('PRIVATE_', result.stdout + result.stderr)
+            print('official Pi SDK creation/tools: ' + ('passed (token-free)' if sdk else
+                                                      'not run (SDK absent or hermetic mode; hermetic contract passed)'))
+
+
+if __name__ == '__main__':
+    unittest.main()

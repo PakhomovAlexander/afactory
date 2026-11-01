@@ -1,6 +1,6 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "$id": "urn:af:schema:task-contracts:1",
+  "$id": "urn:af:schema:task-contracts:2",
   "title": "Additive Task contract definitions; cross-reference invariants require semantic validation",
   "$defs": {
     "name": {
@@ -1861,8 +1861,39 @@
             },
             "effort": {
               "$ref": "#/$defs/name"
+            },
+            "pi": {
+              "$ref": "#/$defs/piAuthority"
             }
-          }
+          },
+          "allOf": [
+            {
+              "if": {
+                "properties": {
+                  "provider_kind": {
+                    "const": "pi"
+                  }
+                }
+              },
+              "then": {
+                "required": [
+                  "pi"
+                ],
+                "properties": {
+                  "principal_id": {
+                    "$ref": "#/$defs/digest"
+                  }
+                }
+              },
+              "else": {
+                "not": {
+                  "required": [
+                    "pi"
+                  ]
+                }
+              }
+            }
+          ]
         }
       ]
     },
@@ -2299,6 +2330,48 @@
           }
         }
       ]
+    },
+    "piAuthority": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "backend",
+        "auth_method",
+        "sdk_version",
+        "sdk_entrypoint",
+        "node_program",
+        "auth_context_id",
+        "model_config_id",
+        "adapter_policy_id"
+      ],
+      "properties": {
+        "backend": {
+          "const": "openai-codex"
+        },
+        "auth_method": {
+          "const": "oauth"
+        },
+        "sdk_version": {
+          "const": "1.4.0"
+        },
+        "sdk_entrypoint": {
+          "type": "string",
+          "pattern": "^/"
+        },
+        "node_program": {
+          "type": "string",
+          "pattern": "^/"
+        },
+        "auth_context_id": {
+          "$ref": "#/$defs/digest"
+        },
+        "model_config_id": {
+          "$ref": "#/$defs/digest"
+        },
+        "adapter_policy_id": {
+          "$ref": "#/$defs/digest"
+        }
+      }
     }
   }
 }

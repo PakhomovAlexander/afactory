@@ -13,7 +13,8 @@ make prereqs
 
 It prints one line per prerequisite, `ok` with what it found or `missing` with the command that
 installs it: python3, git 2.30 or later, the toolchain `rust-toolchain.toml` pins (through
-rustup), cargo-nextest, a C compiler (`cc`), npx (for `markdownlint-cli2`), minisign, and 30 GiB
+rustup), cargo-nextest, a C compiler (`cc`), Node >=22.19 (for the token-free Pi host fixtures),
+npx (for `markdownlint-cli2`), minisign, and 30 GiB
 free on the volume `target/` builds on. It installs and changes nothing,
 and exits 0 when everything is present, 1 otherwise (`scripts/prereqs.py`, issue #161).
 
