@@ -185,8 +185,11 @@ check, and one independent verifier reading the same Snapshot (ADR-0133, decisio
 - The **author** slot is the first triager: Codex `gpt-6-astra`, `model_reasoning_effort =
   "medium"`, Provider `codex-personal`, `read-source` only (no `execute-checks`, so no shell).
   It returns an `af/DocumentDraft@2` with two required sections, `Triage` (the
-  `af/issue-triage@1` document in one fenced `json` block, §6.3) and `Rationale`, and
-  `repository_citations` for every file it relied on.
+  `af/issue-triage@1` document in one fenced `json` block, §6.3) and `Rationale`, beside the
+  sections the installed report policy requires of every report (`Findings` and
+  `Recommendation` in this repository), and `repository_citations` for every file it relied on.
+  Owner decision, 2026-10-30: the installed report policy's required sections apply in addition
+  to `Triage` and `Rationale`, so in this repository a triage draft has four.
 - `report_seal` and `report_check` are the kernel's: the Document is bound to the exact source
   Snapshot of `main`, and every citation is resolved against that Manifest, so a path the issue
   invented, a symlink or a binary fails the check and suppresses the verifier (ADR-0133,
@@ -194,19 +197,24 @@ check, and one independent verifier reading the same Snapshot (ADR-0133, decisio
 - The **verifier** slot is the second triager: Claude Opus 5.5, effort medium, Provider
   `claude-personal`, `read-source`. Its requirements say: classify the issue yourself by §4 and
   §5 before reading the author's `Triage` section, then return `af/ReportEvaluation@1` with
-  `verified` only when your class and size equal the author's, and otherwise your own class,
-  size and reason in the evaluation's text as a second `Triage` block in the same JSON shape
-  (decision 8), which the check parses. A verified Task is agreement; a `changes_requested` Task
-  whose evaluation names a different class or size is a dispute; a failed check is a failed
-  Attempt, never a guessed label.
+  `verified` only when your class and size equal the author's, and in every outcome your own
+  class, size and reason in the evaluation's text as a second `Triage` block in the same JSON
+  shape (decision 8), which the check parses and requires. A verified Task whose two documents
+  agree is agreement; a `changes_requested` Task whose evaluation names a different class or
+  size is a dispute; a failed check is a failed Attempt, never a guessed label.
 - The runner reads `af task output --port report` and `af task show --json` after the Task
-  finishes and runs `scripts/backlog/check-triage.py` on both (§6.3) before any write to GitHub.
+  finishes and runs `scripts/backlog-check-triage.py` on both (§6.3) before any write to GitHub.
 
 Both replies go through the typed paths (ADR-0103 for Claude, ADR-0208 for Codex): a reply that
 does not parse is a failed Attempt. Budget per Task: 150k chargeable tokens, `max_attempts`
 as the report pipeline's 8 (two model Attempts, two admissions, room for one retry each),
 `wall_ms` 20 minutes. A Task that exhausts its budget leaves the issue `triage/pending` for the
-next run, at most three times, then `triage/needs-info` with the reason.
+next run, at most three times, then `triage/needs-info` with the reason. Owner decision,
+2026-10-30: this budget stands, and each triager's Attempt allowance is lowered to fit it,
+40,000 tokens and 500,000 ms. The planner reserves two Attempts per triager and both Provider
+admissions (2 × 40,000 + 2 × 32,768 = 145,536 tokens; 2 × 500,000 ms, two 45,000 ms
+admissions, the report policy's 60,000 ms check and 5,000 ms to start the run, 1,155,000 ms);
+a triager call in the backfill of 2026-10-30 cost about 20,000 tokens and 20 seconds.
 
 The rollout (§8) proves this shape with a compiling example plan before any runner code.
 
@@ -264,7 +272,7 @@ proves neither full nor partial completion: the check verifies that each referen
 is reachable from the captured `main`, and both triagers must support the claimed state before
 the runner acts on it. `adr` names a new or amended ADR the change needs, or is null.
 
-`scripts/backlog/check-triage.py` validates the author's JSON against
+`scripts/backlog-check-triage.py` validates the author's JSON against
 `schemas/issue-triage-v1.json` and the verifier's evaluation against the kernel's
 `af/ReportEvaluation@1`, then applies the hard rules: a contract, schema-version, budget or
 sandbox change in the rationale with a size below `L`; `adr` set with size `S`; a
@@ -288,7 +296,9 @@ these refuses the Task's output and the runner records why.
 
 The merged record is `af/issue-triage-merged@1`: the agreed fields, the verdict, both source
 documents' identities (the Task id, the Document id, the evaluation id) and the generation key
-(§6.5).
+(§6.5), every identity required. A hold prints instead the private `af/issue-triage-hold@1`:
+the issue, why, the label or triager that triggered it and the generation identities the runner
+gave, none of them required.
 
 ### 6.4 What the runner writes back
 
@@ -381,10 +391,10 @@ sweep would have written.
   Provider; the author has no shell.
 - **Security hold.** An existing `class/security` label, a `triage/held` label, or `security`
   from either triager stops every public effect for that issue: no label, no comment, no
-  needs-info. The runner writes a private hold record in its journal and notifies the owner
-  through the nightly's existing channel. The runner and the sweep skip held issues until the
-  owner removes `triage/held` by hand. Only the owner creates the advisory and closes the public
-  issue.
+  needs-info. The runner writes the private hold record (`af/issue-triage-hold@1`, §6.3) in its
+  journal and notifies the owner through the nightly's existing channel. The runner and the
+  sweep skip held issues until the owner removes `triage/held` by hand. Only the owner creates
+  the advisory and closes the public issue.
 
 ## 8. Rollout
 
@@ -394,21 +404,32 @@ sweep would have written.
 2. **Kind, packages and schema** (`size/M`, `default`): an af Task builds and tests, in a
    writable staging directory outside `.af/`, the `triage` kind package, the author and
    verifier Worker packages, their requirements text, `schemas/issue-triage-v1.json` and
-   `scripts/backlog/check-triage.py` with tests (a Task Worker may not edit `.af/`, ADR-0133).
+   `scripts/backlog-check-triage.py` with tests (a Task Worker may not edit `.af/`, ADR-0133).
    The owner then installs the reviewed packages under `.af/task-packages/`, pins them in the
    catalog with their digests, and commits the authority. Acceptance includes one compiling
    example plan, `af task plan` on a real issue's sources file, before any runner code.
    The check's fixtures are the six issues verified by hand on 2026-10-30: #196, #357 and #436
    must come out `fixed_candidate`, #425, #393 and #284 `partial` with the remaining work as
    recorded in `hand-triage-2026-10-30.json`.
-3. **Runner** (`size/M`, `default`): `scripts/backlog/triage.py`: sources assembly, the
+   **Shipped on 2026-10-30**, staged under
+   [`fixtures/issue-triage/`](../../fixtures/issue-triage/README.md): the four packages
+   `backlog/triage-kind`, `backlog/triage`, `backlog/triage-author` and
+   `backlog/triage-verifier` under `task-packages/backlog/`, their shared catalog and contract
+   fixtures, the install steps, and an example Task for #432 with its hand-built sources;
+   `schemas/issue-triage-v1.json`, `schemas/issue-triage-merged-v1.json`,
+   `schemas/issue-triage-hold-v1.json` (all three shown by `af schema show`),
+   `scripts/backlog-check-triage.py` and `scripts/test-backlog-check-triage.py`. The Rust test
+   `task_triage` installs the packages on a copy of `.af/`, plans the example with zero
+   Attempts within §6.1's budget, and feeds the report renderer's bytes to the check.
+   Installing is the owner's hand step.
+3. **Runner** (`size/M`, `default`): `scripts/backlog-triage.py`: sources assembly, the
    journal, the generation key, the lease and ledger, write-back, the sweep, and the cron unit
    on `claw-3`. Dry-run mode prints the labels and comment and writes nothing; the first week
    runs dry.
 4. **Backfill**: run the triager over the 54 open issues in dry-run, compare with the hand
    triage of 2026-10-30, adjust the rubric wording where the two disagree, then apply.
-5. **Plugin**: when the plugin architecture (#316) lands, `scripts/backlog/` becomes
-   `af backlog triage` with no change to the documents, labels or comment format.
+5. **Plugin**: when the plugin architecture (#316) lands, the `scripts/backlog-*.py` scripts
+   become `af backlog triage` with no change to the documents, labels or comment format.
 
 ## 9. Resolved questions
 
@@ -416,4 +437,4 @@ sweep would have written.
    `/triage size-wrong <why>` on the issue. The runner re-triages with that comment as
    evidence; the implementer never edits labels (decision 7).
 2. The verifier's class and size: a second `Triage` block in the evaluation's text, parsed by
-   `scripts/backlog/check-triage.py`; no typed kernel field (decision 8).
+   `scripts/backlog-check-triage.py`; no typed kernel field (decision 8).

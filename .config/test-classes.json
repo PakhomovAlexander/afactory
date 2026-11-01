@@ -184,6 +184,7 @@
       "task_selection": "e2e",
       "task_starters": "e2e",
       "task_structured_acceptance": "e2e",
+      "task_triage": "e2e",
       "task_warm_checks": "e2e",
       "telemetry": "e2e",
       "telemetry_bench": "perf",
@@ -320,6 +321,7 @@
   "schema": "af.test-catalog/1",
   "scripts": {
     "test-af-pin.py": "functional",
+    "test-backlog-check-triage.py": "functional",
     "test-backlog-labels.py": "functional",
     "test-changelog-notes.py": "functional",
     "test-check-pr-report.py": "functional",
