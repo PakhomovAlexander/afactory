@@ -3312,8 +3312,8 @@
   },
   {
    "path": "scripts/performance/tests/test_nightly_build.py",
-   "sha256": "sha256:e7d6934a50d1545d1ddec7fa1fadb0276b38fe3e3b545f2bf48b43233a8d4c9d",
-   "size": 50601
+   "sha256": "sha256:32875b22e72344fd1505422aded9d704f8af0fbf3a450d3996ec0f7c41cfc0cb",
+   "size": 55248
   },
   {
    "path": "scripts/performance/tests/test_nightly_measure.py",
@@ -3322,13 +3322,13 @@
   },
   {
    "path": "scripts/performance/tests/test_nightly_publish.py",
-   "sha256": "sha256:9a516e90c087fc25b0924f2f5fbd70971424707197590b06ec83fd7e3d6f448a",
-   "size": 44886
+   "sha256": "sha256:b6c80ff2b188be22487de49d7b44bef97f68f82cf452767574881d0a64485ff3",
+   "size": 47872
   },
   {
    "path": "scripts/performance/tests/test_nightly_report.py",
-   "sha256": "sha256:d05a169605be7abd6b21ed3029583dc5ea26f7bc4df54ba27c735ffacb778474",
-   "size": 62515
+   "sha256": "sha256:7d0820ddebb88e337d092dc3c54aa800ccc7fc075fcf8566961cd927b6f0baf2",
+   "size": 63272
   },
   {
    "path": "scripts/performance/tests/test_oracle.py",
@@ -3511,7 +3511,7 @@
    "size": 6777
   }
  ],
- "harness_digest": "sha256:4b0ad3cbf8beed27e2b09e46fb852bf7b1d5afa6d350f61a30b197d1ba98d47b",
+ "harness_digest": "sha256:61f46dff52dfedd658db07e893cd1ff62f04bc1e451328690ee1970425c26e6a",
  "inner_metric": "pending",
  "inner_metric_reason": "the inner wall_ms metric is recorded in every Measurement but no staged objective selects it until the guard's real kernel integration and tampered-candidate tests are accepted on the sealed source and a reviewed human change installs and selects it",
  "objective_metric": "elapsed_ms",

@@ -43,9 +43,13 @@ together, and `keep_nights` (3 to 60, 14 by default). [`docs/nightly.md`](../nig
 operator page.
 
 1. **Verify before writing.** For a `built` night `publish` checks the report directory
-   (`daily.json` parses as JSON whose `schema` starts `af.nightly-daily/`, `report.html` at most
-   4 MiB, `digest.md` UTF-8 text of at most 3500 bytes; a missing or oversized file refuses)
-   and the night as `build` left it: every archive has the digest and size `nightly.json`
+   (`daily.json` is valid under the `af.nightly-daily/1` contract, `report.html` at most
+   4 MiB, `digest.md` UTF-8 text of at most 3500 bytes; a missing or oversized file refuses).
+   The report must belong to this exact night: its `date`, `tag`, `repository` and
+   `build.head_sha` equal the selected build record and configured repository, whether the
+   directory came from `--report` or was the newest selected under `--report-root`. A valid
+   report of another night therefore refuses before any GitHub or Telegram write. `publish`
+   also checks the night as `build` left it: every archive has the digest and size `nightly.json`
    records, `dist/SHA256SUMS` is exactly the release-format sums of those archives, and
    `minisign -V -q -m SHA256SUMS -x SHA256SUMS.minisig -p <public_key>` (the call `build`
    makes, through an injectable runner) verifies with the night's trusted comment. The tokens

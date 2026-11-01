@@ -983,6 +983,27 @@ class JournalRefusals(Night):
         self.assertEqual(os.listdir(target), [])
         self.assertEqual(os.listdir(moved), [])
 
+    def test_an_output_directory_swapped_for_a_real_directory_gets_no_file(self):
+        self.night()
+        self.tonight()
+        replacement = self.path("replacement")
+        os.mkdir(replacement)
+        moved = self.path("moved-real")
+
+        def swap(path):
+            os.rename(path, moved)
+            os.rename(replacement, path)
+
+        nightly._after_mkdir = swap
+        try:
+            code, output, err = self.compose(output=self.path("out-real"))
+        finally:
+            nightly._after_mkdir = None
+        self.assertEqual(code, 1)
+        self.assertIn("is not the directory this report created", err)
+        self.assertEqual(os.listdir(moved), [])
+        self.assertEqual(os.listdir(os.path.join(self.tmp, "out-real")), [])
+
     def test_an_unknown_headline_instance_leaves_the_trend_unavailable(self):
         self.night()
         self.tonight()

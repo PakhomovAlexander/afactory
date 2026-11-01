@@ -1192,7 +1192,7 @@ def write(doc, output=None, root=None):
     else:
         where = "--output-root %s" % root
         parent, names = os.path.abspath(root), report_names(doc["date"])
-    parent_fd = dir_fd = None
+    parent_fd = created_fd = dir_fd = None
     try:
         try:
             parent_fd = os.open(parent or os.sep, os.O_RDONLY | os.O_DIRECTORY)
@@ -1206,6 +1206,9 @@ def write(doc, output=None, root=None):
             else:
                 raise Refused("%s already holds %d reports of the night %s"
                               % (where, len(names), doc["date"]))
+            created_fd = os.open(name, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW,
+                                 dir_fd=parent_fd)
+            created = os.fstat(created_fd)
         except OSError as error:
             raise Refused("%s: %s (a report is written into a new directory)" % (where, error))
         written = os.path.join(parent, name)
@@ -1214,6 +1217,10 @@ def write(doc, output=None, root=None):
         try:
             dir_fd = os.open(name, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW,
                              dir_fd=parent_fd)
+            reopened = os.fstat(dir_fd)
+            if (reopened.st_dev, reopened.st_ino) != (created.st_dev, created.st_ino):
+                raise Refused("%s is not the directory this report created"
+                              % (where if root is None else written))
             for filename, data in files:
                 fd = os.open(filename, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW,
                              0o644, dir_fd=dir_fd)
@@ -1223,7 +1230,7 @@ def write(doc, output=None, root=None):
             raise Refused("%s is not the directory this report created: %s"
                           % (where if root is None else written, error))
     finally:
-        for fd in (dir_fd, parent_fd):
+        for fd in (dir_fd, created_fd, parent_fd):
             if fd is not None:
                 os.close(fd)
     return written

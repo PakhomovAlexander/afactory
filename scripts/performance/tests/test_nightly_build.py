@@ -2,8 +2,10 @@
 
 The green-commit walk runs over a tiny real Git history with a fake GitHub transport; the
 build runs against a fake host that stands in for Docker, the built binaries and minisign.
-No test starts a container, reaches the network or builds Rust; one asks `cargo metadata
---locked --offline` about a rewritten copy of this tree's manifests.
+No test starts a container, reaches the network, invokes Cargo or builds Rust. A hermetic
+resolver model checks the rewritten copy's workspace manifests and lock, including stale-lock
+refusal and the exact locked/offline/host-platform arguments a real integration run would use.
+Setting AF_NIGHTLY_REAL_CARGO=1 additionally runs that real-Cargo integration; it is opt-in.
 """
 import contextlib
 import hashlib
@@ -555,7 +557,7 @@ class CargoRewrite(TempDir):
         with self.assertRaises(ContractError):
             nightly.rewrite_manifest('[package]\nversion = "1.0.0"\n', "x")
 
-    def test_a_rewritten_copy_of_this_tree_still_resolves_locked_and_offline(self):
+    def test_a_rewritten_copy_passes_the_hermetic_locked_offline_resolver_model(self):
         copy = self.path("tree")
         os.makedirs(copy)
         for name in ("Cargo.toml", "Cargo.lock", "rust-toolchain.toml"):
@@ -570,13 +572,86 @@ class CargoRewrite(TempDir):
                 open(os.path.join(copy, path, "src", stub), "w").close()
         current = nightly.workspace_version(read(os.path.join(ROOT, "Cargo.toml")).decode())
         version = nightly.nightly_version(current, "2026-10-29")
+        host = "x86_64-unknown-linux-musl"
+        manifest_path = os.path.join(copy, "Cargo.toml")
+        calls = []
+
+        def metadata():
+            """Resolve only workspace inheritance and lock freshness, never run a toolchain.
+
+            Registry packages deliberately cannot cause a stale-lock answer: the refusal below
+            is derived only from a workspace-version mismatch, so the test distinguishes it
+            from an unrelated offline dependency-resolution failure.
+            """
+            argv = ["cargo", "metadata", "--locked", "--offline", "--filter-platform", host,
+                    "--format-version", "1"]
+            calls.append(argv)
+            root_version = nightly.workspace_version(read(manifest_path).decode())
+            locked_doc = nightly.tomlfile.loads(read(os.path.join(copy, "Cargo.lock")),
+                                                "Cargo.lock")
+            locked = {package["name"]: package["version"] for package in locked_doc["package"]
+                      if "source" not in package}
+            names = nightly.workspace_members(copy)
+            stale = [name for name in names if locked.get(name) != root_version]
+            if stale:
+                message = ("the lock file %s needs to be updated but --locked was passed"
+                           % os.path.join(copy, "Cargo.lock"))
+                return subprocess.CompletedProcess(argv, 1, b"", message.encode())
+            packages = [{"name": name, "version": root_version, "source": None,
+                         "manifest_path": os.path.join(copy, "Cargo.toml")} for name in names]
+            return subprocess.CompletedProcess(argv, 0, json.dumps({"packages": packages}).encode(),
+                                               b"")
+
+        # Only Cargo.toml moved: the model refuses the stale lock itself, so the proof is real.
+        with open(manifest_path) as stream:
+            original = stream.read()
+        with open(manifest_path, "w") as stream:
+            stream.write(nightly.rewrite_manifest(original, version)[1])
+        stale = metadata()
+        self.assertNotEqual(stale.returncode, 0)
+        self.assertIn(b"needs to be updated", stale.stderr)
+        self.assertNotIn(b"no matching package", stale.stderr)
+        with open(manifest_path, "w") as stream:
+            stream.write(original)
+
+        self.assertEqual(nightly.rewrite_source(copy, version), current)
+        result = metadata()
+        self.assertEqual(result.returncode, 0, result.stderr.decode("utf-8", "replace"))
+        packages = json.loads(result.stdout)["packages"]
+        names = nightly.workspace_members(copy)
+        self.assertEqual(sorted(p["version"] for p in packages if p["name"] in names
+                                and p["source"] is None), [version] * len(names))
+        expected = ["cargo", "metadata", "--locked", "--offline", "--filter-platform", host,
+                    "--format-version", "1"]
+        self.assertEqual(calls, [expected, expected])
+
+    @unittest.skipUnless(os.environ.get("AF_NIGHTLY_REAL_CARGO") == "1",
+                         "opt-in real-Cargo integration (AF_NIGHTLY_REAL_CARGO=1)")
+    def test_real_cargo_also_resolves_the_rewritten_copy_locked_and_offline(self):
+        copy = self.path("real-cargo-tree")
+        os.makedirs(copy)
+        for name in ("Cargo.toml", "Cargo.lock", "rust-toolchain.toml"):
+            shutil.copyfile(os.path.join(ROOT, name), os.path.join(copy, name))
+        members = nightly.tomlfile.loads(read(os.path.join(ROOT, "Cargo.toml")),
+                                         "Cargo.toml")["workspace"]["members"]
+        for path in members:
+            os.makedirs(os.path.join(copy, path, "src"))
+            shutil.copyfile(os.path.join(ROOT, path, "Cargo.toml"),
+                            os.path.join(copy, path, "Cargo.toml"))
+            for stub in ("lib.rs", "main.rs"):
+                open(os.path.join(copy, path, "src", stub), "w").close()
+        current = nightly.workspace_version(read(os.path.join(ROOT, "Cargo.toml")).decode())
+        version = nightly.nightly_version(current, "2026-10-29")
+        rustc = subprocess.run(["rustc", "-vV"], cwd=copy, stdout=subprocess.PIPE,
+                               stderr=subprocess.PIPE, check=True).stdout.decode()
+        host = next(line.split(":", 1)[1].strip() for line in rustc.splitlines()
+                    if line.startswith("host:"))
 
         def metadata():
             return subprocess.run(["cargo", "metadata", "--locked", "--offline",
-                                   "--format-version", "1"], cwd=copy, stdout=subprocess.PIPE,
-                                  stderr=subprocess.PIPE)
+                                   "--filter-platform", host, "--format-version", "1"],
+                                  cwd=copy, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
 
-        # Only Cargo.toml moved: --locked refuses the stale lock, so the proof below is real.
         manifest_path = os.path.join(copy, "Cargo.toml")
         with open(manifest_path) as stream:
             original = stream.read()
@@ -585,6 +660,7 @@ class CargoRewrite(TempDir):
         stale = metadata()
         self.assertNotEqual(stale.returncode, 0)
         self.assertIn(b"needs to be updated", stale.stderr)
+        self.assertNotIn(b"no matching package", stale.stderr)
         with open(manifest_path, "w") as stream:
             stream.write(original)
 

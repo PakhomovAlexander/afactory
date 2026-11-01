@@ -44,12 +44,11 @@ from githubrest import GitHub, Refused, https_send  # noqa: E402
 from perflab import contracts, tomlfile  # noqa: E402
 from perflab.nightlycontracts import (KEEP_NIGHTS_DEFAULT, REPORT_FILES, SIGNATURE,  # noqa: E402
                                       SUMS, TAG_PATTERN, release_assets)
-from perflab.values import ContractError, loads_strict  # noqa: E402
+from perflab.values import ContractError  # noqa: E402
 
 EXIT_PUBLISHED, EXIT_REFUSED = 0, 1
 DIGEST_BYTES_MAX = 3500
 REPORT_BYTES_MAX = 4 * 1024 * 1024
-DAILY_SCHEMA_PREFIX = "af.nightly-daily/"
 SIGN_SECONDS = 120
 TELEGRAM_API = "https://api.telegram.org"
 TELEGRAM_RESPONSE_MAX = 64 * 1024
@@ -108,18 +107,27 @@ def read_bounded(path, limit, what):
     return data
 
 
-def read_report(directory):
-    """{name: bytes} of the report directory's daily.json and report.html, and its digest.md
-    text, each checked."""
-    daily = read_bounded(os.path.join(directory, "daily.json"), REPORT_BYTES_MAX,
-                         "the report's daily.json")
+def read_report(directory, record, repository):
+    """{name: bytes} of this night's report and its digest.md text, each checked.
+
+    A schema-valid report of another night is not a recovery input: its identity must match
+    the selected build before any GitHub or Telegram write can follow.
+    """
+    path = os.path.join(directory, "daily.json")
+    daily = read_bounded(path, REPORT_BYTES_MAX, "the report's daily.json")
     try:
-        doc = loads_strict(daily, os.path.join(directory, "daily.json"), REPORT_BYTES_MAX)
+        doc = contracts.read_json(daily, "nightly-daily", path)
     except ContractError as error:
         raise Refused(str(error))
-    schema = doc.get("schema") if isinstance(doc, dict) else None
-    if not (isinstance(schema, str) and schema.startswith(DAILY_SCHEMA_PREFIX)):
-        raise Refused("the report's daily.json is no %s* document" % DAILY_SCHEMA_PREFIX)
+    expected = (("date", doc.get("date"), record["date"]),
+                ("tag", doc.get("tag"), record["tag"]),
+                ("repository", doc.get("repository"), repository),
+                ("build.head_sha", doc.get("build", {}).get("head_sha"), record["head_sha"]))
+    mismatches = ["%s is %r, not the night's %r" % (name, found, wanted)
+                  for name, found, wanted in expected if found != wanted]
+    if mismatches:
+        raise Refused("the report %s does not belong to the night %s: %s"
+                      % (directory, record["date"], "; ".join(mismatches)))
     html = read_bounded(os.path.join(directory, "report.html"), REPORT_BYTES_MAX,
                         "the report's report.html")
     digest = read_bounded(os.path.join(directory, "digest.md"), DIGEST_BYTES_MAX,
@@ -414,7 +422,7 @@ def publish(config, args, github, telegram_send, run, clock):
             raise Refused("--report-root %s holds no report of the night %s (%s or %s.<k>): "
                           "compose it first" % (args.report_root, args.date, args.date,
                                                 args.date))
-        report, text = read_report(args.report)
+        report, text = read_report(args.report, record, config["repository"])
         shipped = verify_night(config, record, run)
         if github is None:
             github = GitHub(config["repository"], read_secret(

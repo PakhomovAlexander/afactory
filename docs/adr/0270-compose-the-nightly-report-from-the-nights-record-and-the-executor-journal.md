@@ -34,7 +34,11 @@ publish, written by a step that publishes nothing itself.
 nightly executor's journal (the `root` of the configuration `[report].executor_config` names),
 its `local-telemetry-history/history.json`, GitHub and three host facts, and writes into the new
 directory `DIR` exactly `daily.json`, `report.html` and `digest.md`, and nothing anywhere else. It
-never pushes, publishes, posts, deletes, runs Docker or cargo.
+never pushes, publishes, posts, deletes, runs Docker or cargo. The new directory is opened
+and its device and inode recorded when created; after the path is reopened, the descriptor must
+still name that same directory before any file is created. `O_NOFOLLOW` and descriptor-relative
+exclusive file creation reject a symlink, and the identity comparison also rejects another real
+directory renamed into the path, so no report file can leak into a substituted directory.
 
 1. **Configuration.** `af.nightly-config/1` gains an optional `[report]` table:
    `executor_config` (absolute path), `history_nights` (1 to 60, default 14) and

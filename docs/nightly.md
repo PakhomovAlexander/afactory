@@ -187,10 +187,13 @@ The report is `--report DIR`, the daily report's directory, or else the newest o
 directories below `--report-root ROOT` or, without either, below the configuration's
 `reports_root`: of `ROOT/<date>` and `ROOT/<date>.<k>` the one with the highest `k`, as
 [`compose --output-root`](#the-daily-report) names them; a link is never one. `publish` prints
-the directory it chose and the root it defaulted to on stderr. `daily.json` must parse as JSON
-whose `schema` starts with `af.nightly-daily/`, `report.html` is at most 4 MiB, and `digest.md`
-is UTF-8 text of at most 3500 bytes; a missing, empty or oversized file refuses, and so does a
-built night with no report directory under the root. A skipped night reads none of them.
+the directory it chose and the root it defaulted to on stderr. `daily.json` must be valid under
+the `af.nightly-daily/1` contract, `report.html` is at most 4 MiB, and `digest.md` is UTF-8 text
+of at most 3500 bytes. The report's `date`, `tag`, `repository` and `build.head_sha` must equal
+the selected build record and configured repository, whether `--report` named the directory or
+`--report-root` selected it; a valid report of another night refuses before any GitHub or
+Telegram write. A missing, empty or oversized file refuses, and so does a built night with no
+report directory under the root. A skipped night reads none of them.
 
 For a `built` night, `publish`:
 
@@ -518,6 +521,11 @@ it defaulted to. It writes exactly three files into that directory, and nothing 
   the digest's.
 - `digest.md`, the Telegram digest: at most 3500 bytes of plain Markdown, the headline first,
   then what moved, the queue and the machine, the links as bare URLs on their own lines.
+
+The new directory's device and inode are recorded at creation and checked again after its path
+is reopened. Files are created exclusively by descriptor below that exact directory without
+following links, so replacing the path with either a symlink or another real directory refuses
+the compose and writes no file into the substituted directory.
 
 It runs as the account that owns the nightly executor's journal, from a checkout of the trusted
 repository, and reads only:

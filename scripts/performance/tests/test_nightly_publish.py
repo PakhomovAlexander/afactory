@@ -268,11 +268,27 @@ class Night(TempDir):
             stream.write(contracts.write_bytes(record, "nightly-build"))
         return record
 
+    def daily_record(self, date="2026-10-29", head=HEAD, repository=REPO):
+        """A contract-valid daily report whose identity can be varied independently."""
+        doc = json.loads(read(os.path.join(
+            ROOT, "fixtures/performance/schema/nightly-daily/valid-complete.json")))
+        tag = build.nightly_tag(date)
+        doc.update(date=date, tag=tag, repository=repository)
+        doc["build"].update(head_sha=head,
+                            version=build.nightly_version("0.14.0-rc.3", date))
+        doc["headline"]["text"] = doc["headline"]["text"].replace(TAG, tag)
+        # Publication needs identity, not a trend; omitting it also keeps an earlier night's
+        # otherwise-valid report independent of points dated after that earlier night.
+        doc["trend"] = None
+        doc["completeness"]["trend"] = {"available": False,
+                                          "reason": "not used by the publisher tests"}
+        return doc
+
     def report(self, name="report", daily=None, html=b"<html>report</html>\n", digest=DIGEST):
         directory = self.path(name)
         os.makedirs(directory, exist_ok=True)
-        files = {"daily.json": daily if daily is not None else json.dumps(
-            {"schema": "af.nightly-daily/1", "date": "2026-10-29"}).encode(),
+        files = {"daily.json": daily if daily is not None else contracts.write_bytes(
+            self.daily_record(), "nightly-daily"),
             "report.html": html, "digest.md": digest.encode() if isinstance(digest, str)
             else digest}
         for key, data in files.items():
@@ -378,8 +394,8 @@ class Amending(Night):
         shipped = dict((item["name"], item["id"]) for item in release["assets"][:5])
         reported = dict((item["name"], item["id"]) for item in release["assets"][5:])
         self.github.requests = []
-        report = self.report("late", daily=json.dumps({"schema": "af.nightly-daily/1",
-                                                       "late": True}).encode(),
+        report = self.report("late", daily=contracts.write_bytes(
+            self.daily_record(), "nightly-daily"),
                              html=b"<html>with the late result</html>\n",
                              digest="nightly-2026.10.29: the late result is in\n")
         code, out, err = self.publish(report=report)
@@ -730,8 +746,8 @@ class Refusals(Night):
             "long", "digest.md"), report=self.report("long", digest="x" * 3501))
         self.assert_refused("report.html %s is larger than 4194304 bytes" % self.path(
             "huge", "report.html"), report=self.report("huge", html=b"x" * (4 * 1024 * 1024 + 1)))
-        self.assert_refused("is no af.nightly-daily/* document", report=self.report(
-            "other", daily=b'{"schema": "af.nightly-build/1"}'))
+        self.assert_refused("expected af.nightly-daily/1, found 'af.nightly-build/1'",
+                            report=self.report("other", daily=b'{"schema": "af.nightly-build/1"}'))
         self.assert_refused("digest.md is not UTF-8 text",
                             report=self.report("latin", digest=b"caf\xe9\n"))
 
@@ -753,6 +769,32 @@ class Refusals(Night):
             self.assertEqual(result.returncode, 1, argv)
             self.assertIn(b"nightly: refused: ", result.stderr)
             self.assertEqual(result.stdout, b"")
+
+
+class ReportIdentity(Night):
+    def test_a_valid_report_of_another_night_is_refused_before_any_remote_write(self):
+        self.build()
+        other = contracts.write_bytes(self.daily_record(date="2026-10-28"), "nightly-daily")
+        code, out, err = self.publish(report=self.report("previous", daily=other))
+        self.assertEqual((code, out), (1, ""))
+        self.assertIn("does not belong to the night 2026-10-29", err)
+        self.assertIn("date is '2026-10-28'", err)
+        self.assertEqual((self.github.requests, self.telegram.sent), ([], []))
+        self.assertFalse(os.path.exists(os.path.join(self.night, "publish.json")))
+
+    def test_report_repository_and_build_head_are_checked(self):
+        record = self.build()
+        for field, value in (("repository", "owner/other"), ("build.head_sha", "c" * 40)):
+            with self.subTest(field=field):
+                doc = self.daily_record()
+                if field == "build.head_sha":
+                    doc["build"]["head_sha"] = value
+                else:
+                    doc[field] = value
+                directory = self.report(field, daily=contracts.write_bytes(doc, "nightly-daily"))
+                with self.assertRaises(publish.Refused) as caught:
+                    publish.read_report(directory, record, REPO)
+                self.assertIn(field, str(caught.exception))
 
 
 class ReportRoot(Night):
@@ -800,6 +842,17 @@ class ReportRoot(Night):
         self.assertIn("nightly: --report-root %s (the configuration's reports_root)\n" % root,
                       err)
         self.assertEqual(self.github.releases[next(iter(self.github.releases))]["body"], DIGEST)
+
+    def test_a_wrong_night_selected_under_the_root_is_refused_before_any_remote_write(self):
+        self.build()
+        root = self.path("reports")
+        other = contracts.write_bytes(self.daily_record(date="2026-10-28"), "nightly-daily")
+        self.report(os.path.join("reports", "2026-10-29"), daily=other)
+        code, out, err = self.run_main("--date", "2026-10-29", "--report-root", root)
+        self.assertEqual((code, out), (1, ""))
+        self.assertIn("does not belong to the night 2026-10-29", err)
+        self.assertEqual((self.github.requests, self.telegram.sent), ([], []))
+        self.assertFalse(os.path.exists(os.path.join(self.night, "publish.json")))
 
     def test_a_built_night_without_a_report_under_the_root_is_refused(self):
         self.build()
