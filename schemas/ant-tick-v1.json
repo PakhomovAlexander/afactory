@@ -1,0 +1,56 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:af:schema:ant-tick:1",
+  "title": "ant-tick v1",
+  "description": "ADR-0274. Cross-port types, identity, authority, budget, signature and lifecycle invariants also require semantic admission.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema",
+    "now_unix_ms",
+    "started",
+    "busy",
+    "refused",
+    "runs"
+  ],
+  "properties": {
+    "schema": {
+      "const": "af/ant-tick@1"
+    },
+    "now_unix_ms": {
+      "type": "integer",
+      "minimum": 1,
+      "maximum": 9007199254740991
+    },
+    "started": {
+      "type": "array",
+      "items": {
+        "$ref": "urn:af:schema:scenario:1#/$defs/name"
+      }
+    },
+    "busy": {
+      "type": "array",
+      "items": {
+        "$ref": "urn:af:schema:scenario:1#/$defs/name"
+      }
+    },
+    "refused": {
+      "type": "object",
+      "propertyNames": {
+        "$ref": "urn:af:schema:scenario:1#/$defs/name"
+      },
+      "additionalProperties": {
+        "$ref": "urn:af:schema:scenario:1#/$defs/text"
+      }
+    },
+    "runs": {
+      "type": "object",
+      "propertyNames": {
+        "$ref": "urn:af:schema:scenario:1#/$defs/name"
+      },
+      "additionalProperties": {
+        "$ref": "urn:af:schema:scenario:1#/$defs/Run"
+      }
+    }
+  }
+}

@@ -1,0 +1,32 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:af:schema:scenario-bundle:1",
+  "title": "scenario-bundle v1",
+  "description": "ADR-0274. Cross-port types, identity, authority, budget, signature and lifecycle invariants also require semantic admission.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema",
+    "root",
+    "definitions"
+  ],
+  "properties": {
+    "schema": {
+      "const": "af/scenario-bundle@1"
+    },
+    "root": {
+      "$ref": "urn:af:schema:scenario:1#/$defs/name"
+    },
+    "definitions": {
+      "type": "object",
+      "propertyNames": {
+        "$ref": "urn:af:schema:scenario:1#/$defs/name"
+      },
+      "additionalProperties": {
+        "$ref": "urn:af:schema:scenario:1#/$defs/Scenario"
+      },
+      "minProperties": 1,
+      "maxProperties": 64
+    }
+  }
+}

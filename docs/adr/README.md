@@ -520,3 +520,5 @@ future readers need.
   them](0272-publish-nightlies-as-pre-releases-and-prune-them.md)
 - [0273 — Run the nightly chain as systemd units on the owner's
   VM](0273-run-the-nightly-chain-as-systemd-units-on-the-owners-vm.md)
+- [0274 — Orchestrate pinned Scenarios and admit Ant
+  occurrences](0274-orchestrate-pinned-scenarios-and-admit-ant-occurrences.md)

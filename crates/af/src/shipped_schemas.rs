@@ -22,6 +22,11 @@ macro_rules! schema {
 /// Every shipped schema: its document id (the `schema` field the document carries), its file
 /// under `schemas/`, and its bytes.
 pub(crate) const SCHEMAS: &[(&str, &str, &str)] = &[
+    schema!("ant-list", 1),
+    schema!("ant-pin", 1),
+    schema!("ant-state", 1),
+    schema!("ant-tick", 1),
+    schema!("ant", 1),
     schema!("command-catalog", 1),
     schema!("error", 2),
     schema!("findings-sarif", 1),
@@ -34,6 +39,18 @@ pub(crate) const SCHEMAS: &[(&str, &str, &str)] = &[
     schema!("review-render", 2),
     schema!("review-report", 5),
     schema!("review-show", 1),
+    schema!("scenario-adapter-request", 1),
+    schema!("scenario-adapter-response", 1),
+    schema!("scenario-bundle", 1),
+    schema!("scenario-decision", 1),
+    schema!("scenario-list", 1),
+    schema!("scenario-owned-file", 1),
+    schema!("scenario-pin", 1),
+    schema!("scenario-policy", 1),
+    schema!("scenario-run", 1),
+    schema!("scenario-signed-decision", 1),
+    schema!("scenario-store", 1),
+    schema!("scenario", 1),
     schema!("task-attention", 1),
     schema!("task-cancelled", 2),
     schema!("task-checks", 3),
@@ -186,6 +203,6 @@ mod tests {
         );
         let listing = listing();
         assert_eq!(listing.lines().count(), SCHEMAS.len());
-        assert!(listing.starts_with("af/command-catalog@1  "), "{listing}");
+        assert!(listing.starts_with("af/ant-list@1  "), "{listing}");
     }
 }

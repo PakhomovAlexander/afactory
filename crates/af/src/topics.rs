@@ -63,6 +63,11 @@ pub(crate) const TOPICS: &[(&str, &str, &str)] = &[
         "What af records about its own work, the four levels, and the [telemetry] table",
         TELEMETRY,
     ),
+    (
+        "scenarios",
+        "Durable Scenarios, bounded adapters and daily Ant scheduling",
+        include_str!("../../../docs/scenarios.md"),
+    ),
 ];
 
 /// `af help` without a word: every topic once, with its registry description.
@@ -421,6 +426,10 @@ creates a token-free starter whose README walks through `af task plan`, `af task
 const CONCEPTS: &str = "\
 Task       One piece of work with typed inputs, required outputs and limits, run by a Pipeline
            until it is verified or not. `af task list` and `af task show TASK_ID` show them.
+Scenario   A typed ordered definition coordinating Tasks, children, actions, decisions and waits.
+Run        One pinned Scenario execution with durable progress and completion evidence.
+Ant        An owner's scheduled Scenario binding, admitted locally by `af ant tick`.
+           `af help scenarios` explains its authority, daily timezone and spending limits.
 Worker     A packaged reviewer, implementer or evaluator: a model (claude, codex) or a command,
            with its prompt and declared inputs. `af onboard` lists a repository's reviewers.
 Attempt    One execution of one Worker or check, charged against its budget; a failed one is
@@ -605,6 +614,18 @@ Review reading commands:
                                        --json is --format json; combining them is a usage error
   af review report --format sarif      SARIF 2.1.0, profile af/findings-sarif@1
                                        (schemas/findings-sarif-v1.json)
+
+Scenario and Ant documents (ADR-0274; `af help scenarios`):
+  scenario validate: af/scenario-pin@1; start, show, resume, decide, cancel: af/scenario-run@1.
+  scenario decision-payload: af/scenario-decision@1; list: af/scenario-list@1.
+  ant validate: af/ant-pin@1; add, show, enable, pause, disable: af/ant-state@1;
+  ant list: af/ant-list@1; tick: af/ant-tick@1.
+  Definitions and machine policy: af/scenario@1, af/scenario-bundle@1, af/scenario-policy@1,
+  af/ant@1; signed envelopes: af/scenario-signed-decision@1.
+  Journal: af/scenario-store@1. Owned file envelope: af/scenario-owned-file@1.
+  Bounded adapters: af/scenario-adapter-request@1 and af/scenario-adapter-response@1.
+  `af schema show ID` prints each schema; semantic admission additionally checks authority,
+  exact bindings, signatures, budgets, lifecycle and transitive identity.
 
 The Task documents, each named by its `schema`:
 

@@ -56,6 +56,7 @@ mod report_tasks;
 mod review_handoff;
 mod review_task;
 mod sarif;
+mod scenario;
 mod self_optimizer;
 mod selfmgmt;
 mod shipped_schemas;
@@ -1928,6 +1929,8 @@ fn main() {
                 .map(|()| 0),
         ),
         cli::Command::Task { command } => ("af task", task_command(command)),
+        cli::Command::Scenario { command } => ("af scenario", scenario::scenario(command)),
+        cli::Command::Ant { command } => ("af ant", scenario::ant(command)),
         cli::Command::Project {
             command:
                 cli::ProjectCli::Brief {
