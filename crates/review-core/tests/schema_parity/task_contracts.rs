@@ -1413,9 +1413,9 @@ fn pi_authority_is_closed_versioned_and_required_only_for_pi_models() {
 
 #[test]
 fn pi_host_and_setup_protocols_reject_old_shapes_and_secret_fields() {
-    let ready = json!({"schema":"af.pi-host/1","type":"ready","principal":format!("sha256:{}","a".repeat(64)),
+    let ready = json!({"schema":"af.pi-host/2","type":"ready","principal":format!("sha256:{}","a".repeat(64)),
         "backend":"openai-codex","auth_method":"oauth","version":"1.4.0","models":[{"id":"o3","efforts":["high"],"identity":format!("sha256:{}","b".repeat(64))}]});
-    assert_valid("pi-host-v1.json", &ready);
+    assert_valid("pi-host-v2.json", &ready);
     for (field, wrong) in [
         ("schema", json!("af.pi-host/0")),
         ("version", json!("1.5.0")),
@@ -1424,15 +1424,55 @@ fn pi_host_and_setup_protocols_reject_old_shapes_and_secret_fields() {
     ] {
         let mut bad = ready.clone();
         bad[field] = wrong;
-        assert_invalid("pi-host-v1.json", &bad, field);
+        assert_invalid("pi-host-v2.json", &bad, field);
     }
-    let usage = json!({"schema":"af.pi-host/1","type":"usage","inference":1,"complete":false,"input":null,"output":2,"cache_read":null,"cache_write":null,"reasoning":null});
-    assert_valid("pi-host-v1.json", &usage);
+    let usage = json!({"schema":"af.pi-host/2","type":"usage","inference":1,"complete":false,"input":null,"output":2,"cache_read":null,"cache_write":null,"reasoning":null});
+    assert_valid("pi-host-v2.json", &usage);
     let mut missing = usage;
     missing.as_object_mut().unwrap().remove("input");
-    assert_invalid("pi-host-v1.json", &missing, "missing counter");
-    let setup = json!({"schema":"af/pi-provider-setup@1","id":"pi-personal","kind":"pi","backend":"openai-codex","outcome":"registered","detail":"Pi SDK 1.4.0 registered"});
-    assert_valid("pi-provider-setup-v1.json", &setup);
+    assert_invalid("pi-host-v2.json", &missing, "missing counter");
+    let setup = json!({"schema":"af/pi-provider-setup@2","id":"pi-personal","kind":"pi","backend":"openai-codex","outcome":"registered","detail":"Pi SDK 1.4.0 registered"});
+    assert_valid("pi-provider-setup-v2.json", &setup);
+    for (id, backend) in [
+        (Value::Null, Value::Null),
+        (json!("pi-personal"), Value::Null),
+        (Value::Null, json!("openai-codex")),
+    ] {
+        let mut refusal = setup.clone();
+        refusal["outcome"] = json!("human_action_required");
+        refusal["id"] = id;
+        refusal["backend"] = backend;
+        assert_valid("pi-provider-setup-v2.json", &refusal);
+    }
+    for (field, wrong) in [
+        ("schema", json!("af/pi-provider-setup@1")),
+        ("id", json!("../unsafe")),
+        ("id", json!("codex-ambient")),
+        ("backend", json!("unsupported")),
+        ("access", json!("secret")),
+        ("id", Value::Null),
+    ] {
+        let mut bad = setup.clone();
+        bad[field] = wrong;
+        assert_invalid("pi-provider-setup-v2.json", &bad, field);
+    }
+    for kind in ["prompt", "accepted"] {
+        let mut ack = json!({"schema":"af.pi-host/2","type":kind,"prompt_nonce":format!("sha256:{}","c".repeat(64))});
+        if kind == "prompt" {
+            ack["text"] = json!("private");
+        }
+        assert_valid("pi-host-v2.json", &ack);
+        for wrong in [Value::Null, json!(""), json!("sha256:wrong")] {
+            let mut bad = ack.clone();
+            bad["prompt_nonce"] = wrong;
+            assert_invalid("pi-host-v2.json", &bad, "invalid challenge");
+        }
+        let mut old = ack.clone();
+        old["schema"] = json!("af.pi-host/1");
+        assert_invalid("pi-host-v2.json", &old, "old protocol");
+        ack.as_object_mut().unwrap().remove("prompt_nonce");
+        assert_invalid("pi-host-v2.json", &ack, "missing challenge");
+    }
     let registry = json!({"version":2,"providers":[{"id":"pi-personal","kind":"pi","auth_dir":"/private/profile","backend":"openai-codex","sdk_entrypoint":"/installed/sdk/dist/index.js"}]});
     assert_valid("provider-registry-v2.json", &registry);
     let mut old = registry;

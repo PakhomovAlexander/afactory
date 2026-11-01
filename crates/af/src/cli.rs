@@ -1492,7 +1492,7 @@ af provider setup claude-work --kind claude --auth-dir /secure/claude-work \\\n 
         /// Opt in to starting the official Provider CLI login in this private terminal
         #[arg(long)]
         login: bool,
-        /// Emit `af/provider-setup@2` (Pi: `af/pi-provider-setup@1`)
+        /// Emit `af/provider-setup@2` (Pi: `af/pi-provider-setup@2`)
         #[arg(long, conflicts_with = "login")]
         json: bool,
     },

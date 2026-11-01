@@ -75,15 +75,23 @@ fn pi_registration_requires_explicit_authority_before_starting_or_changing_a_pro
             .unwrap();
         assert_eq!(
             output.status.code(),
-            Some(if verb == "setup" { 1 } else { 2 }),
+            Some(if verb == "setup" { 3 } else { 2 }),
             "{}",
             stderr(&output)
         );
         let document: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
-        crate::schemas::valid(&crate::schemas::validator("error-v2.json"), &document);
-        assert_eq!(document["exit_code"], if verb == "setup" { 1 } else { 2 });
         if verb == "setup" {
+            crate::schemas::valid(
+                &crate::schemas::validator("pi-provider-setup-v2.json"),
+                &document,
+            );
+            assert_eq!(document["outcome"], "human_action_required");
+            assert_eq!(document["id"], "pi-personal");
+            assert!(document["backend"].is_null());
             assert!(stderr(&output).contains("--backend openai-codex"));
+        } else {
+            crate::schemas::valid(&crate::schemas::validator("error-v2.json"), &document);
+            assert_eq!(document["exit_code"], 2);
         }
         assert!(!home.join("cli-started").exists());
         assert!(!home.join("config/af/providers.toml").exists());

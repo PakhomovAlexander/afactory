@@ -29,7 +29,14 @@ fn accepted() -> State {
         json!({"model":"o3","effort":"high","model_identity":digest(b"model")}),
     )
     .unwrap();
-    record(&mut state, "accepted", json!({})).unwrap();
+    state.prompt_sent = true;
+    state.prompt_nonce = Some(digest(b"prompt challenge"));
+    record(
+        &mut state,
+        "accepted",
+        json!({"prompt_nonce":digest(b"prompt challenge")}),
+    )
+    .unwrap();
     state
 }
 fn usage(id: u64, complete: bool, input: Value, output: Value) -> Value {
@@ -73,6 +80,31 @@ fn errors_unknown_and_partial_usage_retain_the_observed_floor() {
     assert!(usage.input_tokens.is_none());
     assert_eq!(usage.output_tokens.unwrap().get(), 7);
 }
+#[test]
+fn prompt_acknowledgement_requires_delivery_and_exact_fresh_challenge() {
+    let accepted_state = accepted();
+    for (sent, nonce) in [
+        (false, digest(b"prompt challenge")),
+        (true, digest(b"wrong")),
+    ] {
+        let mut state = accepted();
+        state.accepted = false;
+        state.prompt_sent = sent;
+        assert!(record(&mut state, "accepted", json!({"prompt_nonce":nonce})).is_err());
+    }
+    for bad in [
+        json!({}),
+        json!({"prompt_nonce":accepted_state.prompt_nonce, "extra":true}),
+    ] {
+        let mut state = accepted();
+        state.accepted = false;
+        assert!(record(&mut state, "accepted", bad).is_err());
+    }
+    let mut state = accepted();
+    state.accepted = false;
+    assert!(state.record(json!({"schema":"af.pi-host/1","type":"accepted","prompt_nonce":state.prompt_nonce}).to_string().as_bytes()).is_err());
+}
+
 #[test]
 fn invalid_counters_versions_and_lifecycle_fail_closed() {
     for bad in [
@@ -122,10 +154,10 @@ mode=MODE
 open(START_MARKER,'w').write('started')
 ready=json.loads(READY)
 def emit(v):
- v['schema']='af.pi-host/1'
+ v['schema']='af.pi-host/2'
  data=(json.dumps(v,ensure_ascii=False)+'\n').encode()
  # Split inside a UTF-8 sequence too: LF is the only record separator.
- for at in range(0,len(data),7): os.write(1,data[at:at+7])
+ for at in range(0,len(data),len(data) if mode=='immediate' else 7): os.write(1,data[at:at+7] if mode!='immediate' else data)
 r=json.loads(sys.stdin.readline())
 assert 'NODE_OPTIONS' not in os.environ and 'OPENAI_API_KEY' not in os.environ
 if mode=='readonly': assert not r['writable']
@@ -139,9 +171,17 @@ p=json.loads(sys.stdin.readline())
 if mode=='model': p['model']='wrong'
 if mode=='effort': p['effort']='low'
 emit({'type':'prepared','model':p['model'],'effort':p['effort'],'model_identity':p['model_identity']})
+if mode=='before-prompt':
+ emit({'type':'accepted','prompt_nonce':'sha256:'+'0'*64})
+ emit({'type':'usage','inference':1,'complete':True,'input':10,'output':2,'cache_read':3,'cache_write':None,'reasoning':None})
+ emit({'type':'message','text':'{"schema":"af.worker-reply/1","outputs":{"report":[{"summary":"premature"}]}}'})
+ emit({'type':'settled'})
+ prompt=json.loads(sys.stdin.readline())
+ open(MARKER,'w').write(prompt['text'])
+ sys.exit(0)
 prompt=json.loads(sys.stdin.readline())
 open(MARKER,'w').write(prompt['text'])
-emit({'type':'accepted'})
+emit({'type':'accepted','prompt_nonce':prompt['prompt_nonce']})
 emit({'type':'usage','inference':1,'complete':True,'input':10,'output':2,'cache_read':3,'cache_write':None,'reasoning':None})
 if mode in ['cancel','cancel-no-pid']:
  s=socket.socket(socket.AF_UNIX); s.connect(SOCKET)
@@ -239,29 +279,55 @@ if mode=='after': emit({'type':'error','code':'inference_failed'})
     }
 
     #[test]
-    fn supervised_host_partial_jsonl_unicode_and_terminal_settlement() {
+    fn supervised_host_partial_jsonl_unicode_and_immediate_terminal_settlement() {
+        for mode in ["success", "immediate"] {
+            let root = tempfile::tempdir().unwrap();
+            let adapter = fixture(mode, root.path(), None);
+            let cas = Cas::open(root.path().join("cas")).unwrap();
+            let returned = adapter.invoke(
+                &cas,
+                root.path(),
+                b"private request".to_vec(),
+                Duration::from_secs(30),
+                WorkerAccess::ReadOnly,
+                None,
+                &[],
+            );
+            assert_eq!(
+                returned.message.unwrap(),
+                "unicode \u{2028} \u{2029} result".as_bytes()
+            );
+            assert_eq!(returned.usage.unwrap().chargeable_tokens.get(), 9);
+            assert_eq!(
+                std::fs::read(root.path().join("prompt")).unwrap(),
+                b"private request"
+            );
+        }
+    }
+    #[test]
+    fn complete_reply_before_reading_prompt_is_refused_even_if_host_then_reads_and_exits_zero() {
         let root = tempfile::tempdir().unwrap();
-        let adapter = fixture("success", root.path(), None);
+        let adapter = fixture("before-prompt", root.path(), None);
         let cas = Cas::open(root.path().join("cas")).unwrap();
         let returned = adapter.invoke(
             &cas,
             root.path(),
-            b"private request".to_vec(),
+            b"PRIVATE".to_vec(),
             Duration::from_secs(30),
             WorkerAccess::ReadOnly,
             None,
             &[],
         );
-        assert_eq!(
-            returned.message.unwrap(),
-            "unicode \u{2028} \u{2029} result".as_bytes()
-        );
-        assert_eq!(returned.usage.unwrap().chargeable_tokens.get(), 9);
-        assert_eq!(
-            std::fs::read(root.path().join("prompt")).unwrap(),
-            b"private request"
+        let error = returned
+            .message
+            .expect_err("accepted a complete reply emitted before prompt consumption");
+        assert!(
+            error == "Pi host lifecycle violation"
+                || error == "Pi host acknowledged a prompt it was not delivered",
+            "{error}"
         );
     }
+
     #[test]
     fn identity_backend_model_effort_and_version_drift_refuse_before_private_input() {
         for mode in ["identity", "backend", "model", "effort", "version"] {

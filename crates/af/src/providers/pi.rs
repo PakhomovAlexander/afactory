@@ -46,7 +46,12 @@ fn safe_installation(program: &Path, module: bool) -> Result<PathBuf, String> {
 fn discover_sdk() -> Result<PathBuf, String> {
     let unresolved = "Cannot safely resolve Pi SDK; pass --sdk-entrypoint /installed/node_modules/@earendil-works/pi-coding-agent/dist/index.js";
     let launcher = resolve_program("pi").ok_or(unresolved)?;
-    let launcher = safe_installation(&launcher, true)?;
+    discover_sdk_from_launcher(&launcher)
+}
+
+fn discover_sdk_from_launcher(launcher: &Path) -> Result<PathBuf, String> {
+    let unresolved = "Cannot safely resolve Pi SDK; pass an explicit installed --sdk-entrypoint";
+    let launcher = safe_installation(launcher, true)?;
     let bin = launcher.parent().ok_or(unresolved)?;
     let agent = bin.parent().ok_or(unresolved)?;
     let install = agent.join("install");
@@ -113,7 +118,7 @@ pub(super) fn probe(
         .auth_dir
         .as_deref()
         .ok_or("Pi requires an explicit auth directory")?;
-    validate_private_auth_directory(auth)?;
+    validate_private_auth_directory(auth).map_err(|_| "Pi auth directory must be an existing private, owned directory without unsafe links or permissions")?;
     if !auth.join("auth.json").is_file() {
         return Err("Pi requires an existing stored openai-codex OAuth login; log in with Pi at a private terminal".into());
     }
@@ -161,38 +166,46 @@ pub(super) fn status(
     }
     (status, String::new())
 }
-pub fn setup(
+// Every internal refusal goes through setup's single emitter. These errors contain only
+// AF-authored text; shared filesystem/registry validators may include arbitrary input bytes.
+fn setup_outcome(
     id: &str,
     backend: Option<&str>,
     auth: Option<&Path>,
     sdk: Option<&Path>,
     login: bool,
-    json: bool,
-) -> Result<i32, String> {
-    validate_explicit_id(id)?;
-    availability::check_id(id)?;
+) -> Result<(i32, &'static str, String), String> {
+    validate_explicit_id(id).map_err(|_| "Pi setup requires a valid, non-reserved Provider ID")?;
+    availability::check_id(id).map_err(|_| "Pi Provider is disabled or its availability state is invalid; inspect af provider status")?;
     if login {
         return Err("Pi login is human-driven: register an existing openai-codex OAuth profile with --auth-dir".into());
     }
     let backend = backend.ok_or("Pi setup requires --backend openai-codex")?;
+    if backend != "openai-codex" {
+        return Err("Pi supports only the openai-codex backend with stored OAuth".into());
+    }
     let auth = auth
         .ok_or("Pi setup requires an absolute --auth-dir holding an existing stored OAuth login")?;
     if !auth.is_absolute() {
         return Err("Pi auth directory must be absolute".into());
     }
-    validate_utf8_destination(auth)?;
-    validate_private_auth_directory(auth)?;
+    validate_utf8_destination(auth)
+        .map_err(|_| "Pi auth directory must be a valid UTF-8 destination")?;
+    validate_private_auth_directory(auth).map_err(|_| "Pi auth directory must be an existing private, owned directory without unsafe links or permissions")?;
     let auth = fs::canonicalize(auth).map_err(|_| "Pi auth directory is missing")?;
     let resolved = match sdk {
         Some(path) => path.to_path_buf(),
         None => discover_sdk()?,
     };
-    let config = PiConfig {
+    let mut config = PiConfig {
         backend: backend.into(),
-        sdk_entrypoint: safe_installation(&resolved, true)?,
+        sdk_entrypoint: resolved,
     };
     config.validate()?;
-    let registry = registry_path()?.ok_or("Cannot locate Provider registry")?;
+    config.sdk_entrypoint = safe_installation(&config.sdk_entrypoint, true)?;
+    let registry = registry_path()
+        .map_err(|_| "Cannot resolve Pi Provider registry")?
+        .ok_or("Cannot locate Provider registry")?;
     let spec = ProviderSpec {
         id: id.into(),
         kind: ProviderKind::Pi,
@@ -203,45 +216,114 @@ pub fn setup(
         source: registry.display().to_string(),
     };
     let cancelled = AtomicBool::new(false);
-    let outcome = probe(&spec, &cancelled, PROBE_TIMEOUT);
-    let (code, state, detail) = match outcome {
-        Err(error) => (EXIT_HUMAN_ACTION_REQUIRED, "human_action_required", error),
-        Ok(_) => {
-            let _lock = registry_lock(&registry)?;
-            match add_to_registry_with_pi(
-                &registry,
-                id,
-                ProviderKind::Pi,
-                &auth,
-                true,
-                Some(&config),
-            )? {
-                RegistryAdd::Added(_) => (
-                    EXIT_OK,
-                    "registered",
-                    "Pi SDK 1.4.0 openai-codex OAuth registered".into(),
-                ),
-                RegistryAdd::AlreadyPresent => (
-                    EXIT_OK,
-                    "already_registered",
-                    "Pi registration already present".into(),
-                ),
-                RegistryAdd::Conflict(error) => {
-                    (EXIT_REGISTRY_CONFLICT, "registry_conflict", error)
-                }
-            }
-        }
-    };
+    // Probe diagnostics are a closed AF-authored vocabulary; no native stderr escapes.
+    probe(&spec, &cancelled, PROBE_TIMEOUT)?;
+    let _lock = registry_lock(&registry).map_err(|_| "Cannot lock Pi Provider registry")?;
+    match add_to_registry_with_pi(&registry, id, ProviderKind::Pi, &auth, true, Some(&config))
+        .map_err(|_| "Cannot update Pi Provider registry; inspect its configuration and permissions")?
+    {
+        RegistryAdd::Added(_) => Ok((EXIT_OK, "registered", "Pi SDK 1.4.0 openai-codex OAuth registered".into())),
+        RegistryAdd::AlreadyPresent => Ok((EXIT_OK, "already_registered", "Pi registration already present".into())),
+        RegistryAdd::Conflict(_) => Ok((EXIT_REGISTRY_CONFLICT, "registry_conflict", "Pi Provider ID or auth directory conflicts with an existing registration or registry limit".into())),
+    }
+}
+
+pub fn setup(
+    id: &str,
+    backend: Option<&str>,
+    auth: Option<&Path>,
+    sdk: Option<&Path>,
+    login: bool,
+    json: bool,
+) -> Result<i32, String> {
+    let (code, state, detail) = setup_outcome(id, backend, auth, sdk, login)
+        .unwrap_or_else(|detail| (EXIT_HUMAN_ACTION_REQUIRED, "human_action_required", detail));
+    // Never fabricate a supported identity for an invalid request, or echo raw invalid input.
+    let id = validate_explicit_id(id).is_ok().then_some(id);
+    let backend = backend.filter(|value| *value == "openai-codex");
     if json {
         println!(
             "{}",
-            serde_json::json!({"schema":"af/pi-provider-setup@1","id":id,"kind":"pi","backend":backend,"outcome":state,"detail":detail})
+            serde_json::json!({"schema":"af/pi-provider-setup@2","id":id,"kind":"pi","backend":backend,"outcome":state,"detail":detail})
         );
     } else {
-        println!("provider {id}: {detail}");
+        println!("provider {}: {detail}", id.unwrap_or("pi (invalid ID)"));
     }
     if code != EXIT_OK {
         eprintln!("af provider setup: {detail} ({state})");
     }
     Ok(code)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn pi_setup_login_refusal_precedes_discovery_and_authentication() {
+        assert_eq!(
+            setup_outcome("pi-one", None, None, None, true).unwrap_err(),
+            "Pi login is human-driven: register an existing openai-codex OAuth profile with --auth-dir"
+        );
+    }
+
+    #[test]
+    fn managed_sdk_discovery_rejects_every_malformed_version_without_executing_launcher() {
+        let root = tempfile::tempdir().unwrap();
+        let root = root.path().canonicalize().unwrap();
+        let agent = root.join("agent");
+        let launcher = agent.join("bin/pi");
+        fs::create_dir_all(launcher.parent().unwrap()).unwrap();
+        let marker = root.join("launcher-executed");
+        fs::write(
+            &launcher,
+            format!("#!/bin/sh\n: > '{}'\nexit 99\n", marker.display()),
+        )
+        .unwrap();
+        fs::set_permissions(&launcher, fs::Permissions::from_mode(0o700)).unwrap();
+        let release = agent.join("install/releases/1.4.0");
+        let sdk = release.join("node_modules/@earendil-works/pi-coding-agent/dist/index.js");
+        fs::create_dir_all(sdk.parent().unwrap()).unwrap();
+        fs::write(&sdk, "must not execute SDK during discovery").unwrap();
+        let current = agent.join("install/current-version");
+        for bad in [
+            "",
+            "..",
+            "../1.4.0",
+            "/1.4.0",
+            "1.5.0",
+            "1.4.0/../../outside",
+            "1.4.0\nextra",
+            " 1.4.0",
+            "1.4.0\0",
+            &"x".repeat(4096),
+        ] {
+            fs::write(&current, bad).unwrap();
+            assert!(
+                discover_sdk_from_launcher(&launcher).is_err(),
+                "accepted {bad:?}"
+            );
+            assert!(!marker.exists());
+        }
+        fs::write(&current, [0xff, 0xfe]).unwrap();
+        assert!(discover_sdk_from_launcher(&launcher).is_err());
+        for version in ["1.4.0", "1.4.0\n", "1.4.0\r\n"] {
+            fs::write(&current, version).unwrap();
+            assert_eq!(discover_sdk_from_launcher(&launcher).unwrap(), sdk);
+        }
+        let saved = root.join("saved-version");
+        fs::rename(&current, &saved).unwrap();
+        std::os::unix::fs::symlink(&saved, &current).unwrap();
+        assert!(discover_sdk_from_launcher(&launcher).is_err());
+        fs::remove_file(&current).unwrap();
+        fs::create_dir(&current).unwrap();
+        assert!(discover_sdk_from_launcher(&launcher).is_err());
+        fs::remove_dir(&current).unwrap();
+        fs::rename(&saved, &current).unwrap();
+        let escaped = root.join("escaped-release");
+        fs::rename(&release, &escaped).unwrap();
+        std::os::unix::fs::symlink(&escaped, &release).unwrap();
+        assert!(discover_sdk_from_launcher(&launcher).is_err());
+        assert!(!marker.exists());
+    }
 }

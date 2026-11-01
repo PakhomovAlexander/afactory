@@ -16,7 +16,7 @@ process. Pi's canonical `openai-codex` OAuth credential includes non-secret `acc
 Embed a small AF-owned Node ES-module host in `review-runner-pi`, behind a native Rust
 `WorkerModelAdapter`. Require external Node >=22.19 and official Pi SDK exactly 1.4.0,
 installed outside repository-owned paths. Never auto-install or execute a project module.
-The host's versioned `af.pi-host/1` JSONL protocol serves token-free identity/catalog probes
+The host's versioned `af.pi-host/2` JSONL protocol serves token-free identity/catalog probes
 and one isolated Attempt invocation under the common `review-process` supervisor.
 
 Admit only explicitly registered `openai-codex` stored OAuth. The host uses Pi `AuthStorage`
@@ -43,9 +43,11 @@ parent and symlink escapes refuse; an attached base is read-only. This is an exp
 boundary under `trusted_local`, not a claim of OS isolation. Native execution remains
 `trusted_unsafe`, with delivery/publication authority unchanged.
 
-Require actual SDK settlement and final text; acknowledgements, `agent_end` and EOF are
-insufficient. Observe native response usage so SDK-initialized zero counters cannot stand
-for missing reports. Replace cumulative observations per inference, retain partial billing
+Require a fresh random prompt-delivery challenge echoed by `accepted` before admitting
+usage, messages or settlement; a speculative pre-prompt response refuses. Publish the expected
+challenge before writing so an immediate legitimate response remains valid. Require actual SDK
+settlement and final text; acknowledgements, `agent_end` and EOF are insufficient. Observe native
+response usage so SDK-initialized zero counters cannot stand for missing reports. Replace cumulative observations per inference, retain partial billing
 floors on every failure and apply the ordinary local typed Worker contract and retry path.
 All processes use the original Attempt wall, cancellation and common owned-group cleanup.
 

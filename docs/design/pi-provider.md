@@ -49,8 +49,16 @@ Pi entries require `kind = "pi"`, `backend = "openai-codex"`, `auth_dir` and
 `sdk_entrypoint`. Version 1 is refused; recreate registrations with this release rather
 than migrating an older registry (ADR-0145). Existing Codex and Claude entries use the
 same fields in version 2, and their adapters and default assignments are unchanged.
-A Pi setup result is `af/pi-provider-setup@1`; status is `af/provider-status@5` and
-model discovery is `af/provider-models@2`. Status proves authentication, never paid
+A Pi setup result is `af/pi-provider-setup@2`; status is `af/provider-status@5` and
+model discovery is `af/provider-models@2`. Setup emits that Pi report for every internal
+refusal after Pi setup is invoked, including discovery, invalid configuration, installation,
+authentication and registry failures. In setup reports, `id` is null for an invalid/reserved
+requested ID and `backend` is null for an absent/unsupported requested backend; AF never
+invents a supported identity or echoes invalid raw request values. Registered/conflict outcomes
+require both validated values. Failures print the same safe AF-authored detail and outcome on
+stderr, including with `--json`; early refusals exit 3 and registry conflicts exit 5.
+CLI parser errors before invocation remain ordinary usage errors. Setup report v1 and host
+protocol v1 fail closed under ADR-0145. Status proves authentication, never paid
 usability. Subscription quota probing is unsupported.
 
 ## Account, model and captured authority
@@ -116,14 +124,20 @@ remote gate or `auto_apply` authority is granted.
 
 ## Protocol, lifecycle and accounting
 
-`af.pi-host/1` is AF's versioned JSONL protocol, with schema `schemas/pi-host-v1.json`:
+`af.pi-host/2` is AF's versioned JSONL protocol, with schema `schemas/pi-host-v2.json`:
 
 1. Rust sends `init`, containing no private Worker prompt. The host returns `ready` with
    safe opaque identity and a bounded static catalog. A token-free probe ends here.
 2. Rust compares captured identity/configuration, then sends `prepare` with exact model,
    effort and model digest. Only after `prepared` matches does Rust send `prompt`.
-3. The host rechecks the guarded credential and emits `accepted` before inference. This is
-   an acknowledgement, never a result. One SDK session runs in this one process.
+3. Rust generates a fresh 256-bit random `prompt_nonce` challenge in the prompt writer and
+   includes it only in the delivered `prompt` record. The host rechecks the guarded credential
+   and echoes that exact challenge in `accepted` before inference. Rust requires this echo
+   before accepting usage, messages or settlement: a speculative reply after `prepared`
+   cannot answer a prompt the host has not consumed. The expected challenge is published
+   before writing so an immediate legitimate reply cannot race the writer's completion.
+   A failed or partial prompt write retains unknown usage conservatively. This acknowledgement
+   is never a result. One SDK session runs in this one process.
 4. Usage observations name an inference sequence; cumulative snapshots replace that
    inference's earlier observation. Completed duplicates do not count twice.
 5. The host requires actual `agent_settled`, successful final assistant text and the return
@@ -176,6 +190,8 @@ and reaches actual session settlement, with HTTP replaced in process and no serv
 The Rust runner tests use
 faithful **AF host** processes for JSONL fragmentation, Unicode, terminal ordering, identity
 and setting drift, limits, malformed events and cancellation with preserved usage/reaping.
+A deterministic host fixture emits a complete typed response before reading the prompt,
+then reads it and exits zero; AF refuses it. An immediate valid response succeeds without waits.
 CLI fixtures exercise setup/status/catalog, common Task admission and typed-result recovery,
 plus doctor and captured Review. Existing-provider regression selections remain required.
 
@@ -194,5 +210,7 @@ official SDK test proves construction, tool confinement and synthetic stream han
 synthetic inference fixtures prove AF's protocol/runtime behavior. They are not a live service receipt.
 
 The [indexed validation record](pi-provider-validation.md) retains the original issue #494
-observation and manual measurement with exact source and file bindings, separately from current
-candidate checks. No historical execution is reconstructed or attributed to this candidate.
+observation and both historical measurement runs with their historical file bindings. A
+reproducible source-content projection separately binds the fresh manual measurement and current
+checks without including the validation record itself. No historical execution is reconstructed
+or attributed to this candidate.

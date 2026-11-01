@@ -112,7 +112,7 @@ class HostTests(unittest.TestCase):
                 sdk = str(package / 'dist/index.js')
             auth = root / 'auth'
             auth.mkdir()
-            request = {'schema': 'af.pi-host/1', 'type': 'init', 'backend': 'openai-codex',
+            request = {'schema': 'af.pi-host/2', 'type': 'init', 'backend': 'openai-codex',
                        'sdk': sdk, 'auth_dir': str(auth), 'principal': None,
                        'cwd': directory, 'home': directory, 'readable': [],
                        'writable': [], 'probe': True}
@@ -195,10 +195,10 @@ if (process.argv[3]==='official') assert.equal(calls,2);
             selected = next(model for model in ready['models'] if 'high' in model['efforts'])
             invocation = {**request, 'probe': False, 'principal': ready['principal'],
                           'readable': [directory], 'writable': [directory]}
-            prepare = {'schema': 'af.pi-host/1', 'type': 'prepare',
+            prepare = {'schema': 'af.pi-host/2', 'type': 'prepare',
                        'model': selected['id'], 'effort': 'high',
                        'model_identity': selected['identity']}
-            prompt = {'schema': 'af.pi-host/1', 'type': 'prompt',
+            prompt = {'schema': 'af.pi-host/2', 'type': 'prompt', 'prompt_nonce': 'sha256:' + 'd'*64,
                       'text': 'Read inside, write turn-created/nested/file, then return the typed reply.'}
             result = subprocess.run([node, '--no-addons', str(wrapper), str(HOST),
                                      'official' if official else 'fixture'],
@@ -210,6 +210,8 @@ if (process.argv[3]==='official') assert.equal(calls,2);
             self.assertEqual(result.returncode, 0, result.stderr)
             records = [json.loads(line) for line in result.stdout.splitlines()]
             self.assertEqual(records[-1]['type'], 'settled', records)
+            self.assertEqual(next(r for r in records if r['type'] == 'accepted')['prompt_nonce'],
+                             prompt['prompt_nonce'])
             self.assertFalse(any(record['type'] == 'error' for record in records), records)
             finalized = [record for record in records if record['type'] == 'usage'
                          and record['complete']]
@@ -224,6 +226,26 @@ if (process.argv[3]==='official') assert.equal(calls,2);
                                     and record['cache_write'] is None for record in finalized))
                 self.assertEqual(sum(record['input'] - record['cache_read'] + record['output']
                                      for record in finalized), 26)
+            # Malformed/missing challenges refuse at the real embedded-host entrypoint,
+            # before accepted/inference; no upstream transport is reached.
+            for challenge in [None, 'invalid']:
+                bad_prompt = {**prompt, 'prompt_nonce': challenge}
+                if challenge is None:
+                    del bad_prompt['prompt_nonce']
+                refused = subprocess.run([node, '--no-addons', str(HOST)],
+                                         input=''.join(json.dumps(r) + '\n' for r in
+                                                       [invocation, prepare, bad_prompt]),
+                                         text=True, capture_output=True, cwd=root,
+                                         env={'HOME': directory, 'PI_OFFLINE': '1',
+                                              'PI_TELEMETRY': 'off'}, timeout=30, check=False)
+                self.assertEqual(refused.returncode, 1, refused.stderr)
+                refused_records = [json.loads(line) for line in refused.stdout.splitlines()]
+                self.assertEqual(refused_records[-1], {'schema': 'af.pi-host/2',
+                                                       'type': 'error', 'code': 'host_refused'})
+                self.assertFalse(any(r['type'] in ['accepted', 'usage', 'message', 'settled']
+                                     for r in refused_records))
+                for secret in [access, 'PRIVATE_REFRESH', 'SYNTHETIC_ACCOUNT']:
+                    self.assertNotIn(secret, refused.stdout + refused.stderr)
             print('official Pi SDK agent turn/read/nested write/typed reply/native usage: ' +
                   ('passed (mocked transport; no paid call)' if official else
                    'not run (SDK absent or hermetic mode; fixture protocol passed)'))
@@ -239,7 +261,7 @@ if (process.argv[3]==='official') assert.equal(calls,2);
                                               'PI_TELEMETRY': 'off'}, timeout=30, check=False)
                 self.assertEqual(invalid.returncode, 0, invalid.stderr)
                 records = [json.loads(line) for line in invalid.stdout.splitlines()]
-                self.assertEqual(records[-1], {'schema': 'af.pi-host/1', 'type': 'error',
+                self.assertEqual(records[-1], {'schema': 'af.pi-host/2', 'type': 'error',
                                                'code': 'inference_failed'})
                 self.assertFalse(any(record['type'] == 'settled' for record in records))
                 observed = [record for record in records if record['type'] == 'usage']

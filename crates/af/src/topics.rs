@@ -581,10 +581,11 @@ Other first-run causes are `task_not_found`, `no_task_catalog`, `no_authority`,
 `af help errors` for the full cause table and `af help errors CAUSE` for one explanation.
 
 A command that classifies its own outcomes — `af provider status` and `af provider setup` — prints
-its own versioned document instead, carrying that exit code and an af-authored `diagnostic`;
-stderr still gets one diagnostic line, so discarding stdout never hides a refusal. The Provider
+its own versioned document instead, carrying a classified outcome and af-authored detail;
+Pi setup uses `detail`, while the other Provider reports use `diagnostic`. Stderr still gets
+one diagnostic line, so discarding stdout never hides a refusal. The Provider
 documents are af/provider-detect@4 (`af provider detect`), af/provider-status@5,
-af/provider-setup@2, af/pi-provider-setup@1 and af/provider-models@2; none carries an account,
+af/provider-setup@2, af/pi-provider-setup@2 and af/provider-models@2; none carries an account,
 a credential or the Provider CLI's own words.
 
 One command prints JSON lines instead and takes no --json: `af task events ID` writes one

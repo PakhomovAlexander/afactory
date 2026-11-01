@@ -569,7 +569,7 @@ fn pi_setup_status_and_exact_model_catalog_are_token_free_and_secret_free() {
         String::from_utf8_lossy(&setup.stderr)
     );
     let value: Value = serde_json::from_slice(&setup.stdout).unwrap();
-    valid("pi-provider-setup-v1.json", &value);
+    valid("pi-provider-setup-v2.json", &value);
     for (args, schema) in [
         (
             vec!["provider", "status", "--json"],
@@ -631,6 +631,9 @@ fn pi_setup_status_and_exact_model_catalog_are_token_free_and_secret_free() {
         "--json",
     ]);
     assert!(!unsupported.status.success());
+    valid("pi-provider-setup-v2.json", &document(&unsupported));
+    assert!(err(&unsupported).starts_with("af provider setup: "));
+
     // Losing one optional SDK installation leaves the registry readable and removable.
     std::fs::remove_file(&sdk).unwrap();
     let status = invoke(&["provider", "status", "--json"]);
@@ -694,35 +697,24 @@ fn pi_setup_discovers_managed_launcher_without_executing_it_and_refuses_unsafe_v
             .output()
             .unwrap()
     };
-    for bad in [
-        "",
-        "..",
-        "../1.4.0",
-        "/1.4.0",
-        "1.5.0",
-        "1.4.0/../../outside",
-        "1.4.0\nextra",
-        " 1.4.0",
-        "1.4.0\0",
-        &"x".repeat(4096),
-    ] {
-        std::fs::write(&current, bad).unwrap();
-        let output = setup();
-        assert!(
-            !output.status.success(),
-            "accepted unsafe current-version {bad:?}"
-        );
+    let refused = |output: Output| {
+        assert_eq!(code(&output), 3, "{} {}", out(&output), err(&output));
+        let value = document(&output);
+        valid("pi-provider-setup-v2.json", &value);
+        assert_eq!(value["outcome"], "human_action_required");
+        assert!(err(&output).starts_with("af provider setup: "));
+        assert!(err(&output).contains(value["detail"].as_str().unwrap()));
         assert!(!root.path().join("providers.toml").exists());
         assert!(!marker.exists());
-    }
+    };
+    // The full malformed-version table runs in-process in providers::pi::tests.
+    std::fs::write(&current, "../1.4.0").unwrap();
+    refused(setup());
     std::fs::write(&current, "1.4.0\n").unwrap();
     let saved_version = root.path().join("saved-version");
     std::fs::rename(&current, &saved_version).unwrap();
     std::os::unix::fs::symlink(&saved_version, &current).unwrap();
-    assert!(
-        !setup().status.success(),
-        "accepted a symlinked current-version"
-    );
+    refused(setup());
     std::fs::remove_file(&current).unwrap();
     std::fs::rename(&saved_version, &current).unwrap();
     // The previous implementation derived agent/index.js, which does not exist.
@@ -731,16 +723,14 @@ fn pi_setup_discovers_managed_launcher_without_executing_it_and_refuses_unsafe_v
     let saved = root.path().join("saved-sdk.js");
     std::fs::rename(&sdk, &saved).unwrap();
     std::os::unix::fs::symlink(&saved, &sdk).unwrap();
-    assert!(
-        !setup().status.success(),
-        "managed entrypoint escaped its release"
-    );
+    refused(setup());
     std::fs::remove_file(&sdk).unwrap();
     std::fs::rename(&saved, &sdk).unwrap();
     let output = setup();
     assert_eq!(code(&output), 0, "{} {}", out(&output), err(&output));
-    valid("pi-provider-setup-v1.json", &document(&output));
+    valid("pi-provider-setup-v2.json", &document(&output));
     assert_eq!(document(&output)["outcome"], "registered");
+    assert!(err(&output).is_empty());
     let registry = std::fs::read_to_string(root.path().join("providers.toml")).unwrap();
     assert!(registry.contains(sdk.to_str().unwrap()));
     assert!(!marker.exists(), "discovery executed the managed launcher");
@@ -800,7 +790,7 @@ fn pi_failed_setup_emits_safe_json_and_human_stderr_for_probe_and_registration_c
         );
         if json {
             let value = document(output);
-            valid("pi-provider-setup-v1.json", &value);
+            valid("pi-provider-setup-v2.json", &value);
             assert_eq!(value["outcome"], outcome);
             assert!(err(output).contains(value["detail"].as_str().unwrap()));
         } else {
@@ -826,7 +816,105 @@ fn pi_failed_setup_emits_safe_json_and_human_stderr_for_probe_and_registration_c
     }
     std::fs::write(auth.join("auth.json"), credential).unwrap();
     assert_eq!(code(&setup("pi-one", true)), 0);
+    let repeated = setup("pi-one", true);
+    assert_eq!(code(&repeated), 0);
+    valid("pi-provider-setup-v2.json", &document(&repeated));
+    assert_eq!(document(&repeated)["outcome"], "already_registered");
+    assert!(err(&repeated).is_empty());
     for json in [true, false] {
         check(&setup("pi-two", json), 5, "registry_conflict", json);
     }
+    let registry = root.path().join("providers.toml");
+    std::fs::write(&registry, "RAW_REGISTRY_MUST_NOT_ESCAPE invalid TOML").unwrap();
+    let refused = setup("pi-one", true);
+    check(&refused, 3, "human_action_required", true);
+    assert!(!out(&refused).contains("RAW_REGISTRY_MUST_NOT_ESCAPE"));
+    assert!(!err(&refused).contains("RAW_REGISTRY_MUST_NOT_ESCAPE"));
+    assert_eq!(
+        std::fs::read_to_string(registry).unwrap(),
+        "RAW_REGISTRY_MUST_NOT_ESCAPE invalid TOML"
+    );
+}
+
+#[test]
+fn pi_early_setup_refusals_have_schema_valid_json_and_safe_stderr_without_invented_identity() {
+    let root = tempfile::tempdir().unwrap();
+    let work = root.path().join("work");
+    std::fs::create_dir(&work).unwrap();
+    let auth = root.path().join("auth");
+    let (sdk, path, state) = crate::fake_models::install_pi(root.path(), &auth, "review");
+    let auth = auth.to_str().unwrap();
+    let sdk = sdk.to_str().unwrap();
+    let cases: Vec<(&str, Vec<&str>, bool, bool)> = vec![
+        ("../RAW_REQUEST_MUST_NOT_ESCAPE", vec![], false, false),
+        ("codex-ambient", vec![], false, false),
+        ("pi-one", vec![], true, false),
+        (
+            "pi-one",
+            vec!["--backend", "RAW_REQUEST_MUST_NOT_ESCAPE"],
+            true,
+            false,
+        ),
+        ("pi-one", vec!["--backend", "openai-codex"], true, true),
+        (
+            "pi-one",
+            vec!["--backend", "openai-codex", "--auth-dir", auth],
+            true,
+            true,
+        ),
+        (
+            "pi-one",
+            vec!["--backend", "openai-codex", "--auth-dir", "relative"],
+            true,
+            true,
+        ),
+        (
+            "pi-one",
+            vec![
+                "--backend",
+                "openai-codex",
+                "--auth-dir",
+                "/RAW_REQUEST_MUST_NOT_ESCAPE",
+            ],
+            true,
+            true,
+        ),
+        (
+            "pi-one",
+            vec![
+                "--backend",
+                "openai-codex",
+                "--auth-dir",
+                auth,
+                "--sdk-entrypoint",
+                "/RAW_REQUEST_MUST_NOT_ESCAPE",
+            ],
+            true,
+            true,
+        ),
+    ];
+    for (id, args, valid_id, valid_backend) in cases {
+        let output = crate::common::af()
+            .args(["provider", "setup", id, "--kind", "pi", "--json"])
+            .args(args)
+            .current_dir(&work)
+            .env("PATH", &path)
+            .env("AF_PROVIDERS_FILE", root.path().join("providers.toml"))
+            .output()
+            .unwrap();
+        assert_eq!(code(&output), 3, "{} {}", out(&output), err(&output));
+        let value = document(&output);
+        valid("pi-provider-setup-v2.json", &value);
+        assert_eq!(!value["id"].is_null(), valid_id);
+        assert_eq!(!value["backend"].is_null(), valid_backend);
+        assert_eq!(value["outcome"], "human_action_required");
+        assert!(err(&output).starts_with("af provider setup: "));
+        assert!(err(&output).contains(value["detail"].as_str().unwrap()));
+        assert!(!out(&output).contains("RAW_REQUEST_MUST_NOT_ESCAPE"));
+        assert!(!err(&output).contains("RAW_REQUEST_MUST_NOT_ESCAPE"));
+        assert!(!root.path().join("providers.toml").exists());
+    }
+    // Explicit installed entrypoint remains covered by the successful setup test above.
+    assert!(Path::new(sdk).is_file());
+    assert!(!state.with_extension("json.calls").exists());
 }

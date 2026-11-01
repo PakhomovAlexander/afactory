@@ -1,10 +1,10 @@
-// AF's credential-bearing host, never a Worker input. Protocol: af.pi-host/1.
+// AF's credential-bearing host, never a Worker input. Protocol: af.pi-host/2.
 import fs from 'node:fs';
 import path from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { createHash } from 'node:crypto';
 
-export const PROTOCOL = 'af.pi-host/1';
+export const PROTOCOL = 'af.pi-host/2';
 export const VERSION = '1.4.0';
 const MAX_LINE = 4 * 1024 * 1024;
 const FILE_LIMIT = 1024 * 1024;
@@ -331,9 +331,9 @@ export async function main() {
           }
           if (event.type === 'agent_settled') { settled = true; failed ||= event.aborted; }
         });
-        initialized.run = async (text) => {
+        initialized.run = async (text, promptNonce) => {
           await initialized.credentials.read('openai-codex');
-          emit('accepted');
+          emit('accepted', { prompt_nonce: promptNonce });
           try { await session.prompt(text, { expandPromptTemplates: false, source: 'rpc' }); } catch { failed = true; }
           if (!settled || failed || inference === 0 || finalText === undefined) emit('error', { code: 'inference_failed' });
           else { emit('message', { text: finalText }); emit('settled'); }
@@ -341,8 +341,9 @@ export async function main() {
         };
         emit('prepared', { model: request.model, effort: request.effort, model_identity: request.model_identity });
       } else if (initialized?.run && !running && request.type === 'prompt' && typeof request.text === 'string') {
+        if (typeof request.prompt_nonce !== 'string' || !/^sha256:[0-9a-f]{64}$/.test(request.prompt_nonce)) fail('protocol');
         running = true;
-        await initialized.run(request.text);
+        await initialized.run(request.text, request.prompt_nonce);
         return;
       } else fail('protocol');
     }

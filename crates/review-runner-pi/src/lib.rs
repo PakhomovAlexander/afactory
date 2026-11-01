@@ -16,7 +16,7 @@ use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
 
 pub const HOST: &str = include_str!("host.mjs");
-pub const PROTOCOL: &str = "af.pi-host/1";
+pub const PROTOCOL: &str = "af.pi-host/2";
 pub const SDK_VERSION: &str = "1.4.0";
 const MAX_RECORD: usize = 4 * 1024 * 1024;
 const MAX_OUTPUT: usize = 16 * 1024 * 1024;
@@ -235,6 +235,7 @@ struct State {
     prepared: Option<(String, String, String)>,
     accepted: bool,
     prompt_sent: bool,
+    prompt_nonce: Option<String>,
     settled: bool,
     message: Option<Vec<u8>>,
     usage: BTreeMap<u64, Usage>,
@@ -301,8 +302,18 @@ impl State {
                     serde_json::from_value(value).map_err(|_| "Invalid Pi prepared response")?;
                 self.prepared = Some((p.model, p.effort, p.model_identity));
             }
-            "accepted" if self.prepared.is_some() && !self.accepted && object.is_empty() => {
-                self.accepted = true
+            "accepted" if self.prepared.is_some() && self.prompt_sent && !self.accepted => {
+                #[derive(Deserialize)]
+                #[serde(deny_unknown_fields)]
+                struct Accepted {
+                    prompt_nonce: String,
+                }
+                let accepted: Accepted = serde_json::from_value(value)
+                    .map_err(|_| "Invalid Pi prompt acknowledgement")?;
+                if self.prompt_nonce.as_ref() != Some(&accepted.prompt_nonce) {
+                    return Err("Pi host acknowledged a prompt it was not delivered".into());
+                }
+                self.accepted = true;
             }
             "usage" if self.accepted => {
                 let usage: Usage = serde_json::from_value(value).map_err(|_| "Invalid Pi usage")?;
@@ -519,8 +530,9 @@ impl WorkerModelAdapter for PiTaskAdapter {
             let (send, receive) = mpsc::channel::<Value>();
             let writer = |writer: &mut dyn Write| -> std::io::Result<()> {
                 write_record(writer, &request)?;
-                for record in receive {
+                for mut record in receive {
                     if started.elapsed() >= timeout
+                        || stopped.load(Ordering::Acquire)
                         || cancellation.is_some_and(|flag| flag.load(Ordering::Acquire))
                     {
                         stopped.store(true, Ordering::Release);
@@ -530,7 +542,18 @@ impl WorkerModelAdapter for PiTaskAdapter {
                         ));
                     }
                     if record["type"] == "prompt" {
-                        state.lock().unwrap().prompt_sent = true;
+                        // Generate the challenge here, never in init/prepare or a host-visible
+                        // file. Echoing it proves the host read this complete prompt record.
+                        let mut random = [0; 32];
+                        std::fs::File::open("/dev/urandom")?.read_exact(&mut random)?;
+                        let nonce = digest(&random);
+                        record["prompt_nonce"] = json!(nonce);
+                        let mut state = state.lock().unwrap();
+                        state.prompt_nonce = Some(nonce);
+                        // Publish before writing: an immediate legitimate acknowledgement
+                        // may arrive before write_record returns. A failed/partial write
+                        // conservatively leaves usage unknown, never a known zero.
+                        state.prompt_sent = true;
                     }
                     write_record(writer, &record)?;
                     if record["type"] == "prompt" {
@@ -576,6 +599,10 @@ impl WorkerModelAdapter for PiTaskAdapter {
                     let mut state = state.lock().unwrap();
                     if let Err(error) = state.record(&line) {
                         state.error = Some(error);
+                        stopped.store(true, Ordering::Release);
+                        break;
+                    }
+                    if state.error.is_some() {
                         stopped.store(true, Ordering::Release);
                         break;
                     }

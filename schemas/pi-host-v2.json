@@ -1,7 +1,7 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "$id": "urn:af:schema:pi-host:1",
-  "title": "AF Pi SDK host protocol @1",
+  "$id": "urn:af:schema:pi-host:2",
+  "title": "AF Pi SDK host protocol @2",
   "oneOf": [
     {
       "type": "object",
@@ -21,7 +21,7 @@
       ],
       "properties": {
         "schema": {
-          "const": "af.pi-host/1"
+          "const": "af.pi-host/2"
         },
         "type": {
           "const": "init"
@@ -89,7 +89,7 @@
       ],
       "properties": {
         "schema": {
-          "const": "af.pi-host/1"
+          "const": "af.pi-host/2"
         },
         "type": {
           "const": "ready"
@@ -162,7 +162,7 @@
       ],
       "properties": {
         "schema": {
-          "const": "af.pi-host/1"
+          "const": "af.pi-host/2"
         },
         "type": {
           "const": "prepare"
@@ -193,7 +193,7 @@
       ],
       "properties": {
         "schema": {
-          "const": "af.pi-host/1"
+          "const": "af.pi-host/2"
         },
         "type": {
           "const": "prepared"
@@ -218,17 +218,22 @@
       "required": [
         "schema",
         "type",
-        "text"
+        "text",
+        "prompt_nonce"
       ],
       "properties": {
         "schema": {
-          "const": "af.pi-host/1"
+          "const": "af.pi-host/2"
         },
         "type": {
           "const": "prompt"
         },
         "text": {
           "type": "string"
+        },
+        "prompt_nonce": {
+          "type": "string",
+          "pattern": "^sha256:[0-9a-f]{64}$"
         }
       }
     },
@@ -237,14 +242,19 @@
       "additionalProperties": false,
       "required": [
         "schema",
-        "type"
+        "type",
+        "prompt_nonce"
       ],
       "properties": {
         "schema": {
-          "const": "af.pi-host/1"
+          "const": "af.pi-host/2"
         },
         "type": {
           "const": "accepted"
+        },
+        "prompt_nonce": {
+          "type": "string",
+          "pattern": "^sha256:[0-9a-f]{64}$"
         }
       }
     },
@@ -264,7 +274,7 @@
       ],
       "properties": {
         "schema": {
-          "const": "af.pi-host/1"
+          "const": "af.pi-host/2"
         },
         "type": {
           "const": "usage"
@@ -329,7 +339,7 @@
       ],
       "properties": {
         "schema": {
-          "const": "af.pi-host/1"
+          "const": "af.pi-host/2"
         },
         "type": {
           "const": "message"
@@ -348,7 +358,7 @@
       ],
       "properties": {
         "schema": {
-          "const": "af.pi-host/1"
+          "const": "af.pi-host/2"
         },
         "type": {
           "const": "settled"
@@ -365,7 +375,7 @@
       ],
       "properties": {
         "schema": {
-          "const": "af.pi-host/1"
+          "const": "af.pi-host/2"
         },
         "type": {
           "const": "error"

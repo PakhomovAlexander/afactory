@@ -38,7 +38,12 @@ and tool test is token-free; **paid live smoke was not run**.
 
 The registry format is version 2; version 1 fails closed under ADR-0145. Recreate older
 registrations with this release. Codex and Claude retain their registration fields and native
-adapter behavior. Pi setup JSON is `af/pi-provider-setup@1`; the shared status and catalog
+adapter behavior. Pi setup emits a safe typed report for every internal refusal, including early
+validation/discovery failures. Invalid or reserved requested IDs and absent or unsupported
+backends appear as null, never as an invented supported identity or a raw invalid value.
+Failures repeat the AF-authored detail/outcome on stderr even with `--json`; early refusals
+exit 3 and registry conflicts exit 5. CLI parser errors remain usage errors before Pi setup.
+Pi setup JSON is `af/pi-provider-setup@2`; the shared status and catalog
 versions are `af/provider-status@5` and `af/provider-models@2`.
 
 ## In a first run
@@ -454,7 +459,7 @@ tokens; the Rust kernel reads no raw credential (Pi AuthStorage stays inside its
 | Kind | Source | Freshness |
 |---|---|---|
 | `claude` | `claude list_models`: the `list_models` and `get_binary_version` control requests of a `claude -p --input-format stream-json --output-format stream-json --verbose` session, which af closes once both are answered, before any turn | `live` |
-| `pi` | AF host `af.pi-host/1` identity/catalog, using the installed SDK 1.4.0 static `openai-codex` models | Pinned SDK static catalog; no network refresh |
+| `pi` | AF host `af.pi-host/2` identity/catalog, using the installed SDK 1.4.0 static `openai-codex` models | Pinned SDK static catalog; no network refresh |
 | `codex` | `codex app-server model/list`, after `initialize` and `initialized` on a bare `codex app-server`; the version from `codex --version` | `fetched_at` of `models_cache.json` under the auth directory when it is readable, else `live` |
 
 Each Provider gets a header with the source, the harness version and the freshness, one row per
