@@ -15,8 +15,8 @@ import shutil
 import subprocess
 import sys
 import tempfile
-import tomllib
 import unittest
+from unittest import mock
 
 sys.dont_write_bytecode = True
 
@@ -628,6 +628,70 @@ class Cli(unittest.TestCase):
         record = held(doc(), doc(), 'passed', '--label', 'triage/held', '--evaluation', str(self.dir / 'absent.json'))
         self.assertEqual(record['generation']['main'], 'main')
 
+    def test_label_holds_never_read_any_input_and_need_no_publication_identity(self):
+        for flag in ('--label', '--owner-label'):
+            for label in triage.HOLD_LABELS:
+                for author_flag in ('--document', '--draft'):
+                    for generation in ([], ['--main', 'main', '--event-id', 'opened-1',
+                                             '--bundle-sha256', 'given-bundle', '--policy-version', 'given-policy']):
+                        with self.subTest(flag=flag, label=label, author=author_flag, generation=generation):
+                            out, err = io.StringIO(), io.StringIO()
+                            with contextlib.ExitStack() as stack:
+                                author = stack.enter_context(mock.patch.object(
+                                    triage, '_read_author', side_effect=AssertionError('author read')))
+                                read = stack.enter_context(mock.patch.object(
+                                    triage, '_load_json', side_effect=AssertionError('JSON read')))
+                                stack.enter_context(contextlib.redirect_stdout(out))
+                                stack.enter_context(contextlib.redirect_stderr(err))
+                                code = triage.main([author_flag, str(self.dir / 'absent-author'),
+                                                    '--evaluation', str(self.dir / 'absent-evaluation'),
+                                                    '--pulls', str(self.dir / 'absent-pulls'),
+                                                    '--hand-triage', str(self.dir / 'absent-hand'),
+                                                    flag, label, *generation])
+                            author.assert_not_called()
+                            read.assert_not_called()
+                            self.assertEqual(code, 3, err.getvalue())
+                            record = json.loads(out.getvalue())
+                            self.assertEqual(SCHEMA.errors(record, 'urn:af:schema:issue-triage-hold:1'), [])
+                            self.assertEqual(record, {
+                                'schema': triage.HOLD, 'issue': None, 'reasons': [f'the issue carries {label}'],
+                                'held_labels': [label], 'security_triagers': [],
+                                'generation': {'bundle_sha256': 'given-bundle', 'main': 'main',
+                                               'policy_version': 'given-policy', 'event_id': 'opened-1'}
+                                if generation else None,
+                            })
+                            self.assertIn('held:', err.getvalue())
+                            self.assertNotIn('Traceback', err.getvalue())
+
+    def test_malformed_draft_sections_hold_for_every_label_source_or_are_normally_refused(self):
+        # Include the evaluator's exact sections: 42 reproduction and other non-array shapes.
+        for sections in (42, None, False, '', 'Triage', {}, {'heading': 'Triage'}):
+            path = self.dir / 'malformed-draft.json'
+            path.write_text(json.dumps({'schema': 'af.document-draft/2', 'sections': sections}))
+            for label in (None, *triage.HOLD_LABELS):
+                for owner_label in (None, *triage.HOLD_LABELS):
+                    with self.subTest(sections=sections, label=label, owner_label=owner_label):
+                        labels = (['--label', label] if label else [])
+                        labels += ['--owner-label', owner_label] if owner_label else []
+                        out, err = io.StringIO(), io.StringIO()
+                        with contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
+                            code = triage.main(['--draft', str(path), '--evaluation',
+                                                str(self.dir / 'absent-evaluation'), *labels])
+                        self.assertNotIn('Traceback', err.getvalue())
+                        if labels:
+                            self.assertEqual(code, 3, err.getvalue())
+                            record = json.loads(out.getvalue())
+                            self.assertEqual(SCHEMA.errors(record, 'urn:af:schema:issue-triage-hold:1'), [])
+                            self.assertEqual(record['held_labels'], list(dict.fromkeys(
+                                value for value in (label, owner_label) if value)))
+                            self.assertIsNone(record['issue'])
+                            self.assertIsNone(record['generation'])
+                            self.assertEqual(record['security_triagers'], [])
+                            self.assertIn('held:', err.getvalue())
+                        else:
+                            self.assertEqual((code, out.getvalue()), (1, ''))
+                            self.assertIn('refused: author-draft:', err.getvalue())
+
     def test_an_unknown_main_is_refused(self):
         code, _, err = self.run_cli(doc(), doc(), 'passed', '--main', 'nonexistent')
         self.assertEqual(code, 1)
@@ -666,9 +730,21 @@ class Staged(unittest.TestCase):
         contracts = json.loads((STAGED / 'contracts.json').read_text(encoding='utf-8'))
         for worker in ('triage-author', 'triage-verifier'):
             with self.subTest(worker):
-                manifest = tomllib.loads((STAGED / 'task-packages' / 'backlog' / worker / 'worker.toml')
-                                         .read_text(encoding='utf-8'))
-                self.assertEqual(manifest['signature']['attempt'], {'tokens': 40_000, 'wall_ms': 500_000})
+                manifest = (STAGED / 'task-packages' / 'backlog' / worker / 'worker.toml').read_text(encoding='utf-8')
+                # Only these integer allowance tables are needed, not a general TOML parser.
+                tables = re.findall(r'(?ms)^\[signature\.attempt\][ \t]*\n(.*?)(?=^\[|\Z)', manifest)
+                self.assertEqual(len(tables), 1)
+                attempt = {}
+                for line in tables[0].splitlines():
+                    line = line.split('#', 1)[0].strip()
+                    if not line:
+                        continue
+                    field = re.fullmatch(r'(\w+)\s*=\s*([0-9]+)', line)
+                    self.assertIsNotNone(field, line)
+                    key, value = field.groups()
+                    self.assertNotIn(key, attempt)
+                    attempt[key] = int(value)
+                self.assertEqual(attempt, {'tokens': 40_000, 'wall_ms': 500_000})
                 self.assertEqual(contracts['workers'][f'backlog/{worker}']['attempt'],
                                  {'tokens': 40_000, 'wall_ms': 500_000})
 

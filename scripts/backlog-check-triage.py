@@ -302,8 +302,10 @@ def author_document(*, document=None, draft=None):
     if draft is not None:
         if not isinstance(draft, dict) or draft.get('schema') != 'af.document-draft/2':
             raise Refusal('author-draft', 'the draft is not an af.document-draft/2 document')
+        if not isinstance(draft.get('sections'), list):
+            raise Refusal('author-draft', 'the draft sections must be an array')
         sections = {}
-        for section in draft.get('sections') or []:
+        for section in draft['sections']:
             if isinstance(section, dict) and section.get('heading') in ('Triage', 'Rationale'):
                 if section['heading'] in sections:
                     raise Refusal('author-draft', f'the draft has two {section["heading"]} sections')
@@ -663,32 +665,25 @@ def main(argv=None):
     identities.add_argument('--event-id', help='the id of the event that triggered this generation')
     args = parser.parse_args(argv)
     held = any(label in HOLD_LABELS for label in [*args.label, *args.owner_label])
+    identity = {key: getattr(args, flag[2:].replace('-', '_')) for flag, key in IDENTITIES}
     try:
-        try:
+        if held:
+            # A label holds before any author, evaluation, pulls or hand-triage input is read.
+            record, code = check(None, None, args.label, None, owner_labels=args.owner_label, identity=identity)
+        else:
             document = _read_author(args)
-        except Refusal:
-            # An issue already held is held whatever its documents say.
-            if not held:
-                raise
-            document = None
-        try:
             evaluation = _load_json(args.evaluation, 'evaluation')
-        except Refusal:
-            if not held:
-                raise
-            evaluation = None
-        pulls = None
-        if args.pulls is not None and not held:
-            pulls = _load_json(args.pulls, 'pulls')
-            if not isinstance(pulls, list) or not all(isinstance(n, int) and not isinstance(n, bool) and n > 0
-                                                      for n in pulls):
-                raise Refusal('input', f'pulls {args.pulls}: not a JSON list of pull request numbers')
-            pulls = set(pulls)
-        hand = _load_json(args.hand_triage, 'hand triage') if args.hand_triage and not held else None
-        record, code = check(
-            document, evaluation, args.label, GitReach(args.repo, args.main, pulls),
-            owner_labels=args.owner_label, hand_triage=hand,
-            identity={key: getattr(args, flag[2:].replace('-', '_')) for flag, key in IDENTITIES})
+            pulls = None
+            if args.pulls is not None:
+                pulls = _load_json(args.pulls, 'pulls')
+                if not isinstance(pulls, list) or not all(isinstance(n, int) and not isinstance(n, bool) and n > 0
+                                                          for n in pulls):
+                    raise Refusal('input', f'pulls {args.pulls}: not a JSON list of pull request numbers')
+                pulls = set(pulls)
+            hand = _load_json(args.hand_triage, 'hand triage') if args.hand_triage else None
+            record, code = check(
+                document, evaluation, args.label, GitReach(args.repo, args.main, pulls),
+                owner_labels=args.owner_label, hand_triage=hand, identity=identity)
     except Usage as usage:
         parser.print_usage(sys.stderr)
         print(f'backlog-check-triage: error: {usage}', file=sys.stderr)
