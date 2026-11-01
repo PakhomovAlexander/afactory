@@ -28,7 +28,9 @@ environment cannot be read, one that made itself undumpable, and that started no
 the browser leaves the listing unconfirmed, as does a `/proc` that cannot be listed or a
 process whose `status` or `stat` cannot be read; one that has exited or given up its address
 space, awaiting its parent's reap (Linux owns its environment as root's then), runs nothing
-and is skipped. SIGTERM, SIGINT and SIGHUP, the supervisor's
+and is skipped. The browser's start is read as soon as it is spawned, before the watcher of
+its exit is made, so a watcher that is refused still leaves this user's older processes out of
+the listing. SIGTERM, SIGINT and SIGHUP, the supervisor's
 cancellation, end the session the same way before the driver exits; one that lands once the
 session is already being settled stays pending until that settlement is confirmed, and ends the
 sample then. A cleanup that cannot be confirmed, a listing included, exits 3; a process it
@@ -186,6 +188,16 @@ def proc_runs(fields):
     (a zombie awaiting its parent's reap) or given up its address space on its way out does
     not, and Linux owns its `environ` as root's from then on, so that it cannot be read."""
     return fields[0] not in EXITED and int(fields[20]) != 0
+
+
+def birth(pid):
+    """The start in clock ticks of `pid`, this driver's unreaped child, on Linux; None
+    elsewhere. Read before anything else can fail, since the listing (`proc_listed`) excludes
+    by it the processes of this user's that started before the browser."""
+    if not os.path.isdir(PROC + "/self/task"):
+        return None
+    fields = proc_stat(pid, PROC)
+    return None if fields is None else int(fields[19])
 
 
 def proc_owned(name, proc):
@@ -427,14 +439,14 @@ def measure(argv):
             child = subprocess.Popen(argv, stdin=slave, stdout=slave, stderr=slave,
                                      env=environment, start_new_session=True, close_fds=True,
                                      pass_fds=(witness,), preexec_fn=enter_session)
+            # The browser's start is its identity in the listing: read first, so that a
+            # watcher that cannot be made still leaves older processes out of it.
+            born = birth(child.pid)
             watch = Exit(child.pid)
         finally:
             signal.pthread_sigmask(signal.SIG_SETMASK, mask)
         os.close(slave)
         slave = -1
-        if os.path.isdir(PROC + "/self/task"):
-            fields = proc_stat(child.pid, PROC)
-            born = None if fields is None else int(fields[19])
         deadline = started + DEADLINE_SECONDS * 1000000000
         while screen.browser is None:
             remaining = (deadline - time.monotonic_ns()) / 1000000000

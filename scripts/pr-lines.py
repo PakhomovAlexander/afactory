@@ -22,7 +22,7 @@ least; a pull request that adds no line says `**Lines added: none**`. The `PR re
 recomputes the block from the pull request's own commits and, when the description's block is
 missing or differs, writes the block into the description itself; it refuses the description,
 printing the block to paste, only when it cannot: two blocks, a marker without its pair, or a
-refused write (ADR-0269).
+refused write (ADR-0270).
 """
 import argparse
 from collections import Counter

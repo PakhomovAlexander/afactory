@@ -17,6 +17,8 @@ from . import bundle, contracts, images, limits, schedule, stats
 from .values import ContractError, canonical_bytes, format_rational, sha256_bytes
 
 RUN_FILES = ("builds.json", "run.json")
+# A later comparison partition's execution authority, the one optional run member (ADR-0269).
+PARTITIONS_FILE = "partitions.json"
 SHARD_DIR = "shards"
 LEVEL_INTEGRITY = 0
 LEVEL_FAIL = 1
@@ -73,7 +75,7 @@ def _read_plan(run_dir):
 def _verify_run_bundle(run_dir, raw_plan, reasons):
     entries = sorted(os.listdir(run_dir))
     for name in entries:
-        if name not in RUN_FILES + (bundle.MANIFEST, SHARD_DIR):
+        if name not in RUN_FILES + (PARTITIONS_FILE, bundle.MANIFEST, SHARD_DIR):
             reasons.add(LEVEL_INTEGRITY, "run_bundle_invalid", "unexpected entry " + name)
     shards_path = os.path.join(run_dir, SHARD_DIR)
     if os.path.islink(shards_path) or (os.path.exists(shards_path)
@@ -81,7 +83,8 @@ def _verify_run_bundle(run_dir, raw_plan, reasons):
         reasons.add(LEVEL_INTEGRITY, "run_bundle_invalid", "shards/ is not a directory")
     try:
         identity, hashes = bundle.verify(run_dir, limits.MAX_JSON_BYTES * 2,
-                                         allowed=lambda path: path in RUN_FILES,
+                                         allowed=lambda path: path in RUN_FILES + (
+                                             PARTITIONS_FILE,),
                                          skip=(SHARD_DIR,), label="run")
     except ContractError as error:
         reasons.add(LEVEL_INTEGRITY, "run_bundle_invalid", str(error))
@@ -104,6 +107,68 @@ def _read(path, limit=limits.MAX_JSON_BYTES):
     if len(data) > limit:
         raise ContractError("%s: exceeds %d bytes" % (path, limit))
     return data
+
+
+def _partition_windows(run_dir, plan, hashes, builds_doc, reasons):
+    """{shard index: (partition index, run window)} of the later comparison partitions whose
+    execution authority the run bundle seals (ADR-0269), bound to this plan and this exact,
+    unchanged build and its recorded run; {} when it holds none, None when it is refused."""
+    if hashes is None or PARTITIONS_FILE not in hashes:
+        return {}
+    try:
+        data = bundle.read_member(run_dir, PARTITIONS_FILE, hashes, limits.MAX_JSON_BYTES,
+                                  "run")
+        doc = contracts.read_json(data, "partition-execution", PARTITIONS_FILE)
+    except ContractError as error:
+        reasons.add(LEVEL_INTEGRITY, "partition_authority_invalid", str(error))
+        return None
+    problems = []
+    if doc["plan_digest"] != plan["plan_digest"] or doc["builds_sha256"] != hashes.get(
+            "builds.json"):
+        problems.append("it names another plan or build than the run bundle's")
+    if builds_doc is None or doc["build_run"] != builds_doc["execution"]["run"]:
+        problems.append("its build run is not the run the build recorded")
+    planned = set(shard["index"] for shard in plan["shards"])
+    windows = {}
+    for item in doc["partitions"]:
+        if not set(item["shards"]) <= planned:
+            problems.append("partition %d declares shards outside the plan" % item["index"])
+        if (builds_doc is not None and item["run"]["started_unix_ms"]
+                < builds_doc["execution"]["ended_unix_ms"]):
+            problems.append("partition %d starts before the build it reuses ended"
+                            % item["index"])
+        for index in item["shards"]:
+            windows[index] = (item["index"], item["run"])
+    if problems:
+        reasons.add(LEVEL_INTEGRITY, "partition_authority_invalid", "; ".join(problems))
+        return None
+    return windows
+
+
+def _bound(binaries, windows, index):
+    """The build binding shard `index` is checked against: its partition's run window in
+    place of the build's run for a shard a later partition executed."""
+    if binaries is None or not windows or index not in windows:
+        return binaries
+    return dict(binaries, run=windows[index][1])
+
+
+def _serial_partitions(windows, evidence, reasons):
+    """Sequential partitions never overlap: every shard of an earlier partition ended before a
+    later partition's window started (the first partition being every other shard)."""
+    starts = {}
+    for partition, run in (windows or {}).values():
+        starts[partition] = run["started_unix_ms"]
+    for item in evidence:
+        if item.doc is None:
+            continue
+        own = windows[item.index][0] if item.index in (windows or {}) else 0
+        for partition, started in sorted(starts.items()):
+            if partition > own and item.doc["ended_unix_ms"] > started:
+                reasons.add(LEVEL_INTEGRITY, "partition_overlap", "shard %d of partition %d "
+                            "ended %d ms after partition %d's window started"
+                            % (item.index, own, item.doc["ended_unix_ms"] - started,
+                               partition), shard=item.index)
 
 
 def _builds(run_dir, plan, hashes, reasons, found=None):
@@ -682,8 +747,12 @@ def evaluate(run_dir):
                 reasons.add(LEVEL_INTEGRITY, "unexpected_shard", "shards/%s is not a planned "
                             "shard" % name)
     builds_sha = hashes.get("builds.json") if hashes else None
-    evidence = [_load_shard(run_dir, plan, shard["index"], binaries, reasons, builds_sha)
+    windows = _partition_windows(run_dir, plan, hashes, found[0] if found else None, reasons)
+    evidence = [_load_shard(run_dir, plan, shard["index"],
+                            _bound(binaries, windows, shard["index"]),
+                            reasons, builds_sha)
                 for shard in plan["shards"]]
+    _serial_partitions(windows, evidence, reasons)
     health = [_health(plan, item) for item in evidence]
     workload = plan["health"]["workload"]
     for item in evidence:

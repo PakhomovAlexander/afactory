@@ -1,4 +1,4 @@
-# ADR-0269: Let CI maintain the lines added block
+# ADR-0270: Let CI maintain the lines added block
 
 **Status:** proposed (2026-10-30). Supersedes in part
 [ADR-0195](0195-state-the-lines-a-pull-request-adds-per-directory-and-check-them.md), whose

@@ -884,7 +884,7 @@ STALE = FRESH.replace('| docs | 12 |', '| docs | 11 |').replace('**Lines added: 
 
 
 def refreshing(pipeline):
-    """`--refresh-into` (ADR-0269): the pure replacement, then the real entry on a repository
+    """`--refresh-into` (ADR-0270): the pure replacement, then the real entry on a repository
     whose commits add twelve lines of docs. Returns the number of cases."""
     spec = importlib.util.spec_from_file_location('check_pr_report', SCRIPT)
     module = importlib.util.module_from_spec(spec)

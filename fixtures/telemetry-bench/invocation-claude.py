@@ -10,10 +10,10 @@ the `shape` it prints and the bytes of intermediate tool output. Under either sh
 same tool output, chunk by chunk, and answers the same final result; under `json` it prints
 only the result envelope, under `stream-json` every message as a line — init, one assistant
 `tool_use` and one user `tool_result` per chunk, the final assistant message, then the very same
-result line. Its last write is one stderr line naming the unix nanosecond it was made at and the
-bytes it wrote to stdout (unless `report` is false). The `af` integration tests use the shape
-`requested`, which prints the shape af asked for, and these optional keys, all absent in the
-measurements: `record_stdin` (a file name in the auth directory the request bytes are written
+result line. Its last write is one stderr line naming the unix nanosecond it was made at, the
+same moment on the host's `CLOCK_MONOTONIC` (`last_write_monotonic_ns`) and the bytes it wrote to stdout
+(unless `report` is false). The `af` integration tests use the shape `requested`, which prints
+the shape af asked for, and these optional keys, all absent in the measurements: `record_stdin` (a file name in the auth directory the request bytes are written
 to, as received), `thinking` (texts printed as `thinking` blocks under `stream-json`: the first
 in the first assistant message, the rest in the final one, in order), `say` (a text block
 printed before the final reply under `stream-json`) and `tool_output_prefix` (text that begins
@@ -146,8 +146,11 @@ def main():
     write(1, batch)
     written += len(batch)
     if harness.get('report', True):
+        last = time.time_ns()
+        last_monotonic = time.clock_gettime_ns(time.CLOCK_MONOTONIC)
         write(2, b'{"type":"result","subtype":"af_bench_last_write","last_write_unix_ns":"%d",'
-              b'"stdout_bytes":%d}\n' % (time.time_ns(), written))
+              b'"last_write_monotonic_ns":"%d","stdout_bytes":%d}\n'
+              % (last, last_monotonic, written))
     os.close(1)
     os.close(2)
     os._exit(0)

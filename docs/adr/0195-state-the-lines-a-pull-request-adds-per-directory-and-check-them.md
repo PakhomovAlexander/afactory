@@ -1,7 +1,7 @@
 # ADR-0195: State the lines a pull request adds per directory, and check them
 
 **Status:** accepted (2026-10-22); superseded in part by
-[ADR-0269](0269-let-ci-maintain-the-lines-added-block.md): its rejections of a bot that writes
+[ADR-0270](0270-let-ci-maintain-the-lines-added-block.md): its rejections of a bot that writes
 the figures and of tolerating a stale block give way to the `PR report` job writing the block
 into the description when it is stale or absent, with `pull-requests: write`; the rest stands.
 

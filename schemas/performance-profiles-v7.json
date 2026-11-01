@@ -1,13 +1,13 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "$id": "urn:af:schema:performance-profiles:6",
-  "title": "af.perf-profiles/6",
-  "description": "One diagnostic child run, profiles.json (ADR-0174): its link to the parent comparison, which never changes that verdict; the automatic or explicit selection; sources, diagnostic recipe and builds; budgets and their use; the explicit execution mode, its containment and, contained, its container and verified scratch bound (ADR-0176); every tool's identity or why it is unavailable; each CPU capture of a probe region or a CLI process with its region, event, unwinder, effective frequency, samples, losses, unknown frames and symbols; baseline, candidate and both-direction difference flamegraphs, original and sanitized; phase traces with their region's coverage and measured overhead; counters as explanatory proxies; and every omission with its reason and reproduction.",
+  "$id": "urn:af:schema:performance-profiles:7",
+  "title": "af.perf-profiles/7",
+  "description": "One diagnostic child run, profiles.json (ADR-0174): its link to the parent comparison, which never changes that verdict; the automatic or explicit selection; sources, diagnostic recipe and builds; budgets and their use; the explicit execution mode, its containment and, contained, its container and verified scratch bound (ADR-0176); every tool's identity or why it is unavailable; each CPU capture of a probe region or a CLI process with its region, event, unwinder, effective frequency, samples, losses, unknown frames and symbols; baseline, candidate and both-direction difference flamegraphs, original and sanitized; phase traces with their region's coverage and measured overhead; counters as explanatory proxies; and every omission with its reason and reproduction. A capture of fresh processes lists its own files and names its repetition index for the per-repetition ones.",
   "type": "object",
   "additionalProperties": false,
   "properties": {
     "schema": {
-      "const": "af.perf-profiles/6"
+      "const": "af.perf-profiles/7"
     },
     "run_id": {
       "$ref": "#/$defs/id"
@@ -945,6 +945,35 @@
             "minItems": 0,
             "maxItems": 64
           },
+          "repetitions": {
+            "anyOf": [
+              {
+                "type": "null"
+              },
+              {
+                "type": "object",
+                "additionalProperties": false,
+                "properties": {
+                  "path": {
+                    "$ref": "#/$defs/relative_path"
+                  },
+                  "bytes": {
+                    "type": "integer",
+                    "minimum": 0,
+                    "maximum": 9223372036854775807
+                  },
+                  "sha256": {
+                    "$ref": "#/$defs/digest"
+                  }
+                },
+                "required": [
+                  "path",
+                  "bytes",
+                  "sha256"
+                ]
+              }
+            ]
+          },
           "omission": {
             "anyOf": [
               {
@@ -991,6 +1020,7 @@
           "unknown_frame_ratio",
           "symbols",
           "artifacts",
+          "repetitions",
           "omission"
         ]
       },

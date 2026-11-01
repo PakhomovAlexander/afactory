@@ -47,7 +47,7 @@ that differs is refused, with the block to paste; when they add none, a block is
 stale and no block passes. Without the commits only a block present is checked, for its shape,
 and the check says so.
 
-With `--refresh-into FILE` (ADR-0269) a lines block that differs from the rendered one, or is
+With `--refresh-into FILE` (ADR-0270) a lines block that differs from the rendered one, or is
 absent, is not refused: when the Task report block is well formed, the description is written to
 FILE with the text between the lines markers replaced by the rendered block (the markers and every
 other byte kept), or, without the markers, with the block inserted after a blank line right after

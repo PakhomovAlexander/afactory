@@ -7,4 +7,4 @@
   prints the block to paste, now for an absent or misshapen block too.
   `scripts/check-pr-report.py --refresh-into FILE` writes the refreshed description to FILE. The
   `af task report` block is still the author's, and its rules are unchanged
-  ([ADR-0269](docs/adr/0269-let-ci-maintain-the-lines-added-block.md)).
+  ([ADR-0270](docs/adr/0270-let-ci-maintain-the-lines-added-block.md)).

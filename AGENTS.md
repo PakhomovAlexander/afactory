@@ -35,7 +35,7 @@ review corpora belong in consuming repositories, not here.
   check refuses the block, printing it to paste, only when it cannot write it: two blocks, a
   marker without its pair, or a refused write. The `af task report` block stays the author's
   ([ADR-0195](docs/adr/0195-state-the-lines-a-pull-request-adds-per-directory-and-check-them.md),
-  [ADR-0269](docs/adr/0269-let-ci-maintain-the-lines-added-block.md)).
+  [ADR-0270](docs/adr/0270-let-ci-maintain-the-lines-added-block.md)).
   A pull request that adds quarantined tests also carries the block between
   `<!-- af-pr-quarantine:v1 -->` and `<!-- /af-pr-quarantine -->` that
   `python3 scripts/pr-quarantine.py` prints, checked the same way; one that adds none carries

@@ -14,9 +14,12 @@ import lzma
 import os
 import re
 import shutil
+import struct
+from fractions import Fraction
 from unittest import mock
 
-from perflab import bundle, contracts, diagnostics, phasetrace, report, symbolarchive, synthetic
+from perflab import (bundle, contracts, diagnostics, hostobserver, perfcapture, phasetrace, report,
+                     symbolarchive, synthetic, toolrun)
 from perflab import suite as suite_module
 from perflab.values import ContractError, document_bytes
 from tests import diagnostic_fixtures as fakes
@@ -829,3 +832,414 @@ class RetainedSymbols(diag.ChildRunBase):
             capture["symbols"]["archive"]["bytes"] = len(data)
         with self.assertRaisesRegex(ContractError, "compressed archive hash differs"):
             symbolarchive.admit(child, doc, hashes)
+
+
+# A host-observed recording as the trusted perf writes it, for `RepeatedCaptures`: its header,
+# one event attribute whose task records carry TID, TIME and CPU (`sample_id_all`), the stand-in
+# perf's samples, a synthesized COMM of the waiting gate (no exec flag), the kernel's COMM of
+# the gate executing the command and its EXIT, and another process's EXIT.
+SAMPLE_TYPE = (1 << 0) | (1 << 1) | (1 << 2) | (1 << 7) | (1 << 5)
+
+
+def trailer(pid, when):
+    return struct.pack("<IIQII", pid, pid, when, 0, 0)
+
+
+def observed_recording(pid, executed, exited, samples, event, exec_flag=True, compressed=False,
+                       sample_id_all=True):
+    attr = struct.pack("<IIQQQQQ", 1, 48, 0, 997, SAMPLE_TYPE, 0,
+                       (1 << 18) if sample_id_all else 0) + struct.pack("<QQ", 0, 0)
+    records = b""
+    body = json.dumps({"samples": samples, "unwind": "fp", "event": event}).encode()
+    records += struct.pack("<IHH", 99, 0, 8 + len(body)) + body
+    gate = struct.pack("<II", pid, pid) + b"sh\0\0\0\0\0\0" + trailer(pid, 1)
+    records += struct.pack("<IHH", 3, 0, 8 + len(gate)) + gate
+    command = struct.pack("<II", pid, pid) + b"af\0\0\0\0\0\0" + trailer(pid, executed)
+    records += struct.pack("<IHH", 3 if not compressed else 81, (1 << 13) if exec_flag else 0,
+                           8 + len(command)) + command
+    other = struct.pack("<IIIIQ", pid + 1, pid, pid + 1, pid, 5) + trailer(pid + 1, 5)
+    records += struct.pack("<IHH", 4, 0, 8 + len(other)) + other
+    ended = struct.pack("<IIIIQ", pid, 1, pid, 1, exited) + trailer(pid, exited)
+    records += struct.pack("<IHH", 4, 0, 8 + len(ended)) + ended
+    header = b"PERFILE2" + struct.pack("<QQ", 104, len(attr)) + struct.pack("<QQ", 104, len(attr))
+    header += struct.pack("<QQ", 104 + len(attr), len(records)) + struct.pack("<QQ", 0, 0)
+    header += bytes(32)
+    return header + attr + records
+
+
+def lifetime(data, pid):
+    return perfcapture.decode_lifetime(lambda offset, count: data[offset:offset + count],
+                                       len(data), pid)
+
+
+class ObservedBoundary(diag.unittest.TestCase):
+    """The host-observed command's own time: its exec to its exit in the trusted recording."""
+
+    def test_the_command_is_bounded_by_its_exec_and_exit_never_the_gate(self):
+        data = observed_recording(4242, 1000000, 4500000, ["af"], "task-clock:u")
+        self.assertEqual(lifetime(data, 4242), (1000000, 4500000))
+
+    def test_a_recording_that_does_not_bound_the_command_refuses(self):
+        cases = [("another process", observed_recording(4242, 10, 20, [], "e"), 7, "no exec"),
+                 ("no exec flag", observed_recording(4242, 10, 20, [], "e", exec_flag=False),
+                  4242, "no exec"),
+                 ("compressed", observed_recording(4242, 10, 20, [], "e", compressed=True),
+                  4242, "compressed records"),
+                 ("no record times", observed_recording(4242, 10, 20, [], "e",
+                                                        sample_id_all=False), 4242,
+                  "carry no time"),
+                 ("exit before exec", observed_recording(4242, 30, 20, [], "e"), 4242,
+                  "exited before"),
+                 ("cut short", observed_recording(4242, 10, 20, [], "e")[:-9], 4242,
+                  "unfinished or malformed header"),
+                 ("not perf.data", b"x" * 200, 4242, "not a little-endian")]
+        overrun = bytearray(observed_recording(4242, 10, 20, [], "e"))
+        # The last record, the EXIT of 56 bytes, claims 8 bytes beyond its data section.
+        struct.pack_into("<H", overrun, len(overrun) - 56 + 6, 64)
+        cases.append(("record past its section", bytes(overrun), 4242, "data section"))
+        for name, data, pid, needle in cases:
+            with self.subTest(name=name):
+                with self.assertRaises(perfcapture.CaptureError) as caught:
+                    lifetime(data, pid)
+                self.assertEqual(caught.exception.reason, "command_boundary_unknown")
+                self.assertIn(needle, caught.exception.detail)
+                self.assertIn("none of it is attributed", caught.exception.detail)
+
+
+class RepeatedCaptures(diag.ChildRunBase):
+    """A CLI CPU profile of many fresh, host-observed processes through the actual Profile
+    writer, profiles.json, its bundle and report admission: 33 repetitions per side keep 66
+    raw recordings and observer records each, beyond any 64-item list, all listed by the
+    capture's verified index. The contained command and the host observer are injected:
+    each repetition's recording is the trusted perf's, written where the observer records it,
+    and its supervised child spends 50 ms more at the gate than its command runs."""
+
+    clean = LinkedChildren.clean
+    made = LinkedChildren.made
+    resealed = Admission.resealed
+    REPETITIONS = 33
+    GATE_NS = 50000000
+
+    def observed_child(self, **perf_config):
+        registry = json.loads(json.dumps(self.registry))
+        registry["capture"]["minimum_samples"] = 20
+        registry["capture"]["max_repetitions"] = self.REPETITIONS
+        perf = fakes.perf(self.path("perf"), **perf_config)
+        tools = diagnostics.configured_tools(perf=perf, inferno_bin=fakes.inferno(
+            self.path("inferno")))
+        test, made, runs = self, [], []
+
+        def observer(profile, staged, unwind, room, gate_root, whole, command_seconds):
+            profile.observers += 1
+            tag = "%04d-%s" % (profile.observers, os.urandom(4).hex())
+            control = test.path("observer-control", tag)
+            os.makedirs(control)
+            item = hostobserver.Observer(None, perf, profile.event, profile.frequency, unwind,
+                                         staged, control, os.path.join(gate_root, "gate-" + tag),
+                                         profile.budget.deadline, whole)
+            item.make_gate()
+            # What `attach` froze and confirmed, and its perf's confirmed end.
+            item.target = hostobserver.Target(5000 + profile.observers, 77, os.getuid(),
+                                               "sha256:" + "c" * 64, "f" * 64, 1)
+            item.attached_ms, item.released = 3, True
+            item.result = toolrun.Result([perf], code=0)
+            made.append(item)
+            return item
+
+        def cli_run(profile, side, case, binary, wrap=None, writes=(), file_bytes=None,
+                    observe=None, what=None, **_):
+            item = made[-1]
+            self.assertTrue(hostobserver.is_gated(wrap(["af", "--help"])))
+            spent = 3000000 + 1000 * len(runs)
+            runs.append(spent)
+            executed = 10 ** 9 * len(runs)
+            with open(item.output, "xb") as stream:
+                stream.write(observed_recording(item.target.pid, executed, executed + spent,
+                                                ["af"] * 2, profile.event))
+            reply = {"timing": {"child_wall_ns": spent + self.GATE_NS}, "setup": None}
+            result = toolrun.Result(["af"], code=0)
+            result.supervised = type("Supervised", (), {"result": reply})()
+            return result, "unused", None
+
+        with mock.patch.object(diagnostics.Profile, "host", "host"), \
+                mock.patch.object(diagnostics.Profile, "trusted_argv", lambda self, argv: False), \
+                mock.patch.object(diagnostics.Profile, "observer", observer), \
+                mock.patch.object(diagnostics.Profile, "cli_run", cli_run):
+            doc, child = self.profile("linux_gnu_cpu_profile", [diag.DISCOVERY], tools, {},
+                                      registry=registry, af_config={}, duration_ms=10000)
+        return doc, child, runs
+
+    def index_of(self, child, capture):
+        return contracts.read_file(os.path.join(child, capture["repetitions"]["path"]),
+                                   "repetitions")
+
+    def decodings(self):
+        """The argv after `perf` of every `perf script` the fake perf ran, in order."""
+        return [json.loads(line) for line in
+                read(self.path("perf", "script-argv.jsonl")).decode().splitlines()]
+
+    def test_many_observed_repetitions_are_indexed_serialized_and_admitted_offline(self):
+        doc, child, runs = self.observed_child()
+        self.assertEqual(len(doc["captures"]), 2, "both sides")
+        self.assertEqual(len(runs), 2 * self.REPETITIONS)
+        for side, capture in zip(diagnostics.diagcontracts.SIDES, doc["captures"]):
+            self.assertEqual(capture["side"], side)
+            self.assertIsNone(capture["omission"], capture["omission"])
+            self.assertEqual((capture["region"]["repetitions"], capture["region"]["stopped"]),
+                             (self.REPETITIONS, "repetition_cap"))
+            directory = os.path.join(child, diagnostics.diagcontracts.capture_directory(
+                capture))
+            raw = [name for name in os.listdir(directory)
+                   if diagnostics.diagcontracts.repeated_name(name)]
+            self.assertEqual(len(raw), 2 * self.REPETITIONS, "every recording and observer "
+                             "record is kept")
+            self.assertEqual(sorted(item["path"].rsplit("/", 1)[1]
+                                    for item in capture["artifacts"]),
+                             ["capture.script", "collapsed.folded"])
+            index = self.index_of(child, capture)
+            self.assertEqual(index["boundary"], "perf_exec_to_exit")
+            self.assertEqual(len(index["repetitions"]), self.REPETITIONS)
+            self.assertTrue(all(item["completed"] and item["observer"] is not None
+                                for item in index["repetitions"]))
+            # The commands' own time: the 50 ms each one waited at the gate is not counted.
+            spent = runs[:self.REPETITIONS] if side == "baseline" else runs[self.REPETITIONS:]
+            self.assertEqual([item["region_ns"] for item in index["repetitions"]], spent)
+            self.assertEqual(Fraction(capture["region"]["region_ms"]),
+                             Fraction(sum(spent), 1000000))
+            self.assertEqual(capture["samples"], 2 * self.REPETITIONS)
+            script = read(os.path.join(directory, "capture.script")).decode()
+            self.assertEqual(script.count("task-clock"), 2 * self.REPETITIONS)
+            # Every listed recording, in its index's order, by its own function-level decoding.
+            listed = [os.path.join(child, item["recording"]["path"])
+                      for item in index["repetitions"]]
+            self.assertEqual([argv for argv in self.decodings()
+                              if os.path.dirname(argv[argv.index("-i") + 1]) == directory],
+                             [perfcapture.script_argv("perf", path)[1:] for path in listed])
+        self.assertEqual(sorted(item["kind"] for item in doc["renders"]),
+                         ["baseline", "candidate", "difference_forward", "difference_reverse"])
+        report.admit_child(child, self.parent)
+        # A copy elsewhere is self-contained and verifies offline, and so does the report's
+        # own copy of it.
+        copied = shutil.copytree(child, self.path("copied"))
+        admitted = report.admit_child(copied, self.parent)
+        os.makedirs(self.path("offline"))
+        report.copy_child(admitted, self.path("offline"))
+        nested = os.path.join(self.path("offline"), *admitted.path("").split("/"))
+        report.admit_child(nested, self.parent)
+
+    def test_a_missing_changed_or_unlisted_repetition_refuses(self):
+        doc, child, _ = self.observed_child()
+        capture = doc["captures"][1]
+        index = self.index_of(child, capture)
+        recording = index["repetitions"][40 % self.REPETITIONS]["recording"]["path"]
+        observer = index["repetitions"][2]["observer"]["path"]
+        directory = diagnostics.diagcontracts.capture_directory(capture)
+
+        def remove(path):
+            return lambda target: os.remove(os.path.join(target, path))
+
+        def flip(path):
+            def edit(target):
+                data = bytearray(read(os.path.join(target, path)))
+                data[-1] ^= 1
+                with open(os.path.join(target, path), "wb") as stream:
+                    stream.write(bytes(data))
+            return edit
+
+        def extra(target):
+            shutil.copy(os.path.join(target, recording),
+                        os.path.join(target, directory, "rep-0099.data"))
+
+        def misplaced(target):
+            # A recording of this capture filed under the other side's directory.
+            shutil.copy(os.path.join(target, recording),
+                        os.path.join(target, directory.replace("candidate", "baseline"),
+                                     "rep-0034.data"))
+        for name, edit, needle in (
+                ("missing recording", remove(recording), "not the verified member its index"),
+                ("missing observer", remove(observer), "not the verified member its index"),
+                ("changed recording", flip(recording), "not the verified member its index"),
+                ("changed observer", flip(observer), "not the verified member its index"),
+                ("changed index", flip(capture["repetitions"]["path"]),
+                 "not the index its capture names"),
+                ("unlisted repetition", extra, "beyond its index"),
+                ("misplaced repetition", misplaced, "beyond its index")):
+            with self.subTest(name=name):
+                target = self.resealed(child, name.replace(" ", "-"), edit)
+                with self.assertRaisesRegex(ContractError, needle):
+                    report.admit_child(target, self.parent)
+
+    def test_a_region_the_recording_does_not_bound_is_refused_offline(self):
+        doc, child, _ = self.observed_child()
+        capture = doc["captures"][0]
+        index = self.index_of(child, capture)
+        first = index["repetitions"][0]
+
+        def edit(target):
+            # A recording whose command took 1 ns more than its sealed index says.
+            path = os.path.join(target, first["recording"]["path"])
+            data = read(path)
+            observer = contracts.read_file(os.path.join(target, first["observer"]["path"]),
+                                           "host-observer")
+            executed, exited = lifetime(data, observer["target"]["pid"])
+            with open(path, "wb") as stream:
+                # The EXIT record's own time, before its 24-byte sample_id trailer.
+                stream.write(data[:-32] + struct.pack("<Q", exited + 1) + data[-24:])
+            first["recording"].update(bytes=len(data), sha256=diag.sha256_bytes(read(path)))
+            index_path = os.path.join(target, capture["repetitions"]["path"])
+            with open(index_path, "wb") as stream:
+                stream.write(contracts.write_bytes(index, "repetitions"))
+            copied = json.loads(read(os.path.join(target, diagnostics.PROFILES_FILE)))
+            copied["captures"][0]["repetitions"].update(
+                bytes=os.path.getsize(index_path), sha256=diag.sha256_bytes(read(index_path)))
+            RetainedSymbols.rewrite(target, copied)
+        target = self.resealed(child, "unbounded", edit)
+        with self.assertRaisesRegex(ContractError, "bounds its command at"):
+            report.admit_child(target, self.parent)
+
+    def test_a_failed_decoding_keeps_its_cause_and_every_recording_in_a_valid_report(self):
+        doc, child, _ = self.observed_child(fail_script="rep-0005.data")
+        for capture in doc["captures"]:
+            self.assertEqual(capture["omission"]["reason"], "tool_failed")
+            detail = capture["omission"]["detail"]
+            self.assertIn("recording 5 of %d" % self.REPETITIONS, detail)
+            self.assertIn("rep-0005.data", detail)
+            self.assertIn("keeps the 4 recordings decoded before it", detail)
+            directory = os.path.join(child, diagnostics.diagcontracts.capture_directory(
+                capture))
+            # Decoding stopped at the failed recording: no later one, and no retry of it.
+            self.assertEqual([os.path.basename(argv[argv.index("-i") + 1])
+                              for argv in self.decodings()
+                              if os.path.dirname(argv[argv.index("-i") + 1]) == directory],
+                             ["rep-%04d.data" % number for number in range(1, 6)])
+            self.assertEqual(sorted(item["path"].rsplit("/", 1)[1]
+                                    for item in capture["artifacts"]),
+                             ["capture.script", "capture.script.part"])
+            index = self.index_of(child, capture)
+            self.assertEqual(len(index["repetitions"]), self.REPETITIONS)
+        self.assertEqual(doc["renders"], [])
+        report.admit_child(child, self.parent)
+
+    def test_a_perf_refusing_function_level_decoding_leaves_every_recording_unrendered(self):
+        self.REPETITIONS = 3
+        doc, child, _ = self.observed_child(reject_no_inline=True)
+        for capture in doc["captures"]:
+            self.assertEqual(capture["omission"]["reason"], "tool_failed")
+            self.assertIn("recording 1 of 3", capture["omission"]["detail"])
+            self.assertIsNone(capture["samples"])
+            self.assertEqual(len(self.index_of(child, capture)["repetitions"]), 3)
+        self.assertTrue(all("--no-inline" in argv for argv in self.decodings()))
+        self.assertEqual(doc["renders"], [])
+        report.admit_child(child, self.parent)
+
+    AF_ID = "cbc6452c61751405d91560eb9b6784a97da6faaa"
+    LIBC_ID = "79005c16293efa45b441fed45f4f29b138557e9e"
+    # Enough repetitions to reach the minimum samples; the many-recordings bound is above.
+    FEW = 10
+
+    def listed_child(self, last, **perf_config):
+        """A capture of `FEW` repetitions whose `perf buildid-list --with-hits` of the first, a
+        short execution, hit nothing, of the others only libc, of the last `last`; the
+        profiled executable's own build ID is the AF one."""
+        self.REPETITIONS = self.FEW
+        listed = dict(("rep-%04d.data" % number, ["%s /usr/lib/libc.so.6" % self.LIBC_ID])
+                      for number in range(2, self.FEW))
+        listed["rep-0001.data"] = []
+        listed["rep-%04d.data" % self.FEW] = last
+        listed.update(perf_config.pop("build_ids", {}))
+        with mock.patch.object(perfcapture, "elf_build_id", return_value=self.AF_ID):
+            return self.observed_child(build_ids=listed, **perf_config)
+
+    def test_a_later_recordings_hit_of_the_executable_is_found_when_the_first_has_none(self):
+        doc, child, _ = self.listed_child(["%s /work/af" % self.AF_ID])
+        for capture in doc["captures"]:
+            self.assertIsNone(capture["omission"], capture["omission"])
+            self.assertEqual(capture["symbols"]["build_ids"],
+                             sorted([self.AF_ID, self.LIBC_ID]))
+            self.assertIs(capture["symbols"]["binary_build_id_present"], True)
+            self.assertEqual(len(self.index_of(child, capture)["repetitions"]), self.FEW)
+        report.admit_child(child, self.parent)
+
+    def test_no_recordings_hit_of_a_known_build_id_omits_the_capture_and_renders_nothing(self):
+        doc, child, _ = self.listed_child([])
+        for capture in doc["captures"]:
+            self.assertEqual(capture["omission"]["reason"], "executable_not_sampled")
+            self.assertIn("hits: %s" % self.LIBC_ID, capture["omission"]["detail"])
+            self.assertEqual(capture["symbols"]["build_ids"], [self.LIBC_ID])
+            self.assertIs(capture["symbols"]["binary_build_id_present"], False)
+            # Every recording is still kept and indexed: the omission is honest, not a loss.
+            self.assertEqual(len(self.index_of(child, capture)["repetitions"]), self.FEW)
+        self.assertEqual(doc["renders"], [])
+        report.admit_child(child, self.parent)
+
+        def usable(target):
+            # The forged claim: the omission removed, the profiles rewritten and resealed.
+            path = os.path.join(target, diagnostics.PROFILES_FILE)
+            forged = json.loads(read(path))
+            for capture in forged["captures"]:
+                capture["omission"] = None
+            with open(path, "wb") as stream:
+                stream.write(document_bytes(forged))
+        with self.assertRaisesRegex(ContractError, "never hit the profiled executable's known "
+                                    "build ID"):
+            report.admit_child(self.resealed(child, "forged-usable", usable), self.parent)
+
+    def test_a_build_id_less_executable_keeps_its_hash_bound_capture_and_renders(self):
+        """A musl executable carries no GNU build ID: its capture is identified by its exact
+        hash and retained archive, the recordings' other hits change nothing, and no build
+        ID is invented for it."""
+        self.REPETITIONS = self.FEW
+        listed = dict(("rep-%04d.data" % number, ["%s /usr/lib/libc.so.6" % self.LIBC_ID])
+                      for number in range(1, self.FEW + 1))
+        with mock.patch.object(perfcapture, "elf_build_id", return_value=None):
+            doc, child, _ = self.observed_child(build_ids=listed)
+        for capture in doc["captures"]:
+            self.assertIsNone(capture["omission"], capture["omission"])
+            self.assertIsNone(capture["symbols"]["binary_build_id_present"])
+            self.assertEqual(capture["symbols"]["build_ids"], [self.LIBC_ID])
+            self.assertEqual(capture["symbols"]["archive"]["path"],
+                             "symbols/" + capture["binary_sha256"][7:] + ".xz")
+        self.assertTrue(any(item["kind"].startswith("difference") for item in doc["renders"]))
+        report.admit_child(child, self.parent)
+
+    def test_a_failed_or_malformed_build_id_listing_refuses_the_capture_by_its_recording(self):
+        for name, config, reason in (
+                ("failed", {"fail_buildids": "rep-0007.data"}, "tool_failed"),
+                ("malformed", {"build_ids": {"rep-0007.data": ["not a build id line"]}},
+                 "malformed_build_ids")):
+            with self.subTest(name=name):
+                for directory in ("child", "perf", "inferno", "observer-control"):
+                    shutil.rmtree(self.path(directory), True)
+                self.clean()
+                doc, child, _ = self.listed_child(["%s /work/af" % self.AF_ID], **config)
+                for capture in doc["captures"]:
+                    self.assertEqual(capture["omission"]["reason"], reason)
+                    detail = capture["omission"]["detail"]
+                    self.assertIn("perf buildid-list of recording 7 of %d" % self.FEW, detail)
+                    self.assertIn("rep-0007.data", detail)
+                    # Every raw recording and observer record is still kept and indexed.
+                    self.assertEqual(len(self.index_of(child, capture)["repetitions"]),
+                                     self.FEW)
+                    directory = os.path.join(child, diagnostics.diagcontracts.capture_directory(
+                        capture))
+                    self.assertEqual(len([item for item in os.listdir(directory)
+                                          if diagnostics.diagcontracts.repeated_name(item)]),
+                                     2 * self.FEW)
+                self.assertEqual(doc["renders"], [])
+                report.admit_child(child, self.parent)
+
+    def test_a_repetition_its_recording_does_not_bound_stops_the_capture_honestly(self):
+        with mock.patch.object(perfcapture, "decode_lifetime",
+                               side_effect=perfcapture.CaptureError(
+                                   "command_boundary_unknown", "it holds no exec of it")):
+            doc, child, runs = self.observed_child()
+        self.assertEqual(len(runs), 2, "one repetition per side, then the capture stops")
+        for capture in doc["captures"]:
+            self.assertEqual(capture["omission"]["reason"], "command_boundary_unknown")
+            self.assertEqual((capture["region"]["repetitions"], capture["region"]["region_ms"]),
+                             (0, "0"))
+            index = self.index_of(child, capture)
+            self.assertEqual([(item["completed"], item["region_ns"])
+                              for item in index["repetitions"]], [(False, None)])
+            self.assertIsNotNone(index["repetitions"][0]["recording"])
+        report.admit_child(child, self.parent)

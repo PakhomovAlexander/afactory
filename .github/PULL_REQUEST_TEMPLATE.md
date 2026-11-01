@@ -22,7 +22,7 @@
 ## Lines added
 
 <!-- The lines this pull request adds, per directory, as a title with the total and a table
-     (ADR-0195). CI maintains this block (ADR-0269): the `PR report` check renders it from the
+     (ADR-0195). CI maintains this block (ADR-0270): the `PR report` check renders it from the
      pull request's commits and, when the block below is empty or differs, writes it into the
      description itself, changing nothing outside its markers. Leave the markers as they are,
      or paste the block yourself; run, from this repository on this branch, with its base

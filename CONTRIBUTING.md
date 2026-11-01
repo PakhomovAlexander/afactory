@@ -322,7 +322,7 @@ Either is fine; the prefixes are used but not required. Domain terms keep their 
   bar and a percentage. It counts `git diff --numstat` additions under the first directory of
   each path, a file under a `tests` directory as `tests`, a root file under its own name,
   figures rounded past 1000 (`12k`, `1.1k`, `463`). CI maintains the block
-  ([ADR-0269](docs/adr/0269-let-ci-maintain-the-lines-added-block.md)): the `PR report`
+  ([ADR-0270](docs/adr/0270-let-ci-maintain-the-lines-added-block.md)): the `PR report`
   workflow renders it again from the pull request's commits on every opening, edit and push,
   and when the description's block is missing or differs it writes the block into the
   description itself, changing nothing outside the block's markers (without them, it inserts

@@ -1,13 +1,13 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "$id": "urn:af:schema:performance-telemetry-lab:2",
-  "title": "af.perf-telemetry-lab/2",
+  "$id": "urn:af:schema:performance-telemetry-lab:3",
+  "title": "af.perf-telemetry-lab/3",
   "description": "fixtures/performance/telemetry.toml as parsed TOML (ADR-0214): the telemetry experiments, each exactly a bench script of design section 12 with its document, the product schema it is read through and its levels, the inputs its measurement authority is identified by, and each trigger's bounded profile of rounds, pairs, scale, corpus size, timeout, work bytes and retention.",
   "type": "object",
   "additionalProperties": false,
   "properties": {
     "schema": {
-      "const": "af.perf-telemetry-lab/2"
+      "const": "af.perf-telemetry-lab/3"
     },
     "description": {
       "type": "string",
@@ -64,8 +64,8 @@
             "document": {
               "type": "string",
               "enum": [
-                "af/telemetry-invocation-cost@1",
-                "af/telemetry-overhead@1",
+                "af/telemetry-invocation-cost@2",
+                "af/telemetry-overhead@2",
                 "af/telemetry-read-latency@2"
               ]
             },
@@ -125,8 +125,8 @@
             "document": {
               "type": "string",
               "enum": [
-                "af/telemetry-invocation-cost@1",
-                "af/telemetry-overhead@1",
+                "af/telemetry-invocation-cost@2",
+                "af/telemetry-overhead@2",
                 "af/telemetry-read-latency@2"
               ]
             },
@@ -186,8 +186,8 @@
             "document": {
               "type": "string",
               "enum": [
-                "af/telemetry-invocation-cost@1",
-                "af/telemetry-overhead@1",
+                "af/telemetry-invocation-cost@2",
+                "af/telemetry-overhead@2",
                 "af/telemetry-read-latency@2"
               ]
             },
