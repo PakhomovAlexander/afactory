@@ -41,11 +41,11 @@ def unit_night(unit, show, error, clock=None):
     code, out = show(unit)
     text = (out or b"").decode("ascii", "replace").strip()
     # systemd prints `@SECONDS`, with fractional seconds when the start has them.
-    match = re.match(r"^@([0-9]{1,12})(?:\.[0-9]{1,9})?$", text)
+    match = re.match(r"^@([0-9]{1,12})(?:\.([0-9]{1,9}))?$", text)
     if code != 0 or match is None or int(match.group(1)) == 0:
         raise error("--night-of %s: systemd reports no start of it since boot (%s); give the "
                     "night with --date" % (unit, text or "exit %s" % code))
-    started = int(match.group(1)) * 1000
+    started = int(match.group(1)) * 1000 + int(((match.group(2) or "") + "000")[:3])
     if clock is not None and clock() - started > CHAIN_HOURS_MAX * 3600 * 1000:
         raise error("--night-of %s: it last started more than %d hours ago (%s); the chain is out "
                     "of order, give the night with --date" % (unit, CHAIN_HOURS_MAX, text))

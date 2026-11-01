@@ -58,11 +58,14 @@ operator page.
    `head_sha` is created through the REST API as a pre-release named `Nightly YYYY-MM-DD`, never
    marked latest, with `digest.md` as its notes, and receives, in this order, the two archives,
    `SHA256SUMS`, `SHA256SUMS.minisig`, `nightly.json`, `daily.json` and `report.html` through
-   its `upload_url`. A tag that already names another commit refuses. Each asset's size and
-   digest as GitHub reports them must equal the file's. The transport is shared with `build`
-   (`scripts/nightly/githubrest.py`): JSON requests to api.github.com, uploads only to
-   uploads.github.com under the repository's releases, bounded responses, 60 s per request,
-   no redirect followed, only reads retried once.
+   its `upload_url`. A tag that already names another commit refuses. Before an amendment's
+   first PATCH or upload, the found release must name the selected tag and its upload URL must
+   name that same release id; create and update responses are checked the same way before any
+   asset write. Each asset's size and digest as GitHub reports them must equal the file's. The
+   transport is shared with `build` (`scripts/nightly/githubrest.py`): JSON requests to
+   api.github.com, uploads only to uploads.github.com under the repository's releases, bounded
+   responses, 60 s per request, no redirect followed, no environment-derived proxy, only reads
+   retried once.
 3. **Amending never changes shipped bytes.** A later `publish` of the night finds the release
    by its tag and refuses, before any request that writes, unless it is a pre-release that
    targets `head_sha` and every archive, sum, signature and record already on it carries the

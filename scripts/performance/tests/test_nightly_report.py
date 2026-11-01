@@ -10,14 +10,12 @@ tables equal to daily.json's value formatted here, independently of the composer
 """
 import contextlib
 import copy
-import gzip
 import html.parser
 import importlib.util
 import io
 import json
 import os
 import re
-import tarfile
 import unittest
 
 from perflab import contracts, executor, hostlock, render
@@ -543,14 +541,12 @@ class Night(TempDir):
         for entry in record["targets"]:
             archive = os.path.join(root, *entry["asset"].split("/"))
             os.makedirs(os.path.dirname(archive), exist_ok=True)
-            # A gzip header without a time, so the archive and the goldens are the same bytes
-            # on every run.
-            with open(archive, "wb") as raw, gzip.GzipFile("", "wb", fileobj=raw,
-                                                           mtime=0) as packed, \
-                    tarfile.open(fileobj=packed, mode="w") as tar:
-                info = tarfile.TarInfo("af")
-                info.size, info.mode, info.mtime = len(AF[entry["target"]]), 0o755, 0
-                tar.addfile(info, io.BytesIO(AF[entry["target"]]))
+            # Committed bytes, not a fresh gzip stream: compression output varies between
+            # Python/zlib versions, while these fixtures and the goldens must not.
+            archived = read(os.path.join(ROOT, "fixtures", "performance", "nightly",
+                                         "af-%s.tar.gz" % entry["target"].split("-")[0]))
+            with open(archive, "wb") as stream:
+                stream.write(archived)
             data = read(archive)
             entry.update(sha256=sha256_bytes(data), bytes=len(data))
         write(os.path.join(root, "nightly.json"), contracts.write_bytes(record, "nightly-build"))

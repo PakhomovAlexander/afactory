@@ -49,16 +49,18 @@ measurement did, and leave the executor, the release train and GitHub Actions as
    deadline; no cycle starts after the deadline and none is interrupted. A refused cycle after
    which nothing moved fails the step. Exit 0 when both ended, 1 with `nightly: failed: …` naming
    each original still queued or running, 1 with `nightly: refused: …` when the night has no
-   record, the configuration no `[report]` table, or the executor refuses a submission. The
+   record, the configuration no `[report]` table, the executor refuses a submission, or two
+   submissions return the same request id (a collision is rejected before status or cycle, so
+   one original can never hide the other). The
    executor calls go through an injectable runner. The nightly executor's configuration is
    submitted to and cycled by this step alone; the executor, its journal, lock and fence rules
    are unchanged.
 2. **The night of a step.** Every step (`build`, `plan`, `measure`, `compose`, `publish`) takes
    `--date YYYY-MM-DD`, or `--night-of UNIT`: the UTC date at which systemd last started the
    service UNIT (`systemctl show --property=ExecMainStartTimestamp --timestamp=unix`, whose
-   seconds may be fractional), refused when the unit has not started since boot or last started
-   more than 23 hours ago: the chain is then out of order, and no step silently works on a
-   later night. Without either the night is today's UTC date from
+   seconds may be fractional, preserved to millisecond precision for the age comparison),
+   refused when the unit has not started since boot or last started more than 23 hours ago:
+   the chain is then out of order, and no step silently works on a later night. Without either the night is today's UTC date from
    the clock. The step prints on stderr the night it chose and why. The four units pass
    `--night-of af-nightly-build.service`, so one chain works on the night its build started, and
    a unit rerun the next morning still works on that night.

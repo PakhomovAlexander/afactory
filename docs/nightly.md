@@ -223,13 +223,14 @@ For a `built` night, `publish`:
 
 Every request goes to `api.github.com`, or for an upload to the release's `upload_url` on
 `uploads.github.com`; each is bounded to 60 s and a bounded response, no redirect is followed,
-and only reads are retried, once.
+no proxy is taken from the process environment, and only reads are retried, once.
 
 **Amending.** Publishing a night again (a late measurement, a recomposed report) finds the
-release by its tag. It must be a pre-release whose target commit is `head_sha`, and the
-archives, sums, signature and `nightly.json` already on it must carry the night's sizes and
-digests: a difference refuses before any request that writes, because shipped bytes never
-change. Then the notes, `daily.json` and `report.html` are replaced (each asset is deleted and
+release by its tag. Before a PATCH or upload, that answer must name the selected tag and its
+upload URL must name the same release id; create and update responses are bound the same way.
+It must be a pre-release whose target commit is `head_sha`, and the archives, sums, signature
+and `nightly.json` already on it must carry the night's sizes and digests: a difference refuses
+before any request that writes, because shipped bytes never change. Then the notes, `daily.json` and `report.html` are replaced (each asset is deleted and
 uploaded again), any of the seven assets an interrupted publish left out is uploaded, and the
 receipt is rewritten with `amendments` counted. An amendment sends no Telegram message unless
 `--notify-again` is given; the receipt keeps the earlier message id, or the earlier reason
@@ -287,7 +288,9 @@ python3 -I -B scripts/performance/cli.py executor --config <executor_config> sub
 ```
 
 A submission of a night already submitted prints the existing original, so running `measure`
-again is safe. Then it runs that executor's `status` and `cycle` in turn until `status` shows
+again is safe. If core and telemetry ever return the same request id, the step refuses before
+`status` or `cycle`: one original must never replace the other in its wait set. Then it runs
+that executor's `status` and `cycle` in turn until `status` shows
 both originals in a terminal state (`complete`, `failed`, `interrupted`, `uncertain` or
 `expired`) or `[measure] deadline_minutes` have passed since it started. After a cycle that
 answers `busy` (the machine lock is held) or `idle`, or while another process holds the journal,
@@ -352,7 +355,8 @@ bounds of their GitHub requests). A built night is so published in the small hou
 the next day, a skipped night within minutes, and the four steps work on the same night: the
 four bounds add to 22 h 30 min, less than the day between two timer starts, so the next
 build never starts while a chain still runs, and a step whose build unit last started more
-than 23 hours ago refuses as out of order rather than work on another night.
+than 23 hours ago refuses as out of order rather than work on another night. Fractional
+systemd start timestamps keep millisecond precision for that comparison.
 
 ## Install
 

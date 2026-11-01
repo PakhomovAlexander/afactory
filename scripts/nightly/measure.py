@@ -210,6 +210,9 @@ def measure(config, record, run, clock, sleep):
                 raise Refused("the nightly executor refused the %s submission: %s (%s)"
                               % (key, refusal[1], refusal[0]))
             wait("another process holds the nightly executor's journal")
+        if ident in keys:
+            raise Refused("the nightly executor returned the original %s for both %s and %s"
+                          % (ident, keys[ident], key))
         keys[ident] = key
         sys.stderr.write("nightly: %s is the original %s\n" % (key, ident))
 

@@ -298,6 +298,29 @@ def reported(name, found, data):
     return {"name": name, "size": found["size"], "digest": found["digest"]}
 
 
+def check_release_location(release, record, repository):
+    """Bind a found release's tag and upload target before an amendment can write."""
+    tag = record["tag"]
+    if release.get("tag_name") != tag:
+        raise Refused("GitHub answered the release of %s with tag %s"
+                      % (tag, release.get("tag_name")))
+    expected = ("https://uploads.github.com/repos/%s/releases/%s/assets{?name,label}"
+                % (repository, release.get("id")))
+    if release.get("upload_url") != expected:
+        raise Refused("GitHub's upload URL for %s does not name its own release id %s"
+                      % (tag, release.get("id")))
+
+
+def check_release_response(release, record, repository):
+    """Bind every create/find/update answer to this night and its own release before writes."""
+    check_release_location(release, record, repository)
+    tag = record["tag"]
+    if (release.get("target_commitish"), release.get("prerelease"),
+            release.get("draft")) != (record["head_sha"], True, False):
+        raise Refused("GitHub holds the release of %s as something else (a draft, another "
+                      "commit or not a pre-release); nothing was uploaded" % tag)
+
+
 def check_existing(release, record, shipped):
     """Refuse, before anything is written, a release that is not this night's: not a
     pre-release, at another commit, or carrying shipped bytes that differ from the night's."""
@@ -323,17 +346,15 @@ def publish_release(github, record, shipped, report, notes):
     release = github.release_by_tag(tag)
     amended = release is not None
     if amended:
+        check_release_location(release, record, github.repository)
         check_existing(release, record, shipped)
         release = github.update_notes(release["id"], notes)
     else:
         release = github.create_release(tag, record["head_sha"],
                                         "Nightly " + record["date"], notes)
-    # What GitHub answered, created or updated, is the release the assets go to: it must be
-    # this tag at this commit, a pre-release and no draft, or nothing is uploaded to it.
-    if (release.get("tag_name"), release.get("target_commitish"), release.get("prerelease"),
-            release.get("draft")) != (tag, record["head_sha"], True, False):
-        raise Refused("GitHub holds the release of %s as something else (a draft, another "
-                      "commit or not a pre-release); nothing was uploaded" % tag)
+    # What GitHub answered, created or updated, is the release the assets go to: its tag,
+    # commit, prerelease state and upload URL are all bound before an asset write.
+    check_release_response(release, record, github.repository)
     by_name = dict((item["name"], item) for item in release["assets"])
     files = dict(shipped, **report)
     assets = []

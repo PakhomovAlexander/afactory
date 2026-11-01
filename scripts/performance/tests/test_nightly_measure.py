@@ -73,7 +73,7 @@ class Executor:
             if isinstance(answer, tuple):
                 return refusal(*answer)
             work = argv[argv.index("--work") + 1]
-            ident = CORE if work == "core" else TELEMETRY
+            ident = answer if isinstance(answer, str) else CORE if work == "core" else TELEMETRY
             out = {"request_id": ident, "submission": {"kind": "nightly", "tag": TAG,
                                                        "key": "nightly:%s:%s" % (TAG, work)}}
         elif operation == "status":
@@ -171,6 +171,15 @@ class BuiltNight(Night):
         self.assertIn("nightly: nightly:%s:core is the original %s\n" % (TAG, CORE), err)
         self.assertIn("nightly: [measure] deadline_minutes 300, poll_seconds 60 (the "
                       "defaults)\n", err)
+
+    def test_a_request_id_reused_for_the_other_work_is_refused_before_status(self):
+        self.night()
+        executor = Executor(self, [], submits=[CORE, CORE])
+        code, out, err = self.measure(executor, "--date", "2026-10-29")
+        self.assertEqual((code, out), (1, ""))
+        self.assertIn("returned the original %s for both nightly:%s:core and "
+                      "nightly:%s:telemetry" % (CORE, TAG, TAG), err)
+        self.assertEqual(executor.operations(), ["submit", "submit"])
 
     def test_any_terminal_state_ends_the_wait(self):
         self.night()
@@ -284,6 +293,19 @@ class NightOfTheBuildUnit(Night):
         self.assertEqual(measure.nightlychain.unit_night("af-nightly-build.service", show,
                                                          measure.Refused, self.clock),
                          "2026-10-29")
+
+    def test_the_fractional_start_is_used_at_the_23_hour_boundary(self):
+        base = 1793311501000
+        show, _ = self.show(b"@1793311501.659757\n")
+        self.clock.now = base + 23 * 3600 * 1000 + 500
+        self.assertEqual(measure.nightlychain.unit_night("af-nightly-build.service", show,
+                                                         measure.Refused, self.clock),
+                         "2026-10-29")
+        self.clock.now += 1000
+        with self.assertRaises(measure.Refused) as caught:
+            measure.nightlychain.unit_night("af-nightly-build.service", show, measure.Refused,
+                                            self.clock)
+        self.assertIn("more than 23 hours ago", str(caught.exception))
 
     def test_a_build_started_more_than_a_day_ago_is_refused_as_out_of_order(self):
         self.night()

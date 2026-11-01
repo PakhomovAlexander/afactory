@@ -14,6 +14,7 @@ import re
 import subprocess
 import sys
 import urllib.parse
+from unittest import mock
 
 from perflab import contracts
 from perflab.values import ContractError
@@ -55,6 +56,8 @@ class FakeGitHub:
         self.fail = None
         # When set, a created release is answered as a draft, whatever was asked.
         self.create_draft = False
+        # When set, release_by_tag returns this answer instead of the stored release.
+        self.release_answer = None
 
     def id(self):
         self.next_id += 1
@@ -77,13 +80,16 @@ class FakeGitHub:
     def render(self, release):
         out = dict((key, value) for key, value in release.items() if key != "assets")
         out["html_url"] = "https://github.com/%s/releases/tag/%s" % (REPO, release["tag_name"])
-        out["upload_url"] = ("https://uploads.github.com/repos/%s/releases/%d/assets{?name,label}"
-                             % (REPO, release["id"]))
+        out["upload_url"] = release.get(
+            "upload_url", "https://uploads.github.com/repos/%s/releases/%d/assets{?name,label}"
+            % (REPO, release["id"]))
         out["assets"] = [dict((k, v) for k, v in item.items() if k != "data")
                          for item in release["assets"]]
         return out
 
     def by_tag(self, tag):
+        if self.release_answer is not None:
+            return self.release_answer
         found = [r for r in self.releases.values() if r["tag_name"] == tag]
         return found[0] if found else None
 
@@ -374,6 +380,17 @@ class FirstPublish(Night):
         self.assertIn("not an asset upload of owner/af", str(caught.exception))
         with self.assertRaises(githubrest.Refused):
             githubrest.GitHub(REPO, None, send=self.github.send).release_by_tag(TAG)
+
+    def test_authenticated_writes_never_use_environment_proxies(self):
+        with mock.patch.dict(os.environ, {"HTTPS_PROXY": "http://proxy.invalid:8080",
+                                          "https_proxy": "http://proxy.invalid:8080"}):
+            proxies = [handler for handler in githubrest._OPENER.handlers
+                       if isinstance(handler, urllib.request.ProxyHandler)]
+            # Some Python versions omit a default ProxyHandler whose map is empty; others
+            # retain it. Either shape proves no environment-derived proxy is installed.
+            self.assertTrue(all(handler.proxies == {} for handler in proxies))
+            self.assertIs(publish.https_send, githubrest.https_send)
+            self.assertIs(publish.Telegram(BOT_TOKEN, "1").send, githubrest.https_send)
 
     def test_a_tag_already_naming_another_commit_refuses_before_any_write(self):
         self.build()
@@ -769,6 +786,30 @@ class Refusals(Night):
             self.assertEqual(result.returncode, 1, argv)
             self.assertIn(b"nightly: refused: ", result.stderr)
             self.assertEqual(result.stdout, b"")
+
+
+class ReleaseIdentity(Night):
+    def test_a_mismatched_release_or_upload_url_is_refused_before_any_write(self):
+        self.build()
+        for mismatch in ("tag", "upload_url"):
+            with self.subTest(mismatch=mismatch):
+                release = self.github.add(TAG)
+                wrong = dict(release)
+                if mismatch == "tag":
+                    wrong["tag_name"] = "nightly-1999.01.01"
+                else:
+                    other = release["id"] + 1
+                    wrong["upload_url"] = ("https://uploads.github.com/repos/owner/af/releases/"
+                                           "%d/assets{?name,label}" % other)
+                self.github.release_answer = wrong
+                code, out, err = self.publish()
+                self.assertEqual((code, out), (1, ""))
+                self.assertEqual((self.github.writes(), self.telegram.sent), ([], []))
+                self.assertFalse(os.path.exists(os.path.join(self.night, "publish.json")))
+                self.github.release_answer = None
+                self.github.releases = {}
+                self.github.tags = {}
+                self.github.requests = []
 
 
 class ReportIdentity(Night):
