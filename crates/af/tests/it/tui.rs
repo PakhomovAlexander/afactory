@@ -1329,7 +1329,7 @@ fn d_removes_a_registered_provider_through_af_provider_remove() {
     let config = home.join("config/af");
     std::fs::create_dir_all(&config).unwrap();
     // Two registered Codex contexts, and a `codex` that answers its login status at once.
-    let mut registry = "version = 1\n".to_owned();
+    let mut registry = "version = 2\n".to_owned();
     for id in ["codex-main", "codex-work"] {
         let auth = home.join(id);
         std::fs::create_dir(&auth).unwrap();
