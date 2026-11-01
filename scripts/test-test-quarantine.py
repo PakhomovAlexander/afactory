@@ -10,6 +10,7 @@ import os
 from pathlib import Path
 import re
 import shutil
+import stat
 import subprocess
 import sys
 import tempfile
@@ -887,6 +888,16 @@ class ClawRunbook(unittest.TestCase):
         package = cls.repo / 'scripts/performance/perflab'
         shutil.copytree(ROOT / 'scripts/performance/perflab', package,
                         ignore=shutil.ignore_patterns('__pycache__', '*.pyc'))
+        # copytree preserves sealed Snapshot modes; only our disposable fixture may change.
+        for directory, _, files in os.walk(package, followlinks=False):
+            path = Path(directory)
+            os.chmod(path, path.lstat().st_mode | stat.S_IWUSR | stat.S_IXUSR,
+                     follow_symlinks=False)
+            for name in files:
+                path = Path(directory) / name
+                mode = path.lstat().st_mode
+                if stat.S_ISREG(mode):
+                    os.chmod(path, mode | stat.S_IWUSR, follow_symlinks=False)
         cls.git_env = {'HOME': str(cls.repo), 'PATH': '/usr/bin:/bin',
                        'GIT_CONFIG_NOSYSTEM': '1', 'GIT_CONFIG_GLOBAL': os.devnull}
         for args in (['init', '-q'], ['add', '.'],
