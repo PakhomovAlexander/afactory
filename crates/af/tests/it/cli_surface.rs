@@ -47,6 +47,48 @@ fn namespace_help_is_scoped_to_the_namespace() {
     assert!(err(&root).contains("review"), "{}", err(&root));
 }
 
+/// Reusing startup's first parse must keep clap's short/long help, even when required
+/// arguments are absent or `--json` follows the help flag. Help is never an error document,
+/// including for `task events`, whose actual usage errors are JSON without `--json`.
+#[test]
+fn help_flags_preserve_text_exit_code_and_streams_with_json() {
+    let dir = tempfile::tempdir().unwrap();
+    for path in [&[][..], &["review", "run"], &["task"], &["task", "events"]] {
+        for flag in ["-h", "--help"] {
+            let run = |json: bool| {
+                let mut command = crate::common::af();
+                command
+                    .current_dir(dir.path())
+                    .args(path)
+                    .arg(flag)
+                    .env("NO_COLOR", "1");
+                if json {
+                    command.arg("--json");
+                }
+                command.output().unwrap()
+            };
+            let plain = run(false);
+            let json = run(true);
+            for output in [&plain, &json] {
+                assert_eq!(
+                    output.status.code(),
+                    Some(0),
+                    "{path:?} {flag}: {}",
+                    err(output)
+                );
+                assert!(output.stderr.is_empty(), "{path:?} {flag}: {}", err(output));
+                assert!(out(output).contains("Usage: af"), "{}", out(output));
+                assert!(
+                    serde_json::from_slice::<serde_json::Value>(&output.stdout).is_err(),
+                    "help is text, not a JSON document: {}",
+                    out(output)
+                );
+            }
+            assert_eq!(plain.stdout, json.stdout, "{path:?} {flag}");
+        }
+    }
+}
+
 #[test]
 fn usage_errors_name_only_the_failing_command() {
     let bad = af(&["review", "ledger", "--campaign", "x", "--nope"]);

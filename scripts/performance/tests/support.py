@@ -1,5 +1,6 @@
 """Shared helpers of the laboratory tests. Every generated bundle is labeled synthetic."""
 import inspect
+import io
 import json
 import os
 import shutil
@@ -8,6 +9,8 @@ import sys
 import tempfile
 import time
 import unittest
+import urllib.error
+import urllib.response
 
 from perflab import suite, synthetic
 
@@ -21,6 +24,27 @@ CLI = os.path.join(ROOT, "scripts/performance/cli.py")
 def read(path):
     with open(path, "rb") as stream:
         return stream.read()
+
+
+class GitHubOpener:
+    """An opener for the nightly scripts' GitHub reader (scripts/nightly/nightlygithub.py):
+    `answer(path, headers)` gives (status, body) or raises, as api.github.com would; every
+    request's URL and timeout are recorded, and a body is read only as far as the reader
+    asks."""
+
+    def __init__(self, answer):
+        self.answer = answer
+        self.urls, self.timeouts = [], []
+
+    def open(self, request, timeout):
+        self.urls.append(request.full_url)
+        self.timeouts.append(timeout)
+        status, body = self.answer(request.full_url[len("https://api.github.com"):],
+                                   dict(request.header_items()))
+        if status != 200:
+            raise urllib.error.HTTPError(request.full_url, status, "answered", {},
+                                         io.BytesIO(body))
+        return urllib.response.addinfourl(io.BytesIO(body), {}, request.full_url, status)
 
 
 # A fixture's own child that outlives what started it on purpose (a deaf supervisor's sample):

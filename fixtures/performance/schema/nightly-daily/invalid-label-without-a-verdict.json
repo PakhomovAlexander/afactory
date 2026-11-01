@@ -1,0 +1,202 @@
+{
+  "backlog": {
+    "closed_24h": 1,
+    "draft_pull_requests": 1,
+    "head_checks": {
+      "failure": 0,
+      "other": 0,
+      "pending": 1,
+      "skipped": 1,
+      "success": 1,
+      "total": 3
+    },
+    "labels": [
+      {
+        "count": 2,
+        "name": "bug"
+      },
+      {
+        "count": 1,
+        "name": "nightly"
+      }
+    ],
+    "open_issues": 2,
+    "open_pull_requests": 2,
+    "opened_24h": 1,
+    "pull_requests": [
+      {
+        "draft": false,
+        "mergeable_state": "clean",
+        "number": 44,
+        "title": "Compose the report"
+      },
+      {
+        "draft": true,
+        "mergeable_state": "draft",
+        "number": 45,
+        "title": "Draft: publish it"
+      }
+    ],
+    "pull_requests_partial": null,
+    "stale": [
+      {
+        "number": 7,
+        "title": "A <script> in a title",
+        "updated": "2026-09-02"
+      }
+    ],
+    "stale_issues": 1
+  },
+  "baseline": {
+    "commits_since": 4,
+    "published": "2026-10-20",
+    "pull_requests_since": 2,
+    "reasons": [],
+    "sha": "dddddddddddddddddddddddddddddddddddddddd",
+    "tag": "v0.13.0"
+  },
+  "build": {
+    "head_sha": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+    "head_subject": "Compose the daily report (#44)",
+    "previous_head_sha": "cccccccccccccccccccccccccccccccccccccccc",
+    "previous_tag": "nightly-2026.10.28",
+    "skip_reason": null,
+    "status": "built",
+    "targets": [
+      {
+        "af_reason": null,
+        "af_sha256": "sha256:b8c99f83fc5852c4ffb86da367ceb4daa2f52f9960f3fb4dcb7e92002b87e9bc",
+        "asset": "dist/af-nightly-2026.10.29-x86_64-unknown-linux-musl.tar.gz",
+        "bytes": 128,
+        "sha256": "sha256:837053df5c15f170a81fa7de8f076d43f09829bbcc0918f4de863817debf56c1",
+        "target": "x86_64-unknown-linux-musl"
+      },
+      {
+        "af_reason": null,
+        "af_sha256": "sha256:0058cd607260e681753c8ef5c1f113d92df3c06791090c844fa1419fe3d04ba1",
+        "asset": "dist/af-nightly-2026.10.29-aarch64-unknown-linux-musl.tar.gz",
+        "bytes": 127,
+        "sha256": "sha256:91f8b9a84ce72ac60c72c6ab0ef68afbc7ef8ab3d43876c89acbe63cae2485b9",
+        "target": "aarch64-unknown-linux-musl"
+      }
+    ],
+    "version": "0.14.0-nightly.20261029"
+  },
+  "completeness": {
+    "backlog": {
+      "available": true,
+      "reason": "composed from validated inputs"
+    },
+    "baseline": {
+      "available": true,
+      "reason": "composed from validated inputs"
+    },
+    "build": {
+      "available": true,
+      "reason": "composed from validated inputs"
+    },
+    "machine": {
+      "available": true,
+      "reason": "composed from validated inputs"
+    },
+    "performance": {
+      "available": false,
+      "reason": "the original nightly:nightly-2026.10.29:core is queued: the claw executor has not run it yet"
+    },
+    "since_last_night": {
+      "available": false,
+      "reason": "verdict changes: this night has no verified core verdict"
+    },
+    "telemetry": {
+      "available": false,
+      "reason": "the executor journal holds no original nightly:nightly-2026.10.29:telemetry"
+    },
+    "trend": {
+      "available": true,
+      "reason": "composed from validated inputs"
+    }
+  },
+  "composed_unix_ms": 1793286000000,
+  "date": "2026-10-29",
+  "headline": {
+    "label": "PASS",
+    "text": "nightly-2026.10.29: UNAVAILABLE (the original nightly:nightly-2026.10.29:core is queued: the claw executor has not run it yet)"
+  },
+  "host": {
+    "machine_id": "claw_vm_1"
+  },
+  "machine": {
+    "failed_units": {
+      "reason": null,
+      "value": 0
+    },
+    "free_bytes": {
+      "reason": null,
+      "value": 214748364800
+    },
+    "lock_held": {
+      "reason": null,
+      "value": false
+    }
+  },
+  "performance": null,
+  "repository": "owner/af",
+  "schema": "af.nightly-daily/1",
+  "since_last_night": {
+    "merged_pull_requests": [
+      {
+        "number": 41,
+        "title": "Measure the nightly"
+      }
+    ],
+    "previous_head_sha": "cccccccccccccccccccccccccccccccccccccccc",
+    "previous_tag": "nightly-2026.10.28",
+    "reasons": [
+      "verdict changes: this night has no verified core verdict"
+    ],
+    "verdict_changes": null
+  },
+  "tag": "nightly-2026.10.29",
+  "telemetry": null,
+  "trend": {
+    "instances": [
+      {
+        "instance_id": "synthetic_fast",
+        "points": [
+          {
+            "baseline_tag": "v0.12.0",
+            "candidate_median": {
+              "exact": "19",
+              "shown": "19.0"
+            },
+            "release": null,
+            "tag": "nightly-2026.10.28"
+          }
+        ],
+        "unit": "ms"
+      },
+      {
+        "instance_id": "synthetic_process__size_1",
+        "points": [
+          {
+            "baseline_tag": "v0.12.0",
+            "candidate_median": {
+              "exact": "20",
+              "shown": "20.0"
+            },
+            "release": null,
+            "tag": "nightly-2026.10.28"
+          }
+        ],
+        "unit": "ms"
+      }
+    ],
+    "nights": 14,
+    "refused": [
+      {
+        "reason": "the original nightly:nightly-2026.10.29:core is queued: the claw executor has not run it yet",
+        "tag": "nightly-2026.10.29"
+      }
+    ]
+  }
+}

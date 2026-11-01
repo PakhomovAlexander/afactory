@@ -141,6 +141,16 @@ def paragraph(text, css=None):
     return "<p%s>%s</p>" % (' class="%s"' % css if css else "", escape(text))
 
 
+def heading(text):
+    """A subsection's heading inside a `section`, of escaped text."""
+    return "<h3>%s</h3>" % escape(text)
+
+
+def verdict(result, text):
+    """A page's verdict line: `outcome` of `result` showing `text`, in the verdict style."""
+    return '<p class="verdict">%s</p>' % outcome(result, text).text
+
+
 WIDTH = 640
 HEIGHT = 150
 MARGIN = 28
