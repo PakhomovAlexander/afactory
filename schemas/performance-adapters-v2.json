@@ -1,13 +1,13 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "$id": "urn:af:schema:performance-adapters:1",
-  "title": "af.perf-adapters/1",
+  "$id": "urn:af:schema:performance-adapters:2",
+  "title": "af.perf-adapters/2",
   "description": "fixtures/performance/adapters.toml as parsed TOML (ADR-0166): the reviewed native probe adapters, each a fixed-priority overlay of authority example files into a measured source, at most four per case contract.",
   "type": "object",
   "additionalProperties": false,
   "properties": {
     "schema": {
-      "const": "af.perf-adapters/1"
+      "const": "af.perf-adapters/2"
     },
     "description": {
       "type": "string",
@@ -36,6 +36,11 @@
             },
             "equivalence_group": {
               "$ref": "#/$defs/id"
+            },
+            "min_version": {
+              "type": "string",
+              "maxLength": 64,
+              "pattern": "^[0-9]+\\.[0-9]+\\.[0-9]+(?:-[0-9A-Za-z.-]+)?$"
             },
             "package": {
               "type": "string",
@@ -73,6 +78,7 @@
             "description",
             "priority",
             "equivalence_group",
+            "min_version",
             "package",
             "example",
             "contracts",

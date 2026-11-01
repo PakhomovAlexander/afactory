@@ -1,13 +1,13 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "$id": "urn:af:schema:performance-telemetry-result:2",
-  "title": "af.perf-telemetry-result/2",
+  "$id": "urn:af:schema:performance-telemetry-result:3",
+  "title": "af.perf-telemetry-result/3",
   "description": "One telemetry experiment run (ADR-0214, ADR-0215): the baseline and candidate sources, binaries and builds, the measurement authority both ran under, the effective configuration and its digest, the execution mode, container, bounds, cleanup and any protected state that changed, the generated corpus's facts, the host observed at both ends, every planned run with its alternating position, seed, status, raw document, capped log and the script's own judgment, each side's within-binary figures by level, and each same-host cross-revision comparison by level, metric and shape, or why it is incompatible or missing. Advisory; never a verdict.",
   "type": "object",
   "additionalProperties": false,
   "properties": {
     "schema": {
-      "const": "af.perf-telemetry-result/2"
+      "const": "af.perf-telemetry-result/3"
     },
     "result_id": {
       "$ref": "#/$defs/id"
@@ -119,7 +119,7 @@
                   "additionalProperties": false,
                   "properties": {
                     "schema": {
-                      "const": "af.perf-telemetry-build/1"
+                      "const": "af.perf-telemetry-build/2"
                     },
                     "side": {
                       "type": "string",
@@ -136,8 +136,8 @@
                     },
                     "image": {
                       "type": "string",
-                      "maxLength": 512,
-                      "pattern": "^[^\\s@]+@sha256:[0-9a-f]{64}$"
+                      "maxLength": 330,
+                      "pattern": "^(?:(?:[a-z0-9]+(?:(?:[._]|__|-+)[a-z0-9]+)*(?::[0-9]{1,5})?/)*[a-z0-9]+(?:(?:[._]|__|-+)[a-z0-9]+)*@)?sha256:[0-9a-f]{64}$"
                     },
                     "rustc": {
                       "type": "string",
@@ -208,7 +208,7 @@
                   "additionalProperties": false,
                   "properties": {
                     "schema": {
-                      "const": "af.perf-telemetry-build/1"
+                      "const": "af.perf-telemetry-build/2"
                     },
                     "side": {
                       "type": "string",
@@ -225,8 +225,8 @@
                     },
                     "image": {
                       "type": "string",
-                      "maxLength": 512,
-                      "pattern": "^[^\\s@]+@sha256:[0-9a-f]{64}$"
+                      "maxLength": 330,
+                      "pattern": "^(?:(?:[a-z0-9]+(?:(?:[._]|__|-+)[a-z0-9]+)*(?::[0-9]{1,5})?/)*[a-z0-9]+(?:(?:[._]|__|-+)[a-z0-9]+)*@)?sha256:[0-9a-f]{64}$"
                     },
                     "rustc": {
                       "type": "string",

@@ -67,6 +67,7 @@ dependency preparation (`dependency_fetch`) is reported separately: it is never 
 import hashlib
 import json
 import os
+import re
 import secrets
 import shutil
 import signal
@@ -87,6 +88,9 @@ ARTIFACTS = "artifacts"
 LOGS = "logs"
 BUILDS_FILE = "builds.json"
 PLAN_FILE = "run.json"
+# The deepest nesting any well-formed identity field has: a list of strings.
+IDENTITY_DEPTH_MAX = 1
+JSON_STRING = re.compile(r'"(?:[^"\\]|\\.)*"')
 EXECUTABLE = stat.S_IRUSR | stat.S_IXUSR | stat.S_IRGRP | stat.S_IXGRP
 
 
@@ -293,18 +297,67 @@ def refuse_implicit_volumes(docker, reference, budget=None):
         budget.seconds("completing image volume inspection")
     require(len(result.stdout) <= limits.RECORD_BYTES_MAX,
             "image volume declaration exceeds its byte bound")
-    require(json.loads(result.stdout) in (None, {}),
-            "bounded build image declares implicit writable volumes")
+    try:
+        volumes = json.loads(result.stdout)
+    except ValueError:
+        raise ContractError("image volume declaration is not JSON")
+    require(volumes in (None, {}), "bounded build image declares implicit writable volumes")
+
+
+def image_identity(stdout, reference, role):
+    """The five fields of a build image's `docker image inspect` identity, each of its shape:
+    the ID, OS and architecture as strings and the repository digests and environment as lists
+    of strings or null. Anything else is a typed `build_image_malformed` refusal, raised before
+    the caller creates any resource."""
+    def malformed(why):
+        return Unavailable("build_image_malformed", "docker image inspect gave a malformed "
+                           "identity for the %s %s: %s" % (role, reference, why))
+    if len(stdout) > limits.RECORD_BYTES_MAX:
+        raise malformed("it exceeds its byte bound")
+    try:
+        fields = stdout.decode("utf-8").strip().split("\t")
+    except UnicodeDecodeError:
+        raise malformed("it is not UTF-8")
+    if len(fields) != 5:
+        raise malformed("%d fields, not 5" % len(fields))
+    values = []
+    for name, field in zip(("ID", "OS", "architecture", "repository digests", "environment"),
+                           fields):
+        # Bound the nesting before decoding, so no field below the byte bound can make the
+        # decoder recurse past the interpreter's limit (a RecursionError, not a refusal).
+        if _nesting(field) > IDENTITY_DEPTH_MAX:
+            raise malformed("its %s nests deeper than %d" % (name, IDENTITY_DEPTH_MAX))
+        try:
+            values.append(json.loads(field))
+        except (ValueError, RecursionError):
+            raise malformed("its %s is not JSON" % name)
+    for name, value in zip(("ID", "OS", "architecture"), values[:3]):
+        if not isinstance(value, str) or not value:
+            raise malformed("its %s is not a non-empty string" % name)
+    for name, value in zip(("repository digests", "environment"), values[3:]):
+        if value is not None and not (isinstance(value, list)
+                                      and all(isinstance(item, str) for item in value)):
+            raise malformed("its %s is not a list of strings" % name)
+    return values
+
+
+def _nesting(field):
+    """The deepest array or object nesting of a JSON text, its strings' contents not counted."""
+    depth = deepest = 0
+    for bracket in re.sub(r"[^\[\]{}]", "", JSON_STRING.sub("", field)):
+        depth += 1 if bracket in "[{" else -1
+        deepest = max(deepest, depth)
+    return deepest
 
 
 class BuildImage:
     """A build image pinned by digest and present locally, run as this user."""
 
-    def __init__(self, docker, reference, uid=None, gid=None, budget=None):
+    def __init__(self, docker, reference, uid=None, gid=None, budget=None, role="build image"):
         self.budget = budget
         if not pinned_image(reference):
-            raise Unavailable("build_image_unpinned", "the build image %s is not pinned by "
-                              "digest" % reference)
+            raise Unavailable("build_image_unpinned", "the %s %s is not pinned by "
+                              "digest" % (role, reference))
         try:
             images.canonical(reference)
         except ContractError as error:
@@ -322,15 +375,14 @@ class BuildImage:
         except OSError as error:
             raise Unavailable("no_container_runtime", "%s: %s" % (docker, error))
         if result.returncode != 0:
-            raise Unavailable("build_image_unavailable", "the build image %s is not present "
+            raise Unavailable("build_image_unavailable", "the %s %s is not present "
                               "on this host (builds never pull): %s" % (
-                                  reference, _first_line(result.stderr)))
-        fields = result.stdout.decode("utf-8", "replace").strip().split("\t")
-        require(len(fields) == 5, "docker image inspect gave no identity for %s" % reference)
-        self.id, image_os, arch, repo_digests, image_env = [json.loads(f) for f in fields]
+                                  role, reference, _first_line(result.stderr)))
+        self.id, image_os, arch, repo_digests, image_env = image_identity(
+            result.stdout, reference, role)
         if reference.startswith("sha256:"):
-            require(self.id == reference, "the build image ID is %s, not %s" % (self.id,
-                                                                                reference))
+            require(self.id == reference, "the %s ID is %s, not %s" % (role, self.id,
+                                                                       reference))
         else:
             # A manifest digest names the image only under exactly its repository name; it is
             # never compared with the local image ID (ADR-0170).
@@ -340,8 +392,8 @@ class BuildImage:
                                       self.id, reference, ", ".join(repo_digests or [])
                                       or "none"))
         if image_os != "linux":
-            raise Unavailable("build_image_unsupported", "the build image %s is %s, not Linux"
-                              % (reference, image_os))
+            raise Unavailable("build_image_unsupported", "the %s %s is %s, not Linux"
+                              % (role, reference, image_os))
         self.platform = "linux/%s" % arch
         self.env = dict(item.split("=", 1) for item in image_env or [] if "=" in item)
 

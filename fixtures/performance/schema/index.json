@@ -179,6 +179,20 @@
       "shape": false
     },
     {
+      "path": "adapters/invalid-missing-min-version.toml",
+      "contract": "adapters",
+      "valid": false,
+      "error": "missing field min_version",
+      "shape": true
+    },
+    {
+      "path": "adapters/invalid-previous-version.toml",
+      "contract": "adapters",
+      "valid": false,
+      "error": "expected af.perf-adapters/2",
+      "shape": true
+    },
+    {
       "path": "adapters/invalid-product-path.toml",
       "contract": "adapters",
       "valid": false,
@@ -1262,7 +1276,7 @@
       "path": "profiles/invalid-previous-version.json",
       "contract": "profiles",
       "valid": false,
-      "error": "expected af.perf-profiles/6",
+      "error": "expected af.perf-profiles/7",
       "shape": true
     },
     {
@@ -1383,6 +1397,72 @@
       "contract": "profiles",
       "valid": false,
       "error": "content-addressed",
+      "shape": false
+    },
+    {
+      "path": "profiles/invalid-cli-capture-lists-its-recordings.json",
+      "contract": "profiles",
+      "valid": false,
+      "error": "listed by its repetition index",
+      "shape": false
+    },
+    {
+      "path": "profiles/invalid-cli-capture-without-its-index.json",
+      "contract": "profiles",
+      "valid": false,
+      "error": "without omission indexes its repetitions",
+      "shape": false
+    },
+    {
+      "path": "repetitions/valid-host-observed-cli-capture.json",
+      "contract": "repetitions",
+      "valid": true
+    },
+    {
+      "path": "repetitions/invalid-repetitions-out-of-order.json",
+      "contract": "repetitions",
+      "valid": false,
+      "error": "every repetition once, in order",
+      "shape": false
+    },
+    {
+      "path": "repetitions/invalid-recording-outside-its-capture.json",
+      "contract": "repetitions",
+      "valid": false,
+      "error": "the repetition's own recording in its capture's directory",
+      "shape": false
+    },
+    {
+      "path": "repetitions/invalid-observed-repetition-without-its-observer.json",
+      "contract": "repetitions",
+      "valid": false,
+      "error": "its observer record exactly when host-observed",
+      "shape": false
+    },
+    {
+      "path": "repetitions/invalid-incomplete-repetition-before-the-last.json",
+      "contract": "repetitions",
+      "valid": false,
+      "error": "only the last repetition, the one a failure ended, is incomplete",
+      "shape": false
+    },
+    {
+      "path": "repetitions/invalid-empty-index.json",
+      "contract": "repetitions",
+      "valid": false,
+      "error": "must hold 1..10000 items",
+      "shape": true
+    },
+    {
+      "path": "repetitions/valid-samply-driver-wall.json",
+      "contract": "repetitions",
+      "valid": true
+    },
+    {
+      "path": "repetitions/invalid-perf-bounded-by-the-driver-wall.json",
+      "contract": "repetitions",
+      "valid": false,
+      "error": "exactly samply's repetitions are bounded by the driver's wall",
       "shape": false
     },
     {
@@ -2030,6 +2110,20 @@
       "shape": true
     },
     {
+      "path": "telemetry-build/invalid-tagged-digest.json",
+      "contract": "telemetry-build",
+      "valid": false,
+      "error": "does not match",
+      "shape": true
+    },
+    {
+      "path": "telemetry-build/invalid-truncated-image-id.json",
+      "contract": "telemetry-build",
+      "valid": false,
+      "error": "does not match",
+      "shape": true
+    },
+    {
       "path": "telemetry-build/invalid-unpinned-image.json",
       "contract": "telemetry-build",
       "valid": false,
@@ -2037,7 +2131,26 @@
       "shape": true
     },
     {
+      "path": "telemetry-build/invalid-uppercase-name.json",
+      "contract": "telemetry-build",
+      "valid": false,
+      "error": "does not match",
+      "shape": true
+    },
+    {
+      "path": "telemetry-build/invalid-version.json",
+      "contract": "telemetry-build",
+      "valid": false,
+      "error": "expected af.perf-telemetry-build/2",
+      "shape": true
+    },
+    {
       "path": "telemetry-build/valid-candidate.json",
+      "contract": "telemetry-build",
+      "valid": true
+    },
+    {
+      "path": "telemetry-build/valid-local-image-id.json",
       "contract": "telemetry-build",
       "valid": true
     },
@@ -2510,10 +2623,29 @@
       "valid": true
     },
     {
+      "path": "executor/valid-comparison-windows.json",
+      "contract": "executor",
+      "valid": true
+    },
+    {
+      "path": "executor/invalid-windows-sampling-past-run.json",
+      "contract": "executor",
+      "valid": false,
+      "error": "sampling window fits inside its run total",
+      "shape": false
+    },
+    {
+      "path": "executor/invalid-windows-past-hard-maximum.json",
+      "contract": "executor",
+      "valid": false,
+      "error": "run_total_minutes",
+      "shape": true
+    },
+    {
       "path": "executor/invalid-version.json",
       "contract": "executor",
       "valid": false,
-      "error": "expected af.perf-executor/2",
+      "error": "expected af.perf-executor/4",
       "shape": true
     },
     {
@@ -2525,8 +2657,34 @@
       "path": "executor-request/invalid-version.json",
       "contract": "executor-request",
       "valid": false,
-      "error": "expected af.perf-executor-request/2",
+      "error": "unknown field partition",
       "shape": true
+    },
+    {
+      "path": "executor-request/invalid-v2-partition.json",
+      "contract": "executor-request",
+      "valid": false,
+      "error": "unknown field parent, partition",
+      "shape": true
+    },
+    {
+      "path": "executor-request/invalid-v3-missing-partition.json",
+      "contract": "executor-request",
+      "valid": false,
+      "error": "missing field parent",
+      "shape": true
+    },
+    {
+      "path": "executor-request/valid-nightly-v3.json",
+      "contract": "executor-request",
+      "valid": true
+    },
+    {
+      "path": "executor-request/invalid-nightly-partition.json",
+      "contract": "executor-request",
+      "valid": false,
+      "error": "neither a comparison partition nor a parent-selected profile",
+      "shape": false
     },
     {
       "path": "executor-state/valid-synthetic.json",
@@ -2714,7 +2872,7 @@
       "path": "telemetry-result/invalid-version.json",
       "contract": "telemetry-result",
       "valid": false,
-      "error": "expected af.perf-telemetry-result/2",
+      "error": "expected af.perf-telemetry-result/3",
       "shape": true
     },
     {
@@ -2792,6 +2950,124 @@
       "valid": false,
       "error": "unknown field extra",
       "shape": true
+    },
+    {
+      "path": "executor-preflight/valid-ready.json",
+      "contract": "executor-preflight",
+      "valid": true
+    },
+    {
+      "path": "executor-preflight/valid-refused.json",
+      "contract": "executor-preflight",
+      "valid": true
+    },
+    {
+      "path": "executor-preflight/invalid-infeasible-ready.json",
+      "contract": "executor-preflight",
+      "valid": false,
+      "error": "a ready preflight carries its request and no refusal",
+      "shape": false
+    },
+    {
+      "path": "comparison-overview/valid-incomplete.json",
+      "contract": "comparison-overview",
+      "valid": true
+    },
+    {
+      "path": "comparison-overview/invalid-claimed-complete.json",
+      "contract": "comparison-overview",
+      "valid": false,
+      "error": "a comparison is complete only when",
+      "shape": false
+    },
+    {
+      "path": "host-observer/valid-attached.json",
+      "contract": "host-observer",
+      "valid": true
+    },
+    {
+      "path": "host-observer/invalid-attached-without-target.json",
+      "contract": "host-observer",
+      "valid": false,
+      "error": "an attachment names its frozen target",
+      "shape": false
+    },
+    {
+      "path": "comparison/valid-release.json",
+      "contract": "comparison",
+      "valid": true
+    },
+    {
+      "path": "comparison/invalid-uncovered-shard.json",
+      "contract": "comparison",
+      "valid": false,
+      "error": "cover every shard of its plan exactly once",
+      "shape": false
+    },
+    {
+      "path": "comparison-aggregate/valid-incomplete.json",
+      "contract": "comparison-aggregate",
+      "valid": true
+    },
+    {
+      "path": "comparison-aggregate/invalid-missing-partition-passes.json",
+      "contract": "comparison-aggregate",
+      "valid": false,
+      "error": "a missing partition never passes",
+      "shape": false
+    },
+    {
+      "path": "comparison-report/valid-running.json",
+      "contract": "comparison-report",
+      "valid": true
+    },
+    {
+      "path": "comparison-report/invalid-claimed-complete.json",
+      "contract": "comparison-report",
+      "valid": false,
+      "error": "a comparison is complete only when",
+      "shape": false
+    },
+    {
+      "path": "comparison-export/valid-bundle.json",
+      "contract": "comparison-export",
+      "valid": true
+    },
+    {
+      "path": "comparison-export/invalid-version.json",
+      "contract": "comparison-export",
+      "valid": false,
+      "error": "expected af.perf-comparison-export/1",
+      "shape": true
+    },
+    {
+      "path": "comparison-preflight/valid-refused.json",
+      "contract": "comparison-preflight",
+      "valid": true
+    },
+    {
+      "path": "comparison-preflight/valid-ready.json",
+      "contract": "comparison-preflight",
+      "valid": true
+    },
+    {
+      "path": "comparison-preflight/invalid-refused-with-declaration.json",
+      "contract": "comparison-preflight",
+      "valid": false,
+      "error": "a refusal carries its reason",
+      "shape": false
+    },
+    {
+      "path": "partition-execution/valid-later-window.json",
+      "contract": "partition-execution",
+      "valid": true
+    },
+    {
+      "path": "partition-execution/invalid-widened-window.json",
+      "contract": "partition-execution",
+      "valid": false,
+      "error": "never widened",
+      "shape": false
     }
   ]
 }

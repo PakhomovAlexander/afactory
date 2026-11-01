@@ -507,8 +507,28 @@ fn source_capture(request: &Request, work: &Path, started: Instant) -> Outcome {
 // State projection ----------------------------------------------------------------------------
 
 /// The admitted fixture Task with exactly `events` relevant events in its log: open, propose,
-/// admit and production lease renewals, each through the protected public writer.
+/// admit and production lease renewals, each through the protected public writer. A seed writer
+/// the driver gave a preparation directory ([`fixture_prep`]) writes the log there and publishes
+/// it to `work`; every sample writes it in `work` itself.
 pub fn event_log(work: &Path, events: u64) -> Result<(), Failure> {
+    let Some(prep) = fixture_prep()? else {
+        return write_event_log(work, events);
+    };
+    let staged = staging(&prep, work)?;
+    write_event_log(&staged, events)?;
+    publish(&staged, work)?;
+    let run = review_store::store::task::task_run_id(authority::TASK_ID).map_err(fixture_error)?;
+    let store = EventStore::open(work.join("events.sqlite")).map_err(fixture_error)?;
+    let recorded = store.len(&run).map_err(fixture_error)?;
+    if recorded != events {
+        return Err(fixture_error(format!(
+            "the published fixture Task log holds {recorded} events, not exactly {events}"
+        )));
+    }
+    Ok(())
+}
+
+fn write_event_log(work: &Path, events: u64) -> Result<(), Failure> {
     let mut fixture =
         authority::build(work, None, fixtures::TASK_LEASE_MS).map_err(fixture_error)?;
     let run = fixture.run_id().map_err(fixture_error)?;
@@ -524,6 +544,124 @@ pub fn event_log(work: &Path, events: u64) -> Result<(), Failure> {
         )));
     }
     Ok(())
+}
+
+// Seed preparation (ADR-0170) ----------------------------------------------------------------
+
+/// Names the bounded, memory-backed directory a seed writer prepares its 10,000-event fixture
+/// in. Only the trusted driver sets it, and only for a seed writer: on the seed's own
+/// filesystem every one of the 10,000 protected writes is a durable commit, and their
+/// per-commit flushes dominate the writer's bound. The writes, their order and their
+/// validation through the protected public writer are the same; the finished Store is then
+/// published, every file flushed, to the seed's work directory, where a fresh Store and the
+/// seed's independent oracle read it. No sample ever runs with it.
+pub const FIXTURE_PREP_ENV: &str = "AF_PERF_FIXTURE_PREP";
+
+/// The preparation directory the driver named, when it names one: an existing directory.
+fn fixture_prep() -> Result<Option<std::path::PathBuf>, Failure> {
+    let Some(prep) = std::env::var_os(FIXTURE_PREP_ENV) else {
+        return Ok(None);
+    };
+    let prep = std::path::PathBuf::from(prep);
+    if !prep.is_absolute()
+        || !std::fs::symlink_metadata(&prep).is_ok_and(|metadata| metadata.is_dir())
+    {
+        return Err(fixture_error(format!(
+            "{FIXTURE_PREP_ENV} names {}, not an existing absolute directory",
+            prep.display()
+        )));
+    }
+    Ok(Some(prep))
+}
+
+/// A new, empty directory below `prep` for the fixture published to `target`.
+fn staging(prep: &Path, target: &Path) -> Result<std::path::PathBuf, Failure> {
+    let name = target
+        .file_name()
+        .ok_or_else(|| fixture_error("the fixture's target has no name"))?;
+    let staged = prep.join(name);
+    std::fs::create_dir(&staged).map_err(|error| {
+        fixture_error(format!(
+            "the preparation directory {}: {error}",
+            staged.display()
+        ))
+    })?;
+    Ok(staged)
+}
+
+/// Copy the finished fixture `staged`, whose every writer handle is closed, into the empty
+/// directory `target` ([`copy_tree`]), then remove the staged copy.
+fn publish(staged: &Path, target: &Path) -> Result<(), Failure> {
+    copy_tree(staged, target)?;
+    std::fs::remove_dir_all(staged).map_err(|error| {
+        fixture_error(format!(
+            "removing the prepared fixture {}: {error}",
+            staged.display()
+        ))
+    })?;
+    eprintln!(
+        "perf-probe: fixture prepared in {FIXTURE_PREP_ENV} {} and published to {}",
+        staged.display(),
+        target.display()
+    );
+    Ok(())
+}
+
+/// Copy the tree `from` into the empty directory `to`: the same directories, files and modes,
+/// each file and directory flushed. Symbolic links and special files are refused.
+fn copy_tree(from: &Path, to: &Path) -> Result<(), Failure> {
+    let failed = |what: &Path, error: std::io::Error| {
+        fixture_error(format!("copying the fixture {}: {error}", what.display()))
+    };
+    let (staged, target) = (from, to);
+    if std::fs::read_dir(target)
+        .map_err(|error| failed(target, error))?
+        .next()
+        .is_some()
+    {
+        return Err(fixture_error(format!(
+            "the fixture's target {} is not empty",
+            target.display()
+        )));
+    }
+    fn copy(
+        from: &Path,
+        to: &Path,
+        failed: &dyn Fn(&Path, std::io::Error) -> Failure,
+    ) -> Result<(), Failure> {
+        let mut entries = std::fs::read_dir(from)
+            .map_err(|error| failed(from, error))?
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(|error| failed(from, error))?;
+        entries.sort_by_key(std::fs::DirEntry::file_name);
+        for entry in entries {
+            let source = entry.path();
+            let destination = to.join(entry.file_name());
+            let metadata =
+                std::fs::symlink_metadata(&source).map_err(|error| failed(&source, error))?;
+            if metadata.is_dir() {
+                std::fs::create_dir(&destination).map_err(|error| failed(&destination, error))?;
+                copy(&source, &destination, failed)?;
+                std::fs::set_permissions(&destination, metadata.permissions())
+                    .map_err(|error| failed(&destination, error))?;
+            } else if metadata.is_file() {
+                std::fs::copy(&source, &destination)
+                    .map_err(|error| failed(&destination, error))?;
+                std::fs::File::open(&destination)
+                    .and_then(|file| file.sync_all())
+                    .map_err(|error| failed(&destination, error))?;
+            } else {
+                return Err(fixture_error(format!(
+                    "the prepared fixture holds {}, neither a file nor a directory",
+                    source.display()
+                )));
+            }
+        }
+        std::fs::File::open(to)
+            .and_then(|directory| directory.sync_all())
+            .map_err(|error| failed(to, error))
+    }
+    copy(staged, target, &failed)
 }
 
 pub fn state_projection_value(
@@ -688,10 +826,21 @@ fn cli_campaign_fixture(request: &Request, started: Instant) -> Outcome {
                     state.display()
                 )));
             }
+            // With a preparation directory the top-up writes a copy of the reviewed state
+            // there, and the finished state replaces the reviewed one ([`fixture_prep`]).
+            let prep = fixture_prep()?;
+            let writer = match &prep {
+                None => state.clone(),
+                Some(prep) => {
+                    let staged = staging(prep, &state)?;
+                    copy_tree(&state, &staged)?;
+                    staged
+                }
+            };
             {
                 let mut store =
-                    EventStore::open(state.join("events.sqlite")).map_err(fixture_error)?;
-                let cas = Cas::open_existing(state.join("cas")).map_err(fixture_error)?;
+                    EventStore::open(writer.join("events.sqlite")).map_err(fixture_error)?;
+                let cas = Cas::open_existing(writer.join("cas")).map_err(fixture_error)?;
                 let mut length = store.len(&run).map_err(fixture_error)?;
                 if length == 0 || length > events {
                     return Err(fixture_error(format!(
@@ -725,6 +874,15 @@ fn cli_campaign_fixture(request: &Request, started: Instant) -> Outcome {
                     ingest.ungroup(&keys[1], &keys[0]).map_err(fixture_error)?;
                     length += 2;
                 }
+            }
+            if prep.is_some() {
+                std::fs::remove_dir_all(&state)
+                    .and_then(|()| std::fs::create_dir(&state))
+                    .and_then(|()| std::fs::set_permissions(&state, metadata.permissions()))
+                    .map_err(|error| {
+                        fixture_error(format!("replacing {}: {error}", state.display()))
+                    })?;
+                publish(&writer, &state)?;
             }
             // Every writer handle is closed: the region reads through a fresh Store.
             let store = EventStore::open(state.join("events.sqlite")).map_err(fixture_error)?;

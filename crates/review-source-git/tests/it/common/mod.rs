@@ -17,12 +17,29 @@ pub struct Fixture {
 
 impl Fixture {
     pub fn new() -> Fixture {
+        Self::init(&[])
+    }
+
+    /// A repository whose administrative directory, index included, is [`Self::admin_path`],
+    /// beside the worktree rather than inside it: the worktree holds only a `.git` file naming it.
+    pub fn with_separate_git_dir() -> Fixture {
         let dir = tempfile::tempdir().unwrap();
+        let admin = dir.path().join("admin.git");
+        Self::init_in(dir, &["--separate-git-dir", admin.to_str().unwrap()])
+    }
+
+    fn init(extra: &[&str]) -> Fixture {
+        Self::init_in(tempfile::tempdir().unwrap(), extra)
+    }
+
+    fn init_in(dir: tempfile::TempDir, extra: &[&str]) -> Fixture {
         std::fs::create_dir_all(dir.path().join("repo")).unwrap();
         std::fs::create_dir_all(dir.path().join("home")).unwrap();
         std::fs::create_dir_all(dir.path().join("cas")).unwrap();
         let fixture = Fixture { dir };
-        fixture.git(&["init", "-q", "-b", "main"]);
+        let mut init = vec!["init", "-q", "-b", "main"];
+        init.extend_from_slice(extra);
+        fixture.git(&init);
         fixture.git(&["config", "user.email", "fixture@example.invalid"]);
         fixture.git(&["config", "user.name", "Fixture"]);
         // Keep objects loose: a capture test that removes a blob's loose object to make it
@@ -33,6 +50,10 @@ impl Fixture {
 
     pub fn repo_path(&self) -> PathBuf {
         self.dir.path().join("repo")
+    }
+
+    pub fn admin_path(&self) -> PathBuf {
+        self.dir.path().join("admin.git")
     }
 
     pub fn home_path(&self) -> PathBuf {

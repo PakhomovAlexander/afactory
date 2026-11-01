@@ -3,7 +3,7 @@
 The green-commit walk runs over a tiny real Git history with a fake GitHub transport; the
 build runs against a fake host that stands in for Docker, the built binaries and minisign.
 No test starts a container, reaches the network or builds Rust; one asks `cargo metadata
---locked --offline` about a rewritten copy of this tree's manifests.
+--locked --offline` for this host's platform about a rewritten copy of this tree's manifests.
 """
 import contextlib
 import hashlib
@@ -521,31 +521,74 @@ class CargoRewrite(TempDir):
                 open(os.path.join(copy, path, "src", stub), "w").close()
         current = nightly.workspace_version(read(os.path.join(ROOT, "Cargo.toml")).decode())
         version = nightly.nightly_version(current, "2026-10-29")
+        cargo_home = self.path("cargo-home")
 
-        def metadata():
-            return subprocess.run(["cargo", "metadata", "--locked", "--offline",
-                                   "--format-version", "1"], cwd=copy, stdout=subprocess.PIPE,
-                                  stderr=subprocess.PIPE)
+        def cargo(*args, home=None):
+            env = dict(os.environ, CARGO_HOME=home) if home else None
+            return subprocess.run(["cargo"] + list(args), cwd=copy, env=env,
+                                  stdout=subprocess.PIPE, stderr=subprocess.PIPE)
 
-        # Only Cargo.toml moved: --locked refuses the stale lock, so the proof below is real.
+        host = re.search(rb"^host: (\S+)$", cargo("-vV").stdout, re.M).group(1).decode()
+
+        # A cache holds the crates of the platform it was filled for (CI's: Linux), never
+        # Windows-only ones such as anstyle-wincon, so the proof resolves for this host only.
+        def metadata(home=cargo_home):
+            return cargo("metadata", "--locked", "--offline", "--format-version", "1",
+                         "--filter-platform", host, home=home)
+
+        def why(result):
+            return result.stderr.decode("utf-8", "replace")
+
+        # The unchanged copy, through the Cargo home this test runs with: its host packages
+        # make a private Cargo home holding exactly those archives beside the shared index.
+        baseline = metadata(home=None)
+        self.assertEqual(baseline.returncode, 0, why(baseline))
+        hosted = {}
+        for package in json.loads(baseline.stdout)["packages"]:
+            if package["source"] is not None:
+                src = os.path.dirname(package["manifest_path"])
+                registry, real_home = os.path.basename(os.path.dirname(src)), \
+                    os.path.dirname(os.path.dirname(os.path.dirname(os.path.dirname(src))))
+                hosted[(package["name"], package["version"])] = (registry, real_home)
+        locked = {(p["name"], p["version"]) for p in nightly.tomlfile.loads(
+            read(os.path.join(copy, "Cargo.lock")), "Cargo.lock")["package"] if "source" in p}
+        self.assertTrue(set(hosted) < locked, "the lock names packages of other platforms")
+        for (name, release), (registry, real_home) in hosted.items():
+            index = os.path.join(cargo_home, "registry", "index", registry)
+            if not os.path.lexists(index):
+                os.makedirs(os.path.dirname(index), exist_ok=True)
+                os.symlink(os.path.join(real_home, "registry", "index", registry), index)
+            # The unpacked sources too, so Cargo unpacks nothing; it still opens each archive.
+            for linked in (os.path.join("cache", registry, "%s-%s.crate" % (name, release)),
+                           os.path.join("src", registry, "%s-%s" % (name, release))):
+                linked = os.path.join("registry", linked)
+                os.makedirs(os.path.dirname(os.path.join(cargo_home, linked)), exist_ok=True)
+                os.symlink(os.path.join(real_home, linked), os.path.join(cargo_home, linked))
+
+        # Only Cargo.toml moved: --locked refuses the stale lock itself, not a missing crate,
+        # so the proof below is real.
         manifest_path = os.path.join(copy, "Cargo.toml")
-        with open(manifest_path) as stream:
+        with open(manifest_path, "rb") as stream:
             original = stream.read()
-        with open(manifest_path, "w") as stream:
-            stream.write(nightly.rewrite_manifest(original, version)[1])
+        with open(manifest_path, "wb") as stream:
+            stream.write(nightly.rewrite_manifest(original.decode(), version)[1].encode())
         stale = metadata()
-        self.assertNotEqual(stale.returncode, 0)
-        self.assertIn(b"needs to be updated", stale.stderr)
-        with open(manifest_path, "w") as stream:
+        self.assertNotEqual(stale.returncode, 0, "a stale lock resolved")
+        self.assertRegex(why(stale), r"(?:the lock file \S.* needs to be updated but|"
+                         r"cannot update the lock file \S.* because) --locked was passed")
+        for unrelated in ("failed to download", "--offline was specified", "no matching package"):
+            self.assertNotIn(unrelated, why(stale))
+        with open(manifest_path, "wb") as stream:
             stream.write(original)
 
         self.assertEqual(nightly.rewrite_source(copy, version), current)
         result = metadata()
-        self.assertEqual(result.returncode, 0, result.stderr.decode("utf-8", "replace"))
+        self.assertEqual(result.returncode, 0, why(result))
         packages = json.loads(result.stdout)["packages"]
         names = nightly.workspace_members(copy)
-        self.assertEqual(sorted(p["version"] for p in packages if p["name"] in names
-                                and p["source"] is None), [version] * len(names))
+        self.assertEqual(sorted((p["name"], p["version"]) for p in packages
+                                if p["source"] is None),
+                         sorted((name, version) for name in names))
 
 
 class FakeHost:

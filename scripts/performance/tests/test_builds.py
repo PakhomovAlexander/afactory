@@ -561,6 +561,57 @@ class FakeBuild(TempDir):
         self.assertNotIn("CARGO_PROFILE_RELEASE_DEBUG", builder.environment())
         self.assertNotIn("CARGO_ENCODED_RUSTFLAGS", builder.environment())
 
+    def test_the_musl_shipping_cpu_profile_builds_bounded_line_tables_with_frame_pointers(self):
+        # The Claw musl CPU acceptance built a full-debug 802,606,040-byte baseline AF that
+        # left no room under the unchanged 1-GiB artifact cap for the later artifacts. Its
+        # diagnostic build now freezes the same line-tables-only level as the GNU recipe,
+        # through cargo-zigbuild, recorded in every step and the recipe digest; the shipping
+        # verdict build keeps neither.
+        loaded = suite_module.load(SUITE)
+        declared = diagnostics.load(os.path.join(ROOT, diagnostics.REGISTRY_PATH), loaded.doc)
+        recipe_id = "linux_musl_cpu_profile"
+        recipe = diagcontracts.diagnostic_recipe(loaded.doc, declared, recipe_id)
+        base = loaded.doc["recipes"]["linux_musl_shipping"]
+        self.assertEqual((recipe["builder"], recipe["linker"], recipe["target"]),
+                         ("cargo_zigbuild", "zig_cc", "x86_64-unknown-linux-musl"))
+        self.assertEqual(recipe["rustflags"], ["-Cdebuginfo=line-tables-only"])
+        self.assertEqual(base["rustflags"], [])
+        self.assertTrue(recipe["debug_symbols"] and recipe["frame_pointers"])
+        toolchain = builds.Toolchain(build_fixtures.fake_toolchain(
+            self.path("musl-toolchain"), "x86_64-unknown-linux-musl"), "1.88.0")
+        zig = build_fixtures.fake_zigbuild(self.path("zig"))
+        plan = plan_for(self.repo, self.base, self.head, self.authority, run_id="musl_cpu",
+                        environment="linux_x86_64_musl_hosted", trusted_host_build=True,
+                        diagnostic_recipe=(recipe_id, recipe,
+                                           diagcontracts.frozen_identity(declared, recipe_id)))
+        builder = builds.Builder(self.repo.path, plan, toolchain, registry(),
+                                 free_bytes=PLENTY, zigbuild_bin=zig)
+        doc = builder.build()
+        self.assertEqual(doc["recipe_digest"], contracts.recipe_digest(
+            recipe_id, recipe, plan["profile"]["build"]))
+        records = [doc["supervisor"]["step"]]
+        for side in ("baseline", "candidate"):
+            record = doc["sides"][side]
+            self.assertEqual(record["status"], "succeeded", record)
+            self.assertEqual(record["argv"][1], "zigbuild")
+            self.assertEqual(record["settings"], contracts.recipe_settings(recipe))
+            records.append(record)
+            records.extend(item["step"] for item in record["adapter_outcomes"]
+                           if item["step"] is not None)
+        for record in records:
+            env = record["environment"]
+            self.assertEqual(env["CARGO_ENCODED_RUSTFLAGS"].split("\x1f"),
+                             ["-Cdebuginfo=line-tables-only", "-Cforce-frame-pointers=yes"])
+            self.assertEqual(env["CARGO_PROFILE_RELEASE_DEBUG"], "true")
+        shipping = plan_for(self.repo, self.base, self.head, self.authority,
+                            run_id="musl_shipping", environment="linux_x86_64_musl_hosted",
+                            trusted_host_build=True)
+        builder = builds.Builder(self.repo.path, shipping, toolchain, registry(),
+                                 free_bytes=PLENTY, zigbuild_bin=zig)
+        self.assertEqual(builder.recipe["rustflags"], [])
+        self.assertNotIn("CARGO_PROFILE_RELEASE_DEBUG", builder.environment())
+        self.assertNotIn("CARGO_ENCODED_RUSTFLAGS", builder.environment())
+
     def test_the_reported_production_probe_size_is_refused_before_reading(self):
         # #353's actual failure: AF and the supervisor had consumed this room before the
         # 531-MB full-debug probe arrived. Keep that refusal under the unchanged cap.
@@ -588,6 +639,87 @@ NAMED = "registry.example/af-build@sha256:" + "e" * 64
 NAMED_ID = "sha256:" + "f" * 64
 # The same manifest digest under another repository name: not the frozen image.
 RENAMED = "registry.example/other@sha256:" + "e" * 64
+
+
+class ImageIdentity(unittest.TestCase):
+    """`builds.image_identity` reads the five `docker image inspect` identity fields, each of
+    its shape, or refuses them as `build_image_malformed`: never a JSON or type error."""
+
+    GOOD = ['"%s"' % IMAGE, '"linux"', '"arm64"', '["%s"]' % NAMED, '["A=1", "B"]']
+
+    def identity(self, fields):
+        return builds.image_identity(("\t".join(fields) + "\n").encode(), IMAGE, "build image")
+
+    def test_well_formed_identity_fields_are_returned_with_their_shapes(self):
+        self.assertEqual(self.identity(self.GOOD),
+                         [IMAGE, "linux", "arm64", [NAMED], ["A=1", "B"]])
+        self.assertEqual(self.identity(self.GOOD[:3] + ["null", "null"])[3:], [None, None])
+
+    def test_malformed_or_misshapen_identity_fields_are_a_typed_refusal(self):
+        good = self.GOOD
+        bad = [(good[:field] + ['"unterminated'] + good[field + 1:], "is not JSON")
+               for field in range(5)]
+        bad += [(["null"] + good[1:], "ID is not a non-empty string"),
+                (good[:1] + ['""'] + good[2:], "OS is not a non-empty string"),
+                (good[:2] + ["7"] + good[3:], "architecture is not a non-empty string"),
+                (good[:3] + ['"%s"' % NAMED, good[4]], "repository digests is not a list"),
+                (good[:3] + ['[1]', good[4]], "repository digests is not a list"),
+                (good[:4] + ['{"A": "1"}'], "environment is not a list"),
+                (good[:4] + ['["A=1", null]'], "environment is not a list"),
+                (good[:4], "4 fields, not 5"), (good + ["null"], "6 fields, not 5"),
+                ([], "1 fields, not 5")]
+        for fields, why in bad:
+            with self.subTest(fields=fields):
+                with self.assertRaises(builds.Unavailable) as caught:
+                    self.identity(fields)
+                self.assertEqual(caught.exception.reason, "build_image_malformed")
+                self.assertIn("malformed identity for the build image %s" % IMAGE,
+                              str(caught.exception))
+                self.assertIn(why, str(caught.exception))
+        with self.assertRaises(builds.Unavailable) as caught:
+            builds.image_identity(b"x" * (builds.limits.RECORD_BYTES_MAX + 1), IMAGE,
+                                  "build image")
+        self.assertIn("exceeds its byte bound", str(caught.exception))
+
+    def test_deep_nesting_below_the_byte_bound_is_a_typed_refusal(self):
+        # 1200 nested arrays fit the byte bound but can recurse the decoder past the
+        # interpreter's limit: the depth is refused before any field is decoded.
+        nested = "[" * 1200 + "]" * 1200
+        loads = json.loads
+
+        def decoded(text):
+            assert text != nested, "decoded the nested field"
+            return loads(text)
+        for field in range(5):
+            fields = self.GOOD[:field] + [nested] + self.GOOD[field + 1:]
+            stdout = ("\t".join(fields) + "\n").encode()
+            self.assertLessEqual(len(stdout), builds.limits.RECORD_BYTES_MAX)
+            with self.subTest(field=field):
+                with mock.patch.object(builds.json, "loads", side_effect=decoded):
+                    with self.assertRaises(builds.Unavailable) as caught:
+                        builds.image_identity(stdout, IMAGE, "build image")
+                self.assertEqual(caught.exception.reason, "build_image_malformed")
+                self.assertIn("nests deeper than 1", str(caught.exception))
+        # Brackets inside a string are its contents, not nesting.
+        self.assertEqual(self.identity(self.GOOD[:4] + [r'["A=[[{\"]]", "B=\\"]'])[4],
+                         ['A=[[{"]]', "B=\\"])
+        # A decoder that still recurses too deeply is the same refusal, never a RecursionError.
+        with mock.patch.object(builds.json, "loads", side_effect=RecursionError("deep")):
+            with self.assertRaises(builds.Unavailable) as caught:
+                self.identity(self.GOOD)
+        self.assertEqual(caught.exception.reason, "build_image_malformed")
+        self.assertIn("its ID is not JSON", str(caught.exception))
+
+    def test_malformed_utf8_is_a_typed_refusal_never_repaired(self):
+        # An environment PATH holding byte 0xff is refused, not replaced by U+FFFD and admitted.
+        fields = [field.encode() for field in self.GOOD[:4]] + [b'["PATH=/usr/\xffbin"]']
+        with self.assertRaises(builds.Unavailable) as caught:
+            builds.image_identity(b"\t".join(fields) + b"\n", IMAGE, "build image")
+        self.assertEqual(caught.exception.reason, "build_image_malformed")
+        self.assertIn("it is not UTF-8", str(caught.exception))
+        # Well-formed non-ASCII UTF-8 is still read exactly.
+        self.assertEqual(self.identity(self.GOOD[:4] + ['["LANG=caf\u00e9"]'])[4],
+                         ["LANG=caf\u00e9"])
 
 
 class ContainerBuild(TempDir):

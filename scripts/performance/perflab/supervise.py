@@ -65,6 +65,13 @@ SAMPLE_DIRECTORY = "sample"
 SEED_DIRECTORY = "seeds"
 SEED_OUTPUT = "/perf/seed-out"
 SEED_INPUT = "/perf/seed"
+# A seed writer's bounded, memory-backed preparation directory (ADR-0170): a private tmpfs whose
+# pages the container's memory limit also bounds. The writer builds its fixture there, so its
+# 10,000 protected writes do not each wait for a flush of the seed's disk, then publishes it,
+# every file flushed, to SEED_OUTPUT. No sample container has it.
+FIXTURE_PREP = "/perf/prep"
+FIXTURE_PREP_BYTES = 512 * 1024 * 1024
+FIXTURE_PREP_ENV = "AF_PERF_FIXTURE_PREP"
 # Entries a dedicated scratch filesystem may hold at its root: the filesystem's own protected
 # lost+found, never mounted, read or changed, the per-sample directory, and while a shard runs
 # its seed store.
@@ -482,7 +489,8 @@ def container_argv(docker, name, image, environment, supervisor, binaries, sampl
     `readonly` maps further container paths below /perf to host paths bound read-only (the
     authority's CLI fixtures, a sealed seed). `seed_output`, only for a seed's writer, is that
     seed's new directory in the same filesystem's seed store, bound writable at /perf/seed-out
-    (ADR-0169). The container is named, never `--rm`, so its removal is a separate, verified
+    (ADR-0169); a seed's writer also gets its preparation directory, a private tmpfs of
+    `FIXTURE_PREP_BYTES` at FIXTURE_PREP owned by the container user, inside the memory limit. The container is named, never `--rm`, so its removal is a separate, verified
     step.
 
     `binds`, only for a diagnostic child run (ADR-0176), lists (host path, writable) pairs bound
@@ -511,6 +519,10 @@ def container_argv(docker, name, image, environment, supervisor, binaries, sampl
                 "a seed writer's only other writable bind is its seed's directory in the "
                 "scratch filesystem's seed store")
         argv += ["--mount", "type=bind,src=%s,dst=%s" % (seed_output, SEED_OUTPUT)]
+        require(FIXTURE_PREP_BYTES * 2 <= memory,
+                "a seed writer's preparation directory fits half its memory limit")
+        argv += ["--tmpfs", "%s:rw,nosuid,nodev,noexec,size=%d,mode=0700,uid=%d,gid=%d"
+                 % (FIXTURE_PREP, FIXTURE_PREP_BYTES, uid, gid)]
     for name_in_container, path in sorted(binaries.items()):
         argv += ["--mount", "type=bind,src=%s,dst=%s/%s,readonly"
                  % (path, BINARIES, name_in_container)]
