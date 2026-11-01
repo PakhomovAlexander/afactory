@@ -72,25 +72,45 @@ commit. On the owner's machine, pick the commit (the `main` commit whose
 COMMIT=$(git rev-parse origin/main)
 ```
 
-Then start the confirmation on Claw. The commit is passed to the remote shell, which reads the
+First prepare the checkout on Claw. The commit is passed to the remote shell, which reads the
 commands from the quoted here-document, so nothing in it is expanded on the owner's machine. The
-mounted directory `$WORK/run` must be owned by uid 1000 (use `sudo chown` when the ssh user is
-not uid 1000), and the host's `git` needs `-c safe.directory='*'` to read a clone another uid
-owns:
+mounted directory `$WORK/run` must be owned by uid 1000: uid 1000 creates it directly, root can
+change its owner directly, and any other SSH user needs `sudo chown` before the container clones:
 
 ```sh
 ssh claw-3 COMMIT="$COMMIT" bash -s <<'CLAW'
 set -e
 WORK="$HOME/af-quarantine-$COMMIT"
-mkdir -p "$WORK/run" && chown 1000:1000 "$WORK/run"
+mkdir -p "$WORK/run"
+case "$(id -u)" in
+  1000) ;;
+  0) chown 1000:1000 "$WORK/run" ;;
+  *) sudo chown 1000:1000 "$WORK/run" ;;
+esac
 docker run --rm -v "$WORK/run":/work -w /work af-quarantine-confirm:1.88.0 sh -c "
   git clone https://github.com/PakhomovAlexander/afactory.git src &&
   git -C src checkout --detach $COMMIT"
+CLAW
+```
+
+Then run this launch block. The host's `git` needs `-c safe.directory='*'` to verify the checkout
+another uid owns before the detached launch:
+
+```sh
+ssh claw-3 COMMIT="$COMMIT" bash -s <<'CLAW'
+set -e
+WORK="$HOME/af-quarantine-$COMMIT"
 test "$(git -c safe.directory='*' -C "$WORK/run/src" rev-parse HEAD)" = "$COMMIT"
-nohup flock -n /tmp/af-perf-machine.lock docker run --rm --name afq-confirm \
-    -v "$WORK/run":/work -w /work/src af-quarantine-confirm:1.88.0 \
-    python3 scripts/test-quarantine.py confirm --report /work/confirm.json \
-    > "$WORK/confirm.log" 2>&1 &
+nohup flock -n /tmp/af-perf-machine.lock sh -c '
+  FENCE=/tmp/af-perf-machine.lock.fence
+  if [ -e "$FENCE" ] || [ -L "$FENCE" ]; then
+    echo "Refusing confirmation: $FENCE exists; operator recovery must confirm all owned resources stopped before fence cleanup." >&2
+    exit 1
+  fi
+  exec docker run --rm --name afq-confirm \
+    -v "$1/run":/work -w /work/src af-quarantine-confirm:1.88.0 \
+    python3 scripts/test-quarantine.py confirm --report /work/confirm.json
+' sh "$WORK" > "$WORK/confirm.log" 2>&1 &
 CLAW
 ```
 
@@ -99,10 +119,20 @@ Claw also hosts the performance laboratory, whose experiments take a non-blockin
 [`performance-local-executor.md`](performance-local-executor.md)). The confirmation holds that
 lock for its whole run, so an experiment started meanwhile refuses to start rather than measure
 under load, and the confirmation does not start while an experiment holds the lock: `flock -n`
-then exits 1 at once, no `afq-confirm` container appears and `confirm.log` stays empty; start it
-again later. `nohup` and the background job detach the confirmation, so an ssh disconnect does
-not kill it. Wait until `docker ps --filter name=afq-confirm` no longer lists the container,
-then read the end of the log:
+then exits 1 at once, no `afq-confirm` container appears and `confirm.log` stays empty. Once the
+lock is free, repeat only the launch block above, with the same `COMMIT`; do not repeat the
+preparation block or `git clone`.
+
+After acquiring the lock, the launch also refuses if `/tmp/af-perf-machine.lock.fence` exists
+(including a dangling symlink), recording the refusal in `confirm.log` before Docker starts.
+This fence means an experiment's cleanup is uncertain
+([ADR-0240](adr/0240-execute-performance-experiments-independently-on-a-locked-vm.md)). Operator
+recovery must confirm all owned resources stopped before fence cleanup; the launch never removes
+or bypasses a fence. Repeat only the launch block after operator recovery.
+
+`nohup` and the background job detach the confirmation, so an ssh disconnect does not kill it.
+Wait until `docker ps --filter name=afq-confirm` no longer lists the container, then read the end
+of the log:
 
 ```sh
 ssh claw-3 'docker ps --filter name=afq-confirm'

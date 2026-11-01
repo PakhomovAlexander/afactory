@@ -1,13 +1,14 @@
 #!/usr/bin/env python3
-"""Exercise scripts/test-quarantine.py scan on test-local task lists, inventories and quarantine
-files with an explicit today; never this checkout's own quarantine file, the clock, af, cargo or
-a real af Store."""
+"""Exercise quarantine scan/confirm/apply with test-local data and an explicit today, plus the
+Claw runbook through local command stubs; never this checkout's quarantine file, the clock,
+af, cargo, a real af Store, SSH, Docker or sudo."""
 import copy
 import datetime as dt
 import importlib.util
 import json
 import os
 from pathlib import Path
+import re
 import subprocess
 import sys
 import tempfile
@@ -672,6 +673,194 @@ class Apply(QuarantineFiles):
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertEqual(self.entries()[HEAVY]['since'], '2026-10-31')
         self.assertEqual(self.entries()[HEAVY]['expires'], '2026-11-14')
+
+
+# Execute the runbook's remote shell bodies locally. Every privileged/network command is a
+# fake; ownership is a receipt, not a host chown. flock takes a real test-local advisory lock.
+RUNBOOK_STUB = r'''
+import fcntl
+import json
+import os
+from pathlib import Path
+import subprocess
+import sys
+
+name, args = Path(sys.argv[0]).name, sys.argv[1:]
+home = Path(os.environ['HOME'])
+work = home / ('af-quarantine-' + os.environ['COMMIT'])
+owner = work / 'owner'
+lock = home / 'machine.lock'
+with (home / 'events').open('a') as output:
+    output.write(json.dumps([name, args]) + '\n')
+if name == 'id':
+    assert args == ['-u']
+    print(os.environ['FAKE_UID'])
+elif name == 'sudo':
+    assert os.environ['FAKE_UID'] not in ('0', '1000')
+    assert args == ['chown', '1000:1000', str(work / 'run')]
+    os.environ['FAKE_ELEVATED'] = '1'
+    os.execvp(args[0], args)
+elif name == 'chown':
+    assert args == ['1000:1000', str(work / 'run')]
+    assert (work / 'run').is_dir()
+    if os.environ['FAKE_UID'] != '0' and os.environ.get('FAKE_ELEVATED') != '1':
+        sys.exit('chown: Operation not permitted')
+    owner.write_text('1000')
+elif name == 'git':
+    assert args == ['-c', 'safe.directory=*', '-C', str(work / 'run/src'), 'rev-parse', 'HEAD']
+    print((work / 'run/src/HEAD').read_text())
+elif name == 'nohup':
+    assert args[0] == 'flock'
+    os.execvp(args[0], args)
+elif name == 'flock':
+    assert args[:2] == ['-n', str(lock)]
+    with lock.open('a') as held:
+        try:
+            fcntl.flock(held, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except BlockingIOError:
+            sys.exit(1)
+        # Introduce a fence only after acquisition: a pre-lock check cannot pass this test.
+        fence = Path(str(lock) + '.fence')
+        kind = os.environ.get('FAKE_FENCE')
+        if kind == 'directory':
+            fence.mkdir()
+        elif kind == 'file':
+            fence.write_text('uncertain experiment')
+        elif kind == 'symlink':
+            fence.symlink_to(home / 'absent')
+        sys.exit(subprocess.call(args[2:]))
+elif name == 'docker':
+    assert (owner.read_text() if owner.exists() else os.environ['FAKE_UID']) == '1000'
+    assert args[:2] == ['run', '--rm']
+    if '--name' in args:
+        assert args == ['run', '--rm', '--name', 'afq-confirm', '-v', str(work / 'run') + ':/work',
+                        '-w', '/work/src', 'af-quarantine-confirm:1.88.0', 'python3',
+                        'scripts/test-quarantine.py', 'confirm', '--report', '/work/confirm.json']
+        with lock.open('a') as probe:
+            try:
+                fcntl.flock(probe, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            except BlockingIOError:
+                pass
+            else:
+                sys.exit('Docker reached without the machine lock')
+        assert not os.path.lexists(str(lock) + '.fence')
+        print('fake confirmation launched')
+    else:
+        assert args[2:9] == ['-v', str(work / 'run') + ':/work', '-w', '/work',
+                             'af-quarantine-confirm:1.88.0', 'sh', '-c']
+        assert 'git clone https://github.com/PakhomovAlexander/afactory.git src &&' in args[9]
+        assert 'git -C src checkout --detach ' + os.environ['COMMIT'] in args[9]
+        (work / 'run/src').mkdir()  # A repeated clone must fail, as the real one does.
+        (work / 'run/src/HEAD').write_text(os.environ['COMMIT'])
+else:
+    sys.exit('unexpected stub: ' + name)
+'''
+
+
+class ClawRunbook(unittest.TestCase):
+    def setUp(self):
+        tmp = tempfile.TemporaryDirectory(prefix='afq-runbook-')
+        self.addCleanup(tmp.cleanup)
+        self.dir = Path(tmp.name)
+        self.bin = self.dir / 'bin'
+        self.bin.mkdir()
+        for name in ('id', 'sudo', 'chown', 'git', 'nohup', 'flock', 'docker'):
+            path = self.bin / name
+            path.write_text(f'#!{sys.executable} -I\n{RUNBOOK_STUB}')
+            path.chmod(0o755)
+        # No host command search: real Docker, sudo, SSH and Provider CLIs are unreachable.
+        for name in ('sh', 'mkdir'):
+            (self.bin / name).symlink_to('/bin/' + name)
+        self.doc = (ROOT / 'docs/test-quarantine-claw.md').read_text()
+        self.blocks = re.findall(
+            r'^ssh claw-3 COMMIT="\$COMMIT" bash -s <<\'CLAW\'\n(.*?)^CLAW$',
+            self.doc, re.MULTILINE | re.DOTALL)
+        self.assertTrue(self.blocks, 'quoted COMMIT remote here-document is required')
+        self.work = self.dir / f'af-quarantine-{COMMIT}'
+        self.lock = self.dir / 'machine.lock'
+        self.fence = Path(str(self.lock) + '.fence')
+
+    def run_block(self, block, uid='1000', fence=''):
+        # Redirect only the literal machine path to our scratch; never touch a real fence.
+        block = block.replace('/tmp/af-perf-machine.lock', str(self.lock))
+        if 'nohup' in block:
+            block += '\nwait "$!"\n'  # Join the detached stub deterministically; no sleeps.
+        return subprocess.run(['/bin/bash', '-s'], input=block, capture_output=True, text=True,
+                              env={'HOME': str(self.dir), 'PATH': str(self.bin), 'COMMIT': COMMIT,
+                                   'FAKE_UID': uid, 'FAKE_FENCE': fence})
+
+    def events(self):
+        return [json.loads(line) for line in (self.dir / 'events').read_text().splitlines()]
+
+    def prepare(self, uid='1000'):
+        result = self.run_block(self.blocks[0], uid=uid)
+        self.assertEqual(result.returncode, 0, result.stderr)
+
+    def test_fence_under_the_lock_refuses_before_docker_and_requires_operator_recovery(self):
+        self.prepare()
+        for kind in ('directory', 'file', 'symlink'):
+            with self.subTest(kind=kind):
+                before = len([e for e in self.events() if e[0] == 'docker'])
+                result = self.run_block(self.blocks[-1], fence=kind)
+                self.assertEqual(result.returncode, 1, result.stderr)
+                log = (self.work / 'confirm.log').read_text()
+                self.assertIn(str(self.fence), log)
+                self.assertIn('operator recovery', log)
+                self.assertIn('all owned resources stopped before fence cleanup', log)
+                self.assertEqual(len([e for e in self.events() if e[0] == 'docker']), before)
+                self.assertTrue(os.path.lexists(self.fence))
+                # Remove only this test's synthetic fence, never a machine fence.
+                if kind == 'directory':
+                    self.fence.rmdir()
+                else:
+                    self.fence.unlink()
+
+    def test_absent_fence_permits_the_detached_named_confirmation_under_the_lock(self):
+        self.prepare()
+        result = self.run_block(self.blocks[-1])
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual([name for name, _ in self.events()],
+                         ['id', 'docker', 'git', 'nohup', 'flock', 'docker'])
+        self.assertEqual((self.work / 'confirm.log').read_text(), 'fake confirmation launched\n')
+
+    def test_non_root_non_1000_preparation_elevates_ownership_before_any_docker(self):
+        self.prepare(uid='2001')
+        self.assertEqual([name for name, _ in self.events()], ['id', 'sudo', 'chown', 'docker'])
+        self.assertEqual((self.work / 'owner').read_text(), '1000')
+        self.assertEqual(self.run_block(self.blocks[-1], uid='2001').returncode, 0)
+
+    def test_uid_1000_prepares_without_sudo_or_chown(self):
+        self.prepare()
+        self.assertEqual([name for name, _ in self.events()], ['id', 'docker'])
+
+    def test_root_prepares_with_direct_chown_without_sudo(self):
+        self.prepare(uid='0')
+        self.assertEqual([name for name, _ in self.events()], ['id', 'chown', 'docker'])
+        self.assertEqual((self.work / 'owner').read_text(), '1000')
+
+    def test_busy_lock_retry_runs_only_launch_and_rechecks_checkout_before_nohup(self):
+        import fcntl
+        self.assertEqual(len(self.blocks), 2, 'preparation and launch must be separate SSH blocks')
+        prepare, launch = self.blocks
+        self.assertIn('git clone', prepare)
+        self.assertNotIn('nohup', prepare)
+        self.assertNotIn('git clone', launch)
+        self.assertIn('WORK="$HOME/af-quarantine-$COMMIT"', prepare)
+        self.assertIn('WORK="$HOME/af-quarantine-$COMMIT"', launch)
+        self.assertIn('repeat only the launch block', self.doc)
+        self.prepare()
+        with self.lock.open('a') as held:
+            fcntl.flock(held, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            result = self.run_block(launch)
+        self.assertEqual(result.returncode, 1, result.stderr)
+        self.assertEqual((self.work / 'confirm.log').read_text(), '')
+        self.assertEqual(self.run_block(launch).returncode, 0)
+        self.assertEqual([name for name, _ in self.events()],
+                         ['id', 'docker', 'git', 'nohup', 'flock', 'git', 'nohup', 'flock', 'docker'])
+        before = self.events()
+        (self.work / 'run/src/HEAD').write_text('wrong commit')
+        self.assertNotEqual(self.run_block(launch).returncode, 0)
+        self.assertEqual(self.events()[len(before):], [['git', before[2][1]]])
 
 
 if __name__ == '__main__':
