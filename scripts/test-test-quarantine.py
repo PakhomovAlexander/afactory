@@ -785,6 +785,8 @@ elif name == 'python3':
         read_anchor = hostlock.read_anchor
         check_directory = hostlock._check_directory
         fstat, lstat, flock = os.fstat, os.lstat, fcntl.flock
+        # hostlock.os is shared: resolve before patching its process-wide lstat.
+        resolved_home = str(home.resolve())
 
         def anchor_stat(fd):
             info = fstat(fd)
@@ -807,7 +809,7 @@ elif name == 'python3':
 
         def root_directory_stat(path):
             info = lstat(path)
-            assert path == str(home.resolve())
+            assert path == resolved_home
             fields = list(info)
             fields[4] = 0
             return os.stat_result(fields)
