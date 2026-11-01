@@ -175,6 +175,25 @@ mod tests {
     }
 
     #[test]
+    fn schema_listing_names_provider_status_v5_and_its_sdk_host_scope() {
+        let line = listing()
+            .lines()
+            .find(|line| line.starts_with("af/provider-status@5 "))
+            .unwrap()
+            .to_owned();
+        assert_eq!(
+            line.split_whitespace().collect::<Vec<_>>(),
+            ["af/provider-status@5", "Provider", "status@5"]
+        );
+        let (_, _, text) = SCHEMAS
+            .iter()
+            .find(|(id, _, _)| *id == "af/provider-status@5")
+            .unwrap();
+        let schema: serde_json::Value = serde_json::from_str(text).unwrap();
+        assert!(schema["$comment"].as_str().unwrap().contains("Pi SDK host"));
+    }
+
+    #[test]
     fn an_unshipped_id_names_the_versions_that_are_shipped() {
         assert_eq!(
             refusal("af/task-status@1"),

@@ -182,8 +182,19 @@ pub(crate) fn install_pi(
             .map(|p| p.join(name))
             .find(|p| p.is_file())
             .unwrap_or_else(|| panic!("test requires installed {name}"));
-        std::os::unix::fs::symlink(std::fs::canonicalize(executable).unwrap(), bin.join(name))
-            .unwrap();
+        let executable = std::fs::canonicalize(executable).unwrap();
+        if name == "node" {
+            // An explicit fixture launcher keeps the test installation independent of the
+            // host's package-manager layout (Homebrew itself has a .git ancestor). Production
+            // still rejects every repository-owned executable; the marker-trap regression
+            // separately exercises that boundary. This only runs AF's host with synthetic SDK/auth.
+            let quoted = executable.to_str().unwrap().replace('\'', "'\\''");
+            let launcher = bin.join(name);
+            std::fs::write(&launcher, format!("#!/bin/sh\nexec '{quoted}' \"$@\"\n")).unwrap();
+            std::fs::set_permissions(&launcher, std::fs::Permissions::from_mode(0o700)).unwrap();
+        } else {
+            std::os::unix::fs::symlink(executable, bin.join(name)).unwrap();
+        }
     }
     (sdk.join("dist/index.js"), bin.into_os_string(), state)
 }

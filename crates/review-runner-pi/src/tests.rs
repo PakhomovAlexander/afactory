@@ -182,7 +182,9 @@ if mode=='before-prompt':
 prompt=json.loads(sys.stdin.readline())
 open(MARKER,'w').write(prompt['text'])
 emit({'type':'accepted','prompt_nonce':prompt['prompt_nonce']})
-emit({'type':'usage','inference':1,'complete':True,'input':10,'output':2,'cache_read':3,'cache_write':None,'reasoning':None})
+if mode!='no-usage':
+ emit({'type':'usage','inference':1,'complete':mode not in ['incomplete','earlier-incomplete'],'input':None if mode=='unknown-usage' else 10,'output':None if mode=='unknown-usage' else 2,'cache_read':None if mode=='unknown-usage' else 3,'cache_write':None,'reasoning':None})
+if mode=='earlier-incomplete': emit({'type':'usage','inference':2,'complete':True,'input':10,'output':2,'cache_read':3,'cache_write':None,'reasoning':None})
 if mode in ['cancel','cancel-no-pid']:
  s=socket.socket(socket.AF_UNIX); s.connect(SOCKET)
  if mode=='cancel-no-pid': sys.exit(1)
@@ -305,7 +307,7 @@ if mode=='after': emit({'type':'error','code':'inference_failed'})
         }
     }
     #[test]
-    fn complete_reply_before_reading_prompt_is_refused_even_if_host_then_reads_and_exits_zero() {
+    fn adapter_refuses_a_complete_reply_emitted_before_prompt_consumption() {
         let root = tempfile::tempdir().unwrap();
         let adapter = fixture("before-prompt", root.path(), None);
         let cas = Cas::open(root.path().join("cas")).unwrap();
@@ -326,6 +328,136 @@ if mode=='after': emit({'type':'error','code':'inference_failed'})
                 || error == "Pi host acknowledged a prompt it was not delivered",
             "{error}"
         );
+    }
+
+    #[test]
+    fn settlement_requires_every_observed_inference_complete_without_inventing_usage() {
+        for (mode, success, charge) in [
+            ("no-usage", false, None),
+            ("incomplete", false, Some(9)),
+            ("earlier-incomplete", false, Some(18)),
+            ("unknown-usage", true, None),
+        ] {
+            let root = tempfile::tempdir().unwrap();
+            let adapter = fixture(mode, root.path(), None);
+            let cas = Cas::open(root.path().join("cas")).unwrap();
+            let returned = adapter.invoke(
+                &cas,
+                root.path(),
+                b"private request".to_vec(),
+                Duration::from_secs(30),
+                WorkerAccess::ReadOnly,
+                None,
+                &[],
+            );
+            assert_eq!(returned.message.is_ok(), success, "{mode}");
+            if !success {
+                assert_eq!(
+                    returned.message.unwrap_err(),
+                    "Pi settled without complete inference observations",
+                    "{mode}"
+                );
+            }
+            let observation = returned.usage_observation.unwrap();
+            assert!(!observation.charge_complete, "{mode}");
+            assert_eq!(
+                observation
+                    .reported_usage
+                    .map(|u| u.chargeable_tokens.get()),
+                charge,
+                "{mode}"
+            );
+            assert_eq!(
+                std::fs::read(root.path().join("prompt")).unwrap(),
+                b"private request"
+            );
+        }
+    }
+
+    #[test]
+    fn observed_early_reply_then_exact_prompt_read_and_zero_exit_is_rejected_on_replay() {
+        let root = tempfile::tempdir().unwrap();
+        let adapter = fixture("before-prompt", root.path(), None);
+        let staging = tempfile::tempdir().unwrap();
+        let mut child = command(&adapter.node, staging.path()).unwrap();
+        let (advance, observed) = mpsc::channel();
+        let prompt = json!({"schema":PROTOCOL,"type":"prompt","text":"PRIVATE exact \u{2028} prompt","prompt_nonce":digest(b"fresh delivered prompt")});
+        let root_path = root.path();
+        let staging_path = staging.path();
+        let sent_prompt = prompt.clone();
+        let deadline = Instant::now() + Duration::from_secs(30);
+        let output = review_process::run_supervised_duplex(
+            &mut child, Duration::from_secs(30), ExitPolicy::KillProcessGroup,
+            move |writer| -> std::io::Result<()> {
+                write_record(writer, &init(&adapter.config, root_path, root_path, staging_path, None, false, false, &[]))?;
+                let wait = || observed.recv_timeout(deadline.saturating_duration_since(Instant::now())).map_err(std::io::Error::other);
+                wait()?;
+                write_record(writer, &json!({"schema":PROTOCOL,"type":"prepare","model":"o3","effort":"high","model_identity":digest(b"model")}))?;
+                // Delivery is causally after the reader captured every early response byte.
+                wait()?;
+                write_record(writer, &sent_prompt)
+            },
+            move |reader| -> std::io::Result<Vec<Vec<u8>>> {
+                let mut reader = BufReader::new(reader);
+                let mut records = Vec::new();
+                loop {
+                    let mut line = Vec::new();
+                    let count = reader.by_ref().take((MAX_RECORD + 1) as u64).read_until(b'\n', &mut line)?;
+                    if count == 0 { break; }
+                    if count > MAX_RECORD || !line.ends_with(b"\n") || records.len() >= 6 {
+                        return Err(std::io::Error::other("unexpected fixture output"));
+                    }
+                    records.push(line);
+                    if records.len() == 1 || records.len() == 6 {
+                        advance.send(()).map_err(std::io::Error::other)?;
+                    }
+                }
+                Ok(records)
+            },
+        ).unwrap();
+        assert!(output.input.is_ok(), "{:?}", output.input);
+        assert!(output.status.success(), "{:?}", output.status);
+        assert!(!output.stderr_held && !output.truncation.is_truncated());
+        assert!(output.stderr.is_empty(), "{:?}", output.stderr);
+        assert_eq!(
+            std::fs::read(root.path().join("prompt")).unwrap(),
+            prompt["text"].as_str().unwrap().as_bytes()
+        );
+        let records = output.output.unwrap();
+        let values: Vec<Value> = records
+            .iter()
+            .map(|line| serde_json::from_slice(line).unwrap())
+            .collect();
+        assert_eq!(
+            values
+                .iter()
+                .map(|v| v["type"].as_str().unwrap())
+                .collect::<Vec<_>>(),
+            [
+                "ready", "prepared", "accepted", "usage", "message", "settled"
+            ]
+        );
+        assert_eq!(values[3]["complete"], true);
+        let reply: Value = serde_json::from_str(values[4]["text"].as_str().unwrap()).unwrap();
+        assert_eq!(reply["schema"], "af.worker-reply/1");
+        assert_eq!(reply["outputs"]["report"][0]["summary"], "premature");
+        let mut state = State::default();
+        state.record(&records[0]).unwrap();
+        state.record(&records[1]).unwrap();
+        // Replay at the observed pre-delivery boundary through the production validator.
+        assert_eq!(
+            state.record(&records[2]).unwrap_err(),
+            "Pi host lifecycle violation"
+        );
+        // Even a delayed parser, running after the write, rejects the stale challenge.
+        state.prompt_sent = true;
+        state.prompt_nonce = prompt["prompt_nonce"].as_str().map(str::to_owned);
+        assert_eq!(
+            state.record(&records[2]).unwrap_err(),
+            "Pi host acknowledged a prompt it was not delivered"
+        );
+        assert!(!state.accepted && !state.settled);
+        assert!(state.observation().reported_usage.is_none());
     }
 
     #[test]

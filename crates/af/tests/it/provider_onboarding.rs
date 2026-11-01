@@ -598,10 +598,13 @@ fn pi_setup_status_and_exact_model_catalog_are_token_free_and_secret_free() {
             String::from_utf8_lossy(&out.stdout),
             String::from_utf8_lossy(&out.stderr)
         );
-        valid(
-            schema,
-            &serde_json::from_slice::<Value>(&out.stdout).unwrap(),
-        );
+        let value: Value = serde_json::from_slice(&out.stdout).unwrap();
+        valid(schema, &value);
+        if schema == "provider-status-v5.json" {
+            assert_eq!(value["schema"], "af/provider-status@5");
+            assert_eq!(value["providers"][0]["kind"], "pi");
+            assert_eq!(value["providers"][0]["auth"], "authenticated");
+        }
         let text = String::from_utf8(out.stdout).unwrap();
         for secret in [
             "synthetic-account",
@@ -650,6 +653,92 @@ fn pi_setup_status_and_exact_model_catalog_are_token_free_and_secret_free() {
         "{}",
         String::from_utf8_lossy(&removed.stderr)
     );
+}
+
+#[test]
+fn pi_node_resolution_and_setup_refuse_repository_owned_path_before_spawn() {
+    for marker in ["git-directory", "git-worktree-file", "af-directory"] {
+        let root = tempfile::tempdir().unwrap();
+        let work = root.path().join("repository/nested/cwd");
+        std::fs::create_dir_all(&work).unwrap();
+        let auth = root.path().join("auth");
+        let (sdk, external_path, _) = crate::fake_models::install_pi(root.path(), &auth, "review");
+        let invoke = |path: &std::ffi::OsStr, args: &[&str]| {
+            crate::common::af()
+                .args(args)
+                .current_dir(&work)
+                .env("HOME", root.path())
+                .env("XDG_CONFIG_HOME", root.path().join("config"))
+                .env("AF_PROVIDERS_FILE", root.path().join("providers.toml"))
+                .env_remove("CODEX_HOME")
+                .env_remove("CLAUDE_CONFIG_DIR")
+                .env("PATH", path)
+                .output()
+                .unwrap()
+        };
+        let setup_args = [
+            "provider",
+            "setup",
+            "pi-safe",
+            "--kind",
+            "pi",
+            "--backend",
+            "openai-codex",
+            "--auth-dir",
+            auth.to_str().unwrap(),
+            "--sdk-entrypoint",
+            sdk.to_str().unwrap(),
+            "--json",
+        ];
+        // The same nested CWD permits a legitimate external Node installation.
+        let setup = invoke(external_path.as_ref(), &setup_args);
+        assert!(setup.status.success(), "{}", err(&setup));
+        let repository = root.path().join("repository");
+        match marker {
+            "git-directory" => std::fs::create_dir(repository.join(".git")).unwrap(),
+            "git-worktree-file" => {
+                std::fs::write(repository.join(".git"), "gitdir: /synthetic/worktree\n").unwrap()
+            }
+            _ => std::fs::create_dir(repository.join(".af")).unwrap(),
+        }
+        let bin = repository.join("bin");
+        std::fs::create_dir(&bin).unwrap();
+        let trap = bin.join("node");
+        let executed = root.path().join("node-executed");
+        std::fs::write(
+            &trap,
+            format!("#!/bin/sh\n: > '{}'\nexit 99\n", executed.display()),
+        )
+        .unwrap();
+        std::fs::set_permissions(&trap, std::fs::Permissions::from_mode(0o700)).unwrap();
+        let absolute_path = bin.canonicalize().unwrap();
+        for args in [&["provider", "status", "--json"][..], &setup_args[..]] {
+            let output = invoke(absolute_path.as_os_str(), args);
+            assert!(!executed.exists(), "executed repository Node for {marker}");
+            let value = document(&output);
+            if args[1] == "setup" {
+                assert_eq!(code(&output), 3, "{}", err(&output));
+                valid("pi-provider-setup-v2.json", &value);
+                assert!(
+                    value["detail"]
+                        .as_str()
+                        .unwrap()
+                        .contains("outside repository-owned paths")
+                );
+                assert!(err(&output).starts_with("af provider setup: "));
+            } else {
+                valid("provider-status-v5.json", &value);
+                assert_ne!(value["providers"][0]["auth"], "authenticated");
+                let human = invoke(absolute_path.as_os_str(), &["provider", "status"]);
+                assert!(
+                    out(&human).contains("outside repository-owned paths"),
+                    "{}",
+                    out(&human)
+                );
+            }
+            assert!(!executed.exists(), "executed repository Node for {marker}");
+        }
+    }
 }
 
 #[test]

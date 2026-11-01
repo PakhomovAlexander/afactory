@@ -24,7 +24,9 @@ af provider setup pi-personal --kind pi --backend openai-codex \
 
 `--sdk-entrypoint` may be omitted for the standard managed `<agent>/bin/pi` launcher:
 AF validates `install/current-version` and resolves the supported 1.4.0 release SDK without
-executing the launcher. Unsafe paths and incompatible versions refuse. Failed Pi setup keeps
+executing the launcher. Unsafe paths and incompatible versions refuse. Node and the SDK must
+resolve outside every repository's `.git` (directory or worktree marker file) and `.af`
+ancestors, including from nested working directories with absolute PATH entries. Failed Pi setup keeps
 its JSON (or human result) on stdout and prints an AF-authored detail and outcome on stderr.
 
 Pi setup does not start login; `--login` and `af provider auth` remain unavailable for Pi.

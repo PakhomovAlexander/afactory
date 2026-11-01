@@ -27,7 +27,7 @@ pub(super) fn registry_config(
     config.validate()?;
     Ok(Some(config))
 }
-fn safe_installation(program: &Path, module: bool) -> Result<PathBuf, String> {
+fn safe_installation(program: &Path) -> Result<PathBuf, String> {
     let program = fs::canonicalize(program).map_err(|_| "Pi installation is missing; install Node >=22.19 and official Pi SDK 1.4.0 outside the repository")?;
     let cwd = std::env::current_dir()
         .and_then(fs::canonicalize)
@@ -35,7 +35,7 @@ fn safe_installation(program: &Path, module: bool) -> Result<PathBuf, String> {
     if program.starts_with(&cwd)
         || program
             .ancestors()
-            .any(|p| (module && p.join(".git").exists()) || p.join(".af").is_dir())
+            .any(|p| p.join(".git").exists() || p.join(".af").is_dir())
     {
         return Err("Pi must use an installed SDK/Node outside repository-owned paths".into());
     }
@@ -51,7 +51,7 @@ fn discover_sdk() -> Result<PathBuf, String> {
 
 fn discover_sdk_from_launcher(launcher: &Path) -> Result<PathBuf, String> {
     let unresolved = "Cannot safely resolve Pi SDK; pass an explicit installed --sdk-entrypoint";
-    let launcher = safe_installation(launcher, true)?;
+    let launcher = safe_installation(launcher)?;
     let bin = launcher.parent().ok_or(unresolved)?;
     let agent = bin.parent().ok_or(unresolved)?;
     let install = agent.join("install");
@@ -60,7 +60,7 @@ fn discover_sdk_from_launcher(launcher: &Path) -> Result<PathBuf, String> {
         && install.exists()
     {
         let invalid = "Pi managed installation requires a regular current-version containing exactly supported SDK version 1.4.0 and an SDK inside that release";
-        if safe_installation(&install, true)? != install {
+        if safe_installation(&install)? != install {
             return Err(invalid.into());
         }
         // Bound reads and refuse links/special files before consulting the version.
@@ -83,13 +83,13 @@ fn discover_sdk_from_launcher(launcher: &Path) -> Result<PathBuf, String> {
             return Err(invalid.into());
         }
         let release = install.join("releases").join(version);
-        let canonical_release = safe_installation(&release, true)?;
+        let canonical_release = safe_installation(&release)?;
         // A symlinked install/release or package must not redirect discovery elsewhere.
         if canonical_release != release {
             return Err(invalid.into());
         }
         let entry = release.join("node_modules/@earendil-works/pi-coding-agent/dist/index.js");
-        let canonical_entry = safe_installation(&entry, true)?;
+        let canonical_entry = safe_installation(&entry)?;
         if !canonical_entry.starts_with(&release) || !canonical_entry.is_file() {
             return Err(invalid.into());
         }
@@ -99,10 +99,7 @@ fn discover_sdk_from_launcher(launcher: &Path) -> Result<PathBuf, String> {
     Ok(agent.join("index.js"))
 }
 pub(super) fn node() -> Result<PathBuf, String> {
-    safe_installation(
-        &resolve_program("node").ok_or("Pi requires Node >=22.19 on PATH")?,
-        false,
-    )
+    safe_installation(&resolve_program("node").ok_or("Pi requires Node >=22.19 on PATH")?)
 }
 pub(super) fn probe(
     spec: &ProviderSpec,
@@ -113,7 +110,7 @@ pub(super) fn probe(
         .pi
         .as_ref()
         .ok_or("Pi registration lacks backend/SDK authority")?;
-    safe_installation(&config.sdk_entrypoint, true)?;
+    safe_installation(&config.sdk_entrypoint)?;
     let auth = spec
         .auth_dir
         .as_deref()
@@ -202,7 +199,7 @@ fn setup_outcome(
         sdk_entrypoint: resolved,
     };
     config.validate()?;
-    config.sdk_entrypoint = safe_installation(&config.sdk_entrypoint, true)?;
+    config.sdk_entrypoint = safe_installation(&config.sdk_entrypoint)?;
     let registry = registry_path()
         .map_err(|_| "Cannot resolve Pi Provider registry")?
         .ok_or("Cannot locate Provider registry")?;

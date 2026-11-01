@@ -374,7 +374,14 @@ impl State {
                 let m: Message = serde_json::from_value(value).map_err(|_| "Invalid Pi message")?;
                 self.message = Some(m.text.into_bytes());
             }
-            "settled" if self.accepted && object.is_empty() => self.settled = true,
+            "settled" if self.accepted && object.is_empty() => {
+                // A terminal message cannot erase an unobserved or unfinished inference.
+                // Counter values may remain unknown; completion is a lifecycle guarantee.
+                if self.usage.is_empty() || self.usage.values().any(|usage| !usage.complete) {
+                    return Err("Pi settled without complete inference observations".into());
+                }
+                self.settled = true;
+            }
             "error" => {
                 #[derive(Deserialize)]
                 #[serde(deny_unknown_fields)]

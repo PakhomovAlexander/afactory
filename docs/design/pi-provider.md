@@ -38,8 +38,11 @@ SDK `dist/index.js`. For the standard managed `<agent>/bin/pi` launcher, AF read
 `install/releases/1.4.0/node_modules/@earendil-works/pi-coding-agent/dist/index.js`.
 It never executes the launcher. Malformed/unsupported versions, symlinked version files,
 release/entrypoint escapes and repository-owned installations refuse. Explicit entrypoints
-and safely resolved SDK CLI layouts remain supported. Node is resolved to an absolute executable outside the candidate's
-repository-owned paths; the SDK must be installed outside any repository. `NODE_OPTIONS`, `NODE_PATH`, proxy,
+and safely resolved SDK CLI layouts remain supported. Both Node and the SDK must resolve
+outside repository-owned paths: every ancestor is checked for `.git` (directory or worktree
+marker file) and `.af`, even when CWD is nested and PATH names an absolute external directory.
+A package-manager prefix containing `.git` also refuses; AF does not exempt ignored installation
+subdirectories from this path boundary. `NODE_OPTIONS`, `NODE_PATH`, proxy,
 cloud and API-key environment variables are absent from the host. `--login` and
 `af provider auth` are unavailable for Pi; login stays human-driven in Pi's own terminal.
 `provider detect` scans the existing Codex/Claude contexts; Pi uses explicit setup.
@@ -139,7 +142,11 @@ remote gate or `auto_apply` authority is granted.
    A failed or partial prompt write retains unknown usage conservatively. This acknowledgement
    is never a result. One SDK session runs in this one process.
 4. Usage observations name an inference sequence; cumulative snapshots replace that
-   inference's earlier observation. Completed duplicates do not count twice.
+   inference's earlier observation. Completed duplicates do not count twice. Successful
+   settlement requires at least one sequentially numbered observed inference and a final
+   `complete: true` snapshot for every observed inference. Missing or unfinished observations
+   refuse the reply while retaining partial/unknown accounting. Individual counters may stay
+   unknown even in a complete snapshot; lifecycle completion does not invent usage values.
 5. The host requires actual `agent_settled`, successful final assistant text and the return
    of `session.prompt`. `agent_end`, EOF and exit zero cannot establish success.
 
@@ -190,8 +197,11 @@ and reaches actual session settlement, with HTTP replaced in process and no serv
 The Rust runner tests use
 faithful **AF host** processes for JSONL fragmentation, Unicode, terminal ordering, identity
 and setting drift, limits, malformed events and cancellation with preserved usage/reaping.
-A deterministic host fixture emits a complete typed response before reading the prompt,
-then reads it and exits zero; AF refuses it. An immediate valid response succeeds without waits.
+A bounded manual transport regression captures the complete early response before delivering
+any prompt, then delivers the exact private prompt, asserts its read marker and observes the
+child's successful exit. Replaying those ordered wire records through the production state
+validator refuses the premature acknowledgement. The adapter-level refusal and immediate
+valid-response tests remain separate; production cancellation is unchanged.
 CLI fixtures exercise setup/status/catalog, common Task admission and typed-result recovery,
 plus doctor and captured Review. Existing-provider regression selections remain required.
 
