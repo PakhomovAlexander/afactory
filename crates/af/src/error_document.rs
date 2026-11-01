@@ -262,16 +262,19 @@ pub(crate) fn document(
 /// which are not errors, and for a command line without `--json`, whose output is clap's alone.
 pub(crate) fn usage(argv: &[String], error: &clap::Error) -> Option<Value> {
     use clap::error::ErrorKind;
-    // `af task events` prints JSON lines without --json, so its usage error is a line too.
-    if !(argv.iter().skip(1).any(|word| word == "--json") || command_path(argv) == "af task events")
-        || matches!(
-            error.kind(),
-            ErrorKind::DisplayHelp | ErrorKind::DisplayVersion
-        )
-    {
+    // Help/version are display results, never usage documents. Return before constructing
+    // another command tree just to discover the command path.
+    if matches!(
+        error.kind(),
+        ErrorKind::DisplayHelp | ErrorKind::DisplayVersion
+    ) {
         return None;
     }
     let command = command_path(argv);
+    // `af task events` prints JSON lines without --json, so its usage error is a line too.
+    if !(argv.iter().skip(1).any(|word| word == "--json") || command == "af task events") {
+        return None;
+    }
     let message = if error.kind() == ErrorKind::DisplayHelpOnMissingArgumentOrSubcommand {
         format!("`{command}` needs a subcommand; `{command} --help` lists them")
     } else {
@@ -409,6 +412,32 @@ mod tests {
             document,
             json!({"schema": "af/error@2", "command": "af task", "error": "e", "exit_code": 1})
         );
+    }
+
+    #[test]
+    fn events_usage_is_json_without_a_flag_but_help_and_version_are_not_errors() {
+        for words in [
+            vec!["af", "task", "events"],
+            vec!["af", "task", "events", "t", "--unknown"],
+        ] {
+            let argv = words.into_iter().map(str::to_owned).collect::<Vec<_>>();
+            let error = crate::cli::Af::try_parse_from(&argv).unwrap_err();
+            let value = usage(&argv, &error).unwrap();
+            assert_eq!(value["command"], "af task events");
+            assert_eq!(value["exit_code"], 2);
+            assert_eq!(value["cause"], "usage");
+            assert_eq!(value["next_action"], "af task events --help");
+            let mut json_argv = argv.clone();
+            json_argv.push("--json".into());
+            for args in [&argv, &json_argv] {
+                for kind in [
+                    clap::error::ErrorKind::DisplayHelp,
+                    clap::error::ErrorKind::DisplayVersion,
+                ] {
+                    assert!(usage(args, &clap::Error::raw(kind, "display only")).is_none());
+                }
+            }
+        }
     }
 
     /// Every leaf command that takes `--json`, given a flag it does not know: one document,

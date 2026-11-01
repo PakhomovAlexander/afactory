@@ -1,13 +1,16 @@
 #!/usr/bin/env python3
 """Build a signed nightly af from the newest green main on the owner's Linux VM (ADR-0265).
 
-    python3 -I scripts/nightly/build.py plan  --config PATH --date YYYY-MM-DD [--previous PATH]
-    python3 -I scripts/nightly/build.py build --config PATH --date YYYY-MM-DD [--previous PATH]
-                                              [--only-plan]
+    python3 -I scripts/nightly/build.py plan  --config PATH [--date YYYY-MM-DD | --night-of UNIT]
+                                              [--previous PATH]
+    python3 -I scripts/nightly/build.py build --config PATH [--date YYYY-MM-DD | --night-of UNIT]
+                                              [--previous PATH] [--only-plan]
 
-`plan` walks the first parents of the mirror's refs/heads/main from its tip and prints, as an
-af.nightly-plan/1 document, the newest commit whose `check /` check runs are all green, every
-red commit it walked over, the previous night and the stable baseline. `build` builds that
+Without --date the night is the UTC date systemd last started UNIT, or else today's UTC date,
+printed on stderr (ADR-0273, scripts/nightly/nightlychain.py). `plan` walks the first parents
+of the mirror's refs/heads/main from its tip and prints, as an af.nightly-plan/1 document, the
+newest commit whose `check /` check runs are all green, every red commit it walked over, the
+previous night and the stable baseline. `build` builds that
 plan in the pinned musl image, packages and smokes both Linux targets as the release does,
 signs SHA256SUMS with the nightly key and writes builds_root/<date>/nightly.json
 (af.nightly-build/1). It never pushes, publishes, posts or deletes anything outside
@@ -18,7 +21,6 @@ night, 1 refused with the reason on stderr. docs/nightly.md is the operator page
 """
 import argparse
 import hashlib
-import http.client
 import json
 import os
 import platform
@@ -34,30 +36,29 @@ sys.dont_write_bytecode = True
 HERE = os.path.dirname(os.path.abspath(__file__))
 ROOT = os.path.dirname(os.path.dirname(HERE))
 sys.path.insert(0, os.path.join(ROOT, "scripts", "performance"))
+sys.path.insert(0, HERE)
 
+import nightlychain  # noqa: E402
+import nightlygithub  # noqa: E402
+# The bounds of each GitHub request (ADR-0265, amended by ADR-0271).
+from nightlygithub import CONNECT_SECONDS, READ_SECONDS, RESPONSE_BYTES_MAX  # noqa: E402,F401
 from perflab import contracts, gitrefs, tomlfile  # noqa: E402
 from perflab.nightlycontracts import (CHECK_PREFIX, DATE_PATTERN, RELEASE_JOB_PREFIX,  # noqa: E402
                                       RELEASE_JOBS, SIGNATURE, SUMS, TARGETS, asset_name,
-                                      night_date, nightly_tag, nightly_version)
+                                      nightly_tag, nightly_version)
 from perflab.values import ContractError, loads_strict, require  # noqa: E402
 
 EXIT_BUILT, EXIT_REFUSED, EXIT_SKIPPED = 0, 1, 3
 MAX_WALK_DEFAULT = 20
-API_HOST = "api.github.com"
-CONNECT_SECONDS, READ_SECONDS = 5, 30
-RESPONSE_BYTES_MAX = 16 * 1024 * 1024
-PER_PAGE, PAGES_MAX = 100, 20
 GREEN = ("success", "skipped")
 PASSWORD_ENV = "AF_NIGHTLY_SIGN_PASSWORD"
+# The systemd credential the build unit may hold the passphrase as instead (ADR-0273).
+PASSWORD_CREDENTIAL = "af-nightly-sign-password"
 SHELLS = ("bash", "zsh", "fish", "elvish", "powershell")
 # Bounds of each external step, in seconds.
 FETCH_SECONDS, BUILD_SECONDS, PROBE_SECONDS = 1800, 5400, 120
 SMOKE_SECONDS, AF_SECONDS, SIGN_SECONDS = 900, 120, 120
 CONTAINER_HOME = "/home/nightly"
-
-
-class Refused(Exception):
-    """The night cannot be planned or built; the message says why."""
 
 
 # Configuration ------------------------------------------------------------------------------
@@ -73,89 +74,24 @@ def load_config(path):
     return dict(doc, max_walk=doc.get("max_walk", MAX_WALK_DEFAULT))
 
 
+class Refused(Exception):
+    """The night cannot be planned or built; the message says why."""
+
+
 def read_token(config):
     """The GitHub token from `github_token_file`, or None to ask anonymously."""
-    path = config.get("github_token_file")
-    if path is None:
-        return None
-    try:
-        with open(path, "r", encoding="utf-8") as stream:
-            token = stream.read(4096).strip()
-    except OSError as error:
-        raise Refused("github_token_file %s: %s" % (path, error))
-    require(token and re.match(r"^[A-Za-z0-9_.-]+$", token) is not None,
-            "github_token_file %s holds no token" % path)
-    return token
+    return nightlygithub.read_token(config.get("github_token_file"), Refused)
 
 
 # GitHub check runs --------------------------------------------------------------------------
 
-def https_get(path, headers):
-    """One bounded GET of api.github.com: 5 s to connect, 30 s for each read."""
-    connection = http.client.HTTPSConnection(API_HOST, timeout=CONNECT_SECONDS)
-    try:
-        connection.connect()
-        connection.sock.settimeout(READ_SECONDS)
-        connection.request("GET", path, headers=headers)
-        response = connection.getresponse()
-        return response.status, response.read(RESPONSE_BYTES_MAX + 1)
-    finally:
-        connection.close()
+class GitHub(nightlygithub.Client):
+    """The check runs of a commit, every page, through `opener` (`nightlygithub.opener()` by
+    default), each request retried once when it fails or the server answers 5xx; a failure
+    refuses the night."""
 
-
-class GitHub:
-    """The check runs of a commit, every page, through `get` (`https_get` by default), each
-    request retried once when it fails or the server answers 5xx."""
-
-    def __init__(self, repository, token=None, get=https_get):
-        self.repository = repository
-        self.token = token
-        self.get = get
-
-    def request(self, path):
-        headers = {"Accept": "application/vnd.github+json", "User-Agent": "af-nightly-build",
-                   "X-GitHub-Api-Version": "2022-11-28"}
-        if self.token:
-            headers["Authorization"] = "Bearer " + self.token
-        failure = None
-        for _ in range(2):
-            try:
-                status, body = self.get(path, headers)
-            except (OSError, http.client.HTTPException) as error:
-                failure = str(error) or type(error).__name__
-                continue
-            if status >= 500:
-                failure = "HTTP %d" % status
-                continue
-            if status != 200:
-                raise Refused("GitHub answered HTTP %d for %s" % (status, path))
-            try:
-                return loads_strict(body, "GitHub " + path, RESPONSE_BYTES_MAX)
-            except ContractError as error:
-                raise Refused(str(error))
-        raise Refused("GitHub %s failed twice: %s" % (path, failure))
-
-    def check_runs(self, sha):
-        """[{name, status, conclusion}] of every check run of `sha`, all pages."""
-        runs = []
-        for page in range(1, PAGES_MAX + 1):
-            doc = self.request("/repos/%s/commits/%s/check-runs?filter=latest&per_page=%d"
-                               "&page=%d" % (self.repository, sha, PER_PAGE, page))
-            batch = doc.get("check_runs") if isinstance(doc, dict) else None
-            total = doc.get("total_count") if isinstance(doc, dict) else None
-            if not isinstance(batch, list) or type(total) is not int:
-                raise Refused("GitHub check runs of %s: not a check-runs page" % sha)
-            for item in batch:
-                if not (isinstance(item, dict) and isinstance(item.get("name"), str)
-                        and isinstance(item.get("status"), str)
-                        and (item.get("conclusion") is None
-                             or isinstance(item.get("conclusion"), str))):
-                    raise Refused("GitHub check runs of %s: a malformed check run" % sha)
-                runs.append({"name": item["name"], "status": item["status"],
-                             "conclusion": item["conclusion"]})
-            if not batch or len(runs) >= total:
-                return runs
-        raise Refused("%s has more than %d check runs" % (sha, PER_PAGE * PAGES_MAX))
+    error = Refused
+    agent = "af-nightly-build"
 
 
 def is_release_job(name):
@@ -650,13 +586,28 @@ class Night:
                 "sha256": "sha256:" + hashlib.sha256(data).hexdigest(), "bytes": len(data),
                 "smoke": "passed", "version_json": version_json}
 
+    def credential_password(self):
+        """The passphrase systemd's LoadCredential= gave this process as
+        `$CREDENTIALS_DIRECTORY/af-nightly-sign-password`, its first line; "" without one."""
+        directory = self.environ.get("CREDENTIALS_DIRECTORY")
+        path = os.path.join(directory, PASSWORD_CREDENTIAL) if directory else None
+        if path is None or not os.path.isfile(path):
+            return ""
+        try:
+            with open(path, "r", encoding="utf-8") as stream:
+                lines = stream.read(4096).splitlines()
+        except (OSError, UnicodeDecodeError) as error:
+            raise Refused("the credential %s: %s" % (PASSWORD_CREDENTIAL, getattr(
+                error, "strerror", None) or type(error).__name__))
+        return lines[0] if lines else ""
+
     def sign(self, entries):
         digests = dict((entry["asset"][len("dist/"):], entry["sha256"][len("sha256:"):])
                        for entry in entries)
         with open(os.path.join(self.root, SUMS), "w", encoding="ascii", newline="") as stream:
             stream.write(sha256sums_text(digests))
         env = {"PATH": self.path_env(), "LC_ALL": "C"}
-        password = self.environ.get(PASSWORD_ENV, "")
+        password = self.environ.get(PASSWORD_ENV, "") or self.credential_password()
         comment = "af " + self.plan["tag"]
         # -W signs with a key that has no passphrase; with one, minisign reads it from stdin.
         argv = ["minisign", "-S"] + ([] if password else ["-W"]) + [
@@ -767,7 +718,7 @@ def parse(argv):
                        ("build", "build, package, smoke and sign the plan's commit")):
         command = commands.add_parser(name, help=text)
         command.add_argument("--config", required=True, help="the af.nightly-config/1 TOML")
-        command.add_argument("--date", required=True, help="the night, YYYY-MM-DD")
+        nightlychain.add_night_options(command)
         command.add_argument("--previous", help="the previous night's nightly.json, built or "
                              "skipped, instead of the newest one under builds_root")
         if name == "build":
@@ -782,18 +733,21 @@ def emit(doc):
     sys.stdout.flush()
 
 
-def main(argv=None, github=None, host=None, clock=now_ms, environ=None):
+def main(argv=None, github=None, host=None, clock=now_ms, environ=None,
+         show=nightlychain.systemctl_show):
     args = parse(argv)
     environ = os.environ if environ is None else environ
     try:
-        night_date(args.date, "--date")
+        date, chosen = nightlychain.night(args, clock, show, Refused)
+        if chosen:
+            sys.stderr.write(chosen)
         config = load_config(args.config)
         git = Mirror(config["mirror"])
         if github is None:
             github = GitHub(config["repository"], read_token(config))
         started = clock()
-        previous = previous_night(config["builds_root"], args.date, args.previous)
-        plan = make_plan(config, args.date, git, github, previous)
+        previous = previous_night(config["builds_root"], date, args.previous)
+        plan = make_plan(config, date, git, github, previous)
         skipped = plan["status"] == "skipped"
         if args.command == "plan":
             emit(plan)

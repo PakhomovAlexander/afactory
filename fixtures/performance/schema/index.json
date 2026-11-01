@@ -1127,6 +1127,59 @@
       "shape": false
     },
     {
+      "path": "nightly-daily/valid-complete.json",
+      "contract": "nightly-daily",
+      "valid": true,
+      "digest": "nightly-daily/digest-complete.md"
+    },
+    {
+      "path": "nightly-daily/valid-skipped.json",
+      "contract": "nightly-daily",
+      "valid": true,
+      "digest": "nightly-daily/digest-skipped.md"
+    },
+    {
+      "path": "nightly-daily/valid-no-core-result.json",
+      "contract": "nightly-daily",
+      "valid": true,
+      "digest": "nightly-daily/digest-no-core-result.md"
+    },
+    {
+      "path": "nightly-daily/invalid-label-without-a-verdict.json",
+      "contract": "nightly-daily",
+      "valid": false,
+      "error": "the verdict's result, or UNAVAILABLE without one",
+      "shape": false
+    },
+    {
+      "path": "nightly-daily/invalid-shown-is-not-its-rational.json",
+      "contract": "nightly-daily",
+      "valid": false,
+      "error": "the exact rational to three significant digits",
+      "shape": false
+    },
+    {
+      "path": "nightly-daily/invalid-skipped-with-performance.json",
+      "contract": "nightly-daily",
+      "valid": false,
+      "error": "a skipped night measures nothing",
+      "shape": false
+    },
+    {
+      "path": "nightly-daily/invalid-unknown-field.json",
+      "contract": "nightly-daily",
+      "valid": false,
+      "error": "unknown field published",
+      "shape": true
+    },
+    {
+      "path": "nightly-config/invalid-history-nights.toml",
+      "contract": "nightly-config",
+      "valid": false,
+      "error": "must be within 1..60",
+      "shape": true
+    },
+    {
       "path": "nightly-config/invalid-requires-a-release-job.toml",
       "contract": "nightly-config",
       "valid": false,
@@ -1139,6 +1192,79 @@
       "valid": false,
       "error": "does not match",
       "shape": true
+    },
+    {
+      "path": "nightly-publish/valid-published.json",
+      "contract": "nightly-publish",
+      "valid": true
+    },
+    {
+      "path": "nightly-publish/valid-skipped.json",
+      "contract": "nightly-publish",
+      "valid": true
+    },
+    {
+      "path": "nightly-publish/invalid-assets-out-of-order.json",
+      "contract": "nightly-publish",
+      "valid": false,
+      "error": "every asset of the night, in order",
+      "shape": false
+    },
+    {
+      "path": "nightly-publish/invalid-telegram-without-a-reason.json",
+      "contract": "nightly-publish",
+      "valid": false,
+      "error": "a Telegram message id, or the reason there is none",
+      "shape": false
+    },
+    {
+      "path": "nightly-publish/invalid-skipped-with-a-release.json",
+      "contract": "nightly-publish",
+      "valid": false,
+      "error": "a skipped night publishes, uploads and prunes nothing",
+      "shape": false
+    },
+    {
+      "path": "nightly-publish/invalid-release-of-another-night.json",
+      "contract": "nightly-publish",
+      "valid": false,
+      "error": "release.url: expected https://github.com/PakhomovAlexander/afactory/releases/tag/nightly-2026.10.29",
+      "shape": false
+    },
+    {
+      "path": "nightly-publish/invalid-prune-failure-of-a-pruned-tag.json",
+      "contract": "nightly-publish",
+      "valid": false,
+      "error": "prune_failures: each tag once, never one pruned",
+      "shape": false
+    },
+    {
+      "path": "nightly-publish/invalid-asset-digest-without-algorithm.json",
+      "contract": "nightly-publish",
+      "valid": false,
+      "error": "does not match",
+      "shape": true
+    },
+    {
+      "path": "nightly-config/invalid-telegram-chat-without-a-token.toml",
+      "contract": "nightly-config",
+      "valid": false,
+      "error": "telegram_token_file and telegram_chat_id are set together or not at all",
+      "shape": false
+    },
+    {
+      "path": "nightly-config/invalid-measure-deadline.toml",
+      "contract": "nightly-config",
+      "valid": false,
+      "error": "must be within 30..600",
+      "shape": true
+    },
+    {
+      "path": "nightly-config/invalid-reports-root-inside-builds-root.toml",
+      "contract": "nightly-config",
+      "valid": false,
+      "error": "reports_root and builds_root lie apart",
+      "shape": false
     },
     {
       "path": "plan-refusal/invalid-status.json",
