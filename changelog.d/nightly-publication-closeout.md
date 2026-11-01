@@ -1,5 +1,3 @@
-# Nightly publication close-out
-
 - Nightly publication now validates the complete daily-report contract and binds its date, tag, repository and build head to the selected night before any GitHub or Telegram write.
 - Report composition now detects replacement of its new output directory by either a link or another real directory and writes no files into the substitute.
 - The nightly Cargo-rewrite test uses a hermetic locked/offline resolver model by default; the real-Cargo integration remains available explicitly with `AF_NIGHTLY_REAL_CARGO=1`.
