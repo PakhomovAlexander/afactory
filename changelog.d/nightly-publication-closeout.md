@@ -1,0 +1,6 @@
+- Nightly publication now validates the complete daily-report contract and binds its date, tag, repository and build head to the selected night before any GitHub or Telegram write.
+- Report composition now detects replacement of its new output directory by either a link or another real directory and writes no files into the substitute.
+- The nightly Cargo-rewrite test uses a hermetic locked/offline resolver model by default; the real-Cargo integration remains available explicitly with `AF_NIGHTLY_REAL_CARGO=1`.
+- Authenticated GitHub and Telegram writes no longer honor ambient proxy variables, and nightly release answers are bound to the selected tag and their own release id before amendment or upload.
+- Nightly measurement rejects a duplicate executor request id instead of allowing one unfinished original to hide the other, and fractional systemd start timestamps retain millisecond precision at the 23-hour boundary.
+- Nightly report tests read committed gzip fixtures so their archive goldens are stable across Python and zlib versions.

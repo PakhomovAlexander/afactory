@@ -317,6 +317,20 @@ fn dispatch_runs_the_version_a_project_pins_when_the_bytes_match() {
         "{text}"
     );
     assert!(text.contains(&format!("from={VERSION}")), "{text}");
+    // A local parse error must still reach the pinned release: it may know commands this
+    // binary does not. Reusing the early parse must not report that error before dispatch.
+    let future_command = sandbox
+        .command(common::af_binary())
+        .args(["command-known-only-to-the-pin", "--json"])
+        .current_dir(&repo)
+        .output()
+        .unwrap();
+    assert!(future_command.status.success(), "{}", err(&future_command));
+    assert!(
+        out(&future_command).contains("fake af 0.8.1 command-known-only-to-the-pin --json"),
+        "{}",
+        out(&future_command)
+    );
     let receipt = std::fs::read_to_string(sandbox.versions().join("0.8.1/receipt.toml")).unwrap();
     assert!(
         receipt.contains("verified_by = \"lock+signature\""),

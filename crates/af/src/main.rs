@@ -1703,6 +1703,9 @@ fn main() {
         std::process::exit(code);
     }
     clap_complete::CompleteEnv::with_factory(cli::Af::command).complete();
+    // Keep the result (including clap's rendered help/error) for ordinary dispatch rather
+    // than constructing and parsing the same command tree a second time.
+    let parsed = cli::Af::try_parse_from(&argv);
     // `af catalog digest` reads one directory and writes nothing (ADR-0157), so it runs and
     // exits before every self-management hook: it never dispatches to or installs a pinned
     // release, schedules an update check or touches af's own state.
@@ -1713,9 +1716,9 @@ fn main() {
                 command: cli::CatalogCommand::Digest { package },
             }),
         ..
-    }) = cli::Af::try_parse_from(&argv)
+    }) = &parsed
     {
-        if let Err(error) = task_execution::catalog::digest(&package) {
+        if let Err(error) = task_execution::catalog::digest(package) {
             eprintln!("af catalog digest: {error}");
             std::process::exit(1);
         }
@@ -1723,7 +1726,7 @@ fn main() {
     }
     selfmgmt::maybe_dispatch(&argv);
     // `parse_from`, with the trace exported before help, usage and errors exit.
-    let parsed = match cli::Af::try_parse_from(&argv) {
+    let parsed = match parsed {
         Ok(parsed) => parsed,
         Err(error) => {
             drop(startup);

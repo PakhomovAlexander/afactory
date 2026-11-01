@@ -1,0 +1,66 @@
+{
+  "schema": "af.nightly-publish/1",
+  "status": "published",
+  "date": "2026-10-29",
+  "tag": "nightly-2026.10.29",
+  "head_sha": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+  "repository": "PakhomovAlexander/afactory",
+  "release": {
+    "id": 250000001,
+    "url": "https://github.com/PakhomovAlexander/afactory/releases/tag/nightly-2026.10.29"
+  },
+  "assets": [
+    {
+      "name": "af-nightly-2026.10.29-x86_64-unknown-linux-musl.tar.gz",
+      "size": 9000000,
+      "digest": "sha256:0000000000000000000000000000000000000000000000000000000000000000"
+    },
+    {
+      "name": "af-nightly-2026.10.29-aarch64-unknown-linux-musl.tar.gz",
+      "size": 9000001,
+      "digest": "sha256:1111111111111111111111111111111111111111111111111111111111111111"
+    },
+    {
+      "name": "SHA256SUMS",
+      "size": 212,
+      "digest": "sha256:2222222222222222222222222222222222222222222222222222222222222222"
+    },
+    {
+      "name": "SHA256SUMS.minisig",
+      "size": 326,
+      "digest": "sha256:3333333333333333333333333333333333333333333333333333333333333333"
+    },
+    {
+      "name": "nightly.json",
+      "size": 2900,
+      "digest": "sha256:4444444444444444444444444444444444444444444444444444444444444444"
+    },
+    {
+      "name": "daily.json",
+      "size": 18000,
+      "digest": "sha256:5555555555555555555555555555555555555555555555555555555555555555"
+    },
+    {
+      "name": "report.html",
+      "size": 240000,
+      "digest": "sha256:6666666666666666666666666666666666666666666666666666666666666666"
+    }
+  ],
+  "telegram": {
+    "message_id": 4242
+  },
+  "telegram_reason": null,
+  "pruned": [
+    "nightly-2026.10.14",
+    "nightly-2026.10.15"
+  ],
+  "prune_failures": [
+    {
+      "tag": "nightly-2026.10.15",
+      "reason": "GitHub answered HTTP 502 for DELETE /repos/PakhomovAlexander/afactory/git/refs/tags/nightly-2026.10.15"
+    }
+  ],
+  "foreign": [],
+  "amendments": 0,
+  "published_unix_ms": 1761710400000
+}

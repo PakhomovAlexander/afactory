@@ -173,6 +173,9 @@ class Parity(unittest.TestCase):
         for contract, kinds in covered.items():
             self.assertEqual(kinds, {True, False}, contract)
         listed = set(os.path.normpath(entry["path"]) for entry in self.index)
+        # A daily report's golden digest.md beside its daily.json (test_nightly_report).
+        listed.update(os.path.normpath(entry["digest"]) for entry in self.index
+                      if "digest" in entry)
         for directory, _, files in os.walk(FIXTURES):
             for name in files:
                 relative = os.path.relpath(os.path.join(directory, name), FIXTURES)
