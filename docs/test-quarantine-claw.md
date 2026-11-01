@@ -94,23 +94,106 @@ CLAW
 ```
 
 Then run this launch block. The host's `git` needs `-c safe.directory='*'` to verify the checkout
-another uid owns before the detached launch:
+another uid owns before the detached launch. Host Python materializes the whole production
+`perflab` package fresh from the verified `COMMIT` object in a private host-only directory beside
+`run`, outside every container bind mount. It refuses a dirty source (including staged, untracked
+and ignored files), comparing package files directly with those committed bytes before importing
+only the host-only copy. It never runs checkout filters or filesystem-monitor hooks to check
+cleanliness. Archive links and paths outside the package refuse. Its temporary directory is
+removed without following links on exit. Python
+binds the installed root-owned anchor's exact identity to the checked `MachineLock`, held in the
+parent until Docker exits:
 
 ```sh
 ssh claw-3 COMMIT="$COMMIT" bash -s <<'CLAW'
 set -e
 WORK="$HOME/af-quarantine-$COMMIT"
 test "$(git -c safe.directory='*' -C "$WORK/run/src" rev-parse HEAD)" = "$COMMIT"
-nohup flock -n /tmp/af-perf-machine.lock sh -c '
-  FENCE=/tmp/af-perf-machine.lock.fence
-  if [ -e "$FENCE" ] || [ -L "$FENCE" ]; then
-    echo "Refusing confirmation: $FENCE exists; operator recovery must confirm all owned resources stopped before fence cleanup." >&2
-    exit 1
-  fi
-  exec docker run --rm --name afq-confirm \
-    -v "$1/run":/work -w /work/src af-quarantine-confirm:1.88.0 \
-    python3 scripts/test-quarantine.py confirm --report /work/confirm.json
-' sh "$WORK" > "$WORK/confirm.log" 2>&1 &
+nohup python3 -I -B - "$WORK" "$COMMIT" > "$WORK/confirm.log" 2>&1 <<'PYCODE' &
+import io
+import os
+from pathlib import Path, PurePosixPath
+import stat
+import subprocess
+import sys
+import tarfile
+import tempfile
+
+work, commit = sys.argv[1:]
+package = "scripts/performance/perflab"
+git = ["git", "--no-replace-objects", "-c", "core.fsmonitor=false",
+       "-c", "safe.directory=*", "-C",
+       os.path.join(work, "run/src")]
+if subprocess.check_output(git + ["rev-parse", "HEAD"], text=True).strip() != commit:
+    sys.exit("Refusing confirmation: checkout HEAD differs from COMMIT")
+def dirty_source():
+    sys.exit("Refusing confirmation: dirty host authority source; restore the verified package")
+
+if subprocess.check_output(git + ["diff-index", "--cached", "--no-ext-diff", "--no-textconv",
+                                  "--name-only", commit, "--", package]):
+    dirty_source()
+archive = subprocess.check_output(git + ["archive", "--format=tar", commit, package])
+with tempfile.TemporaryDirectory(prefix="host-authority-", dir=work) as authority:
+    committed = {}
+    with tarfile.open(fileobj=io.BytesIO(archive), mode="r:") as source:
+        for member in source:
+            path = PurePosixPath(member.name)
+            if (path.is_absolute() or ".." in path.parts
+                    or not (member.isdir() or member.isfile())
+                    or (member.isfile() and not member.name.startswith(package + "/"))
+                    or (member.isdir() and member.name.rstrip("/") not in
+                        ("scripts", "scripts/performance", package)
+                        and not member.name.startswith(package + "/"))):
+                sys.exit("Refusing confirmation: unsafe host authority archive member")
+            destination = Path(authority).joinpath(*path.parts)
+            if member.isdir():
+                destination.mkdir(parents=True, exist_ok=True)
+            else:
+                destination.parent.mkdir(parents=True, exist_ok=True)
+                committed[member.name] = source.extractfile(member).read()
+                with destination.open("xb") as output:
+                    output.write(committed[member.name])
+    if not {package + "/__init__.py", package + "/hostlock.py"} <= set(committed):
+        sys.exit("Refusing confirmation: incomplete host authority archive")
+    checkout = Path(work) / "run/src"
+    actual = set()
+    if any((checkout / part).is_symlink()
+           for part in ("scripts", "scripts/performance", package)):
+        dirty_source()
+    for directory, dirs, files in os.walk(checkout / package, followlinks=False):
+        if any((Path(directory) / name).is_symlink() for name in dirs + files):
+            dirty_source()
+        actual.update(str((Path(directory) / name).relative_to(checkout)) for name in files)
+    if actual != set(committed):
+        dirty_source()
+    try:
+        for name, data in committed.items():
+            fd = os.open(checkout / name, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
+            with os.fdopen(fd, "rb") as current:
+                if not stat.S_ISREG(os.fstat(fd).st_mode) or current.read(len(data) + 1) != data:
+                    dirty_source()
+    except OSError:
+        dirty_source()
+    sys.path.insert(0, os.path.join(authority, "scripts/performance"))
+    from perflab import hostlock
+
+    try:
+        identity = hostlock.read_anchor(required=True)
+        with hostlock.MachineLock(expected_identity=identity):
+            result = subprocess.run([
+                "docker", "run", "--rm", "--name", "afq-confirm",
+                "-v", os.path.join(work, "run") + ":/work", "-w", "/work/src",
+                "af-quarantine-confirm:1.88.0", "python3", "scripts/test-quarantine.py",
+                "confirm", "--report", "/work/confirm.json",
+            ])
+    except hostlock.Refused as refused:
+        if refused.reason != "concurrent_shard":
+            print("Refusing confirmation: %s. Missing or unsafe coordination state requires "
+                  "operator provisioning/recovery; operator recovery must confirm all owned "
+                  "resources stopped before fence cleanup." % refused, file=sys.stderr)
+        sys.exit(1)
+sys.exit(result.returncode)
+PYCODE
 CLAW
 ```
 
@@ -118,12 +201,20 @@ Claw also hosts the performance laboratory, whose experiments take a non-blockin
 `flock` on `/tmp/af-perf-machine.lock` (`scripts/performance/perflab/hostlock.py`,
 [`performance-local-executor.md`](performance-local-executor.md)). The confirmation holds that
 lock for its whole run, so an experiment started meanwhile refuses to start rather than measure
-under load, and the confirmation does not start while an experiment holds the lock: `flock -n`
-then exits 1 at once, no `afq-confirm` container appears and `confirm.log` stays empty. Once the
-lock is free, repeat only the launch block above, with the same `COMMIT`; do not repeat the
+under load, and the confirmation does not start while an experiment holds the lock: `MachineLock`
+acquires non-blockingly and exits 1 at once when busy, no `afq-confirm` container appears and
+`confirm.log` stays empty. Once the lock is free, repeat only the launch block above, with the
+same `COMMIT`; do not repeat the
 preparation block or `git clone`.
 
-After acquiring the lock, the launch also refuses if `/tmp/af-perf-machine.lock.fence` exists
+The required `/etc/af-perf-machine-lock.json` anchor must be root-owned and safe. Production
+`MachineLock` opens the existing lock without creation or symlink following and checks its
+regular-file type, single link, mode, named versus held inode and anchored device/inode. Missing,
+unsafe or mismatched anchor/lock state refuses before Docker and needs operator provisioning or
+recovery as described in the performance operator guide; never automatically create, repin,
+remove or replace coordination state to get a confirmation started.
+
+After acquiring the lock, its constructor also refuses if `/tmp/af-perf-machine.lock.fence` exists
 (including a dangling symlink), recording the refusal in `confirm.log` before Docker starts.
 This fence means an experiment's cleanup is uncertain
 ([ADR-0240](adr/0240-execute-performance-experiments-independently-on-a-locked-vm.md)). Operator

@@ -96,7 +96,8 @@ def _check_directory(directory, system_owned):
 
 class MachineLock(object):
     """The held machine lock. `directory` is a seam for the laboratory's own tests; production
-    always uses the system's `/tmp`, which must be root-owned."""
+    always uses the system's `/tmp`, which must be root-owned. An explicit `expected_identity`
+    binds a previously required anchor read without rereading it or permitting creation."""
 
     def __init__(self, directory=None, register=None, expected_identity=None):
         self.fd = None
@@ -108,7 +109,9 @@ class MachineLock(object):
         if register is not None:
             register(self)
         system_owned = directory is None
-        self.expected_identity = (read_anchor() if system_owned else expected_identity)
+        self.expected_identity = expected_identity
+        if self.expected_identity is None and system_owned:
+            self.expected_identity = read_anchor()
         directory = os.path.realpath(directory or MACHINE_LOCK_DIRECTORY)
         _check_directory(directory, system_owned)
         self.path = os.path.join(directory, MACHINE_LOCK_NAME)

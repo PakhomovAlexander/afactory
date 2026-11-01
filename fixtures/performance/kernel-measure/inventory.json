@@ -3102,8 +3102,8 @@
   },
   {
    "path": "scripts/performance/perflab/hostlock.py",
-   "sha256": "sha256:711d0007ed0dd95087557cd7f64e2af4dce591dab8541327b22c0ae75f18e393",
-   "size": 11916
+   "sha256": "sha256:781941d064f48fecbdbf239c7beb4cc322321dc92632f380deb9922450415d35",
+   "size": 12111
   },
   {
    "path": "scripts/performance/perflab/hostobserver.py",
@@ -3547,8 +3547,8 @@
   },
   {
    "path": "scripts/performance/tests/test_hostlock.py",
-   "sha256": "sha256:d19774cc0ea8cefc6d6122782ba45fc2d920b884c44919d1fe6f0922f535cfa3",
-   "size": 10381
+   "sha256": "sha256:50c7b4b45e7dc7c3abcc007b268e200961062a7ad58c7614348c43bf83af1a64",
+   "size": 13304
   },
   {
    "path": "scripts/performance/tests/test_hostobserver.py",
@@ -3771,7 +3771,7 @@
    "size": 6777
   }
  ],
- "harness_digest": "sha256:6c909d132efdebc628426059af80a0b4e7a880dcdbfaac19b0d357f88a567a26",
+ "harness_digest": "sha256:7eb353307c71a8e3a24c94c3df9d7e286e68f90b9f01c9d494aef213a9a9f517",
  "inner_metric": "pending",
  "inner_metric_reason": "the inner wall_ms metric is recorded in every Measurement but no staged objective selects it until the guard's real kernel integration and tampered-candidate tests are accepted on the sealed source and a reviewed human change installs and selects it",
  "objective_metric": "elapsed_ms",

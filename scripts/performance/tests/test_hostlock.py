@@ -10,6 +10,7 @@ import json
 import os
 import subprocess
 import sys
+from unittest import mock
 
 from perflab import hostlock, runner
 from tests import test_runner
@@ -51,6 +52,53 @@ else:
 
 
 class MachineLock(TempDir):
+    def test_explicit_required_identity_with_system_default_never_rereads_or_creates(self):
+        path = self.path(hostlock.MACHINE_LOCK_NAME)
+        with open(path, "w"):
+            pass
+        os.chmod(path, 0o644)
+        info = os.stat(path)
+        identity = [info.st_dev, info.st_ino]
+        directory_info = list(os.lstat(self.tmp))
+        directory_info[4] = 0  # Simulate the production root-owned directory, never real /tmp.
+        lstat = os.lstat
+        check_directory = hostlock._check_directory
+        with mock.patch.object(hostlock, "MACHINE_LOCK_DIRECTORY", self.tmp), \
+                mock.patch.object(hostlock, "read_anchor", side_effect=AssertionError("reread")) \
+                as read_anchor, \
+                mock.patch.object(hostlock.os, "lstat", side_effect=lambda name:
+                                  os.stat_result(directory_info) if name == self.tmp
+                                  else lstat(name)), \
+                mock.patch.object(hostlock, "_check_directory", wraps=check_directory) as check:
+            with hostlock.MachineLock(expected_identity=identity) as lock:
+                self.assertIs(lock.expected_identity, identity)
+            check.assert_called_once_with(os.path.realpath(self.tmp), True)
+            # An anchor can vanish after the caller's required read; a missing lock cannot
+            # turn the already bound identity into the constructor's optional creation path.
+            os.unlink(path)
+            with self.assertRaises(hostlock.Refused) as caught:
+                hostlock.MachineLock(expected_identity=identity)
+            self.assertIn("cannot open the machine lock", str(caught.exception))
+            self.assertFalse(os.path.lexists(path))
+            read_anchor.assert_not_called()
+
+    def test_explicit_identity_preserves_system_root_and_sticky_directory_validation(self):
+        for kind in ("not-root", "not-sticky"):
+            with self.subTest(kind=kind):
+                info = list(os.lstat(self.tmp))
+                info[4] = 1000 if kind == "not-root" else 0
+                if kind == "not-sticky":
+                    info[0] = (info[0] & ~0o7777) | 0o777
+                with mock.patch.object(hostlock, "MACHINE_LOCK_DIRECTORY", self.tmp), \
+                        mock.patch.object(hostlock.os, "lstat", return_value=os.stat_result(info)), \
+                        mock.patch.object(hostlock, "read_anchor",
+                                          side_effect=AssertionError("reread")):
+                    with self.assertRaises(hostlock.Refused) as caught:
+                        hostlock.MachineLock(expected_identity=[1, 2])
+                self.assertIn("not the system" if kind == "not-root" else "without the sticky bit",
+                              str(caught.exception))
+                self.assertFalse(os.path.exists(self.path(hostlock.MACHINE_LOCK_NAME)))
+
     def private_environment(self, name):
         """A process's own TMPDIR, HOME, XDG directories and working directory."""
         root = self.path(name)

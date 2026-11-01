@@ -9,6 +9,7 @@ import json
 import os
 from pathlib import Path
 import re
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -676,20 +677,26 @@ class Apply(QuarantineFiles):
 
 
 # Execute the runbook's remote shell bodies locally. Every privileged/network command is a
-# fake; ownership is a receipt, not a host chown. flock takes a real test-local advisory lock.
+# fake except local Git object reads; ownership is a receipt, not a host chown. Host Python
+# imports the archived production package with temporary coordination paths and simulated root uid.
 RUNBOOK_STUB = r'''
+import builtins
 import fcntl
+import io
 import json
 import os
 from pathlib import Path
+import shutil
 import subprocess
 import sys
+import tarfile
 
+sys.dont_write_bytecode = True
 name, args = Path(sys.argv[0]).name, sys.argv[1:]
 home = Path(os.environ['HOME'])
 work = home / ('af-quarantine-' + os.environ['COMMIT'])
 owner = work / 'owner'
-lock = home / 'machine.lock'
+lock = home / 'af-perf-machine.lock'
 with (home / 'events').open('a') as output:
     output.write(json.dumps([name, args]) + '\n')
 if name == 'id':
@@ -707,28 +714,133 @@ elif name == 'chown':
         sys.exit('chown: Operation not permitted')
     owner.write_text('1000')
 elif name == 'git':
-    assert args == ['-c', 'safe.directory=*', '-C', str(work / 'run/src'), 'rev-parse', 'HEAD']
-    print((work / 'run/src/HEAD').read_text())
+    if args[0] == '--no-replace-objects':
+        args = args[1:]
+        assert args[:2] == ['-c', 'core.fsmonitor=false']
+        args = args[2:]
+    else:
+        assert args[-2:] == ['rev-parse', 'HEAD'], 'host object reads must disable replacements'
+    assert args[:4] == ['-c', 'safe.directory=*', '-C', str(work / 'run/src')]
+    command = args[4:]
+    assert command in (['rev-parse', 'HEAD'],
+                      ['diff-index', '--cached', '--no-ext-diff', '--no-textconv',
+                       '--name-only', os.environ['COMMIT'], '--',
+                       'scripts/performance/perflab'],
+                      ['archive', '--format=tar', os.environ['COMMIT'],
+                       'scripts/performance/perflab'])
+    command_line = [os.environ['RUNBOOK_GIT'], '--no-replace-objects',
+                    '-c', 'core.fsmonitor=false'] + args
+    if command[0] == 'archive' and os.environ.get('FAKE_ARCHIVE_MEMBER'):
+        data = subprocess.check_output(command_line)
+        output = io.BytesIO()
+        with tarfile.open(fileobj=io.BytesIO(data)) as original, \
+                tarfile.open(fileobj=output, mode='w') as modified:
+            kind = os.environ['FAKE_ARCHIVE_MEMBER']
+            for member in original:
+                if (kind == 'missing-init' and member.name.endswith('/__init__.py')
+                        or kind == 'missing-hostlock' and member.name.endswith('/hostlock.py')):
+                    continue
+                modified.addfile(member, original.extractfile(member) if member.isfile() else None)
+            member = tarfile.TarInfo('scripts/performance/perflab/injected')
+            if kind in ('symlink', 'hardlink'):
+                member.type = tarfile.SYMTYPE if kind == 'symlink' else tarfile.LNKTYPE
+                member.linkname = str(home / 'outside')
+            elif kind == 'absolute':
+                member.name = str(home / 'outside')
+            elif kind == 'traversal':
+                member.name = 'scripts/performance/perflab/../../../../outside'
+            elif kind == 'outside-directory':
+                member.name, member.type = 'outside-directory', tarfile.DIRTYPE
+            elif kind not in ('missing-init', 'missing-hostlock'):
+                assert kind == 'outside-file'
+                member.name = 'scripts/performance/outside.py'
+            if kind not in ('missing-init', 'missing-hostlock'):
+                modified.addfile(member)
+        sys.stdout.buffer.write(output.getvalue())
+    else:
+        os.execv(command_line[0], command_line)
 elif name == 'nohup':
-    assert args[0] == 'flock'
+    assert args[0] == 'python3'
     os.execvp(args[0], args)
-elif name == 'flock':
-    assert args[:2] == ['-n', str(lock)]
-    with lock.open('a') as held:
-        try:
-            fcntl.flock(held, fcntl.LOCK_EX | fcntl.LOCK_NB)
-        except BlockingIOError:
-            sys.exit(1)
-        # Introduce a fence only after acquisition: a pre-lock check cannot pass this test.
-        fence = Path(str(lock) + '.fence')
-        kind = os.environ.get('FAKE_FENCE')
-        if kind == 'directory':
-            fence.mkdir()
-        elif kind == 'file':
-            fence.write_text('uncertain experiment')
-        elif kind == 'symlink':
-            fence.symlink_to(home / 'absent')
-        sys.exit(subprocess.call(args[2:]))
+elif name == 'python3':
+    from unittest import mock
+    assert args == ['-I', '-B', '-', str(work), os.environ['COMMIT']]
+    source = sys.stdin.read()
+    original_import = builtins.__import__
+
+    def instrument_import(name, globals=None, locals=None, fromlist=(), level=0):
+        package = original_import(name, globals, locals, fromlist, level)
+        if name != 'perflab' or 'hostlock' not in fromlist:
+            return package
+        hostlock = package.hostlock
+        imported = Path(hostlock.__file__).resolve()
+        assert (work / 'run').resolve() not in imported.parents, 'mutable host import'
+        assert imported.parents[3].parent == work.resolve(), 'authority must be host-only'
+        assert imported.parents[3].stat().st_mode & 0o777 == 0o700
+        with (home / 'imports').open('a') as output:
+            output.write(str(imported) + '\n')
+        anchor = home / 'anchor.json'
+        hostlock.MACHINE_LOCK_ANCHOR = str(anchor)
+        hostlock.MACHINE_LOCK_DIRECTORY = str(home)
+        read_anchor = hostlock.read_anchor
+        check_directory = hostlock._check_directory
+        fstat, lstat, flock = os.fstat, os.lstat, fcntl.flock
+
+        def anchor_stat(fd):
+            info = fstat(fd)
+            named = anchor.lstat()
+            if (info.st_dev, info.st_ino) == (named.st_dev, named.st_ino):
+                fields = list(info)
+                fields[4] = int(os.environ.get('FAKE_ANCHOR_UID', '0'))
+                return os.stat_result(fields)
+            return info
+
+        def anchored_read(required=False):
+            with (home / 'anchor-reads').open('a') as output:
+                output.write(json.dumps(required) + '\n')
+            with mock.patch.object(hostlock.os, 'fstat', anchor_stat):
+                identity = read_anchor(required=required)
+            if required and os.environ.get('FAKE_REMOVE_ANCHOR_LOCK'):
+                anchor.unlink()
+                lock.unlink()
+            return identity
+
+        def root_directory_stat(path):
+            info = lstat(path)
+            assert path == str(home.resolve())
+            fields = list(info)
+            fields[4] = 0
+            return os.stat_result(fields)
+
+        def system_directory(directory, system_owned):
+            assert system_owned, 'production system-directory validation must remain active'
+            with mock.patch.object(hostlock.os, 'lstat', root_directory_stat):
+                check_directory(directory, system_owned)
+
+        def acquired(fd, operation):
+            assert operation == fcntl.LOCK_EX | fcntl.LOCK_NB
+            flock(fd, operation)
+            # Introduce a fence only after acquisition: a pre-lock check cannot pass this test.
+            fence = Path(str(lock) + '.fence')
+            kind = os.environ.get('FAKE_FENCE')
+            if kind == 'directory':
+                fence.mkdir()
+            elif kind == 'file':
+                fence.write_text('uncertain experiment')
+            elif kind == 'symlink':
+                fence.symlink_to(home / 'absent')
+            if os.environ.get('FAKE_REPLACE_LOCK'):
+                lock.rename(home / 'held-lock')
+                lock.write_text('replacement')
+
+        hostlock.read_anchor = anchored_read
+        hostlock._check_directory = system_directory
+        hostlock.fcntl.flock = acquired
+        return package
+
+    with mock.patch.object(builtins, '__import__', instrument_import):
+        sys.argv = ['-', str(work), os.environ['COMMIT']]
+        exec(compile(source, '<runbook launch>', 'exec'), {'__name__': '__main__'})
 elif name == 'docker':
     assert (owner.read_text() if owner.exists() else os.environ['FAKE_UID']) == '1000'
     assert args[:2] == ['run', '--rm']
@@ -736,7 +848,7 @@ elif name == 'docker':
         assert args == ['run', '--rm', '--name', 'afq-confirm', '-v', str(work / 'run') + ':/work',
                         '-w', '/work/src', 'af-quarantine-confirm:1.88.0', 'python3',
                         'scripts/test-quarantine.py', 'confirm', '--report', '/work/confirm.json']
-        with lock.open('a') as probe:
+        with lock.open('r') as probe:
             try:
                 fcntl.flock(probe, fcntl.LOCK_EX | fcntl.LOCK_NB)
             except BlockingIOError:
@@ -744,27 +856,52 @@ elif name == 'docker':
             else:
                 sys.exit('Docker reached without the machine lock')
         assert not os.path.lexists(str(lock) + '.fence')
+        if os.environ.get('FAKE_DIRTY_HOSTLOCK'):
+            (work / 'run/src/scripts/performance/perflab/hostlock.py').write_text(
+                'raise RuntimeError("MUTABLE AUTHORITY IMPORTED")\n')
+        if os.environ.get('FAKE_AUTHORITY_LINK'):
+            imported = Path((home / 'imports').read_text().splitlines()[-1])
+            (imported.parent / 'cleanup-link').symlink_to(home / 'outside')
         print('fake confirmation launched')
     else:
         assert args[2:9] == ['-v', str(work / 'run') + ':/work', '-w', '/work',
                              'af-quarantine-confirm:1.88.0', 'sh', '-c']
         assert 'git clone https://github.com/PakhomovAlexander/afactory.git src &&' in args[9]
         assert 'git -C src checkout --detach ' + os.environ['COMMIT'] in args[9]
-        (work / 'run/src').mkdir()  # A repeated clone must fail, as the real one does.
-        (work / 'run/src/HEAD').write_text(os.environ['COMMIT'])
+        # A repeated clone must fail, as the real one does. This is a local object fixture.
+        shutil.copytree(os.environ['RUNBOOK_REPO'], work / 'run/src')
 else:
     sys.exit('unexpected stub: ' + name)
 '''
 
 
 class ClawRunbook(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls):
+        tmp = tempfile.TemporaryDirectory(prefix='afq-runbook-source-')
+        cls.addClassCleanup(tmp.cleanup)
+        cls.repo = Path(tmp.name)
+        cls.git = shutil.which('git')
+        package = cls.repo / 'scripts/performance/perflab'
+        shutil.copytree(ROOT / 'scripts/performance/perflab', package,
+                        ignore=shutil.ignore_patterns('__pycache__', '*.pyc'))
+        cls.git_env = {'HOME': str(cls.repo), 'PATH': '/usr/bin:/bin',
+                       'GIT_CONFIG_NOSYSTEM': '1', 'GIT_CONFIG_GLOBAL': os.devnull}
+        for args in (['init', '-q'], ['add', '.'],
+                     ['-c', 'user.name=Fixture', '-c', 'user.email=fixture@example.invalid',
+                      '-c', 'commit.gpgsign=false', 'commit', '-qm', 'authority fixture']):
+            subprocess.run([cls.git, '-C', str(cls.repo), *args], env=cls.git_env,
+                           check=True, capture_output=True)
+        cls.commit = subprocess.check_output(
+            [cls.git, '-C', str(cls.repo), 'rev-parse', 'HEAD'], env=cls.git_env, text=True).strip()
+
     def setUp(self):
         tmp = tempfile.TemporaryDirectory(prefix='afq-runbook-')
         self.addCleanup(tmp.cleanup)
-        self.dir = Path(tmp.name)
+        self.dir = Path(tmp.name).resolve()
         self.bin = self.dir / 'bin'
         self.bin.mkdir()
-        for name in ('id', 'sudo', 'chown', 'git', 'nohup', 'flock', 'docker'):
+        for name in ('id', 'sudo', 'chown', 'git', 'nohup', 'python3', 'docker'):
             path = self.bin / name
             path.write_text(f'#!{sys.executable} -I\n{RUNBOOK_STUB}')
             path.chmod(0o755)
@@ -776,18 +913,27 @@ class ClawRunbook(unittest.TestCase):
             r'^ssh claw-3 COMMIT="\$COMMIT" bash -s <<\'CLAW\'\n(.*?)^CLAW$',
             self.doc, re.MULTILINE | re.DOTALL)
         self.assertTrue(self.blocks, 'quoted COMMIT remote here-document is required')
-        self.work = self.dir / f'af-quarantine-{COMMIT}'
-        self.lock = self.dir / 'machine.lock'
+        self.work = self.dir / f'af-quarantine-{self.commit}'
+        self.lock = self.dir / 'af-perf-machine.lock'
+        self.lock.write_text('')
+        self.lock.chmod(0o644)
+        info = self.lock.stat()
+        self.anchor = self.dir / 'anchor.json'
+        self.anchor.write_text(json.dumps({'schema': 'af.perf-machine-lock-anchor/1',
+                                           'device': info.st_dev, 'inode': info.st_ino}))
+        self.anchor.chmod(0o644)
         self.fence = Path(str(self.lock) + '.fence')
 
-    def run_block(self, block, uid='1000', fence=''):
-        # Redirect only the literal machine path to our scratch; never touch a real fence.
-        block = block.replace('/tmp/af-perf-machine.lock', str(self.lock))
+    def run_block(self, block, uid='1000', fence='', extra_env=None):
         if 'nohup' in block:
             block += '\nwait "$!"\n'  # Join the detached stub deterministically; no sleeps.
         return subprocess.run(['/bin/bash', '-s'], input=block, capture_output=True, text=True,
-                              env={'HOME': str(self.dir), 'PATH': str(self.bin), 'COMMIT': COMMIT,
-                                   'FAKE_UID': uid, 'FAKE_FENCE': fence})
+                              env={'HOME': str(self.dir), 'PATH': str(self.bin),
+                                   'COMMIT': self.commit,
+                                   'FAKE_UID': uid, 'FAKE_FENCE': fence,
+                                   'RUNBOOK_REPO': str(self.repo), 'RUNBOOK_GIT': self.git,
+                                   'GIT_CONFIG_NOSYSTEM': '1', 'GIT_CONFIG_GLOBAL': os.devnull,
+                                   **(extra_env or {})})
 
     def events(self):
         return [json.loads(line) for line in (self.dir / 'events').read_text().splitlines()]
@@ -795,6 +941,226 @@ class ClawRunbook(unittest.TestCase):
     def prepare(self, uid='1000'):
         result = self.run_block(self.blocks[0], uid=uid)
         self.assertEqual(result.returncode, 0, result.stderr)
+
+    def assert_launch_refused(self, needle, extra_env=None):
+        before = len([e for e in self.events() if e[0] == 'docker'])
+        result = self.run_block(self.blocks[-1], extra_env=extra_env)
+        self.assertEqual(result.returncode, 1, result.stderr)
+        log = (self.work / 'confirm.log').read_text()
+        self.assertIn(needle, log)
+        self.assertIn('operator provisioning/recovery', log)
+        self.assertEqual(len([e for e in self.events() if e[0] == 'docker']), before)
+
+    def test_missing_anchored_lock_refuses_before_docker_without_creating_a_lock(self):
+        self.prepare()
+        self.lock.unlink()
+        anchor = self.anchor.read_bytes()
+        self.assert_launch_refused('cannot open the machine lock')
+        self.assertFalse(self.lock.exists())
+        self.assertEqual(self.anchor.read_bytes(), anchor)
+
+    def test_anchor_and_lock_disappearing_after_required_read_never_create_or_launch(self):
+        self.prepare()
+        self.assert_launch_refused('cannot open the machine lock',
+                                   extra_env={'FAKE_REMOVE_ANCHOR_LOCK': '1'})
+        self.assertEqual((self.dir / 'anchor-reads').read_text().splitlines(), ['true'])
+        self.assertFalse(self.anchor.exists())
+        self.assertFalse(self.lock.exists())
+        self.assertEqual(list(self.work.glob('host-authority-*')), [])
+
+    def test_previous_confirmation_dirtying_hostlock_refuses_before_import_or_docker(self):
+        self.prepare()
+        # Git status can be fooled by this index flag; compare actual package bytes instead.
+        subprocess.run([self.git, '-C', str(self.work / 'run/src'), 'update-index',
+                        '--assume-unchanged', 'scripts/performance/perflab/hostlock.py'],
+                       env=self.git_env, check=True)
+        result = self.run_block(self.blocks[-1], extra_env={'FAKE_DIRTY_HOSTLOCK': '1'})
+        self.assertEqual(result.returncode, 0, result.stderr)
+        imports = (self.dir / 'imports').read_bytes()
+        before = len([e for e in self.events() if e[0] == 'docker'])
+        result = self.run_block(self.blocks[-1])
+        self.assertEqual(result.returncode, 1, result.stderr)
+        log = (self.work / 'confirm.log').read_text()
+        self.assertIn('dirty host authority source', log)
+        self.assertNotIn('MUTABLE AUTHORITY IMPORTED', log)
+        self.assertEqual((self.dir / 'imports').read_bytes(), imports)
+        self.assertEqual(len([e for e in self.events() if e[0] == 'docker']), before)
+        self.assertEqual(list(self.work.glob('host-authority-*')), [])
+
+    def test_dirty_package_init_staged_untracked_and_ignored_authority_refuse_before_import(self):
+        self.prepare()
+        package = self.work / 'run/src/scripts/performance/perflab'
+        for kind in ('init', 'staged', 'untracked', 'ignored', 'symlink', 'fifo', 'missing'):
+            with self.subTest(kind=kind):
+                name = ('__init__.py' if kind == 'init' else 'hostlock.py'
+                        if kind in ('symlink', 'fifo', 'missing') else 'injected.py')
+                path = package / name
+                before = path.read_bytes() if path.exists() else None
+                if kind in ('symlink', 'fifo', 'missing'):
+                    path.unlink()
+                    if kind == 'symlink':
+                        path.symlink_to(self.dir / 'absent-source')
+                    elif kind == 'fifo':
+                        os.mkfifo(path)
+                else:
+                    path.write_text('raise RuntimeError("MUTABLE AUTHORITY IMPORTED")\n')
+                repo = self.work / 'run/src'
+                if kind == 'staged':
+                    subprocess.run([self.git, '-C', str(repo), 'add', str(path)],
+                                   env=self.git_env, check=True)
+                if kind == 'ignored':
+                    (repo / '.git/info/exclude').write_text('injected.py\n')
+                result = self.run_block(self.blocks[-1])
+                self.assertEqual(result.returncode, 1, result.stderr)
+                self.assertIn('dirty host authority source', (self.work / 'confirm.log').read_text())
+                self.assertFalse((self.dir / 'imports').exists())
+                self.assertEqual([e[1][:2] for e in self.events() if e[0] == 'docker'],
+                                 [['run', '--rm']])  # Preparation alone.
+                if kind == 'staged':
+                    subprocess.run([self.git, '-C', str(repo), 'reset', '-q', 'HEAD', '--', str(path)],
+                                   env=self.git_env, check=True)
+                path.unlink(missing_ok=True)
+                if before is not None:
+                    path.write_bytes(before)
+
+    def test_fresh_host_only_authority_cleanup_never_follows_links_or_deletes_outside(self):
+        self.prepare()
+        outside = self.dir / 'outside'
+        outside.mkdir()
+        sentinel = outside / 'sentinel'
+        sentinel.write_text('keep me')
+        prior = self.work / 'host-authority-prior'
+        prior.mkdir()
+        (prior / 'sentinel').write_text('previous state')
+        for _ in range(2):
+            result = self.run_block(self.blocks[-1], extra_env={'FAKE_AUTHORITY_LINK': '1'})
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertEqual(sentinel.read_text(), 'keep me')
+            self.assertEqual((prior / 'sentinel').read_text(), 'previous state')
+            self.assertEqual(list(self.work.glob('host-authority-*')), [prior])
+        imports = (self.dir / 'imports').read_text().splitlines()
+        self.assertEqual(len(imports), 2)
+        self.assertNotEqual(imports[0], imports[1])
+        self.assertTrue(all(not Path(path).exists() for path in imports))
+
+    def test_archive_links_and_paths_outside_the_package_refuse_without_import_or_escape(self):
+        self.prepare()
+        outside = self.dir / 'outside'
+        outside.write_text('untouched')
+        for kind in ('symlink', 'hardlink', 'absolute', 'traversal',
+                     'outside-file', 'outside-directory', 'missing-init', 'missing-hostlock'):
+            with self.subTest(kind=kind):
+                result = self.run_block(self.blocks[-1],
+                                        extra_env={'FAKE_ARCHIVE_MEMBER': kind})
+                self.assertEqual(result.returncode, 1, result.stderr)
+                needle = ('incomplete host authority archive' if kind.startswith('missing-')
+                          else 'unsafe host authority archive member')
+                self.assertIn(needle,
+                              (self.work / 'confirm.log').read_text())
+                self.assertFalse((self.dir / 'imports').exists())
+                self.assertEqual(outside.read_text(), 'untouched')
+                self.assertFalse((self.work / 'outside-directory').exists())
+                self.assertEqual(list(self.work.glob('host-authority-*')), [])
+                self.assertEqual(len([e for e in self.events() if e[0] == 'docker']), 1)
+
+    def test_authority_cleanliness_never_executes_checkout_filters_or_fsmonitor(self):
+        self.prepare()
+        trap = self.bin / 'git-hook-trap'
+        marker = self.dir / 'hook-executed'
+        trap.write_text(f'#!{sys.executable} -I\n'
+                        f'from pathlib import Path\nPath({str(marker)!r}).touch()\n')
+        trap.chmod(0o755)
+        repo = self.work / 'run/src'
+        for key in ('core.fsmonitor', 'filter.trap.clean'):
+            subprocess.run([self.git, '-C', str(repo), 'config', key, str(trap)],
+                           env=self.git_env, check=True)
+        (repo / '.gitattributes').write_text('*.py filter=trap\n')
+        result = self.run_block(self.blocks[-1])
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertFalse(marker.exists())
+
+    def test_replaced_lock_refuses_the_anchor_mismatch_before_docker_without_repinning(self):
+        self.prepare()
+        anchor = self.anchor.read_bytes()
+        original = self.dir / 'original-lock'
+        self.lock.rename(original)
+        self.lock.write_text('replacement')
+        self.assert_launch_refused('inode differs from the root-owned anchor')
+        self.assertEqual(self.lock.read_text(), 'replacement')
+        self.assertEqual(self.anchor.read_bytes(), anchor)
+        self.assertTrue(original.exists())
+
+    def test_replacement_during_acquisition_refuses_the_named_vs_held_inode_before_docker(self):
+        self.prepare()
+        anchor = self.anchor.read_bytes()
+        self.assert_launch_refused('no longer names the locked file',
+                                   extra_env={'FAKE_REPLACE_LOCK': '1'})
+        self.assertEqual(self.lock.read_text(), 'replacement')
+        self.assertTrue((self.dir / 'held-lock').exists())
+        self.assertEqual(self.anchor.read_bytes(), anchor)
+
+    def test_symlinked_lock_including_dangling_refuses_before_docker_without_following(self):
+        self.prepare()
+        target = self.dir / 'lock-target'
+        self.lock.rename(target)
+        for destination in (target, self.dir / 'absent'):
+            with self.subTest(destination=destination.name):
+                self.lock.symlink_to(destination)
+                self.assert_launch_refused('cannot open the machine lock')
+                self.assertTrue(self.lock.is_symlink())
+                self.assertEqual(target.read_bytes(), b'')
+                self.assertFalse((self.dir / 'absent').exists())
+                self.lock.unlink()
+
+    def test_unsafe_lock_mode_or_second_link_refuses_before_docker_without_repair(self):
+        self.prepare()
+        self.lock.chmod(0o666)
+        self.assert_launch_refused('writable by others')
+        self.assertEqual(self.lock.stat().st_mode & 0o777, 0o666)
+        self.lock.chmod(0o644)
+        os.link(self.lock, self.dir / 'second-link')
+        self.assert_launch_refused('has 2 links, not one')
+        self.assertEqual(self.lock.stat().st_nlink, 2)
+
+    def test_missing_unsafe_or_mismatched_anchor_refuses_before_docker_without_repair(self):
+        self.prepare()
+        anchor = self.anchor.read_bytes()
+        info = self.lock.stat()
+        for kind, needle in (('missing', 'requires root-owned'),
+                             ('owner', 'unsafe root-owned machine lock anchor'),
+                             ('mode', 'unsafe root-owned machine lock anchor'),
+                             ('symlink', 'machine lock anchor refused'),
+                             ('mismatch', 'inode differs from the root-owned anchor')):
+            with self.subTest(kind=kind):
+                extra_env = {}
+                if kind == 'missing':
+                    self.anchor.unlink()
+                elif kind == 'owner':
+                    extra_env['FAKE_ANCHOR_UID'] = '2001'
+                elif kind == 'mode':
+                    self.anchor.chmod(0o666)
+                elif kind == 'symlink':
+                    self.anchor.unlink()
+                    self.anchor.symlink_to(self.dir / 'absent')
+                else:
+                    document = json.loads(anchor)
+                    document['inode'] += 1
+                    self.anchor.write_text(json.dumps(document))
+                before = self.anchor.read_bytes() if kind not in ('missing', 'symlink') else None
+                self.assert_launch_refused(needle, extra_env=extra_env)
+                self.assertEqual(self.lock.stat(), info)
+                if kind == 'missing':
+                    self.assertFalse(self.anchor.exists())
+                elif kind == 'symlink':
+                    self.assertTrue(self.anchor.is_symlink())
+                    self.assertFalse((self.dir / 'absent').exists())
+                else:
+                    self.assertEqual(self.anchor.read_bytes(), before)
+                    if kind == 'mode':
+                        self.assertEqual(self.anchor.stat().st_mode & 0o777, 0o666)
+                self.anchor.unlink(missing_ok=True)
+                self.anchor.write_bytes(anchor)
+                self.anchor.chmod(0o644)
 
     def test_fence_under_the_lock_refuses_before_docker_and_requires_operator_recovery(self):
         self.prepare()
@@ -816,12 +1182,25 @@ class ClawRunbook(unittest.TestCase):
                     self.fence.unlink()
 
     def test_absent_fence_permits_the_detached_named_confirmation_under_the_lock(self):
+        import fcntl
         self.prepare()
         result = self.run_block(self.blocks[-1])
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertEqual([name for name, _ in self.events()],
-                         ['id', 'docker', 'git', 'nohup', 'flock', 'docker'])
+                         ['id', 'docker', 'git', 'nohup', 'python3', 'git', 'git', 'git', 'docker'])
         self.assertEqual((self.work / 'confirm.log').read_text(), 'fake confirmation launched\n')
+        self.assertEqual((self.dir / 'anchor-reads').read_text().splitlines(), ['true'])
+        self.assertEqual(list(self.work.glob('host-authority-*')), [])
+        # Docker checked exclusion in its own process; the parent releases only on return.
+        with self.lock.open('r') as released:
+            fcntl.flock(released, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        self.assertIn('https://get.nexte.st/0.9.132/linux', self.doc)
+        self.assertIn('docker ps --filter name=afq-confirm', self.doc)
+        self.assertIn('tail -n 20 af-quarantine-$COMMIT/confirm.log', self.doc)
+        for artifact in ('run/confirm.json', 'confirm.log'):
+            self.assertIn(f'scp "claw-3:af-quarantine-$COMMIT/{artifact}"', self.doc)
+        self.assertIn('1 min\n35 s', self.doc)
+        self.assertIn('All nine were clean on\nLinux', self.doc)
 
     def test_non_root_non_1000_preparation_elevates_ownership_before_any_docker(self):
         self.prepare(uid='2001')
@@ -856,9 +1235,11 @@ class ClawRunbook(unittest.TestCase):
         self.assertEqual((self.work / 'confirm.log').read_text(), '')
         self.assertEqual(self.run_block(launch).returncode, 0)
         self.assertEqual([name for name, _ in self.events()],
-                         ['id', 'docker', 'git', 'nohup', 'flock', 'git', 'nohup', 'flock', 'docker'])
+                         ['id', 'docker', 'git', 'nohup', 'python3',
+                          'git', 'git', 'git', 'git', 'nohup', 'python3',
+                          'git', 'git', 'git', 'docker'])
         before = self.events()
-        (self.work / 'run/src/HEAD').write_text('wrong commit')
+        (self.work / 'run/src/.git/HEAD').write_text('1' * 40 + '\n')
         self.assertNotEqual(self.run_block(launch).returncode, 0)
         self.assertEqual(self.events()[len(before):], [['git', before[2][1]]])
 
