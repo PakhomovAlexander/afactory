@@ -59,7 +59,7 @@ Provider registry v1 is refused: recreate registrations with this release. Exist
   fixtures are read-only. The installed production adapter's full PR, recovery, review and
   follow-up sequence now exercises read-only fixture copies and verifies they remain unchanged.
 
-## [0.14.0-rc.4] - 2026-11-02
+## [0.14.0-rc.4] - 2026-11-02 [YANKED]
 
 ### Authority compatibility
 
