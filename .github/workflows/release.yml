@@ -78,10 +78,10 @@ jobs:
             os: macos-latest
             cross: none
           - target: x86_64-unknown-linux-musl
-            os: ubuntu-latest
+            os: ubuntu-24.04
             cross: zig
           - target: aarch64-unknown-linux-musl
-            os: ubuntu-latest
+            os: ubuntu-24.04
             cross: zig-qemu
     runs-on: ${{ matrix.os }}
     steps:

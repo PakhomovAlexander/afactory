@@ -1,8 +1,9 @@
 #!/usr/bin/env python3
-"""Check the Pi validation record against its non-self-referential source projection.
+"""Verify historical Pi evidence against an explicitly selected source and claim.
 
---projection prints the binding to retain before measurement. --check never writes;
---measurement-log additionally checks a supplied real log (never an implicit local path).
+--projection prints a source binding; --check never writes or measures performance.
+--measurement-log additionally verifies supplied log bytes, never an implicit local path.
+A successful check says nothing about a different or future checkout.
 """
 import argparse
 import hashlib
@@ -15,8 +16,8 @@ import stat
 ROOT = Path(__file__).resolve().parent.parent
 RECORD = 'docs/design/pi-provider-validation.md'
 EXCLUDED = frozenset({'.git', 'target', RECORD})
-BEGIN = '<!-- af-pi-validation-current:v1 -->'
-END = '<!-- /af-pi-validation-current -->'
+BEGIN = '<!-- af-pi-validation-claim:v1 -->'
+END = '<!-- /af-pi-validation-claim -->'
 FILTER = 'test(=perf_kernel_measure::guarded_kernel_experiments_measure_one_judged_sample)'
 
 
@@ -66,21 +67,12 @@ def unique_object(pairs):
     return result
 
 
-def read_claim(root):
-    text = (root / RECORD).read_text(encoding='utf-8')
-    # Count the marker family, so unsupported/duplicate versions fail closed too.
-    if text.count('<!-- af-pi-validation-current:') != 1 or text.count(END) != 1:
-        raise ValueError('expected exactly one versioned current claim')
-    pattern = re.escape(BEGIN) + r'\s*```json\n(.*?)\n```\s*' + re.escape(END)
-    match = re.search(pattern, text, re.DOTALL)
-    if match is None:
-        raise ValueError('unsupported or malformed current claim')
-    claim = json.loads(match[1], object_pairs_hook=unique_object)
+def validate_claim(claim):
     # This flat contract uses only these JSON Schema keywords. Reading the shipped schema
     # here keeps the stdlib reader and its versioned on-disk shape together.
     schema = json.loads((ROOT / 'schemas/pi-validation-claim-v1.json').read_text())
     if not isinstance(claim, dict) or set(claim) != set(schema['required']):
-        raise ValueError('current claim fields differ from schema')
+        raise ValueError('historical claim fields differ from schema')
     for key, rule in schema['properties'].items():
         value = claim[key]
         expected = str if rule['type'] == 'string' else int
@@ -93,15 +85,45 @@ def read_claim(root):
     return claim
 
 
-def check(root, measurement_log=None):
-    claim = read_claim(root)
+def read_claims(record):
+    text = record.read_text(encoding='utf-8')
+    # Scan original comment spans before extraction can erase a nested marker. A comment
+    # runs from its first opener to its first terminator (or EOF), without nesting.
+    original_comments = re.finditer(r'<!--.*?(?:-->|$)', text, re.DOTALL)
+    if any('af-pi-validation' in comment[0] and comment[0] not in (BEGIN, END)
+           for comment in original_comments):
+        raise ValueError('unsupported or malformed historical claim blocks')
+    pattern = re.compile(re.escape(BEGIN) + r'\s*```json\n(.*?)\n```\s*' +
+                         re.escape(END), re.DOTALL)
+    matches = pattern.findall(text)
+    # Remove only consumed delimiters, retaining their JSON and unrelated historical prose.
+    # Reserve the literal ASCII, case-sensitive namespace anywhere in a comment body,
+    # including malformed comments with extra dashes or no closing delimiter.
+    comments = re.finditer(r'<!--(.*?)(?:-->|$)', pattern.sub(r'\1', text), re.DOTALL)
+    if not matches or any('af-pi-validation' in comment[1] for comment in comments):
+        raise ValueError('unsupported or malformed historical claim blocks')
+    claims = {}
+    for content in matches:
+        claim = validate_claim(json.loads(content, object_pairs_hook=unique_object))
+        key = claim['source_sha256']
+        if key in claims:
+            raise ValueError('duplicate historical source claim: ' + key)
+        claims[key] = claim
+    return claims
+
+
+def check(root, record, claim_source, measurement_log=None):
+    claims = read_claims(record)
+    if claim_source not in claims:
+        raise ValueError('selected historical claim not found: ' + claim_source)
+    claim = claims[claim_source]
     source = projection(root)
     if source != {key: claim[key] for key in source}:
-        raise ValueError('current claim does not match candidate source: ' + source_line(source))
+        raise ValueError('historical claim does not match selected source: ' + source_line(source))
     if measurement_log is not None:
         content = measurement_log.read_bytes()
         if 'sha256:' + hashlib.sha256(content).hexdigest() != claim['log_sha256']:
-            raise ValueError('measurement log SHA256 differs from current claim')
+            raise ValueError('measurement log SHA256 differs from historical claim')
         lines = content.decode('utf-8').splitlines()
         for prefix, expected in [
                 ('pi-validation source: ', source_line(source)),
@@ -112,7 +134,7 @@ def check(root, measurement_log=None):
                 raise ValueError('measurement log binding/outcome differs: ' + prefix)
         summaries = [line.strip() for line in lines if line.strip().startswith('Summary [')]
         if summaries != [claim['summary']]:
-            raise ValueError('measurement log summary differs from current claim')
+            raise ValueError('measurement log summary differs from historical claim')
     return source
 
 
@@ -121,18 +143,23 @@ def main():
     mode = parser.add_mutually_exclusive_group(required=True)
     mode.add_argument('--check', action='store_true')
     mode.add_argument('--projection', action='store_true')
-    parser.add_argument('--root', type=Path, default=ROOT)
+    parser.add_argument('--root', type=Path, help='source directory; required for --check')
+    parser.add_argument('--record', type=Path, default=ROOT / RECORD)
+    parser.add_argument('--claim-source', help='recorded source_sha256 selecting historical evidence')
     parser.add_argument('--measurement-log', type=Path)
     args = parser.parse_args()
-    if args.measurement_log and not args.check:
-        parser.error('--measurement-log requires --check')
+    if (args.measurement_log or args.claim_source) and not args.check:
+        parser.error('--measurement-log and --claim-source require --check')
+    if args.check and (args.root is None or args.claim_source is None):
+        parser.error('--check requires explicit --root and --claim-source')
     try:
-        source = check(args.root, args.measurement_log) if args.check else projection(args.root)
+        source = (check(args.root, args.record, args.claim_source, args.measurement_log)
+                  if args.check else projection(args.root or ROOT))
     except (OSError, ValueError) as error:
         parser.exit(1, 'pi-validation: ' + str(error) + '\n')
     print(source_line(source))
     if args.check:
-        print('current claim matches candidate source; measurement log ' +
+        print('historical claim matches selected source; measurement log ' +
               ('verified' if args.measurement_log else 'not supplied (not read)'))
 
 

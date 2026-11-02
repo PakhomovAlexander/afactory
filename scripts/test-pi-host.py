@@ -48,16 +48,73 @@ class ValidationTests(unittest.TestCase):
 
     def cli(self, *args):
         return subprocess.run([sys.executable, '-I', '-B', str(ROOT / 'scripts/pi-validation.py'),
-                               '--root', str(self.root), '--check', *args],
+                               '--root', str(self.root), '--record', str(self.record),
+                               '--claim-source', self.claim.get('source_sha256', 'sha256:' + 'f' * 64),
+                               '--check', *args],
                               capture_output=True, text=True, timeout=10, check=False)
 
-    def test_current_claim_matches_this_candidate(self):
-        # This existing, classified suite runs in normal CI, including hermetic SDK mode.
-        result = subprocess.run([sys.executable, '-I', '-B',
-                                 str(ROOT / 'scripts/pi-validation.py'), '--check'],
-                                capture_output=True, text=True, timeout=30, check=False)
-        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
-        self.assertIn('measurement log not supplied (not read)', result.stdout)
+    def test_future_checkout_needs_no_new_measurement_and_no_implicit_source_is_verified(self):
+        # Normal functional CI parses retained evidence, never compares it to today's tree.
+        claims = VALIDATION.read_claims(ROOT / VALIDATION.RECORD)
+        self.assertGreaterEqual(len(claims), 6)
+        before = self.record.read_bytes()
+        (self.root / 'unrelated-future-change').write_text('new release content')
+        self.assertEqual(VALIDATION.read_claims(self.record)[self.claim['source_sha256']],
+                         self.claim)
+        self.assertEqual(self.record.read_bytes(), before)
+        self.assertIn('does not match selected source', self.cli().stderr)
+        for args in [[], ['--claim-source', self.claim['source_sha256']],
+                     ['--root', str(self.root)]]:
+            result = subprocess.run([sys.executable, '-I', '-B',
+                                     str(ROOT / 'scripts/pi-validation.py'), '--check', *args],
+                                    capture_output=True, text=True, timeout=10, check=False)
+            self.assertNotEqual(result.returncode, 0)
+            self.assertIn('requires explicit --root and --claim-source', result.stderr)
+
+    def test_explicit_selection_keeps_distinct_historical_claims_and_rejects_unknown_source(self):
+        earlier = self.record.read_text()
+        original_source = self.claim['source_sha256']
+        (self.root / 'source').write_text('later measured fixture source')
+        self.claim.update(VALIDATION.projection(self.root))
+        self.write_claim()
+        later = self.record.read_text()
+        self.record.write_text('Historical af-pi-validation-claim prose.\n' + earlier +
+                               '\n<!-- unrelated historical comment -->\n' + later + '\nEnd of record.\n')
+        self.assertEqual(len(VALIDATION.read_claims(self.record)), 2)
+        self.assertEqual(self.cli().returncode, 0)
+        wrong = self.cli('--claim-source', original_source)
+        self.assertNotEqual(wrong.returncode, 0)
+        self.assertIn('does not match selected source', wrong.stderr)
+        (self.root / 'source').write_text('original source')
+        self.assertEqual(self.cli('--claim-source', original_source).returncode, 0)
+        unknown = self.cli('--claim-source', 'sha256:' + '0' * 64)
+        self.assertNotEqual(unknown.returncode, 0)
+        self.assertIn('selected historical claim not found', unknown.stderr)
+        # Even an unselected malformed or duplicate record must fail closed.
+        self.record.write_text(earlier + '\n' + later + '\n' + later)
+        self.assertIn('duplicate historical source claim', self.cli().stderr)
+        self.record.write_text(earlier + '\n' + later.replace(':v1 -->', ':v2 -->'))
+        self.assertIn('unsupported or malformed', self.cli().stderr)
+
+    def test_catalog_adapter_rc4_and_premerge_rc5_records_keep_original_values(self):
+        claims = VALIDATION.read_claims(ROOT / VALIDATION.RECORD)
+        for digest, entries, files, log, summary in [
+                ('7f9261ba019aa397fb84cae3673d0e04d3e3ca0e3d11afc75e1575dcce16d8a3',
+                 3859, 3172, 'c264cfb6ccd88b5f55310bcff46c331769a9afe1442e60af995d6fd61e02790c',
+                 'Summary [ 912.403s] 1 test run: 1 passed (1 slow), 4010 skipped'),
+                ('aa0f0012b53e0b8ad6448b7213cd4bfd97c10f38bffed193ff64356991f22144',
+                 3883, 3195, 'b9cc4fa3bd5c082f6e5a31adfbda4a1840670abc9e8c0758ac156f9c5fc43f5e',
+                 'Summary [ 792.681s] 1 test run: 1 passed (1 slow), 4014 skipped'),
+                ('2339691c0b34404684686e27422b3d90f7f7db4fdda2ecc3c59dae137cf7ae14',
+                 3799, 3112, '790aedf44dd4a37b8db3d4a61e11ebe0d0ab69b40fb1f0fb5694282c02185796',
+                 'Summary [1323.393s] 1 test run: 1 passed (1 slow), 4010 skipped'),
+                ('41cf48452e806ca51167b55b05165fd22f197c286f662cba97cac2119084e955',
+                 3799, 3112, '369a647a1c971b6756d25afdddd23ce9bd7f5d43086f59b66db67c83783f12a8',
+                 'Summary [ 817.770s] 1 test run: 1 passed (1 slow), 4010 skipped')]:
+            with self.subTest(source=digest):
+                claim = claims['sha256:' + digest]
+                self.assertEqual((claim['entries'], claim['files'], claim['log_sha256'],
+                                  claim['summary']), (entries, files, 'sha256:' + log, summary))
 
     def test_source_mutation_and_stale_counts_refuse_without_rewriting_record(self):
         self.assertEqual(self.cli().returncode, 0)
@@ -65,7 +122,7 @@ class ValidationTests(unittest.TestCase):
         (self.root / 'source').write_text('mutated source')
         result = self.cli()
         self.assertNotEqual(result.returncode, 0)
-        self.assertIn('does not match candidate source', result.stderr)
+        self.assertIn('does not match selected source', result.stderr)
         self.assertEqual(self.record.read_bytes(), before)
         (self.root / 'source').write_text('original source')
         for field in ['entries', 'files', 'source_sha256']:
@@ -116,7 +173,8 @@ class ValidationTests(unittest.TestCase):
 
     def test_claim_is_closed_versioned_unique_and_never_selects_exclusions(self):
         for field, value in [('schema', 'af/pi-validation-claim@0'), ('exclusions', ['source']),
-                             ('exit_code', 1), ('entries', True), ('log_sha256', 'invalid'),
+                             ('exit_code', 1), ('entries', True), ('files', -1),
+                             ('command', 'fake measurement'), ('log_sha256', 'invalid'),
                              ('filter', 'test(/anything/)'), ('summary', 'passed')]:
             with self.subTest(field=field):
                 original = dict(self.claim)
@@ -124,15 +182,103 @@ class ValidationTests(unittest.TestCase):
                 self.write_claim()
                 self.assertNotEqual(self.cli().returncode, 0)
                 self.claim = original
+        for field in list(self.claim):
+            with self.subTest(missing=field):
+                original = dict(self.claim)
+                del self.claim[field]
+                self.write_claim()
+                self.assertNotEqual(self.cli().returncode, 0)
+                self.claim = original
         self.write_claim()
         valid = self.record.read_text()
         for malformed in [valid + valid, valid.replace(':v1 -->', ':v0 -->'),
                           valid.replace(VALIDATION.END, ''),
+                          valid.replace('af-pi-validation-claim', 'af-pi-validation-current'),
                           valid.replace('"schema":', '"entries": 0, "schema":')]:
             self.record.write_text(malformed)
             self.assertNotEqual(self.cli().returncode, 0)
 
-    def test_optional_real_log_checks_hash_source_filter_and_outcome(self):
+    def test_unconsumed_opening_and_closing_claim_family_markers_fail_closed(self):
+        valid = self.record.read_text()
+        for marker in [
+                VALIDATION.BEGIN, VALIDATION.END,
+                '<!-- af-pi-validation-claim:v2 -->',
+                '<!-- /af-pi-validation-claim:v2 -->',
+                '<!-- /af-pi-validation-claim:v1 -->',
+                '<!-- af-pi-validation-claim -->',
+                '<!-- af-pi-validation-claim: -->',
+                '<!-- af-pi-validation-claim_v2 -->',
+                '<!-- // af-pi-validation-claim:v2 -->',
+                '<!-- /af-pi-validation-claim: -->',
+                '<!-- af-pi-validation-claim:v1',
+                '<!-- /af-pi-validation-claim',
+                '<!--af-pi-validation-claim:v1-->',
+                '<!--/af-pi-validation-claim-->',
+                '<!-- \t / af-pi-validation-claim:v2 -->',
+                '<!-- /af-pi-validation-current:v2 -->',
+                '<!-- /af-pi-validation-future:v2 -->',
+                '<!-- af-pi-validation -->',
+                '<!-- /af-pi-validation -->',
+                '<!-- af-pi-validation-unknown:v99 -->',
+                '<!--- af-pi-validation-claim:v1 --->',
+                '<!---- /af-pi-validation-current --->',
+                '<!-- note: af-pi-validation-future:v2 is reserved -->',
+                '<!-- ordinary prefix\nthen af-pi-validation\nrest -->',
+                '<!-- prefix <!-- af-pi-validation-future -->',
+                '<!-- prefix af-pi-validation-future',
+                '<!-- /af-pi-validation-current:v2 -->' * 2]:
+            for position in ['before', 'after', 'replacement']:
+                with self.subTest(marker=marker, position=position):
+                    if position == 'replacement' and marker == VALIDATION.END:
+                        continue
+                    malformed = {'before': marker + '\n' + valid,
+                                 'after': valid + '\n' + marker,
+                                 'replacement': valid.replace(VALIDATION.END, marker)}[position]
+                    self.record.write_text(malformed)
+                    result = self.cli()
+                    self.assertNotEqual(result.returncode, 0, result.stdout)
+                    self.assertIn('unsupported or malformed', result.stderr)
+        # Marker counts alone cannot detect a marker hidden inside a consumed block.
+        self.claim['summary'] += ' <!-- /af-pi-validation-claim:v2 -->'
+        self.write_claim()
+        self.assertIn('unsupported or malformed', self.cli().stderr)
+
+    def test_original_comment_boundaries_refuse_wrapped_and_nested_claim_delimiters(self):
+        valid = self.record.read_text()
+        for malformed in [
+                '<!-- ordinary wrapper\n' + valid + '\n-->',
+                '<!-- ordinary prefix ' + valid,
+                valid.replace(VALIDATION.BEGIN,
+                              '<!-- ordinary prefix ' + VALIDATION.BEGIN + ' -->'),
+                valid.replace(VALIDATION.END,
+                              '<!-- ordinary prefix ' + VALIDATION.END + ' -->'),
+                valid.replace(VALIDATION.END, '<!-- ordinary prefix ' + VALIDATION.END),
+                valid.replace(VALIDATION.BEGIN, VALIDATION.BEGIN.replace('-->', '--->')),
+                valid.replace(VALIDATION.END, VALIDATION.END.replace('-->', '--->'))]:
+            with self.subTest(record=malformed):
+                self.record.write_text(malformed)
+                with self.assertRaisesRegex(ValueError, 'unsupported or malformed'):
+                    VALIDATION.read_claims(self.record)
+                result = self.cli()
+                self.assertNotEqual(result.returncode, 0, result.stdout)
+                self.assertIn('unsupported or malformed', result.stderr)
+
+    def test_reserved_comment_namespace_is_ascii_case_sensitive_and_prose_is_allowed(self):
+        self.write_claim('\nHistorical af-pi-validation prose remains ordinary text.\n'
+                         '<!-- ordinary historical comment -->\n'
+                         '<!-- AF-PI-VALIDATION-claim:v2 -->\n'
+                         '<!-- af-pi-Validation-current -->\n'
+                         '<!-- af-pi-valid\u0430tion uses a Cyrillic a -->\n'
+                         '<!-- unrelated dangling comment')
+        # Complete delimiters may share a line with prose; no Markdown rendering rule applies.
+        self.record.write_text('Ordinary prefix ' + self.record.read_text().replace(
+            VALIDATION.END, VALIDATION.END + ' ordinary suffix'))
+        self.assertEqual(VALIDATION.read_claims(self.record)[self.claim['source_sha256']],
+                         self.claim)
+        result = self.cli()
+        self.assertEqual(result.returncode, 0, result.stderr)
+
+    def test_supplied_log_checks_hash_source_filter_and_outcome(self):
         # Synthetic log checks the verifier, not a claimed execution of the measurement.
         log = self.root / 'target/fixture.log'
         log.parent.mkdir()
@@ -147,7 +293,10 @@ class ValidationTests(unittest.TestCase):
             self.write_claim()
 
         bind_log('\n'.join(lines) + '\n')
-        self.assertEqual(self.cli('--measurement-log', str(log)).returncode, 0)
+        verified = self.cli('--measurement-log', str(log))
+        self.assertEqual(verified.returncode, 0, verified.stderr)
+        self.assertIn('historical claim matches selected source; measurement log verified',
+                      verified.stdout)
         log.write_text(log.read_text() + 'unbound change\n')
         self.assertIn('SHA256 differs', self.cli('--measurement-log', str(log)).stderr)
         for index, replacement in [(0, lines[0].replace(self.claim['source_sha256'], 'stale')),
@@ -158,9 +307,14 @@ class ValidationTests(unittest.TestCase):
             bad[index] = replacement
             bind_log('\n'.join(bad) + '\n')
             self.assertNotEqual(self.cli('--measurement-log', str(log)).returncode, 0)
-        bind_log('\n'.join(lines + [lines[0]]) + '\n')
+        for duplicate in lines:
+            bind_log('\n'.join(lines + [duplicate]) + '\n')
+            self.assertNotEqual(self.cli('--measurement-log', str(log)).returncode, 0)
+        log.unlink()
         self.assertNotEqual(self.cli('--measurement-log', str(log)).returncode, 0)
-        self.assertEqual(self.cli().returncode, 0, 'normal CI does not need ephemeral logs')
+        source_only = self.cli()
+        self.assertEqual(source_only.returncode, 0)
+        self.assertIn('measurement log not supplied (not read)', source_only.stdout)
 
 
 def installed_sdk():
