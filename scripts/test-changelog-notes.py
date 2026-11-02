@@ -129,7 +129,18 @@ class Fragments(unittest.TestCase):
         self.assertEqual(self.notes('--check').returncode, 0)
 
     def test_rc5_retains_all_five_merged_adapter_notes_verbatim(self):
-        root = SCRIPTS.parent
+        self.assert_rc5_notes(SCRIPTS.parent)
+
+    def test_historical_rc5_notes_allow_later_version_and_new_adapter_fragment(self):
+        (self.repo / 'CHANGELOG.md').write_bytes((SCRIPTS.parent / 'CHANGELOG.md').read_bytes())
+        (self.repo / 'Cargo.toml').write_text('[workspace.package]\nversion = "0.15.0"\n')
+        self.note('scenario-github-future.md', '- A later GitHub Scenario change.\n')
+        self.assert_rc5_notes(self.repo)
+        result = self.notes('--check')
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(self.git('status', '--porcelain'), '')
+
+    def assert_rc5_notes(self, root):
         changelog = (root / 'CHANGELOG.md').read_bytes()
         rc5 = changelog.split(b'## [0.14.0-rc.5] - 2026-11-02\n', 1)[1].split(
             b'\n## [0.14.0-rc.4]', 1)[0]
@@ -165,10 +176,8 @@ class Fragments(unittest.TestCase):
         self.assertEqual(len(notes), 5)
         for note in notes:
             self.assertEqual(rc5.count(note), 1)
-        self.assertEqual(list((root / 'changelog.d').glob('scenario-github-*.md')), [])
         self.assertIn(b'fast releases require no fresh Pi measurement', rc5)
         self.assertIn(b'Pin both Linux release builds to Ubuntu 24.04', rc5)
-        self.assertIn('version = "0.14.0-rc.5"', (root / 'Cargo.toml').read_text())
 
     def test_pi_documentation_links_resolve_in_fragments_and_rendered_root_notes(self):
         root = SCRIPTS.parent
