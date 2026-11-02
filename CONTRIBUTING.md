@@ -274,19 +274,14 @@ Paste that table into the pull request description, next to the `af task report`
 
 A change to a contract, a wire shape, a gate, a budget, a sandbox boundary, or the release
 train is a design change and gets an ADR in `docs/adr/`. `docs/adr/README.md` is the
-authority on the shape; in short: take the next number after the highest in `docs/adr/`,
-name the file `NNNN-kebab-case-title.md` with a short imperative slug, open with a status line
-carrying the status and date (`**Status:** accepted (YYYY-MM-DD)` in most records), state the
-context, list the considered options with the reason each was rejected, record the decision,
-and end with `## Consequences`. Add the record to the index in `docs/adr/README.md`. An
-accepted ADR is immutable: a changed decision is a new ADR that names what it supersedes. A
-partially superseded ADR gains a status-line note linking the new one, and that status line may
-be restated when the new ADR spends the transition wording it carried; a fully superseded ADR
-is deleted with its index entry, and git history keeps it, unless the superseding ADR keeps it
-with a superseded status line. Links to a deleted ADR, or to an internal record or completed
-design note that was deleted, are rewritten to point at the superseding ADR or to plain text;
-this is the only edit allowed in another accepted ADR's body (ADR-0113 clauses 6 and 8,
-ADR-0145 clause 8).
+authority on identity, shape and lifecycle. Add the decision's own file as
+`YYYY-MM-DD-descriptive-topic.md`, with a unique, specific topic and a stable date-topic identity.
+There is no sequence allocation or per-decision index edit. Discover decisions with
+`python3 -I scripts/adr.py list` or GitHub directory browsing, as the guide documents.
+Open with status and date, state context, list rejected options and reasons, record the decision,
+and end with consequences. Acceptance makes the identity and body immutable; a changed decision
+uses a new ADR with explicit supersession and status-only notes under the guide's lifecycle.
+Legacy identities and historical numbering exceptions remain unchanged.
 
 A change never adds a reader, migration, alias or fallback for state, configuration or flags an
 earlier release wrote. A change to a persisted typed shape gives it a new version and changes its

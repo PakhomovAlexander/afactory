@@ -1,7 +1,7 @@
 # Pi coding agent Provider
 
 Status: implemented SDK host architecture, 2026-11-01. See proposed
-[ADR-0274](../adr/0274-own-the-pi-sdk-host-and-confine-its-tools.md).
+[Pi SDK host decision](../adr/2026-11-02-own-the-pi-sdk-host-and-confine-its-tools.md).
 
 AF supports **Node >=22.19** and the installed official
 `@earendil-works/pi-coding-agent` **1.4.0** SDK, release

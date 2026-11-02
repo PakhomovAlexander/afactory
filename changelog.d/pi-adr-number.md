@@ -1,3 +1,3 @@
-- Number the proposed Pi SDK host decision
-  [ADR-0274](https://github.com/PakhomovAlexander/afactory/blob/main/docs/adr/0274-own-the-pi-sdk-host-and-confine-its-tools.md), preserving
-  the accepted nightly decisions at ADR-0271 through ADR-0273.
+- Give the proposed Pi SDK host decision its own
+  [date-topic identity](https://github.com/PakhomovAlexander/afactory/blob/main/docs/adr/2026-11-02-own-the-pi-sdk-host-and-confine-its-tools.md),
+  preserving accepted ADR-0274 for Scenarios and all accepted nightly decision identities.

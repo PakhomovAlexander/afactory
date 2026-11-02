@@ -1,6 +1,6 @@
-# ADR-0274: Own the Pi SDK host and confine its tools
+# ADR-2026-11-02-own-the-pi-sdk-host-and-confine-its-tools: Own the Pi SDK host and confine its tools
 
-Date: 2026-11-01. Status: proposed; accepted on merge.
+Date: 2026-11-02. Status: proposed; accepted on merge.
 
 ## Context
 

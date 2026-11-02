@@ -209,7 +209,7 @@ Deliverables:
    as ADR-0108 does; pointing every check at one shared host directory without a key; a
    per-Attempt clone of the previous check's output), superseding ADR-0108's one-Round scope in
    part for Task checks only and stating the admission, validation and invalidation rules of §2,
-   linked from `docs/adr/README.md`; a `CHANGELOG.md` entry under Unreleased; a paragraph in
+   following the stable authoring guide in `docs/adr/README.md`; a `changelog.d/` note; a paragraph in
    `docs/tasks.md` on what `[warm]` grants and refuses.
 
 Acceptance:

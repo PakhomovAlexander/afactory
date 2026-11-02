@@ -330,6 +330,7 @@
   },
   "schema": "af.test-catalog/1",
   "scripts": {
+    "test-adr.py": "functional",
     "test-af-pin.py": "functional",
     "test-backlog-check-triage.py": "functional",
     "test-backlog-labels.py": "functional",

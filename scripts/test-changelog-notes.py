@@ -136,7 +136,7 @@ class Fragments(unittest.TestCase):
         # afterwards as well; while notes exist, render and audit every shipped Pi fragment.
         contents = {Path('pi-doc-links-regression.md'): (
             '- See [Pi architecture](' + base +
-            'docs/adr/0274-own-the-pi-sdk-host-and-confine-its-tools.md) and\n'
+            'docs/adr/2026-11-02-own-the-pi-sdk-host-and-confine-its-tools.md) and\n'
             '  [Pi validation](' + base + 'docs/design/pi-provider-validation.md).\n')}
         contents.update({path: path.read_text() for path in notes})
         for path, content in contents.items():

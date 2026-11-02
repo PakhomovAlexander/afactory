@@ -4,4 +4,4 @@
 - Retain the original nested-write issue and source-bound historical measurement in the
   [Pi validation record](https://github.com/PakhomovAlexander/afactory/blob/main/docs/design/pi-provider-validation.md), alongside current checks;
   no paid live smoke is claimed. The architecture remains proposed
-  [ADR-0274](https://github.com/PakhomovAlexander/afactory/blob/main/docs/adr/0274-own-the-pi-sdk-host-and-confine-its-tools.md).
+  [Pi SDK host decision](https://github.com/PakhomovAlexander/afactory/blob/main/docs/adr/2026-11-02-own-the-pi-sdk-host-and-confine-its-tools.md).

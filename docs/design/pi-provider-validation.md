@@ -719,7 +719,7 @@ finished, yielding the identical
 after measurement. The combined 220-test selection is repeated after finishing this record;
 its actual completion time and result belong to the Task report, with no edits after that run.
 
-## Current machine-checked validation
+## Historical machine-checked validation: preceding issues 533 and 534 Task
 
 This Task closes documentation/validation issues #533 and #534; the runtime fixes above were
 already implemented. The prior merged-source evidence was present and valid, not missing or
@@ -826,12 +826,12 @@ Scratch paths need not survive cleanup. The retained evidence is the actual resu
 log/receipt hashes and reproducible content projection. All preceding measurements/projections
 remain explicitly historical, including the original supplied #494 failing observation.
 
-### Current machine-readable claim
+### Historical machine-readable claim
 
 This is the sole current claim. The helper verifies it against candidate content; optional
 explicit log verification also checks the actual log bytes and source/outcome binding.
 
-<!-- af-pi-validation-current:v1 -->
+<!-- historical preceding-Task claim -->
 ```json
 {
   "schema": "af/pi-validation-claim@1",
@@ -845,7 +845,7 @@ explicit log verification also checks the actual log bytes and source/outcome bi
   "log_sha256": "sha256:d04b133d924c994e3cafb9f8a383cc0f439b5ba1ec24140de7b723fac73cf267"
 }
 ```
-<!-- /af-pi-validation-current -->
+<!-- /historical preceding-Task claim -->
 
 ### Actual checks of this claim and candidate
 
@@ -892,3 +892,196 @@ the measured source projection remains identical. Only this excluded record chan
 measurement began. No full workspace suite or Worker-run fast gate is claimed: the configured
 `scripts/verify.sh --profile fast` gate remains the kernel's post-seal check.
 **Paid live smoke: not run.** No real OAuth profile, refresh exchange or service inference was used.
+
+## Current machine-checked validation
+
+This Task integrates the supplied Pi/Scenarios source and resolves issue #538's recurring ADR
+conflicts. All observations above, including the preceding Task's formerly current claim, are
+historical. Its `8d78f6e86956cb6d311a94dee56121eb62cdacafdf706b5763095960ddf8231f` projection
+was superseded by the main merge and this restructure. No historical run is attributed to this
+candidate, and no Task input Snapshot is claimed to be the final candidate Snapshot.
+
+### Independent decisions and current-main integration
+
+`docs/adr/README.md` now holds stable authoring/lifecycle guidance and GitHub directory browsing,
+without a per-decision index. New decisions use unique `YYYY-MM-DD-descriptive-topic.md`
+identities; accepted legacy identities, historical numbering anomalies and lifecycle obligations
+stay intact. `python3 -I scripts/adr.py list` derives titles, recorded statuses and relative
+links in basename order on stdout, without writing a catalog or allocating a sequence.
+
+`CatalogTests.test_independent_same_date_additions_merge_without_shared_edits_and_are_discovered`
+creates two real disposable Git branches whose only changes are their distinct same-date ADR
+files, merges them cleanly and discovers both while the shared guide stays byte-identical.
+All **5 catalog tests** passed, including legacy 0107/0240 exceptions, status wording, missing
+metadata, deterministic output, read-only listing and discovery of every file without a manifest.
+The suite is classified functional and runs through existing class selection and full preflight.
+The gate-ordering fixture now includes that exact added preflight receipt and payload; its
+unchanged ordering/failure assertions passed in all **52 test-class script tests**.
+
+Only the unmerged Pi proposal was renamed, to
+[the Pi SDK host decision](../adr/2026-11-02-own-the-pi-sdk-host-and-confine-its-tools.md).
+Its architecture body is unchanged. The new
+[authoring-policy decision](../adr/2026-11-02-add-independent-adrs-and-derive-the-catalog.md)
+supersedes sequence/index requirements; ADR-0113 gained only its specific status-paragraph note
+about index-entry removal. Its accepted body, accepted Scenarios ADR-0274, ADRs 0270–0273 and
+all other accepted files/identities were preserved. Active contributor guidance and live Pi
+links now follow the stable guide; older numbering/index wording in shipped Task prompts is
+explicitly superseded without editing `.af/`. No `.github/` or released changelog was changed.
+`Fragments.test_pi_documentation_links_resolve_in_fragments_and_rendered_root_notes` passed
+with the renamed target; the **10-test changelog suite** passed and its isolated post-release
+representative still exercises both fragment browsing and root release-note rendering.
+
+The first focused Rust run exposed a real mechanical-merge defect: `scenario-v1.json` still
+referenced removed `urn:af:schema:task-contracts:1`, and the Scenario test helper named the
+removed v1 file. The run reported **210 passed, 18 failed**; the failures refused registry
+preparation with `Unretrievable { uri: "urn:af:schema:task-contracts:1", source: DefaultRetrieverError }`.
+The reference and test helper now use the current v2 definition bundle. `TaskResultV1` and the
+Scenario wire shape did not change: this repairs resolution of the same typed result, without
+adding a compatibility reader or changing a payload version in place.
+
+`scenario_task_receipts_resolve_current_task_contracts_and_keep_closed_results` checks a real
+typed receipt and its serialized nested Task result against the published definition, roundtrips
+it and rejects extra result fields through both schema and reader. With the original schema
+copied into a private probe directory, this new regression failed on the old dangling reference;
+it passes against the corrected source. Root inputs still cannot manufacture receipts.
+The full **254-test** focused Provider/Pi/Scenario/Ant selection then passed. No runtime behavior,
+assertion, budget, deadline, profile, quarantine or sandbox boundary was weakened.
+Raw issue filing for the merge defect was attempted with the required three headings;
+`gh issue create` was blocked because this Worker has no authenticated GitHub CLI. The defect
+and before/after evidence remain recorded here.
+
+### Preserved Pi runtime coverage
+
+The existing common Task admission/retry, doctor and captured Review paths are preserved.
+The focused selection covers exact identity/backend/model/effort refusal before private input,
+readonly/writable grants, partial JSONL/Unicode, errors/EOF/limits, cancellation and cleanup,
+cumulative/partial/unknown usage, complete-inference settlement and typed retry handling.
+The deterministic ordered early-response/exact-prompt-consumption/zero-exit regression and
+immediate legitimate-response tests remain unchanged and pass. Setup failures retain their
+closed JSON reports, safe AF stderr and null invalid identity/backend fields; managed discovery
+and repository-owned Node refusals pass. Status v5 schema metadata/listing assertions also pass.
+
+The official Pi 1.4.0 SDK host tests passed using the explicit external installation, synthetic
+credentials and mocked upstream transport. They exercise actual SDK construction, confined tools,
+read/nested write, a typed final reply and native usage without a paid call. The full suite,
+including normal current-source equality checks, passed **9 tests** after writing this current
+claim in each mode: explicit official SDK and hermetic CI fixture. Official mode printed
+real SDK construction/tools and full agent-turn/native-usage success; hermetic mode explicitly
+reported official SDK execution not run and passed its fixture path. The original #494 failing write observation
+above remains historical; it was not recreated or claimed as this Task's discovery.
+**Paid live smoke: not run.** No real OAuth profile, exchange or service inference was used.
+
+### Fresh measurement of the frozen integrated source
+
+All edits outside this record finished before **2026-11-02T10:37:22.287580+00:00**. The Worker ran the real,
+unchanged `make perf-kernel-measure` until **2026-11-02T10:48:37.873728+00:00**, with pinned Rust/Cargo **1.88.0**,
+`CARGO_NET_OFFLINE=true`, `TMPDIR=/private/tmp` and a private `CARGO_HOME` at
+`target/pi-cargo-home`, seeded only with locked registry archives/index entries from a readable
+cache. No dependency installation or shared-cache mutation occurred.
+
+The existing `scripts/pi-validation.py --projection` recipe returned
+`sha256:0bb660f71b82b479bfbc1fd34362b01a242721b025e8655e1b1cb586e8c1cf4f`, **3856 entries / 3169 regular files**.
+Its only exclusions are root `.git`, root `target` and `docs/design/pi-provider-validation.md`.
+All other paths, including new ADRs, scripts, documentation, tests, `.af/` and `.github/`, are
+included. This is the versioned `af.pi.validation-source/1` content projection, never a kernel
+Snapshot identity. Recomputing after measurement returned exactly the starting projection;
+`source_unchanged=true` is recorded in the actual log. Only this excluded record changes after
+measurement. The Task input Snapshot is not claimed as the final candidate Snapshot.
+
+Make exited **0**. Its actual nextest result was:
+
+```text
+Summary [ 673.942s] 1 test run: 1 passed (1 slow), 4009 skipped
+```
+
+The Make target retains `--workspace --locked --profile ci --run-ignored only` and exact filter
+`test(=perf_kernel_measure::guarded_kernel_experiments_measure_one_judged_sample)`.
+Skipped tests are outside this manual selection, not weakened validation. This is a guarded-kernel
+contract check, not a product speed-improvement claim. The actual complete log is
+`/private/tmp/adr538-perf-kernel-measure.log`, SHA256 `sha256:5dc2278409fcdc577aaa7d4fefeeab9e5bc0f6f13dd87a3d513aa06cd6ba907a`.
+Its binding, command, exact filter, observed exit and summary are checked with the explicit
+`--measurement-log` option below. Normal CI reads no implicit local log.
+
+The test exported these `af.perf-kernel-receipts/3` documents and validated them through its
+existing schema/reader assertions. The protected-harness digest remains
+`sha256:d182eaa9f53784005e0fb97c119836705d8ca28d8da0720f7d40479de5205c82`.
+Official `python3 -I scripts/performance/cli.py harness-digest --write` and `--check` agreed;
+the generated fixtures already matched, so no generated or `.af/` identity was edited.
+
+| Scratch receipt | SHA256 | Actual tested outcome |
+|---|---|---|
+| `target/pi-adr538-final-receipts/receipts-37147-candidate-refusal.json` | `3fbfeb1353bc4f1645bb8d756a1ddb6b7e58f5e5f00aac709b8df84cb57a9239` | Six tampered-harness and two invalid metric-contract Tasks refused; each exited 4 |
+| `target/pi-adr538-final-receipts/receipts-37147-improve.json` | `454e662c3dfeb42f4b6a1cee342223b740e608dadb0e50008b84d0e1151cde9a` | Controlled baseline/candidate comparison and acceptance assertions passed; Task exited 0 |
+
+Receipt Snapshot IDs identify disposable test consumers, not this candidate. Scratch logs and
+receipts may be cleaned up; the retained record gives their exact hashes, outcomes and the
+reproducible content binding.
+
+An earlier run in this Task is historical and unusable as final-source evidence: it started
+at `2026-11-02T10:24:49.370030+00:00` on `sha256:253570055dc12b0a36575411b8361e46d3067ce95eed3c7ef720aed8072d2516` before the new receipt fixture and
+final author-guidance edits were complete. Make exited 0, but the driver
+correctly detected `source_unchanged=false` and exited 99. Its retained log hash is
+`sha256:4abc88f20d3129e37ab4be83a325d0ddd6f69b3f928a81d47c5b674edcb2adff` at
+`/private/tmp/adr538-historical-prefreeze-perf-kernel-measure.log`.
+It is not the current claim and its passing Make result is not substituted for the fresh run.
+The fresh run above began only after the final nonrecord source was frozen.
+
+### Current machine-readable claim
+
+This is the sole current `af/pi-validation-claim@1` claim. Its helper, closed schema and mutation
+regressions are unchanged. The claim cannot select exclusions or repair a stale source digest.
+
+<!-- af-pi-validation-current:v1 -->
+```json
+{
+  "schema": "af/pi-validation-claim@1",
+  "entries": 3856,
+  "files": 3169,
+  "source_sha256": "sha256:0bb660f71b82b479bfbc1fd34362b01a242721b025e8655e1b1cb586e8c1cf4f",
+  "command": "make perf-kernel-measure",
+  "filter": "test(=perf_kernel_measure::guarded_kernel_experiments_measure_one_judged_sample)",
+  "exit_code": 0,
+  "log_sha256": "sha256:5dc2278409fcdc577aaa7d4fefeeab9e5bc0f6f13dd87a3d513aa06cd6ba907a",
+  "summary": "Summary [ 673.942s] 1 test run: 1 passed (1 slow), 4009 skipped"
+}
+```
+<!-- /af-pi-validation-current -->
+
+### Verification commands for this candidate
+
+```sh
+python3 -I -B scripts/pi-validation.py --check
+python3 -I -B scripts/pi-validation.py --check \
+  --measurement-log /private/tmp/adr538-perf-kernel-measure.log
+```
+
+Both compare the exact candidate projection; the explicit log check additionally verifies the
+actual log SHA256, source binding, Make command/filter, observed exit and unchanged nextest summary.
+Pinned `cargo fmt --all` and `cargo clippy --workspace --all-targets -- -D warnings` passed
+with the private offline Cargo cache and permitted scratch directory. The catalog (5 tests),
+changelog (10 tests), test-class script (52 tests), classification audit and official protected-harness
+check passed. No flaky assertion required a rerun. Initial integration failures and the new
+receipt/gate fixture corrections described above were deterministic, not classified as flakes.
+No helper/caller in Linux-only `provider_auth_handoff.rs`, `task_interrupt.rs` or
+`campaign_loop/heartbeat.rs` changed; no Linux execution is claimed from this macOS Worker.
+
+`npx --offline --yes markdownlint-cli2@0.22.1` could not run because npm registry metadata was
+not cached (`ENOTCACHED`): **markdownlint through npx: not run**. The installed cached
+**markdownlint-cli2 0.22.1** executable ran directly, without installation, and reported zero
+errors for the changed Markdown files, including this record. The initial shell also selected
+Homebrew Rust 1.94; the completed checks and both manual runs explicitly used pinned 1.88.0.
+No source was changed to accommodate the wrong toolchain or unavailable default cache/TMPDIR.
+
+The focused Provider/Pi/Scenario/Ant selection passed before the final record update:
+`Summary [  33.469s] 254 tests run: 254 passed, 1912 skipped`.
+Its exact command is:
+
+```sh
+cargo nextest run --workspace --locked --profile ci -E \
+  'package(review-runner-pi) | (binary_id(af::it) & (test(/^provider_onboarding::/) | test(/pi_registration_requires/) | test(/pi_task_admission/) | test(/pi_doctor_and_review/) | test(/^scenario::/))) | (binary_id(af::bin/af) & (test(/^providers::/) | test(/^shipped_schemas::/) | test(/pi_setup_guidance/) | test(/^scenario::/))) | (binary_id(review-core::schema_parity) & (test(/pi_/) | test(/every_schema/)))'
+```
+
+The focused selection is repeated as the last test run after this record and all other checks;
+its exact filter, completion time and result belong to the Task report, with no edits afterwards.
+The configured `scripts/verify.sh --profile fast` gate remains the kernel's post-seal action;
+no Worker-run whole suite, full gate, paid live smoke or real OAuth exchange is claimed.
