@@ -41,7 +41,7 @@ Provider registry v1 is refused: recreate registrations with this release. Exist
   durable reconciliation, explicit CI identities, owner review requests and approved follow-up
   issues. Configuration and credentials remain machine-owned; uncertain effects never authorize
   duplicate requests. Includes inert examples and mock-backed fast-gate coverage; no live GitHub
-  validation or active instances ([ADR-0275](../docs/adr/0275-install-a-durable-github-scenario-adapter.md)).
+  validation or active instances ([ADR-0275](docs/adr/0275-install-a-durable-github-scenario-adapter.md)).
 
 - Forward the isolated subprocess's six HOME/XDG paths to every af command in the full GitHub
   Scenario environment regression, checking the effective command environment after launcher

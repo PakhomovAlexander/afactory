@@ -78,7 +78,8 @@ class ValidationTests(unittest.TestCase):
         self.claim.update(VALIDATION.projection(self.root))
         self.write_claim()
         later = self.record.read_text()
-        self.record.write_text(earlier + '\n' + later)
+        self.record.write_text('Historical af-pi-validation-claim prose.\n' + earlier +
+                               '\n<!-- unrelated historical comment -->\n' + later + '\nEnd of record.\n')
         self.assertEqual(len(VALIDATION.read_claims(self.record)), 2)
         self.assertEqual(self.cli().returncode, 0)
         wrong = self.cli('--claim-source', original_source)
@@ -196,6 +197,39 @@ class ValidationTests(unittest.TestCase):
                           valid.replace('"schema":', '"entries": 0, "schema":')]:
             self.record.write_text(malformed)
             self.assertNotEqual(self.cli().returncode, 0)
+
+    def test_unconsumed_opening_and_closing_claim_family_markers_fail_closed(self):
+        valid = self.record.read_text()
+        for marker in [
+                VALIDATION.BEGIN, VALIDATION.END,
+                '<!-- af-pi-validation-claim:v2 -->',
+                '<!-- /af-pi-validation-claim:v2 -->',
+                '<!-- /af-pi-validation-claim:v1 -->',
+                '<!-- af-pi-validation-claim -->',
+                '<!-- af-pi-validation-claim: -->',
+                '<!-- af-pi-validation-claim_v2 -->',
+                '<!-- // af-pi-validation-claim:v2 -->',
+                '<!-- /af-pi-validation-claim: -->',
+                '<!-- af-pi-validation-claim:v1',
+                '<!-- /af-pi-validation-claim',
+                '<!--af-pi-validation-claim:v1-->',
+                '<!--/af-pi-validation-claim-->',
+                '<!-- \t / af-pi-validation-claim:v2 -->']:
+            for position in ['before', 'after', 'replacement']:
+                with self.subTest(marker=marker, position=position):
+                    if position == 'replacement' and marker == VALIDATION.END:
+                        continue
+                    malformed = {'before': marker + '\n' + valid,
+                                 'after': valid + '\n' + marker,
+                                 'replacement': valid.replace(VALIDATION.END, marker)}[position]
+                    self.record.write_text(malformed)
+                    result = self.cli()
+                    self.assertNotEqual(result.returncode, 0, result.stdout)
+                    self.assertIn('unsupported or malformed', result.stderr)
+        # Marker counts alone cannot detect a marker hidden inside a consumed block.
+        self.claim['summary'] += ' <!-- /af-pi-validation-claim:v2 -->'
+        self.write_claim()
+        self.assertIn('unsupported or malformed', self.cli().stderr)
 
     def test_supplied_log_checks_hash_source_filter_and_outcome(self):
         # Synthetic log checks the verifier, not a claimed execution of the measurement.

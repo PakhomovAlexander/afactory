@@ -87,11 +87,13 @@ def validate_claim(claim):
 
 def read_claims(record):
     text = record.read_text(encoding='utf-8')
-    pattern = re.escape(BEGIN) + r'\s*```json\n(.*?)\n```\s*' + re.escape(END)
-    matches = re.findall(pattern, text, re.DOTALL)
-    # Count the marker family so malformed, duplicate and unsupported versions fail closed.
-    if (not matches or text.count('<!-- af-pi-validation-claim:') != len(matches) or
-            text.count(END) != len(matches)):
+    pattern = re.compile(re.escape(BEGIN) + r'\s*```json\n(.*?)\n```\s*' +
+                         re.escape(END), re.DOTALL)
+    matches = pattern.findall(text)
+    # Remove only consumed delimiters, retaining their JSON and unrelated historical prose.
+    # Any remaining family marker (opening or closing, even malformed) fails closed.
+    if not matches or re.search(r'<!--[\s/]*af-pi-validation-claim',
+                                pattern.sub(r'\1', text)):
         raise ValueError('unsupported or malformed historical claim blocks')
     claims = {}
     for content in matches:

@@ -128,7 +128,7 @@ class Fragments(unittest.TestCase):
         self.assertFalse((self.repo / 'changelog.d/good.md').exists())
         self.assertEqual(self.notes('--check').returncode, 0)
 
-    def test_rc5_retains_all_five_merged_adapter_notes_verbatim(self):
+    def test_rc5_retains_all_five_merged_adapter_notes_with_resolving_adr_link(self):
         self.assert_rc5_notes(SCRIPTS.parent)
 
     def test_historical_rc5_notes_allow_later_version_and_new_adapter_fragment(self):
@@ -150,7 +150,7 @@ class Fragments(unittest.TestCase):
                 b'  durable reconciliation, explicit CI identities, owner review requests and approved follow-up\n'
                 b'  issues. Configuration and credentials remain machine-owned; uncertain effects never authorize\n'
                 b'  duplicate requests. Includes inert examples and mock-backed fast-gate coverage; no live GitHub\n'
-                b'  validation or active instances ([ADR-0275](../docs/adr/0275-install-a-durable-github-scenario-adapter.md)).\n'
+                b'  validation or active instances ([ADR-0275]('
             ),
             (
                 b"- Forward the isolated subprocess's six HOME/XDG paths to every af command in the full GitHub\n"
@@ -176,8 +176,25 @@ class Fragments(unittest.TestCase):
         self.assertEqual(len(notes), 5)
         for note in notes:
             self.assertEqual(rc5.count(note), 1)
+        adapter_link = re.search(rb'\[ADR-0275\]\(([^)]+)\)\)\.', rc5)
+        self.assertIsNotNone(adapter_link)
+        self.assertEqual(self.assert_rc5_link_resolves(adapter_link[1].decode()),
+                         'docs/adr/0275-install-a-durable-github-scenario-adapter.md')
+        # Audit every rendered RC5 link, including any other inherited relative docs path.
+        for link in re.findall(rb'\[[^\]]+\]\(([^)]+)\)', rc5):
+            self.assert_rc5_link_resolves(link.decode())
         self.assertIn(b'fast releases require no fresh Pi measurement', rc5)
         self.assertIn(b'Pin both Linux release builds to Ubuntu 24.04', rc5)
+
+    def assert_rc5_link_resolves(self, link):
+        base = 'https://github.com/PakhomovAlexander/afactory/blob/main/'
+        resolved = urlsplit(urljoin(base + 'CHANGELOG.md', link))
+        prefix = '/PakhomovAlexander/afactory/blob/main/'
+        self.assertEqual(resolved.netloc, 'github.com')
+        self.assertTrue(resolved.path.startswith(prefix), (link, resolved.path))
+        target = resolved.path.removeprefix(prefix)
+        self.assertTrue((SCRIPTS.parent / target).is_file(), target)
+        return target
 
     def test_pi_documentation_links_resolve_in_fragments_and_rendered_root_notes(self):
         root = SCRIPTS.parent
