@@ -145,7 +145,8 @@ impl Fixture {
         )
     }
     fn approve(&self, id: &str) -> Value {
-        let payload = self.machine.join(format!("{id}.payload"));
+        let decision_files = tempfile::tempdir_in(&self.machine).unwrap();
+        let payload = decision_files.path().join("payload");
         let request = cli(
             &self.repo,
             &self.state,
@@ -170,7 +171,7 @@ impl Fixture {
         .into_string();
         let envelope = json!({"schema":"af/scenario-signed-decision@1","request":request,"signature":signature});
         valid("scenario-signed-decision-v1.json", &envelope);
-        let signed = self.machine.join(format!("{id}.signed.json"));
+        let signed = decision_files.path().join("signed.json");
         write(&signed, &envelope);
         cli(
             &self.repo,
@@ -814,4 +815,167 @@ fn toml_authoring_runs_and_pins_the_same_contract_as_its_json_wire_form() {
         done["frames"]["root"]["outputs"]["approved"]["type"],
         "decision"
     );
+}
+
+impl Fixture {
+    fn install_github(&self) {
+        std::fs::set_permissions(&self.machine, std::fs::Permissions::from_mode(0o700)).unwrap();
+        let examples = workspace().join("fixtures/scenarios/github");
+        let mut config: Value =
+            serde_json::from_slice(&std::fs::read(examples.join("config.example.json")).unwrap())
+                .unwrap();
+        let token = self.machine.join("token");
+        std::fs::write(&token, b"github_pat_TEST_CREDENTIAL_ONLY\n").unwrap();
+        std::fs::set_permissions(&token, std::fs::Permissions::from_mode(0o600)).unwrap();
+        config["token_file"] = json!(token);
+        config["state_dir"] = json!(self.machine.join("github-receipts"));
+        let config_path = self.machine.join("github-config.json");
+        write(&config_path, &config);
+        std::fs::set_permissions(&config_path, std::fs::Permissions::from_mode(0o600)).unwrap();
+        valid("github-adapter-config-v1.json", &config);
+        for name in ["publication", "notification", "followup"] {
+            let payload: Value = serde_json::from_slice(
+                &std::fs::read(examples.join(format!("{name}.json"))).unwrap(),
+            )
+            .unwrap();
+            let schema = match name {
+                "publication" => "github-publish-pr-v1.json",
+                "notification" => "github-notify-v1.json",
+                _ => "github-followup-v1.json",
+            };
+            valid(schema, &payload);
+        }
+        let executable = self.machine.join("github-adapter");
+        let installed = std::process::Command::new("/usr/bin/python3")
+            .arg("-IS")
+            .arg(workspace().join("scripts/install-scenario-github-adapter.py"))
+            .args(["--config", config_path.to_str().unwrap()])
+            .args(["--output", executable.to_str().unwrap()])
+            .env_clear()
+            .env("HOME", &self.machine)
+            .env("XDG_CONFIG_HOME", &self.machine)
+            .output()
+            .unwrap();
+        assert!(
+            installed.status.success(),
+            "{}",
+            String::from_utf8_lossy(&installed.stderr)
+        );
+        let production = std::fs::read(&executable).unwrap();
+        let installed_digest = format!(
+            "sha256:{}",
+            review_core::hex::encode(&Sha256::digest(&production))
+        );
+        assert_eq!(
+            String::from_utf8(installed.stdout).unwrap().trim(),
+            installed_digest
+        );
+        // All production application bytes remain in this one pinned executable. The
+        // credential-free fixture replaces only stdlib HTTPS transport, before main runs;
+        // production has no mock URL, import hook or environment-controlled test mode.
+        let mut bytes = b"#!/usr/bin/python3 -IS\n".to_vec();
+        bytes.extend(
+            std::fs::read(workspace().join("fixtures/scenarios/github-transport.py")).unwrap(),
+        );
+        bytes.push(b'\n');
+        bytes.extend(&production);
+        std::fs::write(&executable, &bytes).unwrap();
+        let digest = format!(
+            "sha256:{}",
+            review_core::hex::encode(&Sha256::digest(&bytes))
+        );
+        let mut policy: Value =
+            serde_json::from_slice(&std::fs::read(&self.policy).unwrap()).unwrap();
+        policy["adapters"] = json!({"github":{"executable":executable,"digest":digest,"operations":["publish_pr","notify","followup","observe"],"destinations":["github:octo/project"],"max_wall_ms":30000,"max_output_bytes":65536}});
+        write(&self.policy, &policy);
+        std::fs::copy(examples.join("bundle.json"), &self.bundle).unwrap();
+        std::fs::copy(
+            examples.join("mock-service.json"),
+            self.machine.join("mock-service.json"),
+        )
+        .unwrap();
+    }
+    fn github_state(&self) -> Value {
+        serde_json::from_slice(&std::fs::read(self.machine.join("mock-service.json")).unwrap())
+            .unwrap()
+    }
+}
+
+#[test]
+fn production_github_adapter_runs_exact_head_pr_sequence_and_recovers_remote_effect_before_reply() {
+    let f = Fixture::bare();
+    f.install_github();
+    let waiting = f.start("github-pr");
+    assert_eq!(waiting["status"], "waiting");
+    assert_eq!(waiting["waiting"]["kind"], "decision");
+    let pin = waiting["pin"].clone();
+    f.approve("github-pr");
+    let mut remote = f.github_state();
+    remote["crash_after_effect"] = json!(true);
+    write(&f.machine.join("mock-service.json"), &remote);
+    let uncertain = cli(&f.repo, &f.state, &["scenario", "resume", "github-pr"]);
+    assert_eq!(uncertain["status"], "waiting");
+    assert_eq!(uncertain["waiting"]["kind"], "reconcile");
+    let intent = uncertain["waiting"]["intent_id"].clone();
+    let review = cli(&f.repo, &f.state, &["scenario", "resume", "github-pr"]);
+    assert_eq!(review["status"], "waiting");
+    assert_eq!(review["waiting"]["kind"], "decision");
+    assert_eq!(
+        review["frames"]["root"]["steps"][1]["intents"][0]["id"],
+        intent
+    );
+    assert_eq!(review["frames"]["root"]["steps"][1]["status"], "succeeded");
+    assert_eq!(review["frames"]["root"]["steps"][2]["status"], "succeeded");
+    assert_eq!(f.github_state()["effects"], json!(["publish_pr:1"]));
+    f.approve("github-pr");
+    let merge_wait = cli(&f.repo, &f.state, &["scenario", "resume", "github-pr"]);
+    assert_eq!(merge_wait["waiting"]["kind"], "condition");
+    assert_eq!(
+        f.github_state()["effects"],
+        json!(["publish_pr:1", "notify:1"])
+    );
+    let mut remote = f.github_state();
+    remote["prs"]["1"]["state"] = json!("closed");
+    remote["prs"]["1"]["merged"] = json!(true);
+    remote["prs"]["1"]["merged_at"] = json!("2026-11-02T00:00:00Z");
+    remote["prs"]["1"]["merge_commit_sha"] = json!("2222222222222222222222222222222222222222");
+    write(&f.machine.join("mock-service.json"), &remote);
+    let followup = cli(&f.repo, &f.state, &["scenario", "resume", "github-pr"]);
+    assert_eq!(followup["waiting"]["kind"], "decision");
+    f.approve("github-pr");
+    let done = cli(&f.repo, &f.state, &["scenario", "resume", "github-pr"]);
+    assert_eq!(done["status"], "succeeded", "{done:#}");
+    assert_eq!(done["pin"], pin);
+    valid("scenario-run-v1.json", &done);
+    let journal: Value = serde_json::from_slice(
+        &std::fs::read(f.machine.join("github-receipts/state.json")).unwrap(),
+    )
+    .unwrap();
+    valid("github-adapter-state-v1.json", &journal);
+    assert_eq!(journal["records"].as_object().unwrap().len(), 3);
+    assert_eq!(
+        f.github_state()["effects"],
+        json!(["publish_pr:1", "notify:1", "followup:2"])
+    );
+    assert_eq!(
+        cli(&f.repo, &f.state, &["scenario", "resume", "github-pr"]),
+        done
+    );
+}
+
+#[test]
+fn production_github_adapter_changed_executable_digest_refuses_dispatch() {
+    let f = Fixture::bare();
+    f.install_github();
+    assert_eq!(f.start("github-digest")["status"], "waiting");
+    f.approve("github-digest");
+    std::fs::write(
+        f.machine.join("github-adapter"),
+        b"changed executable bytes",
+    )
+    .unwrap();
+    let result = cli(&f.repo, &f.state, &["scenario", "resume", "github-digest"]);
+    assert_eq!(result["status"], "waiting");
+    assert_eq!(result["waiting"]["kind"], "reconcile");
+    assert_eq!(f.github_state()["effects"], json!([]));
 }

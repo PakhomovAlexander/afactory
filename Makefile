@@ -25,7 +25,7 @@ BASE_EVIDENCE = $(if $(AF_GATE_NEXTEST_RUN),$(AF_GATE_NEXTEST_RUN)/base-evidence
 
 # Run unprivileged: preflight proves a chmod-sealed source rejects writes.
 # Root/CAP_DAC_OVERRIDE bypass that seal and intentionally fail the precondition.
-check: preflight-check fmt lint test perf-python-tests perf-feature-tests release-check
+check: preflight-check fmt lint test scenario-python-tests perf-python-tests perf-feature-tests release-check
 
 fmt:
 	$(CI_STEP) --stage lint fmt cargo fmt --all -- --check
@@ -123,6 +123,12 @@ preflight-check:
 	$(CI_STEP) --stage preflight test-catalog python3 scripts/test-classes.py audit
 	$(CI_STEP) --stage preflight performance-schemas python3 scripts/performance/schemas.py
 	$(CI_STEP) --stage preflight --fix 'python3 -I scripts/performance/cli.py harness-digest --write' performance-kernel-harness python3 scripts/performance/cli.py harness-digest --check
+
+# Credential-free installed GitHub adapter integration belongs after the Rust build/test
+# receipt. Selective gates run the same script in its audited e2e class.
+.PHONY: scenario-python-tests
+scenario-python-tests: test
+	$(CI_STEP) --stage tests scenario-github-adapter python3 scripts/test-scenario-github-adapter.py
 
 # The laboratory suite executes tests, so it belongs after the real Rust build receipt,
 # under the test deadline (ADR-0231). Depending on test also enforces this with parallel make;

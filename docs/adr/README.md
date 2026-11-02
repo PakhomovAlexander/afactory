@@ -522,3 +522,4 @@ future readers need.
   VM](0273-run-the-nightly-chain-as-systemd-units-on-the-owners-vm.md)
 - [0274 — Orchestrate pinned Scenarios and admit Ant
   occurrences](0274-orchestrate-pinned-scenarios-and-admit-ant-occurrences.md)
+- [0275 — Install a durable GitHub Scenario adapter](0275-install-a-durable-github-scenario-adapter.md)
