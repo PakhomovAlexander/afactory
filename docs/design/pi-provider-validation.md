@@ -1086,7 +1086,7 @@ its exact filter, completion time and result belong to the Task report, with no 
 The configured `scripts/verify.sh --profile fast` gate remains the kernel's post-seal action;
 no Worker-run whole suite, full gate, paid live smoke or real OAuth exchange is claimed.
 
-## Current machine-checked validation
+## Historical machine-checked validation: catalog confinement
 
 This Task confines ADR catalog reads and corrects the guide's legacy-status wording on the
 supplied integrated source. All preceding observations and claims are historical, including
@@ -1146,13 +1146,13 @@ source's required digest:
 `sha256:c10a05c7d6b40f73f1a1da87d9c5e5ecced824314e74f1f87e2318635631b000`.
 Generated fixtures already match; no harness or authority bytes were changed.
 
-### Current machine-readable claim
+### Historical machine-readable claim
 
 The unchanged closed schema and helper check this sole current claim. Its exclusions cannot be
 selected by claim data. The explicit log check verifies the real hash, source binding, command,
 filter, observed exit and nextest summary; normal CI requires no implicit local log.
 
-<!-- af-pi-validation-current:v1 -->
+<!-- historical catalog-confinement claim -->
 ```json
 {
   "schema": "af/pi-validation-claim@1",
@@ -1166,7 +1166,7 @@ filter, observed exit and nextest summary; normal CI requires no implicit local 
   "summary": "Summary [ 912.403s] 1 test run: 1 passed (1 slow), 4010 skipped"
 }
 ```
-<!-- /af-pi-validation-current -->
+<!-- /historical catalog-confinement claim -->
 
 ### Focused verification and limits
 
@@ -1199,3 +1199,115 @@ directly without installation. No Linux-only helper/caller in `provider_auth_han
 The configured local fast gate remains the kernel's post-seal check. No whole-suite Worker
 run is claimed. The focused Rust selection is repeated after the record and all other checks;
 its final completion time/result belongs to the Task report, with no edits afterwards.
+
+## Current machine-checked validation
+
+### Official RC4 source and retained history
+
+This validation-only Task refreshes the whole-source binding for official **0.14.0-rc.4**.
+The supplied release provenance is `d2e71da0`, branch `release/v0.14.0-rc.4`, PR #550,
+prepared by `make release VERSION=0.14.0-rc.4 PROFILE=fast` from main `ca4e73be`.
+This sandbox has no Git metadata; the independently recomputed content projection below,
+not an invented commit or final candidate Snapshot identity, binds the measured source.
+
+The official `Cargo.toml`, `Cargo.lock`, `CHANGELOG.md`, generated harness fixtures and
+consumed changelog fragments remain exactly as supplied. The release section already documents
+Pi. No fragment is recreated and no new change note is added for this evidence-only refresh.
+Only this excluded validation record changes; no product, authority, `.af/`, `.github/`,
+checker, source exclusion, validation class, budget, deadline or assertion changes.
+All preceding records, including the catalog-confinement claim and its checks, are historical.
+Their source bindings and outcomes are preserved, not reused as RC4 measurement evidence.
+
+The initial `python3 -I -B scripts/pi-validation.py --check` exited **1**, reporting
+`current claim does not match candidate source`: the preceding claim still named
+`sha256:7f9261ba019aa397fb84cae3673d0e04d3e3ca0e3d11afc75e1575dcce16d8a3`.
+That is the expected stale claim after official release generation, not a passing RC4 check.
+No failed measurement is omitted: the single measurement invocation below passed without rerun.
+
+### Actual frozen RC4 measurement
+
+The unchanged **`make perf-kernel-measure`** started at **2026-11-02T16:35:18.070847+00:00**
+and finished at **2026-11-02T17:01:06.165090+00:00**, with observed Make exit **0**.
+It used pinned Rust/Cargo **1.88.0**, a credential-free offline registry copy in
+`target/pi-cargo-home`, the checkout's default `target/`, and `TMPDIR=/private/tmp`.
+The initial `rustup run 1.88.0 cargo --version` probe could not create its ambient home;
+the installed pinned toolchain was selected directly on `PATH` for all completed Cargo checks
+and the measurement. Completed checks needed no new dependency, network fetch or additional
+host permission.
+
+The versioned `af.pi.validation-source/1` projection was
+**`sha256:2339691c0b34404684686e27422b3d90f7f7db4fdda2ecc3c59dae137cf7ae14`**, **3799 entries / 3112 regular files**,
+before and after measurement. Its only exclusions remain root `.git`, root `target` and
+`docs/design/pi-provider-validation.md`. The real log records `source_unchanged=true`;
+only this excluded record was edited afterwards.
+
+The complete retained log is **`/tmp/rc4-perf-kernel-measure.log`** (also accessible through
+`/private/tmp/rc4-perf-kernel-measure.log`), SHA256
+`sha256:790aedf44dd4a37b8db3d4a61e11ebe0d0ab69b40fb1f0fb5694282c02185796`. It records the source line, command, exact filter,
+observed exit, unchanged nextest summary and measurement start/finish times:
+
+```text
+Summary [1323.393s] 1 test run: 1 passed (1 slow), 4010 skipped
+```
+
+The selection remains `--workspace --locked --profile ci --run-ignored only` with exact filter
+`test(=perf_kernel_measure::guarded_kernel_experiments_measure_one_judged_sample)`.
+The 4010 skipped tests are outside this manual selection, not exempted from normal validation.
+This guarded-kernel contract check is not a product speed-improvement claim.
+The canonical generated harness check independently returned
+`sha256:6c80be30504684937effb4e3a8768966f15dca2e0c7d87de3e2ba47f118e5115`;
+no generated fixture or authority digest was edited.
+
+### Current machine-readable claim
+
+The existing closed schema, helper and six `ValidationTests` enforce the sole current claim,
+source equality, exact exclusions, stale/mutated claim refusals and optional real-log binding.
+Normal CI reads no implicit local log. The explicit check verifies the actual log SHA256,
+source line, command, filter, Make exit and summary.
+
+<!-- af-pi-validation-current:v1 -->
+```json
+{
+  "schema": "af/pi-validation-claim@1",
+  "source_sha256": "sha256:2339691c0b34404684686e27422b3d90f7f7db4fdda2ecc3c59dae137cf7ae14",
+  "entries": 3799,
+  "files": 3112,
+  "command": "make perf-kernel-measure",
+  "filter": "test(=perf_kernel_measure::guarded_kernel_experiments_measure_one_judged_sample)",
+  "exit_code": 0,
+  "log_sha256": "sha256:790aedf44dd4a37b8db3d4a61e11ebe0d0ab69b40fb1f0fb5694282c02185796",
+  "summary": "Summary [1323.393s] 1 test run: 1 passed (1 slow), 4010 skipped"
+}
+```
+<!-- /af-pi-validation-current -->
+
+### Verification and limits
+
+```sh
+python3 -I -B scripts/pi-validation.py --check
+python3 -I -B scripts/pi-validation.py --check \
+  --measurement-log /tmp/rc4-perf-kernel-measure.log
+python3 -I -B scripts/test-pi-host.py ValidationTests
+python3 -I -B scripts/performance/cli.py harness-digest --check
+```
+
+Pinned `cargo fmt --all` and `cargo clippy --workspace --all-targets -- -D warnings` passed.
+The ADR catalog's **9 tests**, changelog's **10 tests**, changelog fragment check and test-class
+audit passed. Both helper checks above passed, including actual-log verification; all six
+`ValidationTests` passed. Cached `npx --offline --yes markdownlint-cli2@0.22.1` reported zero
+errors without network.
+The focused Rust selection passed **15 tests**, with 194 outside the selection, before this
+record update; it is repeated after the record and all other checks as the final test run:
+
+```sh
+cargo nextest run --workspace --locked --profile ci -E \
+  'package(review-runner-pi) | (binary_id(review-core::schema_parity) & test(=every_schema_is_a_valid_json_schema))'
+```
+
+The final completion time and exact result belong to the Task report, with no edits afterwards.
+No flaky assertion required a rerun. **Paid live smoke: not run.** No live model inference,
+private authentication read, real OAuth exchange, SDK live call or publication was performed.
+No Linux-only helper/caller in `provider_auth_handoff.rs`, `task_interrupt.rs` or
+`campaign_loop/heartbeat.rs` changed; no Linux execution is claimed from this macOS Worker.
+The configured local fast gate remains the kernel's post-seal check; no whole-suite Worker
+run is claimed.
