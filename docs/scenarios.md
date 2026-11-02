@@ -98,9 +98,10 @@ A Storage Budget setup failure returns 1 with a diagnostic on stderr before the 
   match the same object and revision. Publication (`publish_pr`, `followup`) always requires a
   signed human decision. No Task delivery, commit, push, merge or blanket shell grant follows.
 
-A Decision receipt may authorize at most one publication Action in the pinned bundle, including
-uses through child inputs and outputs. Admission rejects a second publication consumer even if
-it is conditional or uses the same grant. Dispatch checks the producing Decision invocation;
+A Decision receipt used for publication may authorize exactly that one decision-consuming Action
+in the pinned bundle, including uses through aliased child inputs and outputs. Admission rejects
+any second consumer that requires a Decision, including `notify`, even if it is conditional or
+uses the same grant. Dispatch checks the producing Decision invocation;
 the signed pin binds that consumer's exact step, adapter, operation and destination. Changing
 any grant changes the pin and invalidates the approval. Use separate Decisions for separate
 publication Actions; ordinary receipt projections and child forwarding remain available.
@@ -192,7 +193,9 @@ bound to Ant revision and local calendar date and a `started` or named `skipped`
 
 Paused and disabled periods are retained as timed state transitions, so enabling later cannot
 launch an occurrence that was paused when due. Launch also requires the Ant to be enabled at
-tick time: pausing or disabling after due time but before the first tick prevents that launch.
-Historical due-time modes and missed occurrences keep their original skipped outcomes.
+tick time. Any pause or disable transition after due time and before the first tick prevents that
+launch, even if the Ant is enabled again before the tick. The skipped occurrence remains skipped
+on restart; later eligible days may launch normally. Historical due-time modes and missed
+occurrences keep their original skipped outcomes.
 Pausing does not cancel or release an active Run.
 No real definitions, schedules, credentials or publication grants ship enabled in Afactory.

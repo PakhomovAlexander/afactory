@@ -456,13 +456,31 @@ pub(super) struct Bundle {
     pub definitions: BTreeMap<String, Scenario>,
 }
 
-/// Decision provenance and publication uses at a definition's boundary. Internal receipts
+/// Decision provenance and Action uses at a definition's boundary. Internal receipts
 /// which are not exported need not escape the summary. Memoization avoids expanding a shared
 /// child definition once for every possible invocation path.
 #[derive(Clone, Default)]
 struct DecisionFlow {
-    uses: BTreeMap<String, u8>,
+    uses: BTreeMap<String, DecisionUses>,
     outputs: BTreeMap<String, String>,
+}
+
+#[derive(Clone, Default)]
+struct DecisionUses {
+    actions: u8,
+    publication: bool,
+}
+impl DecisionUses {
+    fn merge(&mut self, other: Self) -> Result<()> {
+        // Only zero, one and multiple consumers matter. Keep this bounded even when a
+        // shared child definition is invoked repeatedly or several ports alias one receipt.
+        self.actions = (self.actions + other.actions).min(2);
+        self.publication |= other.publication;
+        require(
+            !self.publication || self.actions <= 1,
+            "Publication decision has multiple Action consumers",
+        )
+    }
 }
 
 fn decision_origin(
@@ -523,7 +541,7 @@ impl Bundle {
             .collect();
         let mut flow = DecisionFlow::default();
         for origin in inputs.values() {
-            flow.uses.insert(origin.clone(), 0);
+            flow.uses.insert(origin.clone(), DecisionUses::default());
         }
         let mut previous = BTreeMap::new();
         for step in &definition.steps {
@@ -531,7 +549,7 @@ impl Bundle {
             match &step.operation {
                 Kind::Decision { .. } => {
                     let origin = format!("step/{}", step.id);
-                    flow.uses.insert(origin.clone(), 0);
+                    flow.uses.insert(origin.clone(), DecisionUses::default());
                     outputs.insert("result".into(), origin);
                 }
                 Kind::Scenario { scenario } => {
@@ -543,28 +561,26 @@ impl Bundle {
                         } else {
                             format!("step/{}/{origin}", step.id)
                         };
-                        let uses = flow.uses.entry(source.clone()).or_default();
-                        *uses += count;
-                        require(
-                            *uses <= 1,
-                            "Publication decision has multiple Action consumers",
-                        )?;
+                        flow.uses.entry(source.clone()).or_default().merge(count)?;
                         origins.insert(origin, source);
                     }
                     for (port, origin) in child.outputs {
                         outputs.insert(port, origins[&origin].clone());
                     }
                 }
-                Kind::Action { grant, .. }
-                    if matches!(grant.operation, Operation::PublishPr | Operation::Followup) =>
-                {
+                Kind::Action {
+                    grant,
+                    requires_decision: true,
+                    ..
+                } => {
                     let origin = decision_origin(&step.inputs["decision"], &inputs, &previous)?;
-                    let uses = flow.uses.entry(origin).or_default();
-                    *uses += 1;
-                    require(
-                        *uses <= 1,
-                        "Publication decision has multiple Action consumers",
-                    )?;
+                    flow.uses.entry(origin).or_default().merge(DecisionUses {
+                        actions: 1,
+                        publication: matches!(
+                            grant.operation,
+                            Operation::PublishPr | Operation::Followup
+                        ),
+                    })?;
                 }
                 _ => {}
             }

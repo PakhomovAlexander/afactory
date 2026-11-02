@@ -512,8 +512,16 @@ impl AntState {
                 used.checked_add(charge)
                     .ok_or_else(|| "Ant rolling accounting overflow".to_string())
             })?;
-            // Preserve due-time dispositions for history, but an otherwise eligible launch
-            // also needs current authority: pause/disable may have happened after it was due.
+            // Preserve historical due-time and missed dispositions. An otherwise eligible
+            // occurrence stays suppressed by any pause/disable before its first tick, even
+            // when enabled again before that tick. The clock guard bounds all changes by now.
+            let stopped = self
+                .changes
+                .iter()
+                .rev()
+                .take_while(|(t, _)| *t > at)
+                .find(|(_, mode)| *mode != AntMode::Enabled)
+                .map(|(_, mode)| *mode);
             let outcome = if gap {
                 OccurrenceOutcome::SkippedMissingTime
             } else if state == AntMode::Paused {
@@ -522,9 +530,9 @@ impl AntState {
                 OccurrenceOutcome::SkippedDisabled
             } else if now - at > self.pin.definition.execution.lateness_ms {
                 OccurrenceOutcome::SkippedMissed
-            } else if self.state == AntMode::Paused {
+            } else if stopped == Some(AntMode::Paused) {
                 OccurrenceOutcome::SkippedPaused
-            } else if self.state == AntMode::Disabled {
+            } else if stopped == Some(AntMode::Disabled) {
                 OccurrenceOutcome::SkippedDisabled
             } else if active {
                 OccurrenceOutcome::SkippedBusy

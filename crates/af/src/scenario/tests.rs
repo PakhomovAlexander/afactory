@@ -374,134 +374,210 @@ fn signed_decisions_bind_exact_revision_owner_pin_and_deadline() {
 }
 
 #[test]
-fn publication_approval_cannot_feed_a_second_action_even_through_child_ports() {
-    let (bundle, policy) = publication();
-    Pin::new(bundle.clone(), policy.clone()).unwrap();
-    for (operation, destination) in [
-        (Operation::PublishPr, "fixture:repository"),
-        (Operation::Followup, "fixture:other"),
-    ] {
-        let mut fanout = bundle.clone();
-        let definition = fanout.definitions.get_mut("main").unwrap();
-        let mut second = definition.steps[1].clone();
-        second.id = "second".into();
-        let Kind::Action { grant, .. } = &mut second.operation else {
+fn publication_approval_rejects_mixed_operation_consumers_across_aliases_and_child_ports() {
+    for other_operation in [Operation::PublishPr, Operation::Followup, Operation::Notify] {
+        let (bundle, mut policy) = publication();
+        policy
+            .adapters
+            .get_mut("publisher")
+            .unwrap()
+            .operations
+            .insert(Operation::Notify);
+        Pin::new(bundle.clone(), policy.clone()).unwrap();
+        for (operation, destination) in [
+            (Operation::PublishPr, "fixture:repository"),
+            (other_operation, "fixture:other"),
+        ] {
+            let mut fanout = bundle.clone();
+            let definition = fanout.definitions.get_mut("main").unwrap();
+            let mut second = definition.steps[1].clone();
+            second.id = "second".into();
+            let Kind::Action { grant, .. } = &mut second.operation else {
+                unreachable!()
+            };
+            grant.operation = operation;
+            grant.destination = destination.into();
+            definition.authority.grants.insert(grant.clone());
+            definition.steps.push(second);
+            // Refuse at pin admission, before a Run can accept a signature or dispatch either
+            // Action. Consumer order must not change the approval boundary.
+            for reverse in [false, true] {
+                let mut candidate = fanout.clone();
+                if reverse {
+                    candidate
+                        .definitions
+                        .get_mut("main")
+                        .unwrap()
+                        .steps
+                        .swap(1, 2);
+                }
+                assert!(
+                    Pin::new(candidate, policy.clone())
+                        .unwrap_err()
+                        .contains("multiple Action consumers"),
+                    "accepted {operation:?} consumer; reversed: {reverse}"
+                );
+            }
+        }
+        // A child consumer of any operation cannot share its parent publication approval.
+        let mut nested = bundle.clone();
+        let mut child = nested.definitions["main"].clone();
+        child.inputs = BTreeMap::from([("approval".into(), Port::Decision)]);
+        child.steps.remove(0);
+        let Kind::Action { grant, .. } = &mut child.steps[0].operation else {
             unreachable!()
         };
-        grant.operation = operation;
-        grant.destination = destination.into();
-        definition.authority.grants.insert(grant.clone());
-        definition.steps.push(second);
+        grant.operation = other_operation;
+        child.authority.grants.insert(grant.clone());
+        nested
+            .definitions
+            .get_mut("main")
+            .unwrap()
+            .authority
+            .grants
+            .insert(grant.clone());
+        child.steps[0].inputs.insert(
+            "decision".into(),
+            Binding::Input {
+                port: "approval".into(),
+            },
+        );
+        let mut invoke = child.steps[0].clone();
+        invoke.id = "child".into();
+        invoke.operation = Kind::Scenario {
+            scenario: "child".into(),
+        };
+        invoke.inputs = BTreeMap::from([(
+            "approval".into(),
+            Binding::Step {
+                step: "review".into(),
+                port: "result".into(),
+            },
+        )]);
+        invoke.outputs = child.outputs.clone();
+        nested.definitions.insert("child".into(), child);
+        nested
+            .definitions
+            .get_mut("main")
+            .unwrap()
+            .steps
+            .push(invoke);
         assert!(
-            Pin::new(fanout, policy.clone())
+            Pin::new(nested.clone(), policy.clone())
                 .unwrap_err()
                 .contains("multiple Action consumers")
         );
+        // Only the child's Action consumes it now: receipt forwarding remains supported.
+        nested.definitions.get_mut("main").unwrap().steps.remove(1);
+        Pin::new(nested.clone(), policy.clone()).unwrap();
+        let mut aliased = nested;
+        let child = aliased.definitions.get_mut("child").unwrap();
+        child.inputs.insert("alias".into(), Port::Decision);
+        let mut second = child.steps[0].clone();
+        second.id = "second".into();
+        second.operation = bundle.definitions["main"].steps[1].operation.clone();
+        second.inputs.insert(
+            "decision".into(),
+            Binding::Input {
+                port: "alias".into(),
+            },
+        );
+        child.steps.push(second);
+        let invocation = &mut aliased.definitions.get_mut("main").unwrap().steps[1];
+        invocation
+            .inputs
+            .insert("alias".into(), invocation.inputs["approval"].clone());
+        assert!(
+            Pin::new(aliased, policy.clone())
+                .unwrap_err()
+                .contains("multiple Action consumers")
+        );
+
+        // Exporting a child's already-consumed approval does not reset its publication use.
+        let mut exported = bundle.clone();
+        let child = exported.definitions.get_mut("main").unwrap();
+        child.outputs.insert("approval".into(), Port::Decision);
+        child.result.insert(
+            "approval".into(),
+            Binding::Step {
+                step: "review".into(),
+                port: "result".into(),
+            },
+        );
+        let mut root = child.clone();
+        let mut invoke = root.steps[0].clone();
+        invoke.id = "child".into();
+        invoke.operation = Kind::Scenario {
+            scenario: "main".into(),
+        };
+        invoke.inputs.clear();
+        invoke.outputs = child.outputs.clone();
+        let mut second = root.steps[1].clone();
+        let Kind::Action { grant, .. } = &mut second.operation else {
+            unreachable!()
+        };
+        grant.operation = other_operation;
+        root.authority.grants.insert(grant.clone());
+        second.inputs.insert(
+            "decision".into(),
+            Binding::Step {
+                step: "child".into(),
+                port: "approval".into(),
+            },
+        );
+        root.outputs.remove("approval");
+        root.result.remove("approval");
+        root.steps = vec![invoke, second];
+        exported.root = "parent".into();
+        exported.definitions.insert("parent".into(), root);
+        assert!(
+            Pin::new(exported.clone(), policy.clone())
+                .unwrap_err()
+                .contains("multiple Action consumers")
+        );
+        // Reusing a definition creates distinct Decision invocations, each with its own consumer.
+        let root = exported.definitions.get_mut("parent").unwrap();
+        let mut second_child = root.steps[0].clone();
+        second_child.id = "second-child".into();
+        root.steps[1] = second_child;
+        Pin::new(exported, policy).unwrap();
     }
-    // A parent approval passed into a child cannot authorize a second publication there.
-    let mut nested = bundle.clone();
-    let mut child = nested.definitions["main"].clone();
-    child.inputs = BTreeMap::from([("approval".into(), Port::Decision)]);
-    child.steps.remove(0);
-    child.steps[0].inputs.insert(
-        "decision".into(),
-        Binding::Input {
-            port: "approval".into(),
-        },
-    );
-    let mut invoke = child.steps[0].clone();
-    invoke.id = "child".into();
-    invoke.operation = Kind::Scenario {
-        scenario: "child".into(),
+}
+
+#[test]
+fn nonpublication_decision_consumers_remain_valid_until_a_publication_shares_the_receipt() {
+    let (mut bundle, mut policy) = publication();
+    policy
+        .adapters
+        .get_mut("publisher")
+        .unwrap()
+        .operations
+        .insert(Operation::Notify);
+    let definition = bundle.definitions.get_mut("main").unwrap();
+    let publish = definition.steps[1].clone();
+    let mut notify = publish.clone();
+    let Kind::Action { grant, .. } = &mut notify.operation else {
+        unreachable!()
     };
-    invoke.inputs = BTreeMap::from([(
-        "approval".into(),
-        Binding::Step {
-            step: "review".into(),
-            port: "result".into(),
-        },
-    )]);
-    invoke.outputs = child.outputs.clone();
-    nested.definitions.insert("child".into(), child);
-    nested
+    grant.operation = Operation::Notify;
+    definition.authority.grants.insert(grant.clone());
+    definition.steps.truncate(1);
+    for id in ["first", "second", "third"] {
+        notify.id = id.into();
+        definition.steps.push(notify.clone());
+    }
+    Pin::new(bundle.clone(), policy.clone()).unwrap();
+    bundle
         .definitions
         .get_mut("main")
         .unwrap()
         .steps
-        .push(invoke);
+        .push(publish);
     assert!(
-        Pin::new(nested.clone(), policy.clone())
+        Pin::new(bundle, policy)
             .unwrap_err()
             .contains("multiple Action consumers")
     );
-    // Only the child's Action consumes it now: receipt forwarding remains supported.
-    nested.definitions.get_mut("main").unwrap().steps.remove(1);
-    Pin::new(nested.clone(), policy.clone()).unwrap();
-    let mut aliased = nested;
-    let child = aliased.definitions.get_mut("child").unwrap();
-    child.inputs.insert("alias".into(), Port::Decision);
-    let mut second = child.steps[0].clone();
-    second.id = "second".into();
-    second.inputs.insert(
-        "decision".into(),
-        Binding::Input {
-            port: "alias".into(),
-        },
-    );
-    child.steps.push(second);
-    let invocation = &mut aliased.definitions.get_mut("main").unwrap().steps[1];
-    invocation
-        .inputs
-        .insert("alias".into(), invocation.inputs["approval"].clone());
-    assert!(
-        Pin::new(aliased, policy.clone())
-            .unwrap_err()
-            .contains("multiple Action consumers")
-    );
-
-    // Exporting a child's already-consumed approval does not reset its publication use.
-    let mut exported = bundle.clone();
-    let child = exported.definitions.get_mut("main").unwrap();
-    child.outputs.insert("approval".into(), Port::Decision);
-    child.result.insert(
-        "approval".into(),
-        Binding::Step {
-            step: "review".into(),
-            port: "result".into(),
-        },
-    );
-    let mut root = child.clone();
-    let mut invoke = root.steps[0].clone();
-    invoke.id = "child".into();
-    invoke.operation = Kind::Scenario {
-        scenario: "main".into(),
-    };
-    invoke.inputs.clear();
-    invoke.outputs = child.outputs.clone();
-    let mut second = root.steps[1].clone();
-    second.inputs.insert(
-        "decision".into(),
-        Binding::Step {
-            step: "child".into(),
-            port: "approval".into(),
-        },
-    );
-    root.outputs.remove("approval");
-    root.result.remove("approval");
-    root.steps = vec![invoke, second];
-    exported.root = "parent".into();
-    exported.definitions.insert("parent".into(), root);
-    assert!(
-        Pin::new(exported.clone(), policy.clone())
-            .unwrap_err()
-            .contains("multiple Action consumers")
-    );
-    // Reusing a definition creates distinct Decision invocations, each with its own consumer.
-    let root = exported.definitions.get_mut("parent").unwrap();
-    let mut second_child = root.steps[0].clone();
-    second_child.id = "second-child".into();
-    root.steps[1] = second_child;
-    Pin::new(exported, policy).unwrap();
 }
 
 #[test]
@@ -812,6 +888,57 @@ fn pause_or_disable_after_due_time_before_first_tick_prevents_launch() {
         assert!(ant.tick(due + 400, &mut runs).unwrap().is_empty());
         assert_eq!(ant.occurrences.len(), 1);
         assert_eq!(ant.tick(due + DAY, &mut runs).unwrap().len(), 1);
+        ant.validate(&runs).unwrap();
+    }
+}
+
+#[test]
+fn pause_or_disable_then_enable_before_first_tick_durably_skips_only_that_day() {
+    let due = START + 12 * 3_600_000;
+    for (mode, expected) in [
+        (AntMode::Paused, OccurrenceOutcome::SkippedPaused),
+        (AntMode::Disabled, OccurrenceOutcome::SkippedDisabled),
+    ] {
+        let mut ant = ant("UTC", 12, 0);
+        let mut runs = BTreeMap::new();
+        ant.change(mode, due + 100).unwrap();
+        ant.change(AntMode::Enabled, due + 150).unwrap();
+        // Recover the transitions before the first tick, then recover its skipped receipt.
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("state");
+        Store::isolated(&path)
+            .unwrap()
+            .update(|world| {
+                world.ants.insert("daily".into(), ant);
+                Ok(())
+            })
+            .unwrap();
+        let store = Store::isolated(&path).unwrap();
+        let mut ant = store.read().unwrap().ants.remove("daily").unwrap();
+        assert!(ant.tick(due + 200, &mut runs).unwrap().is_empty());
+        assert!(runs.is_empty());
+        assert_eq!(ant.occurrences.len(), 1);
+        assert_eq!(ant.occurrences[0].outcome, expected);
+        ant.validate(&runs).unwrap();
+        store
+            .update(|world| {
+                world.ants.insert("daily".into(), ant);
+                Ok(())
+            })
+            .unwrap();
+        let mut ant = Store::isolated(&path)
+            .unwrap()
+            .read()
+            .unwrap()
+            .ants
+            .remove("daily")
+            .unwrap();
+        ant.validate(&runs).unwrap();
+        assert!(ant.tick(due + 300, &mut runs).unwrap().is_empty());
+        assert_eq!(ant.occurrences.len(), 1);
+        assert_eq!(ant.occurrences[0].outcome, expected);
+        assert_eq!(ant.tick(due + DAY, &mut runs).unwrap().len(), 1);
+        assert_eq!(ant.occurrences.len(), 2);
         ant.validate(&runs).unwrap();
     }
 }
