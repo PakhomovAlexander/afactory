@@ -735,6 +735,36 @@ class Telegram(Night):
         self.assertEqual(self.github.requests, [])
 
 
+class BoundedReads(Night):
+    def test_a_large_limit_is_read_in_bounded_chunks(self):
+        path = self.path("archive")
+        payload = b"x" * (2 * 1024 * 1024 + 17)
+        with open(path, "wb") as stream:
+            stream.write(payload)
+        real_open = open
+        calls = []
+
+        class Counted:
+            def __init__(self, stream):
+                self.stream = stream
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *args):
+                self.stream.close()
+
+            def read(self, limit):
+                calls.append(limit)
+                return self.stream.read(limit)
+
+        with mock.patch.object(publish, "open", lambda *args: Counted(real_open(*args))):
+            data = publish.read_bounded(path, 2 ** 40, "archive")
+        self.assertEqual(data, payload)
+        self.assertTrue(calls)
+        self.assertLessEqual(max(calls), 1024 * 1024)
+
+
 class Refusals(Night):
     def assert_refused(self, text, **options):
         code, _, err = self.publish(**options)

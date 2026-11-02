@@ -1,0 +1,1 @@
+- Embed the nightly minisign public key so `af self channel nightly` and the installer can verify signed nightly builds; the release key remains separate and unchanged.

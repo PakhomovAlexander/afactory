@@ -639,6 +639,14 @@ selectors the command was given (a report, pasted into a pull request, names no 
 diff, the materialized candidate and the refused selection describe no Task state. A previous
 version is refused, never read.
 
+The issue-triage check, scripts/backlog-check-triage.py (docs/design/issue-triage.md), a script
+beside af, not an af command, prints and reads:
+
+  each triager's document              af/issue-triage@1 (schemas/issue-triage-v1.json)
+  the merged record, exit 0            af/issue-triage-merged@1
+                                       (schemas/issue-triage-merged-v1.json)
+  the private hold record, exit 3      af/issue-triage-hold@1 (schemas/issue-triage-hold-v1.json)
+
 The command catalog, the help pages and the schemas:
 
   af help --json                       af/command-catalog@1 (schemas/command-catalog-v1.json):

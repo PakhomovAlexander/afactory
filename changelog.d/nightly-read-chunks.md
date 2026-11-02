@@ -1,0 +1,1 @@
+- Nightly publication reads bounded files in chunks, so a large limit does not become a giant allocation before any remote write.

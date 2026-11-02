@@ -446,6 +446,23 @@ fn without_a_nightly_key(installer: &Installer) -> PathBuf {
 }
 
 #[test]
+fn install_sh_embeds_the_nightly_public_key() {
+    let script = std::fs::read_to_string(install_script()).unwrap();
+    let key = std::fs::read_to_string(
+        install_script()
+            .parent()
+            .unwrap()
+            .join("crates/af/keys/nightly.pub"),
+    )
+    .unwrap();
+    let embedded = format!("NIGHTLY_PUB='{}'", key.trim_end());
+    assert!(
+        script.contains(&embedded),
+        "the installer must embed the exact key"
+    );
+}
+
+#[test]
 fn install_sh_installs_the_newest_nightly_by_date_with_the_nightly_key() {
     let Some(host) = install_host() else {
         return;
@@ -485,6 +502,17 @@ fn install_sh_installs_the_newest_nightly_by_date_with_the_nightly_key() {
     }
     assert!(!sandbox.path("curl.log").exists());
 
+    // The checked-in script already carries the key: no AF_INSTALL_NIGHTLY_KEY is needed.
+    let embedded = installer.run(path, &[("AF_INSTALL_CHANNEL", "nightly")]);
+    assert!(embedded.status.success(), "{}", err(&embedded));
+    assert!(
+        out(&embedded).contains("0.10.0-nightly.20261029")
+            && out(&embedded).contains("installed at")
+            && out(&embedded).contains("minisign verified"),
+        "{}",
+        out(&embedded)
+    );
+
     // With the nightly key: the newest by date, verified against that key, recorded as a nightly.
     let key = sandbox.path("nightly.pub");
     write(&key, "untrusted comment: test nightly key\nRWQ=\n");
@@ -497,7 +525,8 @@ fn install_sh_installs_the_newest_nightly_by_date_with_the_nightly_key() {
     );
     assert!(nightly.status.success(), "{}", err(&nightly));
     assert!(
-        out(&nightly).contains("af 0.10.0-nightly.20261029 installed at")
+        out(&nightly).contains("0.10.0-nightly.20261029")
+            && out(&nightly).contains("installed at")
             && out(&nightly).contains("minisign verified"),
         "{}",
         out(&nightly)
