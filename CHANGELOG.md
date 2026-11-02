@@ -19,6 +19,658 @@ publish step — so everything it carried shipped in `0.9.0-rc.6`.
 Changes since the last release are notes under [`changelog.d/`](changelog.d/), one file per
 pull request; the release pull request collects them here.
 
+## [0.14.0-rc.4] - 2026-11-02
+
+### Authority compatibility
+
+Provider registry v1 is refused: recreate registrations with this release. Existing committed .af authority must validate against current formats; refresh stale locks with af onboard --refresh-lock. Persisted Task/Review payloads from unsupported earlier schema versions are refused; start fresh Tasks under this release.
+
+### Changes
+
+- release: v0.14.0-rc.3 (#460)
+- Capture current Codex sessions for optimizer economics (#464)
+- changelog: fix the rc.1 top-level heading that fails every af gate; refuse headings in change notes (#462)
+- Task gate: clone a busy warm layer instead of waiting for it (opt afactory in to clone_when_busy) (#463)
+- af self channel: a nightly channel in af self and install.sh (ADR-0267) (#472)
+- test quarantine Q1: quarantine file, a class no plan selects, guards, ADR-0268 (#466) (#468)
+- Nightly train, part A: build nightlies from the newest green main and measure them on the Claw executor (ADR-0265, ADR-0266) (#475)
+- test quarantine Q2: scan proposes entries from af Tasks' gate flaky lists (#466) (#469)
+- test quarantine Q3: confirm and apply, and the Claw runbook (#466) (#470)
+- test quarantine Q4: a PR description block naming the quarantined tests a PR adds, checked by CI (#466) (#476)
+- test quarantine: the first 9 entries from the 2026-10-30 scan, and tests independent of the shipped file (#480)
+- Issue capture for asynchronous triage: raw template, loosened bug template, label script, filing rule (#482)
+- Stabilize full release performance comparisons on local executors (#473)
+- PR report: CI maintains the lines added block (ADR-0270) (#484)
+- nightly: compose, publish, and schedule the Claw nightly train (#501)
+- Restore CLI help performance by reusing parsing (#486) (#493)
+- self: embed the nightly verification key (#515)
+- Issue triage: stage the two-model Task pipeline, schemas, and merge check (#510)
+- nightly: read bounded publication inputs in chunks (#520)
+- feat: add durable Scenarios and scheduled Ants (#522)
+- perf: avoid temporary integer strings in canonical serialization (#508)
+- test quarantine: apply macOS confirmation and harden Claw launch (#535)
+- feat: add Pi SDK coding provider (#506)
+
+- `scripts/changelog-notes.py --check` (run by `make check`) and `--write` refuse a
+  `changelog.d/` note that holds a Markdown heading outside a fenced code block, naming the file,
+  the line and the fix: a note holds bullets (`changelog.d/README.md`). New
+  `scripts/test-changelog-notes.py` proves it in a temporary repository and runs in
+  `make release-check` beside the pin tests (issue #461).
+- `CHANGELOG.md` passes markdownlint again: the `0.14.0-rc.1` section's
+  `# Performance laboratory whole-source repairs` heading, copied from a note, is now a plain
+  lead-in line. This is the one sanctioned edit of `CHANGELOG.md` outside a release pull request.
+
+- This repository's Task gate no longer waits for a warm layer another gate holds: its code
+  policy declares `[warm] clone_when_busy = true`, so a gate that finds the layer busy clones it
+  into its own runtime directory and rebuilds the workspace crates there (#459,
+  [ADR-0207](docs/adr/0207-key-warm-check-layers-by-content-lock-them-split-the-build-deadline-and-seal-without-generated-files.md)).
+
+- `af self optimize` now reads current Codex sessions: `session_meta` declares the one session a
+  source is attributed to, a `response_item` ID no longer resets it, `token_usage_record`'s
+  cumulative `thread_token_usage` and `token_count` are kept as session maxima, and
+  `task_started`, `task_complete` and `turn_aborted` give task spans. A foreign `session_meta`,
+  `token_usage_record` or project-leaving `turn_context` changes nothing declared and
+  quarantines the session-less records after it until a valid declared `token_usage_record`;
+  the gaps `foreign_session_record` and `quarantined_unscoped_record` keep coverage partial.
+  A repeated declared `session_meta` with a foreign `cwd` or `project_id` quarantines as well, a
+  `token_usage_record` before the declaring `session_meta` is refused rather than adopted, a
+  `token_count` or task event before it is not attributed, a `token_usage_record` with a foreign
+  `cwd` or `project_id` is refused and quarantines even when it names the declared session (a
+  present `cwd` or `project_id` that is not a string counts as foreign), and an
+  incremental capture replays the retained prefix while rechecking it, so the declared session
+  and a quarantine carry over the capture cursor.
+  `docs/task-execution/self-optimizer.md` ("Native Codex sessions") lists the records
+  ([ADR-0264](docs/adr/0264-own-codex-session-records-and-quarantine-after-a-foreign-one.md)).
+  The malformed-project-evidence regressions are classified `functional` and run in the fast
+  gate. Their matrix does not yet prove declared identity, membership and spans through a
+  cursor-continued capture; that coverage is tracked in
+  [issue #465](https://github.com/PakhomovAlexander/afactory/issues/465).
+
+- The performance laboratory's local executor plans its serial schedule: a core submission
+  whose build, sampling windows and finish reserve cannot fit the run deadline is refused before
+  any original, claim or build, naming the shards that fit; `cli.py executor preflight` prints
+  the same checks as `af.perf-executor-preflight/1` without reserving anything.
+- `cli.py executor overview --scope full|partial` writes one combined JSON, Markdown and HTML
+  overview of a release comparison's originals (`af.perf-comparison-overview/1`), keeping state,
+  evidence verification, coverage and the performance verdict apart. A `full` comparison needs
+  core, telemetry, trace and CPU profile originals, a core aggregate that is not `incomplete`
+  and profiles whose parent is its core; a queued, refused, partial or unavailable original
+  makes it `incomplete`, and a `partial` scope is never `complete`. `status`, `verify` and
+  `overview` read the journal without its lock, so they work while a `cycle` executes.
+- A profile with `diagnostic.cases = []` diagnoses the regressions of a verified parent core
+  original (`submit --work profile --parent REQUEST_ID`), bound to its exact plan and verdict
+  (`af.perf-executor-request/3`); `diagnostic.perf` and `diagnostic.inferno_bin`
+  (`af.perf-executor/4`) reach the native CPU capture, and missing tools refuse the profile
+  before any build.
+- `diagnostic.observer = "host_perf"` records a contained CPU profile with a trusted host
+  observer: the operator's perf runs on the host under the authority supervisor, attached by
+  frozen PID and start time to the owned container's gated process and acknowledged before the
+  gate lets the command execute, so a millisecond CLI command is recorded whole and no Docker
+  client time is attributed to AF; the candidate keeps its unprivileged container and never
+  sees perf. Each recording keeps `af.perf-host-observer/1`, and the capability is checked by
+  an actual attachment before any build, never from `perf_event_paranoid`.
+- `cli.py executor comparison-preflight|comparison-launch|comparison-run|comparison-advance|
+  comparison-status|comparison-report|comparison-export|comparison-verify` run one durable full
+  release comparison (`af.perf-comparison/1`): the whole core family's frozen plan partitioned
+  into sequential bounded core originals (later ones reuse the first one's verified build), the
+  telemetry original, and trace and CPU profile lanes on the recipes of the plan's target,
+  selected by the aggregate verdict (`af.perf-comparison-aggregate/1`). The report
+  (`af.perf-comparison-report/1`) keeps completeness, verification, the verdict and calibration
+  eligibility apart; refusals are retained; the export is a self-contained bundle with a hash
+  manifest (`af.perf-comparison-export/1`) that `comparison-verify` checks after copying.
+- The telemetry overhead and invocation-cost drain latency now runs from the harness's last
+  write to the command's observed exit, both read on `CLOCK_MONOTONIC`
+  (`harness_last_write_to_command_exit`), never from file timestamps; a run whose physical drain
+  duration reads negative is kept as measured and leaves the gate `not_judged`, while a negative
+  `spans` minus `off` difference is a judged signed comparison. Drain figures recorded at the
+  drained result's CAS write are historical and not directly comparable. Each side is measured
+  on the fixture contract its `af --version` selects: v0.13.0 runs the same packages declaring
+  `af/TaskCheckReceipt@1`, re-pinned to declared digests its own `af catalog digest` must print.
+  The documents are now `af/telemetry-overhead@2` and `af/telemetry-invocation-cost@2`; `@1` is
+  refused.
+- A 10,000-event seed writer (the native `state_projection` seed and the `task show` and
+  Campaign CLI seeds) prepares its Store in a bounded 512 MiB tmpfs at `/perf/prep` through the
+  same protected public writers, then publishes it, every file flushed, to the seed, where a
+  fresh Store and the seed's oracle read it.
+- A later comparison partition runs in its own bounded run window, sealed in its run bundle as
+  `af.perf-partition-execution/1` and bound to the first partition's unchanged build and its
+  recorded run, instead of inheriting the first partition's expired deadline; a forged, widened
+  or wrong-partition authority starts nothing, and the aggregate checks each shard against its
+  own partition's window
+  ([ADR-0269](../docs/adr/0269-bind-comparison-partition-execution-to-reused-build-artifacts.md)).
+- Preflight, submission and the claim share one storage and one time admission: the native
+  reserve against `max_bytes`, and a telemetry or profile original's sequential bounds (both
+  telemetry builds' caps, scratch, the profile's timeout) against `run_seconds`, each refusal
+  naming the required and available figures before any claim or build. A telemetry original
+  left too little time after its sources ends `failed`, `not_executed`, before either build.
+- The CLI oracle declares each release's `af review report --format json` schema from its
+  version (`@4` through 0.13, `@5` from 0.14.0-rc.1, `af_cli_v3`), and a CLI sample keeps its
+  stdout within the unchanged `sample_log_bytes` total less a 16 KiB stderr reserve, so the
+  whole 100-Finding report is retained and judged; a truncated output is refused as truncated.
+- `comparison-export` carries every original's whole native evidence (core run bundles and
+  reports with their evidence, the telemetry run with its manifest, raw documents and logs,
+  the aggregate's run) and refuses a bundle whose pages link anything it does not hold;
+  `comparison-verify` checks every bundled page's links and verifies the native evidence again
+  offline against each original's sealed result.
+- The host CPU observer admits each perf for the observed command's own bound plus its
+  attachment and settlement allowances, within the 120-second per-run cap, instead of the whole
+  remaining diagnostic window the supervisor refused; a failed attachment after the command
+  started releases its scratch only on the supervisor's confirmed cancellation and keeps the
+  observer's own reason ahead of any cleanup uncertainty.
+- Executor preflight, submission and the claim check the configured `build_image` and
+  `sample_image` (pinned, present, Linux, no implicit volume) and, in the build image under the
+  machine exclusion, the recipe's Rust toolchain and target and the musl recipe's
+  `zigbuild_bin` cargo-zigbuild and Zig versions; a missing image or tool refuses before any
+  original, claim or build, and one gone after submission ends the original `failed` before
+  its first build, with no fence kept.
+- Storage admission also needs the journal root's filesystem to have the native reserve
+  available now; the refusal prints the `max_bytes` figures and the filesystem's available
+  bytes, and a large filesystem never widens `max_bytes`.
+- A diagnostic CLI case keeps its sample's whole 262,144-byte log (245,760 bytes of stdout and
+  its stderr), as core does, instead of adding another 64 KiB of stderr.
+- The musl CPU profile recipe (`linux_musl_cpu_profile`) builds with line-tables-only debug
+  information and frame pointers, as the GNU recipe does, so its AF and probe fit the unchanged
+  build-artifact and symbol-evidence caps; full debug information left no diagnostic build.
+
+- `af self channel [stable|rc|nightly] [--no-update]` shows or switches the release channel: it
+  installs and verifies the channel's newest, then writes `[self] channel` into the user layer,
+  keeping the file's other keys and comments, and makes that newest the default, saying so when
+  that moves back to an older version. A switch that fails leaves the channel and the default as
+  they were and names `af self channel <channel>` to try again. The new `nightly` channel
+  installs the newest nightly build of main by its date (`nightly-YYYY.MM.DD`, version
+  `<core>-nightly.<YYYYMMDD>`, Linux only), verified against a separate nightly key
+  (`crates/af/keys/nightly.pub`, or `AF_NIGHTLY_KEY`); a build without that key refuses the
+  channel. `af self update`, the release check and `af self status` follow the channel, a
+  nightly is never pinned (a lock that pins one is refused at dispatch), an installed nightly is
+  reused only as the version asked for, and `install.sh` takes `--nightly` /
+  `AF_INSTALL_CHANNEL=nightly`. The check cache is now `af/self-check@4`
+  ([ADR-0267](docs/adr/0267-offer-a-nightly-channel-in-af-self.md)).
+
+- `.config/test-quarantine.json` (`af.test-quarantine/1`, shipped empty) lists flaky tests by
+  nextest identity; `scripts/test-classes.py` classifies a listed test as `quarantine`, a class
+  no plan selects, so no Task gate, pull request validation or full release runs it, while its
+  siblings stay selected; `make check`'s full nextest run (`make test`) excludes it too.
+  `make check`'s `test-catalog` step refuses an invalid or expired entry, more than 20 entries,
+  an `#[ignore]` test, an identity outside the inventory and one a feature build's fixed
+  selector reaches (quarantine covers the default-feature inventory only), naming the entry and
+  the fix
+  ([ADR-0268](docs/adr/0268-quarantine-flaky-tests-on-gate-evidence-and-confirm-them-on-claw.md)).
+
+- The owner's nightly build: `scripts/nightly/build.py` chooses the newest green commit of main
+  (walking back over red ones and skipping a night when main has not moved), builds
+  `x86_64-unknown-linux-musl` and `aarch64-unknown-linux-musl` in the laboratory's musl image as
+  the release does (that image's `musl` stage now installs `aarch64-unknown-linux-musl` beside
+  `x86_64-unknown-linux-musl`), smokes and packages each as
+  `af-nightly-YYYY.MM.DD-<target>.tar.gz`, signs `SHA256SUMS` with a separate nightly key, and
+  records the night as `af.nightly-build/1`.
+  Nightlies are tagged `nightly-YYYY.MM.DD` and versioned `<core>-nightly.<YYYYMMDD>`; `install.sh`,
+  `af self` and `.af/af.lock` never take one for a release
+  ([ADR-0265](docs/adr/0265-build-nightlies-from-the-newest-green-main-on-the-owners-vm.md),
+  [`docs/nightly.md`](docs/nightly.md)).
+
+- The independent performance executor measures nightlies: `cli.py executor … submit --kind
+  nightly --tag nightly-YYYY.MM.DD --head SHA` derives the baseline as the highest stable release
+  reachable from the frozen main commit, keys the original by tag and work so a resubmission is
+  idempotent, and refuses `--work profile` and a core nightly on a configuration whose tier is not
+  `nightly`. Core results (`af.perf-executor-result/3`) name each side's built `af` by SHA-256 and
+  size; request/1 and result/2 originals stay readable. The musl build image holds
+  `cargo-zigbuild` and `zig` together in `/opt/af-perf-tools/bin`. The nightly tier runs four
+  shards of 15 sampling minutes within a 180-minute deadline that counts the build's five bounded
+  steps, so a nightly's serial shards fit inside the unchanged hard maxima
+  ([ADR-0266](docs/adr/0266-measure-nightlies-as-originals-of-the-independent-executor.md)).
+
+- `scripts/test-quarantine.py scan` proposes test quarantine entries from af Tasks' gate flaky
+  lists (`af task list --json`, `af/task-list@3` or `@4`, by `--list FILE` or `--state DIR`): an
+  identity flaky in at least 2 distinct Tasks within the 7 days ending today becomes a
+  `quarantined` entry for 14 days with its sorted Task IDs as evidence. A name counts only when
+  it resolves to one default-feature nextest identity, so af 0.13.0's fixture names are listed as
+  rejected; without `--write` it changes nothing, `--write` adds the entries through the
+  quarantine guards up to the 20-entry cap and names the overflow, and `--json` prints one
+  `af.test-quarantine-scan/1` document
+  ([ADR-0268](docs/adr/0268-quarantine-flaky-tests-on-gate-evidence-and-confirm-them-on-claw.md)).
+
+- `scripts/test-quarantine.py confirm` runs the quarantined tests (or the `--only` ones) in N
+  whole nextest runs (`--runs`, default 50) with the functional class running beside them as load
+  (`--load functional`, or `none`), never stopping early or rerunning a failure, and writes one
+  `af.test-quarantine-confirm/1` report classifying each as `flaky`, `always_fails` or `clean`; a
+  run without a result writes no report. `scripts/test-quarantine.py apply REPORT --write
+  --issues DIR` makes a flaky entry `state: flaky` for 14 days with a `flaky: <identity>` issue
+  body, removes an always-failing entry with a P0 body, and removes a clean entry only when the
+  report's platform is the evidence platform (`--evidence-platform`, default macOS); it never
+  runs `gh`. `docs/test-quarantine-claw.md` gives the Claw runbook
+  ([ADR-0268](docs/adr/0268-quarantine-flaky-tests-on-gate-evidence-and-confirm-them-on-claw.md)).
+
+- The worktree-capture regression `capture::an_index_change_alone_invalidates_a_pass` no longer
+  hangs for a 120-second deadline on a loaded macOS host, and no longer waits on filesystem
+  notifications at all. FSEvents there drops events, stalls, and replays earlier events to a
+  newly started watcher, and no wait on a watcher can prove that a later callback is not still
+  coming. The test therefore no longer stages inside the watched worktree; see
+  `index-only-capture-test-invariant.md`. Capture itself is unchanged. `CHANGELOG.md`'s second H1
+  (`# Performance laboratory whole-source repairs`) is a plain lead-in line again, so
+  markdownlint's MD025 passes.
+
+- A CLI CPU profile of many fresh processes is representable again: a capture lists its own
+  files, and its `af.perf-repetitions/1` index (`repetitions.json`, bound by size and SHA-256
+  from `af.perf-profiles/7`) lists every repetition's raw recording and host-observer record in
+  order. Report admission, offline and in a comparison export, refuses a missing, changed or
+  unlisted repetition. A real capture of 188 repetitions per side had failed to write
+  `profiles.json` at all.
+- Each recording of a CLI capture is decoded by its own `perf script`, in order, under the
+  tool's own time bound and the diagnostic deadline, and a decoding that fails names its
+  recording in a report that still serializes.
+- A host-observed CLI command's region time is its exec to its exit in the trusted recording,
+  no longer the supervised wall that included the observer's attachment and the wait at its
+  gate; a recording without both records stops the capture as `command_boundary_unknown`.
+
+- An executor image whose volume declaration or identity refuses at preflight, submission or the
+  claim no longer leaves the machine fence that disabled every later experiment: only
+  `docker image inspect` ran, no probe container, so the refusal settles clean; an unconfirmed
+  probe container still keeps the fence.
+- A CLI CPU capture of many fresh processes lists the build IDs with hits of every recording, in
+  order, not only the first: `binary_build_id_present` is no longer `false` when only a short
+  first execution had no AF sample. A listing that fails or is malformed refuses the capture,
+  naming its recording, instead of being read as no build IDs.
+
+- Performance Lab CPU captures and their capability proofs decode every recording with
+  function-level `perf script --no-inline`, so a CLI capture of hundreds of fresh-process
+  recordings no longer spends its diagnostic budget expanding inline frames (4.7 s against
+  0.09 s per real recording). Samples, losses, unknown frames, sampling settings and the
+  retained recordings are unchanged; the diagnostics page says the stacks are function-level,
+  and the kept recordings and symbols can be decoded again with inline expansion.
+
+- The worktree-capture regression `capture::an_index_change_alone_invalidates_a_pass` now proves
+  what its name says. Its repository keeps its administrative directory, the real index included,
+  beside the worktree (`git init --separate-git-dir`), outside the root the capture's watcher
+  monitors. The staged file is in the worktree before the capture starts, and only `git add`
+  runs between the passes. The test asserts that the index lies outside the worktree, that every
+  entry under the worktree keeps the same mode, bytes, and inode and time stamps across the
+  staging, that `git ls-files -s` did change, and that the capture took exactly two attempts.
+  The fence-and-probe settle wait and its scripted test are removed: they declared the watcher
+  settled on an empty queue, which cannot prove that no repository callback is still coming.
+  Capture itself is unchanged.
+
+- A build or sample image whose `docker image inspect` identity is malformed (a field that is not
+  JSON, an ID, OS or architecture that is not a string, repository digests or environment that
+  are not a list of strings) now refuses as `build_image_malformed` before any claim, build or
+  probe container, and leaves no machine fence, instead of escaping as a JSON or type error that
+  kept the fence and disabled every later experiment.
+
+- A build or sample image identity from `docker image inspect` whose fields nest deeper than a
+  list of strings, or whose bytes are not valid UTF-8 (an environment `PATH` holding byte 0xff),
+  now refuses as `build_image_malformed` before any claim, probe container or build, and leaves
+  no machine fence. Before, deep nesting below the byte bound could escape as a `RecursionError`
+  that kept the fence, and invalid bytes were silently replaced and admitted.
+
+- A SIGTERM or SIGINT to a local performance controller (`executor comparison-run`, the
+  executor service) during a shard now cancels the whole controller. Before, the shard's own
+  handler consumed the signal and the controller went on to the next shard and the next queued
+  original. Now the shard seals its `interrupted` record, no later shard or original starts,
+  and the original's scratch is removed. With that cleanup confirmed the original ends
+  `interrupted` with its partial evidence and the machine fence settles; unconfirmed, it is
+  `uncertain` and the fence stays. The original is never replayed. A shard run alone still
+  just ends `interrupted`.
+- A telemetry build record (`af.perf-telemetry-build/2`, inside `af.perf-telemetry-result/3`)
+  accepts the build image exactly as build admission does (ADR-0170): a local image ID
+  `sha256:<64 hex>` or a manifest digest `name@sha256:<64 hex>`. Before, a telemetry build in
+  an image named by its local ID compiled both sides and was then refused at the record. A tag,
+  a tag before a digest, an uppercase name or a short ID is still refused, and records and
+  results of the previous versions are refused.
+
+- The performance laboratory's pre-build host capability runner holds its tool's process-group
+  leader unreaped until the group settles, so a killed descendant that a subreaper keeps
+  unreaped counts as exited, not as an unconfirmed end, and no recycled group is signalled. The
+  PTY first-frame driver reads the browser's start before its exit watcher, so a refused watcher
+  no longer turns an older unreadable process of the same user into an unconfirmed cleanup.
+- A native release comparison binds every reused member to its frozen configuration and plan: a
+  narrower same-key original (another telemetry profile or experiment set) refuses the
+  comparison before any claim, and status, report and export never count it as coverage. The
+  telemetry experiment registry is `af.perf-telemetry-lab/3`; `/2` is refused.
+- Submission admits the selected releases' declared workloads before any claim or build: the
+  telemetry bench refuses a release no fixture contract names (v0.11.9) instead of measuring it
+  under the current contract, a core original with CLI cases needs an adapter for both sides,
+  and the sample image's own interpreter, shell, driver modules and containment are probed in
+  one owned container under the machine exclusion.
+
+- A termination signal that a performance shard consumes during its final slot now ends the
+  shard `interrupted` (`cancelled`), not `complete`. Before, the shard checked the signal only
+  before the next slot, so a final sample that returned normally sealed a complete shard inside
+  an interrupted original. Every completed sample is kept and none is counted missing. A stop
+  the slot already made, such as an uncertain cleanup, is kept. Under a controller the
+  cancellation still stops every later shard and original.
+- Local core submissions now admit each side's native library workload before any claim or
+  build. The native probe adapter registry is `af.perf-adapters/2`: each adapter declares the
+  first AF release it covers (`min_version`, 0.12.0-rc.3 for the public-API probe). A release no
+  adapter declares (v0.11.9), or a plan contract no declared adapter serves, is refused even
+  for a library-only plan. `/1` is refused.
+- CLI admission now checks every selected process case against the side's chosen adapter. A
+  command the adapter does not declare, or declares pending, is refused with its reason: for
+  example, `tui_open` on 0.12.0-rc.3 under `af_cli_v1`. The adapter's runnable commands stay
+  admitted.
+
+- The Linux-only host observer regression that runs a child subreaper no longer writes Python
+  bytecode into a writable checkout. Its child runs with `-I`, which ignores
+  `PYTHONDONTWRITEBYTECODE`, and does not inherit the parent's `-B`, so in CI it created
+  `perflab/__pycache__`, and every later authority check refused that source. The child now
+  suppresses bytecode itself and imports a disposable writable copy of `perflab`; the test
+  asserts that the copy stays bytecode-free and that the copy was the source imported.
+
+- `executor comparison-verify` now derives a native comparison's report again from the bundle
+  alone (the declaration's members, each original's state bound to its sealed result, the
+  aggregate recomputed from its partitions, run and verdict) and refuses a report that claims
+  anything else. A failed telemetry original or queued members relabelled complete, with
+  report and manifest rehashed, are refused; honest incomplete and running bundles still verify
+  as what they are, and a complete comparison keeps its failing verdict. The
+  `af.perf-comparison-report/1` contract refuses a complete lane over an original that is not
+  complete, and a complete comparison over one that is not verified
+  ([ADR-0240](docs/adr/0240-execute-performance-experiments-independently-on-a-locked-vm.md)).
+- A CPU capture whose recordings never hit the profiled executable's known build ID is omitted
+  as `executable_not_sampled` and nothing is rendered from it; `profiles.json` refuses such a
+  capture without that omission. A build-ID-less (musl) executable stays bound by its exact hash
+  and symbol archive.
+- The local executor guide gives the full release comparison's configuration (the whole
+  nightly family on the musl target in 8 serial shards, the 12 manual telemetry runs, a fresh
+  candidate journal) and the checks of its frozen plan and telemetry workload before it runs.
+
+- The local executor guide's full release comparison runs the whole nightly family in 8 smaller
+  serial shards (2932 slots, 4 serial originals of 2 shards) instead of the tier's 4: on
+  v0.13.0 against v0.14.0-rc.1, a measured 4-shard first shard stopped at 738 of 776 slots
+  inside its unchanged 45-minute window. Cases, pairs, windows, deadlines and the 12 manual
+  telemetry runs are unchanged, and the failed run stays recorded as it is.
+
+- A pull request that adds entries to `.config/test-quarantine.json` now names them in its
+  description: `python3 scripts/pr-quarantine.py` prints the block between
+  `<!-- af-pr-quarantine:v1 -->` and `<!-- /af-pr-quarantine -->` (the title
+  `**Quarantined tests added: N**` and each test's state, expiry and why), the template has a
+  `Test quarantine` section for it, and the `PR report` check renders it again from the pull
+  request's commits, refusing a missing or differing block, and a stale one when none is added
+  ([ADR-0268](docs/adr/0268-quarantine-flaky-tests-on-gate-evidence-and-confirm-them-on-claw.md)).
+
+- The owner's nightly publish step: `scripts/nightly/publish.py publish --config nightly.toml
+  --date YYYY-MM-DD --report DIR` verifies a built night (archive digests, `SHA256SUMS`, its
+  minisign signature), publishes it as the GitHub pre-release `nightly-YYYY.MM.DD` at the
+  night's commit with the two archives, `SHA256SUMS`, `SHA256SUMS.minisig`, `nightly.json`,
+  `daily.json` and `report.html`, sends the report's `digest.md` as one plain-text Telegram
+  message, prunes the nightly pre-releases beyond the newest `keep_nights` (14 by default),
+  the published night included when it is that old, without touching drafts or any other
+  release or tag, and writes the receipt `af.nightly-publish/1`.
+  Publishing a night again replaces only its notes and report and never its shipped bytes; a
+  skipped night sends one line, once, and publishes nothing. `nightly.toml` gains a `[publish]` table
+  naming a separate write token, the optional Telegram bot and chat, and `keep_nights`
+  ([ADR-0272](docs/adr/0272-publish-nightlies-as-pre-releases-and-prune-them.md),
+  [`docs/nightly.md`](docs/nightly.md#publishing)).
+
+- A `github_actions` performance executor configuration that declares `[core.windows]` is now
+  refused when it is admitted, before any original is reserved or dispatched: `performance.yml`
+  has no windows input, so the hosted run would silently have measured the tier's own windows.
+  Without windows, hosted dispatch is unchanged, and local declared windows still work.
+
+- The nightly build's lock-rewrite test resolves `cargo metadata --locked --offline` for the
+  host platform only, through a private Cargo home that holds only the host's crates. It no
+  longer fails offline on a cache filled only for Linux. It still requires Cargo's stale-lock
+  refusal (both the Cargo 1.88 and the newer wording) when only `Cargo.toml` moves.
+
+- Issue capture for asynchronous triage
+  ([`docs/design/issue-triage.md`](../docs/design/issue-triage.md), rollout step 1): a new
+  "Raw note (triaged automatically)" issue template with three fields (`What I saw` required,
+  `Evidence` and `Repro` optional); the bug template now requires only `What happened`, the af
+  version and `Evidence`; every issue template applies `triage/pending`.
+  `scripts/backlog-labels.py` prints (or with `--apply` runs) the `gh label create --force`
+  commands for the 24 `class/`, `size/`, `pipeline/` and `triage/` labels, and `--migrate` moves
+  open issues from `Agent UX Improvement` to `class/aix` and from `test-perf` to `class/sdlc`; it
+  never deletes a label. `AGENTS.md` gains the rule to file a defect met during work raw and
+  continue.
+
+- A native release comparison's trace lane is complete only when every case the aggregate
+  verdict selects has a baseline and a candidate trace without omission whose region coverage is
+  complete. A missing side, an omitted side, a `partial` or a setup-only `region_missing` trace
+  leaves the lane failed with its reason, in `comparison-report` and `comparison-verify` alike;
+  such an honest incomplete bundle still verifies as incomplete
+  ([ADR-0176](docs/adr/0176-diagnose-cli-cases-and-contained-linux-runs-and-bound-every-step-and-seed-before-it-is-used.md)).
+- Each diagnostic profile of a comparison must carry exactly the selection the bundled
+  aggregate's verdict derives (mode, limit, parent verdict digest, cases and reasons) and a parent
+  receipt naming that aggregate's result, plan and verdict. Valid children of a case the
+  aggregate did not select, or of another aggregate, never complete a lane, however their
+  results, states and the export manifest were resealed.
+
+- The owner's daily nightly report: `scripts/nightly/report.py compose --config nightly.toml
+  --date YYYY-MM-DD --output DIR` writes `daily.json` (`af.nightly-daily/1`), a self-contained
+  `report.html` and a Telegram `digest.md` of at most 3500 bytes from the night's
+  `nightly.json`, the nightly executor's verified core and telemetry originals (bound to the
+  night's head and baseline, the measured binaries to the original's sealed builds record), the
+  trend of up to four headline instances over the last `history_nights` earlier nights, GitHub's
+  backlog and three machine facts. Every missing or refused input leaves its section unavailable
+  with the reason; only a night without `nightly.json` is refused. `nightly.toml` gains a
+  `[report]` table, and `build.py` and `report.py` share one bounded GitHub reader on
+  `urllib.request`, whose timeout is now 30 s for the connection as for each read
+  ([ADR-0271](docs/adr/0271-compose-the-nightly-report-from-the-nights-record-and-the-executor-journal.md),
+  [`docs/nightly.md`](docs/nightly.md#the-daily-report)).
+
+- A native release comparison's CPU lane is complete only when every case the aggregate
+  verdict selects has a usable baseline and candidate capture (no omission, at least the frozen
+  registry's `minimum_samples`, its own collapsed stacks) and both directions of its
+  differential flamegraph name exactly those captures' collapsed stacks as inputs. Captures
+  removed, a side missing or omitted, too few samples or a render of other inputs leave the lane
+  failed with its reason in `comparison-report` and `comparison-verify` alike, however the
+  surviving SVG and every receipt were resealed; an honest incomplete bundle still verifies as
+  incomplete. The profile's registry must be the installed producer's.
+- `executor comparison-report` and `comparison-export` derive the core aggregate's partition
+  entries, run, verdict, result, coverage and regressions again from the admitted partitions,
+  as `comparison-verify` does from a bundle. An aggregate altered in the journal, even before
+  its diagnostic children were submitted with matching parent receipts, is refused: the report
+  is incomplete with verification `refused`, and its export verifies as that same report.
+  `comparison-status` still reads cheaply without verifying
+  ([ADR-0240](docs/adr/0240-execute-performance-experiments-independently-on-a-locked-vm.md)).
+
+- The `PR report` check no longer fails a pull request whose `Lines added` block is stale or
+  absent: it renders the block from the pull request's commits and writes it into the
+  description itself, changing only the text between `<!-- af-pr-lines:v1 -->` and
+  `<!-- /af-pr-lines -->` (or inserting the block right after the `af task report` block), and
+  passes. The job now holds `pull-requests: write`; it still checks out only the base branch and
+  runs no code of the pull request. When the write is refused, the check fails as before and
+  prints the block to paste, now for an absent or misshapen block too.
+  `scripts/check-pr-report.py --refresh-into FILE` writes the refreshed description to FILE. The
+  `af task report` block is still the author's, and its rules are unchanged
+  ([ADR-0270](docs/adr/0270-let-ci-maintain-the-lines-added-block.md)).
+
+- The issue-triage Task, staged for the owner to install
+  ([`docs/design/issue-triage.md`](../docs/design/issue-triage.md), rollout step 2):
+  `fixtures/issue-triage/` holds the `triage` kind on the report profile, the `backlog/triage`
+  pipeline in the `kernel/report` shape, the `backlog/triage-author` (Codex `gpt-6-astra`,
+  `read-source` only) and `backlog/triage-verifier` (Claude Opus 5.5) Workers with their shared
+  catalog, contract fixtures and install steps, and an example Task for #432 that plans with
+  zero Attempts. `schemas/issue-triage-v1.json` and `schemas/issue-triage-merged-v1.json` define
+  `af/issue-triage@1` and `af/issue-triage-merged@1`; `scripts/backlog-check-triage.py`
+  validates both triagers' documents, refuses a size below `L` for a named contract,
+  schema-version, budget or sandbox-boundary change, an ADR with size `S` and a fixed or partial
+  claim without a reachable commit or merged pull request, holds any `security` triage, and
+  merges the two into one record (exit 0), a refusal (exit 1) or a hold (exit 3).
+
+- `executor comparison-report`, `comparison-export` and `comparison-verify` now refuse a core
+  aggregate that names another comparison ID or frozen plan digest than its declaration, and
+  one that leaves out a complete, admitted partition of this comparison by labelling it
+  `refused`. Each partition's inclusion and verification are derived from its binding,
+  terminal state and admission, as the aggregate writer derives them, so the check holds even
+  when the diagnostic children's parent receipts were resealed to the altered aggregate. The
+  report is incomplete with verification `refused`. A partition that is incomplete, foreign
+  or not admitted still reports honestly as incomplete
+  ([ADR-0240](docs/adr/0240-execute-performance-experiments-independently-on-a-locked-vm.md)).
+
+- The owner's nightly train runs unattended on the VM as systemd units: `af-nightly.timer`
+  starts `af-nightly-build.service` at 22:05 UTC, and the build hands over to
+  `af-nightly-measure.service`, which hands over to `af-nightly-report.service` whatever the
+  measurement did, which hands over to `af-nightly-publish.service` (units in
+  `scripts/performance/service/`). The new `scripts/nightly/measure.py submit --config
+  nightly.toml` submits a built night's core and telemetry originals to the nightly executor and
+  cycles it until both end or `[measure] deadline_minutes` (default 300) pass. Every step takes
+  `--date`, or `--night-of UNIT` (the UTC date systemd last started UNIT, which the units use),
+  or else today's UTC date, and prints the night it chose; `report.py compose --output-root DIR`
+  writes `DIR/<date>` or the next free `DIR/<date>.<k>`, `publish.py publish --report-root DIR`
+  publishes the newest, and the configuration's new `reports_root` is the default root of both.
+  The build also reads the key's passphrase from the systemd credential
+  `af-nightly-sign-password`. [`docs/nightly.md`](docs/nightly.md#the-nightly-chain) is the
+  runbook ([ADR-0273](docs/adr/0273-run-the-nightly-chain-as-systemd-units-on-the-owners-vm.md)).
+
+- Add a deterministic, synthetic two-partition comparison regression proving complete native
+  core and aggregate verification through report, export and copied-bundle verification.
+  Completeness stays separate from a failing performance verdict; this test makes no product
+  performance claim and changes no runtime behavior.
+
+- The staged issue-triage Task fits its budget of
+  [`docs/design/issue-triage.md`](../docs/design/issue-triage.md) §6.1: each triager has
+  40,000 tokens and 500,000 ms per Attempt, and `fixtures/issue-triage/example/task.json` plans
+  with 150,000 tokens, 1,200,000 ms and 8 Attempts. `scripts/backlog-check-triage.py` now
+  requires the verifier's own `Triage` block for every outcome and the seven identity flags
+  (`--task-id`, `--document-id`, `--evaluation-id`, `--bundle-sha256`, `--main`,
+  `--policy-version`, `--event-id`) for every merged record, exiting 2 without one; holds an
+  issue before reading any input on a `class/security` or `triage/held` label from `--label` or
+  `--owner-label`, printing the private `af/issue-triage-hold@1` with exit 3; reads the
+  `Triage` block from the report's canonical bytes as well as its presentation; and counts a
+  commit written as `commit <sha>`, as a code span or alone whatever its mix of digits and
+  letters. `af schema show` prints `af/issue-triage@1`, `af/issue-triage-merged@1` and
+  `af/issue-triage-hold@1`.
+- Label holds return even with unreadable reports or malformed draft sections; non-held drafts
+  whose `sections` is not an array are refused with exit 1. The triage script's tests run on
+  Python 3.9 using only its standard library, including exact Worker allowance checks.
+- A security class from the author holds before reading the evaluation; one from the verifier
+  holds before reading pulls or hand-triage, or processing merge, evidence or publication
+  identities. Both print only the existing private hold with exit 3. Non-string `Triage` and
+  `Rationale` draft bodies are refused with exit 1, empty stdout and a one-line diagnostic;
+  missing or null bodies keep the blank-section refusal, and label holds still take precedence.
+
+- `docs/test-quarantine-claw.md`: the Claw confirmation runbook now builds a small image with the
+  prebuilt cargo-nextest 0.9.132, runs the clone and the confirmation as uid 1000, holds the
+  performance laboratory's anchored production `MachineLock` across Docker in a host Python
+  parent, and runs detached as `afq-confirm`. Host imports use a fresh, verified `COMMIT` archive
+  of the whole authority package outside container mounts; dirty authority bytes or executable
+  bits refuse before import or Docker. Cleanup stays inside the fresh host-only directory without
+  following links.
+  Preparation uses `sudo chown` only for non-root SSH users other than uid 1000. The launch checks
+  the required root-owned inode anchor, binds its exact identity directly to acquisition without
+  rereading or enabling lock creation, and checks the experiment fence under the lock, refusing
+  missing, unsafe or replaced coordination state and requiring operator provisioning/recovery
+  ([ADR-0240](../docs/adr/0240-execute-performance-experiments-independently-on-a-locked-vm.md));
+  a busy-lock retry repeats only the launch, preserving the prepared checkout.
+- Both production executor lock paths bind the required anchor identity without rereading or
+  creating a lock; explicit test directories still need no installed anchor. Confirmation fences
+  before Docker and settles its fence only after a successful inventory confirms `afq-confirm`
+  is absent, including stopped containers and `--rm` cleanup. Parent death, Docker launch failure,
+  inspection failure or a remaining container retains the fence for operator recovery; a nonzero
+  confirmation result with confirmed container absence releases it and keeps that exit status.
+
+- Nightly publication now validates the complete daily-report contract and binds its date, tag, repository and build head to the selected night before any GitHub or Telegram write.
+- Report composition now detects replacement of its new output directory by either a link or another real directory and writes no files into the substitute.
+- The nightly Cargo-rewrite test uses a hermetic locked/offline resolver model by default; the real-Cargo integration remains available explicitly with `AF_NIGHTLY_REAL_CARGO=1`.
+- Authenticated GitHub and Telegram writes no longer honor ambient proxy variables, and nightly release answers are bound to the selected tag and their own release id before amendment or upload.
+- Nightly measurement rejects a duplicate executor request id instead of allowing one unfinished original to hide the other, and fractional systemd start timestamps retain millisecond precision at the 23-hour boundary.
+- Nightly report tests read committed gzip fixtures so their archive goldens are stable across Python and zlib versions.
+
+- Avoid repeated CLI parsing and help rendering at startup, and skip usage-document command
+  lookup for help/version display results, preserving help text, errors and dispatch behavior.
+  Claw performance validation is pending; this is not yet a verified regression resolution.
+
+- Add a native Pi Provider using an embedded AF SDK host, pinned to Pi 1.4.0 with Node
+  >=22.19 and explicitly registered `openai-codex` stored OAuth. Task, Review and doctor share
+  exact account/model admission, confined file tools and partial usage accounting. Registration,
+  status and model discovery are token-free; paid live smoke was not run. See
+  [Pi SDK host decision](https://github.com/PakhomovAlexander/afactory/blob/main/docs/adr/2026-11-02-own-the-pi-sdk-host-and-confine-its-tools.md).
+- Resolve Pi test fixtures from the runtime Workspace when reusing compiled gate tests. Discover
+  installed SDK test paths portably and verify nested writes and typed replies through a real
+  SDK agent turn with mocked transport; report missing real-SDK coverage explicitly.
+
+- Update onboarding, Provider removal UI and telemetry invocation fixtures to write Provider
+  registry version 2, restoring their workflows with the current Pi-capable registry contract.
+
+- Wrap the Pi setup and Provider catalog names in `af help json` within 100 columns.
+
+- Embed the nightly minisign public key so `af self channel nightly` and the installer can verify signed nightly builds; the release key remains separate and unchanged.
+
+- Canonical JSON formats integers directly into its output buffer, avoiding a temporary String.
+
+- Give the proposed Pi SDK host decision its own
+  [date-topic identity](https://github.com/PakhomovAlexander/afactory/blob/main/docs/adr/2026-11-02-own-the-pi-sdk-host-and-confine-its-tools.md),
+  preserving accepted ADR-0274 for Scenarios and all accepted nightly decision identities.
+
+- Nightly publication reads bounded files in chunks, so a large limit does not become a giant allocation before any remote write.
+
+- Pi setup discovers the SDK through the standard managed launcher without executing it,
+  rejects unsafe version/entrypoint paths, and prints failed setup details on stderr while
+  preserving JSON stdout. Cancellation fixtures bound readiness and retain usage/reaping checks.
+- Retain the original nested-write issue and source-bound historical measurement in the
+  [Pi validation record](https://github.com/PakhomovAlexander/afactory/blob/main/docs/design/pi-provider-validation.md), alongside current checks;
+  no paid live smoke is claimed. The architecture remains proposed
+  [Pi SDK host decision](https://github.com/PakhomovAlexander/afactory/blob/main/docs/adr/2026-11-02-own-the-pi-sdk-host-and-confine-its-tools.md).
+
+- Pi setup now emits `af/pi-provider-setup@2` for all internal refusals, with safe stderr
+  details and null identity/backend fields for invalid requests. Pi host protocol v2 requires
+  a fresh delivered-prompt challenge before accepting inference results; immediate valid
+  replies remain supported. Managed SDK discovery validates malformed versions in process.
+  See [Pi SDK host decision](https://github.com/PakhomovAlexander/afactory/blob/main/docs/adr/2026-11-02-own-the-pi-sdk-host-and-confine-its-tools.md).
+
+- Resolve Scenario schema fixtures from `AF_WORKSPACE_ROOT`, with the compile-time checkout as a
+  fallback, so reused test binaries read the current gate sandbox.
+
+- Add durable `af scenario` orchestration of existing Tasks, child Scenarios, signed decisions,
+  bounded actions and waits, with pinned definitions, recovery, cancellation and safe owned-file
+  cleanup. Publication requires separately scoped machine authority and an exact human signature
+  ([ADR-0274](../docs/adr/0274-orchestrate-pinned-scenarios-and-admit-ant-occurrences.md)).
+- Add `af ant` daily scheduling with explicit pinned timezones, unique occurrence receipts,
+  overlap and missed-occurrence skips, pause/disable operations, and per-run and rolling budgets.
+  Ticks run locally; no daemon, cron job, real instance or production grant is installed.
+
+- Refuse repository-owned Pi Node executables, including Git worktree paths reached from
+  nested directories. Require completed observations for every inference before Pi settlement,
+  retaining unknown and partial usage on refusal. Correct the shipped Provider status v5 title
+  and document its Pi SDK-host scope; verify prompt ordering with an observed child lifecycle.
+
+- Bind each Scenario publication approval to one Action and its exact pinned grant, including
+  receipt forwarding through child Scenarios; refuse approval reuse for a second publication.
+- Install and sweep the machine Storage Budget for executing Scenarios and Ant ticks, including
+  Runs without Tasks. Pause and disable now prevent a due Ant occurrence from launching on its
+  first tick while preserving historical skip outcomes
+  ([ADR-0274](../docs/adr/0274-orchestrate-pinned-scenarios-and-admit-ant-occurrences.md)).
+
+- Validate the Pi SDK Provider against the merged main source, retaining historical evidence
+  separately from the current focused checks and source-bound kernel measurement in the
+  [validation record](https://github.com/PakhomovAlexander/afactory/blob/main/docs/design/pi-provider-validation.md).
+
+- Refuse reuse of a publication Decision by any other decision-consuming Action, including
+  notifications and uses through aliased child Scenario ports.
+- Keep Ant occurrences skipped after a pause or disable between due time and the first tick,
+  even when re-enabled before that tick; later eligible days remain schedulable
+  ([ADR-0274](../docs/adr/0274-orchestrate-pinned-scenarios-and-admit-ant-occurrences.md)).
+
+- Keep Pi documentation links valid in both change fragments and rendered release notes.
+  Check the candidate's source projection against one versioned current measurement claim in the
+  [Pi validation record](https://github.com/PakhomovAlexander/afactory/blob/main/docs/design/pi-provider-validation.md),
+  retaining earlier measurements as historical evidence and paid live smoke as not run.
+
+- Add ADRs with stable date-topic identities and discover them with
+  `python3 -I scripts/adr.py list`, without editing a shared index or allocating a number.
+  Existing accepted identities are preserved; the proposed Pi SDK host decision now has
+  its own date-topic identity. See the
+  [authoring decision](https://github.com/PakhomovAlexander/afactory/blob/main/docs/adr/2026-11-02-add-independent-adrs-and-derive-the-catalog.md).
+- Resolve Scenario Task receipts against the current Task contract schema after integrating Pi;
+  the Task result wire shape and Scenario/Ant execution behavior are unchanged.
+
+- ADR discovery refuses symlink files and directory components, reads only regular files beneath
+  its declared directory, and emits no partial catalog on refusal. The
+  [ADR guide](https://github.com/PakhomovAlexander/afactory/blob/main/docs/adr/README.md)
+  preserves legacy identities without inferring their status.
+
+- The independent performance executor carries both main's nightly originals and the durable
+  release comparison: new originals are `af.perf-executor-request/3` (main's nightly submission
+  plus a profile's parent and a comparison partition), request/1 and main's request/2 nightly
+  originals stay readable, and a request/3 shape under an earlier version is refused. The
+  configuration is `af.perf-executor/4`: `[core.windows]` declares a core plan's sampling and
+  run minutes, frozen into the configuration and plan digests under the unchanged hard maxima.
+  The full release comparison recipe declares 45 and 120 minutes over 8 serial shards in 4
+  partitions; the ordinary nightly keeps its tier's 15 and 180. The partition ADR is renumbered
+  [ADR-0269](docs/adr/0269-bind-comparison-partition-execution-to-reused-build-artifacts.md).
+
+- The staged guarded kernel measures (`fixtures/performance/kernel-measure/`) are re-pinned to
+  the protected harness of the integrated source, `sha256:0d9ea79c…` over 684 files, regenerated
+  with `scripts/performance/cli.py harness-digest --write`; their measures are unchanged.
+
 ## [0.14.0-rc.3] - 2026-10-29
 
 ### Authority compatibility
