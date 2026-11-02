@@ -131,6 +131,15 @@ class Fragments(unittest.TestCase):
     def test_rc5_retains_all_five_merged_adapter_notes_with_resolving_adr_link(self):
         self.assert_rc5_notes(SCRIPTS.parent)
 
+    def test_historical_rc4_yank_explains_tagged_but_unpublished_qemu_failure(self):
+        changelog = (SCRIPTS.parent / 'CHANGELOG.md').read_text()
+        rc4 = changelog.split('## [0.14.0-rc.4] - 2026-11-02 [YANKED]\n', 1)[1].split(
+            '\n## [', 1)[0]
+        explanation = rc4.split('### Authority compatibility', 1)[0]
+        self.assertIn('Tagged but no release assets were published', explanation)
+        self.assertIn('Ubuntu 26.04 no longer supplied the unambiguous', explanation)
+        self.assertIn('`qemu-user-static` package required by the Linux ARM64 build.', explanation)
+
     def test_historical_rc5_notes_allow_later_version_and_new_adapter_fragment(self):
         (self.repo / 'CHANGELOG.md').write_bytes((SCRIPTS.parent / 'CHANGELOG.md').read_bytes())
         (self.repo / 'Cargo.toml').write_text('[workspace.package]\nversion = "0.15.0"\n')

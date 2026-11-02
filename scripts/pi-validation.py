@@ -91,9 +91,10 @@ def read_claims(record):
                          re.escape(END), re.DOTALL)
     matches = pattern.findall(text)
     # Remove only consumed delimiters, retaining their JSON and unrelated historical prose.
-    # Any remaining family marker (opening or closing, even malformed) fails closed.
-    if not matches or re.search(r'<!--[\s/]*af-pi-validation-claim',
-                                pattern.sub(r'\1', text)):
+    # Reserve the literal ASCII, case-sensitive namespace anywhere in a comment body,
+    # including malformed comments with extra dashes or no closing delimiter.
+    comments = re.finditer(r'<!--(.*?)(?:-->|$)', pattern.sub(r'\1', text), re.DOTALL)
+    if not matches or any('af-pi-validation' in comment[1] for comment in comments):
         raise ValueError('unsupported or malformed historical claim blocks')
     claims = {}
     for content in matches:

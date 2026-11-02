@@ -214,7 +214,19 @@ class ValidationTests(unittest.TestCase):
                 '<!-- /af-pi-validation-claim',
                 '<!--af-pi-validation-claim:v1-->',
                 '<!--/af-pi-validation-claim-->',
-                '<!-- \t / af-pi-validation-claim:v2 -->']:
+                '<!-- \t / af-pi-validation-claim:v2 -->',
+                '<!-- /af-pi-validation-current:v2 -->',
+                '<!-- /af-pi-validation-future:v2 -->',
+                '<!-- af-pi-validation -->',
+                '<!-- /af-pi-validation -->',
+                '<!-- af-pi-validation-unknown:v99 -->',
+                '<!--- af-pi-validation-claim:v1 --->',
+                '<!---- /af-pi-validation-current --->',
+                '<!-- note: af-pi-validation-future:v2 is reserved -->',
+                '<!-- ordinary prefix\nthen af-pi-validation\nrest -->',
+                '<!-- prefix <!-- af-pi-validation-future -->',
+                '<!-- prefix af-pi-validation-future',
+                '<!-- /af-pi-validation-current:v2 -->' * 2]:
             for position in ['before', 'after', 'replacement']:
                 with self.subTest(marker=marker, position=position):
                     if position == 'replacement' and marker == VALIDATION.END:
@@ -230,6 +242,18 @@ class ValidationTests(unittest.TestCase):
         self.claim['summary'] += ' <!-- /af-pi-validation-claim:v2 -->'
         self.write_claim()
         self.assertIn('unsupported or malformed', self.cli().stderr)
+
+    def test_reserved_comment_namespace_is_ascii_case_sensitive_and_prose_is_allowed(self):
+        self.write_claim('\nHistorical af-pi-validation prose remains ordinary text.\n'
+                         '<!-- ordinary historical comment -->\n'
+                         '<!-- AF-PI-VALIDATION-claim:v2 -->\n'
+                         '<!-- af-pi-Validation-current -->\n'
+                         '<!-- af-pi-valid\u0430tion uses a Cyrillic a -->\n'
+                         '<!-- unrelated dangling comment')
+        self.assertEqual(VALIDATION.read_claims(self.record)[self.claim['source_sha256']],
+                         self.claim)
+        result = self.cli()
+        self.assertEqual(result.returncode, 0, result.stderr)
 
     def test_supplied_log_checks_hash_source_filter_and_outcome(self):
         # Synthetic log checks the verifier, not a claimed execution of the measurement.

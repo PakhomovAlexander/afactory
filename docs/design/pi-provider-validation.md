@@ -28,6 +28,12 @@ against [`pi-validation-claim-v1.json`](../../schemas/pi-validation-claim-v1.jso
 Blocks use the neutral versioned `af-pi-validation-claim:v1` delimiter; none is marked current.
 Select one by its recorded `source_sha256` using `--claim-source`. Unsupported versions,
 duplicate source claims or fields, missing/extra fields and malformed blocks refuse.
+After consuming exact supported claim delimiters, any remaining HTML comment containing the
+literal ASCII, case-sensitive `af-pi-validation` namespace refuses, anywhere in its body.
+This includes unknown names/versions, extra dashes, duplicate or dangling markers and comments
+without a closing delimiter. Ordinary prose and comments without that exact namespace remain
+accepted; case variants and Unicode lookalikes are not that namespace. This lexical rule completes
+reserved-comment handling; extra comments have not demonstrated a source/log integrity bypass.
 The Rust parity test `pi_validation_historical_claim_is_versioned_and_closed` checks the same
 schema through the real JSON Schema validator. No reader or fallback for an older shape is added.
 

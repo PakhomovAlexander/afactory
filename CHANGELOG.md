@@ -61,6 +61,9 @@ Provider registry v1 is refused: recreate registrations with this release. Exist
 
 ## [0.14.0-rc.4] - 2026-11-02 [YANKED]
 
+Tagged but no release assets were published because Ubuntu 26.04 no longer supplied the unambiguous
+`qemu-user-static` package required by the Linux ARM64 build.
+
 ### Authority compatibility
 
 Provider registry v1 is refused: recreate registrations with this release. Existing committed .af authority must validate against current formats; refresh stale locks with af onboard --refresh-lock. Persisted Task/Review payloads from unsupported earlier schema versions are refused; start fresh Tasks under this release.
