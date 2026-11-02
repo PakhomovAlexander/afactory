@@ -128,6 +128,48 @@ class Fragments(unittest.TestCase):
         self.assertFalse((self.repo / 'changelog.d/good.md').exists())
         self.assertEqual(self.notes('--check').returncode, 0)
 
+    def test_rc5_retains_all_five_merged_adapter_notes_verbatim(self):
+        root = SCRIPTS.parent
+        changelog = (root / 'CHANGELOG.md').read_bytes()
+        rc5 = changelog.split(b'## [0.14.0-rc.5] - 2026-11-02\n', 1)[1].split(
+            b'\n## [0.14.0-rc.4]', 1)[0]
+        notes = (
+            (
+                b'- Add an optional installed GitHub Scenario adapter with exact locked-head publication,\n'
+                b'  durable reconciliation, explicit CI identities, owner review requests and approved follow-up\n'
+                b'  issues. Configuration and credentials remain machine-owned; uncertain effects never authorize\n'
+                b'  duplicate requests. Includes inert examples and mock-backed fast-gate coverage; no live GitHub\n'
+                b'  validation or active instances ([ADR-0275](../docs/adr/0275-install-a-durable-github-scenario-adapter.md)).\n'
+            ),
+            (
+                b"- Forward the isolated subprocess's six HOME/XDG paths to every af command in the full GitHub\n"
+                b'  Scenario environment regression, checking the effective command environment after launcher\n'
+                b'  defaults. Retain aliased TMPDIR, permissive umask and unchanged read-only source assertions.\n'
+            ),
+            (
+                b'- Verify the full installed GitHub Scenario sequence with read-only source fixtures in an\n'
+                b'  isolated subprocess using an aliased TMPDIR and permissive umask, including uncertain-effect\n'
+                b'  recovery, exact-head checks, owner review, merge observation and follow-up publication.\n'
+            ),
+            (
+                b'- Repair GitHub Scenario CLI fixtures under macOS temporary-path aliases and permissive umasks:\n'
+                b'  canonicalize authority paths and create private fixture directories. Installer path and\n'
+                b'  ownership checks remain enforced, with regression coverage for unsafe ancestors and aliases.\n'
+            ),
+            (
+                b'- Initialize GitHub Scenario CLI test state as a private writable file even when the source\n'
+                b"  fixtures are read-only. The installed production adapter's full PR, recovery, review and\n"
+                b'  follow-up sequence now exercises read-only fixture copies and verifies they remain unchanged.\n'
+            ),
+        )
+        self.assertEqual(len(notes), 5)
+        for note in notes:
+            self.assertEqual(rc5.count(note), 1)
+        self.assertEqual(list((root / 'changelog.d').glob('scenario-github-*.md')), [])
+        self.assertIn(b'fast releases require no fresh Pi measurement', rc5)
+        self.assertIn(b'Pin both Linux release builds to Ubuntu 24.04', rc5)
+        self.assertIn('version = "0.14.0-rc.5"', (root / 'Cargo.toml').read_text())
+
     def test_pi_documentation_links_resolve_in_fragments_and_rendered_root_notes(self):
         root = SCRIPTS.parent
         base = 'https://github.com/PakhomovAlexander/afactory/blob/main/'

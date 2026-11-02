@@ -1481,7 +1481,7 @@ fn pi_host_and_setup_protocols_reject_old_shapes_and_secret_fields() {
 }
 
 #[test]
-fn pi_validation_current_claim_is_versioned_and_closed() {
+fn pi_validation_historical_claim_is_versioned_and_closed() {
     // The stdlib helper reads this same schema; fixture mutations also exercise its real CLI.
     let claim = json!({
         "schema": "af/pi-validation-claim@1",

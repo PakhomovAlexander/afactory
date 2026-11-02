@@ -32,6 +32,33 @@ Provider registry v1 is refused: recreate registrations with this release. Exist
   after the `ubuntu-latest` migration to Ubuntu 26.04. The aarch64 QEMU execution, archive
   smoke, signatures and exact-source validation remain required.
 
+- Verify Pi measurements as explicit historical source/log evidence. Normal functional CI
+  uses controlled fixtures; fast releases require no fresh Pi measurement. Retain catalog,
+  adapter, RC4 and premerge RC5 records separately, without a combined-source performance claim
+  ([evidence contract](https://github.com/PakhomovAlexander/afactory/blob/main/docs/adr/2026-11-02-verify-pi-measurements-as-historical-evidence.md)).
+
+- Add an optional installed GitHub Scenario adapter with exact locked-head publication,
+  durable reconciliation, explicit CI identities, owner review requests and approved follow-up
+  issues. Configuration and credentials remain machine-owned; uncertain effects never authorize
+  duplicate requests. Includes inert examples and mock-backed fast-gate coverage; no live GitHub
+  validation or active instances ([ADR-0275](../docs/adr/0275-install-a-durable-github-scenario-adapter.md)).
+
+- Forward the isolated subprocess's six HOME/XDG paths to every af command in the full GitHub
+  Scenario environment regression, checking the effective command environment after launcher
+  defaults. Retain aliased TMPDIR, permissive umask and unchanged read-only source assertions.
+
+- Verify the full installed GitHub Scenario sequence with read-only source fixtures in an
+  isolated subprocess using an aliased TMPDIR and permissive umask, including uncertain-effect
+  recovery, exact-head checks, owner review, merge observation and follow-up publication.
+
+- Repair GitHub Scenario CLI fixtures under macOS temporary-path aliases and permissive umasks:
+  canonicalize authority paths and create private fixture directories. Installer path and
+  ownership checks remain enforced, with regression coverage for unsafe ancestors and aliases.
+
+- Initialize GitHub Scenario CLI test state as a private writable file even when the source
+  fixtures are read-only. The installed production adapter's full PR, recovery, review and
+  follow-up sequence now exercises read-only fixture copies and verifies they remain unchanged.
+
 ## [0.14.0-rc.4] - 2026-11-02
 
 ### Authority compatibility
