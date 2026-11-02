@@ -19,6 +19,16 @@ publish step — so everything it carried shipped in `0.9.0-rc.6`.
 Changes since the last release are notes under [`changelog.d/`](changelog.d/), one file per
 pull request; the release pull request collects them here.
 
+## [0.14.0-rc.5] - 2026-11-02
+
+### Authority compatibility
+
+Provider registry v1 is refused: recreate registrations with this release. Existing committed .af authority must validate against current formats; refresh stale locks with af onboard --refresh-lock. Persisted Task/Review payloads from unsupported earlier schema versions are refused; start fresh Tasks under this release.
+
+### Changes
+
+- release: v0.14.0-rc.4 (#550)
+
 ## [0.14.0-rc.4] - 2026-11-02
 
 ### Authority compatibility
