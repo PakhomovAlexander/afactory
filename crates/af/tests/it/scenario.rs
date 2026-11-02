@@ -7,6 +7,16 @@ use std::os::unix::fs::{DirBuilderExt, OpenOptionsExt, PermissionsExt};
 use std::path::{Path, PathBuf};
 use std::process::Output;
 
+const GITHUB_ENVIRONMENT_CHILD: &str = "AF_TEST_GITHUB_ENVIRONMENT_CHILD";
+const GITHUB_ENVIRONMENT_HOMES: [(&str, &str); 6] = [
+    ("HOME", "home"),
+    ("XDG_CONFIG_HOME", "config"),
+    ("XDG_STATE_HOME", "state"),
+    ("XDG_CACHE_HOME", "cache"),
+    ("XDG_DATA_HOME", "data"),
+    ("XDG_BIN_HOME", "bin"),
+];
+
 fn workspace() -> PathBuf {
     std::env::var_os("AF_WORKSPACE_ROOT")
         .map(PathBuf::from)
@@ -16,13 +26,28 @@ fn write(path: &Path, value: &Value) {
     std::fs::write(path, serde_json::to_vec_pretty(value).unwrap()).unwrap();
 }
 fn output(repo: &Path, state: &Path, args: &[&str]) -> Output {
-    crate::common::af()
+    let mut command = crate::common::af();
+    command
         .current_dir(repo)
         .args(args)
         .args(["--json", "--state"])
-        .arg(state)
-        .output()
-        .unwrap()
+        .arg(state);
+    if let Some(root) = std::env::var_os(GITHUB_ENVIRONMENT_CHILD) {
+        let root = PathBuf::from(root);
+        // Only the isolated regression child forwards its asserted private homes. Apply
+        // them after common::af's defaults, including for Fixture::start and approve.
+        command.envs(GITHUB_ENVIRONMENT_HOMES.map(|(name, leaf)| (name, root.join(leaf))));
+        for (name, leaf) in GITHUB_ENVIRONMENT_HOMES {
+            let expected = root.join(leaf);
+            assert_eq!(std::env::var_os(name).unwrap(), expected.as_os_str());
+            assert_eq!(
+                command.get_envs().find(|(key, _)| *key == name),
+                Some((std::ffi::OsStr::new(name), Some(expected.as_os_str()))),
+                "effective af environment for {name}"
+            );
+        }
+    }
+    command.output().unwrap()
 }
 fn value(output: Output, code: i32) -> Value {
     assert_eq!(
@@ -955,22 +980,13 @@ fn production_github_adapter_runs_exact_head_pr_sequence_and_recovers_remote_eff
 
 #[test]
 fn production_github_adapter_full_read_only_sequence_under_aliased_tmpdir_and_permissive_umask() {
-    const CHILD: &str = "AF_TEST_GITHUB_ENVIRONMENT_CHILD";
     const TEST: &str = "scenario::production_github_adapter_full_read_only_sequence_under_aliased_tmpdir_and_permissive_umask";
-    const HOMES: [(&str, &str); 6] = [
-        ("HOME", "home"),
-        ("XDG_CONFIG_HOME", "config"),
-        ("XDG_STATE_HOME", "state"),
-        ("XDG_CACHE_HOME", "cache"),
-        ("XDG_DATA_HOME", "data"),
-        ("XDG_BIN_HOME", "bin"),
-    ];
-    if let Some(root) = std::env::var_os(CHILD) {
+    if let Some(root) = std::env::var_os(GITHUB_ENVIRONMENT_CHILD) {
         // Only the exact regression is relaunched. Never change the test runner's umask
         // or environment: other integration tests may run concurrently in that process.
         let root = PathBuf::from(root);
         assert_eq!(root, root.canonicalize().unwrap());
-        for (name, leaf) in HOMES {
+        for (name, leaf) in GITHUB_ENVIRONMENT_HOMES {
             let path = PathBuf::from(std::env::var_os(name).unwrap());
             assert_eq!(path, root.join(leaf));
             assert_eq!(path.metadata().unwrap().permissions().mode() & 0o777, 0o700);
@@ -1008,7 +1024,11 @@ fn production_github_adapter_full_read_only_sequence_under_aliased_tmpdir_and_pe
         .tempdir()
         .unwrap();
     let root = parent.path().canonicalize().unwrap();
-    for leaf in HOMES.map(|(_, leaf)| leaf).into_iter().chain(["tmp"]) {
+    for leaf in GITHUB_ENVIRONMENT_HOMES
+        .map(|(_, leaf)| leaf)
+        .into_iter()
+        .chain(["tmp"])
+    {
         std::fs::DirBuilder::new()
             .mode(0o700)
             .create(root.join(leaf))
@@ -1029,9 +1049,9 @@ fn production_github_adapter_full_read_only_sequence_under_aliased_tmpdir_and_pe
         .env_clear()
         .env("PATH", "/usr/bin:/bin")
         .env("AF_WORKSPACE_ROOT", workspace())
-        .env(CHILD, &root)
+        .env(GITHUB_ENVIRONMENT_CHILD, &root)
         .env("TMPDIR", &alias)
-        .envs(HOMES.map(|(name, leaf)| (name, root.join(leaf))))
+        .envs(GITHUB_ENVIRONMENT_HOMES.map(|(name, leaf)| (name, root.join(leaf))))
         .output()
         .unwrap();
     assert!(
