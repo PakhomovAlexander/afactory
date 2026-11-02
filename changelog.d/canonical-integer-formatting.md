@@ -1,0 +1,1 @@
+- Canonical JSON formats integers directly into its output buffer, avoiding a temporary String.

@@ -3077,8 +3077,8 @@
   },
   {
    "path": "scripts/performance/perflab/executor.py",
-   "sha256": "sha256:77ac504bf002c8d118103b14ec983d01128daa4c4c8ba04b2fdf0594bd6e85c3",
-   "size": 106513
+   "sha256": "sha256:870cd61c8b88a8951baa4512c5a0341dd67ee81ea76b173ba9b4342be9c031f4",
+   "size": 106573
   },
   {
    "path": "scripts/performance/perflab/executorcontracts.py",
@@ -3107,8 +3107,8 @@
   },
   {
    "path": "scripts/performance/perflab/hostlock.py",
-   "sha256": "sha256:711d0007ed0dd95087557cd7f64e2af4dce591dab8541327b22c0ae75f18e393",
-   "size": 11916
+   "sha256": "sha256:781941d064f48fecbdbf239c7beb4cc322321dc92632f380deb9922450415d35",
+   "size": 12111
   },
   {
    "path": "scripts/performance/perflab/hostobserver.py",
@@ -3537,8 +3537,8 @@
   },
   {
    "path": "scripts/performance/tests/test_executor.py",
-   "sha256": "sha256:e4cfe78236105940d830045f9fe8abcc54ad6a68d1b6f295c4c43ff6b927a362",
-   "size": 136680
+   "sha256": "sha256:350a2b0712b784c24c98642371a5b6be368d20a6b7618af42b9ddfe37890ea45",
+   "size": 140838
   },
   {
    "path": "scripts/performance/tests/test_fixtures.py",
@@ -3552,8 +3552,8 @@
   },
   {
    "path": "scripts/performance/tests/test_hostlock.py",
-   "sha256": "sha256:d19774cc0ea8cefc6d6122782ba45fc2d920b884c44919d1fe6f0922f535cfa3",
-   "size": 10381
+   "sha256": "sha256:50c7b4b45e7dc7c3abcc007b268e200961062a7ad58c7614348c43bf83af1a64",
+   "size": 13304
   },
   {
    "path": "scripts/performance/tests/test_hostobserver.py",
@@ -3776,7 +3776,7 @@
    "size": 6777
   }
  ],
- "harness_digest": "sha256:d182eaa9f53784005e0fb97c119836705d8ca28d8da0720f7d40479de5205c82",
+ "harness_digest": "sha256:c10a05c7d6b40f73f1a1da87d9c5e5ecced824314e74f1f87e2318635631b000",
  "inner_metric": "pending",
  "inner_metric_reason": "the inner wall_ms metric is recorded in every Measurement but no staged objective selects it until the guard's real kernel integration and tampered-candidate tests are accepted on the sealed source and a reviewed human change installs and selects it",
  "objective_metric": "elapsed_ms",
