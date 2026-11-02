@@ -129,6 +129,79 @@ class ExecutorFixture(TempDir):
 
 
 class Journal(ExecutorFixture):
+    def assert_required_anchor_bound(self, cycle):
+        with executor.Journal(self.c) as j:
+            request = self.submit(j) if cycle else None
+            path = os.path.join(self.locks, hostlock.MACHINE_LOCK_NAME)
+            with open(path, "w"):
+                pass
+            os.chmod(path, 0o644)
+            info = os.stat(path)
+            identity = [info.st_dev, info.st_ino]
+            anchor = self.path("anchor")
+            with open(anchor, "w"):
+                pass
+
+            def disappear(required=False):
+                if not required:
+                    return None  # The old optional reread would permit O_CREAT.
+                os.unlink(anchor)
+                os.unlink(path)
+                return identity
+
+            check_directory = hostlock._check_directory
+            def test_system_directory(directory, system_owned):
+                self.assertEqual(directory, os.path.realpath(self.locks))
+                self.assertTrue(system_owned)
+                check_directory(directory, False)  # Only simulate the fixture's root owner.
+
+            operation = mock.Mock(side_effect=AssertionError("protected execution"))
+            machine_lock = hostlock.MachineLock
+            with mock.patch.object(hostlock, "MACHINE_LOCK_DIRECTORY", self.locks), \
+                    mock.patch.object(hostlock, "read_anchor", side_effect=disappear) as required, \
+                    mock.patch.object(hostlock, "_check_directory", test_system_directory), \
+                    mock.patch.object(hostlock, "MachineLock", wraps=machine_lock) as acquire, \
+                    mock.patch.object(hostlock.os, "open", wraps=os.open) as opened, \
+                    mock.patch.object(machine_lock, "guard",
+                                      side_effect=AssertionError("must not fence")) as guard:
+                with self.assertRaisesRegex(hostlock.Refused if cycle else ContractError,
+                                            "cannot open the machine lock"):
+                    if cycle:
+                        j.cycle(execute=operation)
+                    else:
+                        j.exclusive("test check", operation)
+                required.assert_called_once_with(required=True)
+                acquire.assert_called_once_with(None, expected_identity=identity)
+                self.assertIs(acquire.call_args.kwargs["expected_identity"], identity)
+                lock_opens = [call for call in opened.call_args_list if call.args[0] == path]
+                self.assertEqual(len(lock_opens), 1)
+                self.assertFalse(lock_opens[0].args[1] & os.O_CREAT)
+                guard.assert_not_called()
+            operation.assert_not_called()
+            self.assertFalse(os.path.lexists(anchor))
+            self.assertFalse(os.path.lexists(path))
+            self.assertFalse(os.path.lexists(path + ".fence"))
+            if cycle:
+                self.assertEqual(j.state(request["request_id"])["state"], "queued")
+
+    def test_exclusive_binds_required_anchor_before_disappearance_without_creation_or_work(self):
+        self.assert_required_anchor_bound(cycle=False)
+
+    def test_cycle_binds_required_anchor_before_disappearance_without_creation_or_claim(self):
+        self.assert_required_anchor_bound(cycle=True)
+
+    def test_exclusive_explicit_test_directory_needs_no_anchor_and_settles_fence(self):
+        with executor.Journal(self.c) as j, \
+                mock.patch.object(hostlock, "read_anchor", side_effect=AssertionError("anchor")):
+            j.lock_directory = self.locks
+            def check():
+                self.assertTrue(os.path.isdir(os.path.join(
+                    self.locks, hostlock.MACHINE_LOCK_NAME + ".fence")))
+                return "checked", None, False
+            self.assertEqual(j.exclusive("test check", check), ("checked", None))
+            self.assertFalse(os.path.exists(os.path.join(
+                self.locks, hostlock.MACHINE_LOCK_NAME + ".fence")))
+
     def test_original_identity_and_frozen_backend_survive_switch_and_repeat(self):
         with executor.Journal(self.c) as j:
             first = self.submit(j)
@@ -1072,6 +1145,7 @@ class Journal(ExecutorFixture):
             # No product/tool is executed. The actual native controller produces a complete
             # diagnostic refusal bundle with both sides' missing-build omissions.
             options.parent_build = options.build = options.builder = None
+            options.host_os = "linux"  # The contained runtime below is synthetic on every host.
             options.contained_host = lambda *a: (options.scratch_fs, [0, 1], "synthetic runtime")
             suite, golden = executor.runner.oracle.load(os.path.join(ROOT, "fixtures/performance/suite.toml"))
             return native(git, options, authority_factory=lambda p: (suite, golden), machine_lease=machine_lease)
@@ -1148,6 +1222,7 @@ class Journal(ExecutorFixture):
                             os.makedirs(inner.layout.build)
                             return synthetic.builds(inner.plan)
                     def profile(git, options, machine_lease=None):
+                        options.host_os = "linux"
                         options.contained_host = lambda *a: (options.scratch_fs, [0, 1], "synthetic runtime")
                         return native_profile(git, options, machine_lease=machine_lease)
                     with executor.Journal(c) as j:
@@ -1192,6 +1267,7 @@ class Journal(ExecutorFixture):
         borrowed = []
         def profile(git, options, machine_lease=None):
             borrowed.append(machine_lease)
+            options.host_os = "linux"
             options.contained_host = lambda *a: (options.scratch_fs, [0, 1], "synthetic runtime")
             return native(git, options, machine_lease=machine_lease)
         # Tool checks only before the first build (the executor's own pre-build check): none
