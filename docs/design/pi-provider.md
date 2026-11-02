@@ -220,7 +220,7 @@ official SDK test proves construction, tool confinement and synthetic stream han
 synthetic inference fixtures prove AF's protocol/runtime behavior. They are not a live service receipt.
 
 The [indexed validation record](pi-provider-validation.md) retains the original issue #494
-observation and both historical measurement runs with their historical file bindings. A
+observation and historical measurement runs with their historical file bindings. A
 reproducible source-content projection separately binds the fresh manual measurement and current
 checks without including the validation record itself. No historical execution is reconstructed
 or attributed to this candidate.

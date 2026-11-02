@@ -354,17 +354,19 @@ with **0 errors** across all six changed Markdown files. All 338 local links in 
 and the ADR index resolved. The unchanged configured full fast local gate is the kernel's
 post-seal check; this Worker does not invent its future receipt or claim to have run it.
 
-## Current Task: executable boundary, terminal accounting and observed ordering
+## Historical pre-integration Task: executable boundary, accounting and ordering
 
-The current Worker's input Snapshot is
+The pre-integration Worker's input Snapshot was
 `sha256:8edb684e28d142b1ccefed34eaaf74ae9f2f946e76d4e26f3a934bfd9d75f9c8`.
-It is the input, **not** the corrected candidate Snapshot. This sandbox has neither Git metadata
-nor `../base`; the supplied PR head `5851cc94` and main `9ea` are Task provenance, not locally
-verified commit identities. The feature was assessed against the complete requirements and the
-available implementation/tests; no unavailable main diff or live-service execution is claimed.
+It was the input, **not** the corrected candidate Snapshot. That sandbox had neither Git metadata
+nor `../base`; the supplied PR head `5851cc94` and main `9ea` were Task provenance, not locally
+verified commit identities. Its observations below are historical: main subsequently advanced
+and the merged source has a different content projection. The feature was assessed against the
+complete requirements and available implementation/tests; no unavailable main diff or live-service
+execution is claimed.
 Work began at **2026-11-01 23:06:49 UTC** (02:06:49 MSK on November 2).
 
-### Fresh before-fix evidence
+### Historical pre-integration before-fix evidence
 
 The new boundary, accounting and title regressions first ran against the unchanged input runtime
 under pinned Rust 1.88.0. The result was:
@@ -444,7 +446,7 @@ No production exception was added. The synthetic SDK/auth fixture launcher separ
 transport from that host installation layout; the marker traps still exercise production refusal.
 No Linux-only helper, timeout, assertion, test profile or classification was relaxed.
 
-### Pinned corrected-source checks
+### Historical pre-integration corrected-source checks
 
 The focused command is the same full Pi/existing-Provider selection shown in the historical
 section above, with `--workspace --locked --offline --profile ci`. On the corrected source:
@@ -483,7 +485,7 @@ the exact cached **markdownlint-cli2 0.22.1 executable** was run directly, repor
 for all four changed Markdown files. No package was installed or network workaround used.
 The configured fast local gate remains the kernel's post-seal action, not a Worker-run receipt.
 
-### Current measured-source binding
+### Historical pre-integration measured-source binding
 
 All edits outside this excluded validation record finished before the fresh measurement started
 at **2026-11-01 23:14:54 UTC**. The exact recipe in “Reproducible measured-source projection”
@@ -496,10 +498,10 @@ schema metadata, docs and fixture-launcher bytes. The projection is a non-self-r
 content binding, not a Task input/final Snapshot claim. Only this record may change after
 measurement starts; build/receipt scratch remains excluded under root `target/`.
 
-### Fresh manual measurement result
+### Historical pre-integration manual measurement result
 
 The Worker actually ran `make perf-kernel-measure` from **23:14:54** to **23:27:37 UTC**
-on **2026-11-01**, on the exact current projection above. Rust/Cargo were **1.88.0**,
+on **2026-11-01**, on the exact historical projection above. Rust/Cargo were **1.88.0**,
 `CARGO_NET_OFFLINE=true`, `TMPDIR=/private/tmp`, with the same private checkout-local Cargo
 home. `AF_PERF_KERNEL_RECEIPTS` selected `target/pi-terminal-perf-receipts`. Exit was **0**:
 
@@ -536,5 +538,181 @@ not a claim of measured product speed improvement.
 Recomputing the projection after measurement and this record update returned the identical
 `sha256:8d9fd457d008476b08d87d4eff00275deec93ce75f7fc5d2fa42bad397d9ad9f`,
 **3771 entries, 3096 files**. Only this explicitly excluded record changed during/after the
-measurement. The final focused selection is repeated after the record is finished; its actual
-result and completion time are carried in the Task report, with no edits after that run.
+measurement. That Task repeated its final focused selection after finishing the record; its result and
+completion time belong to that historical Task report, not the integration validation below.
+
+## Current integration validation on merged main
+
+Work began **2026-11-01 23:40:08 UTC**. This Task's input Snapshot is
+`sha256:35bc816c2e1ea3033e7a366ca7c9d0003c0997a0dc16547e40b684a2b7347cd5`.
+It identifies the supplied starting tree, **not** this Task's final candidate Snapshot.
+The coordinator describes that tree as PR506 source `877b0952` integrated with main
+`609a0982`. Those are supplied provenance, not locally verified commit identities: this
+sandbox contains neither Git metadata nor `../base`. No unavailable Git comparison is claimed.
+All earlier projections, hashes, measurements and before-fix probes in this record remain
+historical observations of their stated sources. In particular, the original #494 observation
+is retained as supplied evidence; it was not reconstructed or rerun against invented old bytes.
+
+### Integration inspection and existing feature coverage
+
+No missing runtime integration was found. The earlier fixes are already present in this Task's
+input and were verified through their real paths rather than reimplemented:
+
+| Area | Existing implementation and fresh exercised tests |
+|---|---|
+| Explicit native setup/status/catalog, no ambient auth and safe refusal output | `crates/af/src/providers/pi.rs`; `pi_setup_status_and_exact_model_catalog_are_token_free_and_secret_free`, `pi_registration_requires_explicit_authority_before_starting_or_changing_a_profile`, early/failed setup JSON and stderr tests |
+| Shared Task/Review/doctor binding, typed retries and identity currentness | `crates/af/src/providers/task.rs`; `pi_task_admission_typed_result_retry_and_account_drift_use_the_common_path`, `pi_doctor_and_review_share_the_native_admission_and_readonly_sdk_host` |
+| Host lifecycle, isolation, observed accounting and shared process supervision | `crates/review-runner-pi/src/lib.rs` and `host.mjs`; all `review-runner-pi` tests, including readonly/writable tools, drift, framing/Unicode, EOF/limits/errors and cumulative/partial usage |
+| #523 repository-owned Node refusal before spawn | `safe_installation` applies to Node and SDK; `pi_node_resolution_and_setup_refuse_repository_owned_path_before_spawn` checks directory/file `.git`, `.af`, nested CWD, absolute PATH, marker nonexecution and legitimate external Node |
+| #524 complete sequential inference settlement | `State::record`; `settlement_requires_every_observed_inference_complete_without_inventing_usage` refuses missing/incomplete observations and retains observed/unknown accounting |
+| #521 actual observed early reply, exact later prompt read and zero exit | `observed_early_reply_then_exact_prompt_read_and_zero_exit_is_rejected_on_replay` asserts the ordered process observations before production State replay rejects them; adapter refusal and immediate success remain separate passing tests |
+| #525 status v5 metadata and actual Pi result | `schemas/provider-status-v5.json`; `schema_listing_names_provider_status_v5_and_its_sdk_host_scope` and the setup/status/catalog CLI test validate title, Pi scope and real result against v5 |
+| Managed launcher discovery and bounded cancellation readiness | `pi_setup_discovers_managed_launcher_without_executing_it_and_refuses_unsafe_versions`, malformed-version unit test, `cancellation_during_inference_reaps_the_process_and_keeps_usage`, `cancellation_readiness_observes_early_failure_before_accept_or_pid` |
+| Closed authority and protocol schemas, old-shape refusal | `pi_authority_is_closed_versioned_and_required_only_for_pi_models`, `pi_host_and_setup_protocols_reject_old_shapes_and_secret_fields` |
+| Official SDK confinement, nested writes and a full typed agent turn | `scripts/test-pi-host.py`, both hermetic and installed official SDK modes; real SDK tool execution and mocked native transport/usage, described below |
+
+The mechanically merged `shipped_schemas` table retains all three main issue-triage schemas
+and Pi setup v2. Its full unit-test module passed, including exact parity with `af help json`.
+The design index retains main's staged triage status plus both Pi entries. All local links in
+those indexes, the Pi design, this record and the new note resolved. Proposed ADR-0274 has
+exactly one file and index entry; accepted ADRs 0270–0273, their entries, `.af/` and `.github/`
+are byte-for-byte unchanged from this Task's input. No payload or schema shape changed here.
+
+Only this validation record, the Pi design's historical-measurement wording and
+`changelog.d/pi-main-integration-validation.md` change. No Linux-only helper or caller in
+`provider_auth_handoff.rs`, `task_interrupt.rs` or `campaign_loop/heartbeat.rs` changed.
+
+### Actual merged-source checks
+
+Checks use pinned Rust/Cargo **1.88.0**, `CARGO_NET_OFFLINE=true`, `TMPDIR=/private/tmp`
+and a private `CARGO_HOME` under this checkout's root `target/`, seeded with the 248 locked
+registry archives/index entries from readable caches. No shared Cargo cache was mutated,
+network dependency installation attempted, real credential inspected or paid call made.
+
+The original 217-test Pi/existing-Provider selection passed on the merged tree:
+
+```text
+Summary [30.182s] 217 tests run: 217 passed, 1912 skipped
+```
+
+Log `/private/tmp/pi-integration-targeted.log`, SHA256
+`c7eab6884b90e1f1c3baa6ec1010fd5bb35559d693102285921346aa13502857`.
+The combined selection additionally covers main's two `task_triage` integration tests and
+Pi's captured-authority schema parity:
+
+```sh
+cargo nextest run --workspace --locked --offline --profile ci -E \
+  'package(review-runner-pi) | (binary_id(af::it) & (test(/^provider_onboarding::/) | test(/pi_registration_requires/) | test(/pi_task_admission/) | test(/pi_doctor_and_review/) | test(/^task_triage::/))) | (binary_id(af::bin/af) & (test(/^providers::/) | test(/^shipped_schemas::/) | test(/pi_setup_guidance/))) | (binary_id(review-core::schema_parity) & test(/pi_/))'
+```
+
+```text
+Summary [29.326s] 220 tests run: 220 passed, 1909 skipped
+```
+
+Log `/private/tmp/pi-integration-combined-targeted.log`, SHA256
+`c7ba6f24256e5cdbacf6f4f32280f24302a839a75499a7895fdb34cbd497fcdf`.
+Skips are outside the focused selection, not removed tests or gate exclusions. There were no
+failed assertions, flaky reruns or leaky-test warnings in either selection.
+
+`cargo fmt --all`, its read-only check and
+`cargo clippy --workspace --all-targets --offline -- -D warnings` passed. Clippy log
+`/private/tmp/pi-integration-clippy.log`, SHA256
+`7c3bf0929ac381d40aa8459efecb64a30c5fdcf0d350eea46169d2257b49b977`.
+`python3 -I scripts/test-classes.py audit` and the changelog-note check passed.
+Protected-harness `harness-digest --check` passed with the supplied merged digest
+`sha256:d182eaa9f53784005e0fb97c119836705d8ca28d8da0720f7d40479de5205c82`.
+The generated fixtures were already correct; no protected source or fixture was edited.
+The cached **markdownlint-cli2 0.22.1** executable ran directly without installation and
+reported zero errors for all three changed Markdown files.
+
+Both host script modes passed **3 tests**:
+
+```sh
+AF_PI_TEST_HERMETIC=1 python3 -I scripts/test-pi-host.py
+AF_PI_TEST_SDK=/Users/apakhomov/.pi/agent/install/releases/1.4.0/node_modules/@earendil-works/pi-coding-agent/dist/index.js python3 -I scripts/test-pi-host.py
+```
+
+The official mode printed successful real SDK construction/tools and full agent-turn,
+read/nested-write, typed-reply and native-usage validation. It used synthetic OAuth-shaped
+credentials and mocked upstream HTTP, without reading the real profile or calling a service.
+Hermetic mode explicitly printed official SDK coverage **not run** and passed its fixture
+contract. The two log hashes are respectively:
+
+- `/private/tmp/pi-integration-host-hermetic.log`:
+  `45776aeefcd0fbd1fee42395c2e2530a009b090e25c0141064809ce0c48dabc5`.
+- `/private/tmp/pi-integration-host-sdk.log`:
+  `5420fcbea220e141e7486bff68eb7e145159c07c073a45d58b5c9183ecc46509`.
+
+The merged triage script tests also passed **50 tests**, no skips, with the freshly built
+`af` on PATH for their private-HOME catalog-digest fixture:
+`python3 -I scripts/test-backlog-check-triage.py`. An initial invocation without that binary
+on PATH passed 49 and reported its existing optional digest test skipped; the complete
+invocation exercised it. Complete log `/private/tmp/pi-integration-triage.log`, SHA256
+`7c17060680239032b18f5b4c4b4380f3aa9fa0024f3f8ecff4d69d50004ecc1b`.
+
+**Paid live smoke: not run.** This evidence proves fixture/SDK behavior and local contracts,
+not an actual OAuth refresh exchange or service inference. The configured fast local gate is
+the kernel's post-seal action; no second whole-suite or Worker-run gate pass is claimed.
+
+### Fresh merged-source measurement binding
+
+All edits outside this excluded record finished before measurement began at
+**2026-11-01 23:44:37 UTC**. The exact projection recipe above, with only its three exclusions
+(root `.git`, root `target`, this record), returned:
+
+`sha256:1937edbcf84c0b741fd9f43257f3ee478b22d29c69f907fad35a3d3b8991231e`
+
+**3809 entries, 3124 regular files**. It includes the merged main source/fixtures/indexes,
+all Pi implementation and tests, the new changelog note and the Pi design wording correction.
+This is a reproducible source-content projection, not the input or final kernel Snapshot ID.
+Only this excluded record changes after measurement starts; all build/dependency/receipt
+scratch stays under the excluded root `target/`.
+
+### Actual fresh manual measurement outcome
+
+The Worker ran `make perf-kernel-measure` from **2026-11-01 23:44:37 UTC** to
+**2026-11-02 00:00:25 UTC** on the exact merged-source projection above. Make exited **0**:
+
+```text
+PASS [941.890s] (1/1) af::it perf_kernel_measure::guarded_kernel_experiments_measure_one_judged_sample
+Summary [941.896s] 1 test run: 1 passed (1 slow), 3972 skipped
+[perf-kernel-measure] 947.764s, exit 0
+```
+
+The unchanged Make target selected exactly
+`test(=perf_kernel_measure::guarded_kernel_experiments_measure_one_judged_sample)` with
+`--workspace --locked --profile ci --run-ignored only`. Skips are the remaining inventory,
+not weakened tests or exclusions from normal validation. Pinned Rust/Cargo **1.88.0** and the
+private/offline environment above were used. No boundary, budget, deadline, assertion, retry,
+profile, protected input or generated fixture changed. This is a real guarded-kernel validation
+run, not a measured product speed-improvement claim.
+
+Full log `/private/tmp/pi-integration-perf-kernel-measure.log`, SHA256
+`3d236ceb9f45648f2823a1d1734ebd6e2534f5eba85370ab3c52055a9eaa745d`.
+The log includes the exact starting projection/count, toolchain versions and command, followed
+by nextest's real output, end time and Make exit. `AF_PERF_KERNEL_RECEIPTS` selected
+`target/pi-integration-perf-receipts`. The test exported and checked these
+`af.perf-kernel-receipts/3` documents through the existing schema and reader:
+
+| Scratch receipt | SHA256 | Observed outcome |
+|---|---|---|
+| `target/pi-integration-perf-receipts/receipts-43551-improve.json` | `27e4b9ff7329dfb370ecbae1b45b856551168c94742811dd32a1cf58835d98a1` | Baseline and candidate passed three repetitions; comparison passed; Task acceptance satisfied and conclusion verified |
+| `target/pi-integration-perf-receipts/receipts-43551-candidate-refusal.json` | `a596d01e02f788faf2bdc0c44ff4235a4c09f9f2ffefe910f0da1da49641649e` | All six tampered candidates and both invalid metric-contract cases refused; every conclusion remained incomplete |
+
+For `timing-boundary`, `golden-fixture`, `build-inputs`, `case-variant-build-inputs`,
+`symlink-to-file` and `bytecode`, each baseline passed three repetitions; each candidate failed
+on its first repetition with command exit 2; comparisons were inconclusive. For `wrong-unit`
+and `undeclared-key`, both measurements failed despite their command exiting zero; comparisons
+were inconclusive. Each refused Task exited 4, with inconclusive acceptance and incomplete
+conclusion. No refusal became verified. The receipts carry the merged protected-harness digest
+`sha256:d182eaa9f53784005e0fb97c119836705d8ca28d8da0720f7d40479de5205c82`.
+Their internal Snapshot IDs identify disposable test consumer revisions, never this Task's
+input or final candidate. Scratch files may be removed; this indexed record retains the actual
+outcome, exact log/receipt hashes and reproducible source-content binding.
+
+The projection was recomputed at measurement completion and again after this record was
+finished, yielding the identical
+`sha256:1937edbcf84c0b741fd9f43257f3ee478b22d29c69f907fad35a3d3b8991231e`,
+**3809 entries, 3124 regular files**. Only this explicitly excluded record changed during or
+after measurement. The combined 220-test selection is repeated after finishing this record;
+its actual completion time and result belong to the Task report, with no edits after that run.
