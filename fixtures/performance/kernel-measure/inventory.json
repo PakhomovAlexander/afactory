@@ -3577,8 +3577,8 @@
   },
   {
    "path": "scripts/performance/tests/test_nightly_publish.py",
-   "sha256": "sha256:beac69cf055780b7abd8de58985c4eef07faaff0a459734abfeb75d6aac974c7",
-   "size": 50096
+   "sha256": "sha256:45298510a8eaa9be9bea3b84b9bca68e1ada3f9b6f0d460db91259a6630067ce",
+   "size": 51028
   },
   {
    "path": "scripts/performance/tests/test_nightly_report.py",
@@ -3771,7 +3771,7 @@
    "size": 6777
   }
  ],
- "harness_digest": "sha256:6c909d132efdebc628426059af80a0b4e7a880dcdbfaac19b0d357f88a567a26",
+ "harness_digest": "sha256:589773d3d3701141d4375408b2562351d029e402d3e3657a2e8e462083f8c907",
  "inner_metric": "pending",
  "inner_metric_reason": "the inner wall_ms metric is recorded in every Measurement but no staged objective selects it until the guard's real kernel integration and tampered-candidate tests are accepted on the sealed source and a reviewed human change installs and selects it",
  "objective_metric": "elapsed_ms",

@@ -100,7 +100,15 @@ def read_bounded(path, limit, what):
     if not os.path.isfile(path):
         raise Refused("%s %s is missing" % (what, path))
     with open(path, "rb") as stream:
-        data = stream.read(limit + 1)
+        chunks = []
+        remaining = limit + 1
+        while remaining:
+            chunk = stream.read(min(remaining, 1024 * 1024))
+            if not chunk:
+                break
+            chunks.append(chunk)
+            remaining -= len(chunk)
+        data = b"".join(chunks)
     if not data or len(data) > limit:
         raise Refused("%s %s is %s" % (what, path, "larger than %d bytes" % limit if data
                                        else "empty"))
