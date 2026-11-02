@@ -88,10 +88,15 @@ class AdapterTests(unittest.TestCase):
         self.patcher.start()
         self.addCleanup(self.patcher.stop)
 
+    def installer(self, config_path, output):
+        return subprocess.run(["/usr/bin/python3", "-IS", str(ROOT / "scripts/install-scenario-github-adapter.py"),
+                               "--config", str(config_path), "--output", str(output)],
+                              capture_output=True,
+                              env={"HOME": str(self.root), "XDG_CONFIG_HOME": str(self.root)})
+
     def install(self):
-        completed = subprocess.run(["/usr/bin/python3", "-IS", str(ROOT / "scripts/install-scenario-github-adapter.py"),
-                                    "--config", str(self.config_path), "--output", str(self.output)],
-                                   capture_output=True, check=True)
+        completed = self.installer(self.config_path, self.output)
+        self.assertEqual(completed.returncode, 0, completed.stderr)
         self.assertEqual(completed.stdout.decode().strip(), A.digest(self.output.read_bytes()))
         production = self.output.read_bytes()
         mock = (ROOT / "fixtures/scenarios/github-transport.py").read_bytes()
@@ -531,6 +536,33 @@ class AdapterTests(unittest.TestCase):
             A.decode(b"x" * (A.LIMIT + 1))
         with self.assertRaises(A.Refused):
             A.validate_config({**self.config, "required_checks": []})
+
+    def test_installer_refuses_aliases_and_unsafe_ancestors_before_creating_state(self):
+        alias = self.root / "alias"
+        alias.symlink_to(self.root, target_is_directory=True)
+        for unsafe in ("alias", "ancestor"):
+            with self.subTest(unsafe=unsafe):
+                state = self.root / (unsafe + "-receipts")
+                output = self.root / (unsafe + "-adapter")
+                config_path = self.root / (unsafe + "-config.json")
+                config_path.write_bytes(A.canonical({**self.config, "state_dir": str(state)}))
+                config_path.chmod(0o600)
+                if unsafe == "ancestor":
+                    self.root.chmod(0o770)
+                try:
+                    supplied = alias / config_path.name if unsafe == "alias" else config_path
+                    refused = self.installer(supplied, output)
+                    self.assertEqual(refused.returncode, 1)
+                    self.assertIn(b"Installation refused", refused.stderr)
+                    self.assertFalse(state.exists())
+                    self.assertFalse(output.exists())
+                finally:
+                    self.root.chmod(0o700)
+                # The same fresh authority installs when spelled canonically under safe
+                # ancestors. Refusal was not caused by an existing executable or journal.
+                installed = self.installer(config_path, output)
+                self.assertEqual(installed.returncode, 0, installed.stderr)
+                self.assertEqual(installed.stdout.decode().strip(), A.digest(output.read_bytes()))
 
     def test_machine_config_digest_and_file_permissions_and_symlinks_fail_closed(self):
         # Runtime authority is pinned in the executable, not supplied by request or environment.

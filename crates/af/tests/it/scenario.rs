@@ -2,7 +2,7 @@
 //! credential-free service adapter. No real scenarios, Ants, Providers or remotes are used.
 use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
-use std::os::unix::fs::PermissionsExt;
+use std::os::unix::fs::{DirBuilderExt, PermissionsExt};
 use std::path::{Path, PathBuf};
 use std::process::Output;
 
@@ -61,18 +61,30 @@ struct Fixture {
 }
 impl Fixture {
     fn bare() -> Self {
-        let root = tempfile::tempdir().unwrap();
-        let repo = root.path().join("repo");
+        Self::bare_in(&std::env::temp_dir())
+    }
+    fn bare_in(parent: &Path) -> Self {
+        // Machine authority requires canonical paths and safe ancestors. macOS temp roots
+        // may use /var or /tmp aliases; tempfile's default directory mode also follows umask.
+        let root = tempfile::Builder::new()
+            .permissions(std::fs::Permissions::from_mode(0o700))
+            .tempdir_in(parent)
+            .unwrap();
+        let root_path = root.path().canonicalize().unwrap();
+        let repo = root_path.join("repo");
         std::fs::create_dir(&repo).unwrap();
-        let state = root.path().join("scenario-state");
-        let policy = root.path().join("policy.json");
-        let bundle = root.path().join("bundle.json");
-        let inputs = root.path().join("inputs.json");
-        let owned = root.path().join("owned");
+        let state = root_path.join("scenario-state");
+        let policy = root_path.join("policy.json");
+        let bundle = root_path.join("bundle.json");
+        let inputs = root_path.join("inputs.json");
+        let owned = root_path.join("owned");
         std::fs::create_dir(&owned).unwrap();
         let owned = owned.canonicalize().unwrap();
-        let machine = root.path().join("machine");
-        std::fs::create_dir(&machine).unwrap();
+        let machine = root_path.join("machine");
+        std::fs::DirBuilder::new()
+            .mode(0o700)
+            .create(&machine)
+            .unwrap();
         let key = minisign::KeyPair::generate_unencrypted_keypair().unwrap();
         write(
             &policy,
@@ -819,7 +831,6 @@ fn toml_authoring_runs_and_pins_the_same_contract_as_its_json_wire_form() {
 
 impl Fixture {
     fn install_github(&self) {
-        std::fs::set_permissions(&self.machine, std::fs::Permissions::from_mode(0o700)).unwrap();
         let examples = workspace().join("fixtures/scenarios/github");
         let mut config: Value =
             serde_json::from_slice(&std::fs::read(examples.join("config.example.json")).unwrap())
@@ -899,6 +910,28 @@ impl Fixture {
         serde_json::from_slice(&std::fs::read(self.machine.join("mock-service.json")).unwrap())
             .unwrap()
     }
+}
+
+#[test]
+fn production_github_adapter_installs_from_symlinked_private_temp_root() {
+    let parent = tempfile::Builder::new()
+        .permissions(std::fs::Permissions::from_mode(0o700))
+        .tempdir()
+        .unwrap();
+    let alias = parent.path().join("alias");
+    std::os::unix::fs::symlink(parent.path().canonicalize().unwrap(), &alias).unwrap();
+    let f = Fixture::bare_in(&alias);
+    assert_ne!(f._root.path(), f.machine.parent().unwrap());
+    assert_eq!(f.machine, f.machine.canonicalize().unwrap());
+    for path in [f.machine.parent().unwrap(), &f.machine] {
+        assert_eq!(
+            path.metadata().unwrap().permissions().mode() & 0o7777,
+            0o700
+        );
+    }
+    // Exercise the real installer: it still checks ownership, ancestors and canonical paths.
+    f.install_github();
+    assert_eq!(f.github_state()["effects"], json!([]));
 }
 
 #[test]
