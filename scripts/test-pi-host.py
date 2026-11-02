@@ -243,6 +243,26 @@ class ValidationTests(unittest.TestCase):
         self.write_claim()
         self.assertIn('unsupported or malformed', self.cli().stderr)
 
+    def test_original_comment_boundaries_refuse_wrapped_and_nested_claim_delimiters(self):
+        valid = self.record.read_text()
+        for malformed in [
+                '<!-- ordinary wrapper\n' + valid + '\n-->',
+                '<!-- ordinary prefix ' + valid,
+                valid.replace(VALIDATION.BEGIN,
+                              '<!-- ordinary prefix ' + VALIDATION.BEGIN + ' -->'),
+                valid.replace(VALIDATION.END,
+                              '<!-- ordinary prefix ' + VALIDATION.END + ' -->'),
+                valid.replace(VALIDATION.END, '<!-- ordinary prefix ' + VALIDATION.END),
+                valid.replace(VALIDATION.BEGIN, VALIDATION.BEGIN.replace('-->', '--->')),
+                valid.replace(VALIDATION.END, VALIDATION.END.replace('-->', '--->'))]:
+            with self.subTest(record=malformed):
+                self.record.write_text(malformed)
+                with self.assertRaisesRegex(ValueError, 'unsupported or malformed'):
+                    VALIDATION.read_claims(self.record)
+                result = self.cli()
+                self.assertNotEqual(result.returncode, 0, result.stdout)
+                self.assertIn('unsupported or malformed', result.stderr)
+
     def test_reserved_comment_namespace_is_ascii_case_sensitive_and_prose_is_allowed(self):
         self.write_claim('\nHistorical af-pi-validation prose remains ordinary text.\n'
                          '<!-- ordinary historical comment -->\n'
@@ -250,6 +270,9 @@ class ValidationTests(unittest.TestCase):
                          '<!-- af-pi-Validation-current -->\n'
                          '<!-- af-pi-valid\u0430tion uses a Cyrillic a -->\n'
                          '<!-- unrelated dangling comment')
+        # Complete delimiters may share a line with prose; no Markdown rendering rule applies.
+        self.record.write_text('Ordinary prefix ' + self.record.read_text().replace(
+            VALIDATION.END, VALIDATION.END + ' ordinary suffix'))
         self.assertEqual(VALIDATION.read_claims(self.record)[self.claim['source_sha256']],
                          self.claim)
         result = self.cli()

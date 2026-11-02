@@ -87,6 +87,12 @@ def validate_claim(claim):
 
 def read_claims(record):
     text = record.read_text(encoding='utf-8')
+    # Scan original comment spans before extraction can erase a nested marker. A comment
+    # runs from its first opener to its first terminator (or EOF), without nesting.
+    original_comments = re.finditer(r'<!--.*?(?:-->|$)', text, re.DOTALL)
+    if any('af-pi-validation' in comment[0] and comment[0] not in (BEGIN, END)
+           for comment in original_comments):
+        raise ValueError('unsupported or malformed historical claim blocks')
     pattern = re.compile(re.escape(BEGIN) + r'\s*```json\n(.*?)\n```\s*' +
                          re.escape(END), re.DOTALL)
     matches = pattern.findall(text)
