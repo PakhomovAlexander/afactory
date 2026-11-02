@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 """Exercise file-derived ADR discovery and independent additions in private repositories."""
+import importlib.util
 import os
 from pathlib import Path
 import shutil
@@ -7,16 +8,21 @@ import subprocess
 import sys
 import tempfile
 import unittest
+from unittest.mock import patch
 
 ROOT = Path(__file__).resolve().parent.parent
 SCRIPT = ROOT / 'scripts/adr.py'
+sys.dont_write_bytecode = True
+SPEC = importlib.util.spec_from_file_location('adr', SCRIPT)
+ADR = importlib.util.module_from_spec(SPEC)
+SPEC.loader.exec_module(ADR)
 
 
 class CatalogTests(unittest.TestCase):
     def setUp(self):
         temporary = tempfile.TemporaryDirectory()
         self.addCleanup(temporary.cleanup)
-        self.root = Path(temporary.name)
+        self.root = Path(temporary.name).resolve()
         self.directory = self.root / 'docs/adr'
         self.directory.mkdir(parents=True)
         self.env = {**os.environ, 'GIT_CONFIG_GLOBAL': '/dev/null', 'GIT_CONFIG_NOSYSTEM': '1',
@@ -75,6 +81,65 @@ class CatalogTests(unittest.TestCase):
         self.assertEqual(missing.returncode, 1)
         self.assertEqual(missing.stdout, '')
         self.assertIn('directory does not exist', missing.stderr)
+
+    def test_symlink_entries_refuse_without_emitting_external_contents(self):
+        (self.directory / 'a-valid.md').write_text('# Valid earlier entry\n')
+        external = self.root / 'external.md'
+        marker = 'EXTERNAL-CONTENT-MUST-NOT-BE-READ'
+        external.write_text(f'# {marker}\n\nStatus: {marker}\n')
+        link = self.directory / 'linked.md'
+        for target in [external, self.root / 'missing', self.root]:
+            with self.subTest(target=target):
+                link.unlink(missing_ok=True)
+                link.symlink_to(target)
+                result = self.cli('--directory', str(self.directory))
+                self.assertEqual(result.returncode, 1)
+                self.assertEqual(result.stdout, '')
+                self.assertIn('symlink entry refused: linked.md', result.stderr)
+                self.assertNotIn(marker, result.stderr)
+                link.unlink()
+
+    def test_entry_replaced_by_symlink_between_stat_and_open_is_not_read(self):
+        entry = self.directory / 'record.md'
+        entry.write_text('# Original\n')
+        external = self.root / 'external.md'
+        external.write_text('# EXTERNAL-MARKER\n')
+        real_open = os.open
+        replaced = []
+
+        def racing_open(path, flags, **kwargs):
+            if path == entry.name:
+                entry.unlink()
+                entry.symlink_to(external)
+                replaced.append(True)
+            return real_open(path, flags, **kwargs)
+
+        with patch.object(ADR.os, 'open', side_effect=racing_open):
+            with self.assertRaises(OSError):
+                ADR.catalog(self.directory)
+        self.assertEqual(replaced, [True])
+
+    def test_directory_and_ancestor_symlinks_refuse_before_external_reads(self):
+        marker = 'EXTERNAL-DIRECTORY-MARKER'
+        (self.directory / 'record.md').write_text(f'# {marker}\n')
+        link = self.root / 'linked'
+        link.symlink_to(self.root / 'docs', target_is_directory=True)
+        direct = self.root / 'direct'
+        direct.symlink_to(self.directory, target_is_directory=True)
+        for directory in [direct, link / 'adr']:
+            with self.subTest(directory=directory):
+                result = self.cli('--directory', str(directory))
+                self.assertEqual(result.returncode, 1)
+                self.assertEqual(result.stdout, '')
+                self.assertNotIn(marker, result.stderr)
+                self.assertIn('adr:', result.stderr)
+
+    def test_nonregular_markdown_entry_refuses_without_opening_a_fifo(self):
+        os.mkfifo(self.directory / 'pipe.md')
+        result = self.cli('--directory', str(self.directory))
+        self.assertEqual(result.returncode, 1)
+        self.assertEqual(result.stdout, '')
+        self.assertIn('not a regular file: pipe.md', result.stderr)
 
     def test_independent_same_date_additions_merge_without_shared_edits_and_are_discovered(self):
         guide = (ROOT / 'docs/adr/README.md').read_bytes()

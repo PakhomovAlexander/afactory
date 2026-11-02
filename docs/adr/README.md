@@ -23,6 +23,8 @@ python3 -I scripts/adr.py list --directory /path/to/checkout/docs/adr
 ```
 
 A missing status is shown as `unspecified`; discovery does not infer acceptance from a filename.
+Discovery refuses Markdown symlink entries and directory symlinks (including ancestor components), and
+reads only regular Markdown files directly beneath the declared directory. Refusals emit no catalog.
 
 ## Propose a decision
 
@@ -55,8 +57,8 @@ ADR's body ([ADR-0113](0113-ga-reads-only-what-ga-writes.md), clauses 6 and 8;
 [ADR-0145](0145-read-only-what-this-release-writes-and-version-every-changed-shape.md), clause 8).
 
 Legacy `NNNN-topic.md` identities stay unchanged and their numbers are never reissued.
-Historical anomalies, including both accepted 0107 records and both accepted 0240 records,
+Historical anomalies, including both existing 0107 records and both existing 0240 records,
 retain their exact basenames and links; discovery does not enforce sequence uniqueness.
-Accepted Scenarios ADR-0274 and accepted ADRs 0270–0273 keep their identities. Existing proposals
+Accepted Scenarios ADR-0274 and existing legacy ADRs 0270–0273 keep their identities. Existing proposals
 also keep their identities unless an explicit change authorizes a rename before acceptance.
 The date-topic identity stays stable after acceptance; a later amendment does not change its date.

@@ -893,7 +893,7 @@ measurement began. No full workspace suite or Worker-run fast gate is claimed: t
 `scripts/verify.sh --profile fast` gate remains the kernel's post-seal check.
 **Paid live smoke: not run.** No real OAuth profile, refresh exchange or service inference was used.
 
-## Current machine-checked validation
+## Historical machine-checked validation: Task14 ADR restructuring
 
 This Task integrates the supplied Pi/Scenarios source and resolves issue #538's recurring ADR
 conflicts. All observations above, including the preceding Task's formerly current claim, are
@@ -1031,7 +1031,7 @@ The fresh run above began only after the final nonrecord source was frozen.
 This is the sole current `af/pi-validation-claim@1` claim. Its helper, closed schema and mutation
 regressions are unchanged. The claim cannot select exclusions or repair a stale source digest.
 
-<!-- af-pi-validation-current:v1 -->
+<!-- historical Task14 claim -->
 ```json
 {
   "schema": "af/pi-validation-claim@1",
@@ -1045,7 +1045,7 @@ regressions are unchanged. The claim cannot select exclusions or repair a stale 
   "summary": "Summary [ 673.942s] 1 test run: 1 passed (1 slow), 4009 skipped"
 }
 ```
-<!-- /af-pi-validation-current -->
+<!-- /historical Task14 claim -->
 
 ### Verification commands for this candidate
 
@@ -1085,3 +1085,117 @@ The focused selection is repeated as the last test run after this record and all
 its exact filter, completion time and result belong to the Task report, with no edits afterwards.
 The configured `scripts/verify.sh --profile fast` gate remains the kernel's post-seal action;
 no Worker-run whole suite, full gate, paid live smoke or real OAuth exchange is claimed.
+
+## Current machine-checked validation
+
+This Task confines ADR catalog reads and corrects the guide's legacy-status wording on the
+supplied integrated source. All preceding observations and claims are historical, including
+Task14's formerly current projection. The original #494 failing probe remains historical;
+it was not re-executed here. No Task input Snapshot is claimed as the final candidate Snapshot.
+
+### Catalog confinement and lifecycle wording
+
+`scripts/adr.py` opens each directory component without following symlinks, then reads entries
+relative to that pinned directory descriptor. Markdown symlinks are refused before content is
+read. No-follow file opens close the stat/open race, and descriptor-based regular-file validation
+precedes reading. Nonblocking opens prevent a raced-in FIFO from hanging. Listing remains sorted
+and read-only; a refusal produces safe stderr and no partial catalog on stdout.
+
+Before the fix, the new CLI probes observed exit 0 for an external Markdown symlink, a directory
+symlink and an ancestor symlink, and for the skipped FIFO. Their refusal assertions failed.
+After the fix, all **9 catalog tests** passed. The new regressions are:
+
+- `test_symlink_entries_refuse_without_emitting_external_contents`: external content markers,
+  broken links and directory links are refused, with no output even after a valid earlier entry.
+- `test_entry_replaced_by_symlink_between_stat_and_open_is_not_read`: a deterministic replacement
+  exercises the real no-follow open and refuses the raced-in external link.
+- `test_directory_and_ancestor_symlinks_refuse_before_external_reads`: both directory and ancestor
+  symlinks refuse without emitting external markers.
+- `test_nonregular_markdown_entry_refuses_without_opening_a_fifo`: a nonregular entry refuses.
+
+The existing independent-addition merge and deterministic derived-catalog regressions still pass.
+The catalog discovers all **265 records**. The guide now calls legacy 0240 records and ADRs
+0270–0273 existing records, without fabricating acceptance. Their recorded statuses and all
+accepted identities/bodies remain unchanged. The Pi date-topic proposal, Scenarios/Ant behavior,
+`.af/`, `.github/`, and main's quarantine/performance changes are preserved.
+
+### Actual frozen-source measurement
+
+All nonrecord edits finished before **2026-11-02T12:59:15.856586+00:00**. The unchanged
+`make perf-kernel-measure` ran until **2026-11-02T13:16:23.739495+00:00** and exited **0** using pinned
+Rust/Cargo 1.88.0, offline registry caches in `target/pi-cargo-home`, the default checkout
+`target/`, and `TMPDIR=/private/tmp`. No gate, deadline, budget or assertion changed.
+
+The versioned `af.pi.validation-source/1` projection was **`sha256:7f9261ba019aa397fb84cae3673d0e04d3e3ca0e3d11afc75e1575dcce16d8a3`**,
+**3859 entries / 3172 regular files**, both before and after measurement.
+Its only exclusions remain root `.git`, root `target` and this validation record
+(`docs/design/pi-provider-validation.md`). `source_unchanged=true` is recorded in the real log.
+This is a reproducible source-content projection, not a kernel Snapshot identity.
+Only this excluded record changed after measurement.
+
+The actual log is `/private/tmp/adr-confinement-perf-kernel-measure.log`, SHA256
+`sha256:c264cfb6ccd88b5f55310bcff46c331769a9afe1442e60af995d6fd61e02790c`. The observed result was:
+
+```text
+Summary [ 912.403s] 1 test run: 1 passed (1 slow), 4010 skipped
+```
+
+The 4010 skipped tests were outside this exact manual selection. This guarded-kernel contract
+check is not a product speed claim. The official protected-harness check matched the combined
+source's required digest:
+`sha256:c10a05c7d6b40f73f1a1da87d9c5e5ecced824314e74f1f87e2318635631b000`.
+Generated fixtures already match; no harness or authority bytes were changed.
+
+### Current machine-readable claim
+
+The unchanged closed schema and helper check this sole current claim. Its exclusions cannot be
+selected by claim data. The explicit log check verifies the real hash, source binding, command,
+filter, observed exit and nextest summary; normal CI requires no implicit local log.
+
+<!-- af-pi-validation-current:v1 -->
+```json
+{
+  "schema": "af/pi-validation-claim@1",
+  "source_sha256": "sha256:7f9261ba019aa397fb84cae3673d0e04d3e3ca0e3d11afc75e1575dcce16d8a3",
+  "entries": 3859,
+  "files": 3172,
+  "command": "make perf-kernel-measure",
+  "filter": "test(=perf_kernel_measure::guarded_kernel_experiments_measure_one_judged_sample)",
+  "exit_code": 0,
+  "log_sha256": "sha256:c264cfb6ccd88b5f55310bcff46c331769a9afe1442e60af995d6fd61e02790c",
+  "summary": "Summary [ 912.403s] 1 test run: 1 passed (1 slow), 4010 skipped"
+}
+```
+<!-- /af-pi-validation-current -->
+
+### Focused verification and limits
+
+Pinned `cargo fmt --all` and `cargo clippy --workspace --all-targets -- -D warnings` passed.
+The catalog (9 tests), changelog (10 tests), test-class script (52 tests), classification audit
+and protected-harness check passed. No flaky failure required a rerun. The Provider/Pi/Scenario
+and schema selection passed **254 tests**, with 1912 tests outside its selection:
+`Summary [  39.305s] 254 tests run: 254 passed, 1912 skipped`.
+
+Official `HostTests` passed **3 tests** with explicit Pi SDK 1.4.0, synthetic credentials and
+mocked transport: actual SDK construction, confined tools, nested writes, typed final reply
+and native usage. Hermetic `HostTests` also passed **3 tests** and explicitly reported that
+actual SDK execution was not performed in that mode. **Paid live smoke: not run.** No real
+OAuth profile, credential inspection, exchange or paid inference was used.
+
+After the claim update, all **6 validation tests** passed, including current-source equality,
+stale/mutated claims and exact exclusions. The explicit helper check reported
+`current claim matches candidate source; measurement log verified`:
+
+```sh
+python3 -I -B scripts/test-pi-host.py ValidationTests
+python3 -I -B scripts/pi-validation.py --check \
+  --measurement-log /private/tmp/adr-confinement-perf-kernel-measure.log
+```
+
+`npx --offline --yes markdownlint-cli2@0.22.1` lacked registry metadata (`ENOTCACHED`):
+**markdownlint through npx: not run**. The cached markdownlint-cli2 0.22.1 executable is used
+directly without installation. No Linux-only helper/caller in `provider_auth_handoff.rs`,
+`task_interrupt.rs` or `campaign_loop/heartbeat.rs` changed; no Linux execution is claimed.
+The configured local fast gate remains the kernel's post-seal check. No whole-suite Worker
+run is claimed. The focused Rust selection is repeated after the record and all other checks;
+its final completion time/result belongs to the Task report, with no edits afterwards.
