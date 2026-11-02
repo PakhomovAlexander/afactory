@@ -231,9 +231,12 @@ file over a bound is refused at planning). Everything in it is deterministic and
 - `neighbours`: the ten open issues nearest by title, for duplicate detection;
 - `excerpts`: up to 200 lines around each `path:line` the body names, read only from the
   pinned `main` Git manifest by canonical repository-relative path with a positive line number
-  at most the file's line count. Absolute paths, traversal, symlinks, binaries, paths outside
-  the manifest and URLs are refused and recorded as missing evidence; at most 16 excerpts and
-  128 KiB in all;
+  at most the file's line count. Manifest spelling and membership are the path authority;
+  internal colons, backslashes and spaces stay in the path before its final numeric suffix.
+  Bracketed references (`[path:line]`) and comma- or semicolon-separated references each
+  supply their own captured excerpt, including paths with internal spaces.
+  Absolute paths, traversal, symlinks, binaries, paths outside the manifest and URLs are refused
+  and recorded as missing evidence; at most 16 excerpts and 128 KiB in all;
 - `rubric`: §4 and §5 verbatim, and the Task's requirements repeat them.
 
 Truncation and refusals are recorded in the file before any Provider call. The source Snapshot
@@ -371,9 +374,13 @@ reservations plus the new reservation is at most 2M. Settled usage comes from `a
 Once a week the same runner sweeps every open issue without a model call. An issue gets
 `triage/maybe-fixed` and a comment with the citation only on an explicit completed-fix
 reference: a shipped changelog entry that names `#N` as fixed, an ADR that records the change
-as done, or a merged PR whose closing reference names it. A bare mention, a "not done here"
-paragraph (ADR-0208 names #166 that way) or a partial fix is not enough; the sweep records such
-citations in its log for owner review instead. The sweep preserves `needs-info`, `disputed` and
+as done, or a merged PR whose closing reference names it. The completion assertion must apply
+directly to that issue, such as `Fixes #N`, `Fixed issue #N`, `Shipped fix for #N` or
+`#N is fixed`. A completed fix
+to unrelated code that cites `#N` for context supplies no completion evidence for `#N`.
+A bare mention, a "not done here" paragraph (ADR-0208 names #166 that way) or a partial fix is
+not enough; the sweep records such citations in its log for owner review instead.
+The sweep preserves `needs-info`, `disputed` and
 `held`, deduplicates its comments by issue and evidence identity, and never closes an issue. A
 `triage/needs-info` issue with no reply for 30 days gets one reminder comment. Closing is the
 owner's, as it was for #196, #357 and #436 on 2026-10-30, each with the evidence comment this
@@ -423,9 +430,17 @@ sweep would have written.
    Attempts within §6.1's budget, and feeds the report renderer's bytes to the check.
    Installing is the owner's hand step.
 3. **Runner** (`size/M`, `default`): `scripts/backlog-triage.py`: sources assembly, the
-   journal, the generation key, the lease and ledger, write-back, the sweep, and the cron unit
-   on `claw-3`. Dry-run mode prints the labels and comment and writes nothing; the first week
-   runs dry.
+   journal, the generation key, the lease and ledger, write-back, the sweep, and staged systemd units
+   on `claw-3`. Dry-run mode prints the labels and comment and makes no GitHub mutations or
+   owner notifications; private generation claims and spend reservations remain durable, and
+   report Tasks still use Providers. The first week runs dry.
+   **Implemented, not deployed:** the runner, private versioned journal, hermetic script tests
+   and staged half-hour/weekly systemd units are in this tree. The
+   [operator runbook](../issue-triage-runner.md) supplies installation, the required shared
+   anchored nightly build lease wrapper, credentials, private notification, ambiguous-write
+   recovery and the explicit write transition. The four packages were installed and pinned by
+   the preceding owner hand commit. The evidence is hermetic; no live triage or backfill, cron
+   deployment, held-issue release or plugin migration was performed.
 4. **Backfill**: run the triager over the 54 open issues in dry-run, compare with the hand
    triage of 2026-10-30, adjust the rubric wording where the two disagree, then apply.
 5. **Plugin**: when the plugin architecture (#316) lands, the `scripts/backlog-*.py` scripts

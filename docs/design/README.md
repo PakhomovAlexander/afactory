@@ -70,5 +70,7 @@ and an ADR disagree, the ADR wins. Shared vocabulary is defined in
   ships; step 2, the `triage` kind, the triager packages, the `af/issue-triage@1`,
   `af/issue-triage-merged@1` and `af/issue-triage-hold@1` schemas and
   `scripts/backlog-check-triage.py`, is staged under
-  [`fixtures/issue-triage/`](../../fixtures/issue-triage/README.md) for the owner to install;
-  steps 3 to 5 (the runner, the backfill, the plugin) follow.
+  [`fixtures/issue-triage/`](../../fixtures/issue-triage/README.md) and installed by the owner;
+  step 3 adds the runner, hermetic tests and a staged first-week dry-run schedule, with the
+  [operator runbook](../issue-triage-runner.md). Deployment, live backfill and the plugin remain
+  later steps; the runner tests claim no live coverage.
