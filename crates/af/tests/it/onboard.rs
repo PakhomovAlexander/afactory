@@ -1017,20 +1017,12 @@ fn afactory_authority_plans_a_three_field_task_with_its_defaults() {
         r#"{"task_id":"short","kind":"implement","goal":"Improve the CLI"}"#,
     )
     .unwrap();
-    let providers = registry(
-        &root.path().join("providers"),
-        &[("codex-main", "codex"), ("claude-main", "claude")],
-    );
+    let providers = registry(&root.path().join("providers"), &[("codex-main", "codex")]);
     let bin = root.path().join("bin");
     crate::fake_models::install(
         "codex",
         &bin,
         &root.path().join("providers/auth-codex-main"),
-    );
-    crate::fake_models::install(
-        "claude",
-        &bin,
-        &root.path().join("providers/auth-claude-main"),
     );
     let path = std::env::join_paths(
         std::iter::once(bin).chain(std::env::split_paths(&std::env::var_os("PATH").unwrap())),
@@ -1041,14 +1033,15 @@ fn afactory_authority_plans_a_three_field_task_with_its_defaults() {
         .args([
             "task",
             "plan",
+            "--json",
             "--file",
             ticket.to_str().unwrap(),
             "--state",
         ])
         .arg(root.path().join("state"))
-        .env("AF_PROVIDERS_FILE", providers)
+        .env("AF_PROVIDERS_FILE", &providers)
         .env("USER", "fixture")
-        .env("PATH", path)
+        .env("PATH", &path)
         .output()
         .unwrap();
     assert!(
@@ -1066,12 +1059,11 @@ fn afactory_authority_plans_a_three_field_task_with_its_defaults() {
         stdout(&planned)
     );
     // Every default-pipeline binding is checked against the recorded catalogs: the Codex
-    // fixture lists `gpt-5.6-terra`, which `default/bugs` binds.
+    // fixture lists `gpt-6.1-terra`, which `default/bugs` binds.
     for worker in [
         "default/implementer",
         "default/bugs",
         "default/correctness",
-        "default/advisor",
         "default/evaluator",
     ] {
         assert!(
@@ -1085,6 +1077,35 @@ fn afactory_authority_plans_a_three_field_task_with_its_defaults() {
         "{}",
         stderr(&planned)
     );
+
+    assert!(!stderr(&planned).contains("default/advisor"));
+    let inspected: serde_json::Value = serde_json::from_slice(&planned.stdout).unwrap();
+    assert_default_graph_roles_models_and_evidence(&inspected, true);
+
+    // The read-only twin uses the same fixture and captured authority. Fake CLIs admit
+    // models without spending model tokens; only a Codex Provider is registered.
+    let ticket = root.path().join("verify.json");
+    std::fs::write(
+        &ticket,
+        r#"{"task_id":"verify-default","kind":"verification","goal":"Verify the candidate","pipeline":{"name":"default/verification","fallback":"refuse"}}"#,
+    )
+    .unwrap();
+    let planned = crate::common::af()
+        .current_dir(&repo)
+        .args(["task", "plan", "--json", "--file"])
+        .arg(ticket)
+        .arg("--state")
+        .arg(root.path().join("state"))
+        .env("AF_PROVIDERS_FILE", &providers)
+        .env("USER", "fixture")
+        .env("PATH", &path)
+        .output()
+        .unwrap();
+    assert!(planned.status.success(), "{}", stderr(&planned));
+    assert!(!stderr(&planned).contains("default/advisor"));
+    assert!(!stderr(&planned).contains("unverified against the catalog"));
+    let inspected: serde_json::Value = serde_json::from_slice(&planned.stdout).unwrap();
+    assert_default_graph_roles_models_and_evidence(&inspected, false);
 }
 
 #[test]
@@ -1469,5 +1490,102 @@ print(json.dumps({'type':'turn.completed','usage':{'input_tokens':10,'cached_inp
     assert!(
         auth.join("turns").exists(),
         "the Task did not call a Worker"
+    );
+}
+
+/// Exact owner defaults, through the compiled graph and effective Provider bindings rather
+/// than manifest text: no advisory slot, dispatch or admission can hide in a child call.
+fn assert_default_graph_roles_models_and_evidence(value: &serde_json::Value, implementation: bool) {
+    use review_core::task::pipeline::TaskOperatorV1;
+    use review_graph::task::{CompiledOperator, CompiledTask};
+    use std::collections::{BTreeMap, BTreeSet};
+
+    let graph: CompiledTask = serde_json::from_value(value["graph"].clone()).unwrap();
+    let mut expected = BTreeMap::from([
+        ("bugs", ("gpt-6.1-terra", "high")),
+        ("correctness", ("gpt-6-sol", "high")),
+        ("evaluator", ("gpt-6-astra", "medium")),
+    ]);
+    if implementation {
+        expected.insert("implementer", ("gpt-6.1-sol", "medium"));
+    }
+    let slots: BTreeSet<_> = expected.keys().map(|s| format!("root.slots.{s}")).collect();
+    assert_eq!(graph.slots.keys().cloned().collect::<BTreeSet<_>>(), slots);
+    let bindings = value["plan"]["bindings"].as_object().unwrap();
+    assert_eq!(bindings.keys().cloned().collect::<BTreeSet<_>>(), slots);
+    for (slot, (model, effort)) in expected {
+        assert_eq!(
+            graph.slots[&format!("root.slots.{slot}")].worker,
+            format!("default/{slot}")
+        );
+        let expected_role = match slot {
+            "implementer" => "implement",
+            "evaluator" => "evaluate",
+            _ => "review",
+        };
+        assert_eq!(
+            graph.slots[&format!("root.slots.{slot}")].role,
+            expected_role
+        );
+        let execution = &bindings[&format!("root.slots.{slot}")]["execution"];
+        assert_eq!(execution["provider_kind"], "codex");
+        assert_eq!(execution["provider"], "codex-main");
+        assert_eq!(execution["model"], model);
+        assert_eq!(execution["effort"], effort);
+    }
+    let mut admitted = BTreeSet::new();
+    let mut dispatched = BTreeSet::new();
+    let mut reviewers = BTreeSet::new();
+    let mut local_checks = 0;
+    for node in graph.nodes.values() {
+        match &node.operator {
+            CompiledOperator::ProviderAdmission { bindings } => admitted.extend(bindings.clone()),
+            CompiledOperator::Primitive { operator, .. } => match operator {
+                TaskOperatorV1::Worker { slot } | TaskOperatorV1::Verify { slot } => {
+                    dispatched.insert(slot.clone());
+                    assert!(!node.inputs.contains_key("report"));
+                    if slot == "root.slots.bugs" || slot == "root.slots.correctness" {
+                        reviewers.insert(slot.clone());
+                        for port in [
+                            "assignment",
+                            "checks",
+                            "history",
+                            "requirements",
+                            "source",
+                            "subject",
+                        ] {
+                            assert!(node.inputs.contains_key(port), "{slot}: {port}");
+                        }
+                    } else if slot == "root.slots.evaluator" {
+                        assert_eq!(
+                            node.inputs
+                                .keys()
+                                .map(String::as_str)
+                                .collect::<BTreeSet<_>>(),
+                            BTreeSet::from(["checks", "requirements", "source"])
+                        );
+                    }
+                }
+                TaskOperatorV1::Check { remote_checks, .. } => {
+                    assert!(remote_checks.is_empty());
+                    local_checks += 1;
+                }
+                _ => {}
+            },
+            _ => {}
+        }
+    }
+    assert_eq!(admitted, slots);
+    assert_eq!(dispatched, slots);
+    assert_eq!(
+        reviewers,
+        BTreeSet::from(["root.slots.bugs".into(), "root.slots.correctness".into()])
+    );
+    assert_eq!(local_checks, 1);
+    assert!(
+        !graph
+            .slots
+            .values()
+            .any(|slot| slot.worker == "default/advisor")
     );
 }

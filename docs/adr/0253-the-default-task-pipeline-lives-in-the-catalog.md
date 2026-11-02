@@ -11,6 +11,19 @@ count, of which only correctness is required in the catalog's policy terms. Not 
 through the default pipeline any more: a small, local one may run through the light default
 pipeline.
 
+**Amended 2026-11-02:** the owner's default now uses `gpt-6.1-sol` medium to implement,
+`gpt-6.1-terra` high for bugs, `gpt-6-sol` high for correctness, and `gpt-6-astra` medium to
+evaluate. All four active Workers declare Provider kind `codex` and neutral catalog label
+`codex-main`; the owner's machine maps each to `codex-personal`. No credentials are catalog data.
+Both defaults call the existing local `kernel/review-code` with only bugs and correctness bound.
+They have no advisory/uix slot or call binding and never execute or admit an advisory Worker. The retained
+`default/advisor` package remains available for other callers. Verification has no implementer
+and stays read-only. Both bound reviewers' severity gates, missing-result completeness, evidence
+contracts and independent requirements evaluation remain intact; judges receive source, base,
+requirements and check receipts, never the implementer's summary. Attempt bounds, default-light
+packages and generic kernel behavior are unchanged. The original decision and model table below
+record the historical October default; this amendment supersedes their active role/model choices.
+
 ## Context
 
 Every change to this repository is made through af Tasks (AGENTS.md). On 27 October 2026 the

@@ -31,9 +31,8 @@ write, and look for:
 
 Prefer the changed code and its callers, and read `../base` to see what the change replaced.
 Style, naming, broad refactors, performance without a measured regression and requirements
-outside the goal are not yours: the correctness reviewer judges cross-cutting contracts and the
-advisory reviewer judges quality, so do not duplicate them unless the same fact is also a defect
-you can demonstrate.
+outside the goal are not yours: the correctness reviewer judges cross-cutting contracts, so do
+not duplicate them unless the same fact is also a defect you can demonstrate.
 
 ## Severity: calibrate, because the gate acts on it
 

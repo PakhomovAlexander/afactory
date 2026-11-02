@@ -1,6 +1,6 @@
 schema = "af.worker/1"
 name = "default/evaluator"
-version = "1.1.1"
+version = "1.2.0"
 
 [signature]
 effects = ["read-source"]
@@ -71,4 +71,4 @@ wall_ms = 1800000
 kind = "model"
 provider_kind = "codex"
 model = "gpt-6-astra"
-effort = "high"
+effort = "medium"

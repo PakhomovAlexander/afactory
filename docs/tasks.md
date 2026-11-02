@@ -609,34 +609,29 @@ A change to Afactory that is not small and local enough for
 [the light default pipeline](#the-light-default-pipeline) runs through the default Task pipeline
 that this repository's own catalog, `.af/task-catalog.toml`, pins
 ([ADR-0253](adr/0253-the-default-task-pipeline-lives-in-the-catalog.md)), so any checkout plans
-it. `default/implementation` is `kernel/implementation-ux` with its five slots bound to the
-`default/*` Worker packages: one implementing iteration, the project's local gate on the sealed
-candidate, two bound reviewers whose findings count (bugs, correctness), one advisory reviewer
-for gate time and quality and an independent evaluator. It declares `findings`, so
-`af task run NEW --from TASK` continues it. `default/verification` is
-`kernel/verification-ux` with the same four judging slots and no implementer: it judges an
-existing candidate read-only.
+it. `default/implementation` binds four `default/*` Worker slots: one implementing iteration,
+the project's local gate on the sealed candidate through `kernel/review-code`, two bound
+reviewers whose findings count (bugs, correctness), and an independent evaluator. It declares
+`findings`, so `af task run NEW --from TASK` continues it. `default/verification` uses the same
+review and acceptance path with three judging slots and no implementer: it judges an existing
+candidate read-only. Neither compiled graph has an advisory/uix slot, call binding or Provider
+admission for an advisory Worker.
 
 | Slot | Package | Model | Effort | What it does |
 |---|---|---|---|---|
-| `implementer` | `default/implementer` | `claude-opus-5-5` | `high` | one implementing iteration (`default/implementation` only) |
-| `bugs` | `default/bugs` | `gpt-5.6-terra` | `high` | reviewer bound here, advisory in the catalog's policy: concrete functional defects |
+| `implementer` | `default/implementer` | `gpt-6.1-sol` | `medium` | one implementing iteration (`default/implementation` only) |
+| `bugs` | `default/bugs` | `gpt-6.1-terra` | `high` | reviewer bound here, advisory in the catalog's policy: concrete functional defects |
 | `correctness` | `default/correctness` | `gpt-6-sol` | `high` | required reviewer: requirements, contracts and architecture |
-| `uix` | `default/advisor` | `gpt-6-astra` | `medium` | advisory reviewer: gate time and quality |
-| `evaluator` | `default/evaluator` | `gpt-6-astra` | `high` | independent evaluator of the requirements |
+| `evaluator` | `default/evaluator` | `gpt-6-astra` | `medium` | independent evaluator of the requirements |
 
-The catalog's `[review.reviewers]` marks the `uix` slot advisory, and the `bugs` slot advisory
-so that [the light default pipeline](#the-light-default-pipeline) may leave it unbound.
-`default/implementation` binds `bugs`, so its findings count and its missing result leaves the
-round incomplete, as for a required reviewer; only a benchmark Demand it files is now advisory,
-so an open one no longer keeps the round from converging. The `uix` reviewer judges the time a
-change adds to every future gate and pull-request validation, and the quality a maintainer cares
-about, and files each finding at its honest severity. In this release its reports still count
-toward convergence like any reviewer's: an open `blocker` or `major` of the bound advisory
-reviewer keeps the round from converging, as a required reviewer's does; a kernel change that
-stops them from counting is planned. The reviewers and the evaluator never receive the
-implementer's summary: the tree, `../base`, the requirements and the check receipts are their
-evidence.
+The catalog's `[review.reviewers]` keeps `bugs` advisory so that
+[the light default pipeline](#the-light-default-pipeline) may leave it unbound. Both default
+pipelines bind `bugs`, so its findings count and its missing result leaves the round incomplete,
+as for a required reviewer; only a benchmark Demand it files is advisory. Open `blocker` or
+`major` findings from either bound reviewer prevent convergence. The retained `default/advisor`
+package remains available to other pipelines, but these defaults never dispatch it. The
+reviewers and evaluator never receive the implementer's summary: the tree, `../base`, the
+requirements and the check receipts are their evidence.
 
 To run it, name it in the Task file; `default/verification` takes a Task of `"kind":
 "verification"` whose `inputs.source` binds the candidate it judges
@@ -660,18 +655,17 @@ allowances, and `af task plan --fit` prints the smallest that do:
 }
 ```
 
-The catalog binds `default/implementer` to the Provider label `claude-main` and the other four
-packages to `codex-main`. When your machine-local registry does not carry those labels, map them
+The catalog binds all four active default Worker packages to the neutral Provider label
+`codex-main`. When your machine-local registry does not carry those labels, map them
 in a [local bindings](task-execution/local-bindings.md) file and pass it with `--bindings FILE`:
 
 ```toml
 schema = "af.task-bindings/1"
 
 [providers]
-"default/implementer" = "claude-personal"
+"default/implementer" = "codex-personal"
 "default/bugs" = "codex-personal"
 "default/correctness" = "codex-personal"
-"default/advisor" = "codex-personal"
 "default/evaluator" = "codex-personal"
 ```
 
@@ -691,7 +685,7 @@ two judging slots and no implementer.
 | `correctness` | `default-light/correctness` | `gpt-6-sol` | `high` | 300,000 tokens, 30 min |
 | `evaluator` | `default-light/evaluator` | `gpt-6-astra` | `high` | 200,000 tokens, 20 min |
 
-It gives up the bug-bounty reviewer (`bugs`) and the gate-time and quality reviewer (`uix`). The
+It leaves out the default pipeline's bug-bounty reviewer (`bugs`). The
 correctness reviewer's prompt makes the concrete functional defects on the paths the change
 touches its own, beside requirements, contracts and architecture; the implementer's prompt makes
 testing the edge cases of every changed path and counting what the change adds to every future
