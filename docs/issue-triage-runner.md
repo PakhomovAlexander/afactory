@@ -125,7 +125,14 @@ main or a merged, reachable closing PR can propose `triage/maybe-fixed`; bare, n
 partial or future mentions go into `owner_review` in the private journal. The sweep preserves
 needs-info, disputed and held states and never closes an issue. It also defers issues with
 uncertain Tasks, unresolved publication intents or conflicting owner labels, including reminders;
-a token-free sweep cannot bypass a publication hold. A needs-info generation gets
+a durable dry-run proposal remains unresolved after enabling `--apply`, until publication or
+explicit supersession. A temporary private hold keeps the proposal unresolved after release.
+On recovery, the ordinary tick keeps the original proposal fenced until a fresh checked
+replacement successfully publishes; the durable handoff records that publication and marks
+the superseded proposal stale atomically. Completed or explicitly aborted label/comment effects
+do not block that replacement. An unresolved write intent still requires reconciliation and
+blocks both replacement publication and auxiliary writes.
+A token-free sweep cannot bypass a publication hold. A needs-info generation gets
 one reminder after 30 days without a reply, deduplicated by the recorded request time.
 An existing request can use the trusted owner/runner label-event time; absent a known request
 time, the sweep never guesses its age.
@@ -147,15 +154,23 @@ main queues a new generation; the old generation cannot publish. Consumers use
 with the exact schema/issue/generation and current published generation has authority.
 
 Label and comment intents/completions are separate checkpoints. A known precondition refusal
-records an aborted phase without claiming completion; an ambiguous API response retains its
-unresolved intent and blocks other publication for that issue. Label recovery reads the
-current set and applies only remaining authorized differences. Unrelated and unknown labels
-are preserved; only enumerated runner values and pending/bug/enhancement hints may change.
+before any mutation records an aborted phase without claiming completion. A partial label write,
+an ambiguous API response or a freshness refusal after labels were written retains the unresolved
+intent and blocks replacement publication and auxiliary writes. A refusal on a later attempt cannot
+abort an earlier unresolved intent. Ordinary tick recovery completes a retained label intent only
+when it observes the intended runner-owned labels and hint removals, even if changed inputs prevent
+that generation from publishing. Unrelated label changes still invalidate its freshness but do not
+hide completed runner effects. This reconciliation precedes checked replacement publication,
+retirement and sweep. Partial or unknown label results remain fenced. Fresh label recovery applies
+only remaining authorized differences. Unrelated and unknown labels are preserved; only enumerated
+runner values and pending/bug/enhancement hints may change.
 `class/decision`, `class/security` and `triage/held` are never removed. Owner namespace label
 provenance is retained in `owner_override` and effective JSON/labels; two owner values in one
 namespace suspend that event until a resolving owner event arrives. Missing or incoherent label
 provenance also suspends before Task admission; the runner never assumes an unattributed
 namespace label was its own. The private `suspension` reason identifies that refusal.
+Owner overrides do not establish agreement: differing author/verifier class or size still
+produces `triage/disputed`, while preserving the owner's effective values in the record and labels.
 
 An ambiguous comment create is reconciled by principal, recorded comment id and exact generation
 marker/content. A found comment is adopted once. If no result can be observed, the create stays
@@ -199,7 +214,9 @@ Run `python3 -I scripts/test-backlog-triage.py` and
 `python3 -I scripts/test-backlog-check-triage.py`; the runner test also works with
 `/usr/bin/python3` 3.9.6. Fakes cover input bounds, malicious paths, event deduplication, claim
 and reservation ordering, token caps and unknown spend, holds, dry-run, freshness, ambiguous
-label/create/edit recovery, owner conflicts, sweep evidence and reminder deduplication. A fake
-nightly host covers the staged shared-lease adapter without running Docker or systemd. Existing
-Rust `task_triage` tests cover installed package planning and real report-renderer bytes. These
+label/create/edit recovery (including input changes after a label write returns but before its
+completion checkpoint, and partial/unknown label results), owner conflicts, sweep evidence and
+reminder deduplication. A fake nightly host covers the staged shared-lease adapter without running
+Docker or systemd. Existing Rust `task_triage` tests cover installed package planning and real
+report-renderer bytes. These
 are distinct from an unperformed live deployment and first-week observation.

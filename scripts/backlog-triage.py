@@ -58,7 +58,7 @@ PATH_LINE = re.compile(r':(-?[0-9]+)(?:-[0-9]+)?(?=$|[\s.,;!?)\]])')
 
 
 class Refused(Exception):
-    """Defer without public effects; operator recovery may be necessary."""
+    """Defer further work; operator recovery may be necessary."""
 
 
 class TaskFailure(Refused):
@@ -797,10 +797,19 @@ class GitHub:
         require(all(label in MANAGED - PROTECTED or label in HINTS for label in removals),
                 'unauthorized label removal')
         require(all(label in MANAGED for label in additions), 'unauthorized label addition')
-        for label in removals:
-            self.call('DELETE', self.base + f'/issues/{number}/labels/' + quote(label, safe=''), ok=(200, 204))
-        if additions:
-            self.call('POST', self.base + f'/issues/{number}/labels', dict(labels=additions))
+        mutated = False
+        try:
+            for label in removals:
+                self.call('DELETE', self.base + f'/issues/{number}/labels/' + quote(label, safe=''), ok=(200, 204))
+                mutated = True
+            if additions:
+                self.call('POST', self.base + f'/issues/{number}/labels', dict(labels=additions))
+        except Ambiguous:
+            raise
+        except (Refused, CHECK.Refusal):
+            if mutated:
+                raise Ambiguous('partial label write; reconcile before retry') from None
+            raise
 
     def comment(self, number, body, comment_id=None):
         if comment_id is None:
@@ -1087,11 +1096,22 @@ class Runner:
             state['notified'] = True
             self.journal.save()
 
+    def invalidate(self, gen, event=None):
+        # Changed evidence requests new work, but cannot resolve an unpublished proposal.
+        state = self.journal.issue(gen['identity']['issue'])
+        if gen['status'] == 'dry-run':
+            if state.get('current_generation') == digest(gen['identity']):
+                state['current_generation'] = None
+        else:
+            gen['status'] = 'stale'
+        if event is not None:
+            self.journal.data['events'].setdefault(event, dict(issue=gen['identity']['issue'], status='queued'))
+        self.journal.save()
+
     def fresh(self, gen):
         identity = gen['identity']
         if self.journal.issue(identity['issue']).get('current_generation') != digest(identity):
-            gen['status'] = 'stale'
-            self.journal.save()
+            self.invalidate(gen)
             raise Refused('generation superseded; refuse old publication')
         manifest, issue, clean, pulls, neighbours = self.snapshot(identity['issue'])
         if self.held(issue):
@@ -1102,10 +1122,8 @@ class Runner:
             after = set(gen['desired_labels'])
             current = set(clean['labels'])
             if not before & after <= current <= before | after:
-                gen['status'] = 'stale'
                 event = 'stale-labels:' + digest(clean)
-                self.journal.data['events'].setdefault(event, dict(issue=identity['issue'], status='queued'))
-                self.journal.save()
+                self.invalidate(gen, event)
                 raise Refused('labels changed outside publication intent; new generation queued')
             # Differences can only be this recorded publication's runner-owned labels. Owner
             # label events remain in clean and invalidate the bundle independently.
@@ -1115,10 +1133,8 @@ class Runner:
         bundle = assemble(manifest, clean, pulls, neighbours)
         fresh = generation_identity(identity['issue'], bundle, manifest.main, identity['event_id'])
         if fresh != identity:
-            gen['status'] = 'stale'
             event = 'stale:' + digest(fresh)
-            self.journal.data['events'].setdefault(event, dict(issue=identity['issue'], status='queued'))
-            self.journal.save()
+            self.invalidate(gen, event)
             raise Refused('stale inputs; new generation queued')
         return issue
 
@@ -1149,43 +1165,93 @@ class Runner:
         return gen['comment_done']
 
     def abort_effect(self, gen, phase):
-        # A precondition/read refusal is distinct from an ambiguous mutation response. All
-        # earlier calls returned; the interrupted phase makes no further request and does not
-        # claim completion. Persist that distinction before a later generation can proceed.
+        # Only a refusal before any mutation in this phase can abort its intent. A partial
+        # write or an earlier unresolved attempt must retain the fence until observed.
         gen[phase + '_intent'] = False
         gen[phase + '_aborted'] = True
-        if self.journal.issue(gen['identity']['issue'])['hold']:
+        if gen['status'] == 'dry-run':
+            pass  # A refused publication still leaves this proposal unresolved.
+        elif self.journal.issue(gen['identity']['issue'])['hold']:
             gen['status'] = 'held'
         elif gen['status'] != 'stale':
             gen['status'] = 'uncertain'
         self.journal.save()
 
-    def effects_blocked(self, number, except_key=None):
+    def reconcile_labels(self, gen, issue):
+        # Observation resolves an intent even when changed inputs prevent further writes
+        # by this generation. Unrelated labels are never written by set_labels; they still
+        # invalidate freshness independently. A partial/unknown result keeps its fence.
+        controlled = MANAGED | HINTS
+        if (gen.get('labels_intent') and not gen['labels_done']
+                and set(issue['labels']) & controlled == set(gen['desired_labels']) & controlled):
+            gen['labels_done'] = True
+            self.journal.save()
+
+    def effects_blocked(self, number, except_key=None, replacing_dry_runs=False):
         if 'comment-intent' in self.journal.issue(number)['sweeps'].values():
             return True
         for key, gen in self.journal.data['generations'].items():
             if key == except_key or gen['identity']['issue'] != number:
                 continue
-            if gen['status'] in ('planning', 'admitting', 'uncertain', 'checked', 'publishing', 'claimed'):
+            # Only fresh checked triage publication may pass a reconciled proposal.
+            # Keep its durable fence until the replacement has actually published.
+            if (replacing_dry_runs and gen['status'] == 'dry-run'
+                    and not self.unresolved_effects(gen)):
+                continue
+            if gen['status'] in ('planning', 'admitting', 'uncertain', 'checked', 'dry-run', 'publishing', 'claimed'):
                 return True
-            if (gen.get('labels_intent') and not gen['labels_done']
-                    or gen.get('comment_intent') and not gen['comment_done']):
+            if self.unresolved_effects(gen):
                 return True
         return False
+
+    @staticmethod
+    def unresolved_effects(gen):
+        # Completion resolves a retained intent; abort_effect durably clears an intent
+        # without claiming completion. A prior abort must not waive a later open intent.
+        return any(gen.get(phase + '_intent') and not gen[phase + '_done']
+                   for phase in ('labels', 'comment'))
+
+    def retire_superseded_dry_runs(self):
+        changed = False
+        for key, gen in self.journal.data['generations'].items():
+            # Only a proposal with no unresolved public effects can be retired.
+            # Checked output alone is not a handoff: publication can
+            # still refuse changed inputs or fail. Retire atomically with successful
+            # checked publication, so neither failure nor recovery opens the sweep fence.
+            if gen['status'] != 'dry-run' or self.unresolved_effects(gen):
+                continue
+            number = gen['identity']['issue']
+            state = self.journal.issue(number)
+            current = state.get('current_generation')
+            replacement = self.journal.data['generations'].get(current)
+            if (current != key and replacement is not None
+                    and replacement['identity']['issue'] == number
+                    and replacement['status'] == 'published' and state.get('published') == current
+                    and 'record' in replacement
+                    and replacement['labels_done'] and replacement['comment_done']):
+                gen['status'] = 'stale'
+                changed = True
+        if changed:
+            self.journal.save()
 
     def publish(self, key, gen):
         if gen['status'] == 'published':
             return
         issue = self.api.issue(gen['identity']['issue'])
         if self.held(issue):
-            gen['status'] = 'held'
-            self.journal.save()
+            # A temporary private hold does not resolve an unpublished proposal.
+            if gen['status'] != 'dry-run':
+                gen['status'] = 'held'
+                self.journal.save()
             return
-        require(not self.effects_blocked(issue['number'], key), 'earlier issue generation has unresolved effects')
+        require(gen['status'] != 'stale', 'generation superseded; refuse old publication')
         # Reconcile the recorded id/marker BEFORE building the fresh bundle: a create response
         # may have been lost, and its comment is our own output, not new evidence.
         self.reconcile_comment(gen, issue)
+        self.reconcile_labels(gen, issue)
         issue = self.fresh(gen)
+        require(not self.effects_blocked(issue['number'], key, replacing_dry_runs='record' in gen),
+                'earlier issue generation has unresolved effects')
         if not self.apply:
             self.emit('Issue #%s proposed labels: %s\n%s' % (issue['number'],
                                                           json.dumps(gen['desired_labels']), gen['comment']))
@@ -1194,24 +1260,28 @@ class Runner:
             return
         check_lease(self.lease)
         self.api.before_write = lambda: self.fresh(gen)
-        gen['status'] = 'publishing'
+        if gen['status'] != 'dry-run':
+            gen['status'] = 'publishing'
         self.journal.save()
         if not gen['labels_done']:
             # Separate durable intent and completion; partial/ambiguous edits reconcile from
             # fresh current labels and retry only the remaining authorized differences.
+            unresolved = gen.get('labels_intent', False)
             gen['labels_intent'] = True
+            gen.pop('labels_aborted', None)
             self.journal.save()
             try:
                 self.api.set_labels(issue['number'], gen['desired_labels'], issue['labels'])
-                observed = self.fresh(gen)
             except Ambiguous:
                 raise
             except (Refused, CHECK.Refusal):
-                self.abort_effect(gen, 'labels')
+                if not unresolved:
+                    self.abort_effect(gen, 'labels')
                 raise
+            # A refusal after set_labels returned cannot abort a possibly completed write.
+            observed = self.fresh(gen)
             require(observed['labels'] == gen['desired_labels'], 'label write not observed')
-            gen['labels_done'] = True
-            self.journal.save()
+            self.reconcile_labels(gen, observed)
         issue = self.fresh(gen)
         if not gen['comment_done']:
             state = self.journal.issue(issue['number'])
@@ -1237,6 +1307,7 @@ class Runner:
             state.update(needs_since=self.clock().isoformat(), reminded=False)
         else:
             state.update(needs_since=None, reminded=False)
+        self.retire_superseded_dry_runs()
         self.journal.save()
 
     def failure(self, key, gen):
@@ -1379,11 +1450,23 @@ class Runner:
         rows = self.api.open_issues(self.journal.data['cursor'])
         issues = [self.api.issue(r['number']) for r in rows]
         discover(self.journal, issues, self.principal, self.owner)
+        for gen in self.journal.data['generations'].values():
+            if gen.get('labels_intent') and not gen['labels_done']:
+                issue = self.api.issue(gen['identity']['issue'])
+                if not self.held(issue):
+                    self.reconcile_labels(gen, issue)
+        self.retire_superseded_dry_runs()
         count, seen = 0, set()
         terminal = {'published', 'failed', 'stale', 'held', 'suspended'}
         if not self.apply:
             terminal.add('dry-run')
         for key, gen in list(self.journal.data['generations'].items()):
+            # A discovery-only invalidation leaves the proposal fenced while queued
+            # events record a hold or produce the checked replacement. Do not let old
+            # proposal recovery consume that issue's slot or retire it via freshness.
+            if (gen['status'] == 'dry-run'
+                    and self.journal.issue(gen['identity']['issue']).get('current_generation') != key):
+                continue
             if gen['status'] not in terminal:
                 if gen['identity']['issue'] in seen:
                     continue
@@ -1397,7 +1480,8 @@ class Runner:
                     check_lease(self.lease)
                     if error.rule != 'owner-override':
                         raise
-                    gen['status'] = 'suspended'
+                    if gen['status'] != 'dry-run':
+                        gen['status'] = 'suspended'
                     self.journal.issue(gen['identity']['issue'])['suspension'] = str(error)[:256]
                     self.journal.save()
         for event, item in list(self.journal.data['events'].items()):

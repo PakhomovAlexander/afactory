@@ -127,7 +127,8 @@ path component names the crate or script directory.
 - `needs-info`: the triager could not reach a confident class or size; the comment asks one
   concrete question. A reply from anyone re-enters the queue (§6.6).
 - `disputed`: the two triagers disagree on class or size; the comment carries both rationales.
-  An owner label on the disputed namespace resolves it (§6.5).
+  An owner label sets the effective recorded value without resolving the author/verifier
+  disagreement (§6.5).
 - `maybe-fixed`: the weekly sweep found an explicit completed-fix reference on `main`; the
   comment carries the evidence.
 - `duplicate`: both triagers named the same open issue as the subject; the comment names it.
@@ -291,7 +292,8 @@ these refuses the Task's output and the runner records why.
    `size/` or `pipeline/` label.
 3. Author and verifier differ on class or size, or on `resolution.state`, or name different
    duplicates: `triage/disputed`, no `class/`, `size/` or `pipeline/` label, both positions in
-   the comment.
+   the comment. Owner overrides (§6.5) remain effective in the record and labels, but cannot
+   turn this disagreement into agreement.
 4. Otherwise agreed: `class/` and `size/` as both said; `pipeline/` derived from size unless an
    owner override exists; both rationales and acceptance proposals kept; `resolution` as
    agreed, and `fixed_candidate` sets `triage/maybe-fixed`; an agreed duplicate sets

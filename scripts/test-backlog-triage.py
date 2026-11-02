@@ -969,6 +969,31 @@ class EventsAndPublication(Fixture):
             dict(id=3, actor='other', event='labeled', label='size/L')])
         self.assertEqual(R.owner_labels(row, 'owner'), [])
 
+    def test_failed_disagreement_publishes_disputed_canonical_record_with_owner_override(self):
+        self.api.rows[432].update(labels=['outside', 'class/uix'], events=[
+            dict(id=1, actor='owner', event='labeled', label='class/uix', created_at=NOW.isoformat())])
+        collect = self.tasks.collect
+        def differing_result(*args):
+            result = collect(*args)
+            verifier = dict(result['author'], **{'class': 'aix'})
+            result['evaluation'] = HELPERS.evaluation('failed', verifier)
+            return result
+        with mock.patch.object(self.tasks, 'collect', side_effect=differing_result):
+            key = self.queue()
+        gen = self.journal.data['generations'][key]
+        self.assertEqual(gen['status'], 'published')
+        comment, = self.api.rows[432]['comments']
+        record = R.consume_comment(comment, 432, self.journal)
+        self.assertEqual(record, gen['record'])
+        self.assertEqual(record['verdict'], 'disputed')
+        self.assertEqual(record['class'], 'uix')
+        self.assertEqual(record['owner_override'], {'class': 'class/uix'})
+        self.assertEqual((record['author']['class'], record['verifier']['class']), ('bug', 'aix'))
+        self.assertEqual(record['labels'], ['class/uix', 'triage/disputed'])
+        self.assertEqual(self.api.rows[432]['labels'], ['class/uix', 'outside', 'triage/disputed'])
+        self.assertNotIn('"verdict": "agreed"', comment['body'])
+        self.assertEqual(self.tasks.calls, 1)
+
     def test_nonempty_needs_info_from_either_triager_blocks_agreement(self):
         self.tasks.needs_info = ['What is the measured result?']
         self.queue()
@@ -1484,7 +1509,7 @@ class AdditionalRecovery(Fixture):
         with self.assertRaises(R.Refused):
             R.consume_comment(comment, 432, self.journal)
 
-    def test_superseded_checked_generation_retires_and_new_event_can_run(self):
+    def test_superseded_dry_run_stays_fenced_and_new_event_can_run(self):
         self.runner.apply = False
         key = self.queue()
         gen = self.journal.data['generations'][key]
@@ -1494,9 +1519,11 @@ class AdditionalRecovery(Fixture):
         self.runner.apply = True
         with self.assertRaises(R.Refused):
             self.runner.run_generation(key, gen)
-        self.assertEqual(gen['status'], 'stale')
+        self.assertEqual(gen['status'], 'dry-run')
+        self.runner.sweep()
         self.assertEqual(self.api.writes, [])
         self.runner.tick(time.monotonic() + 5400)
+        self.assertEqual(gen['status'], 'stale')
         self.assertEqual(len(self.api.rows[432]['comments']), 1)
         self.assertEqual(self.tasks.calls, 2)
 
@@ -1592,12 +1619,17 @@ class FinalGuards(Fixture):
             self.queue()
         key, gen = self.gen()
         self.assertEqual(gen['status'], 'stale')
+        self.assertTrue(gen['labels_intent'])
+        self.assertFalse(gen['labels_done'])
+        self.assertFalse(gen.get('labels_aborted', False))
         self.assertEqual(self.api.rows[432]['comments'], [])
         self.assertTrue(any(k.startswith('stale-labels:') for k in self.journal.data['events']))
         self.api.set_labels = original
         self.runner.tick(time.monotonic() + 5400)
         self.assertIn('late-unrelated', self.api.rows[432]['labels'])
         self.assertEqual(len(self.api.rows[432]['comments']), 1)
+        self.assertTrue(gen['labels_done'])
+        self.assertFalse(gen.get('labels_aborted', False))
 
     def test_terminal_settlement_crossing_midnight_remains_charged_on_both_days(self):
         bundle = self.bundle()
@@ -1719,6 +1751,696 @@ class IdentityFailureFence(Fixture):
 
 
 class SweepUncertaintyFence(Fixture):
+    def test_tick_during_owner_hold_preserves_dry_run_until_checked_replacement_publishes(self):
+        self.runner.apply = False
+        self.runner.tick(time.monotonic() + 5400)
+        key = self.journal.issue(432)['current_generation']
+        self.assertEqual(self.journal.data['generations'][key]['status'], 'dry-run')
+        self.runner.apply = True
+        row = self.api.rows[432]
+        row['labels'].append('triage/held')
+        row['events'].append(dict(id=1, actor='owner', event='labeled', label='triage/held',
+                                  created_at=self.clock.isoformat()))
+        self.runner.tick(time.monotonic() + 5400)
+        self.runner.sweep()
+        saved = R.strict_json(self.journal.path.read_bytes())
+        self.assertEqual(saved['generations'][key]['status'], 'dry-run')
+        self.assertIsNone(saved['issues']['432']['current_generation'])
+        self.assertIsNotNone(saved['issues']['432']['hold'])
+        self.assertEqual(self.notifications, [432])
+        self.assertEqual(self.api.writes, [])
+        self.assertEqual(self.tasks.calls, 1)
+
+        # Recover the journal and release the hold without another triage tick.
+        self.journal.data = saved
+        self.clock += dt.timedelta(minutes=1)
+        row['labels'].remove('triage/held')
+        row['events'].append(dict(id=2, actor='owner', event='unlabeled', label='triage/held',
+                                  created_at=self.clock.isoformat()))
+        self.runner.sweep()
+        saved = R.strict_json(self.journal.path.read_bytes())
+        self.assertIsNone(saved['issues']['432']['hold'])
+        self.assertEqual(saved['generations'][key]['status'], 'dry-run')
+        self.assertTrue(self.runner.effects_blocked(432))
+        self.assertEqual(self.api.writes, [])
+
+        publish = self.runner.publish
+        def checked_publish(replacement, gen):
+            durable = R.strict_json(self.journal.path.read_bytes())['generations']
+            self.assertNotEqual(replacement, key)
+            self.assertEqual(durable[replacement]['status'], 'checked')
+            self.assertEqual(durable[key]['status'], 'dry-run')
+            self.runner.sweep()
+            self.assertEqual(self.api.writes, [])
+            return publish(replacement, gen)
+        set_labels = self.api.set_labels
+        def checked_write(number, desired, current):
+            durable = R.strict_json(self.journal.path.read_bytes())
+            replacement = durable['issues']['432']['current_generation']
+            self.assertEqual(durable['generations'][key]['status'], 'dry-run')
+            self.assertEqual(durable['generations'][replacement]['status'], 'publishing')
+            self.runner.sweep()
+            self.assertEqual(self.api.writes, [])
+            return set_labels(number, desired, current)
+        with mock.patch.object(self.runner, 'publish', side_effect=checked_publish), \
+                mock.patch.object(self.api, 'set_labels', side_effect=checked_write):
+            self.runner.tick(time.monotonic() + 5400)
+        saved = R.strict_json(self.journal.path.read_bytes())
+        replacement = saved['issues']['432']['current_generation']
+        self.assertNotEqual(replacement, key)
+        self.assertEqual(saved['generations'][key]['status'], 'stale')
+        self.assertEqual(saved['generations'][replacement]['status'], 'published')
+        self.assertEqual(R.consume_comment(row['comments'][0], 432, self.journal),
+                         saved['generations'][replacement]['record'])
+        self.assertEqual([w[0] for w in self.api.writes], ['labels', 'comment'])
+        self.assertEqual(self.tasks.calls, 2)
+        self.runner.sweep()
+        self.assertIn('triage/maybe-fixed', row['labels'])
+        self.assertEqual(len(row['comments']), 2)
+        self.assertIn('triage-sweep evidence=', row['comments'][1]['body'])
+        self.assertEqual(self.tasks.calls, 2)
+
+    def test_dry_run_retirement_requires_a_checked_replacement_not_a_pointer_or_claim(self):
+        self.runner.apply = False
+        key = self.queue()
+        old = self.journal.data['generations'][key]
+        state = self.journal.issue(432)
+        for pointer in (None, '0' * 64):
+            with self.subTest(pointer=pointer):
+                state['current_generation'] = pointer
+                self.journal.save()
+                self.runner.retire_superseded_dry_runs()
+                saved = R.strict_json(self.journal.path.read_bytes())['generations'][key]
+                self.assertEqual(saved['status'], 'dry-run')
+                self.assertTrue(self.runner.effects_blocked(432))
+
+        identity = dict(old['identity'], event_id='replacement')
+        replacement, gen = self.journal.claim(identity, old['bundle'], old['input'])
+        self.assertNotEqual(replacement, key)
+        for status in ('claimed', 'planning', 'admitting', 'uncertain', 'failed', 'held', 'suspended', 'stale',
+                       'checked', 'dry-run', 'publishing', 'published'):
+            with self.subTest(status=status):
+                gen['status'] = status
+                self.journal.save()
+                self.runner.retire_superseded_dry_runs()
+                saved = R.strict_json(self.journal.path.read_bytes())['generations'][key]
+                self.assertEqual(saved['status'], 'dry-run')
+                self.assertTrue(self.runner.effects_blocked(432))
+        self.assertEqual(self.api.writes, [])
+
+    def test_dry_run_blocks_sweep_after_apply_until_checked_proposal_is_published(self):
+        self.runner.apply = False
+        key = self.queue()
+        gen = self.journal.data['generations'][key]
+        saved = R.strict_json(self.journal.path.read_bytes())['generations'][key]
+        self.assertEqual(saved['status'], 'dry-run')
+        self.assertEqual(saved['desired_labels'], gen['desired_labels'])
+        self.assertEqual(saved['comment'], gen['comment'])
+        self.assertTrue(R.sweep_evidence(self.manifest.citations(432), [], 432)[0])
+        self.runner.apply = True
+        self.runner.sweep()
+        self.assertEqual(self.api.writes, [])
+        self.assertEqual(self.journal.issue(432)['current_generation'], key)
+        self.assertEqual(gen['status'], 'dry-run')
+        self.runner.run_generation(key, gen)
+        self.assertEqual(gen['status'], 'published')
+        self.assertEqual(R.consume_comment(self.api.rows[432]['comments'][0], 432, self.journal), gen['record'])
+        self.runner.sweep()
+        self.assertIn('triage/maybe-fixed', self.api.rows[432]['labels'])
+        self.assertEqual(len(self.api.rows[432]['comments']), 2)
+        self.assertIn('triage-sweep evidence=', self.api.rows[432]['comments'][1]['body'])
+        self.assertEqual(self.tasks.calls, 1)
+
+    def test_dry_run_owner_hold_then_release_keeps_sweep_fenced_until_resolution(self):
+        self.runner.apply = False
+        key = self.queue()
+        self.runner.apply = True
+        row = self.api.rows[432]
+        row['labels'].append('triage/held')
+        row['events'].append(dict(id=1, actor='owner', event='labeled', label='triage/held',
+                                  created_at=self.clock.isoformat()))
+        self.runner.run_generation(key, self.journal.data['generations'][key])
+        self.runner.sweep()
+        saved = R.strict_json(self.journal.path.read_bytes())
+        self.assertEqual(saved['generations'][key]['status'], 'dry-run')
+        self.assertIsNotNone(saved['issues']['432']['hold'])
+        self.assertEqual(self.notifications, [432])
+        self.assertEqual(self.api.writes, [])
+        self.assertEqual(len(self.output), 1)  # Only the original dry-run proposal, no public hold.
+        self.assertEqual(self.tasks.calls, 1)
+
+        # Recover from the durable journal, then observe a later owner release.
+        self.journal.data = saved
+        self.clock += dt.timedelta(minutes=1)
+        row['labels'].remove('triage/held')
+        row['events'].append(dict(id=2, actor='owner', event='unlabeled', label='triage/held',
+                                  created_at=self.clock.isoformat()))
+        self.runner.sweep()
+        self.assertIsNone(self.journal.issue(432)['hold'])
+        self.assertEqual(self.api.writes, [])
+        self.assertTrue(self.runner.effects_blocked(432))
+        # Discovery queues the owner events; ordinary recovery retires the proposal
+        # only with the fresh checked replacement's successful publication.
+        self.runner.tick(time.monotonic() + 5400)
+        self.assertEqual(R.strict_json(self.journal.path.read_bytes())['generations'][key]['status'], 'stale')
+        replacement = self.journal.issue(432)['current_generation']
+        self.assertNotEqual(replacement, key)
+        self.assertEqual(self.journal.data['generations'][replacement]['status'], 'published')
+        self.runner.sweep()
+        self.assertIn('triage/maybe-fixed', row['labels'])
+        self.assertEqual(len(row['comments']), 2)
+
+    def test_tick_retires_superseded_dry_run_with_published_replacement_before_sweep(self):
+        self.runner.apply = False
+        old_key = self.queue()
+        old = self.journal.data['generations'][old_key]
+        self.runner.apply = True
+        # Stop after the replacement is durably checked, before publication starts.
+        with mock.patch.object(self.runner, 'publish', side_effect=R.Refused('publication interrupted')):
+            with self.assertRaisesRegex(R.Refused, 'publication interrupted'):
+                self.queue('replacement')
+        key = self.journal.data['events']['replacement']['generation']
+        gen = self.journal.data['generations'][key]
+        self.assertNotEqual(key, old_key)
+        self.assertEqual(gen['status'], 'checked')
+        self.assertEqual(self.api.writes, [])
+        self.runner.sweep()
+        self.assertEqual(self.api.writes, [])
+
+        set_labels = self.api.set_labels
+        def checked_write(number, desired, current):
+            saved = R.strict_json(self.journal.path.read_bytes())['generations']
+            self.assertEqual(saved[old_key]['status'], 'dry-run')
+            self.assertEqual(saved[key]['status'], 'publishing')
+            self.runner.sweep()  # Replacement still unresolved; no auxiliary effect may interleave.
+            self.assertEqual(self.api.writes, [])
+            return set_labels(number, desired, current)
+        with mock.patch.object(self.api, 'set_labels', side_effect=checked_write):
+            self.runner.tick(time.monotonic() + 5400)
+        self.assertEqual(old['status'], 'stale')
+        self.assertEqual(gen['status'], 'published')
+        saved = R.strict_json(self.journal.path.read_bytes())['generations']
+        self.assertEqual(saved[old_key]['status'], 'stale')
+        self.assertEqual(saved[key]['status'], 'published')
+        self.assertFalse(old['labels_done'])
+        self.assertFalse(old['comment_done'])
+        self.assertEqual(R.consume_comment(self.api.rows[432]['comments'][0], 432, self.journal), gen['record'])
+        self.runner.sweep()
+        self.assertIn('triage/maybe-fixed', self.api.rows[432]['labels'])
+        self.assertEqual(len(self.api.rows[432]['comments']), 2)
+        self.assertEqual(self.tasks.calls, 2)
+
+    def test_replacement_first_publication_retires_the_old_dry_run(self):
+        self.runner.apply = False
+        old_key = self.queue()
+        self.runner.apply = True
+        key = self.queue('replacement')
+        saved = R.strict_json(self.journal.path.read_bytes())['generations']
+        self.assertEqual(saved[old_key]['status'], 'stale')
+        self.assertEqual(saved[key]['status'], 'published')
+        self.assertEqual(len(self.api.rows[432]['comments']), 1)
+        self.assertEqual(self.tasks.calls, 2)
+
+    def test_superseded_dry_run_with_label_or_comment_intent_remains_fenced(self):
+        self.runner.apply = False
+        old_key = self.queue()
+        old = self.journal.data['generations'][old_key]
+        self.runner.apply = True
+        with mock.patch.object(self.runner, 'publish', side_effect=R.Refused('publication interrupted')):
+            with self.assertRaises(R.Refused):
+                self.queue('replacement')
+        key = self.journal.data['events']['replacement']['generation']
+        for phase in ('labels', 'comment'):
+            with self.subTest(phase=phase):
+                old['labels_intent'] = phase == 'labels'
+                old['comment_intent'] = phase == 'comment'
+                self.journal.save()
+                with self.assertRaisesRegex(R.Refused, 'earlier issue generation has unresolved effects'):
+                    self.runner.tick(time.monotonic() + 5400)
+                self.assertEqual(old['status'], 'dry-run')
+                self.assertEqual(self.journal.data['generations'][key]['status'], 'checked')
+                saved = R.strict_json(self.journal.path.read_bytes())['generations'][old_key]
+                self.assertTrue(saved[phase + '_intent'])
+                self.assertFalse(saved[phase + '_done'])
+                self.runner.sweep()
+                self.assertEqual(self.api.writes, [])
+
+    def test_freshness_invalidation_fences_dry_run_until_tick_publishes_replacement(self):
+        self.runner.apply = False
+        key = self.queue()
+        gen = self.journal.data['generations'][key]
+        self.runner.apply = True
+        self.api.rows[432]['body'] += ' new evidence'
+        self.runner.sweep()
+        self.assertEqual(self.api.writes, [])
+        self.assertEqual(gen['status'], 'dry-run')
+        with self.assertRaisesRegex(R.Refused, 'stale inputs; new generation queued'):
+            self.runner.run_generation(key, gen)
+        self.assertEqual(gen['status'], 'dry-run')
+        self.assertTrue(any(k.startswith('stale:') for k in self.journal.data['events']))
+        self.runner.sweep()
+        self.assertEqual(self.api.writes, [])
+        self.assertEqual(self.tasks.calls, 1)
+        self.journal.data = R.strict_json(self.journal.path.read_bytes())
+        self.runner.tick(time.monotonic() + 5400)
+        saved = R.strict_json(self.journal.path.read_bytes())
+        replacement = saved['issues']['432']['current_generation']
+        self.assertNotEqual(replacement, key)
+        self.assertEqual(saved['generations'][key]['status'], 'stale')
+        self.assertEqual(saved['generations'][replacement]['status'], 'published')
+        self.assertEqual([w[0] for w in self.api.writes], ['labels', 'comment'])
+        self.assertEqual(R.consume_comment(self.api.rows[432]['comments'][0], 432, self.journal),
+                         saved['generations'][replacement]['record'])
+        self.runner.sweep()
+        self.assertIn('triage/maybe-fixed', self.api.rows[432]['labels'])
+        self.assertEqual(len(self.api.rows[432]['comments']), 2)
+        self.assertIn('triage-sweep evidence=', self.api.rows[432]['comments'][1]['body'])
+        self.assertEqual(self.tasks.calls, 2)
+
+    def test_tick_replacement_stale_at_publication_keeps_original_until_later_fresh_replacement(self):
+        self.runner.apply = False
+        self.runner.tick(time.monotonic() + 5400)
+        old_key = self.journal.issue(432)['current_generation']
+        self.runner.apply = True
+        self.api.rows[432]['body'] += ' first edit'
+        publish = self.runner.publish
+        def changed_after_check(key, gen):
+            saved = R.strict_json(self.journal.path.read_bytes())['generations']
+            self.assertEqual(saved[key]['status'], 'checked')
+            self.assertEqual(saved[old_key]['status'], 'dry-run')
+            self.api.rows[432]['body'] += ' edit after discovery and check'
+            return publish(key, gen)
+        with mock.patch.object(self.runner, 'publish', side_effect=changed_after_check):
+            with self.assertRaisesRegex(R.Refused, 'stale inputs; new generation queued'):
+                self.runner.tick(time.monotonic() + 5400)
+        saved = R.strict_json(self.journal.path.read_bytes())
+        rejected = saved['issues']['432']['current_generation']
+        self.assertNotEqual(rejected, old_key)
+        self.assertEqual(saved['generations'][rejected]['status'], 'stale')
+        self.assertEqual(saved['generations'][old_key]['status'], 'dry-run')
+        self.assertTrue(any(k.startswith('stale:') and v['status'] == 'queued'
+                            for k, v in saved['events'].items()))
+        self.runner.sweep()
+        self.assertEqual(self.api.writes, [])
+        self.assertEqual(self.tasks.calls, 2)
+        self.journal.data = saved
+        self.runner.tick(time.monotonic() + 5400)
+        saved = R.strict_json(self.journal.path.read_bytes())
+        replacement = saved['issues']['432']['current_generation']
+        self.assertNotIn(replacement, (old_key, rejected))
+        self.assertEqual(saved['generations'][old_key]['status'], 'stale')
+        self.assertEqual(saved['generations'][rejected]['status'], 'stale')
+        self.assertEqual(saved['generations'][replacement]['status'], 'published')
+        self.assertEqual(R.consume_comment(self.api.rows[432]['comments'][0], 432, self.journal),
+                         saved['generations'][replacement]['record'])
+        self.assertEqual([w[0] for w in self.api.writes], ['labels', 'comment'])
+        self.runner.sweep()
+        self.assertIn('triage/maybe-fixed', self.api.rows[432]['labels'])
+        self.assertEqual(len(self.api.rows[432]['comments']), 2)
+        self.assertEqual(self.tasks.calls, 3)
+
+    def test_tick_replacement_refused_before_write_keeps_original_fence(self):
+        self.runner.apply = False
+        self.runner.tick(time.monotonic() + 5400)
+        old_key = self.journal.issue(432)['current_generation']
+        self.runner.apply = True
+        self.api.rows[432]['body'] += ' first edit'
+        set_labels = self.api.set_labels
+        def changed_before_write(*args):
+            self.api.rows[432]['body'] += ' late edit'
+            return set_labels(*args)  # The ordinary API freshness guard refuses this request.
+        with mock.patch.object(self.api, 'set_labels', side_effect=changed_before_write):
+            with self.assertRaisesRegex(R.Refused, 'stale inputs; new generation queued'):
+                self.runner.tick(time.monotonic() + 5400)
+        saved = R.strict_json(self.journal.path.read_bytes())
+        rejected = saved['issues']['432']['current_generation']
+        self.assertEqual(saved['generations'][rejected]['status'], 'stale')
+        self.assertTrue(saved['generations'][rejected]['labels_aborted'])
+        self.assertFalse(saved['generations'][rejected]['labels_intent'])
+        self.assertEqual(saved['generations'][old_key]['status'], 'dry-run')
+        self.runner.sweep()
+        self.assertEqual(self.api.writes, [])
+        self.journal.data = saved
+        self.runner.tick(time.monotonic() + 5400)
+        saved = R.strict_json(self.journal.path.read_bytes())
+        replacement = saved['issues']['432']['current_generation']
+        self.assertNotIn(replacement, (old_key, rejected))
+        self.assertEqual(saved['generations'][old_key]['status'], 'stale')
+        self.assertEqual(saved['generations'][replacement]['status'], 'published')
+        self.assertEqual(self.tasks.calls, 3)
+        self.runner.sweep()
+        self.assertIn('triage/maybe-fixed', self.api.rows[432]['labels'])
+
+    def test_label_freshness_invalidation_keeps_dry_run_fenced_until_replacement(self):
+        self.runner.apply = False
+        self.runner.tick(time.monotonic() + 5400)
+        key = self.journal.issue(432)['current_generation']
+        self.runner.apply = True
+        self.api.rows[432]['labels'].append('outside-new')
+        with self.assertRaisesRegex(R.Refused, 'labels changed outside publication intent'):
+            self.runner.tick(time.monotonic() + 5400)
+        saved = R.strict_json(self.journal.path.read_bytes())
+        self.assertEqual(saved['generations'][key]['status'], 'dry-run')
+        self.assertIsNone(saved['issues']['432']['current_generation'])
+        self.assertTrue(any(k.startswith('stale-labels:') for k in saved['events']))
+        self.runner.sweep()
+        self.assertEqual(self.api.writes, [])
+        self.journal.data = saved
+        self.runner.tick(time.monotonic() + 5400)
+        replacement = self.journal.issue(432)['current_generation']
+        self.assertNotEqual(replacement, key)
+        self.assertEqual(self.journal.data['generations'][key]['status'], 'stale')
+        self.assertEqual(self.journal.data['generations'][replacement]['status'], 'published')
+        self.assertIn('outside-new', self.api.rows[432]['labels'])
+        self.runner.sweep()
+        self.assertIn('triage/maybe-fixed', self.api.rows[432]['labels'])
+        self.assertEqual(self.tasks.calls, 2)
+
+    def test_dry_run_own_publication_refused_before_write_retains_proposal(self):
+        self.runner.apply = False
+        self.runner.tick(time.monotonic() + 5400)
+        key = self.journal.issue(432)['current_generation']
+        self.runner.apply = True
+        set_labels = self.api.set_labels
+        def changed_before_write(*args):
+            self.api.rows[432]['body'] += ' late edit'
+            return set_labels(*args)
+        with mock.patch.object(self.api, 'set_labels', side_effect=changed_before_write):
+            with self.assertRaisesRegex(R.Refused, 'stale inputs; new generation queued'):
+                self.runner.tick(time.monotonic() + 5400)
+        saved = R.strict_json(self.journal.path.read_bytes())
+        self.assertEqual(saved['generations'][key]['status'], 'dry-run')
+        self.assertTrue(saved['generations'][key]['labels_aborted'])
+        self.assertFalse(saved['generations'][key]['labels_intent'])
+        self.runner.sweep()
+        self.assertEqual(self.api.writes, [])
+        self.journal.data = saved
+        self.runner.tick(time.monotonic() + 5400)
+        self.assertEqual(self.journal.data['generations'][key]['status'], 'stale')
+        self.assertEqual(self.tasks.calls, 2)
+        self.runner.sweep()
+        self.assertIn('triage/maybe-fixed', self.api.rows[432]['labels'])
+
+    def test_tick_completed_dry_run_labels_invalidated_before_comment_allow_checked_replacement(self):
+        self.assert_completed_dry_run_effect_allows_replacement('labels')
+
+    def test_tick_labels_invalidated_after_write_before_completion_reconcile_before_replacement(self):
+        self.assert_completed_dry_run_effect_allows_replacement('labels', before_completion=True)
+
+    def test_tick_completed_dry_run_comment_invalidated_before_handoff_allows_checked_replacement(self):
+        self.assert_completed_dry_run_effect_allows_replacement('comment')
+
+    def assert_completed_dry_run_effect_allows_replacement(self, phase, before_completion=False):
+        self.runner.apply = False
+        self.runner.tick(time.monotonic() + 5400)
+        old_key = self.journal.issue(432)['current_generation']
+        self.runner.apply = True
+        fresh = self.runner.fresh
+        set_labels = self.api.set_labels
+        def changed_after_write(*args):
+            result = set_labels(*args)
+            if before_completion:
+                saved = R.strict_json(self.journal.path.read_bytes())['generations'][old_key]
+                self.assertTrue(saved['labels_intent'])
+                self.assertFalse(saved['labels_done'])
+                self.api.rows[432]['body'] += ' evidence after labels returned'
+            return result
+        def changed_after_completion(gen):
+            saved = R.strict_json(self.journal.path.read_bytes())['generations'][old_key]
+            if saved[phase + '_done']:
+                self.assertTrue(saved['labels_intent'])
+                self.assertEqual(saved['comment_done'], phase == 'comment')
+                self.assertEqual(saved.get('comment_intent', False), phase == 'comment')
+                self.api.rows[432]['body'] += ' evidence after completed ' + phase
+            return fresh(gen)
+        with mock.patch.object(self.runner, 'fresh', side_effect=changed_after_completion), \
+                mock.patch.object(self.api, 'set_labels', side_effect=changed_after_write):
+            with self.assertRaisesRegex(R.Refused, 'stale inputs; new generation queued'):
+                self.runner.tick(time.monotonic() + 5400)
+        saved = R.strict_json(self.journal.path.read_bytes())
+        old = saved['generations'][old_key]
+        self.assertEqual(old['status'], 'dry-run')
+        self.assertTrue(old['labels_intent'])
+        self.assertEqual(old['labels_done'], not before_completion)
+        self.assertFalse(old.get('labels_aborted', False))
+        self.assertEqual(old['comment_done'], phase == 'comment')
+        self.assertIsNone(saved['issues']['432']['current_generation'])
+        self.assertTrue(any(k.startswith('stale:') and v['status'] == 'queued'
+                            for k, v in saved['events'].items()))
+        writes = copy.deepcopy(self.api.writes)
+        self.assertEqual([w[0] for w in writes], ['labels'] + (['comment'] if phase == 'comment' else []))
+        self.runner.sweep()
+        self.assertEqual(self.api.writes, writes)
+        self.assertEqual(len(self.api.rows[432]['comments']), int(phase == 'comment'))
+
+        # Reload durable checkpoints and invalidate no further inputs. Ordinary recovery
+        # must keep sweep fenced throughout the replacement's checked publication.
+        self.journal.data = saved
+        publish = self.runner.publish
+        def checked_publish(key, gen):
+            durable = R.strict_json(self.journal.path.read_bytes())['generations']
+            self.assertNotEqual(key, old_key)
+            self.assertEqual(durable[key]['status'], 'checked')
+            self.assertEqual(durable[old_key]['status'], 'dry-run')
+            self.assertTrue(durable[old_key]['labels_done'])
+            self.assertFalse(durable[old_key].get('labels_aborted', False))
+            self.runner.sweep()
+            self.assertEqual(self.api.writes, writes)
+            return publish(key, gen)
+        comment = self.api.comment
+        def checked_comment(*args):
+            durable = R.strict_json(self.journal.path.read_bytes())['generations']
+            self.assertEqual(durable[old_key]['status'], 'dry-run')
+            before = copy.deepcopy(self.api.writes)
+            self.runner.sweep()
+            self.assertEqual(self.api.writes, before)
+            return comment(*args)
+        with mock.patch.object(self.runner, 'publish', side_effect=checked_publish), \
+                mock.patch.object(self.api, 'comment', side_effect=checked_comment):
+            self.runner.tick(time.monotonic() + 5400)
+        saved = R.strict_json(self.journal.path.read_bytes())
+        replacement = saved['issues']['432']['current_generation']
+        self.assertNotEqual(replacement, old_key)
+        self.assertEqual(saved['generations'][old_key]['status'], 'stale')
+        self.assertTrue(saved['generations'][old_key]['labels_done'])
+        self.assertEqual(saved['generations'][replacement]['status'], 'published')
+        self.assertEqual(saved['issues']['432']['published'], replacement)
+        self.assertEqual(R.consume_comment(self.api.rows[432]['comments'][0], 432, self.journal),
+                         saved['generations'][replacement]['record'])
+        self.assertEqual([w[0] for w in self.api.writes], [w[0] for w in writes] + ['labels', 'comment'])
+        self.assertEqual(self.tasks.calls, 2)
+        self.runner.sweep()
+        self.assertIn('triage/maybe-fixed', self.api.rows[432]['labels'])
+        self.assertEqual(len(self.api.rows[432]['comments']), 2)
+        self.assertIn('triage-sweep evidence=', self.api.rows[432]['comments'][1]['body'])
+        self.assertEqual(self.tasks.calls, 2)
+
+    def test_tick_unknown_dry_run_label_attempt_blocks_replacement_and_sweep(self):
+        self.runner.apply = False
+        self.runner.tick(time.monotonic() + 5400)
+        old_key = self.journal.issue(432)['current_generation']
+        self.runner.apply = True
+        def unknown_labels(number, desired, current):
+            self.api.before_write()
+            self.api.writes.append(('labels', number, desired))
+            raise R.Ambiguous('lost label response')
+        with mock.patch.object(self.api, 'set_labels', side_effect=unknown_labels):
+            with self.assertRaisesRegex(R.Ambiguous, 'lost label response'):
+                self.runner.tick(time.monotonic() + 5400)
+        saved = R.strict_json(self.journal.path.read_bytes())
+        self.assertTrue(saved['generations'][old_key]['labels_intent'])
+        self.assertFalse(saved['generations'][old_key]['labels_done'])
+        self.assertFalse(saved['generations'][old_key].get('labels_aborted', False))
+        self.assertEqual([w[0] for w in self.api.writes], ['labels'])
+        writes = copy.deepcopy(self.api.writes)
+        self.api.rows[432]['body'] += ' new evidence after ambiguous labels'
+        self.journal.data = saved
+        with self.assertRaisesRegex(R.Refused, 'earlier issue generation has unresolved effects'):
+            self.runner.tick(time.monotonic() + 5400)
+        saved = R.strict_json(self.journal.path.read_bytes())
+        replacement = saved['issues']['432']['current_generation']
+        self.assertNotEqual(replacement, old_key)
+        self.assertEqual(saved['generations'][replacement]['status'], 'checked')
+        self.assertEqual(saved['generations'][old_key]['status'], 'dry-run')
+        self.runner.retire_superseded_dry_runs()
+        self.runner.sweep()
+        self.assertEqual(self.api.writes, writes)
+        self.assertEqual(self.api.rows[432]['comments'], [])
+        self.assertEqual(R.strict_json(self.journal.path.read_bytes())['generations'][old_key]['status'], 'dry-run')
+
+    def test_tick_partial_label_write_then_freshness_refusal_keeps_replacement_and_sweep_fenced(self):
+        self.runner.apply = False
+        self.runner.tick(time.monotonic() + 5400)
+        old_key = self.journal.issue(432)['current_generation']
+        self.runner.apply = True
+        client = R.GitHub('owner/repo', 'fake', self.lease, time.monotonic() + 5400, 'runner')
+        client.before_write = lambda: self.api.before_write()
+        def transport(method, path, **kwargs):
+            if method == 'GET' and path == '/user':
+                return 200, dict(login='runner')
+            self.assertEqual((method, path), ('DELETE', '/repos/owner/repo/issues/432/labels/bug'))
+            row = self.api.rows[432]
+            row['labels'].remove('bug')
+            row['events'].append(dict(id=1, actor='runner', event='unlabeled', label='bug',
+                                      created_at=NOW.isoformat()))
+            self.api.writes.append(('labels', 432, list(row['labels'])))
+            row['body'] += ' evidence after first DELETE'
+            return 204, None
+        with mock.patch.object(self.api, 'set_labels', side_effect=client.set_labels), \
+                mock.patch.object(client.rest, 'call', side_effect=transport) as requests:
+            with self.assertRaisesRegex(R.Ambiguous, 'partial label write'):
+                self.runner.tick(time.monotonic() + 5400)
+        self.assertEqual([call.args[0] for call in requests.call_args_list], ['GET', 'DELETE'])
+        saved = R.strict_json(self.journal.path.read_bytes())
+        old = saved['generations'][old_key]
+        self.assertTrue(old['labels_intent'])
+        self.assertFalse(old['labels_done'])
+        self.assertFalse(old.get('labels_aborted', False))
+        self.assertIsNone(saved['issues']['432']['current_generation'])
+        self.assertNotEqual(self.api.rows[432]['labels'], old['desired_labels'])
+        writes = copy.deepcopy(self.api.writes)
+        self.journal.data = saved
+        with self.assertRaisesRegex(R.Refused, 'earlier issue generation has unresolved effects'):
+            self.runner.tick(time.monotonic() + 5400)
+        saved = R.strict_json(self.journal.path.read_bytes())
+        replacement = saved['issues']['432']['current_generation']
+        self.assertNotEqual(replacement, old_key)
+        self.assertEqual(saved['generations'][replacement]['status'], 'checked')
+        self.assertEqual(saved['generations'][old_key]['status'], 'dry-run')
+        self.assertTrue(saved['generations'][old_key]['labels_intent'])
+        self.assertFalse(saved['generations'][old_key]['labels_done'])
+        self.assertFalse(saved['generations'][old_key].get('labels_aborted', False))
+        self.runner.retire_superseded_dry_runs()
+        self.runner.sweep()
+        self.assertEqual(self.api.writes, writes)
+        self.assertEqual(self.api.rows[432]['comments'], [])
+        self.assertEqual(R.strict_json(self.journal.path.read_bytes())['generations'][old_key]['status'], 'dry-run')
+
+        # An observed completed result, rather than another refused/returned call, resolves
+        # the original intent. The already checked replacement can then publish on a tick.
+        with mock.patch.object(self.api, 'before_write', None):
+            self.api.set_labels(432, old['desired_labels'], self.api.rows[432]['labels'])
+        self.journal.data = saved
+        self.runner.tick(time.monotonic() + 5400)
+        saved = R.strict_json(self.journal.path.read_bytes())
+        self.assertTrue(saved['generations'][old_key]['labels_done'])
+        self.assertFalse(saved['generations'][old_key].get('labels_aborted', False))
+        self.assertEqual(saved['generations'][old_key]['status'], 'stale')
+        self.assertEqual(saved['generations'][replacement]['status'], 'published')
+        self.assertEqual(saved['issues']['432']['published'], replacement)
+        self.assertEqual(self.tasks.calls, 2)
+        self.runner.sweep()
+        self.assertIn('triage/maybe-fixed', self.api.rows[432]['labels'])
+
+    def test_prewrite_refusal_cannot_abort_an_earlier_unknown_label_attempt(self):
+        self.runner.apply = False
+        key = self.queue()
+        gen = self.journal.data['generations'][key]
+        self.runner.apply = True
+        with mock.patch.object(self.api, 'set_labels', side_effect=R.Refused('initial prewrite refusal')):
+            with self.assertRaisesRegex(R.Refused, 'initial prewrite refusal'):
+                self.runner.publish(key, gen)
+        old = R.strict_json(self.journal.path.read_bytes())['generations'][key]
+        self.assertTrue(old['labels_aborted'])
+        self.assertFalse(old['labels_intent'])
+        with mock.patch.object(self.api, 'set_labels', side_effect=R.Ambiguous('unknown labels')):
+            with self.assertRaises(R.Ambiguous):
+                self.runner.publish(key, gen)
+        saved = R.strict_json(self.journal.path.read_bytes())
+        self.assertFalse(saved['generations'][key].get('labels_aborted', False))
+        self.journal.data = saved
+        gen = saved['generations'][key]
+        with mock.patch.object(self.api, 'set_labels', side_effect=R.Refused('prewrite refused')):
+            with self.assertRaisesRegex(R.Refused, 'prewrite refused'):
+                self.runner.publish(key, gen)
+        old = R.strict_json(self.journal.path.read_bytes())['generations'][key]
+        self.assertTrue(old['labels_intent'])
+        self.assertFalse(old['labels_done'])
+        self.assertFalse(old.get('labels_aborted', False))
+        self.runner.sweep()
+        self.assertEqual(self.api.writes, [])
+
+    def test_tick_observed_labels_reconcile_lost_response_before_replacement(self):
+        self.runner.apply = False
+        self.runner.tick(time.monotonic() + 5400)
+        old_key = self.journal.issue(432)['current_generation']
+        self.runner.apply = True
+        self.api.fail_labels = True
+        with self.assertRaises(R.Ambiguous):
+            self.runner.tick(time.monotonic() + 5400)
+        saved = R.strict_json(self.journal.path.read_bytes())
+        self.assertTrue(saved['generations'][old_key]['labels_intent'])
+        self.assertFalse(saved['generations'][old_key]['labels_done'])
+        self.api.rows[432]['body'] += ' evidence after lost response'
+        self.journal.data = saved
+        self.runner.tick(time.monotonic() + 5400)
+        saved = R.strict_json(self.journal.path.read_bytes())
+        replacement = saved['issues']['432']['current_generation']
+        self.assertNotEqual(replacement, old_key)
+        self.assertEqual(saved['generations'][old_key]['status'], 'stale')
+        self.assertTrue(saved['generations'][old_key]['labels_done'])
+        self.assertFalse(saved['generations'][old_key].get('labels_aborted', False))
+        self.assertEqual(saved['generations'][replacement]['status'], 'published')
+        self.assertEqual(R.consume_comment(self.api.rows[432]['comments'][0], 432, self.journal),
+                         saved['generations'][replacement]['record'])
+        self.assertEqual(self.tasks.calls, 2)
+
+    def test_tick_owner_provenance_refusal_keeps_dry_run_fenced_until_resolved(self):
+        self.runner.apply = False
+        self.runner.tick(time.monotonic() + 5400)
+        key = self.journal.issue(432)['current_generation']
+        self.runner.apply = True
+        self.api.rows[432]['labels'].append('size/M')
+        self.runner.tick(time.monotonic() + 5400)
+        saved = R.strict_json(self.journal.path.read_bytes())
+        self.assertEqual(saved['generations'][key]['status'], 'dry-run')
+        self.assertIn('owner-override', saved['issues']['432']['suspension'])
+        self.runner.sweep()
+        self.assertEqual(self.api.writes, [])
+        self.assertEqual(self.tasks.calls, 1)
+        self.api.rows[432]['events'].append(dict(id=1, actor='owner', event='labeled', label='size/M',
+                                                created_at=NOW.isoformat()))
+        self.journal.data = saved
+        self.runner.tick(time.monotonic() + 5400)
+        self.assertEqual(self.journal.data['generations'][key]['status'], 'stale')
+        replacement = self.journal.issue(432)['current_generation']
+        self.assertEqual(self.journal.data['generations'][replacement]['status'], 'published')
+        self.assertEqual(self.tasks.calls, 2)
+        self.runner.sweep()
+        self.assertIn('triage/maybe-fixed', self.api.rows[432]['labels'])
+
+    def test_tick_ambiguous_replacement_keeps_original_until_publication_recovers(self):
+        for phase in ('labels', 'comment'):
+            with self.subTest(phase=phase):
+                # Use a separate issue for each independent ambiguous write outcome.
+                number = 432 if phase == 'labels' else 434
+                self.api.rows = {number: issue(number)}
+                self.api.writes = []
+                self.runner.apply = False
+                self.runner.tick(time.monotonic() + 5400)
+                old_key = self.journal.issue(number)['current_generation']
+                self.runner.apply = True
+                self.api.rows[number]['body'] += ' first edit'
+                setattr(self.api, 'fail_' + phase, True)
+                with self.assertRaises(R.Ambiguous):
+                    self.runner.tick(time.monotonic() + 5400)
+                saved = R.strict_json(self.journal.path.read_bytes())
+                replacement = saved['issues'][str(number)]['current_generation']
+                self.assertEqual(saved['generations'][old_key]['status'], 'dry-run')
+                self.assertEqual(saved['generations'][replacement]['status'], 'publishing')
+                self.assertTrue(saved['generations'][replacement][phase + '_intent'])
+                self.assertFalse(saved['generations'][replacement][phase + '_done'])
+                writes = copy.deepcopy(self.api.writes)
+                self.runner.sweep()
+                self.assertEqual(self.api.writes, writes)
+                self.journal.data = saved
+                self.runner.tick(time.monotonic() + 5400)
+                saved = R.strict_json(self.journal.path.read_bytes())
+                self.assertEqual(saved['generations'][old_key]['status'], 'stale')
+                self.assertEqual(saved['generations'][replacement]['status'], 'published')
+                self.assertEqual(len(self.api.rows[number]['comments']), 1)
+        self.assertEqual(self.tasks.calls, 4)
+
     def test_sweep_cannot_bypass_an_uncertain_task_or_ambiguous_publication(self):
         self.tasks.unknown = True
         self.queue()
