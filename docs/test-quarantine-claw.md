@@ -97,12 +97,12 @@ Then run this launch block. The host's `git` needs `-c safe.directory='*'` to ve
 another uid owns before the detached launch. Host Python materializes the whole production
 `perflab` package fresh from the verified `COMMIT` object in a private host-only directory beside
 `run`, outside every container bind mount. It refuses a dirty source (including staged, untracked
-and ignored files), comparing package files directly with those committed bytes before importing
-only the host-only copy. It never runs checkout filters or filesystem-monitor hooks to check
+and ignored files), comparing package files and executable bits directly with the commit before
+importing only the host-only copy. It never runs checkout filters or filesystem-monitor hooks to check
 cleanliness. Archive links and paths outside the package refuse. Its temporary directory is
 removed without following links on exit. Python
 binds the installed root-owned anchor's exact identity to the checked `MachineLock`, held in the
-parent until Docker exits:
+parent through Docker execution and confirmed container removal:
 
 ```sh
 ssh claw-3 COMMIT="$COMMIT" bash -s <<'CLAW'
@@ -150,9 +150,10 @@ with tempfile.TemporaryDirectory(prefix="host-authority-", dir=work) as authorit
                 destination.mkdir(parents=True, exist_ok=True)
             else:
                 destination.parent.mkdir(parents=True, exist_ok=True)
-                committed[member.name] = source.extractfile(member).read()
+                data = source.extractfile(member).read()
+                committed[member.name] = (data, member.mode & 0o111)
                 with destination.open("xb") as output:
-                    output.write(committed[member.name])
+                    output.write(data)
     if not {package + "/__init__.py", package + "/hostlock.py"} <= set(committed):
         sys.exit("Refusing confirmation: incomplete host authority archive")
     checkout = Path(work) / "run/src"
@@ -167,10 +168,12 @@ with tempfile.TemporaryDirectory(prefix="host-authority-", dir=work) as authorit
     if actual != set(committed):
         dirty_source()
     try:
-        for name, data in committed.items():
+        for name, (data, executable) in committed.items():
             fd = os.open(checkout / name, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
             with os.fdopen(fd, "rb") as current:
-                if not stat.S_ISREG(os.fstat(fd).st_mode) or current.read(len(data) + 1) != data:
+                mode = os.fstat(fd).st_mode
+                if (not stat.S_ISREG(mode) or mode & 0o111 != executable
+                        or current.read(len(data) + 1) != data):
                     dirty_source()
     except OSError:
         dirty_source()
@@ -179,13 +182,28 @@ with tempfile.TemporaryDirectory(prefix="host-authority-", dir=work) as authorit
 
     try:
         identity = hostlock.read_anchor(required=True)
-        with hostlock.MachineLock(expected_identity=identity):
+        with hostlock.MachineLock(expected_identity=identity) as lock:
+            lock.guard()
             result = subprocess.run([
                 "docker", "run", "--rm", "--name", "afq-confirm",
                 "-v", os.path.join(work, "run") + ":/work", "-w", "/work/src",
                 "af-quarantine-confirm:1.88.0", "python3", "scripts/test-quarantine.py",
                 "confirm", "--report", "/work/confirm.json",
             ])
+            # Docker reserves these exit codes for launch or command execution failures.
+            if result.returncode < 0 or result.returncode in (125, 126, 127):
+                sys.exit("Refusing confirmation: Docker failed; retaining machine fence; "
+                         "operator recovery must confirm all owned resources stopped before fence cleanup")
+            # A successful all-container inventory must confirm --rm finished, including
+            # stopped containers. An inspect error alone cannot prove absence.
+            remaining = subprocess.run([
+                "docker", "container", "ls", "--all", "--filter", "name=^/afq-confirm$",
+                "--format", "{{.ID}}",
+            ], capture_output=True, text=True)
+            if remaining.returncode or remaining.stdout.strip():
+                sys.exit("Refusing confirmation: container absence is unconfirmed; retaining machine fence; "
+                         "operator recovery must confirm all owned resources stopped before fence cleanup")
+            lock.confirm_clean()
     except hostlock.Refused as refused:
         if refused.reason != "concurrent_shard":
             print("Refusing confirmation: %s. Missing or unsafe coordination state requires "
@@ -216,10 +234,18 @@ remove or replace coordination state to get a confirmation started.
 
 After acquiring the lock, its constructor also refuses if `/tmp/af-perf-machine.lock.fence` exists
 (including a dangling symlink), recording the refusal in `confirm.log` before Docker starts.
-This fence means an experiment's cleanup is uncertain
+This fence means an experiment's or confirmation's cleanup is uncertain
 ([ADR-0240](adr/0240-execute-performance-experiments-independently-on-a-locked-vm.md)). Operator
 recovery must confirm all owned resources stopped before fence cleanup; the launch never removes
-or bypasses a fence. Repeat only the launch block after operator recovery.
+or bypasses an existing fence. Repeat only the launch block after operator recovery.
+
+The launch creates its own durable fence after acquisition and before Docker. After Docker returns,
+it checks `docker container ls --all` for the exact name `afq-confirm`: only a successful empty
+listing confirms that no running or stopped container remains and `--rm` cleanup finished. Then
+it removes its own fence and returns the confirmation's exit status, including a nonzero test
+result. Parent death, a Docker or inspection error, or a remaining container retains the fence;
+the released `flock` alone cannot admit the next launch. Do not retry until operator recovery
+has confirmed cleanup.
 
 `nohup` and the background job detach the confirmation, so an ssh disconnect does not kill it.
 Wait until `docker ps --filter name=afq-confirm` no longer lists the container, then read the end

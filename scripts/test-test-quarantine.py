@@ -688,6 +688,7 @@ import json
 import os
 from pathlib import Path
 import shutil
+import signal
 import subprocess
 import sys
 import tarfile
@@ -846,11 +847,8 @@ elif name == 'python3':
         exec(compile(source, '<runbook launch>', 'exec'), {'__name__': '__main__'})
 elif name == 'docker':
     assert (owner.read_text() if owner.exists() else os.environ['FAKE_UID']) == '1000'
-    assert args[:2] == ['run', '--rm']
-    if '--name' in args:
-        assert args == ['run', '--rm', '--name', 'afq-confirm', '-v', str(work / 'run') + ':/work',
-                        '-w', '/work/src', 'af-quarantine-confirm:1.88.0', 'python3',
-                        'scripts/test-quarantine.py', 'confirm', '--report', '/work/confirm.json']
+    def check_exclusion():
+        assert Path(str(lock) + '.fence').is_dir(), 'Docker reached without a durable fence'
         with lock.open('r') as probe:
             try:
                 fcntl.flock(probe, fcntl.LOCK_EX | fcntl.LOCK_NB)
@@ -858,7 +856,33 @@ elif name == 'docker':
                 pass
             else:
                 sys.exit('Docker reached without the machine lock')
-        assert not os.path.lexists(str(lock) + '.fence')
+
+    if args[:2] == ['container', 'ls']:
+        assert args == ['container', 'ls', '--all', '--filter', 'name=^/afq-confirm$',
+                        '--format', '{{.ID}}']
+        check_exclusion()
+        inspection = os.environ.get('FAKE_INSPECTION', 'absent')
+        if inspection == 'failure':
+            sys.exit('fake daemon inspection failure')
+        if inspection in ('running', 'stopped'):
+            print('fake-container-id')  # --all must detect stopped containers too.
+        else:
+            assert inspection == 'absent'
+        sys.exit(0)
+    assert args[:2] == ['run', '--rm']
+    if '--name' in args:
+        assert args == ['run', '--rm', '--name', 'afq-confirm', '-v', str(work / 'run') + ':/work',
+                        '-w', '/work/src', 'af-quarantine-confirm:1.88.0', 'python3',
+                        'scripts/test-quarantine.py', 'confirm', '--report', '/work/confirm.json']
+        check_exclusion()
+        if os.environ.get('FAKE_PARENT_DEATH'):
+            os.kill(os.getppid(), signal.SIGKILL)
+            # Stay active after the lock-owning parent dies; handshakes use no sleeps.
+            with (home / 'docker-ready').open('w') as ready:
+                ready.write(str(os.getpid()) + '\n')
+            with (home / 'docker-release').open() as release:
+                assert release.read() == 'stop'
+            sys.exit(0)
         if os.environ.get('FAKE_DIRTY_HOSTLOCK'):
             (work / 'run/src/scripts/performance/perflab/hostlock.py').write_text(
                 'raise RuntimeError("MUTABLE AUTHORITY IMPORTED")\n')
@@ -866,6 +890,10 @@ elif name == 'docker':
             imported = Path((home / 'imports').read_text().splitlines()[-1])
             (imported.parent / 'cleanup-link').symlink_to(home / 'outside')
         print('fake confirmation launched')
+        code = int(os.environ.get('FAKE_CONFIRM_EXIT', '0'))
+        if code < 0:
+            os.kill(os.getpid(), -code)
+        sys.exit(code)
     else:
         assert args[2:9] == ['-v', str(work / 'run') + ':/work', '-w', '/work',
                              'af-quarantine-confirm:1.88.0', 'sh', '-c']
@@ -998,6 +1026,20 @@ class ClawRunbook(unittest.TestCase):
         self.assertNotIn('MUTABLE AUTHORITY IMPORTED', log)
         self.assertEqual((self.dir / 'imports').read_bytes(), imports)
         self.assertEqual(len([e for e in self.events() if e[0] == 'docker']), before)
+        self.assertEqual(list(self.work.glob('host-authority-*')), [])
+
+    def test_executable_bit_only_authority_change_refuses_before_import_or_docker(self):
+        self.prepare()
+        path = self.work / 'run/src/scripts/performance/perflab/hostlock.py'
+        before = path.read_bytes()
+        mode = path.stat().st_mode
+        path.chmod(mode ^ stat.S_IXUSR)
+        result = self.run_block(self.blocks[-1])
+        self.assertEqual(result.returncode, 1, result.stderr)
+        self.assertIn('dirty host authority source', (self.work / 'confirm.log').read_text())
+        self.assertEqual(path.read_bytes(), before)
+        self.assertFalse((self.dir / 'imports').exists())
+        self.assertEqual(len([e for e in self.events() if e[0] == 'docker']), 1)
         self.assertEqual(list(self.work.glob('host-authority-*')), [])
 
     def test_dirty_package_init_staged_untracked_and_ignored_authority_refuse_before_import(self):
@@ -1200,8 +1242,10 @@ class ClawRunbook(unittest.TestCase):
         result = self.run_block(self.blocks[-1])
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertEqual([name for name, _ in self.events()],
-                         ['id', 'docker', 'git', 'nohup', 'python3', 'git', 'git', 'git', 'docker'])
+                         ['id', 'docker', 'git', 'nohup', 'python3', 'git', 'git', 'git',
+                          'docker', 'docker'])
         self.assertEqual((self.work / 'confirm.log').read_text(), 'fake confirmation launched\n')
+        self.assertFalse(self.fence.exists(), 'confirmed --rm absence settles the fence')
         self.assertEqual((self.dir / 'anchor-reads').read_text().splitlines(), ['true'])
         self.assertEqual(list(self.work.glob('host-authority-*')), [])
         # Docker checked exclusion in its own process; the parent releases only on return.
@@ -1214,6 +1258,60 @@ class ClawRunbook(unittest.TestCase):
             self.assertIn(f'scp "claw-3:af-quarantine-$COMMIT/{artifact}"', self.doc)
         self.assertIn('1 min\n35 s', self.doc)
         self.assertIn('All nine were clean on\nLinux', self.doc)
+
+    def test_nonzero_confirmation_with_confirmed_container_absence_settles_fence(self):
+        self.prepare()
+        result = self.run_block(self.blocks[-1], extra_env={'FAKE_CONFIRM_EXIT': '23'})
+        self.assertEqual(result.returncode, 23, result.stderr)
+        self.assertFalse(self.fence.exists())
+        self.assertEqual(self.run_block(self.blocks[-1]).returncode, 0)
+
+    def test_docker_launch_failure_retains_fence_and_blocks_next_launch(self):
+        self.prepare()
+        for code in (125, 126, 127, -9):
+            with self.subTest(code=code):
+                result = self.run_block(self.blocks[-1], extra_env={'FAKE_CONFIRM_EXIT': str(code)})
+                self.assertEqual(result.returncode, 1, result.stderr)
+                self.assertIn('Docker failed; retaining machine fence',
+                              (self.work / 'confirm.log').read_text())
+                self.assertTrue(self.fence.is_dir())
+                self.assert_launch_refused('unfinished experiment fence')
+                self.fence.rmdir()  # Only the disposable fixture's simulated recovery.
+
+    def test_failed_inspection_or_remaining_running_or_stopped_container_keeps_fence(self):
+        self.prepare()
+        for kind in ('failure', 'running', 'stopped'):
+            with self.subTest(kind=kind):
+                result = self.run_block(self.blocks[-1], extra_env={'FAKE_INSPECTION': kind})
+                self.assertEqual(result.returncode, 1, result.stderr)
+                self.assertIn('container absence is unconfirmed; retaining machine fence',
+                              (self.work / 'confirm.log').read_text())
+                self.assertTrue(self.fence.is_dir())
+                self.assert_launch_refused('unfinished experiment fence')
+                # Only this fixture's positively simulated cleanup permits recovery.
+                self.fence.rmdir()
+
+    def test_parent_death_with_docker_still_active_retains_fence_and_blocks_next_launch(self):
+        import fcntl
+        import signal
+        self.prepare()
+        ready, release = self.dir / 'docker-ready', self.dir / 'docker-release'
+        os.mkfifo(ready)
+        os.mkfifo(release)
+        result = self.run_block(self.blocks[-1], extra_env={'FAKE_PARENT_DEATH': '1'})
+        self.assertEqual(result.returncode, 128 + signal.SIGKILL, result.stderr)
+        with ready.open() as handshake:
+            docker_pid = int(handshake.read())
+        try:
+            os.kill(docker_pid, 0)  # Fake Docker remains alive after its parent's death.
+            self.assertTrue(self.fence.is_dir())
+            with self.lock.open('r') as unlocked:
+                fcntl.flock(unlocked, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            self.assert_launch_refused('unfinished experiment fence')
+            os.kill(docker_pid, 0)
+        finally:
+            # End only the orphan this fixture started; never a real Docker process.
+            os.kill(docker_pid, signal.SIGKILL)
 
     def test_non_root_non_1000_preparation_elevates_ownership_before_any_docker(self):
         self.prepare(uid='2001')
@@ -1250,7 +1348,7 @@ class ClawRunbook(unittest.TestCase):
         self.assertEqual([name for name, _ in self.events()],
                          ['id', 'docker', 'git', 'nohup', 'python3',
                           'git', 'git', 'git', 'git', 'nohup', 'python3',
-                          'git', 'git', 'git', 'docker'])
+                          'git', 'git', 'git', 'docker', 'docker'])
         before = self.events()
         (self.work / 'run/src/.git/HEAD').write_text('1' * 40 + '\n')
         self.assertNotEqual(self.run_block(launch).returncode, 0)
