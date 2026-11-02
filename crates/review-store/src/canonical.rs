@@ -14,7 +14,7 @@
 
 use serde_json::Value;
 use sha2::{Digest, Sha256};
-use std::io::Read;
+use std::io::{Read, Write};
 
 /// Domain separator for `content_id` — hashes the payload alone.
 const DOMAIN_CONTENT: &[u8] = b"review.kernel/content-id/v1\0";
@@ -96,12 +96,13 @@ fn utf16_cmp(a: &str, b: &str) -> std::cmp::Ordering {
 }
 
 fn write_number(n: &serde_json::Number, out: &mut Vec<u8>) -> Result<(), CanonicalError> {
+    // Vec writes cannot return I/O errors, and integer Display is infallible.
     if let Some(i) = n.as_i64() {
-        out.extend_from_slice(i.to_string().as_bytes());
+        write!(out, "{i}").expect("integer formatting into Vec cannot fail");
         return Ok(());
     }
     if let Some(u) = n.as_u64() {
-        out.extend_from_slice(u.to_string().as_bytes());
+        write!(out, "{u}").expect("integer formatting into Vec cannot fail");
         return Ok(());
     }
     let f = n
@@ -242,6 +243,31 @@ pub fn validate_envelope(envelope: &review_core::ArtifactEnvelope) -> Result<(),
 mod tests {
     use super::*;
     use serde_json::json;
+
+    #[test]
+    fn signed_and_unsigned_integers_retain_exact_canonical_bytes() {
+        for text in [
+            "0",
+            "1",
+            "-1",
+            "9",
+            "10",
+            "-10",
+            "255",
+            "-9223372036854775808",
+            "9223372036854775807",
+            "9223372036854775808",
+            "18446744073709551615",
+        ] {
+            let value: Value = serde_json::from_str(text).unwrap();
+            assert_eq!(canonicalize(&value).unwrap(), text.as_bytes(), "{text}");
+        }
+        let nested = json!({"z": [0, -1, i64::MIN, {"u": u64::MAX}], "a": i64::MAX});
+        assert_eq!(
+            canonicalize(&nested).unwrap(),
+            br#"{"a":9223372036854775807,"z":[0,-1,-9223372036854775808,{"u":18446744073709551615}]}"#
+        );
+    }
 
     #[test]
     fn every_unicode_scalar_retains_the_json_string_encoding() {
