@@ -522,3 +522,5 @@ future readers need.
   VM](0273-run-the-nightly-chain-as-systemd-units-on-the-owners-vm.md)
 - [0274 — Own the Pi SDK host and confine its
   tools](0274-own-the-pi-sdk-host-and-confine-its-tools.md) (proposed)
+- [0274 — Orchestrate pinned Scenarios and admit Ant
+  occurrences](0274-orchestrate-pinned-scenarios-and-admit-ant-occurrences.md)

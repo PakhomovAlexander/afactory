@@ -1,0 +1,54 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:af:schema:scenario-decision:1",
+  "title": "scenario-decision v1",
+  "description": "ADR-0274. Cross-port types, identity, authority, budget, signature and lifecycle invariants also require semantic admission.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema",
+    "run_id",
+    "execution_id",
+    "pin_id",
+    "step",
+    "subject",
+    "revision",
+    "owner",
+    "approve",
+    "expires_unix_ms"
+  ],
+  "properties": {
+    "schema": {
+      "const": "af/scenario-decision@1"
+    },
+    "run_id": {
+      "$ref": "urn:af:schema:scenario:1#/$defs/name"
+    },
+    "execution_id": {
+      "$ref": "urn:af:schema:scenario:1#/$defs/digest"
+    },
+    "pin_id": {
+      "$ref": "urn:af:schema:scenario:1#/$defs/digest"
+    },
+    "step": {
+      "$ref": "urn:af:schema:scenario:1#/$defs/text"
+    },
+    "subject": {
+      "$ref": "urn:af:schema:scenario:1#/$defs/text"
+    },
+    "revision": {
+      "$ref": "urn:af:schema:scenario:1#/$defs/text"
+    },
+    "owner": {
+      "$ref": "urn:af:schema:scenario:1#/$defs/name"
+    },
+    "approve": {
+      "type": "boolean"
+    },
+    "expires_unix_ms": {
+      "type": "integer",
+      "minimum": 1,
+      "maximum": 9007199254740991
+    }
+  }
+}

@@ -241,3 +241,10 @@ Start with the Task-file walkthrough, then follow the composition pages in order
 The operator-facing guide for the `implement` Task and local delivery is
 [Implementation Tasks with `af task`](tasks.md). Capabilities deliberately left out are listed in
 [Non-goals](non-goals.md).
+
+## Coordination across Tasks
+
+[Scenarios and Ants](scenarios.md) orchestrate existing Tasks through their exact recorded plans,
+without replacing Task acceptance, sandboxing or local delivery. A Scenario Run also retains
+signed decisions, bounded adapter actions, observations and child Scenario progress across waits
+and restarts. An Ant schedules a pinned Scenario through local `af ant tick` admission.

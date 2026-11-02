@@ -832,6 +832,47 @@ fn wait_stopped(opened: &mut OpenedTask, epoch: u64, limit: Duration) -> Result<
 /// stays resumable with `af task run ID`. A writer on another host is refused with its pid and
 /// host: only the recorded pid is ever signalled, and only here.
 pub(crate) fn cancel(id: &str, inspect: &crate::cli::TaskInspectArgs) -> Result<i32, String> {
+    let document = cancel_document(id, inspect, None)?;
+    if inspect.json {
+        println!(
+            "{}",
+            serde_json::to_string(&document).map_err(|e| e.to_string())?
+        );
+    } else {
+        println!(
+            "Task {id}: cancelled run {} (pid {} on {}) and its Worker processes\nstate: {}\n\
+             next: {}",
+            document.request.run,
+            document.request.pid,
+            preview::text(&document.request.host),
+            document.state.label(),
+            document.state.next_action.as_deref().unwrap_or("none")
+        );
+    }
+    Ok(0)
+}
+
+/// Scenario cancellation is bound to the exact recorded Task run at request time. A later
+/// manual run of the same Task is outside that stop request, even after a lost handoff.
+pub(crate) fn cancel_recorded_run(
+    id: &str,
+    repo: &Path,
+    state: &Path,
+    run: u64,
+) -> Result<TaskCancelledV2, String> {
+    let inspect = crate::cli::TaskInspectArgs {
+        repo: repo.into(),
+        state: Some(state.into()),
+        workspace: None,
+        json: true,
+    };
+    cancel_document(id, &inspect, Some(run))
+}
+fn cancel_document(
+    id: &str,
+    inspect: &crate::cli::TaskInspectArgs,
+    expected_run: Option<u64>,
+) -> Result<TaskCancelledV2, String> {
     let mut opened = open_task(id, &inspect.repo, inspect.state.as_deref())?;
     let (_, view) = opened.view()?;
     let held = opened.task.lease_until_unix_ms() > now_ms();
@@ -863,6 +904,14 @@ pub(crate) fn cancel(id: &str, inspect: &crate::cli::TaskInspectArgs) -> Result<
             runs_dir(&opened.state).display()
         ));
     };
+    if let Some(expected) = expected_run
+        && record.run != expected
+    {
+        return Err(format!(
+            "Task {id} now runs as run {}, outside cancellation of recorded run {expected}; nothing was signalled",
+            record.run
+        ));
+    }
     let host = this_host();
     if record.host != host {
         return Err(format!(
@@ -932,23 +981,7 @@ pub(crate) fn cancel(id: &str, inspect: &crate::cli::TaskInspectArgs) -> Result<
         state: view.state,
     };
     document.validate()?;
-    if inspect.json {
-        println!(
-            "{}",
-            serde_json::to_string(&document).map_err(|e| e.to_string())?
-        );
-    } else {
-        println!(
-            "Task {id}: cancelled run {} (pid {} on {}) and its Worker processes\nstate: {}\n\
-             next: {}",
-            document.request.run,
-            document.request.pid,
-            preview::text(&document.request.host),
-            document.state.label(),
-            document.state.next_action.as_deref().unwrap_or("none")
-        );
-    }
-    Ok(0)
+    Ok(document)
 }
 
 /// Record `request` as the cancel request of its run, unless one is recorded already: then the

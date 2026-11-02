@@ -64,8 +64,9 @@ const AF_ABOUT: &str =
 /// topics are explained. The one command list is clap's, in the order a first run needs it.
 pub(crate) const AF_LONG_ABOUT: &str = "\
 af runs model and command Workers in sandboxes over an immutable Snapshot of a git repository, \
-on a token budget, and never publishes: `af review` folds what reviewers find into a ledger, and \
-`af task` turns a Task file into a verified change you deliver to a new local worktree.
+on a token budget: `af review` folds what reviewers find into a ledger, and \
+`af task` turns a Task file into a verified change you deliver to a new local worktree. \
+`af scenario` coordinates Tasks and separately authorized bounded actions; `af ant` schedules them.
 
 Start here (`af help start` explains each step):
   1. af provider detect           preview claude/codex logins; --apply registers them
@@ -77,7 +78,7 @@ Start here (`af help start` explains each step):
 
 Task, Worker, Attempt, Snapshot, Provider and the other words are explained in \
 `af help concepts`; `af help` lists every topic (config, layers, environment, exit-codes, json, errors, \
-providers, task-states, task-file, agents, self, storage, telemetry). `af` alone at a terminal \
+providers, task-states, task-file, agents, self, storage, telemetry, scenarios). `af` alone at a terminal \
 opens a read-first browser over this scope's settings, Providers, Workers, pipelines, Tasks and \
 review Campaigns: `?` there lists its keys, and `:` runs any af command.";
 
@@ -135,6 +136,18 @@ pub(crate) struct Af {
 #[derive(Debug, Subcommand)]
 #[allow(clippy::large_enum_variant)]
 pub(crate) enum Command {
+    /// Orchestrate Tasks, decisions, waits and bounded actions
+    #[command(display_order = 30)]
+    Scenario {
+        #[command(subcommand)]
+        command: crate::scenario::ScenarioCommand,
+    },
+    /// Schedule a pinned Scenario and tick its durable occurrences
+    #[command(display_order = 31)]
+    Ant {
+        #[command(subcommand)]
+        command: crate::scenario::AntCommand,
+    },
     /// Capture shared Pipeline, Worker and Task-kind packages from an exact Git revision
     #[command(
         display_order = 9,

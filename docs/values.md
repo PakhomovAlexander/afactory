@@ -175,9 +175,12 @@ catalog, plugin contracts, or starter pack already ship.
 
 ## Two consequences of the values
 
-- **TOML-first.** All human-authored configuration is TOML: `.af/af.toml`, user config, worker
-  packages, pipelines, task contracts, lockfiles. Layered, explicit precedence, no other config
-  format for the same purpose.
+- **TOML-first.** Human-authored configuration is TOML: `.af/af.toml`, user config, worker
+  packages, pipelines, task contracts, lockfiles, and Scenario machine policy. Layered,
+  explicit precedence remains. Versioned Task, Scenario and Ant input documents also have JSON
+  wire forms; Scenarios accept TOML authoring and their explicit JSON wire forms, including a
+  captured policy ([ADR-0274](adr/0274-orchestrate-pinned-scenarios-and-admit-ant-occurrences.md)).
+  A parse error never selects another format or an earlier version.
 - **Git is configuration and versioning — not coordination.** Git versions the declarations
   colleagues share (`.af/`) and supplies Snapshots and delivery targets. History, logs,
   tasks, artifacts — the state — live in the kernel's Store (SQLite for now), never in the
@@ -185,12 +188,16 @@ catalog, plugin contracts, or starter pack already ship.
 
 These values are applied in [`architecture.md`](architecture.md); the
 kernel invariants in [`AGENTS.md`](../AGENTS.md) (never weaken a contract, fixture, gate,
-budget, or sandbox boundary; no credential in any artifact; publishing is a human action)
-remain in force alongside them. Publishing has one narrow, operator-authorized exception: when a
-Task pipeline's check node lists a declared check in `remote_checks`, the kernel pushes exactly
+budget, or sandbox boundary; no credential in any artifact; publication requires human-owned
+authority) remain in force alongside them. Scenario publication Actions require a scoped machine
+grant and an exact signed human decision
+([ADR-0274](adr/0274-orchestrate-pinned-scenarios-and-admit-ant-occurrences.md)). The existing
+Remote Check exception remains: when a Task pipeline's check node lists a declared check in `remote_checks`, the kernel pushes exactly
 two `af-gate/<task-id>/` branches built from Task Snapshots and opens one draft pull request
 between them, so the repository's own CI can run that check. It never force-pushes, writes
-another ref, merges, marks ready, closes, comments or deletes. The pipeline asks; only an
+another ref, merges, marks ready or comments. When the Task finishes, it closes that gate pull
+request and deletes exactly its two branches only while they still name the commits it pushed
+([ADR-0144](adr/0144-hold-afs-disk-use-to-a-machine-budget.md)). The pipeline asks; only an
 operator's machine-local mapping, which names the push target, authorizes it, and the plan says
 so: such a pipeline cannot be planned on a machine without a target, and its preview prints the
 `publish-gate` effect and the `github:` destination that confirming the plan consents to.
