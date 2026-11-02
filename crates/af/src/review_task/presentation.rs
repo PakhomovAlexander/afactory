@@ -587,7 +587,7 @@ mod tests {
                 .join("schemas");
             let mut registry = jsonschema::Registry::new();
             for name in [
-                "task-contracts-v1.json",
+                "task-contracts-v2.json",
                 "task-phase-v1.json",
                 "task-result-v1.json",
                 "task-token-usage-v3.json",

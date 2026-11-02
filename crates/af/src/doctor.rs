@@ -1898,6 +1898,9 @@ fn found_dirs(registry: &crate::providers::RegistryRead) -> Vec<String> {
 /// The command that logs in to a new `kind` Provider and registers it, run by a person at a
 /// private terminal, never through an agent or a pipe.
 fn setup_login(kind: &str) -> String {
+    if kind == "pi" {
+        return "af provider setup pi-main --kind pi --backend openai-codex --auth-dir /absolute/private/pi-profile --sdk-entrypoint /installed/node_modules/@earendil-works/pi-coding-agent/dist/index.js".into();
+    }
     format!("af provider setup {kind}-main --kind {kind} --login")
 }
 
@@ -2186,6 +2189,7 @@ fn project(
         let kind = match runner.as_str() {
             "claude" => "claude",
             "codex" => "codex",
+            "pi" => "pi",
             _ => continue,
         };
         match registry.ids_of(kind).first() {
@@ -2270,6 +2274,14 @@ fn same_file(found: &Path, link: &Path) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn pi_setup_guidance_registers_an_existing_explicit_oauth_profile() {
+        let setup = setup_login("pi");
+        assert!(setup.contains("--kind pi --backend openai-codex --auth-dir"));
+        assert!(setup.contains("--sdk-entrypoint"));
+        assert!(!setup.contains("--login"));
+    }
 
     /// The `.af/` file named is the one onboarding's reader stops at, in its order (#331 D2): with
     /// both the lock and the selected pipeline malformed, the pipeline, which it reads first; a

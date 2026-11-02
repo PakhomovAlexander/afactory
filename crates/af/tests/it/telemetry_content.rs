@@ -172,7 +172,7 @@ impl Planned {
         std::fs::write(
             &providers,
             format!(
-                "version = 1\n\n[[providers]]\nid = \"claude-bench\"\nkind = \"claude\"\nauth_dir = \"{}\"\n",
+                "version = 2\n\n[[providers]]\nid = \"claude-bench\"\nkind = \"claude\"\nauth_dir = \"{}\"\n",
                 auth.display()
             ),
         )

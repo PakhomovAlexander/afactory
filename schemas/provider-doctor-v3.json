@@ -1,6 +1,6 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "$id": "urn:af:schema:provider-doctor:2",
+  "$id": "urn:af:schema:provider-doctor:3",
   "title": "Common Task Provider doctor@2",
   "$comment": "Observations from the exact captured Provider-admission operations in one existing Review Task. gates_run and workers_dispatched describe this doctor invocation only, not earlier Task history. Common output/receipt IDs and Provider aliases, principal, model and effort remain subject to Store/compiler authority. A doctor outcome is never a complete business RunReport or TaskResult.",
   "type": "object",
@@ -18,7 +18,7 @@
   ],
   "properties": {
     "schema": {
-      "const": "af/provider-doctor@2"
+      "const": "af/provider-doctor@3"
     },
     "ready": {
       "type": "boolean"
@@ -41,16 +41,16 @@
       ],
       "properties": {
         "authority_snapshot_id": {
-          "$ref": "urn:af:schema:task-contracts:1#/$defs/digest"
+          "$ref": "urn:af:schema:task-contracts:2#/$defs/digest"
         },
         "campaign_manifest_id": {
-          "$ref": "urn:af:schema:task-contracts:1#/$defs/digest"
+          "$ref": "urn:af:schema:task-contracts:2#/$defs/digest"
         },
         "subject_id": {
-          "$ref": "urn:af:schema:task-contracts:1#/$defs/digest"
+          "$ref": "urn:af:schema:task-contracts:2#/$defs/digest"
         },
         "head_snapshot_id": {
-          "$ref": "urn:af:schema:task-contracts:1#/$defs/digest"
+          "$ref": "urn:af:schema:task-contracts:2#/$defs/digest"
         },
         "round_event_id": {
           "type": "string",
@@ -85,19 +85,19 @@
       ],
       "properties": {
         "task_id": {
-          "$ref": "urn:af:schema:task-contracts:1#/$defs/name"
+          "$ref": "urn:af:schema:task-contracts:2#/$defs/name"
         },
         "revision_id": {
-          "$ref": "urn:af:schema:task-contracts:1#/$defs/digest"
+          "$ref": "urn:af:schema:task-contracts:2#/$defs/digest"
         },
         "plan_id": {
-          "$ref": "urn:af:schema:task-contracts:1#/$defs/digest"
+          "$ref": "urn:af:schema:task-contracts:2#/$defs/digest"
         },
         "phase": {
           "$ref": "urn:af:schema:task-phase:1"
         },
         "limits": {
-          "$ref": "urn:af:schema:task-contracts:1#/$defs/limits"
+          "$ref": "urn:af:schema:task-contracts:2#/$defs/limits"
         },
         "committed_tokens": {
           "$ref": "urn:af:schema:task-token-usage:3#/$defs/decimalU128"
@@ -142,7 +142,7 @@
           "execution": {
             "allOf": [
               {
-                "$ref": "urn:af:schema:task-contracts:1#/$defs/workerExecution"
+                "$ref": "urn:af:schema:task-contracts:2#/$defs/workerExecution"
               },
               {
                 "properties": {
@@ -168,14 +168,14 @@
                     "const": "completed"
                   },
                   "output_id": {
-                    "$ref": "urn:af:schema:task-contracts:1#/$defs/digest"
+                    "$ref": "urn:af:schema:task-contracts:2#/$defs/digest"
                   },
                   "admission_ids": {
                     "type": "array",
                     "minItems": 1,
                     "maxItems": 1,
                     "items": {
-                      "$ref": "urn:af:schema:task-contracts:1#/$defs/digest"
+                      "$ref": "urn:af:schema:task-contracts:2#/$defs/digest"
                     }
                   }
                 }

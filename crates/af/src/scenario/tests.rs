@@ -146,12 +146,13 @@ fn ant(timezone: &str, hour: u8, minute: u8) -> AntState {
     ant
 }
 fn schema(name: &str) -> jsonschema::Validator {
+    let (file, fragment) = name.split_once('#').unwrap_or((name, ""));
     let dir = std::env::var_os("AF_WORKSPACE_ROOT")
         .map(PathBuf::from)
         .unwrap_or_else(|| PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../.."))
         .join("schemas");
     let mut registry = jsonschema::Registry::new();
-    for file in ["scenario-v1.json", "task-contracts-v1.json"] {
+    for file in ["scenario-v1.json", "task-contracts-v2.json"] {
         let value: Value = serde_json::from_slice(&std::fs::read(dir.join(file)).unwrap()).unwrap();
         let id = value["$id"].as_str().unwrap().to_owned();
         registry = registry
@@ -159,7 +160,10 @@ fn schema(name: &str) -> jsonschema::Validator {
             .unwrap();
     }
     let registry = registry.prepare().unwrap();
-    let root: Value = serde_json::from_slice(&std::fs::read(dir.join(name)).unwrap()).unwrap();
+    let mut root: Value = serde_json::from_slice(&std::fs::read(dir.join(file)).unwrap()).unwrap();
+    if !fragment.is_empty() {
+        root = json!({"$ref": format!("{}#{fragment}", root["$id"].as_str().unwrap())});
+    }
     jsonschema::options()
         .with_registry(&registry)
         .build(&root)
@@ -173,6 +177,40 @@ fn valid(file: &str, value: &impl serde::Serialize) {
         .map(|e| format!("{e} at {}", e.instance_path()))
         .collect();
     assert!(errors.is_empty(), "{file}: {}", errors.join("\n"));
+}
+
+#[test]
+fn scenario_task_receipts_resolve_current_task_contracts_and_keep_closed_results() {
+    // The Pi/main merge removed task-contracts-v1 while Scenario schemas still referenced it.
+    // TaskResultV1 itself has not changed; resolve its definition from the current bundle.
+    let receipt: TaskReceipt = serde_json::from_value(json!({
+        "task_id": "child", "plan_id": digest(b"plan"), "revision_id": digest(b"revision"),
+        "result_id": digest(b"result"), "charged_tokens": 10,
+        "result": {
+            "task_revision_id": digest(b"revision"), "execution": "completed",
+            "acceptance": "satisfied", "domain_conclusion": "verified",
+            "outputs": {"report": {
+                "artifact_ids": [digest(b"report")], "artifact_type": "af/Test@1", "cardinality": "one"
+            }},
+            "evidence": [digest(b"evidence")], "missing_obligations": []
+        }
+    }))
+    .unwrap();
+    Datum::Task(receipt.clone()).validate().unwrap();
+    let validator = schema("scenario-v1.json#/$defs/TaskReceipt");
+    let mut wire = serde_json::to_value(&receipt).unwrap();
+    let errors: Vec<_> = validator
+        .iter_errors(&wire)
+        .map(|error| error.to_string())
+        .collect();
+    assert!(errors.is_empty(), "{}", errors.join("\n"));
+    assert_eq!(
+        serde_json::from_value::<TaskReceipt>(wire.clone()).unwrap(),
+        receipt
+    );
+    wire["result"]["extra"] = json!(true);
+    assert!(!validator.is_valid(&wire));
+    assert!(serde_json::from_value::<TaskReceipt>(wire).is_err());
 }
 
 #[test]

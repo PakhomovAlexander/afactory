@@ -2,7 +2,7 @@
 
 # What this machine needs before `make check`, one line per tool with the command that installs
 # a missing one (issue #161): python3, git 2.30+, the rustup toolchain rust-toolchain.toml pins,
-# cargo-nextest, cc, npx, minisign and 30 GiB free where target/ builds. It changes nothing.
+# cargo-nextest, cc, Node >=22.19, npx, minisign and 30 GiB free where target/ builds. It changes nothing.
 prereqs:
 	@python3 -I scripts/prereqs.py
 
@@ -110,6 +110,7 @@ release-check:
 # performance schema parity (ADR-0162), and the guarded kernel experiments' protected-harness
 # digest against the staged policy and any installed guarded measure (ADR-0185).
 preflight-check:
+	$(CI_STEP) --stage preflight adr-catalog python3 scripts/test-adr.py
 	$(CI_STEP) --stage preflight task-preflight python3 scripts/test-task-preflight.py
 	$(CI_STEP) --stage preflight prereqs python3 scripts/test-prereqs.py
 	$(CI_STEP) --stage preflight gate-owner python3 scripts/test-gate-owner.py
@@ -117,6 +118,7 @@ preflight-check:
 	$(CI_STEP) --stage preflight stress-proof python3 scripts/test-stress-proof.py
 	$(CI_STEP) --stage preflight test-time-report python3 scripts/test-test-time-report.py
 	$(CI_STEP) --stage preflight provider-auth-host python3 scripts/test-provider-auth-host.py
+	$(CI_STEP) --stage preflight pi-host python3 scripts/test-pi-host.py
 	$(CI_STEP) --stage preflight pr-report python3 scripts/test-check-pr-report.py
 	$(CI_STEP) --stage preflight pr-lines python3 scripts/test-pr-lines.py
 	$(CI_STEP) --stage preflight test-classes python3 scripts/test-class-python.py test-test-classes.py "$(BASE_EVIDENCE)/test-test-classes.py.xml"

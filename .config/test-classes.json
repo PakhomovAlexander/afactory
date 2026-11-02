@@ -45,6 +45,7 @@
     "review-runner": "functional",
     "review-runner-claude": "functional",
     "review-runner-codex": "functional",
+    "review-runner-pi": "functional",
     "review-sandbox": "e2e",
     "review-sandbox::build_cache": "e2e",
     "review-sandbox::cache": "e2e",
@@ -83,6 +84,11 @@
     "review-sandbox::seal unchanged_large_tree_sandbox_measurement": "perf",
     "review-source-git::it capture::dirty_capture_large_tree_measurement": "perf",
     "review-store cas::tests::bench_put_throughput": "perf"
+  },
+  "hosted_checks": {
+    "container-probes": "e2e",
+    "telemetry-build-smoke": "perf",
+    "telemetry-runtime-smoke": "perf"
   },
   "ignored": {
     "af::it perf_kernel_measure::guarded_kernel_experiments_measure_one_judged_sample": "manual-measurement",
@@ -317,10 +323,14 @@
     },
     "review-process": {
       "sample::": "perf"
+    },
+    "review-runner-pi": {
+      "tests::process::": "e2e"
     }
   },
   "schema": "af.test-catalog/1",
   "scripts": {
+    "test-adr.py": "functional",
     "test-af-pin.py": "functional",
     "test-backlog-check-triage.py": "functional",
     "test-backlog-labels.py": "functional",
@@ -329,6 +339,7 @@
     "test-gate-owner.py": "functional",
     "test-nextest-gate.py": "functional",
     "test-performance.py": "perf",
+    "test-pi-host.py": "e2e",
     "test-pr-lines.py": "functional",
     "test-prereqs.py": "functional",
     "test-provider-auth-host.py": "functional",
@@ -346,10 +357,5 @@
     "test-class-python.py",
     "test-labels.py",
     "test-quarantine.py"
-  ],
-  "hosted_checks": {
-    "container-probes": "e2e",
-    "telemetry-build-smoke": "perf",
-    "telemetry-runtime-smoke": "perf"
-  }
+  ]
 }

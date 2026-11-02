@@ -1,0 +1,7 @@
+- Pi setup discovers the SDK through the standard managed launcher without executing it,
+  rejects unsafe version/entrypoint paths, and prints failed setup details on stderr while
+  preserving JSON stdout. Cancellation fixtures bound readiness and retain usage/reaping checks.
+- Retain the original nested-write issue and source-bound historical measurement in the
+  [Pi validation record](https://github.com/PakhomovAlexander/afactory/blob/main/docs/design/pi-provider-validation.md), alongside current checks;
+  no paid live smoke is claimed. The architecture remains proposed
+  [Pi SDK host decision](https://github.com/PakhomovAlexander/afactory/blob/main/docs/adr/2026-11-02-own-the-pi-sdk-host-and-confine-its-tools.md).

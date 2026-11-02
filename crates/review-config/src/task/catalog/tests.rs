@@ -370,7 +370,7 @@ fn export_uses_shared_defaults_and_checked_renaming_without_local_authority() {
     };
     let mut registry = jsonschema::Registry::new();
     for name in [
-        "task-contracts-v1.json",
+        "task-contracts-v2.json",
         "task-operator-signature-v1.json",
         "task-kind-v1.json",
     ] {
@@ -573,7 +573,7 @@ impl Fixture {
             .bind_worker(
                 "local/author",
                 AdmittedWorkerSettings {
-                    execution: WorkerExecutionV1::Command {},
+                    execution: WorkerExecutionV2::Command {},
                     invocation_policy_id: self.task.authority.policy_id.clone(),
                 },
             )
@@ -704,7 +704,7 @@ impl Fixture {
             .bind_worker(
                 "builtin/document-author",
                 AdmittedWorkerSettings {
-                    execution: WorkerExecutionV1::Command {},
+                    execution: WorkerExecutionV2::Command {},
                     invocation_policy_id: policy,
                 },
             )
@@ -1394,15 +1394,16 @@ fn installed_planner_bootstrap_is_exact_fixed_and_cannot_be_reclassified_by_wire
                 "builtin/planner",
                 AdmittedWorkerSettings {
                     execution: if native {
-                        WorkerExecutionV1::Model {
+                        WorkerExecutionV2::Model {
                             provider: "personal".into(),
                             provider_kind: "claude".into(),
                             principal_id: f.task.authority.policy_id.clone(),
                             model: "fixture-model".into(),
+                            pi: None,
                             effort: "high".into(),
                         }
                     } else {
-                        WorkerExecutionV1::Command {}
+                        WorkerExecutionV2::Command {}
                     },
                     invocation_policy_id: f.task.authority.policy_id.clone(),
                 },
@@ -1477,7 +1478,7 @@ fn installed_planner_bootstrap_is_exact_fixed_and_cannot_be_reclassified_by_wire
             serde_json::from_slice(&std::fs::read(root.join("schemas").join(name)).unwrap())
                 .unwrap()
         };
-        for name in ["task-contracts-v1.json", "task-operator-signature-v1.json"] {
+        for name in ["task-contracts-v2.json", "task-operator-signature-v1.json"] {
             let value = schema(name);
             let id = value["$id"].as_str().unwrap().to_owned();
             registry = registry

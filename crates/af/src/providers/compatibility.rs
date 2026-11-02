@@ -39,6 +39,7 @@ pub(super) const APP_SERVER_PROTOCOL: &str =
 /// What af's invocation of this Provider kind requires of its installed CLI.
 pub(super) fn invocation(kind: ProviderKind) -> &'static CliInvocation {
     match kind {
+        ProviderKind::Pi => unreachable!("Pi compatibility uses the SDK host"),
         ProviderKind::Claude => &review_runner_claude::CLAUDE_INVOCATION,
         ProviderKind::Codex => &review_runner_codex::CODEX_INVOCATION,
     }
@@ -238,8 +239,17 @@ pub(super) fn check_invocation(
     attempt_deadline: Option<Instant>,
 ) -> Result<(), CliRefusal> {
     availability::check(spec).map_err(CliRefusal::Unchecked)?;
+    if spec.kind == ProviderKind::Pi {
+        let wall = attempt_deadline.map_or(PROBE_TIMEOUT, |d| {
+            d.saturating_duration_since(Instant::now())
+        });
+        return super::pi::probe(spec, cancelled, wall)
+            .map(|_| ())
+            .map_err(CliRefusal::Unchecked);
+    }
     let invocation = invocation(spec.kind);
     let timeout = probe_timeout(match spec.kind {
+        ProviderKind::Pi => PROBE_TIMEOUT,
         ProviderKind::Claude => CLAUDE_STRUCTURAL_TIMEOUT,
         ProviderKind::Codex => PROBE_TIMEOUT,
     });
@@ -293,7 +303,7 @@ pub(super) fn check_invocation(
             let missing = invocation.missing_flags(&page);
             if missing.is_empty() {
                 return match spec.kind {
-                    ProviderKind::Claude => Ok(()),
+                    ProviderKind::Pi | ProviderKind::Claude => Ok(()),
                     ProviderKind::Codex => {
                         check_app_server(program, spec, probe_path, cancelled, attempt_deadline)
                     }
@@ -447,6 +457,7 @@ mod tests {
 
     fn spec(directory: &Path, kind: ProviderKind) -> ProviderSpec {
         ProviderSpec {
+            pi: None,
             id: format!("{}-main", kind.name()),
             kind,
             auth_dir: Some(directory.to_path_buf()),

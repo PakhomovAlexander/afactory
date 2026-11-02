@@ -691,6 +691,34 @@ pub fn invoke_model(
     cancellation: Option<&AtomicBool>,
     reserved_tokens: u64,
 ) -> WorkerReturn {
+    invoke_model_with_environment(
+        cas,
+        workdir,
+        adapter,
+        contract,
+        context_id,
+        timeout,
+        access,
+        cancellation,
+        reserved_tokens,
+        &[],
+    )
+}
+
+/// Invoke with explicit host-owned non-secret grants, retained by typed-result re-asks.
+#[allow(clippy::too_many_arguments)]
+pub fn invoke_model_with_environment(
+    cas: &Cas,
+    workdir: &Path,
+    adapter: &dyn WorkerModelAdapter,
+    contract: &WorkerContract,
+    context_id: &str,
+    timeout: Duration,
+    access: WorkerAccess,
+    cancellation: Option<&AtomicBool>,
+    reserved_tokens: u64,
+    environment: &[(String, String)],
+) -> WorkerReturn {
     let bytes = match contract.read_context(cas, context_id) {
         Ok((_, bytes)) => bytes,
         Err(error) => {
@@ -715,6 +743,7 @@ pub fn invoke_model(
         access,
         cancellation,
         reserved_tokens,
+        environment,
     )
 }
 

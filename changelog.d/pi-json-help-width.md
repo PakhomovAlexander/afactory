@@ -1,0 +1,1 @@
+- Wrap the Pi setup and Provider catalog names in `af help json` within 100 columns.

@@ -458,7 +458,7 @@ fn code_task_domain_cold_fallback_preserves_existing_environment() {
 fn run_code_task_domain_fixture(mapping: Option<PathBuf>, cold: bool, review_wrapper: bool) {
     use review_config::task::catalog::{TaskPackagePin, TaskPlanCompiler};
     use review_core::Producer;
-    use review_core::task::EXECUTION_PLAN_V1;
+    use review_core::task::EXECUTION_PLAN_V2;
     use review_core::task::pipeline::{PipelineDefinitionV1, ReceiptOutcomeV1};
     use review_core::task::plan::IndependencePolicyV1;
     use review_core::task::verification::{TASK_CHECK_RECEIPT_V2, TaskCheckReceiptV2};
@@ -611,7 +611,7 @@ fn run_code_task_domain_fixture(mapping: Option<PathBuf>, cold: bool, review_wra
     let (plan, graph) = compiler.compile(&cas, &revision, &pipeline.name).unwrap();
     let plan_id = cas
         .put_artifact(
-            EXECUTION_PLAN_V1,
+            EXECUTION_PLAN_V2,
             producer(),
             vec![],
             None,

@@ -538,7 +538,7 @@ fn absent_gate_is_a_refusal_and_help_is_self_contained() {
 /// at `root/providers.toml`; `AF_PROVIDERS_FILE` points `af` at it.
 fn registry(root: &Path, providers: &[(&str, &str)]) -> PathBuf {
     std::fs::create_dir_all(root).unwrap();
-    let mut text = "version = 1\n".to_string();
+    let mut text = "version = 2\n".to_string();
     for (id, kind) in providers {
         let auth = root.join(format!("auth-{id}"));
         std::fs::create_dir_all(&auth).unwrap();

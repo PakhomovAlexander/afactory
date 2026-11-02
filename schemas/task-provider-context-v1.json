@@ -26,10 +26,10 @@
       ]
     },
     "capability": {
-      "$ref": "urn:af:schema:task-provider-admission:1"
+      "$ref": "urn:af:schema:task-provider-admission:2"
     },
     "rendered_id": {
-      "$ref": "urn:af:schema:task-contracts:1#/$defs/digest"
+      "$ref": "urn:af:schema:task-contracts:2#/$defs/digest"
     },
     "manifest": {
       "type": "object",
@@ -62,7 +62,7 @@
                 "const": "installed Provider admission"
               },
               "artifact_id": {
-                "$ref": "urn:af:schema:task-contracts:1#/$defs/digest"
+                "$ref": "urn:af:schema:task-contracts:2#/$defs/digest"
               },
               "rendered_bytes": {
                 "const": 23

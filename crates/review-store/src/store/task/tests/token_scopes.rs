@@ -43,7 +43,7 @@ fn compiled_scope_survives_store_reopen_and_blocks_retry_without_another_event()
     f.plan_id = f
         .cas
         .put_artifact(
-            task::EXECUTION_PLAN_V1,
+            task::EXECUTION_PLAN_V2,
             producer(),
             vec![f.revision_id.clone()],
             None,
@@ -161,7 +161,7 @@ fn a_recovered_attempt_without_usage_leaves_its_reserve_room_for_the_next_attemp
     f.plan_id = f
         .cas
         .put_artifact(
-            task::EXECUTION_PLAN_V1,
+            task::EXECUTION_PLAN_V2,
             producer(),
             vec![f.revision_id.clone()],
             None,

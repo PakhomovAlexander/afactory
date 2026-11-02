@@ -11,7 +11,7 @@ impl TaskAuthority for HandoffAuthority<'_> {
         &self,
         cas: &Cas,
         task: &TaskRevisionV1,
-        plan: &ExecutionPlanV1,
+        plan: &ExecutionPlanV2,
     ) -> Result<Vec<GeneratedOriginV1>, String> {
         self.0.validate_plan(cas, task, plan)
     }
@@ -39,8 +39,8 @@ impl TaskAuthority for HandoffAuthority<'_> {
         cas: &Cas,
         old: &TaskRevisionV1,
         new: &TaskRevisionV1,
-        old_plan: &ExecutionPlanV1,
-        new_plan: &ExecutionPlanV1,
+        old_plan: &ExecutionPlanV2,
+        new_plan: &ExecutionPlanV2,
         handoff: &TaskReviewHandoffV1,
     ) -> Result<(), String> {
         let mut expected = old.clone();
@@ -98,7 +98,7 @@ fn fixture(generated: bool) -> (Fixture, CampaignReviewRoundV1) {
         f.authority.generated = vec![origin.clone()];
         f.plan.generated_origins = vec![origin];
     }
-    f.plan_id = put(&f, task::EXECUTION_PLAN_V1, &f.plan);
+    f.plan_id = put(&f, task::EXECUTION_PLAN_V2, &f.plan);
     (f, round)
 }
 fn put(f: &Fixture, kind: &str, value: &impl serde::Serialize) -> String {
@@ -203,7 +203,7 @@ fn successor(f: &Fixture, old: &CampaignReviewRoundV1) -> (String, TaskReviewHan
         predecessor_revision_id: f.revision_id.clone(),
         predecessor_plan_id: f.plan_id.clone(),
         successor_revision_id: revision_id,
-        successor_plan_id: put(f, task::EXECUTION_PLAN_V1, &plan),
+        successor_plan_id: put(f, task::EXECUTION_PLAN_V2, &plan),
         predecessor_round_id: f.revision.inputs["round"].artifact_ids[0].clone(),
         successor_round_id: id,
         evidence: TaskReviewHandoffEvidenceV1::SupersededInput {
@@ -341,7 +341,7 @@ fn review_handoff_retains_original_budget_late_charge_and_exact_reopen_without_a
         f.revision_id = handoff.successor_revision_id.clone();
         f.revision = revision(&f.cas, &f.revision_id).unwrap();
         f.plan_id = handoff.successor_plan_id.clone();
-        f.plan = payload(&f.cas, &f.plan_id, task::EXECUTION_PLAN_V1).unwrap();
+        f.plan = payload(&f.cas, &f.plan_id, task::EXECUTION_PLAN_V2).unwrap();
         f.record_execution_inputs(&lease);
         let usage = f.cas.put_json(&json!({"actual":"late"})).unwrap();
         let wide = u128::from(u64::MAX) + 7;
@@ -416,13 +416,13 @@ fn review_handoff_refuses_pending_untrusted_or_changed_epoch_caps_without_append
             .contains("not configured")
     );
     let mut bad = handoff.clone();
-    let mut plan: ExecutionPlanV1 =
-        payload(&f.cas, &bad.successor_plan_id, task::EXECUTION_PLAN_V1).unwrap();
+    let mut plan: ExecutionPlanV2 =
+        payload(&f.cas, &bad.successor_plan_id, task::EXECUTION_PLAN_V2).unwrap();
     let mut graph: CompiledTask =
         payload(&f.cas, &plan.compiled_graph_id, "af/CompiledTask@1").unwrap();
     graph.token_scopes.get_mut("review.round1").unwrap().tokens = 31;
     plan.compiled_graph_id = put(&f, "af/CompiledTask@1", &graph);
-    bad.successor_plan_id = put(&f, task::EXECUTION_PLAN_V1, &plan);
+    bad.successor_plan_id = put(&f, task::EXECUTION_PLAN_V2, &plan);
     // Replay enforces the cap independently of the captured compiler callback.
     let bad_id = capture_task_review_handoff(&f.cas, &bad).unwrap();
     let mut projected = f.state();

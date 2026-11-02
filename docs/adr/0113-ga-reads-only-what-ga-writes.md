@@ -6,6 +6,9 @@ ADR-0080 in full. Records the acceptance of the ADRs listed under *Cutover accep
 Superseded in part by [ADR-0145](0145-read-only-what-this-release-writes-and-version-every-changed-shape.md): the compatibility obligations it started at GA. No release
 reads state, configuration or flags only an earlier release wrote, and every changed persisted
 shape takes a new version in every release.
+Superseded in part (2026-11-02) by
+[the independent ADR authoring decision](2026-11-02-add-independent-adrs-and-derive-the-catalog.md):
+clause 6's index-entry removal obligation only; the remaining lifecycle obligations stay.
 
 Before GA, Afactory treated everything it had ever written as a permanent obligation.
 [ADR-0002](0002-event-payload-changes-bump-the-type-version.md) made every superseded event reader

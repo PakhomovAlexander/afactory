@@ -27,7 +27,7 @@ pub(super) fn configured_fixture() -> Fixture {
     f.plan_id = f
         .cas
         .put_artifact(
-            EXECUTION_PLAN_V1,
+            EXECUTION_PLAN_V2,
             producer(),
             vec![],
             None,

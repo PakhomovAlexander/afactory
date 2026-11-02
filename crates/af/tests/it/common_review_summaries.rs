@@ -235,7 +235,7 @@ fn common_two_round_timing_and_attempt_summaries_reopen_without_synthetic_legacy
             .iter()
             .find(|a| a.attempt_id == row.attempt_id)
             .unwrap();
-        let plan: review_core::task::plan::ExecutionPlanV1 =
+        let plan: review_core::task::plan::ExecutionPlanV2 =
             serde_json::from_value(cas.get_artifact(&attempt.plan_id).unwrap().payload).unwrap();
         let round_id = &plan.inputs["round"].artifact_ids[0];
         let round: review_core::task::campaign_review::CampaignReviewRoundV1 =

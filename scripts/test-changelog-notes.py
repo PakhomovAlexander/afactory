@@ -3,10 +3,12 @@
 temporary repository; never this checkout's own CHANGELOG.md or notes."""
 from pathlib import Path
 import os
+import re
 import shutil
 import subprocess
 import tempfile
 import unittest
+from urllib.parse import urljoin, urlsplit
 
 SCRIPTS = Path(__file__).resolve().parent
 GIT = shutil.which('git')
@@ -125,6 +127,44 @@ class Fragments(unittest.TestCase):
             '## [0.1.0]', '## [0.2.0] - today\n\n' + BULLETS + '\n## [0.1.0]'))
         self.assertFalse((self.repo / 'changelog.d/good.md').exists())
         self.assertEqual(self.notes('--check').returncode, 0)
+
+    def test_pi_documentation_links_resolve_in_fragments_and_rendered_root_notes(self):
+        root = SCRIPTS.parent
+        base = 'https://github.com/PakhomovAlexander/afactory/blob/main/'
+        notes = sorted((root / 'changelog.d').glob('pi-*.md'))
+        # Release consumes the real fragments. Keep exercising both documented targets
+        # afterwards as well; while notes exist, render and audit every shipped Pi fragment.
+        contents = {Path('pi-doc-links-regression.md'): (
+            '- See [Pi architecture](' + base +
+            'docs/adr/2026-11-02-own-the-pi-sdk-host-and-confine-its-tools.md) and\n'
+            '  [Pi validation](' + base + 'docs/design/pi-provider-validation.md).\n')}
+        contents.update({path: path.read_text() for path in notes})
+        for path, content in contents.items():
+            self.note(path.name, content)
+        result = self.notes('--write', '## [9.9.9] - today')
+        self.assertEqual(result.returncode, 0, result.stderr)
+        rendered = (self.repo / 'CHANGELOG.md').read_text()
+        documents = []
+        for path, content in contents.items():
+            self.assertIn(content.strip(), rendered)
+            links = re.findall(r'\[[^\]]+\]\(([^)]+)\)', content)
+            for link in links:
+                if 'docs/' not in link:
+                    continue
+                # The renderer copies fragments unchanged: resolve the same target at both
+                # GitHub browsing locations, without network access or touching real notes.
+                for context in ['changelog.d/' + path.name, 'CHANGELOG.md']:
+                    resolved = urlsplit(urljoin(base + context, link))
+                    self.assertEqual(resolved.netloc, 'github.com')
+                    prefix = '/PakhomovAlexander/afactory/blob/main/docs/'
+                    self.assertTrue(resolved.path.startswith(prefix), (context, link, resolved.path))
+                    target = resolved.path.removeprefix('/PakhomovAlexander/afactory/blob/main/')
+                    self.assertTrue((root / target).is_file(), target)
+                    documents.append(link)
+        self.assertGreaterEqual(len(documents), 4, 'cover ADR and validation links in both contexts')
+        for link in documents:
+            self.assertIn('](' + link + ')', rendered)
+        self.assertEqual(list((self.repo / 'changelog.d').glob('pi-*.md')), [])
 
 
 if __name__ == '__main__':

@@ -2,18 +2,18 @@
  "files": [
   {
    "path": "Cargo.lock",
-   "sha256": "sha256:44c1c63fe3cfb45b1f412f4e9405ffeabc51b0c7560e7afb5ca0f8fe02d81067",
-   "size": 62485
+   "sha256": "sha256:02c52aca98829b950be6357aaf10ba1d330a77cb68f93c36d2bfa9c2c54d056e",
+   "size": 62712
   },
   {
    "path": "Cargo.toml",
-   "sha256": "sha256:26bfbe7b34a3193a331e1114ccc78138677e88722db4b6df073ff6d093ecf264",
-   "size": 2038
+   "sha256": "sha256:a46892c2f0a560045653c2ad47bf1a47d00d85094dec2c8e49c78d89915580de",
+   "size": 2065
   },
   {
    "path": "crates/af/Cargo.toml",
-   "sha256": "sha256:b7a6d8f6467b1ed04fa6f48f8e333f6036a9eb9af2e763084a5693aada532089",
-   "size": 3396
+   "sha256": "sha256:493441c2b48fc69d60019e0c943091e80a2dd3f2f49e2322e20167f9835ab244",
+   "size": 3448
   },
   {
    "path": "crates/af/build.rs",
@@ -77,12 +77,12 @@
   },
   {
    "path": "crates/review-pipeline/examples/perf-probe/authority.rs",
-   "sha256": "sha256:7671f7a4f764775195325cab69eeb4b0788610600fd65d578b24026c01fe7f10",
+   "sha256": "sha256:3b9bb75f90b28fd2c1b4a25b2cda98a9078ff29563447d5d22f0d47e25c803a0",
    "size": 24426
   },
   {
    "path": "crates/review-pipeline/examples/perf-probe/cases.rs",
-   "sha256": "sha256:54012b3773c863970e1a4827fd93fe4930d7601d755e18bf7c56b5d79b14180b",
+   "sha256": "sha256:3117fd44d757fbf9be5a37e48ea06d1ff6bca918a517ffc321ab54c8105cdb91",
    "size": 63191
   },
   {
@@ -124,6 +124,11 @@
    "path": "crates/review-runner-codex/Cargo.toml",
    "sha256": "sha256:4ba1dadeada92b690379967a6e93c772e838216916e7bf5fc6d973e45edea638",
    "size": 1371
+  },
+  {
+   "path": "crates/review-runner-pi/Cargo.toml",
+   "sha256": "sha256:9677e49eba4ede07c3a2d1300e5b8b7b5076eb43d737698903d127320bf3ef47",
+   "size": 640
   },
   {
    "path": "crates/review-runner/Cargo.toml",
@@ -3771,7 +3776,7 @@
    "size": 6777
   }
  ],
- "harness_digest": "sha256:a74eb70f2522f3cc6e5e1a3517e0f4f77962ffc636c6fa3d6da73cc52824fc7a",
+ "harness_digest": "sha256:c10a05c7d6b40f73f1a1da87d9c5e5ecced824314e74f1f87e2318635631b000",
  "inner_metric": "pending",
  "inner_metric_reason": "the inner wall_ms metric is recorded in every Measurement but no staged objective selects it until the guard's real kernel integration and tampered-candidate tests are accepted on the sealed source and a reviewed human change installs and selects it",
  "objective_metric": "elapsed_ms",

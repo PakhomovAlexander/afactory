@@ -1,5 +1,16 @@
 use super::*;
 
+/// Pi model IDs are checked against the SDK catalog at identity capture, not Codex's
+/// version heuristic. The common static boundary still refuses unsupported effort.
+#[test]
+fn pi_model_workers_use_adapter_specific_static_checks() {
+    assert!(TaskProviderIdentity::check_static_rules("pi-personal", "pi", "o3", "high").is_ok());
+    assert!(TaskProviderIdentity::check_static_rules("pi-personal", "pi", "o3", "ultra").is_err());
+    assert!(
+        TaskProviderIdentity::check_static_rules("pi-personal", "pi", "../model", "high").is_err()
+    );
+}
+
 /// The Attempt wall for a wrapper whose subject is not the deadline (ADR-0114). Its identity
 /// recheck runs a fixture shell that took seconds to start on a loaded gate, so a 5 s wall raced
 /// scheduling; two minutes only bounds a hung fixture, and a passing test never waits for it.
@@ -11,6 +22,7 @@ fn fixture(kind: ProviderKind, directory: &Path, body: &str) -> (PathBuf, Provid
     std::fs::write(&program, format!("#!/bin/sh\n{body}\n")).unwrap();
     std::fs::set_permissions(&program, std::fs::Permissions::from_mode(0o700)).unwrap();
     let spec = ProviderSpec {
+        pi: None,
         id: "fixture".into(),
         kind,
         auth_dir: Some(directory.to_path_buf()),
@@ -250,6 +262,7 @@ fn wrapper(
     // Fixed grants: a gate may run these tests without USER in its environment.
     let binary = BinaryStamp::of(&program);
     let identity = TaskProviderIdentity {
+        pi_ready: None,
         home: spec.auth_dir.clone().map(Into::into),
         user: Some("fixture".into()),
         spec,
@@ -332,6 +345,20 @@ fn a_removed_executable_with_no_installed_client_refuses_by_name_before_any_prob
 }
 
 #[test]
+fn a_removed_pi_node_refuses_without_resolving_or_running_another_client() {
+    let directory = tempfile::tempdir().unwrap();
+    let (program, spec) = fixture(ProviderKind::Pi, directory.path(), "exit 0");
+    let reached = Arc::new(AtomicBool::new(false));
+    let wrapper = wrapper(spec, program.clone(), &reached, |_| {
+        panic!("Pi never replaces captured Node authority")
+    });
+    std::fs::remove_file(&program).unwrap();
+    let error = wrapper.current_or_installed().err().unwrap();
+    assert!(error.contains("Captured Pi Node executable is missing"));
+    assert!(!reached.load(Ordering::SeqCst));
+}
+
+#[test]
 fn the_installed_client_replaces_a_removed_executable_and_a_present_one_is_kept() {
     static INSTALLED: OnceLock<PathBuf> = OnceLock::new();
     let directory = tempfile::tempdir().unwrap();
@@ -361,6 +388,7 @@ const BROKEN_INSTALL: &str = "printf '%s\\n' 'Error: Missing optional dependency
 fn identity(spec: ProviderSpec, program: PathBuf) -> TaskProviderIdentity {
     let binary = BinaryStamp::of(&program);
     TaskProviderIdentity {
+        pi_ready: None,
         spec,
         program,
         principal_id: "sha256:".to_string() + &"0".repeat(64),

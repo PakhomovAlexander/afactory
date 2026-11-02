@@ -130,7 +130,7 @@ fn captured_fixture() -> (Fixture, CampaignReviewRoundV1, review_core::SliceSetV
     f.plan_id = f
         .cas
         .put_artifact(
-            task::EXECUTION_PLAN_V1,
+            task::EXECUTION_PLAN_V2,
             producer(),
             vec![f.revision_id.clone()],
             None,
