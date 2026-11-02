@@ -2,7 +2,8 @@
 //! credential-free service adapter. No real scenarios, Ants, Providers or remotes are used.
 use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
-use std::os::unix::fs::{DirBuilderExt, PermissionsExt};
+use std::io::Write;
+use std::os::unix::fs::{DirBuilderExt, OpenOptionsExt, PermissionsExt};
 use std::path::{Path, PathBuf};
 use std::process::Output;
 
@@ -832,6 +833,9 @@ fn toml_authoring_runs_and_pins_the_same_contract_as_its_json_wire_form() {
 impl Fixture {
     fn install_github(&self) {
         let examples = workspace().join("fixtures/scenarios/github");
+        self.install_github_from(&examples);
+    }
+    fn install_github_from(&self, examples: &Path) {
         let mut config: Value =
             serde_json::from_slice(&std::fs::read(examples.join("config.example.json")).unwrap())
                 .unwrap();
@@ -899,12 +903,22 @@ impl Fixture {
             serde_json::from_slice(&std::fs::read(&self.policy).unwrap()).unwrap();
         policy["adapters"] = json!({"github":{"executable":executable,"digest":digest,"operations":["publish_pr","notify","followup","observe"],"destinations":["github:octo/project"],"max_wall_ms":30000,"max_output_bytes":65536}});
         write(&self.policy, &policy);
-        std::fs::copy(examples.join("bundle.json"), &self.bundle).unwrap();
-        std::fs::copy(
-            examples.join("mock-service.json"),
-            self.machine.join("mock-service.json"),
+        // Copy fixture bytes, not sealed-source permissions: the bundle remains editable
+        // and both the test and installed mock transport update private service state.
+        std::fs::write(
+            &self.bundle,
+            std::fs::read(examples.join("bundle.json")).unwrap(),
         )
         .unwrap();
+        let mut service = std::fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .mode(0o600)
+            .open(self.machine.join("mock-service.json"))
+            .unwrap();
+        service
+            .write_all(&std::fs::read(examples.join("mock-service.json")).unwrap())
+            .unwrap();
     }
     fn github_state(&self) -> Value {
         serde_json::from_slice(&std::fs::read(self.machine.join("mock-service.json")).unwrap())
@@ -937,7 +951,31 @@ fn production_github_adapter_installs_from_symlinked_private_temp_root() {
 #[test]
 fn production_github_adapter_runs_exact_head_pr_sequence_and_recovers_remote_effect_before_reply() {
     let f = Fixture::bare();
-    f.install_github();
+    // Reproduce sealed gate sources without changing permissions in the source Snapshot.
+    let sources = tempfile::tempdir_in(&f.repo).unwrap();
+    let examples = workspace().join("fixtures/scenarios/github");
+    let mut originals = Vec::new();
+    for name in [
+        "config.example.json",
+        "publication.json",
+        "notification.json",
+        "followup.json",
+        "bundle.json",
+        "mock-service.json",
+    ] {
+        let bytes = std::fs::read(examples.join(name)).unwrap();
+        let path = sources.path().join(name);
+        std::fs::write(&path, &bytes).unwrap();
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o444)).unwrap();
+        originals.push((path, bytes));
+    }
+    f.install_github_from(sources.path());
+    let service_path = f.machine.join("mock-service.json");
+    assert_eq!(
+        service_path.metadata().unwrap().permissions().mode() & 0o777,
+        0o600
+    );
+    assert_ne!(f.bundle.metadata().unwrap().permissions().mode() & 0o200, 0);
     let waiting = f.start("github-pr");
     assert_eq!(waiting["status"], "waiting");
     assert_eq!(waiting["waiting"]["kind"], "decision");
@@ -994,6 +1032,14 @@ fn production_github_adapter_runs_exact_head_pr_sequence_and_recovers_remote_eff
         cli(&f.repo, &f.state, &["scenario", "resume", "github-pr"]),
         done
     );
+    assert_eq!(
+        service_path.metadata().unwrap().permissions().mode() & 0o777,
+        0o600
+    );
+    for (path, bytes) in originals {
+        assert_eq!(std::fs::read(&path).unwrap(), bytes);
+        assert_eq!(path.metadata().unwrap().permissions().mode() & 0o777, 0o444);
+    }
 }
 
 #[test]
