@@ -828,7 +828,7 @@ remain explicitly historical, including the original supplied #494 failing obser
 
 ### Historical machine-readable claim
 
-This is the sole current claim. The helper verifies it against candidate content; optional
+This was that Task's sole current claim. The helper verified it against that candidate; optional
 explicit log verification also checks the actual log bytes and source/outcome binding.
 
 <!-- historical preceding-Task claim -->
@@ -1026,9 +1026,9 @@ correctly detected `source_unchanged=false` and exited 99. Its retained log hash
 It is not the current claim and its passing Make result is not substituted for the fresh run.
 The fresh run above began only after the final nonrecord source was frozen.
 
-### Current machine-readable claim
+### Historical machine-readable claim
 
-This is the sole current `af/pi-validation-claim@1` claim. Its helper, closed schema and mutation
+This was Task14's sole current `af/pi-validation-claim@1` claim. Its helper, closed schema and mutation
 regressions are unchanged. The claim cannot select exclusions or repair a stale source digest.
 
 <!-- historical Task14 claim -->
@@ -1148,7 +1148,7 @@ Generated fixtures already match; no harness or authority bytes were changed.
 
 ### Historical machine-readable claim
 
-The unchanged closed schema and helper check this sole current claim. Its exclusions cannot be
+The unchanged closed schema and helper checked this historical claim. Its exclusions cannot be
 selected by claim data. The explicit log check verifies the real hash, source binding, command,
 filter, observed exit and nextest summary; normal CI requires no implicit local log.
 
@@ -1200,7 +1200,7 @@ The configured local fast gate remains the kernel's post-seal check. No whole-su
 run is claimed. The focused Rust selection is repeated after the record and all other checks;
 its final completion time/result belongs to the Task report, with no edits afterwards.
 
-## Current machine-checked validation
+## Historical RC4 machine-checked validation
 
 ### Official RC4 source and retained history
 
@@ -1258,14 +1258,14 @@ The canonical generated harness check independently returned
 `sha256:6c80be30504684937effb4e3a8768966f15dca2e0c7d87de3e2ba47f118e5115`;
 no generated fixture or authority digest was edited.
 
-### Current machine-readable claim
+### Historical RC4 machine-readable claim
 
-The existing closed schema, helper and six `ValidationTests` enforce the sole current claim,
+The existing closed schema, helper and six `ValidationTests` checked RC4's then-current claim,
 source equality, exact exclusions, stale/mutated claim refusals and optional real-log binding.
 Normal CI reads no implicit local log. The explicit check verifies the actual log SHA256,
 source line, command, filter, Make exit and summary.
 
-<!-- af-pi-validation-current:v1 -->
+<!-- historical RC4 claim -->
 ```json
 {
   "schema": "af/pi-validation-claim@1",
@@ -1279,7 +1279,7 @@ source line, command, filter, Make exit and summary.
   "summary": "Summary [1323.393s] 1 test run: 1 passed (1 slow), 4010 skipped"
 }
 ```
-<!-- /af-pi-validation-current -->
+<!-- /historical RC4 claim -->
 
 ### Verification and limits
 
@@ -1311,3 +1311,114 @@ No Linux-only helper/caller in `provider_auth_handoff.rs`, `task_interrupt.rs` o
 `campaign_loop/heartbeat.rs` changed; no Linux execution is claimed from this macOS Worker.
 The configured local fast gate remains the kernel's post-seal check; no whole-suite Worker
 run is claimed.
+
+## Current machine-checked validation
+
+### RC5 Linux release build runners
+
+This Task updates the supplied official **0.14.0-rc.5** release source. Its generated version,
+prior release sections and consumed fragments are preserved. The RC5 release notes describe the
+runner fix directly; no unconsumed fragment is added.
+
+Only the two Linux build matrix entries in `.github/workflows/release.yml` now use
+`ubuntu-24.04`. This follows the
+[GitHub migration notice](https://github.blog/changelog/2026-09-17-ubuntu-26-generally-available-and-latest-migration/)
+for workflows that need packages affected by Ubuntu 26.04. The three targets, macOS runner,
+validation jobs and classes, `qemu-user-static` installation, `qemu-aarch64-static` execution,
+archive smoke, signatures, exact-SHA/version selection and permissions are preserved.
+`LabelSetup.test_release_linux_builds_pin_ubuntu24_for_static_qemu_execution` failed against
+the original `ubuntu-latest` matrix and passed after the two pins. It checks all three matrix
+rows and the QEMU, smoke, embedded signing key and exact-source build requirements.
+
+Earlier measurements, including RC4's complete claim and outcome, remain historical. The
+catalog-confinement sentence formerly calling its historical claim current is corrected, as
+are the stale current-claim headings and prose for preceding Tasks. There is exactly one
+current claim below; no earlier result is reused as RC5 evidence.
+
+### Actual frozen RC5 measurement
+
+All nonrecord source edits finished before **2026-11-02T18:25:55.310058+00:00**. The unchanged
+**`make perf-kernel-measure`** finished at **2026-11-02T18:41:10.783625+00:00**, with observed Make exit **0**.
+It used installed pinned Rust/Cargo **1.88.0**, a credential-free offline registry copy in
+`target/pi-cargo-home`, the checkout's default `target/`, and `TMPDIR=/private/tmp`.
+No dependency, network fetch or additional host permission was needed.
+
+The versioned `af.pi.validation-source/1` projection was
+**`sha256:41cf48452e806ca51167b55b05165fd22f197c286f662cba97cac2119084e955`**, **3799 entries / 3112 regular files**,
+before and after measurement. Its exclusions remain exactly root `.git`, root `target` and
+`docs/design/pi-provider-validation.md`. The log records `source_unchanged=true`; only this
+excluded record changed afterwards. This content projection is not an invented commit or final
+candidate Snapshot identity; this sandbox has no Git metadata.
+
+The complete real log is **`/tmp/rc5-perf-kernel-measure.log`**, SHA256
+`sha256:369a647a1c971b6756d25afdddd23ce9bd7f5d43086f59b66db67c83783f12a8`. Its source line, command, exact filter,
+observed Make exit and sole nextest summary match the current claim:
+
+```text
+Summary [ 817.770s] 1 test run: 1 passed (1 slow), 4010 skipped
+```
+
+The existing selection remains `--workspace --locked --profile ci --run-ignored only` with
+filter `test(=perf_kernel_measure::guarded_kernel_experiments_measure_one_judged_sample)`.
+Tests skipped by this manual selection are not excluded from normal validation. This guarded
+contract check is not a product speed-improvement claim. The canonical harness check returned
+`sha256:6c02e9002693abcb355390d5535b8a93cf7b26857c6178319c29014684d8153c`;
+the existing RC5 pin is coherent, so no authority digest or generated fixture needed a change.
+
+### Current machine-readable claim
+
+The unchanged helper and closed `af/pi-validation-claim@1` schema bind this sole current claim.
+Normal CI reads no implicit local log. Explicit log verification checks its actual bytes,
+source binding, command, filter, exit and summary.
+
+<!-- af-pi-validation-current:v1 -->
+```json
+{
+  "schema": "af/pi-validation-claim@1",
+  "source_sha256": "sha256:41cf48452e806ca51167b55b05165fd22f197c286f662cba97cac2119084e955",
+  "entries": 3799,
+  "files": 3112,
+  "command": "make perf-kernel-measure",
+  "filter": "test(=perf_kernel_measure::guarded_kernel_experiments_measure_one_judged_sample)",
+  "exit_code": 0,
+  "log_sha256": "sha256:369a647a1c971b6756d25afdddd23ce9bd7f5d43086f59b66db67c83783f12a8",
+  "summary": "Summary [ 817.770s] 1 test run: 1 passed (1 slow), 4010 skipped"
+}
+```
+<!-- /af-pi-validation-current -->
+
+### Verification and limits
+
+```sh
+python3 -I -B scripts/pi-validation.py --check
+python3 -I -B scripts/pi-validation.py --check \
+  --measurement-log /tmp/rc5-perf-kernel-measure.log
+python3 -I -B scripts/test-pi-host.py ValidationTests
+python3 -I -B scripts/test-test-classes.py
+python3 -I -B scripts/test-release-resolve.py
+python3 -I -B scripts/test-changelog-notes.py
+python3 -I -B scripts/changelog-notes.py --check
+python3 -I -B scripts/test-classes.py audit
+python3 -I -B scripts/performance/cli.py harness-digest --check
+```
+
+Pinned `cargo fmt --all` and `cargo clippy --workspace --all-targets -- -D warnings` passed.
+The test-class contract suite passed **53 tests**, release resolver **25 tests**, and changelog
+**10 tests**; the changelog fragment check and test-class audit passed. All **6 validation tests**
+and both helper checks passed, including the real-log check. The focused Rust selection passed
+**2 tests** (claim schema parity and compilation of every schema):
+
+```sh
+cargo nextest run --workspace --locked --profile ci -E \
+  'binary_id(review-core::schema_parity) & (test(=task_contracts::pi_validation_current_claim_is_versioned_and_closed) | test(=every_schema_is_a_valid_json_schema))'
+```
+
+That selection is repeated after the record and all other checks; its final time and result
+belong to the Task report. No flaky assertion required a rerun. Markdownlint was **not run**:
+`markdownlint-cli2@0.22.1` was unavailable in the npm cache (`ENOTCACHED` in offline mode).
+**Paid live smoke: not run.** No private authentication, paid inference, Provider registration,
+remote gate, publication or push was performed. No Linux-only helper/caller in
+`provider_auth_handoff.rs`, `task_interrupt.rs` or `campaign_loop/heartbeat.rs` changed.
+No hosted Linux build, QEMU execution or signature publication was run from this macOS Worker;
+the workflow preserves those required validations. The configured local fast gate remains the
+kernel's post-seal check; no whole-suite Worker run is claimed.

@@ -412,6 +412,21 @@ class LabelSetup(unittest.TestCase):
             self.assertIn('release:fast', default.stderr)
             self.assertEqual(sorted(p.name for p in root.iterdir()), ['gh', 'scripts'])
 
+    def test_release_linux_builds_pin_ubuntu24_for_static_qemu_execution(self):
+        text = (ROOT / '.github/workflows/release.yml').read_text()
+        build = text[text.index('  build:'):text.index('  publish:')]
+        matrix = tc.re.findall(r'- target: (\S+)\n +os: (\S+)\n +cross: (\S+)', build)
+        self.assertEqual(matrix, [
+            ('aarch64-apple-darwin', 'macos-latest', 'none'),
+            ('x86_64-unknown-linux-musl', 'ubuntu-24.04', 'zig'),
+            ('aarch64-unknown-linux-musl', 'ubuntu-24.04', 'zig-qemu')])
+        self.assertIn("if: matrix.cross == 'zig-qemu'", build)
+        self.assertIn('sudo apt-get install -y --no-install-recommends qemu-user-static', build)
+        self.assertIn('exec qemu-aarch64-static', build)
+        self.assertIn('scripts/release-smoke.sh "$run" "$RUNNER_TEMP/smoke"', build)
+        self.assertIn('ref: ${{ github.sha }}', build)
+        self.assertIn('"release_key": "embedded"', build)
+
     def test_release_resolver_has_only_the_required_api_read_permission_and_runner_token(self):
         text = (ROOT / '.github/workflows/release.yml').read_text()
         resolver = text[text.index('  resolve:'):text.index('  # This also provides')]

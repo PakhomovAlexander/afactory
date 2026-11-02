@@ -28,6 +28,9 @@ Provider registry v1 is refused: recreate registrations with this release. Exist
 ### Changes
 
 - release: v0.14.0-rc.4 (#550)
+- Pin both Linux release builds to Ubuntu 24.04 so `qemu-user-static` remains installable
+  after the `ubuntu-latest` migration to Ubuntu 26.04. The aarch64 QEMU execution, archive
+  smoke, signatures and exact-source validation remain required.
 
 ## [0.14.0-rc.4] - 2026-11-02
 
