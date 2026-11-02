@@ -950,9 +950,109 @@ fn production_github_adapter_installs_from_symlinked_private_temp_root() {
 
 #[test]
 fn production_github_adapter_runs_exact_head_pr_sequence_and_recovers_remote_effect_before_reply() {
-    let f = Fixture::bare();
+    github_read_only_source_sequence(Fixture::bare());
+}
+
+#[test]
+fn production_github_adapter_full_read_only_sequence_under_aliased_tmpdir_and_permissive_umask() {
+    const CHILD: &str = "AF_TEST_GITHUB_ENVIRONMENT_CHILD";
+    const TEST: &str = "scenario::production_github_adapter_full_read_only_sequence_under_aliased_tmpdir_and_permissive_umask";
+    const HOMES: [(&str, &str); 6] = [
+        ("HOME", "home"),
+        ("XDG_CONFIG_HOME", "config"),
+        ("XDG_STATE_HOME", "state"),
+        ("XDG_CACHE_HOME", "cache"),
+        ("XDG_DATA_HOME", "data"),
+        ("XDG_BIN_HOME", "bin"),
+    ];
+    if let Some(root) = std::env::var_os(CHILD) {
+        // Only the exact regression is relaunched. Never change the test runner's umask
+        // or environment: other integration tests may run concurrently in that process.
+        let root = PathBuf::from(root);
+        assert_eq!(root, root.canonicalize().unwrap());
+        for (name, leaf) in HOMES {
+            let path = PathBuf::from(std::env::var_os(name).unwrap());
+            assert_eq!(path, root.join(leaf));
+            assert_eq!(path.metadata().unwrap().permissions().mode() & 0o777, 0o700);
+        }
+        let tmpdir = PathBuf::from(std::env::var_os("TMPDIR").unwrap());
+        assert_eq!(tmpdir, root.join("tmp-alias"));
+        assert!(tmpdir.symlink_metadata().unwrap().file_type().is_symlink());
+        assert_eq!(std::env::temp_dir(), tmpdir);
+        assert_eq!(tmpdir.canonicalize().unwrap(), root.join("tmp"));
+        assert_ne!(tmpdir, tmpdir.canonicalize().unwrap());
+        // A fresh 0777 directory proves every inherited umask bit is zero without
+        // mutating it. Its private ancestor still prevents access by other users.
+        let probe = root.join("umask-probe");
+        std::fs::DirBuilder::new()
+            .mode(0o777)
+            .create(&probe)
+            .unwrap();
+        assert_eq!(
+            probe.metadata().unwrap().permissions().mode() & 0o777,
+            0o777
+        );
+        std::fs::remove_dir(probe).unwrap();
+        let f = Fixture::bare();
+        assert!(f._root.path().starts_with(&tmpdir));
+        assert_eq!(f.machine, f.machine.canonicalize().unwrap());
+        for path in [&root, f.machine.parent().unwrap(), &f.machine] {
+            assert_eq!(path.metadata().unwrap().permissions().mode() & 0o777, 0o700);
+        }
+        github_read_only_source_sequence(f);
+        return;
+    }
+
+    let parent = tempfile::Builder::new()
+        .permissions(std::fs::Permissions::from_mode(0o700))
+        .tempdir()
+        .unwrap();
+    let root = parent.path().canonicalize().unwrap();
+    for leaf in HOMES.map(|(_, leaf)| leaf).into_iter().chain(["tmp"]) {
+        std::fs::DirBuilder::new()
+            .mode(0o700)
+            .create(root.join(leaf))
+            .unwrap();
+    }
+    let alias = root.join("tmp-alias");
+    std::os::unix::fs::symlink(root.join("tmp"), &alias).unwrap();
+    // Positional arguments keep paths out of shell syntax. exec preserves the child
+    // identity; the marker takes the child branch instead of launching recursively.
+    let child = std::process::Command::new("/bin/sh")
+        .args([
+            "-c",
+            "umask 000; exec \"$1\" --exact \"$2\" --nocapture --test-threads=1",
+            "github-environment-regression",
+        ])
+        .arg(std::env::current_exe().unwrap())
+        .arg(TEST)
+        .env_clear()
+        .env("PATH", "/usr/bin:/bin")
+        .env("AF_WORKSPACE_ROOT", workspace())
+        .env(CHILD, &root)
+        .env("TMPDIR", &alias)
+        .envs(HOMES.map(|(name, leaf)| (name, root.join(leaf))))
+        .output()
+        .unwrap();
+    assert!(
+        child.status.success(),
+        "stdout: {}\nstderr: {}",
+        String::from_utf8_lossy(&child.stdout),
+        String::from_utf8_lossy(&child.stderr)
+    );
+    assert!(String::from_utf8_lossy(&child.stdout).contains("1 passed; 0 failed"));
+}
+
+fn github_read_only_source_sequence(f: Fixture) {
     // Reproduce sealed gate sources without changing permissions in the source Snapshot.
-    let sources = tempfile::tempdir_in(&f.repo).unwrap();
+    let sources = tempfile::Builder::new()
+        .permissions(std::fs::Permissions::from_mode(0o700))
+        .tempdir_in(&f.repo)
+        .unwrap();
+    assert_eq!(
+        sources.path().metadata().unwrap().permissions().mode() & 0o777,
+        0o700
+    );
     let examples = workspace().join("fixtures/scenarios/github");
     let mut originals = Vec::new();
     for name in [
