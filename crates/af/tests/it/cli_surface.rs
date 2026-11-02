@@ -1510,7 +1510,8 @@ fn root_help_has_one_command_list_and_every_named_topic_resolves() {
             "agents",
             "self",
             "storage",
-            "telemetry"
+            "telemetry",
+            "scenarios"
         ]
     );
     for (name, about) in rows {
@@ -1534,6 +1535,9 @@ fn root_help_has_one_command_list_and_every_named_topic_resolves() {
         "Gate",
         "Pipeline",
         "Candidate",
+        "Scenario",
+        "Run",
+        "Ant",
     ] {
         assert!(
             concepts

@@ -56,6 +56,7 @@ mod report_tasks;
 mod review_handoff;
 mod review_task;
 mod sarif;
+mod scenario;
 mod self_optimizer;
 mod selfmgmt;
 mod shipped_schemas;
@@ -1822,7 +1823,7 @@ fn main() {
         // The free-disk floor and the budget step before a new warm key (ADR-0144). Without
         // them no check or Worker may start, so work is refused rather than run unguarded.
         eprintln!(
-            "af: the storage budget cannot be set up, so no Task or review work starts: {}; \
+            "af: the storage budget cannot be set up, so no Task, review or Scenario work starts: {}; \
              see `af config show --origin` for [storage] and the XDG directories",
             terminal_lines(&error.to_string())
         );
@@ -1928,6 +1929,8 @@ fn main() {
                 .map(|()| 0),
         ),
         cli::Command::Task { command } => ("af task", task_command(command)),
+        cli::Command::Scenario { command } => ("af scenario", scenario::scenario(command)),
+        cli::Command::Ant { command } => ("af ant", scenario::ant(command)),
         cli::Command::Project {
             command:
                 cli::ProjectCli::Brief {
@@ -2561,7 +2564,8 @@ fn task_command(command: cli::TaskCommand) -> Result<i32, String> {
 
 /// The commands that run Task Workers through the shared Task host take over SIGINT and SIGTERM
 /// so an interrupt stops those Workers before af exits (ADR-0129); `af self optimize --execute`
-/// runs an Optimization Task's Workers the same way (issue #158).
+/// runs an Optimization Task's Workers the same way (issue #158). Scenario drivers and Ant
+/// ticks also hold the Storage Budget, including when they dispatch only orchestration steps.
 fn runs_task_work(command: &cli::Command) -> bool {
     match command {
         cli::Command::Review(namespace) => {
@@ -2577,6 +2581,12 @@ fn runs_task_work(command: &cli::Command) -> bool {
         cli::Command::SelfCmd { command } => {
             matches!(command, cli::SelfCommand::Optimize { execute: true, .. })
         }
+        cli::Command::Scenario { command } => matches!(
+            command,
+            scenario::ScenarioCommand::Start { execute: true, .. }
+                | scenario::ScenarioCommand::Resume { .. }
+        ),
+        cli::Command::Ant { command } => matches!(command, scenario::AntCommand::Tick { .. }),
         _ => false,
     }
 }
@@ -2619,6 +2629,7 @@ fn recorded_run(command: &cli::Command) -> Option<review_pipeline::telemetry::Ru
 
 /// `af task run`, `af task start --execute` and `af review run` end with the Storage Budget's
 /// sweep: the budget always, age-based collection too when `[storage] auto_gc` is on (ADR-0144).
+/// Executing Scenario commands and Ant ticks participate even without child Task work.
 fn collects_after_run(command: &cli::Command) -> bool {
     match command {
         cli::Command::Review(namespace) => {
@@ -2629,6 +2640,7 @@ fn collects_after_run(command: &cli::Command) -> bool {
             cli::TaskCommand::Start { execute: true, .. }
                 | cli::TaskCommand::Run { detach: false, .. }
         ),
+        cli::Command::Scenario { .. } | cli::Command::Ant { .. } => runs_task_work(command),
         _ => false,
     }
 }
@@ -6052,6 +6064,47 @@ mod plan_change_tests {
 
 #[cfg(test)]
 mod option_tests {
+    #[test]
+    fn scenario_and_ant_execution_install_storage_and_sweep_afterwards() {
+        use clap::Parser;
+        let start = [
+            "scenario",
+            "start",
+            "run",
+            "--file",
+            "bundle.json",
+            "--authority",
+            "policy.json",
+            "--inputs",
+            "inputs.json",
+            "--confirm-pin",
+            "sha256:pin",
+        ];
+        for (words, executes) in [
+            (start.to_vec(), false),
+            ([start.as_slice(), &["--execute"]].concat(), true),
+            (vec!["scenario", "resume", "run"], true),
+            (vec!["ant", "tick"], true),
+            (vec!["scenario", "show", "run"], false),
+            (vec!["scenario", "list"], false),
+            (vec!["scenario", "cancel", "run", "--reason", "stop"], false),
+            (vec!["ant", "enable", "daily"], false),
+            (vec!["ant", "pause", "daily"], false),
+            (vec!["ant", "disable", "daily"], false),
+            (vec!["ant", "show", "daily"], false),
+        ] {
+            let parsed = crate::cli::Af::parse_from(std::iter::once("af").chain(words.clone()));
+            let command = parsed.command.unwrap();
+            assert_eq!(super::runs_task_work(&command), executes, "{words:?}");
+            assert_eq!(super::collects_after_run(&command), executes, "{words:?}");
+            assert_eq!(
+                super::needs_interrupt_handling(&command),
+                executes,
+                "{words:?}"
+            );
+        }
+    }
+
     /// Every command that runs Task Workers takes over SIGINT and SIGTERM and holds the Storage
     /// Budget; `af self optimize --execute` is one (issue #158), its preview is not.
     #[test]

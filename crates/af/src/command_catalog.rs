@@ -232,6 +232,61 @@ pub(crate) const EFFECTS: &[(&str, Effects)] = &[
     ("af task status", READS),
     ("af task events", READS),
     ("af task cancel", writes(&[(Store, None)])),
+    ("af scenario validate", READS),
+    (
+        "af scenario start",
+        Effects {
+            tokens: Tokens::Charges(Some("--execute")),
+            writes: &[
+                (Store, None),
+                (Files, Some("authorized file action")),
+                (Remote, Some("authorized publication adapter")),
+            ],
+            human: &[(Approval, Some("exact pin confirmation"))],
+        },
+    ),
+    ("af scenario show", READS),
+    ("af scenario list", READS),
+    (
+        "af scenario resume",
+        Effects {
+            tokens: Tokens::Charges(None),
+            writes: &[
+                (Store, None),
+                (Files, Some("authorized file action")),
+                (Remote, Some("authorized publication adapter")),
+            ],
+            human: &[],
+        },
+    ),
+    ("af scenario cancel", writes(&[(Store, None)])),
+    ("af scenario decision-payload", writes(&[(Files, None)])),
+    (
+        "af scenario decide",
+        Effects {
+            human: &[(Approval, None)],
+            ..writes(&[(Store, None)])
+        },
+    ),
+    ("af ant validate", READS),
+    ("af ant add", writes(&[(Store, None)])),
+    ("af ant show", READS),
+    ("af ant list", READS),
+    ("af ant enable", writes(&[(Store, None)])),
+    ("af ant pause", writes(&[(Store, None)])),
+    ("af ant disable", writes(&[(Store, None)])),
+    (
+        "af ant tick",
+        Effects {
+            tokens: Tokens::Charges(None),
+            writes: &[
+                (Store, None),
+                (Files, Some("authorized file action")),
+                (Remote, Some("authorized publication adapter")),
+            ],
+            human: &[],
+        },
+    ),
     ("af task findings", READS),
     ("af task materialize", writes(&[(Files, None)])),
     ("af task diff", READS),

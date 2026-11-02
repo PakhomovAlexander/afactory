@@ -154,6 +154,7 @@
       "task_agent_loop": "e2e",
       "task_attempt_wall": "e2e",
       "task_catalog": "e2e",
+      "scenario": "e2e",
       "task_cli": "e2e",
       "task_cli_fixture": "e2e",
       "task_continue": "e2e",

@@ -78,7 +78,10 @@ The gate branches and draft pull request of a Remote Check are not delivery: the
 a check a pipeline lists in `remote_checks`, under the push target of an operator's mapping and a
 plan that says it publishes, carry commits built from Task Snapshots, are never merged, and the
 gate pull request is never used as a delivery pull request
-([ADR-0140](adr/0140-run-a-declared-check-through-a-gate-pull-request.md)).
+([ADR-0140](adr/0140-run-a-declared-check-through-a-gate-pull-request.md)). Scenario publication
+Actions are another separately authorized coordination capability, outside Task delivery:
+[ADR-0274](adr/0274-orchestrate-pinned-scenarios-and-admit-ant-occurrences.md) requires a scoped
+installed adapter and an exact signed human decision. Scenarios do not make delivery publish.
 
 ### Model output as plan approval
 

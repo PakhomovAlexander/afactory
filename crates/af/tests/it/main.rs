@@ -49,6 +49,7 @@ mod provider_registry;
 mod render;
 mod review_plan_refusals;
 mod routing;
+mod scenario;
 mod self_channel;
 mod self_managed;
 mod self_optimizer;
