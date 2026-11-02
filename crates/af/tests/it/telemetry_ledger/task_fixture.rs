@@ -11,7 +11,7 @@ use review_core::task::plan::*;
 use review_core::task::usage::{
     TASK_TOKEN_USAGE_V3, TASK_USAGE_OBSERVATION_V1, TaskTokenUsageV3, TaskUsageObservationV1,
 };
-use review_core::task::{self, ArtifactInputV1, EXECUTION_PLAN_V1, TaskResultV1, TaskRevisionV1};
+use review_core::task::{self, ArtifactInputV1, EXECUTION_PLAN_V2, TaskResultV1, TaskRevisionV1};
 use review_graph::task::{
     CompileContext, CompiledOperator, OperatorAttemptCost, OperatorSignature, ReviewOperation,
     compile_task,
@@ -46,7 +46,7 @@ impl TaskAuthority for Authority {
         &self,
         _: &Cas,
         _: &TaskRevisionV1,
-        _: &ExecutionPlanV1,
+        _: &ExecutionPlanV2,
     ) -> Result<Vec<GeneratedOriginV1>, String> {
         Ok(vec![])
     }
@@ -65,7 +65,7 @@ impl TaskAuthority for Authority {
         &self,
         _: &Cas,
         _: &TaskRevisionV1,
-        _: &ExecutionPlanV1,
+        _: &ExecutionPlanV2,
         _: &TaskInvocationV1,
         _: &review_store::store::task::execution::ReservedTaskAttempt,
         _: &str,
@@ -76,7 +76,7 @@ impl TaskAuthority for Authority {
         &self,
         _: &Cas,
         _: &TaskRevisionV1,
-        _: &ExecutionPlanV1,
+        _: &ExecutionPlanV2,
         _: &TaskInvocationV1,
         _: &TaskOutputV1,
         _definition: &review_graph::task::CompiledNode,
@@ -407,7 +407,7 @@ impl TaskFixture {
             CompiledOperator::ProviderAdmission {
                 bindings: BTreeSet::from(["first".into(), "second".into()]),
             };
-        let mut plan: ExecutionPlanV1 = serde_json::from_str(include_str!(
+        let mut plan: ExecutionPlanV2 = serde_json::from_str(include_str!(
             "../../../../../fixtures/task-contracts/v1/execution-plan.json"
         ))
         .unwrap();
@@ -428,7 +428,7 @@ impl TaskFixture {
                 artifact_id: pipeline_id,
             },
         )]);
-        let plan_id = put(&cas, EXECUTION_PLAN_V1, &plan);
+        let plan_id = put(&cas, EXECUTION_PLAN_V2, &plan);
         let lease = store
             .open_task(&cas, &revision_id, "fixture", LEASE_MS)
             .unwrap();

@@ -1,5 +1,5 @@
 use super::*;
-use review_pipeline::task::campaign_review::plan::REVIEW_TASK_POLICY_V4;
+use review_pipeline::task::campaign_review::plan::REVIEW_TASK_POLICY_V5;
 
 fn definition(order: &[&str]) -> String {
     include_str!("../../../../../review-config/tests/fixtures/dynamic-v5.toml").replace(
@@ -15,8 +15,8 @@ fn settings_for(mode: &str) -> ReviewPlanSettings {
     let mut review = settings();
     review.mode = mode.into();
     review.executions = BTreeMap::from([
-        ("scatter".into(), WorkerExecutionV1::Command {}),
-        ("closeout".into(), WorkerExecutionV1::Command {}),
+        ("scatter".into(), WorkerExecutionV2::Command {}),
+        ("closeout".into(), WorkerExecutionV2::Command {}),
     ]);
     review
 }
@@ -63,7 +63,7 @@ fn integration_is_captured_only_for_heavy_rounds_with_its_original_dormant_allow
             cas.get_artifact(compiler.policy_id())
                 .unwrap()
                 .artifact_type,
-            REVIEW_TASK_POLICY_V4
+            REVIEW_TASK_POLICY_V5
         );
         if mode == "heavy" {
             let dormant = graph.review_integration.as_ref().unwrap();

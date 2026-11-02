@@ -7,7 +7,7 @@ use review_check::{CheckDefinition, CheckResult, CheckStatus};
 use review_config::task::catalog::*;
 use review_core::PortCardinality;
 use review_core::task::pipeline::*;
-use review_core::task::plan::ExecutionPlanV1;
+use review_core::task::plan::ExecutionPlanV2;
 use review_core::task::plan::IndependencePolicyV1;
 use review_core::task::remote_check::{
     PUBLISH_GATE_EFFECT, REMOTE_CHECK_EVIDENCE_V1, RemoteCheckEvidenceV1,
@@ -325,7 +325,7 @@ impl Planned {
     }
 
     /// The plan of the root pipeline, as the catalog compiler captures it.
-    pub fn compile(&self) -> Result<(ExecutionPlanV1, CompiledTask), String> {
+    pub fn compile(&self) -> Result<(ExecutionPlanV2, CompiledTask), String> {
         self.compiler.compile(
             &self.cas,
             &self.revision,
@@ -340,7 +340,7 @@ pub struct Recorded {
     pub cas: Cas,
     pub domain: CodeTaskDomain,
     pub policy_id: String,
-    pub plan: ExecutionPlanV1,
+    pub plan: ExecutionPlanV2,
     pub receipt: Option<TaskCheckReceiptV2>,
     pub candidate: String,
 }
@@ -401,7 +401,7 @@ pub fn run_planned(planned: Planned, host: impl FnOnce(&Path) -> RemoteCheckHost
     let (plan, graph) = compiler.compile(&cas, &revision, &pipeline_name).unwrap();
     let plan_id = cas
         .put_artifact(
-            EXECUTION_PLAN_V1,
+            EXECUTION_PLAN_V2,
             producer(),
             vec![],
             None,

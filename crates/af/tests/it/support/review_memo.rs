@@ -1,6 +1,6 @@
 //! Reuse one captured domain across operations, then mutate original evidence between calls.
 use review_core::task::execution::TaskInvocationV1;
-use review_core::task::plan::ExecutionPlanV1;
+use review_core::task::plan::ExecutionPlanV2;
 use review_graph::task::CompiledTask;
 use review_pipeline::task::TaskOperatorHost;
 use review_pipeline::task::review::ReviewTaskDomain;
@@ -11,7 +11,7 @@ use std::path::Path;
 pub fn refuses_changed_history(state: &Path, invocation: &Value, original_round: &Value) {
     let cas = Cas::open_existing(state.join("cas")).unwrap();
     let input: TaskInvocationV1 = serde_json::from_value(invocation.clone()).unwrap();
-    let plan: ExecutionPlanV1 =
+    let plan: ExecutionPlanV2 =
         serde_json::from_value(cas.get_json(&input.plan_id).unwrap()["payload"].clone()).unwrap();
     let graph: CompiledTask =
         serde_json::from_value(cas.get_json(&plan.compiled_graph_id).unwrap()["payload"].clone())

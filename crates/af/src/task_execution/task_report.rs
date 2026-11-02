@@ -12,7 +12,7 @@ use review_core::finding_set::FindingSetV1;
 use review_core::task::execution::{TASK_OUTPUT_V1, TaskAttemptResultV1, TaskOutputV1};
 use review_core::task::feedback::{TASK_RETRY_FEEDBACK_V1, TaskRetryFeedbackV1};
 use review_core::task::pipeline::TaskOperatorV1;
-use review_core::task::plan::WorkerExecutionV1;
+use review_core::task::plan::WorkerExecutionV2;
 use review_core::task::runtime::{
     TASK_RUNTIME_EVIDENCE_V1, TaskRuntimeEvidenceV1, TaskRuntimeSpanKindV1,
 };
@@ -594,12 +594,12 @@ fn slot_of(node: &CompiledNode) -> Option<&str> {
 
 /// The Worker `plan` binds `slot` to, named by Provider kind, model and effort only: never the
 /// binding's label or principal, and a model value that is not a model identity is `unknown`.
-fn bound_worker(plan: &ExecutionPlanV1, slot: &str) -> Option<TaskReportWorkerV1> {
+fn bound_worker(plan: &ExecutionPlanV2, slot: &str) -> Option<TaskReportWorkerV1> {
     plan.bindings
         .get(slot)
         .map(|binding| match &binding.execution {
-            WorkerExecutionV1::Command {} => TaskReportWorkerV1::Command {},
-            WorkerExecutionV1::Model {
+            WorkerExecutionV2::Command {} => TaskReportWorkerV1::Command {},
+            WorkerExecutionV2::Model {
                 provider_kind,
                 model,
                 effort,
@@ -626,7 +626,7 @@ fn slot_role(graph: &CompiledTask, slot: &str) -> String {
 /// bookkeeping nodes (seal, bind, reduce, accept, select) and Provider admission are left out.
 fn pipeline(
     cas: &Cas,
-    plan: &ExecutionPlanV1,
+    plan: &ExecutionPlanV2,
     graph: &CompiledTask,
 ) -> Result<TaskReportPipelineV1, String> {
     let root = graph
@@ -858,12 +858,12 @@ fn tally_runs(events: &[(u64, u64, Mark)]) -> Option<EventTimes> {
 
 /// Each recorded plan and its compiled graph, read once.
 #[derive(Default)]
-struct Plans(BTreeMap<String, (ExecutionPlanV1, CompiledTask)>);
+struct Plans(BTreeMap<String, (ExecutionPlanV2, CompiledTask)>);
 
 impl Plans {
-    fn get(&mut self, cas: &Cas, id: &str) -> Result<(&ExecutionPlanV1, &CompiledTask), String> {
+    fn get(&mut self, cas: &Cas, id: &str) -> Result<(&ExecutionPlanV2, &CompiledTask), String> {
         if !self.0.contains_key(id) {
-            let plan: ExecutionPlanV1 = artifact(cas, id, EXECUTION_PLAN_V1)?;
+            let plan: ExecutionPlanV2 = artifact(cas, id, EXECUTION_PLAN_V2)?;
             let graph: CompiledTask = artifact(cas, &plan.compiled_graph_id, COMPILED_TASK_V1)?;
             self.0.insert(id.to_owned(), (plan, graph));
         }

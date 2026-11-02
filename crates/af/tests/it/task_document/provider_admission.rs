@@ -72,7 +72,7 @@ print(json.dumps({'type':'turn.completed','usage':usage}))
             }
         };
         std::fs::write(home.join("usage.json"), serde_json::to_vec(&usage).unwrap()).unwrap();
-        std::fs::write(home.join("providers.toml"), toml::to_string(&json!({"version":1,"providers":[{"id":"codex-personal","kind":"codex","auth_dir":home}]})).unwrap()).unwrap();
+        std::fs::write(home.join("providers.toml"), toml::to_string(&json!({"version":2,"providers":[{"id":"codex-personal","kind":"codex","auth_dir":home}]})).unwrap()).unwrap();
         let catalog_path = repo.join(".af/task-catalog.toml");
         let mut catalog: Value =
             toml::from_str(&std::fs::read_to_string(&catalog_path).unwrap()).unwrap();
@@ -389,7 +389,7 @@ fn admission_tokens_and_wall_exceeding_original_task_limits_refuse_paid_dispatch
 
 fn catalog_schema(schema: &Value) -> jsonschema::Validator {
     let contracts: Value = serde_json::from_str(include_str!(
-        "../../../../../schemas/task-contracts-v1.json"
+        "../../../../../schemas/task-contracts-v2.json"
     ))
     .unwrap();
     let planner: Value = serde_json::from_str(include_str!(
@@ -398,7 +398,7 @@ fn catalog_schema(schema: &Value) -> jsonschema::Validator {
     .unwrap();
     let registry = jsonschema::Registry::new()
         .add(
-            "urn:af:schema:task-contracts:1",
+            "urn:af:schema:task-contracts:2",
             jsonschema::Resource::from_contents(contracts),
         )
         .unwrap()
@@ -598,4 +598,91 @@ fn captured_task_rechecks_disable_on_fresh_run_and_enable_restores_the_same_plan
         std::fs::read_to_string(f.home.join("calls")).unwrap(),
         "admission\nauthor\n"
     );
+}
+
+#[test]
+fn pi_task_admission_typed_result_retry_and_account_drift_use_the_common_path() {
+    for mode in [
+        "document",
+        "retry",
+        "replace-after-admission",
+        "rotate-after-admission",
+        "replace-endpoint-after-admission",
+    ] {
+        let mut f = Fixture::new(true, 5, 49152);
+        let (sdk, path, state) = crate::fake_models::install_pi(f._root.path(), &f.home, mode);
+        f.path = path;
+        std::fs::write(f.home.join("providers.toml"),toml::to_string(&json!({"version":2,"providers":[{"id":"pi-personal","kind":"pi","backend":"openai-codex","auth_dir":f.home,"sdk_entrypoint":sdk}]})).unwrap()).unwrap();
+        f.catalog["providers"] = json!({"builtin/document-author":"pi-personal"});
+        let package = f.repo.join(
+            f.catalog["packages"]["builtin/document-author"]["path"]
+                .as_str()
+                .unwrap(),
+        );
+        let mut worker: TaskWorkerManifest =
+            toml::from_str(&std::fs::read_to_string(package.join("worker.toml")).unwrap()).unwrap();
+        worker.runner = TaskWorkerRunner::Model {
+            provider_kind: "pi".into(),
+            model: "o3".into(),
+            effort: "high".into(),
+        };
+        std::fs::write(
+            package.join("worker.toml"),
+            toml::to_string(&worker).unwrap(),
+        )
+        .unwrap();
+        f.catalog["packages"]["builtin/document-author"]["digest"] = json!(
+            review_config::lock::package_digest("builtin/document-author", &package).unwrap()
+        );
+        std::fs::write(
+            f.repo.join(".af/task-catalog.toml"),
+            toml::to_string(&f.catalog).unwrap(),
+        )
+        .unwrap();
+        commit(&f.repo);
+        let planned = success(f.cli(&["task", "plan", "--file", "document.json"]));
+        let binding = &planned["plan"]["bindings"]["root.author"];
+        // The exact execution identity is captured even when this plan renderer changes its
+        // slot labels; inspect the canonical plan rather than manufacturing a Pi authority.
+        let cas = review_store::Cas::open_existing(f.state.join("cas")).unwrap();
+        let envelope = cas.get_json(planned["plan_id"].as_str().unwrap()).unwrap();
+        let text = envelope.to_string();
+        assert!(text.contains("openai-codex"), "{binding}\n{text}");
+        let out = f.cli(&["task", "run", "--execute", "release-notes"]);
+        let done: Value = serde_json::from_slice(&out.stdout).unwrap_or_else(|_| {
+            panic!(
+                "{}\n{}",
+                String::from_utf8_lossy(&out.stdout),
+                String::from_utf8_lossy(&out.stderr)
+            )
+        });
+        let calls = std::fs::read_to_string(state.with_extension("json.calls")).unwrap();
+        if matches!(
+            mode,
+            "replace-after-admission" | "replace-endpoint-after-admission"
+        ) {
+            assert!(!out.status.success(), "{done}");
+            assert_eq!(calls, "admission\n");
+            assert_eq!(done["chargeable_tokens"], "5");
+        } else {
+            assert!(
+                out.status.success(),
+                "{done}\n{}",
+                String::from_utf8_lossy(&out.stderr)
+            );
+            assert_eq!(done["result"]["acceptance"], "satisfied");
+            assert_eq!(
+                calls,
+                if mode == "retry" {
+                    "admission\nworker\nworker\n"
+                } else {
+                    "admission\nworker\n"
+                }
+            );
+            assert_eq!(
+                done["chargeable_tokens"],
+                if mode == "retry" { "15" } else { "10" }
+            );
+        }
+    }
 }

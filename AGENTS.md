@@ -10,9 +10,12 @@ and the gate branches of a Remote Check that a pipeline chose and an operator's 
 
 Before changing behaviour, read [`CONTEXT.md`](CONTEXT.md) for the canonical vocabulary and
 [`docs/adr/README.md`](docs/adr/README.md) for the binding decisions; [`docs/README.md`](docs/README.md)
-maps the rest of the documentation. Use the pinned Rust toolchain (`rust-toolchain.toml`) and keep
-`make check` green. Never weaken a contract, fixture, gate, budget, or sandbox boundary to make a
-test or review pass. Project-specific pipelines, reviewer packages, Campaign state, and captured
+maps the rest of the documentation. New ADRs follow that stable guide: add only their own
+`YYYY-MM-DD-descriptive-topic.md` file, preserve accepted identities, and discover decisions with
+`python3 -I scripts/adr.py list`; no central index edit or sequence allocation is required.
+That guide supersedes older Task prompt wording about assigned ADR numbers or README entries.
+Use the pinned Rust toolchain (`rust-toolchain.toml`) and keep `make check` green. Never weaken a
+contract, fixture, gate, budget, or sandbox boundary to make a test or review pass. Project-specific pipelines, reviewer packages, Campaign state, and captured
 review corpora belong in consuming repositories, not here.
 
 - Every change to this repository is made through af Tasks: an implementation pipeline makes

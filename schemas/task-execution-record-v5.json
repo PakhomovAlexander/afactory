@@ -15,7 +15,7 @@
           "const": "invocation"
         },
         "invocation_id": {
-          "$ref": "urn:af:schema:task-contracts:1#/$defs/digest"
+          "$ref": "urn:af:schema:task-contracts:2#/$defs/digest"
         }
       }
     },
@@ -36,7 +36,7 @@
           "const": "reserved"
         },
         "invocation_id": {
-          "$ref": "urn:af:schema:task-contracts:1#/$defs/digest"
+          "$ref": "urn:af:schema:task-contracts:2#/$defs/digest"
         },
         "attempt_id": {
           "type": "string",
@@ -59,7 +59,7 @@
         "feedback_ids": {
           "type": "array",
           "items": {
-            "$ref": "urn:af:schema:task-contracts:1#/$defs/digest"
+            "$ref": "urn:af:schema:task-contracts:2#/$defs/digest"
           },
           "maxItems": 16,
           "uniqueItems": true
@@ -83,7 +83,7 @@
           "pattern": "^[A-Za-z0-9]{26}$"
         },
         "context_id": {
-          "$ref": "urn:af:schema:task-contracts:1#/$defs/digest"
+          "$ref": "urn:af:schema:task-contracts:2#/$defs/digest"
         }
       }
     },
@@ -139,7 +139,7 @@
           "const": "published"
         },
         "output_id": {
-          "$ref": "urn:af:schema:task-contracts:1#/$defs/digest"
+          "$ref": "urn:af:schema:task-contracts:2#/$defs/digest"
         },
         "attempt_id": {
           "type": "string",
@@ -182,7 +182,7 @@
                   "const": "succeeded"
                 },
                 "output_id": {
-                  "$ref": "urn:af:schema:task-contracts:1#/$defs/digest"
+                  "$ref": "urn:af:schema:task-contracts:2#/$defs/digest"
                 }
               }
             },
@@ -198,10 +198,10 @@
                   "const": "failed"
                 },
                 "diagnostic_id": {
-                  "$ref": "urn:af:schema:task-contracts:1#/$defs/digest"
+                  "$ref": "urn:af:schema:task-contracts:2#/$defs/digest"
                 },
                 "feedback_id": {
-                  "$ref": "urn:af:schema:task-contracts:1#/$defs/digest"
+                  "$ref": "urn:af:schema:task-contracts:2#/$defs/digest"
                 }
               }
             },
@@ -217,7 +217,7 @@
                   "const": "abandoned"
                 },
                 "diagnostic_id": {
-                  "$ref": "urn:af:schema:task-contracts:1#/$defs/digest"
+                  "$ref": "urn:af:schema:task-contracts:2#/$defs/digest"
                 }
               }
             }
@@ -226,13 +226,13 @@
         "raw_artifact_ids": {
           "type": "array",
           "items": {
-            "$ref": "urn:af:schema:task-contracts:1#/$defs/digest"
+            "$ref": "urn:af:schema:task-contracts:2#/$defs/digest"
           },
           "maxItems": 64,
           "uniqueItems": true
         },
         "usage_id": {
-          "$ref": "urn:af:schema:task-contracts:1#/$defs/digest"
+          "$ref": "urn:af:schema:task-contracts:2#/$defs/digest"
         },
         "unknown_usage": {
           "description": "No usage was reported: the Attempt is charged zero and its usage is unknown, with its cause (ADR-0143).",
@@ -294,14 +294,14 @@
           "$ref": "urn:af:schema:task-token-usage:3#/$defs/decimalU128"
         },
         "usage_id": {
-          "$ref": "urn:af:schema:task-contracts:1#/$defs/digest"
+          "$ref": "urn:af:schema:task-contracts:2#/$defs/digest"
         },
         "raw_artifact_ids": {
           "type": "array",
           "uniqueItems": true,
           "maxItems": 64,
           "items": {
-            "$ref": "urn:af:schema:task-contracts:1#/$defs/digest"
+            "$ref": "urn:af:schema:task-contracts:2#/$defs/digest"
           }
         }
       }
@@ -318,7 +318,7 @@
           "const": "owned_children_registered"
         },
         "child_set_id": {
-          "$ref": "urn:af:schema:task-contracts:1#/$defs/digest"
+          "$ref": "urn:af:schema:task-contracts:2#/$defs/digest"
         }
       }
     },
@@ -336,10 +336,10 @@
           "const": "owned_child_published"
         },
         "child_set_id": {
-          "$ref": "urn:af:schema:task-contracts:1#/$defs/digest"
+          "$ref": "urn:af:schema:task-contracts:2#/$defs/digest"
         },
         "output_id": {
-          "$ref": "urn:af:schema:task-contracts:1#/$defs/digest"
+          "$ref": "urn:af:schema:task-contracts:2#/$defs/digest"
         },
         "attempt_id": {
           "type": "string",
@@ -360,10 +360,10 @@
           "const": "owned_children_completed"
         },
         "child_set_id": {
-          "$ref": "urn:af:schema:task-contracts:1#/$defs/digest"
+          "$ref": "urn:af:schema:task-contracts:2#/$defs/digest"
         },
         "output_id": {
-          "$ref": "urn:af:schema:task-contracts:1#/$defs/digest"
+          "$ref": "urn:af:schema:task-contracts:2#/$defs/digest"
         }
       }
     },
@@ -379,7 +379,7 @@
           "const": "experiment_prepared"
         },
         "prepared_id": {
-          "$ref": "urn:af:schema:task-contracts:1#/$defs/digest"
+          "$ref": "urn:af:schema:task-contracts:2#/$defs/digest"
         }
       }
     },
@@ -396,10 +396,10 @@
           "const": "experiment_plan_decided"
         },
         "prepared_id": {
-          "$ref": "urn:af:schema:task-contracts:1#/$defs/digest"
+          "$ref": "urn:af:schema:task-contracts:2#/$defs/digest"
         },
         "decision_id": {
-          "$ref": "urn:af:schema:task-contracts:1#/$defs/digest"
+          "$ref": "urn:af:schema:task-contracts:2#/$defs/digest"
         }
       }
     },
@@ -417,13 +417,13 @@
           "const": "experiment_children_registered"
         },
         "prepared_id": {
-          "$ref": "urn:af:schema:task-contracts:1#/$defs/digest"
+          "$ref": "urn:af:schema:task-contracts:2#/$defs/digest"
         },
         "decision_id": {
-          "$ref": "urn:af:schema:task-contracts:1#/$defs/digest"
+          "$ref": "urn:af:schema:task-contracts:2#/$defs/digest"
         },
         "child_plan_id": {
-          "$ref": "urn:af:schema:task-contracts:1#/$defs/digest"
+          "$ref": "urn:af:schema:task-contracts:2#/$defs/digest"
         }
       }
     }

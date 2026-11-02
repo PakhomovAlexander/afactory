@@ -103,7 +103,7 @@ sys.stdout.write(open(home+'/reviewed').read())
         std::fs::write(&installed, crate::provider_cli::with_probe(stub)).unwrap();
         std::fs::set_permissions(&installed, std::fs::Permissions::from_mode(0o755)).unwrap();
         let registry = home.join("providers.toml");
-        std::fs::write(&registry,toml::to_string(&serde_json::json!({"version":1,"providers":[{"id":"claude-personal","kind":"claude","auth_dir":home}]})).unwrap()).unwrap();
+        std::fs::write(&registry,toml::to_string(&serde_json::json!({"version":2,"providers":[{"id":"claude-personal","kind":"claude","auth_dir":home}]})).unwrap()).unwrap();
         let catalog_path = repo.join(".af/task-catalog.toml");
         let mut catalog: toml::Value =
             toml::from_str(&std::fs::read_to_string(&catalog_path).unwrap()).unwrap();
@@ -251,7 +251,7 @@ fn a_model_at_capacity_is_waited_out_in_its_attempt_and_show_names_the_wait() {
     let shown = fixture.show(true);
     let shown: Value = serde_json::from_slice(&shown.stdout).unwrap();
     crate::schemas::valid(
-        &crate::schemas::validator("task-inspection-v14.json"),
+        &crate::schemas::validator("task-inspection-v15.json"),
         &shown,
     );
     let events = shown["provider_events"].as_array().unwrap();

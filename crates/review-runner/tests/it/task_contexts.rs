@@ -16,7 +16,7 @@ fn validator(name: &str) -> jsonschema::Validator {
         serde_json::from_slice::<Value>(&std::fs::read(root.join(name)).unwrap()).unwrap()
     };
     let mut registry = jsonschema::Registry::new();
-    for name in ["task-contracts-v1.json", "task-invocation-v1.json"] {
+    for name in ["task-contracts-v2.json", "task-invocation-v1.json"] {
         let schema = read(name);
         let id = schema["$id"].as_str().unwrap().to_owned();
         registry = registry

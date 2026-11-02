@@ -1,7 +1,7 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "$id": "urn:af:schema:legacy-review-task-policy:4",
-  "title": "LegacyReviewTaskPolicy@4",
+  "$id": "urn:af:schema:legacy-review-task-policy:5",
+  "title": "LegacyReviewTaskPolicy@5",
   "type": "object",
   "additionalProperties": false,
   "required": [
@@ -11,10 +11,10 @@
   ],
   "properties": {
     "engine_id": {
-      "$ref": "urn:af:schema:task-contracts:1#/$defs/digest"
+      "$ref": "urn:af:schema:task-contracts:2#/$defs/digest"
     },
     "campaign_manifest_id": {
-      "$ref": "urn:af:schema:task-contracts:1#/$defs/digest"
+      "$ref": "urn:af:schema:task-contracts:2#/$defs/digest"
     },
     "settings": {
       "type": "object",
@@ -52,7 +52,7 @@
           "type": "object",
           "minProperties": 1,
           "propertyNames": {
-            "$ref": "urn:af:schema:task-contracts:1#/$defs/name"
+            "$ref": "urn:af:schema:task-contracts:2#/$defs/name"
           },
           "additionalProperties": {
             "type": "object",
@@ -80,7 +80,7 @@
             "minLength": 1
           },
           "additionalProperties": {
-            "$ref": "urn:af:schema:task-contracts:1#/$defs/workerExecution"
+            "$ref": "urn:af:schema:task-contracts:2#/$defs/workerExecution"
           }
         },
         "provider_admission": {
@@ -107,7 +107,7 @@
           "type": "array",
           "uniqueItems": true,
           "items": {
-            "$ref": "urn:af:schema:task-contracts:1#/$defs/name"
+            "$ref": "urn:af:schema:task-contracts:2#/$defs/name"
           },
           "$comment": "Canonical ascending order is checked by captured-policy admission."
         }

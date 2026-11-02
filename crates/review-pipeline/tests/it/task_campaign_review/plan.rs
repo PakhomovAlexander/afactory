@@ -1,6 +1,6 @@
 use super::*;
 use review_core::task::execution::{TaskInvocationV1, TaskOutputV1};
-use review_core::task::plan::{ExecutionPlanV1, WorkerExecutionV1};
+use review_core::task::plan::{ExecutionPlanV2, WorkerExecutionV2};
 use review_core::task::{TaskResultV1, TaskRevisionV1};
 use review_graph::task::OperatorAttemptCost;
 #[path = "plan/integration.rs"]
@@ -51,7 +51,7 @@ impl TaskDomain for RefuseExecution {
         &self,
         _: &Cas,
         _: &TaskRevisionV1,
-        _: &ExecutionPlanV1,
+        _: &ExecutionPlanV2,
         _: &TaskInvocationV1,
         _: &TaskOutputV1,
         _definition: &review_graph::task::CompiledNode,
@@ -70,7 +70,7 @@ pub(super) fn settings() -> ReviewPlanSettings {
             uncapped_attempt_tokens: 1,
         },
         outputs: capture::outputs(),
-        executions: BTreeMap::from([("reviewer".into(), WorkerExecutionV1::Command {})]),
+        executions: BTreeMap::from([("reviewer".into(), WorkerExecutionV2::Command {})]),
         provider_admission: OperatorAttemptCost {
             tokens: 1,
             wall_ms: 1000,
@@ -103,7 +103,7 @@ fn assert_cached_authority_is_fresh(
     root: &std::path::Path,
     compiler: &CampaignReviewPlanCompiler,
     task: &TaskRevisionV1,
-    plan: &ExecutionPlanV1,
+    plan: &ExecutionPlanV2,
 ) {
     let manifest_id = &compiler.round().binding().campaign_manifest_id;
     let manifest: review_core::CampaignManifestV1 =
@@ -240,7 +240,7 @@ fn captured_review_plan_admits_reopens_and_refuses_changed_or_missing_authority(
             compiler.round().binding().campaign_manifest_id
         );
     }
-    let plan_id = artifact(&cas, review_core::task::EXECUTION_PLAN_V1, &plan);
+    let plan_id = artifact(&cas, review_core::task::EXECUTION_PLAN_V2, &plan);
     let authority =
         CapturedTaskAuthority::for_campaign_review(&compiler, &RefuseExecution, &NoTaskDeveloper);
     let lease = store
@@ -350,11 +350,12 @@ fn captured_native_runner_requires_exact_model_binding_and_common_provider_budge
     let mut selected = settings();
     selected.executions.insert(
         "reviewer".into(),
-        WorkerExecutionV1::Model {
+        WorkerExecutionV2::Model {
             provider: "claude-personal".into(),
             provider_kind: "claude".into(),
             principal_id: "fixture-principal".into(),
             model: "claude-fixture".into(),
+            pi: None,
             effort: "high".into(),
         },
     );
@@ -388,13 +389,13 @@ fn captured_native_runner_requires_exact_model_binding_and_common_provider_budge
     );
     compiler.validate_plan(&cas, &task, &plan).unwrap();
     let mut changed = plan.clone();
-    if let WorkerExecutionV1::Model { provider, .. } =
+    if let WorkerExecutionV2::Model { provider, .. } =
         &mut changed.bindings.values_mut().next().unwrap().execution
     {
         *provider = "ambient-work".into();
     }
     assert!(compiler.validate_plan(&cas, &task, &changed).is_err());
-    if let WorkerExecutionV1::Model { effort, .. } =
+    if let WorkerExecutionV2::Model { effort, .. } =
         selected.executions.get_mut("reviewer").unwrap()
     {
         *effort = "low".into();
@@ -403,7 +404,7 @@ fn captured_native_runner_requires_exact_model_binding_and_common_provider_budge
     assert_eq!(store.len("review").unwrap(), 2);
 }
 
-fn assert_plan_schemas(cas: &Cas, compiler: &CampaignReviewPlanCompiler, plan: &ExecutionPlanV1) {
+fn assert_plan_schemas(cas: &Cas, compiler: &CampaignReviewPlanCompiler, plan: &ExecutionPlanV2) {
     use std::sync::OnceLock;
     static VALIDATORS: OnceLock<BTreeMap<&'static str, jsonschema::Validator>> = OnceLock::new();
     let validators = VALIDATORS.get_or_init(|| {
@@ -411,13 +412,13 @@ fn assert_plan_schemas(cas: &Cas, compiler: &CampaignReviewPlanCompiler, plan: &
             .map(std::path::PathBuf::from)
             .unwrap_or_else(|| std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../.."));
         let common: serde_json::Value = serde_json::from_slice(
-            &std::fs::read(root.join("schemas/task-contracts-v1.json")).unwrap(),
+            &std::fs::read(root.join("schemas/task-contracts-v2.json")).unwrap(),
         )
         .unwrap();
         [
             (
-                "af/LegacyReviewTaskPolicy@4",
-                "legacy-review-task-policy-v4.json",
+                "af/LegacyReviewTaskPolicy@5",
+                "legacy-review-task-policy-v5.json",
             ),
             ("af/CompiledTask@1", "compiled-task-v1.json"),
             (
@@ -425,8 +426,8 @@ fn assert_plan_schemas(cas: &Cas, compiler: &CampaignReviewPlanCompiler, plan: &
                 "legacy-review-dependency-v1.json",
             ),
             (
-                "af/LegacyReviewInvocationPolicy@1",
-                "legacy-review-invocation-policy-v1.json",
+                "af/LegacyReviewInvocationPolicy@2",
+                "legacy-review-invocation-policy-v2.json",
             ),
         ]
         .into_iter()

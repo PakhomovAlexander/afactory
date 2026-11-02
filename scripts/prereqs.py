@@ -155,9 +155,16 @@ def checks(env, toolchain_file, target, min_free_gib):
                     "xcode-select --install" if macos()
                     else "apt install build-essential (dnf install gcc)"))
 
+    node = (tool := which("node")) and run([tool, "--version"], env)
+    numbers = re.search(r"v?(\d+)\.(\d+)\.(\d+)", node or "")
+    version = tuple(int(part) for part in numbers.groups()) if numbers else None
+    results.append(("node", bool(version) and version >= (22, 19, 0),
+                    first_line(node) if node else "not on PATH",
+                    "install Node.js 22.19 or later (Pi host fixtures and markdownlint)"))
+
     npx = (tool := which("npx")) and run([tool, "--version"], env)
     results.append(("npx", bool(npx), f"npx {first_line(npx)}" if npx else "not on PATH",
-                    "install Node.js 18 or later, which brings npx (markdownlint-cli2 runs "
+                    "install Node.js 22.19 or later, which brings npx (markdownlint-cli2 runs "
                     "through it)"))
 
     minisign = (tool := which("minisign")) and run([tool, "-v"], env)

@@ -120,7 +120,7 @@ fn document(output: &Output) -> Value {
     let document: Value = serde_json::from_str(stdout.trim())
         .unwrap_or_else(|error| panic!("stdout is not one document: {error}\n{stdout}"));
     crate::schemas::valid(
-        &crate::schemas::validator("provider-status-v4.json"),
+        &crate::schemas::validator("provider-status-v5.json"),
         &document,
     );
     document
@@ -649,7 +649,7 @@ fn denied_codex_probe_is_distinct_on_status_and_detect_with_or_without_sandbox_m
             let value: Value = serde_json::from_slice(&output.stdout).unwrap();
             if args[1] == "status" {
                 crate::schemas::valid(
-                    &crate::schemas::validator("provider-status-v4.json"),
+                    &crate::schemas::validator("provider-status-v5.json"),
                     &value,
                 );
                 assert_eq!(only_provider(&value)["auth"], "probe_denied");

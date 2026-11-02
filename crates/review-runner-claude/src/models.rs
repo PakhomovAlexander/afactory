@@ -21,6 +21,8 @@
 //!
 //! af never substitutes a model or an effort level: every rule refuses or accepts the spelling
 //! as written.
+//! Pi does not use the versioned-name heuristic: its SDK catalog must list the exact model,
+//! and native admission checks that catalog again before any charged invocation.
 
 use crate::hint;
 
@@ -51,6 +53,7 @@ const MAX_NEAREST: usize = 5;
 /// A Provider kind, and the vocabulary af accepts for it without a catalog.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
 pub enum Kind {
+    Pi,
     Claude,
     Codex,
 }
@@ -58,6 +61,7 @@ pub enum Kind {
 impl Kind {
     pub fn parse(value: &str) -> Option<Kind> {
         match value {
+            "pi" => Some(Kind::Pi),
             "claude" => Some(Kind::Claude),
             "codex" => Some(Kind::Codex),
             _ => None,
@@ -66,6 +70,7 @@ impl Kind {
 
     pub fn name(self) -> &'static str {
         match self {
+            Kind::Pi => "pi",
             Kind::Claude => "claude",
             Kind::Codex => "codex",
         }
@@ -74,6 +79,7 @@ impl Kind {
     /// The effort levels af accepts for this kind before any catalog is read.
     pub fn efforts(self) -> &'static [&'static str] {
         match self {
+            Kind::Pi => &["off", "minimal", "low", "medium", "high", "xhigh", "max"],
             Kind::Claude => &CLAUDE_EFFORTS,
             Kind::Codex => &CODEX_EFFORTS,
         }
@@ -83,12 +89,13 @@ impl Kind {
     pub fn documented_aliases(self) -> &'static [(&'static str, &'static str)] {
         match self {
             Kind::Claude => &CLAUDE_ALIASES,
-            Kind::Codex => &[],
+            Kind::Pi | Kind::Codex => &[],
         }
     }
 
     fn harness(self) -> &'static str {
         match self {
+            Kind::Pi => "Pi SDK",
             Kind::Claude => "Claude Code",
             Kind::Codex => "Codex",
         }
@@ -330,7 +337,7 @@ pub fn check_static(kind: Kind, model: &str, effort: Option<&str>) -> Result<(),
     if !variants.is_empty() {
         return Err(Refusal::new(Rule::Misspelled, variants));
     }
-    if !versioned(model) {
+    if kind != Kind::Pi && !versioned(model) {
         let nearest = nearest_of(known_ids(kind), model);
         return Err(Refusal::new(Rule::Unversioned, nearest));
     }
@@ -387,7 +394,7 @@ pub fn check(kind: Kind, catalog: Option<&Catalog>, model: &str, effort: Option<
     };
     let Some(listed) = catalog.model(model) else {
         let misses = misspelled(catalog, model);
-        return if misses.is_empty() {
+        return if misses.is_empty() && kind != Kind::Pi {
             Verdict::Unverified
         } else {
             Verdict::Refused(Refusal::new(Rule::Misspelled, misses))

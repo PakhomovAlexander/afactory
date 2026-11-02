@@ -439,11 +439,12 @@ fn run(case: &'static str) -> Outcome {
         .bind_worker(
             "fixture/uix",
             AdmittedWorkerSettings {
-                execution: WorkerExecutionV1::Model {
+                execution: WorkerExecutionV2::Model {
                     provider: "personal".into(),
                     provider_kind: "fixture".into(),
                     principal_id: policy_id.clone(),
                     model: "uix-model".into(),
+                    pi: None,
                     effort: "high".into(),
                 },
                 invocation_policy_id: policy_id.clone(),
@@ -464,7 +465,7 @@ fn run(case: &'static str) -> Outcome {
     let (plan, graph) = compiler.compile(&cas, &revision, &pipeline.name).unwrap();
     let plan_id = cas
         .put_artifact(
-            EXECUTION_PLAN_V1,
+            EXECUTION_PLAN_V2,
             producer(),
             vec![],
             None,

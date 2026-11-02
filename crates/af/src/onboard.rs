@@ -1553,6 +1553,7 @@ fn provider_kind(runner: &str) -> Option<&'static str> {
     match runner {
         "claude" => Some("claude"),
         "codex" => Some("codex"),
+        "pi" => Some("pi"),
         _ => None,
     }
 }
@@ -1612,8 +1613,15 @@ fn providers_block(
         match ids.first() {
             None => {
                 let id = crate::providers::available_provider_id(kind, &taken);
+                let setup = if kind == "pi" {
+                    format!(
+                        "af provider setup {id} --kind pi --backend openai-codex --auth-dir /absolute/private/pi-profile --sdk-entrypoint /installed/node_modules/@earendil-works/pi-coding-agent/dist/index.js"
+                    )
+                } else {
+                    format!("af provider detect, or af provider setup {id} --kind {kind} --login")
+                };
                 lines.push(format!(
-                    "{node} needs a {kind} Provider: {NONE_REGISTERED}{PROVIDER_ARROW}af provider detect, or af provider setup {id} --kind {kind} --login"
+                    "{node} needs a {kind} Provider: {NONE_REGISTERED}{PROVIDER_ARROW}{setup}"
                 ));
             }
             Some(first) => {
@@ -2297,6 +2305,44 @@ mod tests {
         worker_manifest,
     };
     use review_core::{Arg, Command};
+
+    #[test]
+    fn pi_workers_name_explicit_setup_and_registered_provider_bindings() {
+        use super::{ReviewerSummary, providers_block, validated_next_steps};
+        use crate::providers::{Declared, RegistryRead};
+        let reviewers = vec![ReviewerSummary {
+            node: "correctness".into(),
+            package: "project/pi".into(),
+            runner: "pi".into(),
+            model: "o3 (high effort)".into(),
+        }];
+        let mut registry = RegistryRead {
+            path: None,
+            warning: None,
+            registered: vec![],
+            candidates: vec![],
+            unregistered: vec![],
+            registrable: vec![],
+        };
+        let missing = providers_block(&reviewers, &registry, false).join("\n");
+        assert!(missing.contains("--kind pi --backend openai-codex --auth-dir"));
+        assert!(!missing.contains("--login"));
+        registry.registered.push(Declared {
+            id: "pi-personal".into(),
+            kind: "pi",
+            auth_dir: None,
+        });
+        assert!(
+            providers_block(&reviewers, &registry, false)
+                .join("\n")
+                .contains("--provider correctness=pi-personal")
+        );
+        assert!(
+            validated_next_steps(&reviewers, &registry)
+                .join("\n")
+                .contains("--provider correctness=pi-personal")
+        );
+    }
 
     #[test]
     fn model_summary_understands_codex_short_flag() {

@@ -11,10 +11,10 @@
   ],
   "properties": {
     "continuation_id": {
-      "$ref": "urn:af:schema:task-contracts:1#/$defs/digest"
+      "$ref": "urn:af:schema:task-contracts:2#/$defs/digest"
     },
     "subject_id": {
-      "$ref": "urn:af:schema:task-contracts:1#/$defs/digest"
+      "$ref": "urn:af:schema:task-contracts:2#/$defs/digest"
     },
     "claims": {
       "type": "object",
@@ -35,10 +35,10 @@
         ],
         "properties": {
           "expected_view_id": {
-            "$ref": "urn:af:schema:task-contracts:1#/$defs/digest"
+            "$ref": "urn:af:schema:task-contracts:2#/$defs/digest"
           },
           "attestation_id": {
-            "$ref": "urn:af:schema:task-contracts:1#/$defs/digest"
+            "$ref": "urn:af:schema:task-contracts:2#/$defs/digest"
           },
           "outcome": {
             "enum": [

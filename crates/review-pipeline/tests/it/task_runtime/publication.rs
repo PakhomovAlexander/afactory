@@ -132,7 +132,7 @@ impl TaskDomain for RecoveringHost<'_> {
         &self,
         cas: &Cas,
         task: &TaskRevisionV1,
-        plan: &ExecutionPlanV1,
+        plan: &ExecutionPlanV2,
         input: &TaskInvocationV1,
         output: &TaskOutputV1,
         definition: &review_graph::task::CompiledNode,

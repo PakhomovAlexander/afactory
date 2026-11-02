@@ -16,10 +16,10 @@
       "description": "Omitted, the file is read as af.task-file/1."
     },
     "task_id": {
-      "$ref": "urn:af:schema:task-contracts:1#/$defs/name"
+      "$ref": "urn:af:schema:task-contracts:2#/$defs/name"
     },
     "kind": {
-      "$ref": "urn:af:schema:task-contracts:1#/$defs/package"
+      "$ref": "urn:af:schema:task-contracts:2#/$defs/package"
     },
     "goal": {
       "type": "string",
@@ -47,7 +47,7 @@
       ],
       "properties": {
         "task": {
-          "$ref": "urn:af:schema:task-contracts:1#/$defs/name"
+          "$ref": "urn:af:schema:task-contracts:2#/$defs/name"
         },
         "round": {
           "type": "integer",
@@ -91,7 +91,7 @@
       "minProperties": 1,
       "maxProperties": 16,
       "propertyNames": {
-        "$ref": "urn:af:schema:task-contracts:1#/$defs/name"
+        "$ref": "urn:af:schema:task-contracts:2#/$defs/name"
       },
       "additionalProperties": {
         "oneOf": [
@@ -104,10 +104,10 @@
             ],
             "properties": {
               "task": {
-                "$ref": "urn:af:schema:task-contracts:1#/$defs/name"
+                "$ref": "urn:af:schema:task-contracts:2#/$defs/name"
               },
               "port": {
-                "$ref": "urn:af:schema:task-contracts:1#/$defs/name"
+                "$ref": "urn:af:schema:task-contracts:2#/$defs/name"
               }
             }
           },
@@ -119,7 +119,7 @@
             ],
             "properties": {
               "artifact": {
-                "$ref": "urn:af:schema:task-contracts:1#/$defs/digest"
+                "$ref": "urn:af:schema:task-contracts:2#/$defs/digest"
               }
             }
           },
@@ -137,10 +137,10 @@
               ],
               "properties": {
                 "task": {
-                  "$ref": "urn:af:schema:task-contracts:1#/$defs/name"
+                  "$ref": "urn:af:schema:task-contracts:2#/$defs/name"
                 },
                 "port": {
-                  "$ref": "urn:af:schema:task-contracts:1#/$defs/name"
+                  "$ref": "urn:af:schema:task-contracts:2#/$defs/name"
                 }
               }
             }
@@ -200,7 +200,7 @@
               "const": "jira"
             },
             "binding": {
-              "$ref": "urn:af:schema:task-contracts:1#/$defs/name"
+              "$ref": "urn:af:schema:task-contracts:2#/$defs/name"
             },
             "key": {
               "type": "string",
@@ -220,11 +220,11 @@
       ]
     },
     "pipeline": {
-      "$ref": "urn:af:schema:task-contracts:1#/$defs/choice"
+      "$ref": "urn:af:schema:task-contracts:2#/$defs/choice"
     },
     "strategy": {
       "description": "Absent, the Task's kind fills it in, with `verification` and `facts.standard` unless the file names them: `implement` is `reviewed` with `verification` `review`, `verification` is `light` with `evaluation`, both with `facts.standard = true`, and `report` is `report`. A kind without a default needs `strategy`.",
-      "$ref": "urn:af:schema:task-contracts:1#/$defs/name"
+      "$ref": "urn:af:schema:task-contracts:2#/$defs/name"
     },
     "verification": {
       "enum": [
@@ -236,10 +236,10 @@
     "facts": {
       "type": "object",
       "propertyNames": {
-        "$ref": "urn:af:schema:task-contracts:1#/$defs/name"
+        "$ref": "urn:af:schema:task-contracts:2#/$defs/name"
       },
       "additionalProperties": {
-        "$ref": "urn:af:schema:task-contracts:1#/$defs/fact"
+        "$ref": "urn:af:schema:task-contracts:2#/$defs/fact"
       }
     },
     "limits": {
@@ -268,7 +268,7 @@
           "maximum": 18446744073709551615
         },
         "verification": {
-          "$ref": "urn:af:schema:task-contracts:1#/$defs/reserve"
+          "$ref": "urn:af:schema:task-contracts:2#/$defs/reserve"
         }
       }
     }

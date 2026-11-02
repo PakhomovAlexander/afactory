@@ -5,8 +5,8 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use review_core::task::pipeline::{PipelineDefinitionV1, TaskOperatorV1};
 use review_core::task::plan::{
-    EffectiveWorkerBindingV1, ExecutionPlanV1, GeneratedOriginV1, IndependencePolicyV1,
-    PlanDependencyV1, WorkerExecutionV1, validate_independent_bindings,
+    EffectiveWorkerBindingV2, ExecutionPlanV2, GeneratedOriginV1, IndependencePolicyV1,
+    PlanDependencyV1, WorkerExecutionV2, validate_independent_bindings,
 };
 use review_core::task::{TaskRevisionV1, is_package_name};
 use review_core::{ArtifactEnvelope, Producer};
@@ -165,7 +165,7 @@ pub trait ProjectBriefResolver: std::fmt::Debug + Send + Sync {
 /// plan declaration. The principal in Model execution must come from Provider identity proof.
 #[derive(Debug, Clone)]
 pub struct AdmittedWorkerSettings {
-    pub execution: WorkerExecutionV1,
+    pub execution: WorkerExecutionV2,
     pub invocation_policy_id: String,
 }
 
@@ -738,14 +738,14 @@ impl TaskPlanCompiler {
             .get(name)
             .ok_or("Worker package is not captured")?;
         match (&worker.runner, &settings.execution) {
-            (TaskWorkerRunner::Command { .. }, WorkerExecutionV1::Command {}) => (),
+            (TaskWorkerRunner::Command { .. }, WorkerExecutionV2::Command {}) => (),
             (
                 TaskWorkerRunner::Model {
                     provider_kind: wanted_kind,
                     model: wanted_model,
                     effort: wanted_effort,
                 },
-                WorkerExecutionV1::Model {
+                WorkerExecutionV2::Model {
                     provider_kind,
                     model,
                     effort,
@@ -757,7 +757,7 @@ impl TaskPlanCompiler {
             _ => return Err("Provider admission disagrees with captured Worker settings".into()),
         }
         let package = &self.packages[name];
-        EffectiveWorkerBindingV1 {
+        EffectiveWorkerBindingV2 {
             package_digest: package.bytes.digest.clone(),
             package_artifact_id: package.dependency.artifact_id.clone(),
             execution: settings.execution.clone(),
@@ -944,7 +944,7 @@ impl TaskPlanCompiler {
         &self,
         cas: &Cas,
         graph: &CompiledTask,
-    ) -> Result<BTreeMap<String, EffectiveWorkerBindingV1>, String> {
+    ) -> Result<BTreeMap<String, EffectiveWorkerBindingV2>, String> {
         let mut bindings = BTreeMap::new();
         for (slot, declaration) in &graph.slots {
             let package = self
@@ -959,7 +959,7 @@ impl TaskPlanCompiler {
                 .map_err(|e| e.to_string())?;
             bindings.insert(
                 slot.clone(),
-                EffectiveWorkerBindingV1 {
+                EffectiveWorkerBindingV2 {
                     package_digest: package.bytes.digest.clone(),
                     package_artifact_id: package.dependency.artifact_id.clone(),
                     execution: settings.execution.clone(),
@@ -1040,7 +1040,7 @@ impl TaskPlanCompiler {
         cas: &Cas,
         task_revision_id: &str,
         root: &str,
-    ) -> Result<(ExecutionPlanV1, CompiledTask), String> {
+    ) -> Result<(ExecutionPlanV2, CompiledTask), String> {
         self.compile_inner(cas, task_revision_id, root, None)
     }
 
@@ -1080,7 +1080,7 @@ impl TaskPlanCompiler {
         task_revision_id: &str,
         root: &str,
         recorded_graph: Option<&ArtifactEnvelope>,
-    ) -> Result<(ExecutionPlanV1, CompiledTask), String> {
+    ) -> Result<(ExecutionPlanV2, CompiledTask), String> {
         let revision = read_envelope(cas, task_revision_id, review_core::task::TASK_REVISION_V1)?;
         let task: TaskRevisionV1 =
             serde_json::from_value(revision.payload).map_err(|e| e.to_string())?;
@@ -1219,7 +1219,7 @@ impl TaskPlanCompiler {
             .map_err(|e| e.to_string())?
             .0
         };
-        let plan = ExecutionPlanV1 {
+        let plan = ExecutionPlanV2 {
             preparation: self
                 .preparation_roots
                 .contains(root)
@@ -1250,7 +1250,7 @@ impl TaskPlanCompiler {
         &self,
         cas: &Cas,
         task: &TaskRevisionV1,
-        plan: &ExecutionPlanV1,
+        plan: &ExecutionPlanV2,
     ) -> Result<Vec<GeneratedOriginV1>, String> {
         let revision = read_envelope(
             cas,

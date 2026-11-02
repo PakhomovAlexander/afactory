@@ -340,7 +340,7 @@ impl<'store, 'host> TaskRuntime<'store, 'host> {
         lease: TaskLease,
         authority: &'host dyn TaskAuthority,
         host: &'host dyn TaskOperatorHost,
-        plan: review_core::task::plan::ExecutionPlanV1,
+        plan: review_core::task::plan::ExecutionPlanV2,
         projection: TaskProjection,
         integration: Option<
             review_store::store::task::review_integration::RegisteredTaskReviewIntegration,

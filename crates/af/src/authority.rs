@@ -401,9 +401,9 @@ pub(super) fn plan(
         providers.push(serde_json::json!({
             "node": node,
             "runner": runner,
-            "required": matches!(runner.as_str(), "claude" | "codex"),
+            "required": matches!(runner.as_str(), "claude" | "codex" | "pi"),
             "binding": options.provider_bindings.get(node),
-            "ready": !matches!(runner.as_str(), "claude" | "codex") || options.provider_bindings.contains_key(node),
+            "ready": !matches!(runner.as_str(), "claude" | "codex" | "pi") || options.provider_bindings.contains_key(node),
         }));
     }
     let checks = loaded
@@ -475,7 +475,7 @@ pub(super) fn model_workers(loaded: &review_config::Loaded) -> Vec<(String, Stri
                 .file_name()
                 .map(|name| name.to_string_lossy().to_string())
                 .unwrap_or_default();
-            matches!(runner.as_str(), "claude" | "codex").then(|| (node.clone(), runner))
+            matches!(runner.as_str(), "claude" | "codex" | "pi").then(|| (node.clone(), runner))
         })
         .collect()
 }
@@ -562,7 +562,7 @@ fn model_lines(options: &Options, loaded: &review_config::Loaded) -> Result<Vec<
             .file_name()
             .map(|name| name.to_string_lossy().to_string())
             .unwrap_or_default();
-        if !matches!(runner.as_str(), "claude" | "codex") {
+        if !matches!(runner.as_str(), "claude" | "codex" | "pi") {
             continue;
         }
         let manifest: review_config::lock::PackageManifest = toml::from_str(
@@ -725,6 +725,14 @@ pub(super) fn first_attempt_input(
                 }
                 Box::new(adapter)
             }
+            "pi" => {
+                let mut adapter = review_runner_pi::PiAdapter::from_package(package)
+                    .map_err(|error| format!("{node}: {error}"))?;
+                if let Some(focus) = focus {
+                    adapter = adapter.with_focus(focus);
+                }
+                Box::new(adapter)
+            }
             "codex" => {
                 let mut adapter = review_runner_codex::CodexAdapter::from_package(package)
                     .map_err(|error| format!("{node}: {error}"))?;
@@ -735,7 +743,7 @@ pub(super) fn first_attempt_input(
             }
             other => {
                 return Err(format!(
-                    "node `{node}`: no adapter drives `{other}`; this af release knows claude and codex"
+                    "node `{node}`: no adapter drives `{other}`; this af release knows claude, codex and pi"
                 ));
             }
         },

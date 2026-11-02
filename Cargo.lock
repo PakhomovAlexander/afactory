@@ -31,6 +31,7 @@ dependencies = [
  "review-runner",
  "review-runner-claude",
  "review-runner-codex",
+ "review-runner-pi",
  "review-sandbox",
  "review-source-git",
  "review-source-task",
@@ -1541,6 +1542,20 @@ dependencies = [
  "serde_json",
  "tempfile",
  "tracing",
+]
+
+[[package]]
+name = "review-runner-pi"
+version = "0.14.0-rc.3"
+dependencies = [
+ "review-core",
+ "review-process",
+ "review-runner",
+ "review-store",
+ "serde",
+ "serde_json",
+ "sha2 0.10.9",
+ "tempfile",
 ]
 
 [[package]]

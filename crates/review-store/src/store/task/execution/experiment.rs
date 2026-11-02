@@ -347,7 +347,7 @@ fn validate_child_plan(
     prepared: &ExperimentPreparedV1,
     value: &ExperimentExecutionPlanV1,
 ) -> Result<(), StoreError> {
-    let outer: ExecutionPlanV1 = payload(cas, outer_plan_id, task::EXECUTION_PLAN_V1)?;
+    let outer: ExecutionPlanV2 = payload(cas, outer_plan_id, task::EXECUTION_PLAN_V2)?;
     let graph: CompiledTask = payload(cas, &outer.compiled_graph_id, "af/CompiledTask@1")?;
     if value.schema != "af.experiment-execution-plan/1"
         || value.children.len() != prepared.children.len()
@@ -384,8 +384,8 @@ fn validate_child_plan(
             .get(slot_name)
             .ok_or_else(|| conflict("Experimental child has no exact outer Worker binding"))?;
         let effort = match &binding.execution {
-            task::plan::WorkerExecutionV1::Command {} => "command",
-            task::plan::WorkerExecutionV1::Model { effort, .. } => effort.as_str(),
+            task::plan::WorkerExecutionV2::Command {} => "command",
+            task::plan::WorkerExecutionV2::Model { effort, .. } => effort.as_str(),
         };
         if child.invocation.plan_id != outer_plan_id || child.invocation.node != closure.node {
             return Err(conflict(
@@ -827,7 +827,7 @@ mod derived_package_tests {
     use review_core::task::ArtifactInputV1;
     use review_core::task::optimization_experiment::ExperimentChildClosureV1;
     use review_core::task::pipeline::{PipelineContractV1, TaskOperatorV1, WorkerSlotV1};
-    use review_core::task::plan::{EffectiveWorkerBindingV1, WorkerExecutionV1};
+    use review_core::task::plan::{EffectiveWorkerBindingV2, WorkerExecutionV2};
     use review_graph::task::{CompiledNode, CompiledOperator, CompiledTask};
 
     fn producer() -> review_core::Producer {
@@ -1010,7 +1010,7 @@ mod derived_package_tests {
                 )
                 .unwrap()
                 .0;
-            let mut outer: review_core::task::plan::ExecutionPlanV1 = serde_json::from_slice(
+            let mut outer: review_core::task::plan::ExecutionPlanV2 = serde_json::from_slice(
                 &std::fs::read(
                     std::env::var_os("AF_WORKSPACE_ROOT")
                         .map(std::path::PathBuf::from)
@@ -1025,16 +1025,16 @@ mod derived_package_tests {
             outer.compiled_graph_id = compiled_graph_id;
             outer.bindings = BTreeMap::from([(
                 slot.into(),
-                EffectiveWorkerBindingV1 {
+                EffectiveWorkerBindingV2 {
                     package_digest: original_digest.clone(),
                     package_artifact_id: original_id.clone(),
-                    execution: WorkerExecutionV1::Command {},
+                    execution: WorkerExecutionV2::Command {},
                     invocation_policy_id: digest("invocation-policy"),
                 },
             )]);
             let outer_plan_id = cas
                 .put_artifact(
-                    task::EXECUTION_PLAN_V1,
+                    task::EXECUTION_PLAN_V2,
                     producer(),
                     vec![],
                     None,

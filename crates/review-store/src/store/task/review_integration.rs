@@ -267,7 +267,7 @@ impl EventStore {
         phase: &TaskReviewIntegrationPhaseV1,
         authority: &dyn TaskAuthority,
         dispatching: bool,
-    ) -> Result<(TaskProjection, ExecutionPlanV1), StoreError> {
+    ) -> Result<(TaskProjection, ExecutionPlanV2), StoreError> {
         let state = self
             .task_projection(cas, &lease.task_id)?
             .ok_or_else(|| conflict("Unknown Task"))?;
@@ -319,7 +319,7 @@ impl EventStore {
         registered: &RegisteredTaskReviewIntegration,
         authority: &dyn TaskAuthority,
         dispatching: bool,
-    ) -> Result<ExecutionPlanV1, StoreError> {
+    ) -> Result<ExecutionPlanV2, StoreError> {
         let (state, plan) =
             self.checked_integration(cas, lease, &registered.phase, authority, dispatching)?;
         let active = state
@@ -1092,7 +1092,7 @@ impl EventStore {
         &mut self,
         cas: &Cas,
         state: &TaskProjection,
-        plan: &ExecutionPlanV1,
+        plan: &ExecutionPlanV2,
         evidence: &TaskReviewIntegrationEvidence,
         change: TaskChangeV1,
         review_events: &[NewEvent],
@@ -1322,8 +1322,8 @@ pub(super) fn validate_cached(
             return Err(conflict("Cached Integration phase changed identity"));
         }
         let evidence = store.integration_evidence_with_replays(cas, &phase.phase, replays)?;
-        let original_plan: ExecutionPlanV1 =
-            payload(cas, &phase.phase.plan_id, task::EXECUTION_PLAN_V1)?;
+        let original_plan: ExecutionPlanV2 =
+            payload(cas, &phase.phase.plan_id, task::EXECUTION_PLAN_V2)?;
         let original_graph: CompiledTask =
             payload(cas, &original_plan.compiled_graph_id, "af/CompiledTask@1")?;
         if original_graph.review_integration.as_ref() != Some(&phase.compiled) {

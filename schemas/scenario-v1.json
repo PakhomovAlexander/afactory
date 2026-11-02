@@ -135,7 +135,7 @@
           "maximum": 9007199254740991
         },
         "result": {
-          "$ref": "urn:af:schema:task-contracts:1#/$defs/taskResult"
+          "$ref": "urn:af:schema:task-contracts:2#/$defs/taskResult"
         }
       }
     },

@@ -286,6 +286,9 @@ pub fn run(options: DetectOptions) -> Result<i32, String> {
         Some(kind) => Some(ProviderKind::parse(kind)?),
         None => None,
     };
+    if only == Some(ProviderKind::Pi) {
+        return Err("Pi uses explicit `af provider setup --kind pi --backend openai-codex --auth-dir DIR --sdk-entrypoint FILE`; it has no ambient discovery".into());
+    }
     let kinds: Vec<ProviderKind> = [ProviderKind::Claude, ProviderKind::Codex]
         .into_iter()
         .filter(|kind| only.is_none_or(|only| only == *kind))
@@ -606,6 +609,7 @@ fn home_dir() -> Option<PathBuf> {
 
 fn selector(kind: ProviderKind) -> &'static str {
     match kind {
+        ProviderKind::Pi => "AF_PI_AUTH_DIR_NOT_AMBIENT",
         ProviderKind::Claude => "CLAUDE_CONFIG_DIR",
         ProviderKind::Codex => "CODEX_HOME",
     }
@@ -613,6 +617,7 @@ fn selector(kind: ProviderKind) -> &'static str {
 
 fn marker_names(kind: ProviderKind) -> &'static [&'static str] {
     match kind {
+        ProviderKind::Pi => &["auth.json"],
         ProviderKind::Claude => CLAUDE_MARKERS,
         ProviderKind::Codex => CODEX_MARKERS,
     }
@@ -1062,6 +1067,7 @@ fn neutral_spec() -> ProviderSpec {
 /// against Codex's capabilities.
 fn neutral_spec_of(kind: ProviderKind) -> ProviderSpec {
     ProviderSpec {
+        pi: None,
         id: "detect".to_string(),
         kind,
         auth_dir: None,
@@ -1076,6 +1082,7 @@ fn neutral_spec_of(kind: ProviderKind) -> ProviderSpec {
 /// the same login.
 fn probe_spec(kind: ProviderKind, auth_dir: &Path) -> ProviderSpec {
     ProviderSpec {
+        pi: None,
         id: kind.name().to_string(),
         kind,
         auth_dir: Some(auth_dir.to_path_buf()),
@@ -1440,6 +1447,7 @@ fn login_label(kind: ProviderKind, auth: Auth, status: &ProviderStatus) -> Strin
         .unwrap_or_default()
         .trim();
     match (kind, method) {
+        (ProviderKind::Pi, _) => "OAuth".into(),
         (ProviderKind::Claude, "api_key") | (ProviderKind::Codex, "API key") => "API key".into(),
         (ProviderKind::Codex, "ChatGPT") => "ChatGPT".into(),
         (ProviderKind::Claude, "claude.ai" | "oauth") => {
@@ -1663,6 +1671,10 @@ fn path_fix_for(dir: &Path, home: Option<&Path>, fish: bool) -> String {
 /// The official install commands of a kind, the first being the one a note names.
 fn install_commands(kind: ProviderKind) -> [&'static str; 2] {
     match kind {
+        ProviderKind::Pi => [
+            "install Node >=22.19 and Pi SDK 1.4.0",
+            "pass --sdk-entrypoint to af provider setup --kind pi",
+        ],
         ProviderKind::Claude => [
             "npm install -g @anthropic-ai/claude-code",
             "curl -fsSL https://claude.ai/install.sh | bash",
@@ -1674,6 +1686,7 @@ fn install_commands(kind: ProviderKind) -> [&'static str; 2] {
 /// The upgrade command for a CLI that cannot start or does not accept af's invocation.
 fn upgrade_command(kind: ProviderKind) -> &'static str {
     match kind {
+        ProviderKind::Pi => "install official @earendil-works/pi-coding-agent@1.4.0",
         ProviderKind::Claude => "npm install -g @anthropic-ai/claude-code@latest",
         ProviderKind::Codex => "npm install -g @openai/codex@latest",
     }
@@ -2113,6 +2126,7 @@ fn rerun_command(options: &DetectOptions) -> String {
 /// The official install documentation of a kind, beside its install command.
 fn install_docs(kind: ProviderKind) -> &'static str {
     match kind {
+        ProviderKind::Pi => "https://github.com/earendil-works/pi/tree/v1.4.0",
         ProviderKind::Claude => "https://code.claude.com/docs/en/setup",
         ProviderKind::Codex => "https://developers.openai.com/codex/cli",
     }
@@ -2660,7 +2674,7 @@ mod tests {
             Applied::AlreadyRegistered
         );
         // Removed again: a logged-out row is no longer called registered.
-        fs::write(&registry, "version = 1\n").unwrap();
+        fs::write(&registry, "version = 2\n").unwrap();
         let mut rows = vec![row(scanned(), Auth::NotAuthenticated)];
         apply(&mut rows, &registry, true, Some(&home), &BTreeSet::new()).unwrap();
         assert!(rows[0].applied.is_none());

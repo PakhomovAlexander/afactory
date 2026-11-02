@@ -249,7 +249,7 @@ fn outcome(
     let round = captured.compiler.round();
     let authority = round.authority();
     Ok(json!({
-        "schema":"af/provider-doctor@2", "ready":report.ready() && !resources_exhausted,
+        "schema":"af/provider-doctor@3", "ready":report.ready() && !resources_exhausted,
         "run_id":round.binding().campaign_id,
         "authority":{"authority_snapshot_id":authority.authority_snapshot_id(), "campaign_manifest_id":authority.campaign_manifest_id(),
             "subject_id":authority.subject_id(), "head_snapshot_id":authority.head_snapshot_id(), "round_event_id":authority.round_event_id(),
