@@ -1156,14 +1156,14 @@ filter, observed exit and nextest summary; normal CI requires no implicit local 
 ```json
 {
   "schema": "af/pi-validation-claim@1",
-  "source_sha256": "sha256:7f9261ba019aa397fb84cae3673d0e04d3e3ca0e3d11afc75e1575dcce16d8a3",
-  "entries": 3859,
-  "files": 3172,
+  "entries": 3883,
+  "files": 3195,
+  "source_sha256": "sha256:aa0f0012b53e0b8ad6448b7213cd4bfd97c10f38bffed193ff64356991f22144",
   "command": "make perf-kernel-measure",
   "filter": "test(=perf_kernel_measure::guarded_kernel_experiments_measure_one_judged_sample)",
   "exit_code": 0,
-  "log_sha256": "sha256:c264cfb6ccd88b5f55310bcff46c331769a9afe1442e60af995d6fd61e02790c",
-  "summary": "Summary [ 912.403s] 1 test run: 1 passed (1 slow), 4010 skipped"
+  "log_sha256": "sha256:b9cc4fa3bd5c082f6e5a31adfbda4a1840670abc9e8c0758ac156f9c5fc43f5e",
+  "summary": "Summary [ 792.681s] 1 test run: 1 passed (1 slow), 4014 skipped"
 }
 ```
 <!-- /historical catalog-confinement claim -->
@@ -1199,6 +1199,25 @@ directly without installation. No Linux-only helper/caller in `provider_auth_han
 The configured local fast gate remains the kernel's post-seal check. No whole-suite Worker
 run is claimed. The focused Rust selection is repeated after the record and all other checks;
 its final completion time/result belongs to the Task report, with no edits afterwards.
+
+## GitHub adapter merge validation (2026-11-02)
+
+PR #548 merges main `ca4e73be` while retaining its ADR discovery guide and both Pi and
+GitHub adapter test registrations. The current claim above supersedes the earlier source
+binding for this combined tree. No gate or measurement contract was changed.
+
+The real `make perf-kernel-measure` log is retained at
+`/Users/apakhomov/bs/apkhmv-main/af/scenario-ant-workstream/logs/scenario-github-merge-perf-kernel.log`, with SHA256
+`sha256:b9cc4fa3bd5c082f6e5a31adfbda4a1840670abc9e8c0758ac156f9c5fc43f5e`. The command exited 0, and the source projection was
+identical before and after measurement: `sha256:aa0f0012b53e0b8ad6448b7213cd4bfd97c10f38bffed193ff64356991f22144`,
+3883 entries and 3195 regular files. Only this excluded
+validation record changed afterward. HOME and all XDG directories were isolated; build
+artifacts remained in this checkout’s `target/`. This is a guarded-kernel contract
+measurement, not a product speed claim. No live Pi or GitHub credentials were used.
+
+```text
+Summary [ 792.681s] 1 test run: 1 passed (1 slow), 4014 skipped
+```
 
 ## Historical RC4 machine-checked validation
 

@@ -21,3 +21,12 @@ and pinned separately under the [bounded adapter contract](../../docs/scenarios.
 The executable evidence is `crates/af/tests/it/scenario.rs`: it replaces the placeholders with a
 private existing Task fixture, runs the real CLI across process boundaries and verifies receipts,
 restart recovery, cancellation, stale evidence refusal and preservation of unexpected content.
+
+The optional production adapter, offline installer and explicit private machine configuration are
+documented in [GitHub Scenario adapter](../../docs/scenario-github-adapter.md). `github/` contains
+inert v1 config/payload examples and a signed publication → green → owner review → merged →
+follow-up bundle. The values are test placeholders; it is neither registered nor scheduled.
+`github/mock-service.json` and `github-transport.py` are credential-free service mocks used by
+Python tests and the real CLI production-adapter tests. Never install the mock transport in
+production. Test-installed executables contain all production application bytes plus the mock
+transport, and the existing machine policy pins their complete digest.

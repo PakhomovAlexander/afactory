@@ -150,6 +150,11 @@ must enforce exact object-revision preconditions, including checking the current
 with publication where the service supports it, and refuse when it cannot establish them. This
 contract, rather than process exit, prevents repeated PRs or follow-ups across restart.
 
+An optional production [GitHub adapter](scenario-github-adapter.md) implements publication,
+exact-head CI and merge observation, approved follow-up issues and bounded owner review requests.
+Its separate offline installation pins complete application code and config identity. The local
+simulator remains a credential-free test fixture; neither adapter is installed automatically.
+
 The built-in actions use adapter `builtin` and an authorized existing canonical absolute file root:
 `write_owned_file` takes a leaf `file` name (letters, digits, `-` and `_`, starting with a
 letter or digit) and text `content`, writes a versioned ownership
