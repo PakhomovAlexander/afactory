@@ -9,11 +9,158 @@ import shutil
 import subprocess
 import tempfile
 import unittest
+import hashlib
+import importlib.util
+import sys
 from unittest.mock import patch
 
 ROOT = Path(__file__).resolve().parent.parent
 HOST = ROOT / 'crates/review-runner-pi/src/host.mjs'
 SDK_PACKAGE = Path('node_modules/@earendil-works/pi-coding-agent/dist/index.js')
+
+# -I does not itself disable bytecode writes by importlib. Load the helper without creating
+# source-tree caches, including when this suite is invoked without -B by the existing gate.
+sys.dont_write_bytecode = True
+_spec = importlib.util.spec_from_file_location('pi_validation', ROOT / 'scripts/pi-validation.py')
+VALIDATION = importlib.util.module_from_spec(_spec)
+_spec.loader.exec_module(VALIDATION)
+
+
+class ValidationTests(unittest.TestCase):
+    def setUp(self):
+        directory = tempfile.TemporaryDirectory()
+        self.addCleanup(directory.cleanup)
+        self.root = Path(directory.name)
+        (self.root / 'docs/design').mkdir(parents=True)
+        (self.root / 'source').write_text('original source')
+        self.record = self.root / VALIDATION.RECORD
+        self.claim = {
+            'schema': 'af/pi-validation-claim@1', **VALIDATION.projection(self.root),
+            'command': 'make perf-kernel-measure', 'filter': VALIDATION.FILTER,
+            'exit_code': 0,
+            'summary': 'Summary [   1.234s] 1 test run: 1 passed (1 slow), 10 skipped',
+            'log_sha256': 'sha256:' + 'a' * 64}
+        self.write_claim()
+
+    def write_claim(self, suffix=''):
+        self.record.write_text(VALIDATION.BEGIN + '\n```json\n' +
+                               json.dumps(self.claim) + '\n```\n' + VALIDATION.END + suffix)
+
+    def cli(self, *args):
+        return subprocess.run([sys.executable, '-I', '-B', str(ROOT / 'scripts/pi-validation.py'),
+                               '--root', str(self.root), '--check', *args],
+                              capture_output=True, text=True, timeout=10, check=False)
+
+    def test_current_claim_matches_this_candidate(self):
+        # This existing, classified suite runs in normal CI, including hermetic SDK mode.
+        result = subprocess.run([sys.executable, '-I', '-B',
+                                 str(ROOT / 'scripts/pi-validation.py'), '--check'],
+                                capture_output=True, text=True, timeout=30, check=False)
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertIn('measurement log not supplied (not read)', result.stdout)
+
+    def test_source_mutation_and_stale_counts_refuse_without_rewriting_record(self):
+        self.assertEqual(self.cli().returncode, 0)
+        before = self.record.read_bytes()
+        (self.root / 'source').write_text('mutated source')
+        result = self.cli()
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn('does not match candidate source', result.stderr)
+        self.assertEqual(self.record.read_bytes(), before)
+        (self.root / 'source').write_text('original source')
+        for field in ['entries', 'files', 'source_sha256']:
+            with self.subTest(field=field):
+                original = self.claim[field]
+                self.claim[field] = original + 1 if isinstance(original, int) else 'sha256:' + '0'*64
+                self.write_claim()
+                self.assertNotEqual(self.cli().returncode, 0)
+                self.claim[field] = original
+
+    def test_exact_three_exclusions_allow_record_edits_but_include_nested_and_hidden_paths(self):
+        self.write_claim('\nHistorical prose may be corrected without a new measurement.\n')
+        for name in ['.git', 'target']:
+            (self.root / name).mkdir()
+            (self.root / name / 'scratch').write_text('excluded')
+        self.assertEqual(self.cli().returncode, 0)
+        for name in ['docs/.git', 'docs/target', '.af', '.config', 'docs/other.md']:
+            with self.subTest(path=name):
+                path = self.root / name
+                path.write_text('included')
+                self.assertNotEqual(self.cli().returncode, 0)
+                path.unlink()
+        self.assertEqual(self.cli().returncode, 0)
+
+    def test_projection_matches_independent_rows_and_tracks_symlinks_and_executable_bits(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            (root / 'd').mkdir()
+            (root / 'd/\u2028.txt').write_bytes(b'content')
+            (root / 'link').symlink_to('d/\u2028.txt')
+            rows = [['d', 'directory', False, None],
+                    ['d/\u2028.txt', 'file', False, hashlib.sha256(b'content').hexdigest()],
+                    ['link', 'symlink', False,
+                     hashlib.sha256(os.fsencode('d/\u2028.txt')).hexdigest()]]
+            wire = b'af.pi.validation-source/1\0' + b''.join(
+                (json.dumps(row, ensure_ascii=True, separators=(',', ':')) + '\n').encode('ascii')
+                for row in rows)
+            expected = {'source_sha256': 'sha256:' + hashlib.sha256(wire).hexdigest(),
+                        'entries': 3, 'files': 1}
+            self.assertEqual(VALIDATION.projection(root), expected)
+            (root / 'd/\u2028.txt').chmod(0o700)
+            self.assertNotEqual(VALIDATION.projection(root), expected)
+            (root / 'd/\u2028.txt').chmod(0o600)
+            self.assertEqual(VALIDATION.projection(root), expected)
+            (root / 'link').unlink()
+            (root / 'link').symlink_to('missing')
+            self.assertNotEqual(VALIDATION.projection(root), expected)
+
+    def test_claim_is_closed_versioned_unique_and_never_selects_exclusions(self):
+        for field, value in [('schema', 'af/pi-validation-claim@0'), ('exclusions', ['source']),
+                             ('exit_code', 1), ('entries', True), ('log_sha256', 'invalid'),
+                             ('filter', 'test(/anything/)'), ('summary', 'passed')]:
+            with self.subTest(field=field):
+                original = dict(self.claim)
+                self.claim[field] = value
+                self.write_claim()
+                self.assertNotEqual(self.cli().returncode, 0)
+                self.claim = original
+        self.write_claim()
+        valid = self.record.read_text()
+        for malformed in [valid + valid, valid.replace(':v1 -->', ':v0 -->'),
+                          valid.replace(VALIDATION.END, ''),
+                          valid.replace('"schema":', '"entries": 0, "schema":')]:
+            self.record.write_text(malformed)
+            self.assertNotEqual(self.cli().returncode, 0)
+
+    def test_optional_real_log_checks_hash_source_filter_and_outcome(self):
+        # Synthetic log checks the verifier, not a claimed execution of the measurement.
+        log = self.root / 'target/fixture.log'
+        log.parent.mkdir()
+        lines = [VALIDATION.source_line({key: self.claim[key] for key in
+                                        ['source_sha256', 'entries', 'files']}),
+                 'command: make perf-kernel-measure', 'filter: ' + VALIDATION.FILTER,
+                 '  ' + self.claim['summary'], 'make exit: 0']
+
+        def bind_log(text):
+            log.write_text(text)
+            self.claim['log_sha256'] = 'sha256:' + hashlib.sha256(log.read_bytes()).hexdigest()
+            self.write_claim()
+
+        bind_log('\n'.join(lines) + '\n')
+        self.assertEqual(self.cli('--measurement-log', str(log)).returncode, 0)
+        log.write_text(log.read_text() + 'unbound change\n')
+        self.assertIn('SHA256 differs', self.cli('--measurement-log', str(log)).stderr)
+        for index, replacement in [(0, lines[0].replace(self.claim['source_sha256'], 'stale')),
+                                   (1, 'command: fake'), (2, 'filter: fake'),
+                                   (3, 'Summary [1s] 1 test run: 0 passed, 1 failed'),
+                                   (4, 'make exit: 1')]:
+            bad = list(lines)
+            bad[index] = replacement
+            bind_log('\n'.join(bad) + '\n')
+            self.assertNotEqual(self.cli('--measurement-log', str(log)).returncode, 0)
+        bind_log('\n'.join(lines + [lines[0]]) + '\n')
+        self.assertNotEqual(self.cli('--measurement-log', str(log)).returncode, 0)
+        self.assertEqual(self.cli().returncode, 0, 'normal CI does not need ephemeral logs')
 
 
 def installed_sdk():

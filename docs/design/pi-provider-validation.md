@@ -1,7 +1,9 @@
 # Pi Provider validation record
 
-This record separates supplied historical observations, previous-Task checks and fresh checks
-of the present source. Historical/input Snapshot IDs below are not final candidate identities.
+This record separates retained historical observations from the current source-bound checks
+at the end. Everything before “Current machine-checked validation” is historical; its “fresh”
+and “this Task” wording refers to the stated earlier Task, never the present candidate.
+Historical/input Snapshot IDs below are not final candidate identities.
 **Paid live smoke: not run.** No real profile credentials, OAuth exchange or paid inference
 were used. The official SDK tests use synthetic credentials and mocked upstream transport.
 
@@ -541,7 +543,7 @@ Recomputing the projection after measurement and this record update returned the
 measurement. That Task repeated its final focused selection after finishing the record; its result and
 completion time belong to that historical Task report, not the integration validation below.
 
-## Current integration validation on merged main
+## Historical integration validation on merged main
 
 Work began **2026-11-01 23:40:08 UTC**. This Task's input Snapshot is
 `sha256:35bc816c2e1ea3033e7a366ca7c9d0003c0997a0dc16547e40b684a2b7347cd5`.
@@ -654,7 +656,7 @@ invocation exercised it. Complete log `/private/tmp/pi-integration-triage.log`, 
 not an actual OAuth refresh exchange or service inference. The configured fast local gate is
 the kernel's post-seal action; no second whole-suite or Worker-run gate pass is claimed.
 
-### Fresh merged-source measurement binding
+### Historical merged-source measurement binding
 
 All edits outside this excluded record finished before measurement began at
 **2026-11-01 23:44:37 UTC**. The exact projection recipe above, with only its three exclusions
@@ -668,7 +670,7 @@ This is a reproducible source-content projection, not the input or final kernel 
 Only this excluded record changes after measurement starts; all build/dependency/receipt
 scratch stays under the excluded root `target/`.
 
-### Actual fresh manual measurement outcome
+### Historical merged-source manual measurement outcome
 
 The Worker ran `make perf-kernel-measure` from **2026-11-01 23:44:37 UTC** to
 **2026-11-02 00:00:25 UTC** on the exact merged-source projection above. Make exited **0**:
@@ -716,3 +718,177 @@ finished, yielding the identical
 **3809 entries, 3124 regular files**. Only this explicitly excluded record changed during or
 after measurement. The combined 220-test selection is repeated after finishing this record;
 its actual completion time and result belong to the Task report, with no edits after that run.
+
+## Current machine-checked validation
+
+This Task closes documentation/validation issues #533 and #534; the runtime fixes above were
+already implemented. The prior merged-source evidence was present and valid, not missing or
+stale when supplied: projection `1937edbcf84c0b741fd9f43257f3ee478b22d29c69f907fad35a3d3b8991231e`,
+3809 entries/3124 files, actual Make exit 0. This Worker independently read the retained prior
+log and confirmed SHA256 `3d236ceb9f45648f2823a1d1734ebd6e2534f5eba85370ab3c52055a9eaa745d`.
+That measurement is now historical because the helper, tests and changelog corrections change
+source bytes. No input Snapshot is represented as this candidate's final Snapshot.
+
+### Rendered release-note links (#533)
+
+Every Pi fragment was audited. Five existing notes linked repository documentation with
+`../docs/` or `docs/`; neither relative form works in both fragment browsing and the root
+release notes. Those destinations now use absolute repository documentation URLs; the text
+is preserved. `Fragments.test_pi_documentation_links_resolve_in_fragments_and_rendered_root_notes`
+first failed on the old `../docs/adr/0274-...` destination from `CHANGELOG.md`, resolving to
+`/PakhomovAlexander/afactory/blob/docs/...` instead of `/blob/main/docs/...`.
+The corrected suite passed all **10 tests**. The regression runs the real release-note writer
+in a private Git repository, verifies unchanged inclusion of every Pi fragment and resolves its
+documentation targets from both browsing contexts to existing repository files. A permanent
+representative note keeps the regression active after release consumes the shipped fragments.
+The real root `CHANGELOG.md` was never edited.
+
+### Explicit current-claim contract (#534)
+
+`scripts/pi-validation.py` implements the exact `af.pi.validation-source/1` recipe above with
+only its three fixed exclusions: root `.git`, root `target` and this record. Exclusions cannot
+come from claim data. Both the original documented recipe and the helper returned the same
+candidate projection/count before measurement. The helper neither writes the record nor reads
+ambient profiles, credentials or an implicit developer-specific log. Symlink targets are hashed
+as bytes, never followed. It is deterministic and uses only Python's standard library.
+
+One delimited JSON claim below uses `af/pi-validation-claim@1`, with the closed contract in
+[`pi-validation-claim-v1.json`](../../schemas/pi-validation-claim-v1.json). Duplicate fields,
+missing/extra fields, unsupported versions, duplicate claim blocks and malformed claims refuse.
+The helper reads that same schema; `pi_validation_current_claim_is_versioned_and_closed` also
+checks it through the real JSON Schema validator, including old shapes and missing fields.
+
+```sh
+python3 -I -B scripts/pi-validation.py --projection
+python3 -I -B scripts/pi-validation.py --check
+# Explicit optional verification of the actual local log; not needed by normal CI:
+python3 -I -B scripts/pi-validation.py --check \
+  --measurement-log /private/tmp/pi-provenance-perf-kernel-measure.log
+```
+
+`--check` compares digest and entry/file counts to candidate content; it never silently repairs
+a stale claim. Without `--measurement-log`, it explicitly reports that no log was supplied or
+read. With that option, it checks the real file's SHA256 and its exact source binding, command,
+filter, Make exit and nextest summary. A missing ephemeral log is never asserted to be verified.
+The log binding lines use the canonical `--projection` output followed by `command:`, `filter:`
+and the actual process outcome `make exit:`; the original nextest summary remains unmodified.
+
+The existing, classified `scripts/test-pi-host.py` suite now always runs
+`ValidationTests.test_current_claim_matches_this_candidate`, including hermetic CI mode.
+Its five private-tree regressions passed before measurement: source mutation/stale digest/counts,
+record-only edits and precisely scoped exclusions (including nested/hidden paths), independent
+projection rows/Unicode/symlinks/executable bits, closed versioned unique claims, and optional
+log hash/source/filter/outcome verification. They use `-I -B` subprocesses; the imported helper
+also suppresses bytecode writes. All three existing host tests are preserved.
+No gate, classification, retry, budget, profile, sandbox boundary, `.af/`, `.github/` or accepted
+ADR 0270–0273 changed. No Linux-only helper or caller in `provider_auth_handoff.rs`,
+`task_interrupt.rs` or `campaign_loop/heartbeat.rs` changed.
+
+### Fresh manual measurement of the frozen candidate
+
+All edits outside this excluded record finished before **2026-11-02 01:33:20 UTC**.
+The Worker ran the unchanged `make perf-kernel-measure` until **01:44:23 UTC**, using pinned
+Rust/Cargo **1.88.0**, `CARGO_NET_OFFLINE=true`, `TMPDIR=/private/tmp` and a private
+`CARGO_HOME` at `target/pi-cargo-home`, seeded from the readable locked registry caches.
+No installation, shared-cache mutation, real credential inspection or paid inference occurred.
+The documented recipe and the helper both returned the binding below: **3812 entries,
+3127 regular files**. It includes every nonrecord edit; only this excluded record changed
+while/after measurement ran. This is a content projection, never a kernel Snapshot identity.
+
+The real command exited **0**:
+
+```text
+PASS [ 659.122s] (1/1) af::it perf_kernel_measure::guarded_kernel_experiments_measure_one_judged_sample
+Summary [ 659.141s] 1 test run: 1 passed (1 slow), 3973 skipped
+[perf-kernel-measure] 662.940s, exit 0
+```
+
+The unchanged Make target selects the exact filter in the claim, with
+`--workspace --locked --profile ci --run-ignored only`. Skips are the other tests outside this
+manual selection, not weakened validation. This is guarded-kernel validation, not a product
+speed-improvement claim. Full log: `/private/tmp/pi-provenance-perf-kernel-measure.log`.
+Its actual SHA256, filter, source projection/counts and successful outcome are in the current
+claim. The log starts with the exact source binding, command/filter, start time and toolchain;
+it ends with the observed process exit, end time and `source_unchanged=true`.
+
+`AF_PERF_KERNEL_RECEIPTS` exported the existing schema/reader-validated
+`af.perf-kernel-receipts/3` documents below. Both carry protected-harness digest
+`sha256:d182eaa9f53784005e0fb97c119836705d8ca28d8da0720f7d40479de5205c82`;
+`harness-digest --check` passed and no protected input/generated fixture needed changing.
+
+| Scratch receipt | SHA256 | Actual outcome |
+|---|---|---|
+| `target/pi-provenance-perf-receipts/receipts-74006-improve.json` | `4955f940e71d4ecff637a5cafd73011461105fa0c9445439371166f22bd5936a` | Controlled baseline/candidate assertions passed; Task exited 0 |
+| `target/pi-provenance-perf-receipts/receipts-74006-candidate-refusal.json` | `c0f6b72c64f9c8e5e9b6a3a29a0af21e47fba3eedf933234e0ad6c12f853f0ce` | All six tampered-harness and two invalid metric-contract Tasks refused, each exiting 4 |
+
+These receipts' Snapshot IDs belong to disposable test consumers, not this candidate.
+Scratch paths need not survive cleanup. The retained evidence is the actual result, exact
+log/receipt hashes and reproducible content projection. All preceding measurements/projections
+remain explicitly historical, including the original supplied #494 failing observation.
+
+### Current machine-readable claim
+
+This is the sole current claim. The helper verifies it against candidate content; optional
+explicit log verification also checks the actual log bytes and source/outcome binding.
+
+<!-- af-pi-validation-current:v1 -->
+```json
+{
+  "schema": "af/pi-validation-claim@1",
+  "entries": 3812,
+  "files": 3127,
+  "source_sha256": "sha256:8d78f6e86956cb6d311a94dee56121eb62cdacafdf706b5763095960ddf8231f",
+  "command": "make perf-kernel-measure",
+  "filter": "test(=perf_kernel_measure::guarded_kernel_experiments_measure_one_judged_sample)",
+  "exit_code": 0,
+  "summary": "Summary [ 659.141s] 1 test run: 1 passed (1 slow), 3973 skipped",
+  "log_sha256": "sha256:d04b133d924c994e3cafb9f8a383cc0f439b5ba1ec24140de7b723fac73cf267"
+}
+```
+<!-- /af-pi-validation-current -->
+
+### Actual checks of this claim and candidate
+
+After adding the current claim, both the ordinary helper check and explicit real-log check
+passed. Their actual output was:
+
+```text
+pi-validation source: {"entries":3812,"files":3127,"source_sha256":"sha256:8d78f6e86956cb6d311a94dee56121eb62cdacafdf706b5763095960ddf8231f"}
+current claim matches candidate source; measurement log not supplied (not read)
+pi-validation source: {"entries":3812,"files":3127,"source_sha256":"sha256:8d78f6e86956cb6d311a94dee56121eb62cdacafdf706b5763095960ddf8231f"}
+current claim matches candidate source; measurement log verified
+```
+
+The full existing Pi Python suite, including the new normal-CI current-source assertion, passed
+**9 tests** in each mode: `AF_PI_TEST_HERMETIC=1` and the explicitly selected installed official
+Pi 1.4.0 SDK. The official mode exercised SDK construction, confined tools, nested writes and
+the actual SDK agent turn with mocked upstream transport, typed final reply and native usage.
+Hermetic mode explicitly reports official SDK execution as not run and passes the fixture path.
+The changelog suite passed **10 tests**. No existing host test was removed or skipped.
+
+Before measurement, the focused Rust selection below passed **220 tests**, no failures,
+**1910 skipped** outside the selection. It covers the existing Pi runtime and other Provider
+contracts, the new claim schema parity test and full schema compilation:
+
+```sh
+cargo nextest run --workspace --locked --offline --profile ci -E \
+  'package(review-runner-pi) | (binary_id(af::it) & (test(/^provider_onboarding::/) | test(/pi_registration_requires/) | test(/pi_task_admission/) | test(/pi_doctor_and_review/))) | (binary_id(af::bin/af) & (test(/^providers::/) | test(/^shipped_schemas::/) | test(/pi_setup_guidance/))) | (binary_id(review-core::schema_parity) & (test(/pi_/) | test(/every_schema/)))'
+```
+
+Actual premeasurement summary:
+`Summary [  27.609s] 220 tests run: 220 passed, 1910 skipped`.
+This selection is repeated after completing the record; the final run's actual time and result
+are retained in the Task report, with no subsequent edit.
+
+Pinned `cargo fmt --all`, `cargo clippy --workspace --all-targets --offline -- -D warnings`,
+`python3 -I scripts/test-classes.py audit`, the changelog-note check and protected-harness
+`harness-digest --check` passed. No flaky assertion needed a rerun. Offline `npx` returned
+`ENOTCACHED` for registry metadata: **markdownlint through npx: not run**. The exact cached
+markdownlint-cli2 **0.22.1** executable ran directly without installation, reporting zero errors
+for all seven changed Markdown files. No network workaround or new dependency was used.
+
+The helper's ordinary and explicit real-log checks are repeated after this final record update;
+the measured source projection remains identical. Only this excluded record changed after the
+measurement began. No full workspace suite or Worker-run fast gate is claimed: the configured
+`scripts/verify.sh --profile fast` gate remains the kernel's post-seal check.
+**Paid live smoke: not run.** No real OAuth profile, refresh exchange or service inference was used.

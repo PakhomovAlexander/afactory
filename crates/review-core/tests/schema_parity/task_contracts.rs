@@ -1479,3 +1479,45 @@ fn pi_host_and_setup_protocols_reject_old_shapes_and_secret_fields() {
     old["version"] = json!(1);
     assert_invalid("provider-registry-v2.json", &old, "old registry");
 }
+
+#[test]
+fn pi_validation_current_claim_is_versioned_and_closed() {
+    // The stdlib helper reads this same schema; fixture mutations also exercise its real CLI.
+    let claim = json!({
+        "schema": "af/pi-validation-claim@1",
+        "source_sha256": format!("sha256:{}", "a".repeat(64)),
+        "entries": 3809,
+        "files": 3124,
+        "command": "make perf-kernel-measure",
+        "filter": "test(=perf_kernel_measure::guarded_kernel_experiments_measure_one_judged_sample)",
+        "exit_code": 0,
+        "summary": "Summary [ 941.896s] 1 test run: 1 passed (1 slow), 3972 skipped",
+        "log_sha256": format!("sha256:{}", "b".repeat(64))
+    });
+    assert_valid("pi-validation-claim-v1.json", &claim);
+    for (field, wrong) in [
+        ("schema", json!("af/pi-validation-claim@0")),
+        ("source_sha256", json!("not-a-projection")),
+        ("entries", json!(true)),
+        ("files", json!(-1)),
+        ("command", json!("fake measurement")),
+        ("filter", json!("test(/anything/)")),
+        ("exit_code", json!(1)),
+        (
+            "summary",
+            json!("Summary [1s] 1 test run: 0 passed, 1 failed"),
+        ),
+        ("log_sha256", json!("unknown")),
+        ("exclusions", json!(["source"])),
+        ("snapshot_id", json!("invented")),
+    ] {
+        let mut bad = claim.clone();
+        bad[field] = wrong;
+        assert_invalid("pi-validation-claim-v1.json", &bad, field);
+    }
+    for field in claim.as_object().unwrap().keys() {
+        let mut bad = claim.clone();
+        bad.as_object_mut().unwrap().remove(field);
+        assert_invalid("pi-validation-claim-v1.json", &bad, field);
+    }
+}
