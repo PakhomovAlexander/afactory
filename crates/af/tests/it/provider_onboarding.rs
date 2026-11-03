@@ -1096,6 +1096,37 @@ fn pi_first_malformed_native_usage_retains_safe_floors_in_rust_and_stops_inferen
                     110,
                 ),
                 (
+                    "first malformed choice details retain 110",
+                    vec![json!({"usage":{"prompt_tokens":100,"completion_tokens":10},
+                        "choices":[{"usage":{"prompt_tokens_details":false}}]})],
+                    json!([100, 10, null, null, null]),
+                    110,
+                ),
+                (
+                    "first malformed details reversed source order retain 110",
+                    vec![json!({"usage":{"prompt_tokens_details":false},
+                        "choices":[{"usage":{"prompt_tokens":100,"completion_tokens":10}}]})],
+                    json!([100, 10, null, null, null]),
+                    110,
+                ),
+                (
+                    "malformed input does not erase independently observed input",
+                    vec![
+                        json!({"usage":{"prompt_tokens":false,"completion_tokens":10},
+                        "choices":[{"usage":{"prompt_tokens":100}}]}),
+                    ],
+                    json!([100, 10, null, null, null]),
+                    110,
+                ),
+                (
+                    "three source numeric conflict cannot be restored by matching input",
+                    vec![json!({"usage":{"prompt_tokens":100},"choices":[
+                        {"usage":{"prompt_tokens":101,"completion_tokens":10}},
+                        {"usage":{"prompt_tokens":100}}]})],
+                    json!([null, 10, null, null, null]),
+                    10,
+                ),
+                (
                     "first null choice retains 110",
                     vec![
                         json!({"usage":{"prompt_tokens":100,"completion_tokens":10},"choices":[null]}),
@@ -1373,6 +1404,10 @@ fn pi_first_malformed_native_usage_retains_safe_floors_in_rust_and_stops_inferen
             std::fs::remove_file(native).unwrap();
         }
         if backend == "kimi-coding" {
+            let mut valid_events = vec![
+                json!({"usage":{"prompt_tokens":12},"choices":[{"usage":{"completion_tokens":3}}]}),
+                json!({"usage":{"completion_tokens":3},"choices":[{"usage":{"prompt_tokens":12}}]}),
+            ];
             for choices in [
                 None,
                 Some(json!(null)),
@@ -1384,6 +1419,9 @@ fn pi_first_malformed_native_usage_retains_safe_floors_in_rust_and_stops_inferen
                 if let Some(choices) = choices {
                     native_event["choices"] = choices;
                 }
+                valid_events.push(native_event);
+            }
+            for native_event in valid_events {
                 std::fs::write(
                     &state,
                     serde_json::to_vec(&json!({"backend":backend,"mode":"budget",
@@ -1411,6 +1449,15 @@ fn pi_first_malformed_native_usage_retains_safe_floors_in_rust_and_stops_inferen
                 PiInferenceEvidenceV1::decode(&bytes).unwrap();
                 let trace: Value = serde_json::from_slice(&bytes).unwrap();
                 assert_eq!(trace["completed_inferences"], 2);
+                for inference in trace["inferences"].as_array().unwrap() {
+                    assert_eq!(inference["input"], 12);
+                    assert_eq!(inference["output"], 3);
+                    assert_eq!(inference["cache_read"], Value::Null);
+                    assert_eq!(inference["cache_write"], Value::Null);
+                    assert_eq!(inference["reasoning"], Value::Null);
+                    assert_eq!(inference["complete"], true);
+                }
+                assert_eq!(trace["settled"], true);
                 assert_eq!(trace["successful"], true);
                 assert_eq!(trace["aggregate"]["charge_complete"], true);
                 let native = state.with_extension("json.native");

@@ -148,16 +148,22 @@ export function rawUsage(backend, event, onInvalid = () => fail('invalid_usage')
     // choose an alias, or discard independently justified aggregate counters with it.
     const cached = raw.cached.map(counter);
     const observedCached = cached.filter((value) => value !== null);
-    const badCache = raw.cached.some((value, i) => value != null && cached[i] === null) ||
-      new Set(observedCached).size > 1;
+    const cacheConflict = new Set(observedCached).size > 1;
+    const badCache = raw.cached.some((value, i) => value != null && cached[i] === null) || cacheConflict;
+    if (cacheConflict) conflicted.add('cache_read');
     if (badCache) invalid = true;
     const next = { input: counter(raw.input), output: counter(raw.output),
       cache_read: badCache ? null : observedCached[0] ?? null,
       cache_write: counter(raw.cache_write), reasoning: counter(raw.reasoning) };
     if (!result) result = next;
     else for (const key of keys) {
-      if (result[key] !== next[key]) { invalid = true; conflicted.add(key); }
+      // Unknown is absence, not a value. Only distinct observed numbers conflict;
+      // that state is permanent for this event, regardless of later sources.
+      if (result[key] !== null && next[key] !== null && result[key] !== next[key]) {
+        invalid = true; conflicted.add(key);
+      }
       if (conflicted.has(key)) result[key] = null;
+      else if (next[key] !== null) result[key] = next[key];
     }
   }
   if (invalid) onInvalid();

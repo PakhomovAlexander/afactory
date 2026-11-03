@@ -814,6 +814,38 @@ for (const [field, change] of [
       {...expected,[field]:null});
   }
 }
+// Unknown components are absence, not numeric conflicts, in either source order.
+const totals = {input:100,output:10,cache_read:null,cache_write:null,reasoning:null};
+const aggregate = {prompt_tokens:100,completion_tokens:10};
+for (const sources of [[aggregate,{prompt_tokens_details:false}],
+                       [{prompt_tokens_details:false},aggregate]]) {
+  invalid({usage:sources[0],choices:[{usage:sources[1]}]},totals);
+}
+for (const change of [
+  {prompt_tokens:false}, {completion_tokens:false}, {cached_tokens:false},
+  {prompt_tokens_details:{cache_write_tokens:false}},
+  {completion_tokens_details:{reasoning_tokens:false}},
+]) {
+  for (const sources of [[base,change],[change,base]]) {
+    invalid({usage:sources[0],choices:[{usage:sources[1]}]},expected);
+  }
+}
+for (const unknown of [undefined,null,-1,'PRIVATE_RAW_BODY']) {
+  for (const sources of [[aggregate,{prompt_tokens:unknown}],
+                         [{prompt_tokens:unknown},aggregate]]) {
+    const event = {usage:sources[0],choices:[{usage:sources[1]}]};
+    if (unknown == null) assert.deepEqual(rawUsage('kimi-coding',event),totals);
+    else invalid(event,totals);
+  }
+}
+for (const sources of [[{prompt_tokens:100},{completion_tokens:10}],
+                       [{completion_tokens:10},{prompt_tokens:100}]]) {
+  assert.deepEqual(rawUsage('kimi-coding',
+    {usage:sources[0],choices:[{usage:sources[1]}]}),totals);
+}
+// Contradictory aliases are actual numeric conflicts too; another source cannot restore them.
+invalid({usage:{...base,prompt_cache_hit_tokens:3},choices:[{usage:base}]},
+  {...expected,cache_read:null});
 invalid({usage:{...base,prompt_cache_hit_tokens:3}},{...expected,cache_read:null});
 invalid({usage:[],choices:[{usage:base}]},expected);
 invalid({usage:[]},undefined);
