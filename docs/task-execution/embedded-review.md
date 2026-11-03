@@ -43,6 +43,13 @@ ticket.json: "Implement this Jira ticket: offset/limit pagination"
 `verification` and `evaluation` outputs cover `verified` and `goal` respectively. Both obligations
 are determined before compilation; both must pass.
 
+Read-only reviewed verification also requires its retained canonical Review acceptance to pass,
+even when its public coverage names only goal evaluation. A passing independent evaluator does
+not override required open Findings at the Review severity gate. A failed Review produces
+`changes_requested`; an incomplete Review prevents verification. Both retain the exact Review
+evidence and evaluator judgment, and neither recommends delivery. Terminal replay applies the
+same acceptance rule.
+
 ```sh
 af task plan --file ticket.json --state /tmp/reviewed-pagination --json
 af task run pagination-cli --execute --state /tmp/reviewed-pagination --json
