@@ -17,11 +17,11 @@ export class ModelRuntime {
         fs.appendFileSync(statePath+'.native',JSON.stringify({maxTokens:options.maxTokens})+'\n');
         if (Object.keys(options.env).length || options.maxRetries !== 0) throw Error('ambient auth/retry');
         await options.credentials?.read?.(backend());
+        if (state().providerEvents) {
+          for (const event of state().providerEvents) await options.onProviderStreamEvent(event, selected);
+          return;
+        }
         if (backend() === 'kimi-coding') {
-          if (state().providerEvents) {
-            for (const event of state().providerEvents) await options.onProviderStreamEvent(event, selected);
-            return;
-          }
           const usage = state().usage ?? {prompt_tokens:12,completion_tokens:3,cached_tokens:2,completion_tokens_details:{reasoning_tokens:1}};
           for (let n=0;n<(state().usageEvents ?? 2);n++) await options.onProviderStreamEvent(n%2 ? {choices:[{usage}]} : {choices:[],usage}, selected);
           return;

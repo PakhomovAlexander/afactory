@@ -831,6 +831,78 @@ assert(refused);
                                     capture_output=True, text=True, timeout=30, check=False)
             self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
 
+    def test_raw_usage_validates_recognized_native_containers_without_losing_sibling_totals(self):
+        node = shutil.which('node')
+        self.assertIsNotNone(node)
+        script = r"""
+import assert from 'node:assert/strict';
+import {pathToFileURL} from 'node:url';
+const {rawUsage} = await import(pathToFileURL(process.argv[2]).href);
+const kimi = {prompt_tokens:100,completion_tokens:10};
+const openai = {input_tokens:100,output_tokens:10};
+const totals = {input:100,output:10,cache_read:null,cache_write:null,reasoning:null};
+function check(backend,event,expected,invalid) {
+  let refused = 0;
+  assert.deepEqual(rawUsage(backend,event,()=>refused++),expected);
+  assert.equal(refused,Number(invalid),JSON.stringify({backend,event}));
+  if (invalid) assert.throws(()=>rawUsage(backend,event),/invalid_usage/);
+}
+// Every non-null JSON shape outside objects is rejected at object containers;
+// choices alone requires an array, and each entry requires a non-null object.
+for (const backend of ['kimi-coding','openai-codex']) {
+  const wrap = usage => backend==='kimi-coding' ? {usage} : {response:{usage}};
+  const usage = backend==='kimi-coding' ? kimi : openai;
+  const details = backend==='kimi-coding'
+    ? ['prompt_tokens_details','completion_tokens_details']
+    : ['input_tokens_details','output_tokens_details'];
+  for (const bad of [false,true,0,1,'PRIVATE_RAW_BODY',[],[{}]]) {
+    check(backend,bad,undefined,true);
+    check(backend,wrap(bad),undefined,true);
+    for (const field of details) check(backend,wrap({...usage,[field]:bad}),totals,true);
+    if (backend==='openai-codex') check(backend,{response:bad},undefined,true);
+    else {
+      check(backend,{usage,choices:[bad]},totals,true);
+      check(backend,{usage:bad,choices:[{usage}]},totals,true);
+      check(backend,{usage,choices:[{usage:bad}]},totals,true);
+    }
+  }
+  check(backend,null,undefined,true);
+  check(backend,undefined,undefined,true);
+  for (const optional of [undefined,null]) {
+    check(backend,{},undefined,false);
+    check(backend,wrap(optional),undefined,false);
+    for (const field of details) check(backend,wrap({...usage,[field]:optional}),totals,false);
+    if (backend==='openai-codex') check(backend,{response:optional},undefined,false);
+    else {
+      check(backend,{usage,choices:optional},totals,false);
+      check(backend,{usage,choices:[{usage:optional}]},totals,false);
+    }
+  }
+}
+for (const choices of [{},false,0,'PRIVATE_RAW_BODY',[null]]) {
+  check('kimi-coding',{usage:kimi,choices},totals,true);
+}
+for (const choices of [[],[{}],[{usage:kimi}],[{usage:kimi},{usage:kimi}]]) {
+  check('kimi-coding',{usage:kimi,choices},totals,false);
+}
+check('kimi-coding',{choices:[{usage:kimi}]},totals,false);
+check('kimi-coding',{usage:{...kimi,prompt_tokens_details:{cached_tokens:2,cache_write_tokens:1},
+  completion_tokens_details:{reasoning_tokens:3}}},
+  {...totals,cache_read:2,cache_write:1,reasoning:3},false);
+check('openai-codex',{response:{usage:{...openai,input_tokens_details:{cached_tokens:2,cache_write_tokens:1},
+  output_tokens_details:{reasoning_tokens:3}}}},
+  {...totals,cache_read:2,cache_write:1,reasoning:3},false);
+// Unknown unrelated fields remain opaque.
+check('kimi-coding',{usage:{...kimi,unrelated:[]},unrelated:false},totals,false);
+check('openai-codex',{response:{usage:openai,unrelated:[]},unrelated:false},totals,false);
+"""
+        with tempfile.TemporaryDirectory() as directory:
+            contract = Path(directory) / 'containers.mjs'
+            contract.write_text(script)
+            result = subprocess.run([node, str(contract), str(HOST)],
+                                    capture_output=True, text=True, timeout=30, check=False)
+            self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+
     def test_trusted_allowance_caps_each_native_call_and_stops_unsafe_continuation(self):
         node = shutil.which('node')
         self.assertIsNotNone(node)

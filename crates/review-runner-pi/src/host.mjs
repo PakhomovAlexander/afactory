@@ -45,20 +45,35 @@ const BACKENDS = Object.freeze({
   'openai-codex': Object.freeze({
     identity: 'account', credentialIdentity: openaiIdentity,
     api: 'openai-codex-responses', endpoint: 'https://chatgpt.com/backend-api',
-    usageSources: (event) => [event.response?.usage],
-    usageFields: (u) => ({ input: u.input_tokens, output: u.output_tokens,
-      cached: [u.input_tokens_details?.cached_tokens],
-      cache_write: u.input_tokens_details?.cache_write_tokens,
-      reasoning: u.output_tokens_details?.reasoning_tokens }),
+    usageSources: (event, object) => [object(event.response)?.usage],
+    usageFields: (u, object) => {
+      const input = object(u.input_tokens_details), output = object(u.output_tokens_details);
+      return { input: u.input_tokens, output: u.output_tokens,
+        cached: [input?.cached_tokens], cache_write: input?.cache_write_tokens,
+        reasoning: output?.reasoning_tokens };
+    },
   }),
   'kimi-coding': Object.freeze({
     identity: 'unavailable', credentialIdentity: kimiIdentity,
     api: 'openai-completions', endpoint: 'https://api.kimi.com/coding/v1', model: 'k3',
-    usageSources: (event) => [event.usage, ...(event.choices ?? []).map((choice) => choice.usage)],
-    usageFields: (u) => ({ input: u.prompt_tokens, output: u.completion_tokens,
-      cached: [u.prompt_tokens_details?.cached_tokens, u.prompt_cache_hit_tokens, u.cached_tokens],
-      cache_write: u.prompt_tokens_details?.cache_write_tokens,
-      reasoning: u.completion_tokens_details?.reasoning_tokens }),
+    usageSources: (event, object, invalidate) => {
+      // Keep the independent aggregate even when choices cannot be traversed.
+      const sources = [event.usage];
+      if (event.choices != null) {
+        if (!Array.isArray(event.choices)) invalidate();
+        else for (const choice of event.choices) {
+          if (choice == null) invalidate();
+          else sources.push(object(choice)?.usage);
+        }
+      }
+      return sources;
+    },
+    usageFields: (u, object) => {
+      const input = object(u.prompt_tokens_details), output = object(u.completion_tokens_details);
+      return { input: u.prompt_tokens, output: u.completion_tokens,
+        cached: [input?.cached_tokens, u.prompt_cache_hit_tokens, u.cached_tokens],
+        cache_write: input?.cache_write_tokens, reasoning: output?.reasoning_tokens };
+    },
   }),
 });
 export function backendAdapter(backend) {
@@ -106,7 +121,17 @@ export function guardedCredentials(storage, expected, backend = 'openai-codex', 
 export function rawUsage(backend, event, onInvalid = () => fail('invalid_usage')) {
   let invalid = false;
   const adapter = backendAdapter(backend);
-  const sources = adapter.usageSources(event);
+  const invalidate = () => { invalid = true; };
+  // Only the finite recognized native containers are inspected. Optional null/absent
+  // containers mean unknown; other non-object shapes fail without losing sibling usage.
+  const object = (value) => {
+    if (value == null) return undefined;
+    if (typeof value !== 'object' || Array.isArray(value)) { invalidate(); return undefined; }
+    return value;
+  };
+  const native = object(event);
+  if (!native) { onInvalid(); return undefined; }
+  const sources = adapter.usageSources(native, object, invalidate);
   let result;
   const counter = (value) => {
     if (value === undefined || value === null) return null;
@@ -116,9 +141,9 @@ export function rawUsage(backend, event, onInvalid = () => fail('invalid_usage')
   const keys = ['input', 'output', 'cache_read', 'cache_write', 'reasoning'];
   const conflicted = new Set();
   for (const u of sources) {
-    if (u === undefined || u === null) continue;
-    if (typeof u !== 'object' || Array.isArray(u)) { invalid = true; continue; }
-    const raw = adapter.usageFields(u);
+    const source = object(u);
+    if (!source) continue;
+    const raw = adapter.usageFields(source, object);
     // A malformed or conflicting alias makes only its own component unknown. Never
     // choose an alias, or discard independently justified aggregate counters with it.
     const cached = raw.cached.map(counter);
