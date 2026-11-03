@@ -1,7 +1,7 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "$id": "urn:af:schema:pi-host:3",
-  "title": "AF Pi SDK host protocol @3",
+  "$id": "urn:af:schema:pi-host:4",
+  "title": "AF Pi SDK host protocol @4",
   "oneOf": [
     {
       "type": "object",
@@ -22,7 +22,7 @@
       ],
       "properties": {
         "schema": {
-          "const": "af.pi-host/3"
+          "const": "af.pi-host/4"
         },
         "type": {
           "const": "init"
@@ -97,7 +97,7 @@
       ],
       "properties": {
         "schema": {
-          "const": "af.pi-host/3"
+          "const": "af.pi-host/4"
         },
         "type": {
           "const": "ready"
@@ -215,11 +215,13 @@
         "type",
         "model",
         "effort",
-        "model_identity"
+        "model_identity",
+        "remaining_tokens",
+        "reply_schema"
       ],
       "properties": {
         "schema": {
-          "const": "af.pi-host/3"
+          "const": "af.pi-host/4"
         },
         "type": {
           "const": "prepare"
@@ -235,6 +237,17 @@
         "model_identity": {
           "type": "string",
           "pattern": "^sha256:[0-9a-f]{64}$"
+        },
+        "remaining_tokens": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 9007199254740991
+        },
+        "reply_schema": {
+          "type": [
+            "object",
+            "null"
+          ]
         }
       }
     },
@@ -250,7 +263,7 @@
       ],
       "properties": {
         "schema": {
-          "const": "af.pi-host/3"
+          "const": "af.pi-host/4"
         },
         "type": {
           "const": "prepared"
@@ -280,7 +293,7 @@
       ],
       "properties": {
         "schema": {
-          "const": "af.pi-host/3"
+          "const": "af.pi-host/4"
         },
         "type": {
           "const": "prompt"
@@ -304,7 +317,7 @@
       ],
       "properties": {
         "schema": {
-          "const": "af.pi-host/3"
+          "const": "af.pi-host/4"
         },
         "type": {
           "const": "accepted"
@@ -327,11 +340,12 @@
         "output",
         "cache_read",
         "cache_write",
-        "reasoning"
+        "reasoning",
+        "observations"
       ],
       "properties": {
         "schema": {
-          "const": "af.pi-host/3"
+          "const": "af.pi-host/4"
         },
         "type": {
           "const": "usage"
@@ -339,7 +353,7 @@
         "inference": {
           "type": "integer",
           "minimum": 1,
-          "maximum": 10000
+          "maximum": 256
         },
         "complete": {
           "type": "boolean"
@@ -383,6 +397,11 @@
           ],
           "minimum": 0,
           "maximum": 9007199254740991
+        },
+        "observations": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 128
         }
       }
     },
@@ -396,7 +415,7 @@
       ],
       "properties": {
         "schema": {
-          "const": "af.pi-host/3"
+          "const": "af.pi-host/4"
         },
         "type": {
           "const": "message"
@@ -415,7 +434,7 @@
       ],
       "properties": {
         "schema": {
-          "const": "af.pi-host/3"
+          "const": "af.pi-host/4"
         },
         "type": {
           "const": "settled"
@@ -432,7 +451,7 @@
       ],
       "properties": {
         "schema": {
-          "const": "af.pi-host/3"
+          "const": "af.pi-host/4"
         },
         "type": {
           "const": "error"
@@ -449,6 +468,39 @@
             "model_changed",
             "settings_changed"
           ]
+        }
+      }
+    },
+    {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "schema",
+        "type",
+        "name",
+        "count"
+      ],
+      "properties": {
+        "schema": {
+          "const": "af.pi-host/4"
+        },
+        "type": {
+          "const": "tool_count"
+        },
+        "name": {
+          "enum": [
+            "read",
+            "ls",
+            "find",
+            "grep",
+            "write",
+            "edit"
+          ]
+        },
+        "count": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 4096
         }
       }
     }

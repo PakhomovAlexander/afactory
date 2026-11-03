@@ -16,6 +16,9 @@ fn ready() -> Ready {
 }
 fn record(state: &mut State, kind: &str, data: Value) -> Result<(), String> {
     let mut value = data;
+    if kind == "usage" && value.get("observations").is_none() {
+        value["observations"] = json!(1);
+    }
     value["schema"] = json!(PROTOCOL);
     value["type"] = json!(kind);
     state.record(&serde_json::to_vec(&value).unwrap())
@@ -204,7 +207,8 @@ mode=MODE
 open(START_MARKER,'w').write('started')
 ready=json.loads(READY)
 def emit(v):
- v['schema']='af.pi-host/3'
+ if v.get('type')=='usage': v.setdefault('observations',1)
+ v['schema']='af.pi-host/4'
  data=(json.dumps(v,ensure_ascii=False)+'\n').encode()
  # Split inside a UTF-8 sequence too: LF is the only record separator.
  for at in range(0,len(data),len(data) if mode=='immediate' else 7): os.write(1,data[at:at+7] if mode!='immediate' else data)
@@ -302,6 +306,73 @@ if mode=='after': emit({'type':'error','code':'inference_failed'})
         }
     }
     #[test]
+    fn missing_trusted_allowance_refuses_before_start_even_with_payload_and_environment_budget() {
+        let root = tempfile::tempdir().unwrap();
+        let adapter = fixture("readonly", root.path(), None);
+        let cas = Cas::open(root.path().join("cas")).unwrap();
+        let returned = adapter.invoke(
+            &cas,
+            root.path(),
+            br#"{"remaining_tokens":999999}"#.to_vec(),
+            Duration::from_secs(30),
+            WorkerAccess::ReadOnly,
+            None,
+            &[("AF_PI_REMAINING_TOKENS".into(), "999999".into())],
+        );
+        assert!(
+            returned
+                .message
+                .unwrap_err()
+                .contains("trusted remaining token allowance")
+        );
+        assert_eq!(returned.usage.unwrap().chargeable_tokens.get(), 0);
+        assert!(!root.path().join("started").exists());
+        let invalid = adapter
+            .invoke_with_allowance(
+                &cas,
+                root.path(),
+                b"request".to_vec(),
+                Duration::from_secs(30),
+                WorkerAccess::ReadOnly,
+                None,
+                &[],
+                RemainingTokenAllowance::new(u64::MAX).unwrap(),
+                review_runner::task::reply_schema::ReplyContract::Request,
+            )
+            .unwrap_or_else(|unstarted| *unstarted.0);
+        assert!(invalid.message.is_err());
+        assert_eq!(invalid.usage.unwrap().chargeable_tokens.get(), 0);
+        assert!(!root.path().join("started").exists());
+    }
+
+    #[test]
+    fn safe_evidence_distinguishes_requests_with_identical_usage_without_sensitive_payloads() {
+        let root = tempfile::tempdir().unwrap();
+        let adapter = fixture("immediate", root.path(), None);
+        let cas = Cas::open(root.path().join("cas")).unwrap();
+        let mut evidence = vec![];
+        for _ in 0..2 {
+            let returned = invoke_test(
+                &adapter,
+                &cas,
+                root.path(),
+                b"PRIVATE_PROMPT_SENTINEL".to_vec(),
+                Duration::from_secs(30),
+                WorkerAccess::ReadOnly,
+                None,
+                &[],
+            );
+            assert!(returned.message.is_ok());
+            let bytes = cas.get(&returned.raw_artifact_ids[0]).unwrap();
+            assert!(!String::from_utf8_lossy(&bytes).contains("PRIVATE_PROMPT_SENTINEL"));
+            evidence.push(PiInferenceEvidenceV1::decode(&bytes).unwrap());
+        }
+        assert_ne!(evidence[0].request_nonce, evidence[1].request_nonce);
+        assert_eq!(evidence[0].aggregate, evidence[1].aggregate);
+        assert_eq!(evidence[0].started_inferences, 1);
+    }
+
+    #[test]
     fn kimi_adapter_aggregate_budget_preserves_unknown_cache_and_refuses_bad_observations() {
         for (mode, complete, charge, message_ok) in [
             ("kimi-aggregate", true, 477, true),
@@ -320,7 +391,8 @@ if mode=='after': emit({'type':'error','code':'inference_failed'})
             let root = tempfile::tempdir().unwrap();
             let adapter = fixture(mode, root.path(), None);
             let cas = Cas::open(root.path().join("cas")).unwrap();
-            let returned = adapter.invoke(
+            let returned = invoke_test(
+                &adapter,
                 &cas,
                 root.path(),
                 b"private request".to_vec(),
@@ -335,6 +407,31 @@ if mode=='after': emit({'type':'error','code':'inference_failed'})
                 "{mode}: {:?}",
                 returned.message
             );
+            assert_eq!(returned.raw_artifact_ids.len(), 1);
+            let bytes = cas.get(&returned.raw_artifact_ids[0]).unwrap();
+            PiInferenceEvidenceV1::decode(&bytes).unwrap();
+            let evidence: Value = serde_json::from_slice(&bytes).unwrap();
+            let mut old = evidence.clone();
+            old["schema"] = json!("af/pi-inference-evidence@0");
+            assert!(PiInferenceEvidenceV1::decode(&serde_json::to_vec(&old).unwrap()).is_err());
+            let mut secret = evidence.clone();
+            secret["tool_arguments"] = json!("PRIVATE");
+            assert!(PiInferenceEvidenceV1::decode(&serde_json::to_vec(&secret).unwrap()).is_err());
+            assert_eq!(evidence["schema"], "af/pi-inference-evidence@1");
+            assert_eq!(evidence["remaining_tokens"], 1_000_000);
+            assert_eq!(
+                evidence["started_inferences"],
+                if mode == "kimi-multiple" { 2 } else { 1 }
+            );
+            assert_eq!(
+                evidence["inferences"][0]["input"],
+                if mode == "kimi-missing-input" {
+                    Value::Null
+                } else {
+                    json!(439)
+                }
+            );
+            assert!(!evidence.to_string().contains("private request"));
             // Incomplete observations refuse Task admission even when lifecycle/text succeeded.
             assert_eq!(returned.usage_observation.is_none(), complete, "{mode}");
             if let Some(observation) = &returned.usage_observation {
@@ -390,7 +487,8 @@ if mode=='after': emit({'type':'error','code':'inference_failed'})
             let adapter = fixture("success", root.path(), None);
             let cas = Cas::open(root.path().join("cas")).unwrap();
             let cancelled = AtomicBool::new(!expired);
-            let returned = adapter.invoke(
+            let returned = invoke_test(
+                &adapter,
                 &cas,
                 root.path(),
                 b"PRIVATE".to_vec(),
@@ -420,7 +518,8 @@ if mode=='after': emit({'type':'error','code':'inference_failed'})
             let root = tempfile::tempdir().unwrap();
             let adapter = fixture(mode, root.path(), None);
             let cas = Cas::open(root.path().join("cas")).unwrap();
-            let returned = adapter.invoke(
+            let returned = invoke_test(
+                &adapter,
                 &cas,
                 root.path(),
                 b"request".to_vec(),
@@ -439,7 +538,8 @@ if mode=='after': emit({'type':'error','code':'inference_failed'})
             let root = tempfile::tempdir().unwrap();
             let adapter = fixture(mode, root.path(), None);
             let cas = Cas::open(root.path().join("cas")).unwrap();
-            let returned = adapter.invoke(
+            let returned = invoke_test(
+                &adapter,
                 &cas,
                 root.path(),
                 b"private request".to_vec(),
@@ -464,7 +564,8 @@ if mode=='after': emit({'type':'error','code':'inference_failed'})
         let root = tempfile::tempdir().unwrap();
         let adapter = fixture("before-prompt", root.path(), None);
         let cas = Cas::open(root.path().join("cas")).unwrap();
-        let returned = adapter.invoke(
+        let returned = invoke_test(
+            &adapter,
             &cas,
             root.path(),
             b"PRIVATE".to_vec(),
@@ -494,7 +595,8 @@ if mode=='after': emit({'type':'error','code':'inference_failed'})
             let root = tempfile::tempdir().unwrap();
             let adapter = fixture(mode, root.path(), None);
             let cas = Cas::open(root.path().join("cas")).unwrap();
-            let returned = adapter.invoke(
+            let returned = invoke_test(
+                &adapter,
                 &cas,
                 root.path(),
                 b"private request".to_vec(),
@@ -637,7 +739,8 @@ if mode=='after': emit({'type':'error','code':'inference_failed'})
                 std::fs::create_dir(&adapter.auth_dir).unwrap();
             }
             let cas = Cas::open(root.path().join("cas")).unwrap();
-            let returned = adapter.invoke(
+            let returned = invoke_test(
+                &adapter,
                 &cas,
                 root.path(),
                 b"PRIVATE".to_vec(),
@@ -660,7 +763,8 @@ if mode=='after': emit({'type':'error','code':'inference_failed'})
             let root = tempfile::tempdir().unwrap();
             let adapter = fixture(mode, root.path(), None);
             let cas = Cas::open(root.path().join("cas")).unwrap();
-            let returned = adapter.invoke(
+            let returned = invoke_test(
+                &adapter,
                 &cas,
                 root.path(),
                 b"request".to_vec(),
@@ -744,7 +848,8 @@ if mode=='after': emit({'type':'error','code':'inference_failed'})
         let (finished, completed) = mpsc::channel();
         std::thread::scope(|scope| {
             let running = scope.spawn(|| {
-                let returned = adapter.invoke(
+                let returned = invoke_test(
+                    &adapter,
                     &cas,
                     root.path(),
                     b"request".to_vec(),
@@ -761,6 +866,21 @@ if mode=='after': emit({'type':'error','code':'inference_failed'})
             cancelled.store(true, Ordering::Release);
             let returned = running.join().unwrap();
             assert!(returned.message.is_err());
+            assert_eq!(returned.raw_artifact_ids.len(), 1);
+            let evidence =
+                PiInferenceEvidenceV1::decode(&cas.get(&returned.raw_artifact_ids[0]).unwrap())
+                    .unwrap();
+            assert!(!evidence.successful && !evidence.settled);
+            assert_eq!(evidence.started_inferences, 1);
+            assert_eq!(
+                evidence
+                    .aggregate
+                    .reported_usage
+                    .unwrap()
+                    .chargeable_tokens
+                    .get(),
+                9
+            );
             assert_eq!(
                 returned
                     .usage_observation
@@ -817,4 +937,50 @@ fn kimi_catalog_requires_unavailable_identity_k3_and_exact_supported_efforts() {
     let mut openai = ready();
     openai.principal = None;
     assert!(openai.validate().is_err());
+}
+
+#[allow(clippy::too_many_arguments)]
+fn invoke_test(
+    adapter: &PiTaskAdapter,
+    cas: &Cas,
+    workdir: &Path,
+    input: Vec<u8>,
+    timeout: Duration,
+    access: WorkerAccess,
+    cancellation: Option<&AtomicBool>,
+    environment: &[(String, String)],
+) -> ModelWorkerReturn {
+    adapter
+        .invoke_with_allowance(
+            cas,
+            workdir,
+            input,
+            timeout,
+            access,
+            cancellation,
+            environment,
+            RemainingTokenAllowance::new(1_000_000).unwrap(),
+            review_runner::task::reply_schema::ReplyContract::Request,
+        )
+        .unwrap_or_else(|unstarted| *unstarted.0)
+}
+
+#[test]
+fn tool_count_evidence_accepts_only_declared_names_and_cumulative_counts() {
+    let mut state = accepted();
+    record(&mut state, "tool_count", json!({"name":"read","count":1})).unwrap();
+    record(&mut state, "tool_count", json!({"name":"read","count":2})).unwrap();
+    record(&mut state, "tool_count", json!({"name":"edit","count":1})).unwrap();
+    for wrong in [
+        json!({"name":"PRIVATE_NAME","count":1}),
+        json!({"name":"read","count":2}),
+        json!({"name":"read","count":3,"arguments":"PRIVATE_ARGS"}),
+        json!({"name":"write","count":4097}),
+    ] {
+        assert!(record(&mut state, "tool_count", wrong).is_err());
+    }
+    assert_eq!(
+        state.tool_counts,
+        BTreeMap::from([("edit".into(), 1), ("read".into(), 2)])
+    );
 }

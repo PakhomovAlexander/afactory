@@ -271,7 +271,7 @@ path = ".af/task-packages/default-light/verification"
 
 [packages."pi-light/implementer"]
 version = "1.0.0"
-digest = "sha256:55b983606e94c28b0969d3ef9a1324531dc7991e78762724e56abacf48cb22c1"
+digest = "sha256:48349a1eaf2334043bded370dc4394c504a63faf6dd608e49a9b8f4dd29db9e2"
 path = ".af/task-packages/pi-light/implementer"
 
 [packages."pi-light/correctness"]

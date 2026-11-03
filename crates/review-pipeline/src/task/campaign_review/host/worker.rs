@@ -352,7 +352,7 @@ impl CampaignReviewTaskHost<'_, '_> {
                 WorkerExecutionV3::Model { provider_kind, .. } => self
                     .model(&node.id)?
                     .adapter
-                    .invoke_constrained(
+                    .invoke_with_allowance(
                         cas,
                         sandbox.root(),
                         bytes,
@@ -364,6 +364,9 @@ impl CampaignReviewTaskHost<'_, '_> {
                         },
                         cancellation,
                         &environment,
+                        review_runner::task::RemainingTokenAllowance::new(
+                            attempt.reservation().tokens,
+                        )?,
                         review_runner::task::reply_schema::ReplyContract::ReviewerResult,
                     )
                     .unwrap_or_else(|unstarted| *unstarted.0),

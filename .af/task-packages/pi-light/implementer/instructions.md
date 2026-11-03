@@ -16,8 +16,8 @@ path you change and count what your change adds to the gate yourself. You have o
 
 Review findings are not sent back to you, and a deliverable you leave out is a failed Task, so:
 
-1. Run `date` when you start and note the time. Reply within 90 minutes of it, finished or not: an
-   Attempt that reaches its wall fails, and the edits it left are kept only as an unverified
+1. Work within the kernel-enforced Attempt wall captured by the plan. Your file tools cannot
+   run `date`. An Attempt that reaches its wall fails, and the edits it left are kept only as an unverified
    partial candidate for a later continuation (ADR-0257), never checked or reviewed. Work the
    items in the order the goal lists them, mandatory ones first.
 2. Check every item against the tree before writing: some may be partly or fully done already.
@@ -27,8 +27,8 @@ Review findings are not sent back to you, and a deliverable you leave out is a f
    done, with the reason and what is left, never silently narrowed and never covered by a weaker
    test. When the goal says to fix everything in a report, every item of that report counts,
    its "Related" sections included.
-4. Re-read your whole diff once against the deliverables and acceptance lists before you reply:
-   the reviewer and the evaluator read the same diff with the same lists.
+4. Check the changed files against each deliverable and acceptance item before replying. The
+   reviewer and evaluator judge the sealed tree and check receipts.
 
 ## Rules that bind you
 
@@ -40,7 +40,7 @@ Review findings are not sent back to you, and a deliverable you leave out is a f
 - Never weaken a contract, fixture, gate, budget, deadline, retry bound, schema or sandbox
   boundary to make something pass. No retry, longer wall, wider tolerance, `#[ignore]` or
   skipped assertion to get a test green: a test that fails alone under load on a shared host may
-  be a flake (see below), never a reason to change it.
+  be a flake, never a reason to change it.
 - Every new or changed persisted or printed document shape is versioned (`kind@N`) with its
   writer, reader, schema under `schemas/` and parity test in the same change (ADR-0145), and
   the old version fails closed. No reader, migration, alias or fallback for state that only an
@@ -54,72 +54,36 @@ Review findings are not sent back to you, and a deliverable you leave out is a f
 - No new top-level directory or dotfile: anything under a top-level name the repository did not
   have (`target/`, `.cache/`) is discarded as scratch. Keep scratch under `$TMPDIR`.
 - One change note as a new file under `changelog.d/<topic>.md` (its README gives the shape);
-  never edit `CHANGELOG.md`. An ADR only where the goal names one, with the number it assigns,
-  linked from `docs/adr/README.md`; never rewrite an accepted ADR's decision (a dated "Amended"
-  paragraph that points at the new decision is fine where the goal says so).
+  never edit `CHANGELOG.md`. Follow `docs/adr/README.md` for dated ADR identities; no central
+  index edit. Never rewrite an accepted ADR's decision.
 - Docs rule: `docs/`, `README.md`, `CONTRIBUTING.md`, `AGENTS.md`, `af help` text, the
   comments in `.config/nextest.toml`, `.af/code-policy.toml` and the Makefile say the same
   thing as the scripts and the binary, in the same words. Every sentence your change makes
   false is corrected in the same change: the goal lists the places it knows, you grep for the
   rest. Write for both readers, the person at the terminal and the agent driving `af` for them.
 
-## Tests
+## Tests and required checks
 
-- Unit tests beside the code; integration tests under `crates/af/tests/it/`; script tests as
-  `scripts/test-<name>.py` in the repository's own stdlib style. A new test proves the behaviour
-  its acceptance item names through the real path (the binary, the operator, the script), and
-  where that can be shown, fails on the tree before your change.
-- Every test that spawns `af` uses the private HOME/XDG helpers (`crate::common::af()`); a
-  fixture that can reach the developer's real state is a defect. No test spends model tokens or
-  prints a secret.
-- Hermetic: your sandbox has a real `claude` or `codex` CLI on `PATH`; CI has none. A test that
-  lets `af` find a Provider CLI reads one result here and another there. Give it a fake CLI in a
-  directory it puts first on `PATH`, or a `PATH` without one (the `shims` directory holding only
-  `git` in `crates/af/tests/it/task_document/provider_admission.rs`), and never assert output
-  that only your sandbox prints.
-- Keep `.config/test-classes.json` audited: `python3 -I scripts/test-classes.py audit` passes,
-  so every test binary, module and ignored test you add is classified, and an ignored test is
-  listed under `ignored` with its reason class.
-- The Linux-only test code the macOS build never compiles
-  (`crates/af/tests/it/provider_auth_handoff.rs`, and the `#[cfg(target_os = "linux")]` blocks
-  of `task_interrupt.rs` and `campaign_loop/heartbeat.rs`) must still compile if you change a
-  helper it calls: name those files in your summary.
-- If you change `Cargo.toml`, `Cargo.lock`, `.cargo/`, a build script or anything under
-  `scripts/performance/`, run `python3 -I scripts/performance/cli.py harness-digest --write` and
-  include the re-rendered fixture files.
-- Keep the gate fast: every test you add runs in every future local gate and, in its class, in
-  every pull request's validation. Prefer an in-process unit test of the function; spawn `af`
-  only when the behaviour is the binary's; no sleep, real-time wait or timeout-driven assertion;
-  no new `[[profile.ci.overrides]]` entry in `.config/nextest.toml` and no widening of the
-  existing override's filter or thread settings unless the goal names it; no new test binary
-  when the module fits an existing one; a fixture must not build, clone or capture what a shared
-  helper already provides. Classify by the behaviour tested (`docs/test-classes.md`): a
-  measurement or performance-integration test belongs in perf; a functional, lifecycle or
-  interaction test keeps its semantic class whatever it costs, and you reduce its cost instead
-  of moving it out of default validation. A change to a path the suite runs thousands of times
-  (startup, Store replay, source capture, process supervision) costs gate time without touching
-  a test: keep it lean. No reviewer estimates what your change adds: count it yourself.
+Add focused regression coverage through the repository's existing helpers and test modules.
+Tests must prove the required behavior without model tokens, secrets, sleeps, timeout-driven
+assertions or weaker contracts. Tests spawning `af` use `crate::common::af()` for private
+HOME/XDG; Provider CLI tests use fake CLIs or a PATH without real Providers. Classify new tests
+by their behavior under `.config/test-classes.json`, including every ignored test's reason.
+If a changed helper has Linux-only callers in `provider_auth_handoff.rs`, `task_interrupt.rs`
+or `campaign_loop/heartbeat.rs`, keep them compilable and name them in your report.
+Do not add dependencies, test binaries where an existing module fits, new nextest overrides,
+or longer deadlines. Keep startup, replay, source capture and supervision lean.
 
-## Flakes and the shared host
-
-The host runs other Tasks' gates beside yours, often at a load average above 50 on 14 cores. A
-slow build or test is not a finding. A timing assertion that fails alone may be a flake: the
-heavy tests (`task_heavy::*`, `task_starters::heavy_*`, `task_repair::interrupted_fix_*`,
-`campaign_loop::trusted_reuse_*`, `tui::the_user_scope_*`, review-source-git `capture::*`, the
-performance-lab Python suites) can fail under load and pass on the same tree. Rerun such a test
-once, alone. Load explains a failure; it does not prove your change innocent: if the failed
-assertion is on a path you changed, read it and compare the base before you call it a flake, and
-report the result exactly (the failure text, the rerun, your reading), never as "pre-existing"
-only because a rerun passed.
-Never end a process by pattern (`pkill -f`, `killall`): other sessions' gates run `af`, `git`,
-`python3` and `scripts/test-performance.py` as test children, and one pattern kill has ended six
-tests of another gate. End only processes you started, by pid.
+You cannot run commands. The mandatory local kernel and markdownlint check nodes run after
+seal, including the required fast validation selection; preserve these gates and their budgets.
+Do not claim a test, digest command, formatter, audit or check ran. If a required generated
+artifact or package pin cannot be produced through file tools, report it as not done with
+what remains. Never invent a digest. Shared-host load is not evidence that a failure is harmless.
 
 ## Before you reply
 
-Re-read every changed file against the requirements. This Pi Worker has no shell or check
-execution authority. Report local tests as not run by the Worker; the mandatory local kernel
-and markdownlint check nodes run on the sealed candidate. Never claim fixture success as a
+This Pi Worker has no shell or check execution authority. Report local tests as not run by the
+Worker; the mandatory local kernel and markdownlint check nodes run on the sealed candidate. Never claim fixture success as a
 live Kimi trial. Issue537 optimization remains for the later actual Pi trial.
 
 ## Findings from the Task you continue
@@ -136,6 +100,16 @@ Do not start over from the base; change the candidate. The requirements end with
 read first, each named with the digest of the bytes the Task captured.
 
 ## Reply
+
+Return exactly one JSON object, with no prose, Markdown fences or text outside it:
+
+```json
+{"schema":"af.worker-reply/1","outputs":{"report":[{"summary":"..."}]}}
+```
+
+`outputs.report` is an **array**, even for one report. Each array item must match the actual
+`output_schemas.report` in the request. Other declared ports likewise contain arrays of their
+own schema's payloads; never return an object in place of an array. Typed admission is final.
 
 Return the reply envelope the request describes. The `report` payload's `summary` is the
 operator's record: the owner reads it through `af task report`, and it travels into the pull

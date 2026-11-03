@@ -141,14 +141,14 @@ remote gate or `auto_apply` authority is granted.
 
 ## Protocol, lifecycle and accounting
 
-`af.pi-host/3` is AF's versioned JSONL protocol, with schema `schemas/pi-host-v3.json`:
+`af.pi-host/4` is AF's versioned JSONL protocol, with schema `schemas/pi-host-v4.json`:
 
 1. Rust sends `init`, containing no private Worker prompt. The host returns `ready` with
    safe opaque identity and a bounded static catalog. The host compares the canonical auth
    directory against the captured `auth_context_id` before opening credential storage, including
    on the first invocation check. A token-free probe ends here.
 2. Rust compares captured identity/configuration, then sends `prepare` with exact model,
-   effort and model digest. Only after `prepared` matches does Rust send `prompt`.
+   effort, model digest, trusted remaining-token allowance and actual reply schema. Only after `prepared` matches does Rust send `prompt`.
 3. Rust generates a fresh 256-bit random `prompt_nonce` challenge in the prompt writer and
    includes it only in the delivered `prompt` record. The host rechecks the guarded credential
    and echoes that exact challenge in `accepted` before inference. Rust requires this echo
@@ -166,6 +166,26 @@ remote gate or `auto_apply` authority is granted.
 5. The host requires actual `agent_settled`, successful final assistant text and the return
    of `session.prompt`. `agent_end`, EOF and exit zero cannot establish success.
 
+Every native `streamSimple` call checks the trusted remaining allowance before inference and
+receives SDK `maxTokens` capped by remaining AF tokens and the native output limit. All preceding
+inferences must have complete, safe required usage; observed exhaustion or unsafe accounting
+refuses another call. Prompt cost arrives afterward, so one inference can overshoot; the full
+observed charge is retained. No character-based estimate claims exact enforcement. Admission
+and format re-asks receive their actual remaining reservation through typed kernel dispatch;
+model input and environment cannot grant tokens. Unbudgeted Pi entrypoints refuse before spawn.
+
+Safe raw CAS `af/pi-inference-evidence@1` records per-inference sequence, native cumulative
+counters, usage-observation counts and completion flags, aggregate started/completed counts,
+counts of declared tool names, a fresh non-secret request nonce, allowance/policy identity and the
+separately labeled aggregate
+AF charge observation. It excludes sensitive payloads and is retained on failure/cancellation
+when available. It is diagnostic, never charged again. Calls stop at 256 inferences, 128 native
+usage observations per inference or 4,096 file-tool executions; reaching observation capacity
+retains the last counters and fails. An unsuccessful or unsettled trace does not establish
+complete accounting. The system prompt includes file-only guidance, the actual reply schema
+and an exact array-envelope example; common typed validation and ADR-0208 remain unchanged.
+See the [allowance decision](../adr/2026-11-03-bound-pi-native-inferences-by-remaining-allowance.md).
+
 Kimi's callback receives the actual ChatCompletions chunk, with `chunk.usage` or
 `chunk.choices[].usage`. AF reads `prompt_tokens`, `completion_tokens`, cache reads from
 `prompt_tokens_details.cached_tokens`, `prompt_cache_hit_tokens` or `cached_tokens`, and
@@ -180,7 +200,7 @@ not an invoice, uncached-token count or provider cost estimate. The
 [Kimi caching reference](https://platform.kimi.com/docs/guide/context-caching) documents total
 prompt input and final streaming usage; it does not establish absent cache as zero.
 
-`adapter_policy_id` uses domain `af.pi-adapter-policy@2` and binds the embedded host plus
+`adapter_policy_id` uses domain `af.pi-adapter-policy@3` and binds the embedded host plus
 both backend convention identities and their map. A preceding host-only policy cannot
 silently adopt this accounting: it refuses before private input, without adding persisted
 fields. Missing, malformed, unsafe, conflicting or failed observations refuse complete

@@ -861,6 +861,30 @@ impl WorkerModelAdapter for CurrentTaskProviderAdapter {
         )
         .unwrap_or_else(|unstarted| *unstarted.0)
     }
+    fn invoke_with_allowance(
+        &self,
+        cas: &Cas,
+        workdir: &Path,
+        input: Vec<u8>,
+        timeout: Duration,
+        access: review_runner::task::WorkerAccess,
+        cancellation: Option<&AtomicBool>,
+        environment: &[(String, String)],
+        allowance: review_runner::task::RemainingTokenAllowance,
+        contract: ReplyContract,
+    ) -> Result<ModelWorkerReturn, Unstarted> {
+        Ok(self.invoke_current(
+            cas,
+            workdir,
+            input,
+            timeout,
+            access,
+            cancellation,
+            environment,
+            contract,
+            Some(allowance),
+        ))
+    }
     /// Sandbox-local environment (a carried Build Cache location), the kernel-derived access and
     /// the reply contract are forwarded to the native client exactly as they arrived, and only
     /// after the identity recheck passes.
@@ -884,6 +908,7 @@ impl WorkerModelAdapter for CurrentTaskProviderAdapter {
             cancellation,
             environment,
             contract,
+            None,
         ))
     }
 }
@@ -902,6 +927,7 @@ impl CurrentTaskProviderAdapter {
         cancellation: Option<&AtomicBool>,
         environment: &[(String, String)],
         contract: ReplyContract,
+        allowance: Option<review_runner::task::RemainingTokenAllowance>,
     ) -> ModelWorkerReturn {
         let refuse = |reason: &str| ModelWorkerReturn {
             notes: Default::default(),
@@ -958,16 +984,30 @@ impl CurrentTaskProviderAdapter {
             if let Err(reason) = availability::check(&identity.spec) {
                 return refuse(&reason);
             }
-            let mut returned = match native.invoke_constrained(
-                cas,
-                workdir,
-                input.clone(),
-                remaining,
-                access,
-                cancellation,
-                environment,
-                contract,
-            ) {
+            let invoke = |allowance| match allowance {
+                Some(allowance) => native.invoke_with_allowance(
+                    cas,
+                    workdir,
+                    input.clone(),
+                    remaining,
+                    access,
+                    cancellation,
+                    environment,
+                    allowance,
+                    contract,
+                ),
+                None => native.invoke_constrained(
+                    cas,
+                    workdir,
+                    input.clone(),
+                    remaining,
+                    access,
+                    cancellation,
+                    environment,
+                    contract,
+                ),
+            };
+            let mut returned = match invoke(allowance) {
                 Ok(returned) => returned,
                 Err(Unstarted(_)) if !is_executable(&identity.program) => continue,
                 Err(Unstarted(returned)) => *returned,

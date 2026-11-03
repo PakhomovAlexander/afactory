@@ -30,8 +30,9 @@ use review_core::{
 };
 use serde_json::{Value, json};
 
-const SCHEMAS: [&str; 240] = [
-    "pi-host-v3.json",
+const SCHEMAS: [&str; 241] = [
+    "pi-host-v4.json",
+    "pi-inference-evidence-v1.json",
     "pi-validation-claim-v1.json",
     "pi-provider-setup-v3.json",
     "provider-registry-v3.json",

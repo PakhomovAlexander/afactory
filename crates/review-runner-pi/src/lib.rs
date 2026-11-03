@@ -9,14 +9,16 @@ use std::time::{Duration, Instant};
 use review_core::task::plan::{PiAuthorityV2, PiIdentityModeV1};
 use review_core::task::usage::{TaskTokenUsageV3, TaskUsageObservationV1};
 use review_process::{ExitPolicy, SupervisedError};
-use review_runner::task::{ModelWorkerReturn, WorkerAccess, WorkerModelAdapter};
+use review_runner::task::{
+    ModelWorkerReturn, RemainingTokenAllowance, WorkerAccess, WorkerModelAdapter,
+};
 use review_store::Cas;
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
 
 pub const HOST: &str = include_str!("host.mjs");
-pub const PROTOCOL: &str = "af.pi-host/3";
+pub const PROTOCOL: &str = "af.pi-host/4";
 pub const SDK_VERSION: &str = "1.4.0";
 const MAX_RECORD: usize = 4 * 1024 * 1024;
 const MAX_OUTPUT: usize = 16 * 1024 * 1024;
@@ -161,7 +163,7 @@ fn accounting(backend: &str) -> Option<Accounting> {
         .find_map(|(id, convention)| (*id == backend).then_some(*convention))
 }
 pub fn policy_id() -> String {
-    let mut policy = b"af.pi-adapter-policy@2\0".to_vec();
+    let mut policy = b"af.pi-adapter-policy@3\0".to_vec();
     for (backend, convention) in BACKEND_ACCOUNTING {
         policy.extend_from_slice(backend.as_bytes());
         policy.push(0);
@@ -312,13 +314,15 @@ struct State {
     settled: bool,
     message: Option<Vec<u8>>,
     usage: BTreeMap<u64, Usage>,
+    tool_counts: BTreeMap<String, u64>,
     error: Option<String>,
 }
-#[derive(Clone, Default, Debug, Deserialize)]
+#[derive(Clone, Default, Debug, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 struct Usage {
     inference: u64,
     complete: bool,
+    observations: u64,
     #[serde(deserialize_with = "counter")]
     input: Option<u64>,
     #[serde(deserialize_with = "counter")]
@@ -338,6 +342,68 @@ fn counter<'de, D: serde::Deserializer<'de>>(deserializer: D) -> Result<Option<u
         ));
     }
     Ok(value)
+}
+
+/// Bounded diagnostic snapshot, separate from the Attempt's authoritative accounting.
+/// Its closed reader accepts only this release's evidence version, never raw SDK bodies.
+#[derive(Debug, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct PiInferenceEvidenceV1 {
+    schema: String,
+    backend: String,
+    remaining_tokens: u64,
+    #[serde(deserialize_with = "Option::deserialize")]
+    request_nonce: Option<String>,
+    adapter_policy_id: String,
+    provenance: String,
+    inferences: Vec<Usage>,
+    started_inferences: usize,
+    completed_inferences: usize,
+    tool_counts: BTreeMap<String, u64>,
+    settled: bool,
+    successful: bool,
+    aggregate: TaskUsageObservationV1,
+}
+impl PiInferenceEvidenceV1 {
+    pub fn decode(bytes: &[u8]) -> Result<Self, String> {
+        if bytes.len() > 256 * 1024 {
+            return Err("Pi safe evidence exceeds its byte bound".into());
+        }
+        let evidence: Self =
+            serde_json::from_slice(bytes).map_err(|_| "Invalid Pi safe evidence")?;
+        if evidence.schema != "af/pi-inference-evidence@1"
+            || accounting(&evidence.backend).is_none()
+            || RemainingTokenAllowance::new(evidence.remaining_tokens).is_err()
+            || evidence.remaining_tokens > 9_007_199_254_740_991
+            || !review_core::is_digest(&evidence.adapter_policy_id)
+            || evidence
+                .request_nonce
+                .as_ref()
+                .is_some_and(|nonce| !review_core::is_digest(nonce))
+            || (!evidence.inferences.is_empty() && evidence.request_nonce.is_none())
+            || evidence.provenance != "native-per-inference-cumulative;aggregate-af-charge"
+            || evidence.inferences.len() > 256
+            || evidence.started_inferences != evidence.inferences.len()
+            || evidence.completed_inferences
+                != evidence.inferences.iter().filter(|u| u.complete).count()
+            || evidence
+                .inferences
+                .iter()
+                .enumerate()
+                .any(|(i, u)| u.inference != i as u64 + 1 || u.observations > 128)
+            || evidence.tool_counts.iter().any(|(name, count)| {
+                !["read", "ls", "find", "grep", "write", "edit"].contains(&name.as_str())
+                    || *count == 0
+                    || *count > 4096
+            })
+            || evidence.tool_counts.values().sum::<u64>() > 4096
+            || (evidence.successful && !evidence.settled)
+        {
+            return Err("Unsupported or invalid Pi safe evidence".into());
+        }
+        evidence.aggregate.validate()?;
+        Ok(evidence)
+    }
 }
 
 impl State {
@@ -395,11 +461,12 @@ impl State {
                 {
                     return Err("Pi skipped an inference identity".into());
                 }
-                if usage.inference == 0 || usage.inference > 10000 {
+                if usage.inference == 0 || usage.inference > 256 || usage.observations > 128 {
                     return Err("Invalid Pi inference identity".into());
                 }
                 if let Some(previous) = self.usage.get(&usage.inference)
                     && (previous.complete
+                        || previous.observations > usage.observations
                         || [
                             (previous.input, usage.input),
                             (previous.output, usage.output),
@@ -412,6 +479,7 @@ impl State {
                 {
                     // A duplicate finalized observation is only an echo if its counters match.
                     if previous.complete == usage.complete
+                        && previous.observations == usage.observations
                         && previous.input == usage.input
                         && previous.output == usage.output
                         && previous.cache_read == usage.cache_read
@@ -447,6 +515,26 @@ impl State {
                     self.message = None;
                 }
                 self.usage.insert(usage.inference, usage);
+            }
+            "tool_count" if self.accepted => {
+                #[derive(Deserialize)]
+                #[serde(deny_unknown_fields)]
+                struct ToolCount {
+                    name: String,
+                    count: u64,
+                }
+                let count: ToolCount =
+                    serde_json::from_value(value).map_err(|_| "Invalid Pi tool count")?;
+                if !["read", "ls", "find", "grep", "write", "edit"].contains(&count.name.as_str())
+                    || count.count != self.tool_counts.get(&count.name).copied().unwrap_or(0) + 1
+                    || count.count > 4096
+                {
+                    return Err("Invalid Pi tool count".into());
+                }
+                if self.tool_counts.values().sum::<u64>() >= 4096 {
+                    return Err("Pi tool evidence capacity exhausted".into());
+                }
+                self.tool_counts.insert(count.name, count.count);
             }
             "message" if self.accepted => {
                 #[derive(Deserialize)]
@@ -592,17 +680,77 @@ impl WorkerModelAdapter for PiTaskAdapter {
     fn invoke(
         &self,
         _cas: &Cas,
+        _workdir: &Path,
+        _input: Vec<u8>,
+        _timeout: Duration,
+        _access: WorkerAccess,
+        _cancellation: Option<&AtomicBool>,
+        _environment: &[(String, String)],
+    ) -> ModelWorkerReturn {
+        ModelWorkerReturn {
+            message: Err("Pi requires a trusted remaining token allowance".into()),
+            usage: Some(TaskTokenUsageV3::charge_only(0)),
+            usage_observation: None,
+            raw_artifact_ids: vec![],
+            native_failure: None,
+            notes: Default::default(),
+        }
+    }
+    fn invoke_with_allowance(
+        &self,
+        cas: &Cas,
         workdir: &Path,
         input: Vec<u8>,
         timeout: Duration,
         access: WorkerAccess,
         cancellation: Option<&AtomicBool>,
         environment: &[(String, String)],
+        allowance: RemainingTokenAllowance,
+        contract: review_runner::task::reply_schema::ReplyContract,
+    ) -> Result<ModelWorkerReturn, review_runner::task::Unstarted> {
+        if allowance.tokens() > 9_007_199_254_740_991 {
+            return Ok(self.invoke(
+                cas,
+                workdir,
+                input,
+                timeout,
+                access,
+                cancellation,
+                environment,
+            ));
+        }
+        Ok(self.invoke_bounded(
+            cas,
+            workdir,
+            input,
+            timeout,
+            access,
+            cancellation,
+            environment,
+            allowance,
+            contract,
+        ))
+    }
+}
+impl PiTaskAdapter {
+    #[allow(clippy::too_many_arguments)]
+    fn invoke_bounded(
+        &self,
+        cas: &Cas,
+        workdir: &Path,
+        input: Vec<u8>,
+        timeout: Duration,
+        access: WorkerAccess,
+        cancellation: Option<&AtomicBool>,
+        environment: &[(String, String)],
+        allowance: RemainingTokenAllowance,
+        contract: review_runner::task::reply_schema::ReplyContract,
     ) -> ModelWorkerReturn {
         let started = Instant::now();
         let state = Mutex::new(State::default());
         let stopped = AtomicBool::new(false);
         let run = || -> Result<(), String> {
+            let reply_schema = contract.transport(&input)?;
             if timeout.is_zero() || cancellation.is_some_and(|flag| flag.load(Ordering::Acquire)) {
                 return Err("Pi Attempt ended before starting".into());
             }
@@ -728,7 +876,7 @@ impl WorkerModelAdapter for PiTaskAdapter {
                             stopped.store(true, Ordering::Release);
                             break;
                         }
-                        let _ = send.send(json!({"schema":PROTOCOL,"type":"prepare","model":self.model,"effort":self.effort,"model_identity":self.captured.model_config_id}));
+                        let _ = send.send(json!({"schema":PROTOCOL,"type":"prepare","remaining_tokens":allowance.tokens(),"reply_schema":reply_schema,"model":self.model,"effort":self.effort,"model_identity":self.captured.model_config_id}));
                     } else if let Some(prepared) = &state.prepared
                         && !state.accepted
                         && state.message.is_none()
@@ -789,6 +937,36 @@ impl WorkerModelAdapter for PiTaskAdapter {
             state.error.get_or_insert(error);
         }
         let observation = state.observation();
+        // Safe, bounded snapshots, not a second source of spend. Repeated observations
+        // replace each inference above; only observation() supplies aggregate AF charge.
+        let evidence = PiInferenceEvidenceV1 {
+            schema: "af/pi-inference-evidence@1".into(),
+            backend: self.config.backend.clone(),
+            remaining_tokens: allowance.tokens(),
+            request_nonce: state.prompt_nonce.clone(),
+            adapter_policy_id: policy_id(),
+            provenance: "native-per-inference-cumulative;aggregate-af-charge".into(),
+            inferences: state.usage.values().cloned().collect(),
+            started_inferences: state.usage.len(),
+            completed_inferences: state.usage.values().filter(|u| u.complete).count(),
+            tool_counts: state.tool_counts.clone(),
+            settled: state.settled,
+            successful: state.settled && state.error.is_none(),
+            aggregate: observation.clone(),
+        };
+        let retained = serde_json::to_vec(&evidence)
+            .map_err(|_| "Cannot encode Pi safe evidence")
+            .and_then(|bytes| {
+                cas.put(&bytes)
+                    .map_err(|_| "Cannot retain Pi safe evidence")
+            });
+        let raw_artifact_ids = match retained {
+            Ok(id) => vec![id],
+            Err(error) => {
+                state.error.get_or_insert(error.into());
+                vec![]
+            }
+        };
         let message = if state.settled && state.error.is_none() {
             state
                 .message
@@ -802,7 +980,7 @@ impl WorkerModelAdapter for PiTaskAdapter {
             message,
             usage: observation.reported_usage.clone(),
             usage_observation: (!observation.charge_complete).then_some(observation),
-            raw_artifact_ids: vec![],
+            raw_artifact_ids,
             native_failure: None,
             notes: Default::default(),
         }

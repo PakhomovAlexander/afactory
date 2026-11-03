@@ -5,8 +5,8 @@ const state = () => JSON.parse(fs.readFileSync(statePath, 'utf8'));
 const token = (account,nonce='original') => 'e30.' + Buffer.from(JSON.stringify({'https://api.openai.com/auth':{chatgpt_account_id:account},nonce})).toString('base64url') + '.synthetic';
 const backend = () => state().backend ?? 'openai-codex';
 const model = () => backend() === 'kimi-coding'
-  ? { id: 'k3', api: 'openai-completions', provider: backend(), baseUrl: state().endpoint ?? 'https://api.kimi.com/coding/v1', reasoning: true }
-  : { id: 'o3', api: 'openai-codex-responses', provider: backend(), baseUrl: state().endpoint ?? 'https://chatgpt.com/backend-api', reasoning: true };
+  ? { id: 'k3', api: 'openai-completions', provider: backend(), baseUrl: state().endpoint ?? 'https://api.kimi.com/coding/v1', reasoning: true, maxTokens: 32768 }
+  : { id: 'o3', api: 'openai-codex-responses', provider: backend(), baseUrl: state().endpoint ?? 'https://chatgpt.com/backend-api', reasoning: true, maxTokens: 32768 };
 export const createExtensionRuntime = () => ({});
 export class ModelRuntime {
   static async create(options) {
@@ -14,11 +14,12 @@ export class ModelRuntime {
     return {
       getModels: () => [model()], getModel: (provider,id) => provider === backend() && id === model().id ? model() : undefined,
       async streamSimple(selected,_context,options) {
+        fs.appendFileSync(statePath+'.native',JSON.stringify({maxTokens:options.maxTokens})+'\n');
         if (Object.keys(options.env).length || options.maxRetries !== 0) throw Error('ambient auth/retry');
         await options.credentials?.read?.(backend());
         if (backend() === 'kimi-coding') {
           const usage = state().usage ?? {prompt_tokens:12,completion_tokens:3,cached_tokens:2,completion_tokens_details:{reasoning_tokens:1}};
-          for (const event of [{choices:[],usage}, {choices:[{usage}]}]) await options.onProviderStreamEvent(event, selected);
+          for (let n=0;n<(state().usageEvents ?? 2);n++) await options.onProviderStreamEvent(n%2 ? {choices:[{usage}]} : {choices:[],usage}, selected);
           return;
         }
         await options.onProviderStreamEvent({type:'response.completed',response:{usage:{input_tokens:3,output_tokens:2,input_tokens_details:{cached_tokens:0},output_tokens_details:{reasoning_tokens:1}}}}, selected);
@@ -67,9 +68,12 @@ export async function createAgentSession(options) {
         await options.customTools.find(t=>t.name==='write').execute('tool',{path:'kimi-edited',content:'confined Kimi edit'});
       }
       const message={role:'assistant',provider:backend(),model:model().id,stopReason:'stop',content:[{type:'text',text:answer}]};
-      emit({type:'message_start',message});
-      await options.modelRuntime.streamSimple(options.model,{},{});
-      emit({type:'message_end',message}); emit({type:'agent_end'}); emit({type:'agent_settled',aborted:false});
+      for (let i=0;i<(state().inferences ?? 1);i++) {
+        emit({type:'message_start',message});
+        await options.modelRuntime.streamSimple(options.model,{},{});
+        emit({type:'message_end',message});
+        if (state().countRead) await options.customTools.find(t=>t.name==='read').execute('id',{path:'SYNTHETIC_SECRET_PATH'});
+      } emit({type:'agent_end'}); emit({type:'agent_settled',aborted:false});
       if (probe && mode==='replace-auth-after-admission') {
         const data=JSON.parse(fs.readFileSync(state().auth,'utf8'));data[backend()]={type:'api_key',key:'PRIVATE_HELPER'};
         fs.writeFileSync(state().auth,JSON.stringify(data));

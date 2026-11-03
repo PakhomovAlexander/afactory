@@ -55,6 +55,20 @@ cache read plus output and refuses complete accounting without observed cache re
 The captured policy digest binds these versioned backend conventions and the host; preceding
 policy identities refuse before private input. No live Kimi inference was run by this Worker.
 
+The kernel passes Pi a trusted remaining token allowance, including admission and format re-asks.
+Before every SDK inference the host checks observed cumulative AF charge and requires safe,
+complete accounting for previous inferences. SDK `maxTokens` is capped by remaining allowance
+and the model's output limit. A single inference may still overshoot: native prompt usage arrives
+only afterward. Its full charge is retained; no subsequent inference is allowed after exhaustion
+or unsafe accounting. Worker payloads and environment variables cannot increase the allowance.
+Bounded `af/pi-inference-evidence@1` raw CAS evidence retains per-inference native counters,
+observation/completion counts, a fresh non-secret request nonce and declared tool-name counts,
+separately from aggregate AF charge.
+It excludes prompts, answers, reasoning text, tool arguments/results and credentials, and survives
+failure/cancellation when observed. Capacity exhaustion fails closed. File-only Pi Workers receive
+the actual output schemas and an array-envelope example; typed admission remains authoritative.
+See the [allowance decision](adr/2026-11-03-bound-pi-native-inferences-by-remaining-allowance.md).
+
 `--sdk-entrypoint` may be omitted for the standard managed `<agent>/bin/pi` launcher:
 AF validates `install/current-version` and resolves the supported 1.4.0 release SDK without
 executing the launcher. Unsafe paths and incompatible versions refuse. Node and the SDK must
@@ -494,7 +508,7 @@ tokens; the Rust kernel reads no raw credential (Pi AuthStorage stays inside its
 | Kind | Source | Freshness |
 |---|---|---|
 | `claude` | `claude list_models`: the `list_models` and `get_binary_version` control requests of a `claude -p --input-format stream-json --output-format stream-json --verbose` session, which af closes once both are answered, before any turn | `live` |
-| `pi` | AF host `af.pi-host/3` identity/catalog, using installed SDK 1.4.0 static OpenAI and Kimi K3 models | Pinned SDK static catalog; no network refresh |
+| `pi` | AF host `af.pi-host/4` identity/catalog, using installed SDK 1.4.0 static OpenAI and Kimi K3 models | Pinned SDK static catalog; no network refresh |
 | `codex` | `codex app-server model/list`, after `initialize` and `initialized` on a bare `codex app-server`; the version from `codex --version` | `fetched_at` of `models_cache.json` under the auth directory when it is readable, else `live` |
 
 Each Provider gets a header with the source, the harness version and the freshness, one row per

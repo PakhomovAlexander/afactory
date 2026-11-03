@@ -17,6 +17,7 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use review_runner::native_failure::NativeFailureKind;
 use review_runner::task::provider::{PROBE_INPUT, PROBE_INPUT_ALTERNATE};
+use review_runner::task::{RemainingTokenAllowance, reply_schema::ReplyContract};
 
 pub struct ProviderTaskDomain<'a> {
     pub graph: &'a CompiledTask,
@@ -107,9 +108,10 @@ impl ProviderTaskDomain<'_> {
                 model,
                 directory,
                 Duration::from_millis(remaining),
+                RemainingTokenAllowance::new(attempt.reservation().tokens)?,
             ))
         })();
-        let (receipt, context, model, directory, timeout) = match prepared {
+        let (receipt, context, model, directory, timeout, allowance) = match prepared {
             Ok(value) => value,
             Err(error) => {
                 return TaskWorkOutput {
@@ -127,20 +129,31 @@ impl ProviderTaskDomain<'_> {
             }
         };
         let started = std::time::Instant::now();
-        let mut returned = model.adapter.invoke(
-            cas,
-            directory.path(),
-            PROBE_INPUT.to_vec(),
-            timeout,
-            review_runner::task::WorkerAccess::ReadOnly,
-            cancellation,
-            &[],
-        );
+        let mut returned = model
+            .adapter
+            .invoke_with_allowance(
+                cas,
+                directory.path(),
+                PROBE_INPUT.to_vec(),
+                timeout,
+                review_runner::task::WorkerAccess::ReadOnly,
+                cancellation,
+                &[],
+                allowance,
+                ReplyContract::Request,
+            )
+            .unwrap_or_else(|unstarted| *unstarted.0);
         // The classifier refused the probe itself: that says nothing about the account, so the
         // alternate wording is sent once in the same Attempt, its usage added to the first's
         // (ADR-0208). A second refusal fails the admission with both refusals named.
         if returned.native_failure == Some(NativeFailureKind::ModelRefused)
             && returned.usage_observation.is_none()
+            && let Some(remaining_tokens) = returned
+                .usage
+                .as_ref()
+                .and_then(|usage| u64::try_from(usage.chargeable_tokens.get()).ok())
+                .and_then(|charged| allowance.tokens().checked_sub(charged))
+                .and_then(|tokens| RemainingTokenAllowance::new(tokens).ok())
             && let Some(remaining) = timeout
                 .checked_sub(started.elapsed())
                 .filter(|left| *left >= Duration::from_millis(100))
@@ -153,6 +166,7 @@ impl ProviderTaskDomain<'_> {
                 remaining,
                 cancellation,
                 returned,
+                remaining_tokens,
             );
         }
         let charged_tokens = returned
@@ -223,6 +237,7 @@ impl ProviderTaskDomain<'_> {
     /// The alternate admission probe after the first was refused, as one return of the Attempt:
     /// both calls' usage and raw evidence, the alternate's outcome, and the event naming the
     /// refusal category the first call's stream reported.
+    #[allow(clippy::too_many_arguments)]
     fn reprobe(
         &self,
         cas: &Cas,
@@ -231,16 +246,22 @@ impl ProviderTaskDomain<'_> {
         remaining: Duration,
         cancellation: Option<&std::sync::atomic::AtomicBool>,
         first: review_runner::task::ModelWorkerReturn,
+        allowance: RemainingTokenAllowance,
     ) -> review_runner::task::ModelWorkerReturn {
-        let second = model.adapter.invoke(
-            cas,
-            directory,
-            PROBE_INPUT_ALTERNATE.to_vec(),
-            remaining,
-            review_runner::task::WorkerAccess::ReadOnly,
-            cancellation,
-            &[],
-        );
+        let second = model
+            .adapter
+            .invoke_with_allowance(
+                cas,
+                directory,
+                PROBE_INPUT_ALTERNATE.to_vec(),
+                remaining,
+                review_runner::task::WorkerAccess::ReadOnly,
+                cancellation,
+                &[],
+                allowance,
+                ReplyContract::Request,
+            )
+            .unwrap_or_else(|unstarted| *unstarted.0);
         let mut raw = first.raw_artifact_ids;
         // The exact alternate text is the Attempt's evidence beside its native captures.
         if let Ok(id) = cas.put(PROBE_INPUT_ALTERNATE)

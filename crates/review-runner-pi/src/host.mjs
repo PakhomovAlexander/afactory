@@ -1,10 +1,10 @@
-// AF's credential-bearing host, never a Worker input. Protocol: af.pi-host/3.
+// AF's credential-bearing host, never a Worker input. Protocol: af.pi-host/4.
 import fs from 'node:fs';
 import path from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { createHash } from 'node:crypto';
 
-export const PROTOCOL = 'af.pi-host/3';
+export const PROTOCOL = 'af.pi-host/4';
 export const VERSION = '1.4.0';
 const MAX_LINE = 4 * 1024 * 1024;
 const FILE_LIMIT = 1024 * 1024;
@@ -130,7 +130,37 @@ export function rawUsage(backend, event, onInvalid = () => fail('invalid_usage')
   if (invalid) onInvalid();
   return result;
 }
-export function emptyResources(sdk) {
+export const FILE_INSTRUCTIONS = 'Follow only the AF Worker request. Use only the declared confined file tools. You have no shell or check execution tool. Do not claim tests ran. For a typed Worker request, return exactly one JSON object with schema af.worker-reply/1 and outputs whose declared port values are ARRAYS of payloads matching output_schemas. No prose or Markdown fences. Example for a report port: {"schema":"af.worker-reply/1","outputs":{"report":[{"summary":"..."}]}}. Use the actual declared ports and schemas; the example does not add a report port. For other requests follow their exact reply contract (including admission OK).';
+// The budget gates every SDK stream, not just session.prompt. Prompt cost is only known
+// afterward: one inference may overshoot; its observed charge is retained in full.
+export class InferenceBudget {
+  constructor(tokens, backend) {
+    if (!Number.isSafeInteger(tokens) || tokens <= 0) fail('invalid_allowance');
+    backendAdapter(backend);
+    this.tokens = BigInt(tokens); this.backend = backend; this.entries = [];
+    this.unsafe = false;
+  }
+  begin(model) {
+    if (this.unsafe) fail('unsafe_accounting');
+    let charged = 0n;
+    for (const entry of this.entries) {
+      const u = entry.observed;
+      if (!entry.finished || !entry.complete || u.input === null || u.output === null ||
+          (this.backend === 'openai-codex' && u.cache_read === null)) fail('unsafe_accounting');
+      charged += BigInt(u.input) - (this.backend === 'openai-codex' ? BigInt(u.cache_read) : 0n) + BigInt(u.output);
+    }
+    const remaining = this.tokens - charged;
+    if (remaining <= 0n) fail('allowance_exhausted');
+    // Stop before losing diagnostic coverage, rather than continuing with a partial trace.
+    if (this.entries.length >= 256) fail('diagnostic_capacity');
+    if (!Number.isSafeInteger(model.maxTokens) || model.maxTokens <= 0) fail('model_changed');
+    const entry = { id: this.entries.length + 1, finished: false, complete: false,
+      observations: 0, observed: { input: null, output: null, cache_read: null, cache_write: null, reasoning: null },
+      maxTokens: Number(remaining < BigInt(model.maxTokens) ? remaining : BigInt(model.maxTokens)) };
+    this.entries.push(entry); return entry;
+  }
+}
+export function emptyResources(sdk, replySchema = null) {
   const extensions = { extensions: [], errors: [], runtime: sdk.createExtensionRuntime() };
   return {
     getExtensions: () => extensions,
@@ -138,7 +168,7 @@ export function emptyResources(sdk) {
     getPrompts: () => ({ prompts: [], diagnostics: [] }),
     getThemes: () => ({ themes: [], diagnostics: [] }),
     getAgentsFiles: () => ({ agentsFiles: [] }),
-    getSystemPrompt: () => 'Follow only the AF Worker request. Use only the declared confined file tools.',
+    getSystemPrompt: () => FILE_INSTRUCTIONS + (replySchema === null ? '' : '\nActual final reply JSON Schema: ' + JSON.stringify(replySchema)),
     getSystemPromptSource: () => undefined,
     getAppendSystemPrompt: () => [],
     getAppendSystemPromptSources: () => [],
@@ -148,7 +178,7 @@ export function emptyResources(sdk) {
 }
 // Reject symlinks (including in-tree links) and paths outside granted roots. Model-visible code cannot
 // run concurrently with these synchronous operations: no shell, extensions or other tools.
-export function confinedTools(cwd, readable, writable) {
+export function confinedTools(cwd, readable, writable, countTool = () => {}) {
   const aliases = [...readable, ...writable].map((value) => [path.resolve(value), fs.realpathSync(value)]);
   const roots = (values) => values.map((value) => fs.realpathSync(value));
   cwd = fs.realpathSync(cwd);
@@ -259,6 +289,7 @@ export function confinedTools(cwd, readable, writable) {
     async execute(_id, args, signal) {
       if (signal?.aborted) fail('cancelled');
       try {
+        countTool(name);
         const text = execute(args);
         if (Buffer.byteLength(text) > RESULT_LIMIT) fail('file_limit');
         return { content: [{ type: 'text', text }], details: {} };
@@ -288,16 +319,16 @@ export function modelIdentity(model) {
   if (model.api !== adapter.api || model.baseUrl !== adapter.endpoint || (adapter.model && model.id !== adapter.model)) fail('model_changed');
   return hash('af.pi.model/1\0' + JSON.stringify(model));
 }
-export async function createSession(sdk, runtime, model, effort, cwd, readable, writable, agentDir) {
+export async function createSession(sdk, runtime, model, effort, cwd, readable, writable, agentDir, replySchema = null, countTool = () => {}) {
   const expectedModel = modelIdentity(model);
-  const tools = confinedTools(cwd, readable, writable);
+  const tools = confinedTools(cwd, readable, writable, countTool);
   const settings = sdk.SettingsManager.inMemory({
     compaction: { enabled: false }, retry: { enabled: false, provider: { maxRetries: 0 } }, cacheWarming: 'off',
     transport: 'sse',
   }, { projectTrusted: false });
   const result = await sdk.createAgentSession({ cwd, agentDir, modelRuntime: runtime, model,
     thinkingLevel: effort, settingsManager: settings, sessionManager: sdk.SessionManager.inMemory(cwd),
-    resourceLoader: emptyResources(sdk), noTools: 'all', tools: tools.map((t) => t.name), customTools: tools,
+    resourceLoader: emptyResources(sdk, replySchema), noTools: 'all', tools: tools.map((t) => t.name), customTools: tools,
   });
   const session = result.session;
   session.setAutoRetryEnabled(false); session.setAutoCompactionEnabled(false);
@@ -342,7 +373,7 @@ export async function main() {
         const stream = runtime.streamSimple.bind(runtime);
         runtime.streamSimple = (model, context, options) => {
           const inference = initialized.beginInference(model);
-          return stream(model, context, { ...options, env: {}, maxRetries: 0,
+          return stream(model, context, { ...options, maxTokens: inference.maxTokens, env: {}, maxRetries: 0,
             onProviderStreamEvent: (event, effective) => initialized.observe(inference, event, effective) });
         };
         const models = runtime.getModels(request.backend).filter((model) => !backendAdapter(request.backend).model || model.id === backendAdapter(request.backend).model).map((model) => ({ id: model.id, efforts: sdk.getSupportedThinkingLevels(model), identity: modelIdentity(model) }));
@@ -351,20 +382,29 @@ export async function main() {
         if (request.probe) return;
       } else if (initialized && !running && request.type === 'prepare') {
         const state = initialized;
+        const budget = new InferenceBudget(request.remaining_tokens, state.request.backend);
+        if (request.reply_schema !== null && (typeof request.reply_schema !== 'object' || Array.isArray(request.reply_schema))) fail('protocol');
+        const toolCounts = {}; let toolCalls = 0;
+        const countTool = (name) => {
+          if (++toolCalls > 4096) { budget.unsafe = true; fail('diagnostic_capacity'); }
+          toolCounts[name] = (toolCounts[name] ?? 0) + 1;
+          emit('tool_count', { name, count: toolCounts[name] });
+        };
         const model = state.runtime.getModel(state.request.backend, request.model);
         if (!model || modelIdentity(model) !== request.model_identity || !levels.includes(request.effort) || !state.sdk.getSupportedThinkingLevels(model).includes(request.effort)) fail('model_changed');
         await state.credentials.read(state.request.backend);
         const result = await createSession(state.sdk, state.runtime, model, request.effort,
-          state.request.cwd, state.request.readable, state.request.writable, state.request.home);
+          state.request.cwd, state.request.readable, state.request.writable, state.request.home, request.reply_schema, countTool);
         session = result.session;
         let inference = 0; let active; let failed = false; let settled = false; let finalText;
         initialized.beginInference = (effective) => {
           if ((active && !active.finished) || effective.provider !== state.request.backend || effective.id !== request.model || modelIdentity(effective) !== request.model_identity) {
             failed = true; fail('model_changed');
           }
-          active = { id: ++inference, finished: false, observed: { input: null, output: null, cache_read: null, cache_write: null, reasoning: null } };
+          if (failed) fail('unsafe_accounting');
+          active = budget.begin(effective); inference = active.id;
           finalText = undefined;
-          emit('usage', { inference: active.id, complete: false, ...active.observed });
+          emit('usage', { inference: active.id, complete: false, observations: active.observations, ...active.observed });
           return active;
         };
         initialized.observe = (current, event, effective) => {
@@ -372,10 +412,20 @@ export async function main() {
           try { next = rawUsage(state.request.backend, event, () => { invalid = true; }); }
           catch { failed = true; fail('invalid_usage'); }
           if (next) {
-            for (const key of Object.keys(next)) if (next[key] !== null) current.observed[key] = next[key];
-            emit('usage', { inference: current.id, complete: false, ...current.observed });
+            // Validate cumulative counters before allowing another inference. Preserve safe
+            // observed floors even if another counter in this same event is malformed.
+            for (const key of Object.keys(next)) if (next[key] !== null) {
+              if (current.observed[key] !== null && next[key] < current.observed[key]) invalid = true;
+              else current.observed[key] = next[key];
+            }
+            const u = current.observed;
+            if ((u.input !== null && ((u.cache_read ?? 0) + (u.cache_write ?? 0) > u.input)) ||
+                (u.output !== null && (u.reasoning ?? 0) > u.output)) invalid = true;
+            current.observations++;
+            emit('usage', { inference: current.id, complete: false, observations: current.observations, ...current.observed });
+            if (current.observations >= 128) { budget.unsafe = true; fail('diagnostic_capacity'); }
           }
-          if (invalid) { failed = true; fail('invalid_usage'); }
+          if (invalid) { budget.unsafe = true; failed = true; fail('invalid_usage'); }
           if (current.finished || effective.provider !== state.request.backend || effective.id !== request.model || modelIdentity(effective) !== request.model_identity) {
             failed = true; fail('model_changed');
           }
@@ -387,7 +437,8 @@ export async function main() {
             if (event.type === 'message_end') {
               if (!active || active.finished) { failed = true; return; }
               active.finished = true;
-              emit('usage', { inference: active.id, complete: !['error','aborted'].includes(msg.stopReason), ...active.observed });
+              active.complete = !failed && !['error','aborted'].includes(msg.stopReason);
+              emit('usage', { inference: active.id, complete: active.complete, observations: active.observations, ...active.observed });
             }
             if (event.type === 'message_end') {
               if (['error','aborted'].includes(msg.stopReason)) failed = true;

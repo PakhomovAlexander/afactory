@@ -1414,15 +1414,15 @@ fn pi_authority_is_closed_versioned_and_required_only_for_pi_models() {
 
 #[test]
 fn pi_host_and_setup_protocols_reject_old_shapes_and_secret_fields() {
-    let ready = json!({"schema":"af.pi-host/3","type":"ready","principal":format!("sha256:{}","a".repeat(64)),
+    let ready = json!({"schema":"af.pi-host/4","type":"ready","principal":format!("sha256:{}","a".repeat(64)),
         "backend":"openai-codex","auth_method":"oauth","version":"1.4.0","models":[{"id":"o3","efforts":["high"],"identity":format!("sha256:{}","b".repeat(64))}]});
-    assert_valid("pi-host-v3.json", &ready);
+    assert_valid("pi-host-v4.json", &ready);
     let mut kimi_ready = ready.clone();
     kimi_ready["backend"] = json!("kimi-coding");
     kimi_ready["principal"] = Value::Null;
     kimi_ready["models"][0]["id"] = json!("k3");
     kimi_ready["models"][0]["efforts"] = json!(["low", "high", "max"]);
-    assert_valid("pi-host-v3.json", &kimi_ready);
+    assert_valid("pi-host-v4.json", &kimi_ready);
     for (pointer, wrong) in [
         ("/principal", ready["principal"].clone()),
         ("/models/0/id", json!("k3-256k")),
@@ -1430,39 +1430,40 @@ fn pi_host_and_setup_protocols_reject_old_shapes_and_secret_fields() {
     ] {
         let mut bad = kimi_ready.clone();
         *bad.pointer_mut(pointer).unwrap() = wrong;
-        assert_invalid("pi-host-v3.json", &bad, pointer);
+        assert_invalid("pi-host-v4.json", &bad, pointer);
     }
-    let init = json!({"schema":"af.pi-host/3","type":"init","backend":"kimi-coding",
+    let init = json!({"schema":"af.pi-host/4","type":"init","backend":"kimi-coding",
         "sdk":"/installed/sdk/dist/index.js","auth_dir":"/private/auth",
         "auth_context_id":format!("sha256:{}","c".repeat(64)),"principal":null,
         "cwd":"/sandbox","home":"/private/home","readable":["/sandbox"],"writable":[],"probe":false});
-    assert_valid("pi-host-v3.json", &init);
+    assert_valid("pi-host-v4.json", &init);
     let mut missing_context = init;
     missing_context
         .as_object_mut()
         .unwrap()
         .remove("auth_context_id");
     assert_invalid(
-        "pi-host-v3.json",
+        "pi-host-v4.json",
         &missing_context,
         "missing captured auth context",
     );
     for (field, wrong) in [
         ("schema", json!("af.pi-host/0")),
         ("schema", json!("af.pi-host/2")),
+        ("schema", json!("af.pi-host/3")),
         ("version", json!("1.5.0")),
         ("backend", json!("anthropic")),
         ("access", json!("secret")),
     ] {
         let mut bad = ready.clone();
         bad[field] = wrong;
-        assert_invalid("pi-host-v3.json", &bad, field);
+        assert_invalid("pi-host-v4.json", &bad, field);
     }
-    let usage = json!({"schema":"af.pi-host/3","type":"usage","inference":1,"complete":false,"input":null,"output":2,"cache_read":null,"cache_write":null,"reasoning":null});
-    assert_valid("pi-host-v3.json", &usage);
+    let usage = json!({"schema":"af.pi-host/4","type":"usage","observations":1,"inference":1,"complete":false,"input":null,"output":2,"cache_read":null,"cache_write":null,"reasoning":null});
+    assert_valid("pi-host-v4.json", &usage);
     let mut missing = usage;
     missing.as_object_mut().unwrap().remove("input");
-    assert_invalid("pi-host-v3.json", &missing, "missing counter");
+    assert_invalid("pi-host-v4.json", &missing, "missing counter");
     let setup = json!({"schema":"af/pi-provider-setup@3","id":"pi-personal","kind":"pi","backend":"openai-codex","outcome":"registered","detail":"Pi SDK 1.4.0 registered"});
     assert_valid("pi-provider-setup-v3.json", &setup);
     let mut kimi_setup = setup.clone();
@@ -1494,21 +1495,21 @@ fn pi_host_and_setup_protocols_reject_old_shapes_and_secret_fields() {
         assert_invalid("pi-provider-setup-v3.json", &bad, field);
     }
     for kind in ["prompt", "accepted"] {
-        let mut ack = json!({"schema":"af.pi-host/3","type":kind,"prompt_nonce":format!("sha256:{}","c".repeat(64))});
+        let mut ack = json!({"schema":"af.pi-host/4","type":kind,"prompt_nonce":format!("sha256:{}","c".repeat(64))});
         if kind == "prompt" {
             ack["text"] = json!("private");
         }
-        assert_valid("pi-host-v3.json", &ack);
+        assert_valid("pi-host-v4.json", &ack);
         for wrong in [Value::Null, json!(""), json!("sha256:wrong")] {
             let mut bad = ack.clone();
             bad["prompt_nonce"] = wrong;
-            assert_invalid("pi-host-v3.json", &bad, "invalid challenge");
+            assert_invalid("pi-host-v4.json", &bad, "invalid challenge");
         }
         let mut old = ack.clone();
         old["schema"] = json!("af.pi-host/1");
-        assert_invalid("pi-host-v3.json", &old, "old protocol");
+        assert_invalid("pi-host-v4.json", &old, "old protocol");
         ack.as_object_mut().unwrap().remove("prompt_nonce");
-        assert_invalid("pi-host-v3.json", &ack, "missing challenge");
+        assert_invalid("pi-host-v4.json", &ack, "missing challenge");
     }
     let registry = json!({"version":3,"providers":[{"id":"pi-personal","kind":"pi","auth_dir":"/private/profile","backend":"openai-codex","sdk_entrypoint":"/installed/sdk/dist/index.js"}]});
     assert_valid("provider-registry-v3.json", &registry);
@@ -1661,4 +1662,77 @@ fn kimi_identity_unavailable_is_explicit_and_never_proves_principal_independence
     );
     other.execution = WorkerExecutionV3::Command {};
     assert!(validate_independent_bindings(&kimi, &other, strict).is_err());
+}
+
+#[test]
+fn pi_allowance_and_safe_inference_evidence_have_closed_bounded_schemas() {
+    let prepare = json!({"schema":"af.pi-host/4","type":"prepare","model":"k3","effort":"high",
+        "model_identity":format!("sha256:{}","a".repeat(64)),"remaining_tokens":37,"reply_schema":{"type":"object"}});
+    assert_valid("pi-host-v4.json", &prepare);
+    for tokens in [
+        Value::Null,
+        json!(0),
+        json!(-1),
+        json!("37"),
+        json!(1.5),
+        json!(9_007_199_254_740_992u64),
+    ] {
+        let mut bad = prepare.clone();
+        bad["remaining_tokens"] = tokens;
+        assert_invalid("pi-host-v4.json", &bad, "invalid trusted allowance");
+    }
+    for field in ["remaining_tokens", "reply_schema"] {
+        let mut bad = prepare.clone();
+        bad.as_object_mut().unwrap().remove(field);
+        assert_invalid("pi-host-v4.json", &bad, "missing authority or contract");
+    }
+    let usage = json!({"inference":1,"complete":true,"observations":2,"input":439,"output":38,
+        "cache_read":null,"cache_write":null,"reasoning":24});
+    let evidence = json!({"schema":"af/pi-inference-evidence@1","backend":"kimi-coding",
+        "remaining_tokens":100,"request_nonce":format!("sha256:{}","c".repeat(64)),"adapter_policy_id":format!("sha256:{}","a".repeat(64)),
+        "provenance":"native-per-inference-cumulative;aggregate-af-charge","inferences":[usage],
+        "started_inferences":1,"completed_inferences":1,"tool_counts":{"read":2,"edit":1},
+        "settled":false,"successful":false,"aggregate":{"charge_complete":false,"reported_usage":{
+            "input_tokens":"439","output_tokens":"38","reasoning_tokens":"24","chargeable_tokens":"477"}}});
+    assert_valid("pi-inference-evidence-v1.json", &evidence);
+    for (pointer, value) in [
+        ("/inferences/0/observations", json!(129)),
+        ("/inferences/0/inference", json!(257)),
+        ("/started_inferences", json!(257)),
+        ("/tool_counts/read", json!(4097)),
+        ("/schema", json!("af/pi-inference-evidence@0")),
+    ] {
+        let mut bad = evidence.clone();
+        *bad.pointer_mut(pointer).unwrap() = value;
+        assert_invalid("pi-inference-evidence-v1.json", &bad, pointer);
+    }
+    for field in [
+        "prompt",
+        "completion",
+        "reasoning",
+        "tool_arguments",
+        "tool_results",
+        "credentials",
+        "claims",
+    ] {
+        let mut bad = evidence.clone();
+        bad[field] = json!("secret");
+        assert_invalid(
+            "pi-inference-evidence-v1.json",
+            &bad,
+            "sensitive extra field",
+        );
+        let mut bad = evidence.clone();
+        bad["inferences"][0][field] = json!("secret");
+        assert_invalid(
+            "pi-inference-evidence-v1.json",
+            &bad,
+            "sensitive inference field",
+        );
+    }
+    let count = json!({"schema":"af.pi-host/4","type":"tool_count","name":"read","count":2});
+    assert_valid("pi-host-v4.json", &count);
+    let mut bad = count;
+    bad["name"] = json!("shell");
+    assert_invalid("pi-host-v4.json", &bad, "undeclared tool");
 }
