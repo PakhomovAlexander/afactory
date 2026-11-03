@@ -5,3 +5,4 @@
 - Add the optional `pi-light` implementation/review/verification family with Kimi high,
   Sol high correctness and Astra medium evaluation, using mandatory local checks.
   Changed plan, admission, inspection, Pi host and registry contracts refuse prior versions.
+  Merged acceptance and report tests use the current plan, inspection and Provider registry contracts.
