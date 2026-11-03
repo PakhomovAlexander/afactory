@@ -107,7 +107,7 @@
             "covers": []
           },
           "checks": {
-            "artifact_type": "af/TaskCheckReceipt@1",
+            "artifact_type": "af/TaskCheckReceipt@2",
             "cardinality": "one",
             "optional": false,
             "affinity": {
@@ -184,7 +184,7 @@
       "contract": {
         "inputs": {
           "checks": {
-            "artifact_type": "af/TaskCheckReceipt@1",
+            "artifact_type": "af/TaskCheckReceipt@2",
             "cardinality": "one",
             "optional": false,
             "affinity": {

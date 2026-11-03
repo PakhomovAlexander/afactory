@@ -139,6 +139,10 @@ port = "requirements"
 kind = "input"
 port = "source"
 
+[nodes.inputs.research_report]
+kind = "input"
+port = "research_report"
+
 [[nodes]]
 id = "seal"
 
@@ -295,3 +299,12 @@ port = "result"
 kind = "node"
 node = "accept"
 port = "result"
+
+[contract.inputs.research_report]
+artifact_type = "af/Document@1"
+cardinality = "one"
+optional = true
+covers = []
+
+[contract.inputs.research_report.affinity]
+kind = "unbound"

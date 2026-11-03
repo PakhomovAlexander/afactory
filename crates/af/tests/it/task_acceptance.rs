@@ -233,6 +233,21 @@ fn verification_evaluator_pass_cannot_override_required_open_review_findings() {
         )
         .replace("standard = true", "");
         std::fs::write(packages.join("implementation/pipeline.toml"), pipeline).unwrap();
+        // This test installs the CURRENT shipped verification topology. Its evaluator
+        // consumes EvaluationInput@2, including the optional exact diff Subject.
+        let path = packages.join("evaluator/worker.toml");
+        let mut evaluator: review_config::task::catalog::TaskWorkerManifest =
+            toml::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
+        let current: review_config::task::catalog::TaskWorkerManifest = toml::from_str(
+            include_str!("../../../../.af/task-packages/kernel/evaluator/worker.toml"),
+        )
+        .unwrap();
+        evaluator.signature.worker_input_type = current.signature.worker_input_type;
+        evaluator.signature.contract.inputs.insert(
+            "diff_subject".into(),
+            current.signature.contract.inputs["diff_subject"].clone(),
+        );
+        std::fs::write(path, toml::to_string(&evaluator).unwrap()).unwrap();
         let kind = packages.join("verification-kind");
         std::fs::create_dir(&kind).unwrap();
         std::fs::write(kind.join("kind.toml"),

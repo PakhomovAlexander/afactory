@@ -2,24 +2,68 @@
 use super::*;
 use review_store::Cas;
 
+fn copy_mutable_fixture_file(source: &Path, target: &Path) {
+    std::fs::copy(source, target).unwrap();
+    let mut permissions = std::fs::metadata(target).unwrap().permissions();
+    permissions.set_mode(permissions.mode() | 0o200);
+    std::fs::set_permissions(target, permissions).unwrap();
+}
+
+// Operator authority is copied into this disposable consuming repository before editing.
+// Sealed gate inputs stay read-only; only the copies gain their owner-write bit.
+fn copy_operator_authority(source: &Path, repo: &Path) {
+    for name in ["task-catalog.toml", "report-policy.toml"] {
+        let target = repo.join(".af").join(name);
+        copy_mutable_fixture_file(&source.join(name), &target);
+    }
+}
+
+#[test]
+fn copied_operator_authority_is_writable_under_a_read_only_gate() {
+    let root = tempfile::tempdir().unwrap();
+    let source = root.path().join("sealed");
+    let repo = root.path().join("consumer");
+    std::fs::create_dir(&source).unwrap();
+    std::fs::create_dir_all(repo.join(".af")).unwrap();
+    for (name, mode) in [("task-catalog.toml", 0o444), ("report-policy.toml", 0o400)] {
+        let path = source.join(name);
+        std::fs::write(&path, "sealed authority\n").unwrap();
+        std::fs::set_permissions(path, std::fs::Permissions::from_mode(mode)).unwrap();
+    }
+    copy_operator_authority(&source, &repo);
+    for (name, mode) in [("task-catalog.toml", 0o444), ("report-policy.toml", 0o400)] {
+        let target = repo.join(".af").join(name);
+        assert_eq!(std::fs::read(&target).unwrap(), b"sealed authority\n");
+        assert_eq!(
+            std::fs::metadata(&target).unwrap().permissions().mode() & 0o777,
+            mode | 0o200
+        );
+        std::fs::write(target, "consumer authority\n").unwrap();
+        let original = source.join(name);
+        assert_eq!(std::fs::read(&original).unwrap(), b"sealed authority\n");
+        assert_eq!(
+            std::fs::metadata(original).unwrap().permissions().mode() & 0o777,
+            mode
+        );
+    }
+}
+
 struct Performance {
     f: Fixture,
     task_state: PathBuf,
     home: PathBuf,
     path: std::ffi::OsString,
     commit: String,
+    packet_source: PathBuf,
 }
 impl Performance {
     fn new() -> Self {
+        Self::from_source(&workspace())
+    }
+    fn from_source(source: &Path) -> Self {
         let f = Fixture::bare();
         std::fs::create_dir(f.repo.join(".af")).unwrap();
-        for name in ["task-catalog.toml", "report-policy.toml"] {
-            std::fs::copy(
-                workspace().join(".af").join(name),
-                f.repo.join(".af").join(name),
-            )
-            .unwrap();
-        }
+        copy_operator_authority(&source.join(".af"), &f.repo);
         // This fixture is a tiny consuming project. Its local Gate checks its own file;
         // production package reservations and all independent judging slots are unchanged.
         std::fs::write(f.repo.join("subject.txt"), "bounded performance subject\n").unwrap();
@@ -51,7 +95,7 @@ impl Performance {
             .retain(|name, _| needed.contains(&name));
         for pin in catalog["packages"].as_table().unwrap().values() {
             let path = pin["path"].as_str().unwrap();
-            crate::task_cli::copy_tree(&workspace().join(path), &f.repo.join(path));
+            crate::task_cli::copy_tree(&source.join(path), &f.repo.join(path));
         }
         catalog["review"]["reviewers"]["bugs"] = toml::Value::String("required".into());
         for (role, model, effort) in [
@@ -168,6 +212,7 @@ print(json.dumps({'type':'turn.completed','usage':{'input_tokens':3,'cached_inpu
             path,
             task_state,
             commit,
+            packet_source: source.join("fixtures/performance/schema/evidence-packet/valid.json"),
         }
     }
     fn output(&self, state: &Path, args: &[&str]) -> Output {
@@ -270,11 +315,11 @@ print(json.dumps(o))
 "#,
             root = self.f.machine.display().to_string()
         );
-        std::fs::copy(
-            workspace().join("fixtures/performance/schema/evidence-packet/valid.json"),
-            self.f.machine.join("research-packet.json"),
-        )
-        .unwrap();
+        // This packet is replaced by native prior findings later in the complete loop.
+        copy_mutable_fixture_file(
+            &self.packet_source,
+            &self.f.machine.join("research-packet.json"),
+        );
         std::fs::write(&adapter, &text).unwrap();
         std::fs::set_permissions(&adapter, std::fs::Permissions::from_mode(0o755)).unwrap();
         policy["adapters"] = json!({"lab":{"executable":adapter,"digest":format!("sha256:{}", review_core::hex::encode(&Sha256::digest(text.as_bytes()))),"operations":["observe","experiment_submit_v1"],"destinations":["native:claw"],"max_wall_ms":30000,"max_output_bytes":65536}});
@@ -355,7 +400,41 @@ print(json.dumps(o))
 #[test]
 fn shipped_performance_loop_plans_exact_models_delivers_research_and_recovers_without_duplicate_work()
  {
-    let p = Performance::new();
+    // Reproduce a native Gate's read-only source without changing the sealed checkout.
+    // Keep every copied input's bytes and mode to prove only disposable consumer files change.
+    let source = tempfile::tempdir().unwrap();
+    for directory in [".af", "fixtures/performance/schema/evidence-packet"] {
+        crate::task_cli::copy_tree(&workspace().join(directory), &source.path().join(directory));
+    }
+    let mut sealed = Vec::new();
+    let mut stack = vec![source.path().to_path_buf()];
+    while let Some(path) = stack.pop() {
+        if path.is_dir() {
+            stack.extend(
+                std::fs::read_dir(path)
+                    .unwrap()
+                    .map(|entry| entry.unwrap().path()),
+            );
+        } else {
+            let mut permissions = std::fs::metadata(&path).unwrap().permissions();
+            let mode = permissions.mode() & !0o222;
+            permissions.set_mode(mode);
+            std::fs::set_permissions(&path, permissions).unwrap();
+            assert!(std::fs::metadata(&path).unwrap().permissions().readonly());
+            assert_eq!(
+                std::fs::OpenOptions::new()
+                    .write(true)
+                    .open(&path)
+                    .unwrap_err()
+                    .kind(),
+                std::io::ErrorKind::PermissionDenied,
+                "sealed fixture source must refuse writes: {}",
+                path.display()
+            );
+            sealed.push((path.clone(), std::fs::read(path).unwrap(), mode));
+        }
+    }
+    let p = Performance::from_source(source.path());
     let mut bundle = p.bundle();
     let prior = p.f.machine.join("prior-evidence");
     std::fs::create_dir(&prior).unwrap();
@@ -671,9 +750,17 @@ fn shipped_performance_loop_plans_exact_models_delivers_research_and_recovers_wi
         std::fs::read(p.home.join("requests.jsonl")).unwrap(),
         before
     );
+    for (path, bytes, mode) in sealed {
+        assert_eq!(std::fs::read(&path).unwrap(), bytes);
+        assert_eq!(std::fs::metadata(path).unwrap().permissions().mode(), mode);
+    }
 }
 
 fn native_prior_packet(root: &Path) -> (PathBuf, PathBuf, Value, Value) {
+    // This helper owns its fixture paths. Resolve macOS's /var alias before handing
+    // them to the exporter, whose production boundary correctly refuses aliases.
+    let canonical_root = root.canonicalize().unwrap();
+    let root = canonical_root.as_path();
     let (repo, state) = crate::task_cli::fixture_named(root, "continue");
     let worker = repo.join(".af/task-packages/fixture/bugs/worker.py");
     let original = std::fs::read_to_string(&worker).unwrap();

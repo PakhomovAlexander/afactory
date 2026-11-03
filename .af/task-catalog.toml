@@ -24,32 +24,32 @@ uix = "advisory"
 
 [packages."warm/implementer"]
 version = "1.3.0"
-digest = "sha256:fd5fca2e0f3810ab113d49ddb26ebcc6f884c5bb01743d195f664c940739d629"
+digest = "sha256:0e8261d7c2de8e95b7b2eeb3d7d50235f84b466738f7e6c1018be4c90cc8c181"
 path = ".af/task-packages/warm/implementer"
 
 [packages."warm/correctness"]
 version = "1.0.0"
-digest = "sha256:abd803546bde2b5a9ebe2920ae161ec2488568d4749d742403c818301604331d"
+digest = "sha256:5a3b201427f80eda13804a33b95a862a10664580cfaa874acbcab76b4db78ef3"
 path = ".af/task-packages/warm/correctness"
 
 [packages."warm/bugs"]
 version = "1.0.0"
-digest = "sha256:83821fae727188bc212ebeb94bf2804739761d1824d59c99900b0467ca5f65ef"
+digest = "sha256:f61ca3295876ed2b04677f3d343eba38a8c3b49a8dabfdb7a44407a071b59400"
 path = ".af/task-packages/warm/bugs"
 
 [packages."warm/evaluator"]
 version = "1.0.0"
-digest = "sha256:c15968ac1f8fe2b6985417bf8f0ecf16eb8d6f17f66641a92307cae87836dd25"
+digest = "sha256:44e98c5710431ad09a0149e90c190b98ee634d79bf33884254ff77624a72c38a"
 path = ".af/task-packages/warm/evaluator"
 
 [packages."warm/review-light"]
 version = "1.0.0"
-digest = "sha256:b1eba94b4b2fe151b0327652a2203ff09067eea0dc0cad942167293c8b339685"
+digest = "sha256:0989433fed48e4562b0b3163c78fb262d5bb9cf59fe9d9614b24ced3a5589be6"
 path = ".af/task-packages/warm/review-light"
 
 [packages."warm/implementation-reviewed"]
 version = "1.0.0"
-digest = "sha256:3ac1aaa73fe0dbf444bf4bc4fec75e5aa8362bac91e763000f54a4c3ea947bb0"
+digest = "sha256:8ee7e310ca4e7cd27b1ca3ac50fc2b196c2d72efeadd85020fe7412bbf5f6463"
 path = ".af/task-packages/warm/implementation-reviewed"
 
 [packages."warm/verification"]
@@ -84,27 +84,27 @@ path = ".af/task-packages/kernel/evaluator"
 
 [packages."kernel/uix"]
 version = "1.6.0"
-digest = "sha256:0435c68586214f572a3efe167506ec070ba530fa8288c3d318fc6187d4ef7c5d"
+digest = "sha256:3a6f06019545fc4ed72827fb96211161e4e9c236df2fe3ff0654e73241500ccc"
 path = ".af/task-packages/kernel/uix"
 
 [packages."kernel/ux"]
 version = "1.2.0"
-digest = "sha256:ac9ecbad1dc1fe3e7656c5fb7a62b7687df67dcf27e35983b3843651f9d06cc4"
+digest = "sha256:677de94187081575a6fdbc25fb5df048efce35abafecd40cdbc1850e9efa073d"
 path = ".af/task-packages/kernel/ux"
 
 [packages."kernel/implementation-ux"]
 version = "1.2.0"
-digest = "sha256:d2b1cff748a6eb4763e02ad383bde03d7f83aecf40c27c2b76d2659e0704a844"
+digest = "sha256:4da1654b4329d382aa4d43ff8378d326ec0af6f0b549a1993cac1b42764d88d6"
 path = ".af/task-packages/kernel/implementation-ux"
 
 [packages."kernel/implementer-long"]
 version = "1.3.2"
-digest = "sha256:65bf8dd722d607883fae5c4e8ba0fa900465534f81d7c0fcbd23220be195b28d"
+digest = "sha256:5c07a7e09e0d127acf417669bb18349f573c3a6357c065494e56e697a7416189"
 path = ".af/task-packages/kernel/implementer-long"
 
 [packages."kernel/review-light"]
 version = "1.3.0"
-digest = "sha256:2f1b6d4eddcad62d62da310f3b5038ed12cb9152dc38344587e6166c2b9702fe"
+digest = "sha256:19e7534191a45c85836aa6bc81bbbe010dbf59ea76a8609419d541c5e0175557"
 path = ".af/task-packages/kernel/review-light"
 
 [packages."kernel/implementation-reviewed"]
@@ -129,7 +129,7 @@ path = ".af/task-packages/kernel/verification"
 
 [packages."kernel/gate-accept"]
 version = "1.0.0"
-digest = "sha256:7c24a6860a110d827e00875639b194302b04bae5a226b0ac8c5101c68571a9d7"
+digest = "sha256:265fa432640093fec3a6cf5a52ea9e85b7e884d771827d49110b2cbf70847ec1"
 path = ".af/task-packages/kernel/gate-accept"
 
 [packages."kernel/gate-bench"]
@@ -147,12 +147,12 @@ path = ".af/task-packages/kernel/experiment"
 
 [packages."kernel/experiment-evaluator"]
 version = "1.0.0"
-digest = "sha256:c643d704a15e3e3dc225dc02f6006e6ece7bd21428a3c16db98004f33408d025"
+digest = "sha256:631331f5bc804ecd883cb95a24c0f535847bda15f74ad6a93ab8a432f22782b8"
 path = ".af/task-packages/kernel/experiment-evaluator"
 
 [packages."kernel/experiment-trial"]
 version = "1.0.0"
-digest = "sha256:7f96ce714daafcc9d61e11b71bcfadc4a08e3f44afcdf16eb3041590f746a6a9"
+digest = "sha256:d4f1327cc6690e661fbfd4a0146b295e199dd7dda876e21cc49d648e5e073195"
 path = ".af/task-packages/kernel/experiment-trial"
 
 [packages."kernel/report"]
@@ -181,7 +181,7 @@ path = ".af/task-packages/kernel/gate-bench-remote"
 
 [packages."kernel/implementation-reviewed-remote"]
 version = "1.4.0"
-digest = "sha256:7ee0ded67c3aa2b2bfdcc97e5772eae79e34f13916f6501abde9704ee02917a3"
+digest = "sha256:8fc5150f3f8216ad33eb323eba157e6c5912215c236163185ee223f31b5eb111"
 path = ".af/task-packages/kernel/implementation-reviewed-remote"
 
 [packages."kernel/verification-reviewed-remote"]
@@ -201,37 +201,37 @@ path = ".af/task-packages/kernel/review-code-remote"
 
 [packages."default/implementer"]
 version = "1.0.0"
-digest = "sha256:e7112e57284398f86883227607b30fb74a10b1e3c2d980ea64a840e64a6dda61"
+digest = "sha256:c8767d271040a23544ed200b484be94f32c906c476ce88f4f08ddb20d70fe28e"
 path = ".af/task-packages/default/implementer"
 
 [packages."default/bugs"]
 version = "1.1.1"
-digest = "sha256:1ffe8634f084c2490c94c643f5657a86d1057813490d5dc2b207ed2cf6159272"
+digest = "sha256:a44cb609516c919291aef88dc4e40a2b0fb4e5d98f71c4ac6c30c6c0aa02271b"
 path = ".af/task-packages/default/bugs"
 
 [packages."default/correctness"]
 version = "1.1.1"
-digest = "sha256:87c891df7a148edcc2f8801fabbe6b9d6bab4676dd37f31a67640a336035be9a"
+digest = "sha256:7b1fbd49f777813611cda9743326118d127faeb75fd61b5c17b747a81db78740"
 path = ".af/task-packages/default/correctness"
 
 [packages."default/advisor"]
 version = "1.1.1"
-digest = "sha256:15c52cad62bb7a2e6ef57cad27723ac3369e0065e896e8ee2ab64b7303c80782"
+digest = "sha256:2dacfe98cdd2c24ef0d7e6a87e804701a8db0e4c11ba6eb12aa0ea1d64817604"
 path = ".af/task-packages/default/advisor"
 
 [packages."default/evaluator"]
 version = "1.1.1"
-digest = "sha256:c6885658f294a258381bb2ea4db9cf69e75c3cfa18c97d959b5458c930789120"
+digest = "sha256:6e60a343b92d6bc872dd80e26edb2f12eab2cb9ed9c41d548f103f5d7354b621"
 path = ".af/task-packages/default/evaluator"
 
 [packages."default/implementation"]
 version = "1.0.0"
-digest = "sha256:56819b9abe80fe1b0409c032f90ba3654d07e0f816fd0a900d49ccf6305cb27c"
+digest = "sha256:2af3361bbad54d3caf4db8dc3a056751dfe619e71d33e420483aeb1f750a4496"
 path = ".af/task-packages/default/implementation"
 
 [packages."default/verification"]
 version = "1.0.0"
-digest = "sha256:595fd743b703967b3b4b0c28cf15046d9f4d15b0fa2d0b3a376ad1fdd229fe1f"
+digest = "sha256:e5529e4450ceee77e6cdef63b77491279542bc7e9a1f351553aa5775ba98e859"
 path = ".af/task-packages/default/verification"
 
 # The light default pipeline (owner's decision, 29 October 2026) for small, local issues: one
@@ -241,32 +241,32 @@ path = ".af/task-packages/default/verification"
 
 [packages."default-light/implementer"]
 version = "1.0.2"
-digest = "sha256:c5750c42151cfe5d1f832a6ba2c8aa3e53d9ca752fe6e40a352026f7d904980c"
+digest = "sha256:b718d68cdc8222d53e9c1fb0f31e1590fce0a06127a6f127df0a90ed8716df8c"
 path = ".af/task-packages/default-light/implementer"
 
 [packages."default-light/correctness"]
 version = "1.0.1"
-digest = "sha256:66a423d4130474cc7c210827e4c17d30dc81b296e81fcced4f004a664fe07b55"
+digest = "sha256:8d6ddb9e96eb472cf696c92d6a04c123e021147e6147809025277d6f907bdc80"
 path = ".af/task-packages/default-light/correctness"
 
 [packages."default-light/evaluator"]
 version = "1.0.1"
-digest = "sha256:674918b87e63d4a22f922f21971119e38fcc8a022b5fbec50009cea1a01698d3"
+digest = "sha256:53eca7694e085f1abb09681080242baf848196cc981fd2d4f96d19e880af1492"
 path = ".af/task-packages/default-light/evaluator"
 
 [packages."default-light/review"]
 version = "1.0.0"
-digest = "sha256:95d652e15fcf06d703d3ada577d251d51e47f75c2f046bbaadfbbef5eecc9b12"
+digest = "sha256:7dd957a8f663e4ffff56ff0dbf8d1944991ec7099b0384af7703c416eaf22222"
 path = ".af/task-packages/default-light/review"
 
 [packages."default-light/implementation"]
 version = "1.0.0"
-digest = "sha256:0ea9415118a24b6f987c2ec5a259bf07e8529ed4774f5b6db7114da65cae980e"
+digest = "sha256:823cd589a3aaea31fc4d25f22205c5039fa41f8481a17bee9f1b8bacc4a2ccbe"
 path = ".af/task-packages/default-light/implementation"
 
 [packages."default-light/verification"]
 version = "1.0.0"
-digest = "sha256:570f34947f12d22a32c64a1d4ec53218747cc33f99be924fddcad0506e07a10f"
+digest = "sha256:4134f24846090ace8b02493f6b2abcd814ac445bbd8cb971afc51432f54f83dd"
 path = ".af/task-packages/default-light/verification"
 
 [independence]
@@ -303,5 +303,5 @@ wall_ms = 45000
 
 [packages."kernel/verification-ux"]
 version = "1.0.0"
-digest = "sha256:fb052a4a253ea631dbcb43b70133146e20064d6d0ed46a0e587304a787de2c70"
+digest = "sha256:9ba9f8679258a49277f0797c9a5d2bd396b08ebebfee1f65bb35b7381b65139b"
 path = ".af/task-packages/kernel/verification-ux"

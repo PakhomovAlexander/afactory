@@ -952,8 +952,7 @@ fn kernel_repository(root: &Path) -> PathBuf {
     );
     std::fs::write(repo.join("README.md"), "# Kernel\n\nA fixture copy.\n").unwrap();
     install_kernel_report(&repo);
-    // The committed packages name the receipt this release no longer reads; the copy takes
-    // ADR-0255's migration.
+    // Normalize only disposable fixture authority; the shipped packages already name @2.
     task_cli::migrate_check_receipt(&repo, &[".af"], &[".af/task-catalog.toml"]);
     git(&repo, &["init", "-q", "-b", "main"]);
     git(&repo, &["add", "-A"]);

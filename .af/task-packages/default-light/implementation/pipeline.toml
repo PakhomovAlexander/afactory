@@ -80,7 +80,7 @@ standard = true
 [slots.correctness]
 worker = "default-light/correctness"
 role = "review"
-input_type = "af/ReviewInput@1"
+input_type = "af/ReviewInput@2"
 output_type = "review.kernel/ReviewerResult@2"
 min_attempts = 1
 max_attempts = 2
@@ -100,7 +100,7 @@ independent_from = ["implementer"]
 [slots.implementer]
 worker = "default-light/implementer"
 role = "implement"
-input_type = "af/ImplementationInput@1"
+input_type = "af/ImplementationInput@2"
 output_type = "af/ImplementationReport@1"
 min_attempts = 1
 max_attempts = 1

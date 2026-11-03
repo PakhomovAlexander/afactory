@@ -6,12 +6,12 @@ path = "fixtures/kernel-experiment/task-packages/kernel/experiment"
 version = "1.0.0"
 
 [packages."kernel/experiment-evaluator"]
-digest = "sha256:c643d704a15e3e3dc225dc02f6006e6ece7bd21428a3c16db98004f33408d025"
+digest = "sha256:631331f5bc804ecd883cb95a24c0f535847bda15f74ad6a93ab8a432f22782b8"
 path = "fixtures/kernel-experiment/task-packages/kernel/experiment-evaluator"
 version = "1.0.0"
 
 [packages."kernel/experiment-trial"]
-digest = "sha256:7f96ce714daafcc9d61e11b71bcfadc4a08e3f44afcdf16eb3041590f746a6a9"
+digest = "sha256:d4f1327cc6690e661fbfd4a0146b295e199dd7dda876e21cc49d648e5e073195"
 path = "fixtures/kernel-experiment/task-packages/kernel/experiment-trial"
 version = "1.0.0"
 

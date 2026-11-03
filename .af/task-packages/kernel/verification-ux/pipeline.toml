@@ -81,7 +81,7 @@ independent_from = []
 [slots.uix]
 worker = "kernel/ux"
 role = "review"
-input_type = "af/ReviewInput@1"
+input_type = "af/ReviewInput@2"
 output_type = "review.kernel/ReviewerResult@2"
 min_attempts = 1
 max_attempts = 2
