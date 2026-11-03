@@ -117,7 +117,7 @@ impl TaskOutcomeV1 {
     pub fn description(self) -> &'static str {
         match self {
             Self::Verified => {
-                "every declared acceptance obligation is satisfied; inspect the domain conclusion"
+                "all declared acceptance obligations met; inspect the domain conclusion"
             }
             Self::ChangesRequested => {
                 "the review or the evaluator ran to completion and asked for changes"

@@ -297,7 +297,7 @@ the `state` object: `phase`, `outcome`, `cause` and `next_action`, `null` where 
 
 | Outcome | Exit code of `af task run` | Meaning |
 | --- | ---: | --- |
-| `verified` | 0 | every declared acceptance obligation is satisfied; inspect the domain conclusion |
+| `verified` | 0 | all declared acceptance obligations met; inspect the domain conclusion |
 | `changes_requested` | 3 | the review or the evaluator ran to completion and asked for changes |
 | `gate_failed` | 5 | a required check of the gate failed or could not run |
 | `provider_failed` | 6 | a Worker's Provider or process failed, or its reply was not admissible |
