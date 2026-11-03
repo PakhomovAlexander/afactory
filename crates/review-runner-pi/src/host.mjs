@@ -144,16 +144,15 @@ export function rawUsage(backend, event, onInvalid = () => fail('invalid_usage')
     const source = object(u);
     if (!source) continue;
     const raw = adapter.usageFields(source, object);
-    // A malformed or conflicting alias makes only its own component unknown. Never
-    // choose an alias, or discard independently justified aggregate counters with it.
+    // Malformed aliases fail accounting but do not hide independently valid numbers.
+    // Only distinct numeric aliases conflict; keep that conflict permanent across sources.
     const cached = raw.cached.map(counter);
     const observedCached = cached.filter((value) => value !== null);
     const cacheConflict = new Set(observedCached).size > 1;
-    const badCache = raw.cached.some((value, i) => value != null && cached[i] === null) || cacheConflict;
     if (cacheConflict) conflicted.add('cache_read');
-    if (badCache) invalid = true;
+    if (cacheConflict) invalid = true;
     const next = { input: counter(raw.input), output: counter(raw.output),
-      cache_read: badCache ? null : observedCached[0] ?? null,
+      cache_read: cacheConflict ? null : observedCached[0] ?? null,
       cache_write: counter(raw.cache_write), reasoning: counter(raw.reasoning) };
     if (!result) result = next;
     else for (const key of keys) {

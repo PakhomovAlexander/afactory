@@ -793,7 +793,7 @@ function invalid(event, safe) {
 }
 for (const value of [-1,0.5,'12',true,9007199254740992,Infinity,NaN,{},[]]) {
   invalid({usage:{...base,cached_tokens:value}},{...expected,cache_read:null});
-  invalid({usage:{...base,prompt_cache_hit_tokens:value}},{...expected,cache_read:null});
+  invalid({usage:{...base,prompt_cache_hit_tokens:value}},expected);
   invalid({usage:{...base,prompt_tokens_details:{cache_write_tokens:value}}},
     {...expected,cache_write:null});
   invalid({usage:{...base,completion_tokens_details:{reasoning_tokens:value}}},
@@ -842,6 +842,21 @@ for (const sources of [[{prompt_tokens:100},{completion_tokens:10}],
                        [{completion_tokens:10},{prompt_tokens:100}]]) {
   assert.deepEqual(rawUsage('kimi-coding',
     {usage:sources[0],choices:[{usage:sources[1]}]}),totals);
+}
+// A malformed sibling must not hide valid aliases from permanent conflict detection.
+const malformedAlias = {...aggregate,cached_tokens:false,prompt_cache_hit_tokens:3};
+const otherAlias = {cached_tokens:4};
+invalid({usage:malformedAlias},{...totals,cache_read:3});
+for (const sources of [[malformedAlias,otherAlias],[otherAlias,malformedAlias],
+                       [malformedAlias,otherAlias,{cached_tokens:3}],
+                       [otherAlias,malformedAlias,{cached_tokens:4}]]) {
+  invalid({usage:sources[0],choices:sources.slice(1).map(usage=>({usage}))},totals);
+}
+for (const sources of [[{...aggregate,cached_tokens:3,prompt_cache_hit_tokens:4},
+                        {cached_tokens:3}],
+                       [{cached_tokens:4},
+                        {...aggregate,cached_tokens:3,prompt_cache_hit_tokens:4}]]) {
+  invalid({usage:sources[0],choices:sources.slice(1).map(usage=>({usage}))},totals);
 }
 // Contradictory aliases are actual numeric conflicts too; another source cannot restore them.
 invalid({usage:{...base,prompt_cache_hit_tokens:3},choices:[{usage:base}]},
