@@ -14,10 +14,12 @@ class HostError extends Error {
 }
 const fail = (code) => { throw new HostError(code); };
 const hash = (text) => 'sha256:' + createHash('sha256').update(text).digest('hex');
+// Pi owns OAuth metadata. Validate only the required mode and credential fields; extra
+// fields are opaque, never interpreted as identity, settings, routing or helpers. Reads
+// bypass AuthStorage's helper resolution and refresh preserves the SDK's complete record.
 function kimiIdentity(credential) {
   if (credential?.type !== 'oauth' || typeof credential.access !== 'string' || !credential.access ||
-      typeof credential.refresh !== 'string' || !credential.refresh || !Number.isFinite(credential.expires) ||
-      Object.keys(credential).some((key) => !['type','access','refresh','expires'].includes(key))) fail('unsupported_auth');
+      typeof credential.refresh !== 'string' || !credential.refresh || !Number.isFinite(credential.expires)) fail('unsupported_auth');
   return null;
 }
 function openaiIdentity(credential) {

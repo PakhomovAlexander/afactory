@@ -619,14 +619,6 @@ fn pi_setup_status_and_exact_model_catalog_are_token_free_and_secret_free() {
                 assert_eq!(value["schema"], "af/provider-status@5");
                 assert_eq!(value["providers"][0]["kind"], "pi");
                 assert_eq!(value["providers"][0]["auth"], "authenticated");
-                if backend == "kimi-coding" {
-                    assert!(value.to_string().contains("account identity unavailable"));
-                    assert!(
-                        value
-                            .to_string()
-                            .contains("account substitution cannot be detected")
-                    );
-                }
             }
             let text = String::from_utf8(out.stdout).unwrap();
             for secret in [
@@ -637,6 +629,21 @@ fn pi_setup_status_and_exact_model_catalog_are_token_free_and_secret_free() {
                 "SYNTHETIC_KIMI_REFRESH",
                 "DO_NOT_USE_AMBIENT",
             ] {
+                assert!(!text.contains(secret));
+            }
+        }
+        // Status JSON deliberately carries stable states, not diagnostic prose. Check
+        // the identity limitation on the human status surface that publishes Pi's note.
+        if backend == "kimi-coding" {
+            let status = invoke(&["provider", "status"]);
+            assert!(status.status.success());
+            let text = String::from_utf8(status.stdout).unwrap();
+            assert!(text.contains("account identity unavailable"), "{text}");
+            assert!(
+                text.contains("account substitution cannot be detected"),
+                "{text}"
+            );
+            for secret in ["SYNTHETIC_KIMI_ACCESS", "SYNTHETIC_KIMI_REFRESH"] {
                 assert!(!text.contains(secret));
             }
         }

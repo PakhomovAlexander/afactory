@@ -38,7 +38,12 @@ af provider models pi-kimi --resolve k3/high --json
 
 Only `k3` at the official HTTPS `https://api.kimi.com/coding/v1` endpoint is admitted.
 Supported thinking levels are exactly `low`, `high`, `max`; `medium` and `off` refuse,
-with no fallback. Status explicitly says account identity is unavailable and auth context only.
+with no fallback. The human status note explicitly says account identity is unavailable and
+auth context only; status JSON retains its stable authentication/credential states. Plans and
+admission receipts capture the typed unavailable identity separately from auth context.
+Pi owns the OAuth record and its additional SDK metadata. AF validates the required OAuth
+mode, nonempty access/refresh strings and finite expiry, preserving opaque metadata through
+refresh without interpreting it as account identity, settings, endpoints or helpers.
 Kimi raw usage is observed from native chunks, including cached-token alternatives; missing
 counters remain unknown. No live Kimi inference was run for this implementation.
 

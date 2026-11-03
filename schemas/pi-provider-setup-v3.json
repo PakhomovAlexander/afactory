@@ -72,7 +72,10 @@
             "type": "string"
           },
           "backend": {
-            "const": "openai-codex"
+            "enum": [
+              "openai-codex",
+              "kimi-coding"
+            ]
           }
         }
       }

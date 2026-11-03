@@ -616,6 +616,12 @@ fn pi_task_admission_typed_result_retry_and_account_drift_use_the_common_path() 
         f.path = path;
         let kimi = mode.starts_with("kimi-");
         let backend = if kimi { "kimi-coding" } else { "openai-codex" };
+        if kimi {
+            // Successful context-only admission requires explicit trusted policy. The
+            // pi-light compile fixture separately proves strict principal-policy refusal.
+            f.catalog["independence"] = json!({"command_workers_by_package":true,
+                "distinct_principals":false,"distinct_providers":false,"distinct_models":false});
+        }
         std::fs::write(f.home.join("providers.toml"),toml::to_string(&json!({"version":3,"providers":[{"id":"pi-personal","kind":"pi","backend":backend,"auth_dir":f.home,"sdk_entrypoint":sdk}]})).unwrap()).unwrap();
         f.catalog["providers"] = json!({"builtin/document-author":"pi-personal"});
         let package = f.repo.join(

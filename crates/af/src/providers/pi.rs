@@ -145,7 +145,7 @@ pub(super) fn status(
         "Pi SDK/authentication check could not establish identity",
     );
     match probe(spec, cancelled, PROBE_TIMEOUT) {
-        Ok(ready) => {
+        Ok((_, ready)) => {
             status.status = "authenticated".into();
             status.auth_type = "OAuth".into();
             status.detail = format!(

@@ -719,7 +719,7 @@ fn task_contract_positive_and_negative_fixtures() {
     let schema = |contract: &str| {
         format!(
             "{contract}-v{}.json",
-            if contract == "execution-plan" { 2 } else { 1 }
+            if contract == "execution-plan" { 3 } else { 1 }
         )
     };
     let manifest = fixture("content-ids");
@@ -1465,6 +1465,9 @@ fn pi_host_and_setup_protocols_reject_old_shapes_and_secret_fields() {
     assert_invalid("pi-host-v3.json", &missing, "missing counter");
     let setup = json!({"schema":"af/pi-provider-setup@3","id":"pi-personal","kind":"pi","backend":"openai-codex","outcome":"registered","detail":"Pi SDK 1.4.0 registered"});
     assert_valid("pi-provider-setup-v3.json", &setup);
+    let mut kimi_setup = setup.clone();
+    kimi_setup["backend"] = json!("kimi-coding");
+    assert_valid("pi-provider-setup-v3.json", &kimi_setup);
     for (id, backend) in [
         (Value::Null, Value::Null),
         (json!("pi-personal"), Value::Null),

@@ -583,18 +583,40 @@ if (process.argv[3]==='official') assert.equal(calls,2);
 import assert from 'node:assert/strict';
 import {pathToFileURL} from 'node:url';
 const host = await import(pathToFileURL(process.argv[2]).href);
+globalThis.fetch=async()=>{throw Error('Network forbidden during credential validation/refresh');};
+globalThis.WebSocket=class{constructor(){throw Error('WebSocket forbidden');}};
 const credential = {type:'oauth',access:'PRIVATE_ACCESS',refresh:'PRIVATE_REFRESH',expires:9999999999999};
 assert.equal(host.principal(credential,'kimi-coding'),null);
+for (const field of ['type','access','refresh','expires']) {
+ const missing={...credential};delete missing[field];
+ assert.throws(()=>host.principal(missing,'kimi-coding'));
+}
 for (const bad of [{...credential,type:'api_key'}, {...credential,access:''},
-                   {...credential,accountId:'invented'}, {...credential,key:'!helper'},
-                   {...credential,expires:'later'}]) assert.throws(()=>host.principal(bad,'kimi-coding'));
-let current = credential;
-const storage = {async modify(id,fn) { assert.equal(id,'kimi-coding'); const next=await fn(current); if(next!==undefined)current=next;return current; }};
+                   {...credential,refresh:''}, {...credential,access:42},
+                   {...credential,refresh:null}, {...credential,expires:'later'},
+                   {...credential,expires:NaN}, {...credential,expires:Infinity},
+                   {type:'api_key',key:'!echo HELPER_MUST_NOT_RUN'},
+                   {type:'command',command:'echo HELPER_MUST_NOT_RUN'}]) assert.throws(()=>host.principal(bad,'kimi-coding'));
+// Opaque SDK-owned fields carry no AF authority, even when their names resemble it.
+const metadata = {accountId:'NOT_AN_ACCOUNT_PRINCIPAL', key:'!echo HELPER_MUST_NOT_RUN',
+  endpoint:'https://untrusted.invalid', settings:{thinking:'medium'}, helper:'DO_NOT_EXECUTE',
+  nested:{secret:'PRIVATE_METADATA', values:[1,null,true]}, flags:['opaque'],
+  generation:10, optional:null, label:'SDK_METADATA'};
+const extended = {...credential,...metadata};
+assert.equal(host.principal(extended,'kimi-coding'),null);
+let current = extended;
+const storage = {read:async()=>{throw Error('helper-capable read forbidden');}, async modify(id,fn) { assert.equal(id,'kimi-coding'); const next=await fn(current); if(next!==undefined)current=next;return current; }};
 let sameContext = true;
 const guarded = host.guardedCredentials(storage,null,'kimi-coding',()=>{if(!sameContext)throw Error('context_changed');});
 await guarded.read('kimi-coding');
 await guarded.modify('kimi-coding',async c=>({...c,access:'rotated'}));
-assert.equal((await guarded.read('kimi-coding')).access,'rotated');
+const rotated = await guarded.read('kimi-coding');
+assert.equal(rotated.access,'rotated');
+for (const [key,value] of Object.entries(metadata)) assert.deepEqual(rotated[key],value);
+await guarded.modify('kimi-coding',async()=>undefined);
+assert.deepEqual(await guarded.read('kimi-coding'),rotated);
+await assert.rejects(guarded.modify('kimi-coding',async c=>({...c,refresh:''})));
+assert.deepEqual(current,rotated,'invalid refresh must not write');
 sameContext=false;await assert.rejects(guarded.read('kimi-coding'));
 await assert.rejects(guarded.modify('kimi-coding',async c=>c));sameContext=true;
 await assert.rejects(guarded.modify('kimi-coding',async c=>{sameContext=false;return c;}));sameContext=true;
@@ -624,12 +646,27 @@ assert.throws(()=>host.rawUsage('kimi-coding',{usage:{...usage,prompt_cache_hit_
 assert.throws(()=>host.rawUsage('kimi-coding',{usage,choices:[{usage:{...usage,completion_tokens:6}}]}));
 assert.deepEqual(host.rawUsage('kimi-coding',{usage:{prompt_tokens:0,completion_tokens:0,cached_tokens:0}}),
  {input:0,output:0,cache_read:0,cache_write:null,reasoning:null});
+// Exercise the pinned SDK's locked storage/refresh interface with synthetic in-memory data.
+if (process.argv[3]) {
+ const sdk=await host.loadSdk(process.argv[3]);
+ const actual=sdk.AuthStorage.inMemory({'kimi-coding':extended});
+ const secured=host.guardedCredentials(actual,null,'kimi-coding');
+ assert.deepEqual(await secured.read('kimi-coding'),extended);
+ await secured.modify('kimi-coding',async c=>({...c,access:'rotated',expires:c.expires+1}));
+ const saved=await secured.read('kimi-coding');
+ for (const [key,value] of Object.entries(metadata)) assert.deepEqual(saved[key],value);
+ assert.equal(saved.access,'rotated');
+ await assert.rejects(secured.modify('kimi-coding',async c=>({...c,type:'api_key'})));
+ assert.deepEqual(await secured.read('kimi-coding'),saved);
+}
 console.log('Kimi contract passed (synthetic credentials only)');
 ''')
-            result = subprocess.run([node, str(script), str(HOST)], capture_output=True,
-                                    text=True, env={'HOME': directory}, timeout=30, check=False)
+            sdk = installed_sdk()
+            result = subprocess.run([node, str(script), str(HOST)] + ([sdk] if sdk else []),
+                                    capture_output=True, text=True, env={'HOME': directory},
+                                    timeout=30, check=False)
             self.assertEqual(result.returncode, 0, result.stderr)
-            for secret in ['PRIVATE_ACCESS', 'PRIVATE_REFRESH']:
+            for secret in ['PRIVATE_ACCESS', 'PRIVATE_REFRESH', 'PRIVATE_METADATA', 'NOT_AN_ACCOUNT_PRINCIPAL']:
                 self.assertNotIn(secret, result.stdout + result.stderr)
 
     def test_kimi_host_observed_usage_tools_and_exact_thinking_with_mock_transport(self):
@@ -660,7 +697,12 @@ console.log('Kimi contract passed (synthetic credentials only)');
             auth = root / 'auth'
             auth.mkdir()
             credential = {'type': 'oauth', 'access': 'KIMI_PRIVATE_ACCESS',
-                          'refresh': 'KIMI_PRIVATE_REFRESH', 'expires': 9999999999999}
+                          'refresh': 'KIMI_PRIVATE_REFRESH', 'expires': 9999999999999,
+                          'sdkMetadata': {'opaque': 'KIMI_PRIVATE_METADATA'},
+                          'endpoint': 'https://untrusted.invalid',
+                          'settings': {'thinking': 'medium'},
+                          'helper': '!echo HELPER_MUST_NOT_RUN',
+                          'accountId': 'NOT_AN_ACCOUNT_PRINCIPAL'}
             (auth / 'auth.json').write_text(json.dumps({'kimi-coding': credential}))
             init = {'schema': 'af.pi-host/3', 'type': 'init', 'sdk': sdk, 'backend': 'kimi-coding',
                     'auth_dir': str(auth),
@@ -722,7 +764,8 @@ const host=await import(pathToFileURL(HOST_PATH).href);await host.main();
             self.assertTrue(all((r['input'], r['output'], r['cache_read'], r['reasoning']) ==
                                 (12, 3, 2, 1) for r in finalized))
             self.assertEqual((root / 'kimi-edited').read_text(), 'confined Kimi edit')
-            for secret in credential['access'], credential['refresh']:
+            for secret in (credential['access'], credential['refresh'], 'KIMI_PRIVATE_METADATA',
+                           'NOT_AN_ACCOUNT_PRINCIPAL', 'HELPER_MUST_NOT_RUN'):
                 self.assertNotIn(secret, result.stdout + result.stderr)
             print('Kimi SDK tools and raw usage: passed (' +
                   ('official SDK, mocked HTTP; no live call)' if official else 'hermetic SDK fixture)'))

@@ -394,7 +394,7 @@ if mode=='after': emit({'type':'error','code':'inference_failed'})
         let output = review_process::run_supervised_duplex(
             &mut child, Duration::from_secs(30), ExitPolicy::KillProcessGroup,
             move |writer| -> std::io::Result<()> {
-                write_record(writer, &init(&adapter.config, root_path, root_path, staging_path, None, false, false, &[]))?;
+                write_record(writer, &init(&adapter.config, root_path, &adapter.captured.auth_context_id, root_path, staging_path, None, false, false, &[]))?;
                 let wait = || observed.recv_timeout(deadline.saturating_duration_since(Instant::now())).map_err(std::io::Error::other);
                 wait()?;
                 write_record(writer, &json!({"schema":PROTOCOL,"type":"prepare","model":"o3","effort":"high","model_identity":digest(b"model")}))?;
