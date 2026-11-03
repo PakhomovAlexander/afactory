@@ -43,7 +43,7 @@ def load_check():
 
 CHECK = load_check()
 POLICY = 'triage-runner/1'
-STATE_SCHEMA = 'af.issue-triage-runner/1'
+STATE_SCHEMA = 'af.issue-triage-runner/3'
 TOKENS, DAILY, TASK_SECONDS, BATCH_SECONDS, BATCH_MAX = 150000, 2000000, 1200, 5400, 4
 ENTRY_MAX, TOTAL_MAX, FILE_MAX, ENTRY_COUNT = 256 * 1024, 512 * 1024, 640 * 1024, 256
 EXCERPT_MAX, EXCERPT_COUNT = 128 * 1024, 16
@@ -180,8 +180,8 @@ class Journal:
                 self.data = dict(schema=STATE_SCHEMA, repository=repository, principal=principal, owner=owner,
                                  timezone=timezone, cursor='', events={}, issues={}, generations={},
                                  ledger={}, owner_review={}, blocked=None)
-            schema = CHECK.Validator(ROOT / 'schemas/issue-triage-runner-v1.json')
-            require(not schema.errors(self.data, 'urn:af:schema:issue-triage-runner:1'), 'journal schema refused')
+            schema = CHECK.Validator(ROOT / 'schemas/issue-triage-runner-v3.json')
+            require(not schema.errors(self.data, 'urn:af:schema:issue-triage-runner:3'), 'journal schema refused')
             require((self.data['repository'], self.data['principal'], self.data['timezone'], self.data['owner']) ==
                     (repository, principal, timezone, owner), 'journal identity changed')
             self.validate()
@@ -191,6 +191,11 @@ class Journal:
             raise
 
     def validate(self):
+        for state in self.data['issues'].values():
+            for key, phase in state['sweeps'].items():
+                require(key in state['aux_bodies'], 'auxiliary checkpoint has no recorded body')
+                if phase in ('label-intent', 'labels-done', 'aborted'):
+                    require(key in state['aux_labels'], 'auxiliary label intent has no desired labels')
         for reservation in self.data['ledger'].values():
             dt.date.fromisoformat(reservation['day'])
             if reservation['settled_day'] is not None:
@@ -216,7 +221,7 @@ class Journal:
         return self.data['issues'].setdefault(str(number), dict(comment_id=None, failures=0,
                                                                hold=None, notified=False,
                                                                needs_since=None, reminded=False,
-                                                               sweeps={}, aux_bodies={}))
+                                                               sweeps={}, aux_bodies={}, aux_labels={}))
 
     def claim(self, identity, bundle, issue):
         key = digest(identity)
@@ -1188,7 +1193,8 @@ class Runner:
             self.journal.save()
 
     def effects_blocked(self, number, except_key=None, replacing_dry_runs=False):
-        if 'comment-intent' in self.journal.issue(number)['sweeps'].values():
+        if any(phase in ('label-intent', 'comment-intent')
+               for phase in self.journal.issue(number)['sweeps'].values()):
             return True
         for key, gen in self.journal.data['generations'].items():
             if key == except_key or gen['identity']['issue'] != number:
@@ -1503,6 +1509,13 @@ class Runner:
 
     def reconcile_auxiliary(self, issue, state):
         for key, phase in list(state['sweeps'].items()):
+            if phase == 'label-intent':
+                # A response (including success) cannot prove completion. Only the exact
+                # recorded label state resolves this effect; a matching comment cannot.
+                if set(issue['labels']) == set(state['aux_labels'][key]):
+                    state['sweeps'][key] = 'labels-done'
+                    self.journal.save()
+                continue
             if phase != 'comment-intent':
                 continue
             body = state['aux_bodies'].get(key)
@@ -1557,6 +1570,7 @@ class Runner:
     def auxiliary(self, issue, checkpoints, key, body, label=None, main=None):
         if checkpoints.get(key) == 'done':
             return
+        require(not self.effects_blocked(issue['number']), 'earlier issue generation has unresolved effects')
         if not self.apply:
             self.emit('Issue #%d proposed label: %s\n%s' % (issue['number'], label or '(none)', body))
             return
@@ -1585,19 +1599,40 @@ class Runner:
         if not found:
             require(checkpoints.get(key) != 'comment-intent', 'auxiliary create unresolved; owner reconciliation required')
             # Replace the allowed triage value only; protected states were refused above.
-            if label and label not in current['labels']:
+            if label and label not in current['labels'] and checkpoints.get(key) != 'labels-done':
                 require(not set(current['labels']) & {'triage/needs-info', 'triage/disputed', 'triage/held'},
                         'sweep state changed')
                 desired = sorted((set(current['labels']) - {l for l in current['labels']
                                                             if l in MANAGED and l.startswith('triage/')}) | {label})
-                self.journal.issue(issue['number'])['current_generation'] = None
+                state = self.journal.issue(issue['number'])
+                checkpoints[key] = 'label-intent'
+                state['aux_labels'][key] = desired
+                state['aux_bodies'][key] = body
+                # Persist the exact effect before clearing canonical authority or sending
+                # any DELETE/POST. Only a proven pre-mutation refusal can abort this intent.
                 self.journal.save()
-                self.api.set_labels(issue['number'], desired, current['labels'])
+                previous = state.get('current_generation')
+                state['current_generation'] = None
+                self.journal.save()
+                try:
+                    self.api.set_labels(issue['number'], desired, current['labels'])
+                except Ambiguous:
+                    raise
+                except (Refused, CHECK.Refusal):
+                    # set_labels promotes partial/unknown effects to Ambiguous. This
+                    # fresh intent had no earlier unresolved write (effects_blocked).
+                    checkpoints[key] = 'aborted'
+                    state['current_generation'] = previous
+                    self.journal.save()
+                    raise
+                self.reconcile_auxiliary(self.api.issue(issue['number']), state)
+                require(checkpoints[key] == 'labels-done', 'auxiliary label write not observed')
             checkpoints[key] = 'comment-intent'
             self.journal.issue(issue['number'])['aux_bodies'][key] = body
             self.journal.issue(issue['number'])['current_generation'] = None
             self.journal.save()
             self.api.comment(issue['number'], body)
+        self.journal.issue(issue['number'])['aux_bodies'][key] = body
         checkpoints[key] = 'done'
         self.journal.save()
 

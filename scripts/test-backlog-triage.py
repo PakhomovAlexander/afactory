@@ -761,14 +761,20 @@ class StateAndAdmission(Fixture):
     def test_journal_atomic_roundtrip_schema_parity_and_old_shape_fail_closed(self):
         self.queue()
         doc = R.strict_json(self.journal.path.read_bytes())
-        schema = C.Validator(ROOT / 'schemas/issue-triage-runner-v1.json')
-        self.assertEqual(schema.errors(doc, 'urn:af:schema:issue-triage-runner:1'), [])
+        schema = C.Validator(ROOT / 'schemas/issue-triage-runner-v3.json')
+        self.assertEqual(schema.errors(doc, 'urn:af:schema:issue-triage-runner:3'), [])
         broken = copy.deepcopy(doc)
         broken['schema'] = 'af.issue-triage-runner/0'
-        self.assertTrue(schema.errors(broken, 'urn:af:schema:issue-triage-runner:1'))
+        self.assertTrue(schema.errors(broken, 'urn:af:schema:issue-triage-runner:3'))
         broken = copy.deepcopy(doc)
         broken['ledger'][next(iter(broken['ledger']))]['reserved'] = 1
-        self.assertTrue(schema.errors(broken, 'urn:af:schema:issue-triage-runner:1'))
+        self.assertTrue(schema.errors(broken, 'urn:af:schema:issue-triage-runner:3'))
+        broken = copy.deepcopy(doc)
+        del broken['issues']['432']['aux_labels']
+        self.assertTrue(schema.errors(broken, 'urn:af:schema:issue-triage-runner:3'))
+        broken = copy.deepcopy(doc)
+        broken['issues']['432']['aux_labels']['evidence'] = [False]
+        self.assertTrue(schema.errors(broken, 'urn:af:schema:issue-triage-runner:3'))
         self.assertFalse(list(self.root.glob('.write-*')))
         with mock.patch.object(R.os, 'replace', side_effect=OSError('crash before replace')):
             with self.assertRaises(OSError):
@@ -2465,6 +2471,328 @@ class SweepUncertaintyFence(Fixture):
 
 
 class AuxiliaryRecoveryFence(Fixture):
+    def reload_journal(self):
+        expected = R.strict_json(self.journal.path.read_bytes())
+        schema = C.Validator(ROOT / 'schemas/issue-triage-runner-v3.json')
+        self.assertEqual(schema.errors(expected, 'urn:af:schema:issue-triage-runner:3'), [])
+        self.journal.close()
+        self.journal = R.Journal(self.root, 'owner/repo', 'runner', 'Europe/Moscow')
+        self.assertEqual(self.journal.data, expected)
+        self.addCleanup(self.journal.close)
+        self.runner.journal = self.journal
+        return self.journal.issue(432)
+
+    def assert_aborted_with_authority(self, current, before):
+        state = self.reload_journal()
+        key, = state['sweeps']
+        self.assertEqual(state['sweeps'][key], 'aborted')
+        self.assertIn('triage/maybe-fixed', state['aux_labels'][key])
+        self.assertIn('triage-sweep evidence=' + key, state['aux_bodies'][key])
+        self.assertEqual(state['current_generation'], current)
+        comment, = self.api.rows[432]['comments']
+        self.assertEqual(R.consume_comment(comment, 432, self.journal),
+                         self.journal.data['generations'][current]['record'])
+        self.assertFalse(self.runner.effects_blocked(432))
+        self.assertEqual(self.api.writes, before)
+        return key
+
+    def assert_fresh_sweep_after_abort(self, key):
+        set_labels = self.api.set_labels
+        def checked_write(*args):
+            state = R.strict_json(self.journal.path.read_bytes())['issues']['432']
+            self.assertEqual(state['sweeps'][key], 'label-intent')
+            self.assertIsNone(state['current_generation'])
+            return set_labels(*args)
+        before = len(self.api.writes)
+        with mock.patch.object(self.api, 'set_labels', side_effect=checked_write):
+            self.runner.sweep()
+        self.assertEqual([w[0] for w in self.api.writes[before:]], ['labels', 'comment'])
+        self.assertEqual(self.reload_journal()['sweeps'][key], 'done')
+
+    def test_second_guard_main_refusal_aborts_durably_preserves_authority_and_allows_fresh_sweep(self):
+        self.queue()
+        current = self.journal.issue(432)['current_generation']
+        before = copy.deepcopy(self.api.writes)
+        set_labels = self.api.set_labels
+        def changed_after_intent(*args):
+            state = R.strict_json(self.journal.path.read_bytes())['issues']['432']
+            self.assertEqual(list(state['sweeps'].values()), ['label-intent'])
+            self.assertIsNone(state['current_generation'])
+            self.manifest.main = 'f' * 40
+            return set_labels(*args)  # Calls the second guard before any mutation.
+        with mock.patch.object(self.api, 'set_labels', side_effect=changed_after_intent):
+            with self.assertRaisesRegex(R.Refused, 'sweep main changed'):
+                self.runner.sweep()
+        key = self.assert_aborted_with_authority(current, before)
+        self.assert_fresh_sweep_after_abort(key)
+
+    def test_first_api_prewrite_refusals_abort_durably_without_transport_or_authority_loss(self):
+        self.queue()
+        current = self.journal.issue(432)['current_generation']
+        before = copy.deepcopy(self.api.writes)
+        client = R.GitHub('owner/repo', 'fake', self.lease, time.monotonic() + 5400, 'runner')
+        for refusal in (R.Refused('prewrite refused'), C.Refusal('test', 'prewrite refused')):
+            with self.subTest(refusal=type(refusal).__name__):
+                def refuse():
+                    state = R.strict_json(self.journal.path.read_bytes())['issues']['432']
+                    self.assertEqual(list(state['sweeps'].values()), ['label-intent'])
+                    self.assertIsNone(state['current_generation'])
+                    self.api.before_write()
+                    raise refusal
+                client.before_write = refuse
+                with mock.patch.object(self.api, 'set_labels', side_effect=client.set_labels), \
+                        mock.patch.object(client.rest, 'call', side_effect=AssertionError('transport forbidden')):
+                    with self.assertRaisesRegex(type(refusal), 'prewrite refused'):
+                        self.runner.sweep()
+                key = self.assert_aborted_with_authority(current, before)
+        self.assert_fresh_sweep_after_abort(key)
+
+    def test_prewrite_refusal_after_a_delete_remains_ambiguous_and_fenced(self):
+        client = R.GitHub('owner/repo', 'fake', self.lease, time.monotonic() + 5400, 'runner')
+        def guard():
+            self.api.before_write()
+            if self.api.writes:
+                raise C.Refusal('test', 'later prewrite refused')
+        client.before_write = guard
+        def transport(method, path, **kwargs):
+            if method == 'GET':
+                self.assertEqual(path, '/user')
+                return 200, dict(login='runner')
+            self.assertEqual((method, path), ('DELETE', '/repos/owner/repo/issues/432/labels/triage%2Fpending'))
+            self.api.writes.append((method, path))
+            self.api.rows[432]['labels'].remove('triage/pending')
+            return 204, None
+        with mock.patch.object(self.api, 'set_labels', side_effect=client.set_labels), \
+                mock.patch.object(client.rest, 'call', side_effect=transport):
+            with self.assertRaisesRegex(R.Ambiguous, 'partial label write'):
+                self.runner.sweep()
+        state = self.reload_journal()
+        key, = state['sweeps']
+        self.assertEqual(state['sweeps'][key], 'label-intent')
+        self.assertIsNone(state['current_generation'])
+        self.assertTrue(self.runner.effects_blocked(432))
+        before = copy.deepcopy(self.api.writes)
+        self.runner.sweep()
+        self.assertEqual(self.api.writes, before)
+        self.assertEqual(state['sweeps'][key], 'label-intent')
+
+    def test_read_refusal_after_labels_return_does_not_abort_the_effect(self):
+        label_written = False
+        read = self.api.issue
+        def observed(number):
+            R.require(not label_written, 'postwrite read refused')
+            return read(number)
+        set_labels = self.api.set_labels
+        def written(*args):
+            nonlocal label_written
+            set_labels(*args)
+            label_written = True
+        with mock.patch.object(self.api, 'issue', side_effect=observed), \
+                mock.patch.object(self.api, 'set_labels', side_effect=written):
+            with self.assertRaisesRegex(R.Refused, 'postwrite read refused'):
+                self.runner.sweep()
+        state = self.reload_journal()
+        key, = state['sweeps']
+        self.assertEqual(state['sweeps'][key], 'label-intent')
+        self.assertIsNone(state['current_generation'])
+        self.assertTrue(self.runner.effects_blocked(432))
+        self.assertEqual([w[0] for w in self.api.writes], ['labels'])
+
+    def test_exact_existing_principal_comment_is_adopted_with_body_and_no_api_writes(self):
+        evidence, = R.sweep_evidence(self.manifest.citations(432), [], 432)[0]
+        key = R.digest(evidence)
+        body = ('Possible completed fix; owner review required.\n\n' + evidence['citation']
+                + '\n\ntriage-sweep evidence=' + key)
+        self.api.rows[432]['comments'].append(dict(id=100, author='runner', body=body,
+                                                   created_at=NOW.isoformat()))
+        self.assertEqual(self.journal.issue(432)['sweeps'], {})
+        self.runner.sweep()
+        state = self.reload_journal()
+        self.assertEqual(state['sweeps'], {key: 'done'})
+        self.assertEqual(state['aux_bodies'], {key: body})
+        self.runner.sweep()
+        self.assertEqual(self.api.writes, [])
+        self.assertEqual(len(self.api.rows[432]['comments']), 1)
+        self.assertEqual(self.tasks.calls, 0)
+
+    def test_partial_delete_or_unknown_post_fences_sweep_and_queued_canonical_until_observed(self):
+        for lost in ('DELETE-before', 'DELETE-after', 'POST-before'):
+            with self.subTest(lost=lost):
+                self.api.rows = {432: issue()}
+                self.api.writes.clear()
+                self.journal.data['issues'].clear()
+                self.journal.data['generations'].clear()
+                self.journal.data['ledger'].clear()
+                self.journal.data['events'].clear()
+                client = R.GitHub('owner/repo', 'fake', self.lease, time.monotonic() + 5400, 'runner')
+                client.before_write = lambda: self.api.before_write()
+                desired = ['bug', 'outside', 'triage/maybe-fixed']
+                def transport(method, path, **kwargs):
+                    if method == 'GET':
+                        self.assertEqual(path, '/user')
+                        return 200, dict(login='runner')
+                    saved = R.strict_json(self.journal.path.read_bytes())['issues']['432']
+                    key = next(iter(saved['sweeps']))
+                    self.assertEqual(saved['sweeps'][key], 'label-intent')
+                    self.assertEqual(saved['aux_labels'][key], desired)
+                    self.assertIn('triage-sweep evidence=' + key, saved['aux_bodies'][key])
+                    self.assertIsNone(saved['current_generation'])
+                    self.api.writes.append((method, path))
+                    if lost == method + '-before':
+                        raise OSError('response lost; outcome unknown')
+                    self.assertEqual((method, path), ('DELETE', '/repos/owner/repo/issues/432/labels/triage%2Fpending'))
+                    self.api.rows[432]['labels'].remove('triage/pending')
+                    self.api.rows[432]['events'].append(dict(id=1, actor='runner', event='unlabeled',
+                                                             label='triage/pending', created_at=NOW.isoformat()))
+                    if lost == 'DELETE-after':
+                        raise OSError('DELETE applied; response lost')
+                    return 204, None
+                with mock.patch.object(self.api, 'set_labels', side_effect=client.set_labels), \
+                        mock.patch.object(client.rest, 'call', side_effect=transport):
+                    with self.assertRaisesRegex(R.Ambiguous, 'API write outcome unknown'):
+                        self.runner.sweep()
+                state = self.reload_journal()
+                key = next(iter(state['sweeps']))
+                before = copy.deepcopy(self.api.writes)
+                self.runner.sweep()
+                self.assertEqual(state['sweeps'][key], 'label-intent')
+                with self.assertRaisesRegex(R.Refused, 'earlier issue generation has unresolved effects'):
+                    self.queue('after-unknown-' + lost)
+                gen_key, gen = self.gen()
+                self.assertEqual(gen['status'], 'checked')
+                # Neither a different evidence identity nor unrelated observed labels can
+                # replace/complete the retained intent, even through a direct auxiliary call.
+                self.api.rows[432]['labels'].append('unrelated')
+                self.runner.reconcile_auxiliary(self.api.issue(432), state)
+                with self.assertRaisesRegex(R.Refused, 'unresolved effects'):
+                    self.runner.auxiliary(self.api.issue(432), state['sweeps'], 'different', 'different effect')
+                self.runner.sweep()
+                self.assertEqual(self.api.writes, before)
+                self.assertEqual(state['sweeps'], {key: 'label-intent'})
+                self.assertEqual(state['aux_labels'][key], desired)
+                self.assertEqual(self.api.rows[432]['comments'], [])
+
+                # Establish the exact recorded outcome without a runner retry. Observation
+                # completes only the label phase and performs no public write itself.
+                self.api.rows[432]['labels'] = list(desired)
+                self.api.rows[432]['events'].append(dict(id=2, actor='runner', event='labeled',
+                                                         label='triage/maybe-fixed', created_at=NOW.isoformat()))
+                self.runner.reconcile_auxiliary(self.api.issue(432), state)
+                self.assertEqual(state['sweeps'][key], 'labels-done')
+                self.assertEqual(self.api.writes, before)
+                # The queued proposal used the partial labels and now fails freshness.
+                with self.assertRaisesRegex(R.Refused, 'labels changed'):
+                    self.runner.publish(gen_key, gen)
+                self.runner.sweep()
+                self.assertEqual(state['sweeps'][key], 'done')
+                self.assertEqual(self.api.writes[len(before):], [('comment', 432, state['aux_bodies'][key], None)])
+                self.assertEqual(len(self.api.rows[432]['comments']), 1)
+                self.queue('after-observed-' + lost)
+                self.assertEqual(self.journal.data['generations'][state['published']]['status'], 'published')
+
+    def test_returned_partial_labels_remain_fenced_and_matching_comment_cannot_complete_them(self):
+        def partial(number, desired, current):
+            self.api.before_write()
+            self.api.rows[number]['labels'].remove('triage/pending')
+            self.api.writes.append(('partial-labels', number))
+        with mock.patch.object(self.api, 'set_labels', side_effect=partial):
+            with self.assertRaisesRegex(R.Refused, 'auxiliary label write not observed'):
+                self.runner.sweep()
+        state = self.reload_journal()
+        key = next(iter(state['sweeps']))
+        self.api.rows[432]['comments'].append(dict(id=100, author='runner', body=state['aux_bodies'][key],
+                                                  created_at=NOW.isoformat()))
+        before = copy.deepcopy(self.api.writes)
+        self.runner.sweep()
+        self.assertEqual(state['sweeps'][key], 'label-intent')
+        self.assertTrue(self.runner.effects_blocked(432))
+        self.assertEqual(self.api.writes, before)
+
+    def test_lost_completed_labels_are_observed_before_comment_intent_and_never_repeated(self):
+        self.api.fail_labels = True
+        with self.assertRaisesRegex(R.Ambiguous, 'lost label response'):
+            self.runner.sweep()
+        state = self.reload_journal()
+        key = next(iter(state['sweeps']))
+        self.assertEqual(state['sweeps'][key], 'label-intent')
+        self.runner.reconcile_auxiliary(self.api.issue(432), state)
+        state = self.reload_journal()
+        self.assertEqual(state['sweeps'][key], 'labels-done')
+        comment = self.api.comment
+        def observed_comment(*args):
+            saved = R.strict_json(self.journal.path.read_bytes())['issues']['432']
+            self.assertEqual(saved['sweeps'][key], 'comment-intent')
+            self.assertEqual(sorted(self.api.rows[432]['labels']), saved['aux_labels'][key])
+            return comment(*args)
+        self.api.fail_comment = True
+        with mock.patch.object(self.api, 'comment', side_effect=observed_comment):
+            with self.assertRaisesRegex(R.Ambiguous, 'lost comment response'):
+                self.runner.sweep()
+        state = self.reload_journal()
+        self.assertEqual(state['sweeps'][key], 'comment-intent')
+        self.runner.sweep()
+        self.assertEqual([w[0] for w in self.api.writes], ['labels', 'comment'])
+        self.assertEqual(state['sweeps'][key], 'done')
+
+    def test_success_observes_exact_labels_before_advancing_to_comment_intent(self):
+        read = self.api.issue
+        observed = []
+        def observe(number):
+            row = read(number)
+            saved = R.strict_json(self.journal.path.read_bytes())['issues'].get(str(number), {})
+            for key, phase in saved.get('sweeps', {}).items():
+                if phase == 'label-intent' and sorted(row['labels']) == saved['aux_labels'][key]:
+                    observed.append(key)
+            return row
+        comment = self.api.comment
+        def checked_comment(*args):
+            self.assertEqual(len(observed), 1)
+            saved = R.strict_json(self.journal.path.read_bytes())['issues']['432']
+            self.assertEqual(saved['sweeps'][observed[0]], 'comment-intent')
+            return comment(*args)
+        with mock.patch.object(self.api, 'issue', side_effect=observe), \
+                mock.patch.object(self.api, 'comment', side_effect=checked_comment):
+            self.runner.sweep()
+        state = self.reload_journal()
+        self.assertEqual(state['sweeps'], {observed[0]: 'done'})
+        self.assertEqual([w[0] for w in self.api.writes], ['labels', 'comment'])
+
+    def test_reader_refuses_label_checkpoint_without_its_exact_desired_state(self):
+        self.api.fail_labels = True
+        with self.assertRaises(R.Ambiguous):
+            self.runner.sweep()
+        saved = R.strict_json(self.journal.path.read_bytes())
+        self.journal.close()
+        for phase in ('label-intent', 'labels-done', 'aborted'):
+            for field, error in (('aux_labels', 'auxiliary label intent has no desired labels'),
+                                 ('aux_bodies', 'auxiliary checkpoint has no recorded body')):
+                with self.subTest(phase=phase, field=field):
+                    broken = copy.deepcopy(saved)
+                    state = broken['issues']['432']
+                    key, = state['sweeps']
+                    state['sweeps'][key] = phase
+                    state[field].clear()
+                    self.journal.path.write_bytes(R.encoded(broken))
+                    before = self.journal.path.read_bytes()
+                    with self.assertRaisesRegex(R.Refused, error):
+                        R.Journal(self.root, 'owner/repo', 'runner', 'Europe/Moscow')
+                    self.assertEqual(self.journal.path.read_bytes(), before)
+
+    def test_intent_fsync_failure_prevents_label_call_and_preserves_canonical_authority(self):
+        self.queue()
+        state = self.journal.issue(432)
+        current = state['current_generation']
+        before = copy.deepcopy(self.api.writes)
+        with mock.patch.object(R.os, 'fsync', side_effect=OSError('intent not durable')):
+            with self.assertRaises(OSError):
+                self.runner.auxiliary(self.api.issue(432), state['sweeps'], 'new-evidence',
+                                      'possible fix', 'triage/maybe-fixed', self.main)
+        saved = R.strict_json(self.journal.path.read_bytes())['issues']['432']
+        self.assertEqual(saved['current_generation'], current)
+        self.assertEqual(state['current_generation'], current)
+        self.assertNotIn('new-evidence', saved['sweeps'])
+        self.assertEqual(self.api.writes, before)
+
     def test_auxiliary_creation_reconciles_even_when_evidence_is_no_longer_proposed(self):
         self.api.fail_comment = True
         with self.assertRaises(R.Ambiguous):
@@ -2546,17 +2874,74 @@ class ReminderBootstrap(Fixture):
 
 
 class JournalReader(Fixture):
-    def test_real_reader_round_trips_current_writer_and_refuses_prior_version(self):
+    def test_v3_schema_identity_and_aborted_checkpoint_are_distinct_from_v2(self):
+        self.assertEqual(R.STATE_SCHEMA, 'af.issue-triage-runner/3')
+        validators = {}
+        for version in (2, 3):
+            path = ROOT / ('schemas/issue-triage-runner-v%d.json' % version)
+            schema = json.loads(path.read_text(encoding='utf-8'))
+            self.assertEqual(schema['$schema'], 'https://json-schema.org/draft/2020-12/schema')
+            self.assertEqual(schema['$id'], 'urn:af:schema:issue-triage-runner:%d' % version)
+            self.assertEqual(schema['properties']['schema']['const'], 'af.issue-triage-runner/%d' % version)
+            validators[version] = C.Validator(path)
+        state = self.journal.issue(432)
+        state['sweeps']['evidence'] = 'aborted'
+        state['aux_bodies']['evidence'] = 'recorded auxiliary body'
+        state['aux_labels']['evidence'] = ['triage/maybe-fixed']
+        self.journal.save()
+        doc = R.strict_json(self.journal.path.read_bytes())
+        self.assertEqual(validators[3].errors(doc, 'urn:af:schema:issue-triage-runner:3'), [])
+        self.assertTrue(validators[2].errors(doc, 'urn:af:schema:issue-triage-runner:2'))
+        # Relabel to isolate the phase rejection from the schema identity rejection.
+        doc['schema'] = 'af.issue-triage-runner/2'
+        errors = validators[2].errors(doc, 'urn:af:schema:issue-triage-runner:2')
+        self.assertEqual(len(errors), 1)
+        self.assertIn('$.issues.432.sweeps.evidence: must be one of', errors[0])
+        self.assertTrue(validators[3].errors(doc, 'urn:af:schema:issue-triage-runner:3'))
+        doc['issues']['432']['sweeps']['evidence'] = 'done'
+        self.assertEqual(validators[2].errors(doc, 'urn:af:schema:issue-triage-runner:2'), [])
+
+    def test_v3_reader_round_trips_every_current_auxiliary_checkpoint(self):
+        self.queue()
+        state = self.journal.issue(432)
+        for phase in ('label-intent', 'labels-done', 'aborted', 'comment-intent', 'done'):
+            state['sweeps'][phase] = phase
+            state['aux_bodies'][phase] = 'recorded body for ' + phase
+            if phase in ('label-intent', 'labels-done', 'aborted'):
+                state['aux_labels'][phase] = ['triage/maybe-fixed']
+        self.journal.save()
+        expected = copy.deepcopy(self.journal.data)
+        before = self.journal.path.read_bytes()
+        schema = C.Validator(ROOT / 'schemas/issue-triage-runner-v3.json')
+        self.assertEqual(schema.errors(expected, 'urn:af:schema:issue-triage-runner:3'), [])
+        self.journal.close()
+        with_reader = R.Journal(self.root, 'owner/repo', 'runner', 'Europe/Moscow')
+        self.addCleanup(with_reader.close)
+        self.assertEqual(with_reader.data, expected)
+        self.assertEqual(self.journal.path.read_bytes(), before)
+
+    def test_real_reader_round_trips_current_writer_and_refuses_prior_versions(self):
         self.queue()
         expected = R.strict_json(self.journal.path.read_bytes())
         self.journal.close()
         reader = R.Journal(self.root, 'owner/repo', 'runner', 'Europe/Moscow')
         self.assertEqual(reader.data, expected)
         reader.close()
-        expected['schema'] = 'af.issue-triage-runner/0'
-        self.journal.path.write_bytes(R.encoded(expected))
-        with self.assertRaisesRegex(R.Refused, 'journal schema refused'):
-            R.Journal(self.root, 'owner/repo', 'runner', 'Europe/Moscow')
+        for version in (1, 2, 0):
+            with self.subTest(version=version):
+                prior = copy.deepcopy(expected)
+                prior['schema'] = 'af.issue-triage-runner/%d' % version
+                if version == 1:
+                    for state in prior['issues'].values():
+                        state.pop('aux_labels')
+                if version in (1, 2):
+                    old_schema = C.Validator(ROOT / ('schemas/issue-triage-runner-v%d.json' % version))
+                    self.assertEqual(old_schema.errors(prior, 'urn:af:schema:issue-triage-runner:%d' % version), [])
+                self.journal.path.write_bytes(R.encoded(prior))
+                before = self.journal.path.read_bytes()
+                with self.assertRaisesRegex(R.Refused, 'journal schema refused'):
+                    R.Journal(self.root, 'owner/repo', 'runner', 'Europe/Moscow')
+                self.assertEqual(self.journal.path.read_bytes(), before)
 
     def test_source_schema_parity_matches_the_report_profile_bounds(self):
         schema = C.Validator(ROOT / 'schemas/report-sources-v1.json')

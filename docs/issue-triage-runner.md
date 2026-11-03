@@ -140,10 +140,11 @@ time, the sweep never guesses its age.
 ## Recovery and publication
 
 Stop both timers before inspecting or recovering state. Read `journal.json` as
-`af.issue-triage-runner/1`, checked against
-[`schemas/issue-triage-runner-v1.json`](../schemas/issue-triage-runner-v1.json). Older or malformed
-shapes fail closed; do not migrate or silently reset them. Preserve the original state for
-inspection. In particular, deleting the journal loses comment authority and the spend ledger.
+`af.issue-triage-runner/3`, checked against
+[`schemas/issue-triage-runner-v3.json`](../schemas/issue-triage-runner-v3.json)
+(`urn:af:schema:issue-triage-runner:3`). Versions 1 and 2 and malformed shapes fail closed without
+rewriting; do not migrate or silently reset them. Preserve the original
+state for inspection. In particular, deleting the journal loses comment authority and the spend ledger.
 The runner refuses an unjournaled existing canonical comment rather than making a second one.
 
 The inclusive updated-issue cursor advances in the same atomic fsynced journal write as event
@@ -180,6 +181,25 @@ same journal-named comment. The canonical footer is exactly
 `triage: af/issue-triage-merged@1 generation=<key> task=<id>`. Auxiliary sweep/reminder comments
 use separate evidence checkpoints and retain their exact intended bodies for reconciliation
 even if the next sweep no longer proposes that evidence; they never impersonate a merged triage record.
+An exact existing auxiliary comment by the configured principal is adopted with its body and
+`done` checkpoint saved together, even when that evidence has no prior local checkpoint. Adoption
+performs no API writes and remains idempotent after journal reload.
+
+Before any sweep label mutation, the journal fsyncs a `label-intent`, its exact desired labels in
+`aux_labels`, and the intended body under the evidence identity, before clearing canonical
+authority. A definite adapter refusal before any DELETE/POST records `aborted`, retaining the
+desired labels and body, and restores the prior canonical generation pointer in the same fsynced
+write. It claims no completed label effect; a later eligible sweep can create a fresh intent.
+This includes a main-change refusal in the second guard and the first API prewrite guard.
+The `aborted` auxiliary phase belongs to journal v3; the retained v2 schema rejects it.
+Partial DELETE/POST results and unknown responses retain that intent and block both
+canonical publication and auxiliary writes, including other evidence and reminders. A successful
+response also requires observation: only the exact recorded label set advances to `labels-done`.
+Reconciliation completes that label effect without creating a comment or issuing another label
+write. If the evidence is still eligible, the sweep can then persist `comment-intent` and send its
+comment. A matching comment or unrelated label change cannot resolve a pending label intent.
+If the intended labels cannot be observed, inspect the API outcome and retain the fence; do not
+replace its desired state with a new effect. The generation policy identity stays `triage-runner/1`.
 
 A Task with known terminal failed usage leaves pending on its first two failed generations;
 the third asks the owner to inspect failed Task receipts under needs-info, without inventing a
@@ -215,7 +235,10 @@ Run `python3 -I scripts/test-backlog-triage.py` and
 `/usr/bin/python3` 3.9.6. Fakes cover input bounds, malicious paths, event deduplication, claim
 and reservation ordering, token caps and unknown spend, holds, dry-run, freshness, ambiguous
 label/create/edit recovery (including input changes after a label write returns but before its
-completion checkpoint, and partial/unknown label results), owner conflicts, sweep evidence and
+completion checkpoint, partial/unknown sweep DELETE/POST results, and exact observed label
+reconciliation before comment intent), definite auxiliary prewrite aborts with preserved canonical
+authority and fresh-intent recovery, existing-comment adoption with journal round-trip and zero
+API writes, owner conflicts, sweep evidence and
 reminder deduplication. A fake nightly host covers the staged shared-lease adapter without running
 Docker or systemd. Existing Rust `task_triage` tests cover installed package planning and real
 report-renderer bytes. These
