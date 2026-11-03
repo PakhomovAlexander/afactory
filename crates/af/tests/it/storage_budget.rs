@@ -847,7 +847,7 @@ fn claude_review(machine: &Machine) -> (PathBuf, PathBuf, PathBuf) {
     std::fs::create_dir_all(registry.parent().unwrap()).unwrap();
     std::fs::write(
         &registry,
-        toml::to_string(&serde_json::json!({"version": 1, "providers": [
+        toml::to_string(&serde_json::json!({"version": 2, "providers": [
             {"id": "claude-personal", "kind": "claude", "auth_dir": config}]}))
         .unwrap(),
     )
@@ -1029,7 +1029,7 @@ fn the_sweep_that_ends_a_run_is_an_observation_of_its_task() {
     let (stdout, stderr) = text(&newer);
     assert!(newer.status.success(), "{stdout}\n{stderr}");
     let shown = json(&show("gc-newer", true));
-    schemas::valid(&schemas::validator("task-inspection-v14.json"), &shown);
+    schemas::valid(&schemas::validator("task-inspection-v15.json"), &shown);
     let [sweep] = shown["storage_sweeps"].as_array().unwrap().as_slice() else {
         panic!("one storage sweep: {shown}");
     };
@@ -1374,7 +1374,7 @@ fn a_sweep_whose_remainder_cannot_be_measured_leaves_a_replayable_receipt_on_its
         machine.af(&repo, &[], &args)
     };
     let shown = json(&show(true));
-    schemas::valid(&schemas::validator("task-inspection-v14.json"), &shown);
+    schemas::valid(&schemas::validator("task-inspection-v15.json"), &shown);
     let [sweep] = shown["storage_sweeps"].as_array().unwrap().as_slice() else {
         panic!("one storage sweep: {shown}");
     };

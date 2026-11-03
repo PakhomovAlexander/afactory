@@ -345,6 +345,12 @@ class Adapter:
                         continue
                     receipt = contracts.read_json(executor.read(receipt_path), "scenario-receipt")
                     require(receipt["intent_digest"] == canonical_digest(intent), "stale intent receipt")
+                    status_path = os.path.join(path, "status.json")
+                    if os.path.exists(status_path):
+                        status = contracts.read_json(executor.read(status_path), "scenario-status")
+                        require(status["intent_digest"] == canonical_digest(intent), "stale verification status")
+                        if status["state"] == "refused":
+                            continue
                     native = journal.request(receipt["request_id"])
                     require(canonical_digest(config) == intent["experiment"]["configuration_digest"],
                             "installed executor configuration changed")
@@ -365,36 +371,36 @@ class Adapter:
                     evaluated = {}
                     def check():
                         try:
-                            verified = verifier(journal, receipt["request_id"], evaluated=evaluated)
-                            if verified[0]["work"] == "core":
-                                require(evaluated[receipt["request_id"]].verdict["aggregate"]["result"]
-                                        == verified[2]["measurement_status"], "native verdict differs from result status")
-                            return verified, None, False
+                            native, state, result = verifier(journal, receipt["request_id"], evaluated=evaluated)
+                            self.check_native(intent, native, source, frozen)
+                            verdict = None
+                            if native["work"] == "core":
+                                verdict = evaluated[receipt["request_id"]].verdict
+                                require(verdict["aggregate"]["result"] == result["measurement_status"],
+                                        "native verdict differs from result status")
+                            completion = dict(schema="af.perf-scenario-completion/1", request=native,
+                                experiment=intent["experiment"], result_sha256=state["result_sha256"],
+                                source_request_digest=intent["source_request_digest"],
+                                baseline_snapshot_id=source["baseline_snapshot_id"],
+                                candidate_snapshot_id=source["candidate_snapshot_id"],
+                                verdict=verdict, telemetry_is_diagnostic=True)
+                            require(len(document_bytes(completion)) <= 24576,
+                                    "verified native report exceeds bounded Scenario evidence; narrow the declared workload")
+                            certificate = dict(schema="af.perf-scenario-verification/1",
+                                receipt_digest=canonical_digest(receipt), result_sha256=state["result_sha256"],
+                                verified_unix_ms=int(time.time() * 1000), measurement_status=result["measurement_status"],
+                                completion=completion)
+                            contracts.write_bytes(certificate, "scenario-verification")
+                            return certificate, None, False
                         except (ContractError, OSError) as error:
-                            # Offline verification owns no sample/container. A definitive
-                            # read refusal has no outstanding shared work to roll back.
+                            # Offline verification owns no sample/container. Every definitive
+                            # refusal, including the output bound, is durable and skippable.
                             return None, str(error), False
-                    verified, refusal = journal.exclusive("native report verification", check)
+                    certificate, refusal = journal.exclusive("native report verification", check)
                     if refusal is not None:
                         executor.atomic(os.path.join(path, "status.json"), dict(schema="af.perf-scenario-status/1",
                             intent_digest=canonical_digest(intent), state="refused",
                             detail=("offline native verification refused: " + refusal)[:4096]), "scenario-status")
                         return
-                    native, state, result = verified
-                    self.check_native(intent, native, source, frozen)
-                    verdict = None
-                    if native["work"] == "core":
-                        verdict = evaluated[receipt["request_id"]].verdict
-                    completion = dict(schema="af.perf-scenario-completion/1", request=native, experiment=intent["experiment"],
-                        result_sha256=state["result_sha256"], source_request_digest=intent["source_request_digest"],
-                        baseline_snapshot_id=source["baseline_snapshot_id"],
-                        candidate_snapshot_id=source["candidate_snapshot_id"],
-                        verdict=verdict, telemetry_is_diagnostic=True)
-                    require(len(document_bytes(completion)) <= 24576,
-                            "verified native report exceeds bounded Scenario evidence; narrow the declared workload")
-                    certificate = dict(schema="af.perf-scenario-verification/1",
-                        receipt_digest=canonical_digest(receipt), result_sha256=state["result_sha256"],
-                        verified_unix_ms=int(time.time() * 1000), measurement_status=result["measurement_status"],
-                        completion=completion)
                     executor.atomic(os.path.join(path, "verification.json"), certificate, "scenario-verification")
                     return

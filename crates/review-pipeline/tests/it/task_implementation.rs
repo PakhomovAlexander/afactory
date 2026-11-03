@@ -524,7 +524,7 @@ print(json.dumps({'schema':'af.worker-reply/1','outputs':{'result':[{'outcome':'
                     .bind_worker(
                         &name,
                         AdmittedWorkerSettings {
-                            execution: WorkerExecutionV1::Command {},
+                            execution: WorkerExecutionV2::Command {},
                             invocation_policy_id: policy_id.clone(),
                         },
                     )
@@ -544,7 +544,7 @@ print(json.dumps({'schema':'af.worker-reply/1','outputs':{'result':[{'outcome':'
         let (plan, graph) = compiler.compile(&cas, &revision, &pipeline.name).unwrap();
         let plan_id = cas
             .put_artifact(
-                EXECUTION_PLAN_V1,
+                EXECUTION_PLAN_V2,
                 producer(),
                 vec![],
                 None,

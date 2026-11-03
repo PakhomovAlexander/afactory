@@ -268,7 +268,7 @@ where
     F: FnOnce(&mut dyn Write) -> Result<(), I> + Send,
     G: FnOnce(&mut dyn Read) -> R + Send,
 {
-    run_supervised_duplex_inner(command, timeout, exit_policy, None, writer, reader)
+    run_supervised_duplex_inner(command, timeout, exit_policy, &[], writer, reader)
 }
 
 /// Cancelled work terminates the same owned process group as deadline expiration. Existing
@@ -291,17 +291,19 @@ where
         command,
         timeout,
         exit_policy,
-        Some(cancellation),
+        &[cancellation],
         writer,
         reader,
     )
 }
 
-fn run_supervised_duplex_inner<I, R, F, G>(
+/// A duplex protocol may stop itself on malformed or excessive output while also observing
+/// the caller's cancellation. Every signal terminates the same owned process group.
+pub fn run_supervised_duplex_signals<I, R, F, G>(
     command: &mut std::process::Command,
     timeout: Duration,
     exit_policy: ExitPolicy,
-    cancellation: Option<&std::sync::atomic::AtomicBool>,
+    signals: &[&std::sync::atomic::AtomicBool],
     writer: F,
     reader: G,
 ) -> Result<SupervisedDuplexOutput<I, R>, SupervisedError>
@@ -311,7 +313,28 @@ where
     F: FnOnce(&mut dyn Write) -> Result<(), I> + Send,
     G: FnOnce(&mut dyn Read) -> R + Send,
 {
-    if cancellation.is_some_and(|flag| flag.load(std::sync::atomic::Ordering::Acquire)) {
+    run_supervised_duplex_inner(command, timeout, exit_policy, signals, writer, reader)
+}
+
+fn run_supervised_duplex_inner<I, R, F, G>(
+    command: &mut std::process::Command,
+    timeout: Duration,
+    exit_policy: ExitPolicy,
+    signals: &[&std::sync::atomic::AtomicBool],
+    writer: F,
+    reader: G,
+) -> Result<SupervisedDuplexOutput<I, R>, SupervisedError>
+where
+    I: Send,
+    R: Send,
+    F: FnOnce(&mut dyn Write) -> Result<(), I> + Send,
+    G: FnOnce(&mut dyn Read) -> R + Send,
+{
+    let deadline = Instant::now() + timeout;
+    if signals
+        .iter()
+        .any(|flag| flag.load(std::sync::atomic::Ordering::Acquire))
+    {
         return Err(SupervisedError::Cancelled);
     }
     command.stdin(Stdio::piped());
@@ -344,9 +367,8 @@ where
         });
 
         let stderr = drain_async(stderr_pipe, MAX_CAPTURED_STREAM_BYTES);
-        let deadline = Instant::now() + timeout;
         let outcome = (|| {
-            wait_exact_cancellable(deadline, cancellation, &leader, exit_policy.kills_group())?;
+            wait_exact_signals(deadline, signals, &leader, exit_policy.kills_group())?;
 
             let input = match input_receive.recv_timeout(stdin_writer_wait(deadline)) {
                 Ok(Ok(result)) => result,
@@ -441,6 +463,20 @@ fn wait_exact_cancellable(
     leader: &std::sync::Arc<Leader>,
     kill_group_on_exit: bool,
 ) -> Result<(), SupervisedError> {
+    wait_exact_signals(
+        deadline,
+        cancellation.as_slice(),
+        leader,
+        kill_group_on_exit,
+    )
+}
+
+fn wait_exact_signals(
+    deadline: Instant,
+    signals: &[&std::sync::atomic::AtomicBool],
+    leader: &std::sync::Arc<Leader>,
+    kill_group_on_exit: bool,
+) -> Result<(), SupervisedError> {
     let (send, receive) = std::sync::mpsc::channel();
     let waiter = std::sync::Arc::clone(leader);
     std::thread::spawn(move || {
@@ -451,15 +487,16 @@ fn wait_exact_cancellable(
         let _ = send.send(());
     });
     loop {
-        let cancelled =
-            cancellation.is_some_and(|flag| flag.load(std::sync::atomic::Ordering::Acquire));
+        let cancelled = signals
+            .iter()
+            .any(|flag| flag.load(std::sync::atomic::Ordering::Acquire));
         if cancelled {
             leader.kill_group();
             let _ = receive.recv_timeout(OUTPUT_DRAIN_GRACE);
             return Err(SupervisedError::Cancelled);
         }
         let remaining = deadline.saturating_duration_since(Instant::now());
-        let delay = if cancellation.is_some() {
+        let delay = if !signals.is_empty() {
             remaining.min(Duration::from_millis(20))
         } else {
             remaining

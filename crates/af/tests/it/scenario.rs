@@ -2,9 +2,20 @@
 //! credential-free service adapter. No real scenarios, Ants, Providers or remotes are used.
 use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
-use std::os::unix::fs::PermissionsExt;
+use std::io::Write;
+use std::os::unix::fs::{DirBuilderExt, OpenOptionsExt, PermissionsExt};
 use std::path::{Path, PathBuf};
 use std::process::Output;
+
+const GITHUB_ENVIRONMENT_CHILD: &str = "AF_TEST_GITHUB_ENVIRONMENT_CHILD";
+const GITHUB_ENVIRONMENT_HOMES: [(&str, &str); 6] = [
+    ("HOME", "home"),
+    ("XDG_CONFIG_HOME", "config"),
+    ("XDG_STATE_HOME", "state"),
+    ("XDG_CACHE_HOME", "cache"),
+    ("XDG_DATA_HOME", "data"),
+    ("XDG_BIN_HOME", "bin"),
+];
 
 fn workspace() -> PathBuf {
     std::env::var_os("AF_WORKSPACE_ROOT")
@@ -15,13 +26,28 @@ fn write(path: &Path, value: &Value) {
     std::fs::write(path, serde_json::to_vec_pretty(value).unwrap()).unwrap();
 }
 fn output(repo: &Path, state: &Path, args: &[&str]) -> Output {
-    crate::common::af()
+    let mut command = crate::common::af();
+    command
         .current_dir(repo)
         .args(args)
         .args(["--json", "--state"])
-        .arg(state)
-        .output()
-        .unwrap()
+        .arg(state);
+    if let Some(root) = std::env::var_os(GITHUB_ENVIRONMENT_CHILD) {
+        let root = PathBuf::from(root);
+        // Only the isolated regression child forwards its asserted private homes. Apply
+        // them after common::af's defaults, including for Fixture::start and approve.
+        command.envs(GITHUB_ENVIRONMENT_HOMES.map(|(name, leaf)| (name, root.join(leaf))));
+        for (name, leaf) in GITHUB_ENVIRONMENT_HOMES {
+            let expected = root.join(leaf);
+            assert_eq!(std::env::var_os(name).unwrap(), expected.as_os_str());
+            assert_eq!(
+                command.get_envs().find(|(key, _)| *key == name),
+                Some((std::ffi::OsStr::new(name), Some(expected.as_os_str()))),
+                "effective af environment for {name}"
+            );
+        }
+    }
+    command.output().unwrap()
 }
 fn value(output: Output, code: i32) -> Value {
     assert_eq!(
@@ -61,18 +87,30 @@ struct Fixture {
 }
 impl Fixture {
     fn bare() -> Self {
-        let root = tempfile::tempdir().unwrap();
-        let repo = root.path().join("repo");
+        Self::bare_in(&std::env::temp_dir())
+    }
+    fn bare_in(parent: &Path) -> Self {
+        // Machine authority requires canonical paths and safe ancestors. macOS temp roots
+        // may use /var or /tmp aliases; tempfile's default directory mode also follows umask.
+        let root = tempfile::Builder::new()
+            .permissions(std::fs::Permissions::from_mode(0o700))
+            .tempdir_in(parent)
+            .unwrap();
+        let root_path = root.path().canonicalize().unwrap();
+        let repo = root_path.join("repo");
         std::fs::create_dir(&repo).unwrap();
-        let state = root.path().join("scenario-state");
-        let policy = root.path().join("policy.json");
-        let bundle = root.path().join("bundle.json");
-        let inputs = root.path().join("inputs.json");
-        let owned = root.path().join("owned");
+        let state = root_path.join("scenario-state");
+        let policy = root_path.join("policy.json");
+        let bundle = root_path.join("bundle.json");
+        let inputs = root_path.join("inputs.json");
+        let owned = root_path.join("owned");
         std::fs::create_dir(&owned).unwrap();
         let owned = owned.canonicalize().unwrap();
-        let machine = root.path().join("machine");
-        std::fs::create_dir(&machine).unwrap();
+        let machine = root_path.join("machine");
+        std::fs::DirBuilder::new()
+            .mode(0o700)
+            .create(&machine)
+            .unwrap();
         let key = minisign::KeyPair::generate_unencrypted_keypair().unwrap();
         write(
             &policy,
@@ -145,7 +183,8 @@ impl Fixture {
         )
     }
     fn approve(&self, id: &str) -> Value {
-        let payload = self.machine.join(format!("{id}.payload"));
+        let decision_files = tempfile::tempdir_in(&self.machine).unwrap();
+        let payload = decision_files.path().join("payload");
         let request = cli(
             &self.repo,
             &self.state,
@@ -170,7 +209,7 @@ impl Fixture {
         .into_string();
         let envelope = json!({"schema":"af/scenario-signed-decision@1","request":request,"signature":signature});
         valid("scenario-signed-decision-v1.json", &envelope);
-        let signed = self.machine.join(format!("{id}.signed.json"));
+        let signed = decision_files.path().join("signed.json");
         write(&signed, &envelope);
         cli(
             &self.repo,
@@ -887,6 +926,330 @@ fn toml_authoring_runs_and_pins_the_same_contract_as_its_json_wire_form() {
     );
 }
 
+impl Fixture {
+    fn install_github(&self) {
+        let examples = workspace().join("fixtures/scenarios/github");
+        self.install_github_from(&examples);
+    }
+    fn install_github_from(&self, examples: &Path) {
+        let mut config: Value =
+            serde_json::from_slice(&std::fs::read(examples.join("config.example.json")).unwrap())
+                .unwrap();
+        let token = self.machine.join("token");
+        std::fs::write(&token, b"github_pat_TEST_CREDENTIAL_ONLY\n").unwrap();
+        std::fs::set_permissions(&token, std::fs::Permissions::from_mode(0o600)).unwrap();
+        config["token_file"] = json!(token);
+        config["state_dir"] = json!(self.machine.join("github-receipts"));
+        let config_path = self.machine.join("github-config.json");
+        write(&config_path, &config);
+        std::fs::set_permissions(&config_path, std::fs::Permissions::from_mode(0o600)).unwrap();
+        valid("github-adapter-config-v1.json", &config);
+        for name in ["publication", "notification", "followup"] {
+            let payload: Value = serde_json::from_slice(
+                &std::fs::read(examples.join(format!("{name}.json"))).unwrap(),
+            )
+            .unwrap();
+            let schema = match name {
+                "publication" => "github-publish-pr-v1.json",
+                "notification" => "github-notify-v1.json",
+                _ => "github-followup-v1.json",
+            };
+            valid(schema, &payload);
+        }
+        let executable = self.machine.join("github-adapter");
+        let installed = std::process::Command::new("/usr/bin/python3")
+            .arg("-IS")
+            .arg(workspace().join("scripts/install-scenario-github-adapter.py"))
+            .args(["--config", config_path.to_str().unwrap()])
+            .args(["--output", executable.to_str().unwrap()])
+            .env_clear()
+            .env("HOME", &self.machine)
+            .env("XDG_CONFIG_HOME", &self.machine)
+            .output()
+            .unwrap();
+        assert!(
+            installed.status.success(),
+            "{}",
+            String::from_utf8_lossy(&installed.stderr)
+        );
+        let production = std::fs::read(&executable).unwrap();
+        let installed_digest = format!(
+            "sha256:{}",
+            review_core::hex::encode(&Sha256::digest(&production))
+        );
+        assert_eq!(
+            String::from_utf8(installed.stdout).unwrap().trim(),
+            installed_digest
+        );
+        // All production application bytes remain in this one pinned executable. The
+        // credential-free fixture replaces only stdlib HTTPS transport, before main runs;
+        // production has no mock URL, import hook or environment-controlled test mode.
+        let mut bytes = b"#!/usr/bin/python3 -IS\n".to_vec();
+        bytes.extend(
+            std::fs::read(workspace().join("fixtures/scenarios/github-transport.py")).unwrap(),
+        );
+        bytes.push(b'\n');
+        bytes.extend(&production);
+        std::fs::write(&executable, &bytes).unwrap();
+        let digest = format!(
+            "sha256:{}",
+            review_core::hex::encode(&Sha256::digest(&bytes))
+        );
+        let mut policy: Value =
+            serde_json::from_slice(&std::fs::read(&self.policy).unwrap()).unwrap();
+        policy["adapters"] = json!({"github":{"executable":executable,"digest":digest,"operations":["publish_pr","notify","followup","observe"],"destinations":["github:octo/project"],"max_wall_ms":30000,"max_output_bytes":65536}});
+        write(&self.policy, &policy);
+        // Copy fixture bytes, not sealed-source permissions: the bundle remains editable
+        // and both the test and installed mock transport update private service state.
+        std::fs::write(
+            &self.bundle,
+            std::fs::read(examples.join("bundle.json")).unwrap(),
+        )
+        .unwrap();
+        let mut service = std::fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .mode(0o600)
+            .open(self.machine.join("mock-service.json"))
+            .unwrap();
+        service
+            .write_all(&std::fs::read(examples.join("mock-service.json")).unwrap())
+            .unwrap();
+    }
+    fn github_state(&self) -> Value {
+        serde_json::from_slice(&std::fs::read(self.machine.join("mock-service.json")).unwrap())
+            .unwrap()
+    }
+}
+
+#[test]
+fn production_github_adapter_installs_from_symlinked_private_temp_root() {
+    let parent = tempfile::Builder::new()
+        .permissions(std::fs::Permissions::from_mode(0o700))
+        .tempdir()
+        .unwrap();
+    let alias = parent.path().join("alias");
+    std::os::unix::fs::symlink(parent.path().canonicalize().unwrap(), &alias).unwrap();
+    let f = Fixture::bare_in(&alias);
+    assert_ne!(f._root.path(), f.machine.parent().unwrap());
+    assert_eq!(f.machine, f.machine.canonicalize().unwrap());
+    for path in [f.machine.parent().unwrap(), &f.machine] {
+        assert_eq!(
+            path.metadata().unwrap().permissions().mode() & 0o7777,
+            0o700
+        );
+    }
+    // Exercise the real installer: it still checks ownership, ancestors and canonical paths.
+    f.install_github();
+    assert_eq!(f.github_state()["effects"], json!([]));
+}
+
+#[test]
+fn production_github_adapter_runs_exact_head_pr_sequence_and_recovers_remote_effect_before_reply() {
+    github_read_only_source_sequence(Fixture::bare());
+}
+
+#[test]
+fn production_github_adapter_full_read_only_sequence_under_aliased_tmpdir_and_permissive_umask() {
+    const TEST: &str = "scenario::production_github_adapter_full_read_only_sequence_under_aliased_tmpdir_and_permissive_umask";
+    if let Some(root) = std::env::var_os(GITHUB_ENVIRONMENT_CHILD) {
+        // Only the exact regression is relaunched. Never change the test runner's umask
+        // or environment: other integration tests may run concurrently in that process.
+        let root = PathBuf::from(root);
+        assert_eq!(root, root.canonicalize().unwrap());
+        for (name, leaf) in GITHUB_ENVIRONMENT_HOMES {
+            let path = PathBuf::from(std::env::var_os(name).unwrap());
+            assert_eq!(path, root.join(leaf));
+            assert_eq!(path.metadata().unwrap().permissions().mode() & 0o777, 0o700);
+        }
+        let tmpdir = PathBuf::from(std::env::var_os("TMPDIR").unwrap());
+        assert_eq!(tmpdir, root.join("tmp-alias"));
+        assert!(tmpdir.symlink_metadata().unwrap().file_type().is_symlink());
+        assert_eq!(std::env::temp_dir(), tmpdir);
+        assert_eq!(tmpdir.canonicalize().unwrap(), root.join("tmp"));
+        assert_ne!(tmpdir, tmpdir.canonicalize().unwrap());
+        // A fresh 0777 directory proves every inherited umask bit is zero without
+        // mutating it. Its private ancestor still prevents access by other users.
+        let probe = root.join("umask-probe");
+        std::fs::DirBuilder::new()
+            .mode(0o777)
+            .create(&probe)
+            .unwrap();
+        assert_eq!(
+            probe.metadata().unwrap().permissions().mode() & 0o777,
+            0o777
+        );
+        std::fs::remove_dir(probe).unwrap();
+        let f = Fixture::bare();
+        assert!(f._root.path().starts_with(&tmpdir));
+        assert_eq!(f.machine, f.machine.canonicalize().unwrap());
+        for path in [&root, f.machine.parent().unwrap(), &f.machine] {
+            assert_eq!(path.metadata().unwrap().permissions().mode() & 0o777, 0o700);
+        }
+        github_read_only_source_sequence(f);
+        return;
+    }
+
+    let parent = tempfile::Builder::new()
+        .permissions(std::fs::Permissions::from_mode(0o700))
+        .tempdir()
+        .unwrap();
+    let root = parent.path().canonicalize().unwrap();
+    for leaf in GITHUB_ENVIRONMENT_HOMES
+        .map(|(_, leaf)| leaf)
+        .into_iter()
+        .chain(["tmp"])
+    {
+        std::fs::DirBuilder::new()
+            .mode(0o700)
+            .create(root.join(leaf))
+            .unwrap();
+    }
+    let alias = root.join("tmp-alias");
+    std::os::unix::fs::symlink(root.join("tmp"), &alias).unwrap();
+    // Positional arguments keep paths out of shell syntax. exec preserves the child
+    // identity; the marker takes the child branch instead of launching recursively.
+    let child = std::process::Command::new("/bin/sh")
+        .args([
+            "-c",
+            "umask 000; exec \"$1\" --exact \"$2\" --nocapture --test-threads=1",
+            "github-environment-regression",
+        ])
+        .arg(std::env::current_exe().unwrap())
+        .arg(TEST)
+        .env_clear()
+        .env("PATH", "/usr/bin:/bin")
+        .env("AF_WORKSPACE_ROOT", workspace())
+        .env(GITHUB_ENVIRONMENT_CHILD, &root)
+        .env("TMPDIR", &alias)
+        .envs(GITHUB_ENVIRONMENT_HOMES.map(|(name, leaf)| (name, root.join(leaf))))
+        .output()
+        .unwrap();
+    assert!(
+        child.status.success(),
+        "stdout: {}\nstderr: {}",
+        String::from_utf8_lossy(&child.stdout),
+        String::from_utf8_lossy(&child.stderr)
+    );
+    assert!(String::from_utf8_lossy(&child.stdout).contains("1 passed; 0 failed"));
+}
+
+fn github_read_only_source_sequence(f: Fixture) {
+    // Reproduce sealed gate sources without changing permissions in the source Snapshot.
+    let sources = tempfile::Builder::new()
+        .permissions(std::fs::Permissions::from_mode(0o700))
+        .tempdir_in(&f.repo)
+        .unwrap();
+    assert_eq!(
+        sources.path().metadata().unwrap().permissions().mode() & 0o777,
+        0o700
+    );
+    let examples = workspace().join("fixtures/scenarios/github");
+    let mut originals = Vec::new();
+    for name in [
+        "config.example.json",
+        "publication.json",
+        "notification.json",
+        "followup.json",
+        "bundle.json",
+        "mock-service.json",
+    ] {
+        let bytes = std::fs::read(examples.join(name)).unwrap();
+        let path = sources.path().join(name);
+        std::fs::write(&path, &bytes).unwrap();
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o444)).unwrap();
+        originals.push((path, bytes));
+    }
+    f.install_github_from(sources.path());
+    let service_path = f.machine.join("mock-service.json");
+    assert_eq!(
+        service_path.metadata().unwrap().permissions().mode() & 0o777,
+        0o600
+    );
+    assert_ne!(f.bundle.metadata().unwrap().permissions().mode() & 0o200, 0);
+    let waiting = f.start("github-pr");
+    assert_eq!(waiting["status"], "waiting");
+    assert_eq!(waiting["waiting"]["kind"], "decision");
+    let pin = waiting["pin"].clone();
+    f.approve("github-pr");
+    let mut remote = f.github_state();
+    remote["crash_after_effect"] = json!(true);
+    write(&f.machine.join("mock-service.json"), &remote);
+    let uncertain = cli(&f.repo, &f.state, &["scenario", "resume", "github-pr"]);
+    assert_eq!(uncertain["status"], "waiting");
+    assert_eq!(uncertain["waiting"]["kind"], "reconcile");
+    let intent = uncertain["waiting"]["intent_id"].clone();
+    let review = cli(&f.repo, &f.state, &["scenario", "resume", "github-pr"]);
+    assert_eq!(review["status"], "waiting");
+    assert_eq!(review["waiting"]["kind"], "decision");
+    assert_eq!(
+        review["frames"]["root"]["steps"][1]["intents"][0]["id"],
+        intent
+    );
+    assert_eq!(review["frames"]["root"]["steps"][1]["status"], "succeeded");
+    assert_eq!(review["frames"]["root"]["steps"][2]["status"], "succeeded");
+    assert_eq!(f.github_state()["effects"], json!(["publish_pr:1"]));
+    f.approve("github-pr");
+    let merge_wait = cli(&f.repo, &f.state, &["scenario", "resume", "github-pr"]);
+    assert_eq!(merge_wait["waiting"]["kind"], "condition");
+    assert_eq!(
+        f.github_state()["effects"],
+        json!(["publish_pr:1", "notify:1"])
+    );
+    let mut remote = f.github_state();
+    remote["prs"]["1"]["state"] = json!("closed");
+    remote["prs"]["1"]["merged"] = json!(true);
+    remote["prs"]["1"]["merged_at"] = json!("2026-11-02T00:00:00Z");
+    remote["prs"]["1"]["merge_commit_sha"] = json!("2222222222222222222222222222222222222222");
+    write(&f.machine.join("mock-service.json"), &remote);
+    let followup = cli(&f.repo, &f.state, &["scenario", "resume", "github-pr"]);
+    assert_eq!(followup["waiting"]["kind"], "decision");
+    f.approve("github-pr");
+    let done = cli(&f.repo, &f.state, &["scenario", "resume", "github-pr"]);
+    assert_eq!(done["status"], "succeeded", "{done:#}");
+    assert_eq!(done["pin"], pin);
+    valid("scenario-run-v3.json", &done);
+    let journal: Value = serde_json::from_slice(
+        &std::fs::read(f.machine.join("github-receipts/state.json")).unwrap(),
+    )
+    .unwrap();
+    valid("github-adapter-state-v2.json", &journal);
+    assert_eq!(journal["records"].as_object().unwrap().len(), 3);
+    assert_eq!(
+        f.github_state()["effects"],
+        json!(["publish_pr:1", "notify:1", "followup:2"])
+    );
+    assert_eq!(
+        cli(&f.repo, &f.state, &["scenario", "resume", "github-pr"]),
+        done
+    );
+    assert_eq!(
+        service_path.metadata().unwrap().permissions().mode() & 0o777,
+        0o600
+    );
+    for (path, bytes) in originals {
+        assert_eq!(std::fs::read(&path).unwrap(), bytes);
+        assert_eq!(path.metadata().unwrap().permissions().mode() & 0o777, 0o444);
+    }
+}
+
+#[test]
+fn production_github_adapter_changed_executable_digest_refuses_dispatch() {
+    let f = Fixture::bare();
+    f.install_github();
+    assert_eq!(f.start("github-digest")["status"], "waiting");
+    f.approve("github-digest");
+    std::fs::write(
+        f.machine.join("github-adapter"),
+        b"changed executable bytes",
+    )
+    .unwrap();
+    let result = cli(&f.repo, &f.state, &["scenario", "resume", "github-digest"]);
+    assert_eq!(result["status"], "waiting");
+    assert_eq!(result["waiting"]["kind"], "reconcile");
+    assert_eq!(f.github_state()["effects"], json!([]));
+}
+
 #[test]
 fn roadmap_cli_restart_revision_confirmation_and_untrusted_progress_refusal() {
     let root = tempfile::tempdir().unwrap();
@@ -1217,6 +1580,12 @@ fn fresh_tasks_resume_once_bind_accepted_sources_capture_experiments_and_refuse_
     // Editing the authoring file after pinning cannot change an admitted template's bytes.
     document["goal"] = json!("Changed unchecked future text");
     write(&file, &document);
+    let refused = f.start("command-roadmap-refused");
+    assert_eq!(refused["status"], "failed", "{refused}");
+    assert!(refused["failure"].as_str().unwrap().contains("Performance"));
+    assert!(refused["fresh_tasks"].as_object().unwrap().is_empty());
+    bundle["definitions"]["main"]["admission"] = Value::Null;
+    write(&f.bundle, &bundle);
     let done = f.start("fresh-chain");
     assert_eq!(done["status"], "succeeded", "{done}");
     valid("scenario-run-v3.json", &done);
@@ -1226,7 +1595,7 @@ fn fresh_tasks_resume_once_bind_accepted_sources_capture_experiments_and_refuse_
         &["scenario", "roadmap", "show", "performance"],
     );
     assert_eq!(
-        roadmap["progress"]["store-replay"]["state"], "completed",
+        roadmap["progress"]["store-replay"]["state"], "deferred",
         "{roadmap}"
     );
     assert_eq!(
@@ -1234,9 +1603,9 @@ fn fresh_tasks_resume_once_bind_accepted_sources_capture_experiments_and_refuse_
             .as_array()
             .unwrap()
             .len(),
-        2
+        0
     );
-    assert_eq!(roadmap["progress"]["store-replay"]["reserved_tokens"], 0);
+    assert_eq!(roadmap["progress"]["store-replay"]["reserved_tokens"], 2000);
     let plans = done["fresh_tasks"].as_object().unwrap();
     assert_eq!(plans.len(), 2);
     let first = done["frames"]["root"]["steps"][0]["outputs"]["result"]["value"].clone();
@@ -1309,7 +1678,7 @@ fn fresh_tasks_resume_once_bind_accepted_sources_capture_experiments_and_refuse_
         assert_eq!(resumed, done);
     }
     let listed = cli(&f.repo, &task_state, &["task", "list"]);
-    assert_eq!(listed["tasks"].as_array().unwrap().len(), 2, "{listed}");
+    assert_eq!(listed["tasks"].as_array().unwrap().len(), 3, "{listed}");
     let listed = serde_json::to_string(&listed).unwrap();
     assert!(
         !listed.contains("pagination-cli"),
@@ -1338,7 +1707,7 @@ fn fresh_tasks_resume_once_bind_accepted_sources_capture_experiments_and_refuse_
         assert!(failed["fresh_tasks"].as_object().unwrap().is_empty());
     }
     let listed = cli(&f.repo, &task_state, &["task", "list"]);
-    assert_eq!(listed["tasks"].as_array().unwrap().len(), 2, "{listed}");
+    assert_eq!(listed["tasks"].as_array().unwrap().len(), 3, "{listed}");
     // Restore a fresh first step before checking its immutable template grant.
     bundle["definitions"]["main"]["steps"][0]["operation"] =
         json!({"kind":"fresh_task","template":pinned["template"],"bindings":{}});
@@ -1445,7 +1814,7 @@ fn fresh_tasks_resume_once_bind_accepted_sources_capture_experiments_and_refuse_
     let listed = cli(&f.repo, &task_state, &["task", "list"]);
     assert_eq!(
         listed["tasks"].as_array().unwrap().len(),
-        3,
+        4,
         "Native planning recovery duplicated work: {listed}"
     );
     let code_policy = f.repo.join(".af/code-policy.toml");
@@ -1621,3 +1990,6 @@ fn fresh_read_only_review_template_uses_native_acceptance_without_an_implementat
         String::from_utf8_lossy(&status.stdout)
     );
 }
+
+#[path = "scenario_performance.rs"]
+mod performance;

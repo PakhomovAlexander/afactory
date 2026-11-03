@@ -4,11 +4,49 @@ How a machine gets the model access `af review` and `af task` need, and what tha
 caller that is not a human sitting at a terminal.
 
 A **Provider** is an operator-named, machine-local authentication context for one adapter kind
-([`../CONTEXT.md`](../CONTEXT.md)). `af` never holds a credential: the official `claude` or `codex`
-CLI owns it, and the machine-local registry at `~/.config/af/providers.toml` records only an ID, a
-kind, and an auth directory. Bootstrap runs in the invoking release rather than a repository's
-pinned one, and registry publication stays atomic for older readers
-([ADR-0111](adr/0111-keep-provider-bootstrap-machine-local-and-cross-release-safe.md)).
+([`../CONTEXT.md`](../CONTEXT.md)). The Rust kernel never holds raw credentials: the official
+Claude/Codex CLI or AF's embedded Pi SDK host owns them. The machine-local registry at
+`~/.config/af/providers.toml` records non-secret configuration: ID, kind and auth directory,
+plus Pi's explicit backend and installed SDK entrypoint. Bootstrap runs in the invoking
+release rather than a repository's pinned one, with atomic registry publication.
+
+Pi uses the official **1.4.0 SDK** on **Node >=22.19**, with the `openai-codex` backend and an
+existing stored OAuth login holding stable `accountId`. Other backends, API keys, ambient
+credentials and custom endpoints are unsupported. Setup/status/catalog are token-free;
+Task, Review and doctor use the same exact-account/model admission and confined tools.
+Install outside a repository, log in with Pi at a private terminal, then register:
+
+```sh
+af provider setup pi-personal --kind pi --backend openai-codex \
+  --auth-dir /absolute/private/pi-profile \
+  --sdk-entrypoint /installed/node_modules/@earendil-works/pi-coding-agent/dist/index.js
+```
+
+`--sdk-entrypoint` may be omitted for the standard managed `<agent>/bin/pi` launcher:
+AF validates `install/current-version` and resolves the supported 1.4.0 release SDK without
+executing the launcher. Unsafe paths and incompatible versions refuse. Node and the SDK must
+resolve outside every repository's `.git` (directory or worktree marker file) and `.af`
+ancestors, including from nested working directories with absolute PATH entries. Failed Pi setup keeps
+its JSON (or human result) on stdout and prints an AF-authored detail and outcome on stderr.
+
+Pi setup does not start login; `--login` and `af provider auth` remain unavailable for Pi.
+`provider detect` scans Claude/Codex contexts; Pi registration is explicit. Writable Pi
+Workers get confined edit/write tools in addition to read/grep/find/ls, with no shell,
+extensions or MCP. Worker packages name `provider_kind = "pi"`, an exact catalog model ID
+and supported thinking level. `af provider models pi-personal` lists those levels.
+See the [Pi design and evidence](design/pi-provider.md) for the protocol, identity,
+accounting and confinement details, supported matrix and limits. The official SDK creation
+and tool test is token-free; **paid live smoke was not run**.
+
+The registry format is version 2; version 1 fails closed under ADR-0145. Recreate older
+registrations with this release. Codex and Claude retain their registration fields and native
+adapter behavior. Pi setup emits a safe typed report for every internal refusal, including early
+validation/discovery failures. Invalid or reserved requested IDs and absent or unsupported
+backends appear as null, never as an invented supported identity or a raw invalid value.
+Failures repeat the AF-authored detail/outcome on stderr even with `--json`; early refusals
+exit 3 and registry conflicts exit 5. CLI parser errors remain usage errors before Pi setup.
+Pi setup JSON is `af/pi-provider-setup@2`; the shared status and catalog
+versions are `af/provider-status@5` and `af/provider-models@2`.
 
 ## In a first run
 
@@ -272,7 +310,7 @@ Each new lookup compares the current wall clock to the stored absolute Unix time
 nanoseconds: the Provider is available at the expiry instant, across restarts and downtime.
 Changing the system clock changes the remaining suspension. No background process is needed.
 Status shows a disabled row, the RFC3339 UTC expiry and `af provider enable ID` without probing
-that Provider, even with `--usage`. JSON is `af/provider-status@4`, with `disabled_until` and `enable_command`
+that Provider, even with `--usage`. JSON is `af/provider-status@5`, with `disabled_until` and `enable_command`
 (non-null only while disabled), `auth = "not_probed"` and `usability = "unusable"`.
 
 Review and model preflights, Task admission and every captured or resumed Task private send
@@ -369,7 +407,7 @@ Enter runs it.
 
 ```sh
 af provider status                 # fast: the registry, the CLI capability check and one authentication check per context
-af provider status --json          # the same, as af/provider-status@4
+af provider status --json          # the same, as af/provider-status@5
 af provider status --usage         # additionally probe subscription and quota windows
 af provider doctor --campaign NAME --provider correctness=codex-main
 ```
@@ -410,7 +448,7 @@ refusal that happens anyway is still `model_refused`
 
 ```sh
 af provider models                                        # every registered Provider's catalog
-af provider models claude-work --json                     # the same, as af/provider-models@1
+af provider models claude-work --json                     # the same, as af/provider-models@2
 af provider models claude-work --resolve 'Fable 5.1/xhigh'
 af provider models codex-main --resolve 'GPT-6 Sol/ultra'
 ```
@@ -418,11 +456,12 @@ af provider models codex-main --resolve 'GPT-6 Sol/ultra'
 `af provider models` lists, for every registered Provider or the named ones, the model catalog
 its harness offers, read through the harness's own local protocol under that Provider's auth
 directory, in the bounded probe environment `af provider status` uses. It spends no model
-tokens and reads no credential:
+tokens; the Rust kernel reads no raw credential (Pi AuthStorage stays inside its host):
 
 | Kind | Source | Freshness |
 |---|---|---|
 | `claude` | `claude list_models`: the `list_models` and `get_binary_version` control requests of a `claude -p --input-format stream-json --output-format stream-json --verbose` session, which af closes once both are answered, before any turn | `live` |
+| `pi` | AF host `af.pi-host/2` identity/catalog, using the installed SDK 1.4.0 static `openai-codex` models | Pinned SDK static catalog; no network refresh |
 | `codex` | `codex app-server model/list`, after `initialize` and `initialized` on a bare `codex app-server`; the version from `codex --version` | `fetched_at` of `models_cache.json` under the auth directory when it is readable, else `live` |
 
 Each Provider gets a header with the source, the harness version and the freshness, one row per
@@ -438,7 +477,8 @@ or a family and version such as `Fable 5.1` or `GPT-6 Sol`, and says what it is:
 the catalog lists (confirmed), an alias of an exact ID (af binds exact IDs, never the alias), a
 display name or family form of an exact ID, a misspelling with the nearest catalog IDs (the
 same family or at most two edits away), or an exact ID the catalog does not list, which passes
-or fails af's spelling rule and whose usability only `af provider doctor` proves. It then checks
+or fails af's spelling rule and whose usability only `af provider doctor` proves. Pi requires
+an exact catalog ID; unlisted IDs are refused. It then checks
 the effort level against that model's levels and, for a listed pair only, prints the three
 configurations to copy. Each is printed under its label, one table header or key per line, and
 is a TOML document that parses on its own and pastes unchanged into the file it is named for:
@@ -659,9 +699,9 @@ reinstalling the CLI cannot grant a host permission. `af doctor` reports the det
 harness, sandbox and network context without treating markers as proof of CLI compatibility.
 
 The versioned documents are [`provider-detect-v4.json`](../schemas/provider-detect-v4.json),
-[`provider-status-v4.json`](../schemas/provider-status-v4.json),
+[`provider-status-v5.json`](../schemas/provider-status-v5.json),
 [`provider-setup-v2.json`](../schemas/provider-setup-v2.json) and
-[`provider-models-v1.json`](../schemas/provider-models-v1.json). They are closed vocabularies; the
+[`provider-models-v2.json`](../schemas/provider-models-v2.json). They are closed vocabularies; the
 models document carries model IDs, aliases, effort levels and bounded display names only. None
 can represent an account email, an organization or account identity, a credential, OAuth material,
 or raw Provider output — quota windows carry only the numbers `af` derived itself, and the human
@@ -682,7 +722,7 @@ table keeps the Provider's own window labels.
 | `Claude Code switched models, a safety-classifier fallback (model_refused)` or `an unexplained switch (model_switched)` | Claude Code answered with a model the Worker did not bind; the line names the bound model, each model that answered with its output tokens (a model ID outside the printable grammar reads `[not printable]` with its byte length), and `safety_stops` and `num_turns`. The diagnostic in `af task show` starts with it even when the usage was also malformed or listed more than 32 models, and gives those accounting reasons after it; an entry for another model that reports no activity, or only malformed counters, is not a switch. af refused the reply, because it never runs or accepts an unrequested model, and charged what the result reported. af already sets `CLAUDE_CODE_DISABLE_REFUSAL_FALLBACK=1`, so a client that still switches ignores it: upgrade it with `npm install -g @anthropic-ai/claude-code@latest` and rerun. If the classifier flags the input again, change it or bind another model. |
 | `model_unavailable` after `Claude Code rejected the model`, quoting the model ID | Claude Code answered "There's an issue with the selected model (…). It may not exist or you may not have access to it.": it does not know that model ID or the account cannot use it. The line names the Provider, the nearest exact IDs af knows and `af provider models <id>`. Correct the binding's model ID (Claude IDs use hyphens, such as `claude-fable-5-1`), then check the Provider with `af provider status` (token-free) and `af provider doctor` (charged). |
 | `af refused the binding of model … (model_not_accepted)` from `af task plan`, `af review plan`, `af review render` or a run | A rule refused the binding before any process started: an alias (with the exact ID it resolves to), a misspelling of a known exact ID (with the nearest IDs), an unversioned model, an effort level the Provider kind does not accept or the model does not list (with the levels it lists). Bind the exact ID and an effort level `af provider models <id>` lists; `--resolve` prints the configuration to copy ([ADR-0148](adr/0148-discover-provider-models-and-validate-every-binding-before-a-charge.md)). |
-| `its --model value (N bytes) is not a model spelling af accepts` | The binding's model (or `--effort`) is outside the one grammar af prints: an ASCII letter or digit, then at most 127 ASCII letters, digits, `-`, `.`, `_` or `:`, with no `/`, `@` or whitespace. `af task plan`, `af review run` and both adapters refuse it before any process starts and never print the value, prefixed with the Worker or node and its Provider label; every Worker's binding is checked before the first Provider is probed, and this rule before every other. Put the model ID itself in the binding, such as `claude-fable-5-1` or `us.anthropic.claude-opus-5-5-v1:0` ([ADR-0147](adr/0147-stop-the-claude-model-fallback-and-name-the-model-that-answered.md)). |
+| `its --model value (N bytes) is not a model spelling af accepts` | The binding's model (or `--effort`) is outside the one grammar af prints: an ASCII letter or digit, then at most 127 ASCII letters, digits, `-`, `.`, `_` or `:`, with no `/`, `@` or whitespace. For Claude/Codex, `af task plan`, `af review run` and their adapters refuse it before any process starts and never print the value, prefixed with the Worker or node and its Provider label; every Worker's binding is checked before the first Provider is probed, and this rule before every other. Put the model ID itself in the binding, such as `claude-fable-5-1` or `us.anthropic.claude-opus-5-5-v1:0` ([ADR-0147](adr/0147-stop-the-claude-model-fallback-and-name-the-model-that-answered.md)). |
 | exit 7 from `status --usage` | Optional usage probing did not answer. Authentication is unaffected; drop `--usage` if you only needed that. |
 | `auth directory … is writable by another user` | Tighten ownership and permissions on the directory (and its rename-controlling parents) before registering it. |
 | `provider registry … is invalid` after an auth directory was deleted | Run `af provider remove ID` for the entry that names it; name every stale entry in one command. |

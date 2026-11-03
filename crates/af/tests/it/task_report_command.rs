@@ -646,7 +646,7 @@ fn a_capacity_failure_without_usage_is_charged_zero_and_reported_as_unknown() {
     // `af task show --json`: the settlement carries the marker and a closed diagnostic.
     let shown = f.cli(&["task", "show", "release-notes"]);
     let shown: Value = serde_json::from_slice(&shown.stdout).unwrap();
-    schemas::valid(&schemas::validator("task-inspection-v14.json"), &shown);
+    schemas::valid(&schemas::validator("task-inspection-v15.json"), &shown);
     assert_eq!(shown["unknown_usage_attempts"], 1, "{shown:#}");
     let settled = shown["execution_records"]
         .as_array()
@@ -1201,7 +1201,7 @@ fn a_refresh_that_binds_a_node_to_another_worker_charges_each_attempt_to_its_own
     let providers = home.join("providers.toml");
     std::fs::write(
         &providers,
-        toml::to_string(&serde_json::json!({"version": 1, "providers": [
+        toml::to_string(&serde_json::json!({"version": 2, "providers": [
             {"id": "codex-personal", "kind": "codex", "auth_dir": home}]}))
         .unwrap(),
     )
@@ -1313,7 +1313,7 @@ fn a_refresh_that_binds_a_node_to_another_worker_charges_each_attempt_to_its_own
     // The Provider is gone from this machine, and the issue changed.
     std::fs::write(
         &providers,
-        toml::to_string(&serde_json::json!({"version": 1, "providers": []})).unwrap(),
+        toml::to_string(&serde_json::json!({"version": 2, "providers": []})).unwrap(),
     )
     .unwrap();
     std::fs::write(

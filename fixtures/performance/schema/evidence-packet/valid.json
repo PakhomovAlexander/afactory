@@ -1,12 +1,12 @@
 {
-  "schema": "af.perf-evidence-packet/1",
+  "schema": "af.perf-evidence-packet/2",
   "cutoff_unix_ms": 1,
   "created_unix_ms": 1,
   "max_age_ms": 86400000,
   "compatibility": "sha256:1111111111111111111111111111111111111111111111111111111111111111",
   "max_items": 32,
   "max_bytes": 32768,
-  "index_digest": "sha256:3d61b90cb27aac2778cd840205f19930a235674c9e1f5221be9aa39349ffdbf6",
+  "index_digest": "sha256:dae041503996a992ce22f8cbb57c8a4eb1e54456a14af519ff36f0c3c11c2f4b",
   "items": [],
   "omissions": [],
   "telemetry_is_diagnostic": true

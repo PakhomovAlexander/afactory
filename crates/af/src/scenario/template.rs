@@ -93,6 +93,7 @@ pub(super) fn instantiate(d: &Dispatch, goal: Option<&super::roadmap::Goal>) -> 
         crate::task_execution::scenario_template::check_predecessor(
             template,
             receipt,
+            input,
             &binding.port,
             &binding.artifact_type,
         )?;

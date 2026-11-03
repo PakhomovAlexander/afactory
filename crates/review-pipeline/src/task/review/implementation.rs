@@ -164,7 +164,11 @@ impl ReviewTaskDomain {
                 REVIEWED_IMPLEMENTATION_V1 | REPAIR_ALLOWED_IMPLEMENTATION_V1
             )
         }) {
-            return self.code.assess(cas, task, result);
+            self.code.assess(cas, task, result)?;
+            if task.kind == "verification" {
+                self.assess_verification_review(cas, task, result)?;
+            }
+            return Ok(());
         }
         // Requirements acceptance and Review scope are independent obligations on the same
         // final Snapshot. Evaluate both without changing the captured revision or plan.
@@ -218,9 +222,9 @@ impl ReviewTaskDomain {
                     serde_json::from_value(artifact.payload).map_err(|e| e.to_string())?;
                 receipt.validate()?;
                 let plan_artifact = envelope(cas, &receipt.invocation.plan_id)?;
-                let plan: ExecutionPlanV1 =
+                let plan: ExecutionPlanV2 =
                     serde_json::from_value(plan_artifact.payload).map_err(|e| e.to_string())?;
-                if plan_artifact.artifact_type != EXECUTION_PLAN_V1
+                if plan_artifact.artifact_type != EXECUTION_PLAN_V2
                     || plan.task_revision_id != result.task_revision_id
                     || plan.authority != task.authority
                     || !origins.iter().any(|a| a.node == receipt.invocation.node)
@@ -293,6 +297,99 @@ impl ReviewTaskDomain {
         }
         .into();
         result.missing_obligations = missing;
+        Ok(())
+    }
+
+    /// Read-only verification can publish only goal coverage, with Review acceptance retained
+    /// by the public Snapshot. Its independent evaluator cannot discharge that Review.
+    /// Reconstruct the canonical receipt here too, so assembly and terminal replay agree.
+    fn assess_verification_review(
+        &self,
+        cas: &Cas,
+        task: &TaskRevisionV1,
+        result: &mut TaskResultV1,
+    ) -> Result<(), String> {
+        let Some(address) = self.graph.outputs.get("snapshot") else {
+            return Ok(());
+        };
+        let origins = self.graph.evidence_origins(address)?;
+        let reviewed = |node: &str| {
+            matches!(
+                self.graph.nodes.get(node).map(|n| &n.operator),
+                Some(CompiledOperator::Primitive {
+                    operator: TaskOperatorV1::ReviewAccept {},
+                    ..
+                })
+            )
+        };
+        if !origins.iter().any(|origin| reviewed(&origin.node)) {
+            return Ok(());
+        }
+        let Some(source) = result.outputs.get("snapshot") else {
+            return Ok(());
+        };
+        let Some(id) = source.artifact_ids.first() else {
+            return Ok(());
+        };
+        let artifact = envelope(cas, id)?;
+        let Producer::KernelOperation {
+            run_id,
+            node_id: Some(node),
+            ..
+        } = &artifact.producer
+        else {
+            return Err("Verification Snapshot lost its declared acceptance producer".into());
+        };
+        if *run_id != task_run_id(&task.task_id).map_err(|e| e.to_string())?
+            || !origins.iter().any(|origin| &origin.node == node)
+        {
+            return Err("Verification Snapshot changed its declared acceptance producer".into());
+        }
+        if !reviewed(node) {
+            return Ok(());
+        }
+        let mut review = None;
+        for id in &artifact.input_artifacts {
+            // SourceTree also retains its raw Snapshot document, not an artifact envelope.
+            if Some(id) == artifact.subject_snapshot_id.as_ref() {
+                continue;
+            }
+            let retained = envelope(cas, id)?;
+            if retained.artifact_type != REVIEWED_IMPLEMENTATION_V1 {
+                continue;
+            }
+            let receipt: ReviewedImplementationV1 =
+                serde_json::from_value(retained.payload).map_err(|e| e.to_string())?;
+            if review.is_some()
+                || receipt.invocation.node != *node
+                || self
+                    .accept_implementation(cas, &receipt.invocation)?
+                    .get("snapshot")
+                    != Some(source)
+            {
+                return Err("Verification changed its retained canonical Review acceptance".into());
+            }
+            review = Some(receipt.outcome);
+        }
+        let outcome = review.ok_or("Verification Snapshot omitted its Review acceptance")?;
+        if outcome != ReceiptOutcomeV1::Passed {
+            result.acceptance = if outcome == ReceiptOutcomeV1::Failed
+                || result.acceptance == TaskAcceptanceV1::Unsatisfied
+            {
+                TaskAcceptanceV1::Unsatisfied
+            } else {
+                TaskAcceptanceV1::Inconclusive
+            };
+            result.domain_conclusion = if result.acceptance == TaskAcceptanceV1::Unsatisfied {
+                "changes_requested"
+            } else {
+                "incomplete"
+            }
+            .into();
+            result
+                .missing_obligations
+                .extend(task.acceptance.keys().cloned());
+        }
         Ok(())
     }
 }

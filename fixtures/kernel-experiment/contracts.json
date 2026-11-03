@@ -279,6 +279,15 @@
             },
             "covers": []
           },
+          "research_report": {
+            "artifact_type": "af/Document@1",
+            "cardinality": "one",
+            "optional": true,
+            "covers": [],
+            "affinity": {
+              "kind": "unbound"
+            }
+          },
           "source": {
             "artifact_type": "af/SourceTree@1",
             "cardinality": "one",
@@ -320,17 +329,19 @@
       "retains": {
         "candidate": [
           "requirements",
+          "research_report",
           "source"
         ],
         "report": [
           "requirements",
+          "research_report",
           "source"
         ]
       },
       "roles": [
         "implement"
       ],
-      "worker_input_type": "af/ImplementationInput@1",
+      "worker_input_type": "af/ImplementationInput@2",
       "worker_output_type": "af/ImplementationReport@1",
       "attempt": {
         "tokens": 1500000,

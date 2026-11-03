@@ -154,6 +154,11 @@ must enforce exact object-revision preconditions, including checking the current
 with publication where the service supports it, and refuse when it cannot establish them. This
 contract, rather than process exit, prevents repeated PRs or follow-ups across restart.
 
+An optional production [GitHub adapter](scenario-github-adapter.md) implements publication,
+exact-head CI and merge observation, approved follow-up issues and bounded owner review requests.
+Its separate offline installation pins complete application code and config identity. The local
+simulator remains a credential-free test fixture; neither adapter is installed automatically.
+
 The built-in actions use adapter `builtin` and an authorized existing canonical absolute file root:
 `write_owned_file` takes a leaf `file` name (letters, digits, `-` and `_`, starting with a
 letter or digit) and text `content`, writes a versioned ownership
@@ -396,3 +401,9 @@ for implementation, Terra
 (`gpt-6-astra`) medium for evaluation, all on `codex-personal`. Verification is read-only and has
 no implementer. An advisory model role or a default-light judging team is refused before model
 dispatch. Command-only native fixtures remain token-free and use no Provider.
+
+The [native performance loop decision](adr/2026-11-03-native-performance-scenario-loops.md)
+extends ADR-0274 with complete-goal admission, fresh Tasks and the asynchronous lab adapter.
+`af scenario evidence-source TASK_ID --artifact-id ID --repo REPO --task-state STORE --json`
+retrieves one native findings, History Capture or adoption artifact after checking its recorded
+Task/source receipts. It reads no owner-supplied JSON artifact file and launches no Worker.

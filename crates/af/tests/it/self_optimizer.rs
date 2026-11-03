@@ -31,7 +31,7 @@ fn af(repo: &Path, state: &Path, extra: &[&str]) -> Value {
 fn valid_inspection(value: &Value) {
     static SCHEMA: std::sync::OnceLock<jsonschema::Validator> = std::sync::OnceLock::new();
     schemas::valid(
-        SCHEMA.get_or_init(|| schemas::validator("task-inspection-v14.json")),
+        SCHEMA.get_or_init(|| schemas::validator("task-inspection-v15.json")),
         value,
     );
 }
@@ -725,6 +725,32 @@ fn light_strategy_generates_one_candidate_without_exposing_source_to_author_work
         ],
     );
     assert_eq!(equivalent["observation"]["equivalence"], "equivalent");
+    // The performance research reader follows the prepared receipt and the completed
+    // delivery that adopted it, rather than accepting a hashed exported JSON file.
+    let native_adoption = command_json(
+        &delivered,
+        state,
+        &[
+            "scenario",
+            "evidence-source",
+            task,
+            "--artifact-id",
+            equivalent["observation_id"].as_str().unwrap(),
+            "--repo",
+            delivered.to_str().unwrap(),
+            "--task-state",
+            state.to_str().unwrap(),
+        ],
+    );
+    schemas::valid(
+        &schemas::validator("scenario-evidence-source-v1.json"),
+        &native_adoption,
+    );
+    assert_eq!(
+        native_adoption["artifact"]["payload"],
+        equivalent["observation"]
+    );
+
     let equivalent_replay = command_json(
         &delivered,
         state,
@@ -1204,7 +1230,7 @@ fn light_cache_candidate_measures_real_latency_and_grounds_later_adoption_eviden
         state,
         &["task", "show", task, "--repo", delivered.to_str().unwrap()],
     );
-    assert_eq!(adoption_projection["schema"], "af/task-inspection@14");
+    assert_eq!(adoption_projection["schema"], "af/task-inspection@15");
     valid_inspection(&adoption_projection);
     let projected = adoption_projection["adoption_observations"]
         .as_array()
@@ -1717,7 +1743,7 @@ fn experimental_cli_signs_registers_executes_and_imports_actual_child_receipt() 
     }
 
     let waiting = af(&repo, &state, &["--experiment", "--execute"]);
-    assert_eq!(waiting["schema"], "af/task-inspection@14");
+    assert_eq!(waiting["schema"], "af/task-inspection@15");
     valid_inspection(&waiting);
     assert_eq!(waiting["attempts"], 0);
     assert_eq!(waiting["phase"]["reason"], "needs_plan_review");
@@ -2082,6 +2108,34 @@ fn self_optimize_compiles_executes_and_replays_without_model_calls() {
     let cas = review_store::Cas::open_existing(state.join("cas")).unwrap();
     let report = cas.get_json(report_id).unwrap();
     assert_eq!(report["type"], "af/OptimizationReport@1");
+    let revision = cas
+        .get_artifact(executed["revision_id"].as_str().unwrap())
+        .unwrap();
+    let history_id = revision.payload["inputs"]["history"]["artifact_ids"][0]
+        .as_str()
+        .unwrap();
+    let native_history = command_json(
+        &repo,
+        &state,
+        &[
+            "scenario",
+            "evidence-source",
+            executed["task_id"].as_str().unwrap(),
+            "--artifact-id",
+            history_id,
+            "--repo",
+            repo.to_str().unwrap(),
+            "--task-state",
+            state.to_str().unwrap(),
+        ],
+    );
+    schemas::valid(
+        &schemas::validator("scenario-evidence-source-v1.json"),
+        &native_history,
+    );
+    assert_eq!(native_history["artifact"]["artifact_id"], history_id);
+    assert_eq!(native_history["artifact"]["payload"]["project_id"], project);
+
     let output = crate::common::af()
         .current_dir(&repo)
         .args([
@@ -2130,7 +2184,7 @@ fn actual_code_task_runtime_evidence_round_trips_through_native_af_capture() {
         String::from_utf8_lossy(&task.stderr)
     );
     let receipt: Value = serde_json::from_slice(&task.stdout).unwrap();
-    assert_eq!(receipt["schema"], "af/task-inspection@14");
+    assert_eq!(receipt["schema"], "af/task-inspection@15");
     valid_inspection(&receipt);
     let runtime = receipt["runtime_observations"].as_array().unwrap();
     assert!(runtime.iter().any(|entry| {

@@ -20,6 +20,13 @@ plan before execution. The same option works with `task start`, `review run --fi
 `review plan --file`. Model, effort and Attempt cost are properties of the replacement
 Worker package; its Provider alias supplies the locally admitted account.
 
+An alias does not bypass Provider admission. A Pi Worker uses `provider_kind = "pi"`, an
+exact SDK catalog model ID and thinking level, and an explicitly registered `openai-codex`
+OAuth Provider. The common factory checks opaque account identity, backend, SDK and model
+configuration before private input. Its embedded SDK host exposes confined file tools and
+no shell. See the [Pi Provider design](../design/pi-provider.md) for setup, the exact support
+matrix and token-free fixture evidence; paid live smoke was not run.
+
 `af onboard --tasks` generates `onboard/implementer`, `onboard/bugs`,
 `onboard/correctness` and `onboard/evaluator` with `codex-main` or
 `claude-main` Provider aliases. With both kinds registered, the implementer uses

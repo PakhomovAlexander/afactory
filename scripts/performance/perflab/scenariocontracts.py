@@ -45,13 +45,16 @@ def register(c):
                  Field("state", Str(enum=("refused", "uncertain"))), Field("detail", text))
     artifact = Obj(Field("kind", Str(enum=("finding", "performance", "telemetry"))),
                    Field("source_id", DIGEST), Field("source_digest", DIGEST),
-                   Field("provenance", Str(enum=("verified_native", "native_journal", "captured_artifact"))),
+                   Field("provenance", Str(enum=("verified_native", "native_journal", "native_task"))),
                    Field("freshness_basis", Str(enum=("native_terminal", "native_created", "native_cutoff", "capture_observed"))),
                    Field("observed_unix_ms", c.UNIX_MS), Field("compatibility", DIGEST),
-                   Field("outcome", Str(enum=("positive", "negative", "inconclusive", "merged", "diagnostic"))),
-                   Field("summary", Str(min_len=1, max_len=2048)))
+                   Field("compatibility_basis", Str(enum=("native_request", "owner_selection"))),
+                   Field("outcome", Str(enum=("positive", "negative", "inconclusive", "adopted", "diagnostic"))),
+                   Field("summary", Str(min_len=1, max_len=2048)),
+                   Field("native_receipt", Obj(Field("task_id", Str(min_len=1, max_len=128)),
+                       Field("revision_id", DIGEST), Field("artifact_id", DIGEST)), required=False))
     entry = Obj(Field("artifact", artifact), Field("fresh", Bool()), Field("compatible", Bool()))
-    packet = Obj(Field("schema", Const("af.perf-evidence-packet/1")),
+    packet = Obj(Field("schema", Const("af.perf-evidence-packet/2")),
                  Field("cutoff_unix_ms", c.UNIX_MS), Field("created_unix_ms", c.UNIX_MS),
                  Field("max_age_ms", Int(0, 31536000000)), Field("compatibility", DIGEST),
                  Field("max_items", Int(1, 256)), Field("max_bytes", Int(1024, 65536)),
@@ -59,7 +62,7 @@ def register(c):
                  Field("omissions", Arr(Obj(Field("reason", Str(enum=("future", "item_limit", "byte_limit"))),
                                              Field("count", Int(1, 4096))), 0, 3)),
                  Field("telemetry_is_diagnostic", Const(True)))
-    index = Obj(Field("schema", Const("af.perf-evidence-index/1")),
+    index = Obj(Field("schema", Const("af.perf-evidence-index/2")),
                 Field("artifacts", Arr(artifact, 0, 4096)))
     service = Obj(Field("schema", Const("af.perf-scenario-service/1")), Field("status", text))
     launcher = Obj(Field("schema", Const("af.perf-scenario-launcher/1")),
@@ -98,6 +101,9 @@ def register(c):
     def valid_index(doc, where="evidence index"):
         index.validate(doc, where)
         records = doc["artifacts"]
+        for record in records:
+            require((record["provenance"] == "native_task") == ("native_receipt" in record),
+                    "native Task evidence requires its source receipt")
         require(len({r["source_id"] for r in records}) == len(records)
                 and records == sorted(records, key=lambda r: (r["observed_unix_ms"], r["source_id"])),
                 "evidence index requires unique sources in canonical history order")
@@ -116,6 +122,8 @@ def register(c):
                 "packet omission accounting exceeds the bounded index")
         for item in doc["items"]:
             source = item["artifact"]
+            require((source["provenance"] == "native_task") == ("native_receipt" in source),
+                    "native Task evidence requires its source receipt")
             require(source["observed_unix_ms"] <= doc["cutoff_unix_ms"]
                     and item["fresh"] == (doc["created_unix_ms"] - source["observed_unix_ms"] <= doc["max_age_ms"])
                     and item["compatible"] == (source["compatibility"] == doc["compatibility"]),

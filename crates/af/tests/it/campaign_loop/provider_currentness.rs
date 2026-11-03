@@ -167,7 +167,7 @@ fn doctor_account_change_before_probe_refuses_known_zero_without_business_or_rep
         String::from_utf8_lossy(&output.stderr)
     );
     let value: Value = serde_json::from_slice(&output.stdout).unwrap();
-    contracts::valid("provider-doctor-v2.json", &value);
+    contracts::valid("provider-doctor-v3.json", &value);
     assert_eq!(value["ready"], false);
     assert_eq!(value["gates_run"], false);
     assert_eq!(value["workers_dispatched"], false);
@@ -246,4 +246,91 @@ fn review_disable_after_admission_refuses_captured_private_send_before_account_p
         refused > 0,
         "no disabled private-send diagnostic was recorded"
     );
+}
+
+#[test]
+fn pi_doctor_and_review_share_the_native_admission_and_readonly_sdk_host() {
+    for doctor in [true, false] {
+        let root = tempfile::tempdir().unwrap();
+        let (repo, home, state) = native_diff_fixture(root.path());
+        let auth = home.join("pi-auth");
+        let (sdk, path, trace) = crate::fake_models::install_pi(root.path(), &auth, "review");
+        let package = repo.join(".af/workers/tester");
+        std::fs::write(
+            package.join("reviewer.toml"),
+            r#"name="tester"
+version="1.0.0"
+subjects=["diff"]
+[runner]
+program="pi"
+args=[{value="--model"},{value="o3"},{value="--effort"},{value="high"}]
+"#,
+        )
+        .unwrap();
+        let registry = review_config::lock::Registry::new(repo.join(".af/workers"));
+        let mut lock = review_config::lock::Lockfile::from_toml(
+            &std::fs::read_to_string(repo.join(".af/af.lock")).unwrap(),
+        )
+        .unwrap();
+        lock.workers.insert(
+            "tester".into(),
+            review_config::lock::Lockfile::pin("tester", &registry).unwrap(),
+        );
+        std::fs::write(repo.join(".af/af.lock"), lock.to_toml()).unwrap();
+        std::fs::write(home.join(".config/af/providers.toml"),toml::to_string(&serde_json::json!({"version":2,"providers":[{"id":"test-pi","kind":"pi","backend":"openai-codex","auth_dir":auth,"sdk_entrypoint":sdk}]})).unwrap()).unwrap();
+        git(&repo, &home, &["add", "-A"]);
+        git(&repo, &home, &["commit", "-qm", "bind Pi fixture"]);
+        let out = crate::common::af()
+            .args(if doctor {
+                vec!["provider", "doctor"]
+            } else {
+                vec!["review", "run"]
+            })
+            .args([
+                "--repo",
+                repo.to_str().unwrap(),
+                "--pipeline",
+                PIPELINE,
+                "--campaign",
+                "pi-sdk",
+                "--state",
+                &state,
+                "--policy-rev",
+                "HEAD",
+                "--base",
+                "HEAD^",
+                "--candidate",
+                "HEAD",
+                "--provider",
+                "reviewer=test-pi",
+                "--json",
+            ])
+            .current_dir(&repo)
+            .env("HOME", &home)
+            .env("XDG_CONFIG_HOME", home.join(".config"))
+            .env("USER", "fixture")
+            .env("PATH", &path)
+            .env("AF_PROVIDERS_FILE", home.join(".config/af/providers.toml"))
+            .output()
+            .unwrap();
+        assert!(
+            out.status.success(),
+            "{}\n{}",
+            String::from_utf8_lossy(&out.stdout),
+            String::from_utf8_lossy(&out.stderr)
+        );
+        let value: Value = serde_json::from_slice(&out.stdout).unwrap();
+        if doctor {
+            assert_eq!(value["ready"], true);
+            contracts::valid("provider-doctor-v3.json", &value);
+        }
+        assert_eq!(
+            std::fs::read_to_string(trace.with_extension("json.calls")).unwrap(),
+            if doctor {
+                "admission\n"
+            } else {
+                "admission\nworker\n"
+            }
+        );
+    }
 }

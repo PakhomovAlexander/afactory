@@ -2,5 +2,5 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "urn:af:schema:repair-assessment:1",
   "title": "repair-assessment@1",
-  "$ref": "urn:af:schema:task-contracts:1#/$defs/repairAssessment"
+  "$ref": "urn:af:schema:task-contracts:2#/$defs/repairAssessment"
 }

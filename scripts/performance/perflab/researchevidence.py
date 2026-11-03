@@ -1,10 +1,11 @@
 """A rebuildable projection of explicit authoritative artifacts, never an archive in a prompt.
 
-Only numerical and identity facts enter packets. Raw telemetry, arbitrary log strings, issue
-bodies, environment variables and credentials are never copied. Native findings remain linked
-by exact source digest; a model may request their separately declared bounded detail input.
+Native Store receipts authorize selected findings, History Captures and adoption. Finding
+substance is bounded data, never instructions; raw logs and credentials are not retrieved.
 """
 import os
+import subprocess
+import tempfile
 from collections import Counter
 
 from . import contracts, executor
@@ -46,39 +47,76 @@ def native(journal, ids, verifier=executor.verify_original):
             provenance="verified_native" if state["state"] == "complete" else "native_journal",
             freshness_basis="native_terminal" if state["ended_unix_ms"] is not None else "native_created",
             source_digest=result_digest, observed_unix_ms=state["ended_unix_ms"] or request["created_unix_ms"],
-            compatibility=compatibility(request, configuration), outcome=outcome,
+            compatibility=compatibility(request, configuration), compatibility_basis="native_request", outcome=outcome,
             summary="native %s experiment %s: %s; baseline %s; candidate %s; no standalone speedup claim" % (
                 request["work"], ident, state["state"], request["sources"]["baseline_sha"],
                 request["sources"]["candidate_sha"])))
     return records
 
 
-def captured(sources):
-    """`sources` are explicit owner-selected captures: (path, digest, time, compatibility).
+def resolve(config, selection):
+    """Retrieve one exact artifact via the trusted native reader and its authoritative Store."""
+    require(set(selection) == {"task_id", "artifact_id", "observed_unix_ms", "compatibility"},
+            "native evidence selection requires Task and artifact IDs, never file paths")
+    require(os.path.isabs(config["af"]) and sha256_bytes(executor.read(config["af"], 256 * 1024 * 1024))
+            == config["af_digest"], "installed evidence reader bytes changed")
+    with tempfile.TemporaryDirectory() as home, tempfile.TemporaryFile() as output:
+        result = subprocess.run([config["af"], "scenario", "evidence-source", selection["task_id"],
+            "--artifact-id", selection["artifact_id"], "--repo", config["task_repo"],
+            "--task-state", config["task_state"], "--json"], stdin=subprocess.DEVNULL, stdout=output,
+            stderr=subprocess.DEVNULL, timeout=60,
+            env={"PATH": os.defpath, "HOME": home, "XDG_CONFIG_HOME": home,
+                 "XDG_STATE_HOME": home, "XDG_CACHE_HOME": home, "AF_SELF_OFFLINE": "1"})
+        require(result.returncode == 0, "native evidence source refused; inspect its Task and artifact receipt")
+        output.seek(0)
+        data = output.read(SOURCE_BYTES + 1)
+    return loads_strict(data, "native evidence source", SOURCE_BYTES)
 
-    Every input is rehashed. No recursive archive scan and no supplied prose summary is
-    admitted. History Capture timestamps/observations remain separate from timing verdicts.
-    """
-    require(len(sources) <= SOURCES, "too many evidence sources")
+
+def captured(sources, config=None, resolver=resolve):
+    """Resolve bounded owner selections through native authority; never trust captured JSON."""
+    require(isinstance(sources, list) and len(sources) <= SOURCES, "too many evidence sources")
+    require(not sources or config is not None, "native evidence reader configuration required")
     out = []
-    for path, expected, observed, compatible in sources:
+    for selection in sources:
+        require(isinstance(selection, dict) and set(selection) == {
+            "task_id", "artifact_id", "observed_unix_ms", "compatibility"},
+            "native evidence selection requires Task and artifact IDs, never file paths")
+        expected, observed, compatible = (selection[k] for k in ("artifact_id", "observed_unix_ms", "compatibility"))
         freshness_basis = "capture_observed"
-        contracts.DIGEST.validate(expected, "source digest")
+        contracts.DIGEST.validate(expected, "source artifact ID")
         contracts.DIGEST.validate(compatible, "compatibility")
         contracts.UNIX_MS.validate(observed, "source observation time")
-        data = executor.read(path, SOURCE_BYTES)
-        require(sha256_bytes(data) == expected, "captured evidence source changed")
-        doc = loads_strict(data, "captured evidence", SOURCE_BYTES)
-        if "artifact_type" in doc:
-            doc = doc["payload"]
+        source = resolver(config, selection)
+        require(source["schema"] == "af/scenario-evidence-source@1"
+                and source["task_id"] == selection["task_id"]
+                and source["artifact"]["artifact_id"] == expected, "native source receipt changed")
+        envelope = source["artifact"]
+        doc = envelope["payload"]
+        receipt = dict(task_id=source["task_id"], revision_id=source["revision_id"], artifact_id=expected)
         schema = doc.get("schema")
         if schema == "af.task-review-findings/1":
             findings = doc["findings"]
             require(isinstance(findings, list) and len(findings) <= 512, "invalid findings capture")
-            outcome, kind = ("negative" if findings else "inconclusive"), "finding"
-            summary = "%d prior native review findings; %d missing reviewers" % (
-                len(findings), len(doc.get("missing_reviewers", [])))
+            require(envelope["type"] == "af/TaskReviewFindings@1", "wrong native findings type")
+            def bounded(value, limit):
+                value = " ".join(str(value or "").split())
+                return value if len(value) <= limit else value[:limit - 12] + " [truncated]"
+            for finding in findings:
+                require(len(out) < 4096, "selected evidence exceeds history index item bound; narrow selection")
+                summary = "finding %s by %s: %s; at %s; evidence: %s; fix: %s" % (
+                    bounded(finding["id"], 80), bounded(finding["by"], 80), bounded(finding["title"], 300),
+                    bounded(finding.get("file"), 160), bounded(finding["body"], 850), bounded(finding.get("fix"), 350))
+                out.append(dict(kind="finding", source_id=canonical_digest([expected, finding["id"]]),
+                    source_digest=envelope["content_id"], provenance="native_task", native_receipt=receipt,
+                    freshness_basis=freshness_basis, observed_unix_ms=observed, compatibility=compatible, compatibility_basis="owner_selection",
+                    outcome="negative", summary=summary))
+            if findings:
+                continue
+            outcome, kind = "inconclusive", "finding"
+            summary = "no prior findings; %d missing reviewers" % len(doc["missing_reviewers"])
         elif schema == "af.optimization-history/1":
+            require(envelope["type"] == "af/OptimizationHistory@1", "wrong native History Capture type")
             require(len(doc["observations"]) <= 100000 and len(doc["receipts"]) <= 200,
                     "History Capture exceeds native bounds")
             observed = int(doc["cutoff_unix_ms"])
@@ -104,17 +142,19 @@ def captured(sources):
             summary += "; exact span maxima in ms: " + ", ".join("%s=%d" % p for p in sorted(maxima.items()))
             summary += "; %d non-exact spans excluded; maxima are not total or causal time" % unknown
         elif schema == "af.optimization-adoption-observation/1":
+            require(envelope["type"] == "af/OptimizationAdoptionObservation@1", "wrong native adoption type")
             require(doc["causal_claim"] is False, "adoption evidence cannot claim causation")
             contracts.DIGEST.validate(doc["commit_snapshot_id"], "adopted Snapshot")
-            outcome, kind = "merged", "finding"
+            outcome, kind = "adopted", "finding"
             observed = int(doc["observed_unix_ms"])
             freshness_basis = "native_cutoff"
-            summary = "retained adoption at Snapshot " + doc["commit_snapshot_id"] + "; no causal claim"
+            summary = "recorded local adoption observation at Snapshot " + doc["commit_snapshot_id"] + "; no causal claim"
         else:
             require(False, "unsupported evidence source; use native findings, History Capture or adoption")
-        out.append(dict(kind=kind, source_id=expected, source_digest=expected,
-                        provenance="captured_artifact", freshness_basis=freshness_basis,
-                        observed_unix_ms=observed, compatibility=compatible, outcome=outcome, summary=summary))
+        require(len(out) < 4096, "selected evidence exceeds history index item bound; narrow selection")
+        out.append(dict(kind=kind, source_id=expected, source_digest=envelope["content_id"],
+                        provenance="native_task", native_receipt=receipt, freshness_basis=freshness_basis,
+                        observed_unix_ms=observed, compatibility=compatible, compatibility_basis="owner_selection", outcome=outcome, summary=summary))
     return out
 
 
@@ -125,7 +165,7 @@ def rebuild(records):
         key = record["source_id"]
         require(key not in unique or unique[key] == record, "conflicting source evidence")
         unique[key] = record
-    index = dict(schema="af.perf-evidence-index/1", artifacts=sorted(unique.values(),
+    index = dict(schema="af.perf-evidence-index/2", artifacts=sorted(unique.values(),
                 key=lambda r: (r["observed_unix_ms"], r["source_id"])))
     require(len(contracts.write_bytes(index, "evidence-index")) <= INDEX_BYTES,
             "evidence history index exceeds its byte bound")
@@ -135,7 +175,7 @@ def rebuild(records):
 def packet(index, cutoff, created, wanted, max_age_ms, max_items=32, max_bytes=32768):
     contracts.CONTRACTS["evidence-index"][2](index)
     require(cutoff <= created, "evidence cutoff cannot be in the future")
-    result = dict(schema="af.perf-evidence-packet/1", cutoff_unix_ms=cutoff, created_unix_ms=created,
+    result = dict(schema="af.perf-evidence-packet/2", cutoff_unix_ms=cutoff, created_unix_ms=created,
         max_age_ms=max_age_ms, compatibility=wanted, max_items=max_items, max_bytes=max_bytes,
         index_digest=canonical_digest(index), items=[], omissions=[], telemetry_is_diagnostic=True)
     contracts.write_bytes(result, "evidence-packet")

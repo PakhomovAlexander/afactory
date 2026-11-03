@@ -83,7 +83,7 @@ kinds = ["report"]
 [slots.author]
 worker = "kernel/analyst"
 role = "author"
-input_type = "af/ReportInput@1"
+input_type = "af/ReportInput@2"
 output_type = "af/DocumentDraft@2"
 min_attempts = 1
 # A reply the kernel refuses for its shape gets one more Attempt, with the refusal as feedback.
@@ -94,7 +94,7 @@ independent_from = []
 [slots.verifier]
 worker = "kernel/report-verifier"
 role = "verify"
-input_type = "af/ReportVerificationInput@1"
+input_type = "af/ReportVerificationInput@2"
 output_type = "af/ReportEvaluation@1"
 min_attempts = 1
 # A reply that does not parse, or a refused one, gets one more Attempt (issue #283).
@@ -128,6 +128,10 @@ port = "source"
 [nodes.inputs.sources]
 kind = "input"
 port = "sources"
+
+[nodes.inputs.research_report]
+kind = "input"
+port = "research_report"
 
 [[nodes]]
 id = "seal"
@@ -208,6 +212,10 @@ port = "sources"
 node = "checks"
 outcome = "passed"
 
+[nodes.inputs.research_report]
+kind = "input"
+port = "research_report"
+
 [[nodes]]
 id = "accept"
 
@@ -247,3 +255,12 @@ port = "result"
 kind = "node"
 node = "accept"
 port = "result"
+
+[contract.inputs.research_report]
+artifact_type = "af/Document@1"
+cardinality = "one"
+optional = true
+covers = []
+
+[contract.inputs.research_report.affinity]
+kind = "unbound"

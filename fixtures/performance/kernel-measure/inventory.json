@@ -2,18 +2,18 @@
  "files": [
   {
    "path": "Cargo.lock",
-   "sha256": "sha256:44c1c63fe3cfb45b1f412f4e9405ffeabc51b0c7560e7afb5ca0f8fe02d81067",
-   "size": 62485
+   "sha256": "sha256:ae5e201d799a15a567a64f41ca3430e9b15ed55c73ae88d3ba1e62b3cdf7b141",
+   "size": 62712
   },
   {
    "path": "Cargo.toml",
-   "sha256": "sha256:26bfbe7b34a3193a331e1114ccc78138677e88722db4b6df073ff6d093ecf264",
-   "size": 2038
+   "sha256": "sha256:7aa7118d12541c1a067bfe143cf3e032581a5f0673bf83a23c5ca60c40a0a8f4",
+   "size": 2065
   },
   {
    "path": "crates/af/Cargo.toml",
-   "sha256": "sha256:b7a6d8f6467b1ed04fa6f48f8e333f6036a9eb9af2e763084a5693aada532089",
-   "size": 3396
+   "sha256": "sha256:493441c2b48fc69d60019e0c943091e80a2dd3f2f49e2322e20167f9835ab244",
+   "size": 3448
   },
   {
    "path": "crates/af/build.rs",
@@ -77,12 +77,12 @@
   },
   {
    "path": "crates/review-pipeline/examples/perf-probe/authority.rs",
-   "sha256": "sha256:7671f7a4f764775195325cab69eeb4b0788610600fd65d578b24026c01fe7f10",
+   "sha256": "sha256:3b9bb75f90b28fd2c1b4a25b2cda98a9078ff29563447d5d22f0d47e25c803a0",
    "size": 24426
   },
   {
    "path": "crates/review-pipeline/examples/perf-probe/cases.rs",
-   "sha256": "sha256:54012b3773c863970e1a4827fd93fe4930d7601d755e18bf7c56b5d79b14180b",
+   "sha256": "sha256:3117fd44d757fbf9be5a37e48ea06d1ff6bca918a517ffc321ab54c8105cdb91",
    "size": 63191
   },
   {
@@ -124,6 +124,11 @@
    "path": "crates/review-runner-codex/Cargo.toml",
    "sha256": "sha256:4ba1dadeada92b690379967a6e93c772e838216916e7bf5fc6d973e45edea638",
    "size": 1371
+  },
+  {
+   "path": "crates/review-runner-pi/Cargo.toml",
+   "sha256": "sha256:9677e49eba4ede07c3a2d1300e5b8b7b5076eb43d737698903d127320bf3ef47",
+   "size": 640
   },
   {
    "path": "crates/review-runner/Cargo.toml",
@@ -1032,7 +1037,7 @@
   },
   {
    "path": "fixtures/performance/schema/evidence-index/valid.json",
-   "sha256": "sha256:cffc482950cef27dfd08278ec1ae6db9f7ad1490c84ca1f1a85060f8c956bea6",
+   "sha256": "sha256:b114556f44ee3a50a7d22cb2428f2e2f132f1d841e81b14976177e7f58b77fd9",
    "size": 62
   },
   {
@@ -1042,7 +1047,7 @@
   },
   {
    "path": "fixtures/performance/schema/evidence-packet/valid.json",
-   "sha256": "sha256:599eb5d3c516a2dee4d1ec3926c7fe6982c362d3555984ecaa194dff93d42930",
+   "sha256": "sha256:83ad408760c1c92a8269148630b69ce0d525092477839313bbe732090f869d49",
    "size": 414
   },
   {
@@ -3322,8 +3327,8 @@
   },
   {
    "path": "scripts/performance/perflab/researchevidence.py",
-   "sha256": "sha256:b94c6c20770d8d9309c59804fc57d1d3579ca3c7604005b2ab98d53bd65f8153",
-   "size": 10158
+   "sha256": "sha256:d01f526466c34ab149b8bc3fc1152ea2321b8e16ee532551a693eba2cbd159c6",
+   "size": 13496
   },
   {
    "path": "scripts/performance/perflab/runner.py",
@@ -3332,13 +3337,13 @@
   },
   {
    "path": "scripts/performance/perflab/scenarioadapter.py",
-   "sha256": "sha256:5060b43f1f49819879871b65800cf79dafdc8bbc0310492babf0b83b3f410034",
-   "size": 25271
+   "sha256": "sha256:602694dd43fc3afc478c8872cd299f5603a3a788feb29224677e4fed6846380f",
+   "size": 25814
   },
   {
    "path": "scripts/performance/perflab/scenariocontracts.py",
-   "sha256": "sha256:e0196ccb8742752c434bbb0d0437670ebec0bb0643f65265ac84313ade6a890a",
-   "size": 9225
+   "sha256": "sha256:dc18f4953f1f4d21ae97f629cbcee650d755c6d8ef415fb9129d6f582bc7918a",
+   "size": 9874
   },
   {
    "path": "scripts/performance/perflab/scenariosource.py",
@@ -3442,8 +3447,8 @@
   },
   {
    "path": "scripts/performance/scenario.py",
-   "sha256": "sha256:979f3e84ae865589a83c6408a808b055302ad218f16b533a2bb05b4753fc7e03",
-   "size": 7546
+   "sha256": "sha256:e46cb3d7a7c91fd5789b30310f6e1b4e23d3136249fd4c6f0694e080af7985c8",
+   "size": 8163
   },
   {
    "path": "scripts/performance/schemas.py",
@@ -3936,7 +3941,7 @@
    "size": 6777
   }
  ],
- "harness_digest": "sha256:cb56dceef5271e8074cf952ca5f83a8ddd056013589658173dd334fe5e77a5f6",
+ "harness_digest": "sha256:6ebfaed9cc312e15dd44e27dcf878b5c109cc46a4d7e96fb54d0d308b0a7ba3d",
  "inner_metric": "pending",
  "inner_metric_reason": "the inner wall_ms metric is recorded in every Measurement but no staged objective selects it until the guard's real kernel integration and tampered-candidate tests are accepted on the sealed source and a reviewed human change installs and selects it",
  "objective_metric": "elapsed_ms",

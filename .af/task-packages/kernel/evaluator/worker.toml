@@ -5,12 +5,12 @@ version = "1.3.0"
 [signature]
 effects = ["read-source"]
 roles = ["evaluate"]
-worker_input_type = "af/EvaluationInput@1"
+worker_input_type = "af/EvaluationInput@2"
 worker_output_type = "af/TaskEvaluation@1"
 outcome_port = "result"
 
 [signature.contract.inputs.checks]
-artifact_type = "af/TaskCheckReceipt@1"
+artifact_type = "af/TaskCheckReceipt@2"
 cardinality = "one"
 optional = false
 covers = []

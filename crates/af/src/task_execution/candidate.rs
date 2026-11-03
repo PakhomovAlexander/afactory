@@ -767,12 +767,9 @@ pub(crate) fn experiment_source(
         Some(&baseline_sha),
         &request.candidate_snapshot_id,
     )?;
-    let value = serde_json::to_value(request).map_err(|e| e.to_string())?;
     let expected = SourceReceipt {
         schema: "af/scenario-experiment-source@1".into(),
-        request_digest: digest_bytes(
-            &review_store::canonicalize(&value).map_err(|e| e.to_string())?,
-        ),
+        request_digest: request.digest()?,
         repository_id: base_origin.repository_id().into(),
         baseline_snapshot_id: baseline_snapshot_id.clone(),
         candidate_snapshot_id: request.candidate_snapshot_id.clone(),

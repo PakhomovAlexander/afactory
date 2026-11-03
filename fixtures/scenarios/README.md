@@ -22,6 +22,15 @@ The executable evidence is `crates/af/tests/it/scenario.rs`: it replaces the pla
 private existing Task fixture, runs the real CLI across process boundaries and verifies receipts,
 restart recovery, cancellation, stale evidence refusal and preservation of unexpected content.
 
+The optional production adapter, offline installer and explicit private machine configuration are
+documented in [GitHub Scenario adapter](../../docs/scenario-github-adapter.md). `github/` contains
+inert v1 config/payload examples and a signed publication → green → owner review → merged →
+follow-up bundle. The values are test placeholders; it is neither registered nor scheduled.
+`github/mock-service.json` and `github-transport.py` are credential-free service mocks used by
+Python tests and the real CLI production-adapter tests. Never install the mock transport in
+production. Test-installed executables contain all production application bytes plus the mock
+transport, and the existing machine policy pins their complete digest.
+
 `fresh-task-loop.json` is an inert current-release fresh Task example. Its repository, Store,
 commit and authority values are placeholders. Capture a real native Task with
 `af scenario template-pin`, replace the template and both template digest grants, and review the

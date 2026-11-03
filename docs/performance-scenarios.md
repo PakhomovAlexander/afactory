@@ -26,7 +26,9 @@ filter-free Git materialization helpers, never `git add`, candidate attributes o
 deterministic commits are benchmark representations, not commits in the developer's repository.
 The destination is outside every repository and the Task Store, under an owned parent unwritable
 by other accounts. No checkout, user branch or remote changes. The receipt retains both original Snapshot IDs,
-content digests, origin IDs and repository identity beside the private commit IDs.
+content digests, origin IDs and repository identity beside the private commit IDs. The handoff
+request digest is the adapter protocol's SHA-256 of canonical JSON; Snapshot and artifact IDs
+retain their separate native CAS domains. The Python/native bridge checks these identities.
 
 `af/scenario-experiment-source-request@1` optionally names `baseline_snapshot_id`; null or absent
 means the native Task's original source, never main. A supplied different source refuses. The
@@ -82,22 +84,34 @@ reservation across restarts, dates and roadmap revisions.
 
 `scripts/performance/scenario.py evidence` rebuilds a history index from explicitly selected native
 original IDs and captured native findings, Optimization History Captures and adoption observations.
-It does not scan an archive into a prompt. Supply `--sources` as a JSON array of
-`[absolute_path, raw_file_sha256, observed_unix_ms, compatibility_digest]` entries. Select at most
-256 captures (4 MiB each) and 256 native original IDs. Every capture is rehashed; every completed
-native original is independently verified. Failed, uncertain, inconclusive and already adopted
-work stays in the index. The index is a disposable projection; deleting it does not reset native
-history, receipts or accounting. Rebuild it from the same selected authoritative artifacts.
+It does not scan an archive into a prompt. Supply `--sources` as a JSON array of objects with
+`task_id`, exact native `artifact_id`, `observed_unix_ms` and `compatibility`. Also supply
+`--af`, its `--af-digest`, `--task-repo` and `--task-state`. The trusted native
+`af scenario evidence-source` reader verifies each envelope against the Task Store, reconstructs
+findings from their recorded source round, checks History Capture input receipts and checks
+adoption against its recorded observation and delivered receipt. Arbitrary JSON exports, even
+with correct file hashes, are refused. Select at most 256 native artifacts (4 MiB each) and 256
+native original IDs. Completed native originals are independently verified. Failed, uncertain,
+inconclusive and already adopted work stays in the index. Adoption records attest local delivery
+and observed commit equivalence; they do not independently prove a remote merge. The index is a
+disposable projection; deleting it does not reset native history, receipts or accounting.
+Rebuild it from the same selected authoritative artifacts. For a findings capture, select the
+continuation Task that records `continues.findings_id` in `af task show --json`, rather than
+an exported `af task findings` file. History selections name a recorded native `history` input;
+adoption IDs are listed under `adoption_observations` in the optimization Task's inspection.
 
 Packets are immutable content-addressed documents carrying source IDs/digests, index digest,
-cutoff, creation time, compatibility, age bound, item/byte limits and counted omissions. `fresh`
+cutoff, creation time, compatibility, age bound, item/byte limits and counted omissions. `compatibility_basis` distinguishes the native request-derived workload
+identity from an owner-declared selection label; matching the latter is not independently
+verified timing compatibility. `fresh`
 means fresh **at packet creation**, not at an arbitrary future read. Incompatible and stale evidence
 is retained and labelled. Provenance distinguishes a verified native result, native journal state
-and a selected raw artifact capture; freshness distinguishes native terminal/cutoff time from the
+and a native Task artifact receipt; freshness distinguishes native terminal/cutoff time from the
 owner's capture observation time. Capturing an old finding today does not establish when it was
 first reported. A packet covers its explicit selection, not every artifact in an archive.
-It deliberately omits arbitrary finding bodies, raw telemetry, logs, environment and credentials;
-its identity/counter summaries are leads to separately declared bounded detail retrieval. Counts
+Each finding is a separate item carrying bounded title, location, evidence and proposed fix,
+with explicit truncation and native Task/revision/artifact provenance. Byte and item limits count
+omissions. Raw telemetry, logs, environment and credentials are excluded. Counts
 are not causal evidence or a speedup claim. Native matched timing is the improvement authority. Span maxima remain distinct from total wall
 time, and non-exact spans stay explicitly excluded.
 
@@ -107,11 +121,18 @@ explicit age. `scenario_evidence` is an optional, typed Observation input on fre
 Only satisfied `bounded_evidence` or `native_verified` observations enter that reserved field of
 the Task's immutable Requirements. Templates cannot prefill it or `scenario_goal`. Research
 receives a bounded packet; verification and reporting receive the exact native completion.
+The candidate and final report also bind the accepted research Document on `research_report`.
+Its exact native receipt, acceptance and original source are verified before dispatch, and its
+envelope is bounded to 32 KiB. Both Workers receive the same artifact, including its useful
+recommendation; ordering alone never passes data. The owner pipeline must declare and forward
+this optional `af/Document@1` input, as the shipped implementation-reviewed/report contracts do.
 
 Example authoring command (operator-selected paths and digests):
 
 ```sh
 python3 -I scripts/performance/scenario.py evidence --sources /private/perf/sources.json \
+  --af /opt/af/bin/af --af-digest sha256:EXACT_AF_BYTES \
+  --task-repo /project --task-state /private/tasks \
   --executor /etc/af-perf/executor.toml --original exp_EXACT_ID \
   --output-root /private/perf/evidence --compatibility sha256:REVIEWED_COMPATIBILITY \
   --cutoff 1793664000000 --created 1793664000000 --max-age-ms 86400000
@@ -137,7 +158,9 @@ catalog authority. The examples explicitly select `kernel/implementation-reviewe
 `kernel/verification-reviewed` and `kernel/report`; inspect their complete compiled plans and bind
 the development team below. The current repository's ordinary Worker defaults are different and
 must not be silently reused. Commit reviewed owner manifests/pins, using `af catalog digest` for
-every changed package; do not hand-type package digests or use local mutable package overrides.
+every changed package; select both `bugs` and `correctness` as required in the owner review
+policy. Current native checks use `af/TaskCheckReceipt@2`; copied pre-ADR-0255 package contracts
+must be corrected and re-pinned before capture. Do not hand-type package digests or use local mutable package overrides.
 
 | Development role | Model | Effort | Provider |
 | --- | --- | --- | --- |
@@ -160,6 +183,11 @@ Provider admission; they are authorization bounds, not expected spend:
 | Independent read-only verification | 5,000,000 | 24 hours |
 | Final report and its independent verification | 5,000,000 | 24 hours |
 
+The verification template protects 12 hours of its 24-hour Task wall for verification;
+the remainder permits native Provider admission before judging begins. A reserve equal to the
+whole Task wall refuses performance planning, since it leaves no dispatchable admission window.
+This changes no Worker Attempt wall or Task token allowance.
+
 The declared Task sum is 23,000,000 tokens; a goal reserves 32,000,000. Each Scenario step permits
 one Task attempt; the Task plan retains its existing per-Worker retry bounds. The native comparison
 needs no tokens and has its own declared executor bounds. Eight elapsed days cover the five Task
@@ -171,7 +199,9 @@ production model-loop budget. Inspect native plan reservations and refuse if any
 
 Export each stage's `operation.template.document` to an external Task file and capture it with
 `af scenario template-pin --file FILE --repo REPO --task-state STORE --authority-commit COMMIT
---bindings BINDINGS --json`. Preserve its goal, mode and explicit limits. Collect the four returned
+--bindings BINDINGS --json`. Preserve its goal, mode, explicit limits and `facts.standard = true` on the candidate and
+verification templates. Token-free native planning must succeed for all four stages before the
+operator approves execution. Template capture itself runs no Provider inference. Collect the four returned
 envelopes under `research`, `candidate`, `verification` and `report` in `pins.json`. Capture the
 exact committed owner authority; review model bindings and contracts before any execution.
 
@@ -247,3 +277,7 @@ them. A new evidence selection also requires a reviewed launcher and Scenario pi
 
 Live Claw proof, installation and Ant enablement are operator acceptance, not Worker work. Do not
 mark them complete from hermetic fake adapter results or a successful local Task gate.
+
+The binding integration decision is
+[ADR-2026-11-03-native-performance-scenario-loops](adr/2026-11-03-native-performance-scenario-loops.md).
+Evidence index and packet documents use generation 2; old generation 1 evidence fails closed.

@@ -36,6 +36,7 @@ FAKES = {
               "esac",
     "cargo-nextest": "echo 'cargo-nextest 0.9.132'",
     "cc": "echo 'cc (fixture) 13.2.0'",
+    "node": "echo 'v22.19.0'",
     "npx": "echo '10.8.2'",
     "minisign": "echo 'minisign 0.11'",
 }
@@ -79,12 +80,12 @@ class Prereqs(unittest.TestCase):
         code, out = self.main("--min-free-gib", "0")
         self.assertEqual(code, 0, out)
         lines = out.splitlines()
-        self.assertEqual(len(lines), 9, out)
-        for line, name in zip(lines, ["python3", "git", "rust", "cargo-nextest", "cc", "npx",
+        self.assertEqual(len(lines), 10, out)
+        for line, name in zip(lines, ["python3", "git", "rust", "cargo-nextest", "cc", "node", "npx",
                                       "minisign", "disk"]):
             self.assertTrue(line.startswith("ok ") and f" {name} " in line, line)
         self.assertIn("rustup holds the pinned 1.88.0", out)
-        self.assertEqual(lines[-1], "all 8 prerequisites present; next: make check")
+        self.assertEqual(lines[-1], "all 9 prerequisites present; next: make check")
 
     def test_a_missing_or_old_tool_names_its_install_command(self):
         for name, body in FAKES.items():
@@ -107,7 +108,7 @@ class Prereqs(unittest.TestCase):
         self.assertEqual(code, 1, out)
         self.assertIn("missing  minisign", out)
         self.assertIn("— fix: ", out)
-        self.assertTrue(out.splitlines()[-1].startswith("3 of 8 prerequisites missing: git, rust"),
+        self.assertTrue(out.splitlines()[-1].startswith("3 of 9 prerequisites missing: git, rust"),
                         out)
 
     def test_too_little_free_space_names_the_volume_and_the_way_out(self):
@@ -119,9 +120,18 @@ class Prereqs(unittest.TestCase):
         self.assertIn(str(self.root.resolve()), found)
         self.assertIn("free 1099511627776 GiB there", fix)
 
+    def test_node_meets_the_embedded_pi_host_runtime_requirement(self):
+        for version, accepted in [('20.19.0', False), ('22.18.0', False),
+                                  ('22.19.0', True), ('24.0.0', True)]:
+            self.fake('node', "echo 'v" + version + "'")
+            passed, found, fix = self.run_checks()['node']
+            self.assertEqual(passed, accepted, version)
+            self.assertEqual(found, 'v' + version)
+            self.assertIn('22.19', fix)
+
     def test_nothing_on_path_is_every_tool_missing_and_nothing_runs(self):
         results = self.run_checks()
-        for name in ["git", "rust", "cargo-nextest", "cc", "npx", "minisign"]:
+        for name in ["git", "rust", "cargo-nextest", "cc", "node", "npx", "minisign"]:
             self.assertFalse(results[name][0], name)
         self.assertIn("install rustup (https://rustup.rs)", results["rust"][2])
 
@@ -135,7 +145,7 @@ class Prereqs(unittest.TestCase):
         lines = done.stdout.splitlines()
         # One line per check, a wrapped one continued on indented lines, and a last line.
         entries = [line for line in lines if not line.startswith(" ")]
-        self.assertEqual(len(entries), 9, said)
+        self.assertEqual(len(entries), 10, said)
         passed = all(line.startswith("ok ") for line in entries[:-1])
         self.assertEqual(done.returncode == 0, passed, said)
         self.assertTrue(all(len(line) <= prereqs.WIDTH for line in lines), said)
@@ -155,7 +165,7 @@ class Prereqs(unittest.TestCase):
         code, out = self.main("--min-free-gib", "0")
         self.assertEqual(code, 1, out)
         self.assertIn("missing  rust", out)
-        self.assertTrue(out.splitlines()[-1].startswith("1 of 8 prerequisites missing: rust"),
+        self.assertTrue(out.splitlines()[-1].startswith("1 of 9 prerequisites missing: rust"),
                         out)
 
     def test_long_lines_wrap_at_100_columns_and_home_is_abbreviated(self):

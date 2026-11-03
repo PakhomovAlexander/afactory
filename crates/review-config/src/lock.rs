@@ -221,6 +221,7 @@ pub struct PackageManifest {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ReviewerBackend {
+    Pi,
     Codex,
     Claude,
 }
@@ -228,6 +229,7 @@ pub enum ReviewerBackend {
 impl std::fmt::Display for ReviewerBackend {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
+            Self::Pi => write!(f, "pi"),
             Self::Codex => write!(f, "codex"),
             Self::Claude => write!(f, "claude"),
         }
@@ -251,6 +253,7 @@ pub fn reviewer_runner_settings_from_manifest(
         .and_then(|name| name.to_str())
         .ok_or_else(|| LockError::Parse("reviewer runner program has no basename".into()))?;
     let backend = match basename {
+        "pi" => ReviewerBackend::Pi,
         "codex" => ReviewerBackend::Codex,
         "claude" => ReviewerBackend::Claude,
         other => {
@@ -261,11 +264,15 @@ pub fn reviewer_runner_settings_from_manifest(
     };
     let model_index = unique_option_value(&manifest.runner.args, "--model")?;
     let effort_index = match backend {
-        ReviewerBackend::Claude => unique_option_value(&manifest.runner.args, "--effort")?,
+        ReviewerBackend::Pi | ReviewerBackend::Claude => {
+            unique_option_value(&manifest.runner.args, "--effort")?
+        }
         ReviewerBackend::Codex => unique_codex_effort(&manifest.runner.args)?,
     };
     let effort = match backend {
-        ReviewerBackend::Claude => manifest.runner.args[effort_index].value.clone(),
+        ReviewerBackend::Pi | ReviewerBackend::Claude => {
+            manifest.runner.args[effort_index].value.clone()
+        }
         ReviewerBackend::Codex => manifest.runner.args[effort_index]
             .value
             .strip_prefix("model_reasoning_effort=")

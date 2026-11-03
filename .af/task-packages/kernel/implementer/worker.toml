@@ -5,7 +5,7 @@ version = "1.8.2"
 [signature]
 effects = ["write-source", "execute-checks"]
 roles = ["implement"]
-worker_input_type = "af/ImplementationInput@1"
+worker_input_type = "af/ImplementationInput@2"
 worker_output_type = "af/ImplementationReport@1"
 
 [signature.contract.inputs.requirements]
@@ -58,8 +58,8 @@ input = "source"
 [signature.evidence]
 
 [signature.retains]
-candidate = ["requirements", "source"]
-report = ["requirements", "source"]
+candidate = ["requirements", "source", "research_report"]
+report = ["requirements", "source", "research_report"]
 
 [signature.attempt]
 tokens = 1500000
@@ -70,3 +70,12 @@ kind = "model"
 provider_kind = "claude"
 model = "claude-opus-5-5"
 effort = "high"
+
+[signature.contract.inputs.research_report]
+artifact_type = "af/Document@1"
+cardinality = "one"
+optional = true
+covers = []
+
+[signature.contract.inputs.research_report.affinity]
+kind = "unbound"

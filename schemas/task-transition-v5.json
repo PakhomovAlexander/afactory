@@ -303,10 +303,10 @@
               "const": "source_refreshed"
             },
             "revision_id": {
-              "$ref": "urn:af:schema:task-contracts:1#/$defs/digest"
+              "$ref": "urn:af:schema:task-contracts:2#/$defs/digest"
             },
             "plan_id": {
-              "$ref": "urn:af:schema:task-contracts:1#/$defs/digest"
+              "$ref": "urn:af:schema:task-contracts:2#/$defs/digest"
             },
             "waiting": {
               "enum": [

@@ -97,7 +97,7 @@ independent_from = ["implementer"]
 [slots.implementer]
 worker = "kernel/implementer"
 role = "implement"
-input_type = "af/ImplementationInput@1"
+input_type = "af/ImplementationInput@2"
 output_type = "af/ImplementationReport@1"
 min_attempts = 1
 max_attempts = 1

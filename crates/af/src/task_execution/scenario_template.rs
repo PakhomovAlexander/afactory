@@ -143,6 +143,7 @@ pub(crate) fn pin(
 pub(crate) fn check_predecessor(
     template: &Template,
     receipt: &TaskReceipt,
+    input: &str,
     port: &str,
     artifact_type: &str,
 ) -> Result<(), String> {
@@ -172,6 +173,48 @@ pub(crate) fn check_predecessor(
         validate_envelope(&envelope)?;
         if envelope.artifact_type != artifact_type {
             return Err("Predecessor envelope type differs".into());
+        }
+        if input == "research_report" {
+            use review_core::task::document::{DOCUMENT_V1, DocumentV1};
+            if artifact_type != DOCUMENT_V1
+                || output.artifact_ids.len() != 1
+                || output.cardinality != PortCardinality::One
+            {
+                return Err("Research requires one accepted native report Document".into());
+            }
+            let document: DocumentV1 =
+                serde_json::from_value(envelope.payload.clone()).map_err(|e| e.to_string())?;
+            document.validate()?;
+            if serde_json::to_vec(&envelope)
+                .map_err(|e| e.to_string())?
+                .len()
+                > 32768
+            {
+                return Err(
+                    "Accepted research report exceeds 32 KiB; narrow the research Task".into(),
+                );
+            }
+            let source = opened
+                .task
+                .revision
+                .inputs
+                .get("source")
+                .and_then(|p| p.snapshot_id.as_deref())
+                .ok_or("Research has no native source")?;
+            if output.snapshot_id.as_deref() != Some(source)
+                || envelope.subject_snapshot_id.as_deref() != Some(source)
+            {
+                return Err("Research report source differs from its accepted Task".into());
+            }
+            let (snapshot, _) = review_source_git::task::read_snapshot(&opened.cas, source)?;
+            let origin = review_source_git::task::read_origin(&opened.cas, &snapshot.origin_id)?;
+            if origin.repository_id() != template.repository_id
+                || snapshot.content_digest != template.source_content_digest
+                || origin.source_revision() != Some(template.authority_commit.as_str())
+                || snapshot.parent_snapshot_id.is_some()
+            {
+                return Err("Research report belongs to a different source".into());
+            }
         }
         if artifact_type == SOURCE_TREE_V1 {
             let tree: review_source_git::task::SourceTree =
@@ -304,10 +347,15 @@ pub(crate) fn plan(
             .plan_id
             .as_deref()
             .ok_or("Template Task has no native plan")?;
-        let plan: ExecutionPlanV1 = artifact(&opened.cas, plan_id, EXECUTION_PLAN_V1)?;
+        let plan: ExecutionPlanV2 = artifact(&opened.cas, plan_id, EXECUTION_PLAN_V2)?;
+        let file: TaskFile = serde_json::from_value(document.clone()).map_err(|e| e.to_string())?;
+        let limits = file
+            .limits
+            .ok_or("Performance template has no native limits")?;
+        performance_wall(limits.wall_ms, limits.verification.wall_ms)?;
         performance_roles(
             &plan,
-            if profile == TaskKindProfile::Review {
+            if document["kind"] == "verification" || profile == TaskKindProfile::Review {
                 "verification"
             } else {
                 "implement"
@@ -408,9 +456,19 @@ fn validate_recorded_plan(
     Ok(())
 }
 
-/// The owner policy for performance loops. Command-only native fixtures need no Provider;
-/// a model-bearing implementation/verification plan must name the complete judging team.
-fn performance_roles(plan: &ExecutionPlanV1, kind: &str) -> Result<(), String> {
+/// Model-backed performance development must leave time for its native Provider admissions.
+/// Command-only generic Tasks may use their whole wall for verification and are unchanged.
+fn performance_wall(total: u64, verification: u64) -> Result<(), String> {
+    if verification >= total {
+        return Err(
+            "Performance verification reserve must leave Task wall for Provider admission".into(),
+        );
+    }
+    Ok(())
+}
+
+/// Production performance development requires the complete exact model team.
+fn performance_roles(plan: &ExecutionPlanV2, kind: &str) -> Result<(), String> {
     performance_executions(
         plan.bindings
             .iter()
@@ -419,12 +477,12 @@ fn performance_roles(plan: &ExecutionPlanV1, kind: &str) -> Result<(), String> {
     )
 }
 fn performance_executions<'a>(
-    bindings: impl IntoIterator<Item = (&'a str, &'a WorkerExecutionV1)>,
+    bindings: impl IntoIterator<Item = (&'a str, &'a WorkerExecutionV2)>,
     kind: &str,
 ) -> Result<(), String> {
     let mut roles = BTreeSet::new();
     for (slot, execution) in bindings {
-        let WorkerExecutionV1::Model {
+        let WorkerExecutionV2::Model {
             provider,
             provider_kind,
             model,
@@ -432,7 +490,7 @@ fn performance_executions<'a>(
             ..
         } = execution
         else {
-            continue;
+            return Err("Performance development roles require exact model bindings".into());
         };
         let role = slot.rsplit('.').next().ok_or("Missing performance role")?;
         let (expected_model, expected_effort) = match role {
@@ -455,20 +513,20 @@ fn performance_executions<'a>(
                 "Performance role {role} requires {expected_model} {expected_effort} on codex-personal"
             ));
         }
-        roles.insert(role);
+        if !roles.insert(role) {
+            return Err("Performance model role is duplicated".into());
+        }
     }
-    if !roles.is_empty()
-        && ((kind == "verification" && roles.contains("implementer"))
-            || (kind == "implement" && !roles.contains("implementer")))
+    if (kind == "verification" && roles.contains("implementer"))
+        || (kind == "implement" && !roles.contains("implementer"))
     {
         return Err(
             "Performance implementation requires its implementer; verification is read-only".into(),
         );
     }
-    if !roles.is_empty()
-        && !["bugs", "correctness", "evaluator"]
-            .iter()
-            .all(|r| roles.contains(r))
+    if !["bugs", "correctness", "evaluator"]
+        .iter()
+        .all(|r| roles.contains(r))
     {
         return Err(
             "Performance loops require bugs, correctness and evaluator; no default-light fallback"
@@ -520,7 +578,7 @@ mod tests {
         let changed = capture_snapshot(&cas, &changed, &bound, Some(&rerooted)).unwrap();
         assert!(experiment_source_matches(&cas, &changed, &original).is_err());
     }
-    fn team() -> BTreeMap<String, WorkerExecutionV1> {
+    fn team() -> BTreeMap<String, WorkerExecutionV2> {
         [
             ("implementer", "gpt-6.1-sol", "medium"),
             ("bugs", "gpt-6.1-terra", "high"),
@@ -531,18 +589,19 @@ mod tests {
         .map(|(role, model, effort)| {
             (
                 format!("root.slots.{role}"),
-                WorkerExecutionV1::Model {
+                WorkerExecutionV2::Model {
                     provider: "codex-personal".into(),
                     provider_kind: "codex".into(),
                     principal_id: "fixture".into(),
                     model: model.into(),
                     effort: effort.into(),
+                    pi: None,
                 },
             )
         })
         .collect()
     }
-    fn check(team: &BTreeMap<String, WorkerExecutionV1>, kind: &str) -> Result<(), String> {
+    fn check(team: &BTreeMap<String, WorkerExecutionV2>, kind: &str) -> Result<(), String> {
         performance_executions(
             team.iter()
                 .map(|(name, execution)| (name.as_str(), execution)),
@@ -565,7 +624,7 @@ mod tests {
         ] {
             let mut wrong = team.clone();
             let execution = wrong.get_mut(&format!("root.slots.{slot}")).unwrap();
-            let WorkerExecutionV1::Model {
+            let WorkerExecutionV2::Model {
                 model,
                 effort,
                 provider,
@@ -581,12 +640,34 @@ mod tests {
             };
             assert!(check(&wrong, "implement").is_err());
         }
+        assert!(check(&BTreeMap::new(), "implement").is_err());
+        assert!(check(&BTreeMap::new(), "verification").is_err());
+        let mut mixed = team.clone();
+        mixed.insert("root.slots.bugs".into(), WorkerExecutionV2::Command {});
+        assert!(check(&mixed, "implement").is_err());
+        let command_only = team
+            .keys()
+            .map(|k| (k.clone(), WorkerExecutionV2::Command {}))
+            .collect();
+        assert!(check(&command_only, "implement").is_err());
+        assert!(check(&command_only, "verification").is_err());
         let mut advisory = team.clone();
         advisory.insert("root.slots.uix".into(), team["root.slots.bugs"].clone());
         assert!(check(&advisory, "implement").is_err());
         let mut light = team;
         light.remove("root.slots.bugs");
         assert!(check(&light, "implement").is_err());
+    }
+    #[test]
+    fn performance_reserve_leaves_provider_admission_wall_without_restricting_generic_tasks() {
+        assert!(
+            performance_wall(86400000, 86400000)
+                .unwrap_err()
+                .contains("Provider admission")
+        );
+        performance_wall(86400000, 43200000).unwrap();
+        let doc = serde_json::json!({"schema":"af.task-file/1","task_id":"generic","kind":"verification","goal":"Read-only verification","pipeline":{"name":"fixture/verification","fallback":"refuse"},"strategy":"reviewed","limits":{"tokens":100,"max_attempts":4,"wall_ms":10000,"verification":{"tokens":50,"attempts":2,"wall_ms":10000}}});
+        validate_document(&doc, None, 100).unwrap();
     }
     #[test]
     fn template_refuses_mutable_inputs_local_packages_fallbacks_and_missing_limits() {

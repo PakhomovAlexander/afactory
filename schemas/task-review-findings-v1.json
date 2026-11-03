@@ -31,7 +31,7 @@
       "maxItems": 64,
       "uniqueItems": true,
       "items": {
-        "$ref": "urn:af:schema:task-contracts:1#/$defs/name"
+        "$ref": "urn:af:schema:task-contracts:2#/$defs/name"
       }
     }
   },
@@ -50,13 +50,13 @@
       ],
       "properties": {
         "task_id": {
-          "$ref": "urn:af:schema:task-contracts:1#/$defs/name"
+          "$ref": "urn:af:schema:task-contracts:2#/$defs/name"
         },
         "task_revision_id": {
-          "$ref": "urn:af:schema:task-contracts:1#/$defs/digest"
+          "$ref": "urn:af:schema:task-contracts:2#/$defs/digest"
         },
         "result_id": {
-          "$ref": "urn:af:schema:task-contracts:1#/$defs/digest"
+          "$ref": "urn:af:schema:task-contracts:2#/$defs/digest"
         },
         "round": {
           "type": "integer",
@@ -64,10 +64,10 @@
           "maximum": 16
         },
         "round_id": {
-          "$ref": "urn:af:schema:task-contracts:1#/$defs/digest"
+          "$ref": "urn:af:schema:task-contracts:2#/$defs/digest"
         },
         "snapshot_id": {
-          "$ref": "urn:af:schema:task-contracts:1#/$defs/digest"
+          "$ref": "urn:af:schema:task-contracts:2#/$defs/digest"
         }
       }
     },
@@ -97,7 +97,7 @@
       "properties": {
         "id": {
           "description": "`bugs-1`: the reviewer slot and the report's position from one; `evaluator` for the evaluator's verdict.",
-          "$ref": "urn:af:schema:task-contracts:1#/$defs/name"
+          "$ref": "urn:af:schema:task-contracts:2#/$defs/name"
         },
         "origin": {
           "enum": [
@@ -106,11 +106,11 @@
           ]
         },
         "by": {
-          "$ref": "urn:af:schema:task-contracts:1#/$defs/name"
+          "$ref": "urn:af:schema:task-contracts:2#/$defs/name"
         },
         "artifact_id": {
           "description": "The review.kernel/ReviewerResult@2 or af/TaskEvaluation@1 artifact the finding came from.",
-          "$ref": "urn:af:schema:task-contracts:1#/$defs/digest"
+          "$ref": "urn:af:schema:task-contracts:2#/$defs/digest"
         },
         "severity": {
           "enum": [

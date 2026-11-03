@@ -2809,6 +2809,8 @@ fn provider_command(command: cli::ProviderCommand) -> Result<i32, String> {
             providers::print_status(json, usage, verbose)
         }
         cli::ProviderCommand::Setup {
+            backend,
+            sdk_entrypoint,
             id,
             kind,
             auth_dir,
@@ -2816,7 +2818,21 @@ fn provider_command(command: cli::ProviderCommand) -> Result<i32, String> {
             json,
         } => {
             let kind = provider_kind(kind);
-            providers::setup(&id, kind, auth_dir.as_deref(), login, json)
+            if kind == "pi" {
+                providers::setup_pi(
+                    &id,
+                    backend.as_deref(),
+                    auth_dir.as_deref(),
+                    sdk_entrypoint.as_deref(),
+                    login,
+                    json,
+                )
+            } else {
+                if backend.is_some() || sdk_entrypoint.is_some() {
+                    return Err("--backend and --sdk-entrypoint apply only to Pi".into());
+                }
+                providers::setup(&id, kind, auth_dir.as_deref(), login, json)
+            }
         }
         cli::ProviderCommand::Models { ids, json, resolve } => {
             providers::models::print_models(&ids, json, resolve.as_deref())
@@ -2870,6 +2886,7 @@ fn provider_command(command: cli::ProviderCommand) -> Result<i32, String> {
 
 fn provider_kind(kind: cli::ProviderKindArg) -> &'static str {
     match kind {
+        cli::ProviderKindArg::Pi => "pi",
         cli::ProviderKindArg::Claude => "claude",
         cli::ProviderKindArg::Codex => "codex",
     }

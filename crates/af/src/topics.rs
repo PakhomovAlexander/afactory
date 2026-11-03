@@ -391,13 +391,14 @@ before it prepares a record or touches git. The value is captured when a Task is
 const START: &str = "\
 The first run, in four steps. `af doctor` checks where you are at any point, token-free.
 
-1. Register a Provider: the claude or codex CLI login af's model Workers run under.
+1. Register a Provider: the Claude/Codex CLI or Pi SDK login model Workers run under.
      af provider detect --apply
    finds the logins on this machine (~/.claude, ~/.codex, CLAUDE_CONFIG_DIR, CODEX_HOME) and
    registers them; without --apply it only lists them. With no login yet, run this at your own
    terminal, never through an agent: af provider setup claude-main --kind claude --login
-   (or codex-main --kind codex). af never reads a credential: the registry holds an ID, a kind
-   and a directory. `af provider status` shows what is registered and logged in.
+   (or codex-main --kind codex). The Rust kernel never holds raw credentials: the registry keeps
+   non-secret configuration. Pi uses an embedded SDK host; see `af provider setup --help`.
+   `af provider status` shows what is registered and logged in.
 
 2. Onboard a repository. In a clean git checkout:
      af onboard              preview `.af/`, the review authority (token-free; writes nothing)
@@ -442,8 +443,8 @@ Campaign   One logical review owning one Ledger of Findings across its Rounds; l
            one closed Round. `af review campaigns` lists them; `af review ledger` shows one.
 Store      Where af records a Task's or a Campaign's events and artifacts, outside the
            repository under XDG state. `af storage` shows every Store and its size.
-Provider   A named, machine-local login of the claude or codex CLI that model Workers run under;
-           af never reads its credential. `af provider status` lists them.
+Provider   A named machine-local Claude/Codex CLI or Pi SDK login for model Workers.
+           The Rust kernel never holds its raw credential. `af provider status` lists them.
 Gate       The checks a Pipeline declares, such as `make check`, that must pass before reviewers
            run; a check that could not run is not a pass. `af onboard` shows the Gate.
 Pipeline   The typed graph of Gates and Workers a review or Task runs, pinned in `.af/`.
@@ -589,11 +590,12 @@ Other first-run causes are `task_not_found`, `no_task_catalog`, `no_authority`,
 `af help errors` for the full cause table and `af help errors CAUSE` for one explanation.
 
 A command that classifies its own outcomes — `af provider status` and `af provider setup` — prints
-its own versioned document instead, carrying that exit code and an af-authored `diagnostic`;
-stderr still gets one diagnostic line, so discarding stdout never hides a refusal. The Provider
-documents are af/provider-detect@4 (`af provider detect`), af/provider-status@4,
-af/provider-setup@2 and af/provider-models@1; none carries an account, a credential or the
-Provider CLI's own words.
+its own versioned document instead, carrying a classified outcome and af-authored detail;
+Pi setup uses `detail`, while the other Provider reports use `diagnostic`. Stderr still gets
+one diagnostic line, so discarding stdout never hides a refusal. The Provider
+documents are af/provider-detect@4 (`af provider detect`), af/provider-status@5,
+af/provider-setup@2, af/pi-provider-setup@2 and af/provider-models@2; none carries an account,
+a credential or the Provider CLI's own words.
 
 One command prints JSON lines instead and takes no --json: `af task events ID` writes one
 af/task-event@1 document per line while it follows a Task, and its refusal or usage error is one
@@ -626,6 +628,7 @@ Scenario and Ant documents (ADR-0274; `af help scenarios`):
   af/scenario-roadmap@2 (create, show, revise), af/scenario-roadmap-list@2 (list).
   Fresh templates: af/scenario-task-template@1; capture: af/scenario-template-pin@1.
   Journal: af/scenario-store@4. Owned file envelope: af/scenario-owned-file@1.
+  Research evidence: af/scenario-evidence-source@1.
   Experiment source: af/scenario-experiment-source-request@1 and af/scenario-experiment-source@1.
   Bounded adapters: af/scenario-adapter-request@2 and af/scenario-adapter-response@1.
   `af schema show ID` prints each schema; semantic admission additionally checks authority,
@@ -633,7 +636,7 @@ Scenario and Ant documents (ADR-0274; `af help scenarios`):
 
 The Task documents, each named by its `schema`:
 
-  af task show --json                  af/task-inspection@14; a collected Task:
+  af task show --json                  af/task-inspection@15; a collected Task:
                                        af/task-collected-inspection@3
   af task show --checks --json         af/task-checks@3
   af task list --json                  af/task-list@4, one af/task-list-entry@4 per Task
@@ -656,7 +659,7 @@ The Task documents, each named by its `schema`:
                                        and `next_action`; an infeasible plan carries
                                        planning_diagnostic.required_limits and .reserves
 
-af/task-inspection@14, af/task-collected-inspection@3, af/task-checks@3, each
+af/task-inspection@15, af/task-collected-inspection@3, af/task-checks@3, each
 af/task-list-entry@4, the groups of af/task-attention@1, af/task-report@3, af/task-findings@2,
 af/task-status@2, af/task-detached@3, af/task-cancelled@2 and the terminal record of
 af/task-event@1 carry the Task's `state` (`af help task-states`), its `next_action` carrying the

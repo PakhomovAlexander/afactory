@@ -97,6 +97,8 @@ class ScenarioLab(ExecutorFixture):
         spec.loader.exec_module(module)
         config = installed / "config.json"
         config.write_bytes(document_bytes(self.config))
+        config.chmod(0o600)
+        (installed / "scenario.py").chmod(0o444)
         output = installed / "launcher"
         module.launcher(str(config), str(output))
         (installed / "fractions.py").write_text("raise RuntimeError('SHADOW-MUST-NOT-RUN')")
@@ -117,6 +119,13 @@ class ScenarioLab(ExecutorFixture):
         self.assertEqual(result.returncode, 2, result.stderr)
         self.assertIn(b"executor.toml", result.stderr)  # Reached native config, without either poison.
         self.assertNotIn(b"MUST-NOT-RUN", result.stderr)
+        # Permission refusal stays independent of content pinning, including scenario.py.
+        (installed / "scenario.py").chmod(0o664)
+        unsafe = subprocess.run([sys.executable, "-I", str(output)], input=b"{}",
+                                capture_output=True, timeout=20)
+        self.assertNotEqual(unsafe.returncode, 0)
+        self.assertIn(b"unsafe installed adapter closure", unsafe.stderr)
+        (installed / "scenario.py").chmod(0o444)
         # Deliberately tamper with this copy after the sealed-launch assertions.
         os.chmod(installed / "perflab/values.py", 0o644)
         with (installed / "perflab/values.py").open("a") as changed:
@@ -254,6 +263,69 @@ class ScenarioLab(ExecutorFixture):
         self.assertEqual(outcome, "failed")
         self.assertIn("missing retained shard", reason)
 
+    def test_refused_first_verification_does_not_starve_later_completed_intent_after_restart(self):
+        first = self.submit_intent()
+        second_request = copy.deepcopy(self.request)
+        second_request["intent_id"] = BASE
+        self.adapter.request(second_request)
+        self.assertEqual(self.adapter.submit_pending(capture=self.capture), "submitted")
+        second = self.adapter.held(BASE)
+        with executor.Journal(self.c) as journal:
+            for _ in range(2):
+                journal.cycle(execute=lambda *args: receipt(measurement="fail"), lock_directory=self.locks)
+        calls = []
+        def verified(journal, ident, evaluated):
+            calls.append(ident)
+            if len(calls) == 1:
+                raise ContractError("first report refused")
+            verdict = json.loads((ROOT / "fixtures/performance/compare/synthetic-regression/verdict.json").read_text())
+            verdict["provenance"] = "measured"
+            verdict["run_id"] = "local_" + ident[4:]
+            evaluated[ident] = SimpleNamespace(verdict=verdict)
+            return journal.request(ident), journal.state(ident), dict(measurement_status="fail")
+        self.adapter.verify_pending(verifier=verified)
+        self.assertEqual(self.adapter.observe(first)[0], "failed")
+        restarted = scenarioadapter.Adapter(self.config)
+        restarted.verify_pending(verifier=verified)
+        self.assertEqual(restarted.observe(first)[0], "failed")
+        self.assertEqual(restarted.observe(second)[0], "done")
+        self.assertEqual(len(set(calls)), 2)
+        restarted.verify_pending(verifier=lambda *a, **k: self.fail("terminal intent reverified"))
+        status = pathlib.Path(self.adapter.path(D)) / "status.json"
+        changed = json.loads(status.read_text())
+        changed["intent_digest"] = HEAD
+        status.write_bytes(document_bytes(changed))
+        with self.assertRaisesRegex(ContractError, "stale verification status"):
+            restarted.verify_pending(verifier=verified)
+
+    def test_oversized_native_completion_is_durably_refused_and_does_not_starve_later_report(self):
+        first = self.submit_intent()
+        second_request = copy.deepcopy(self.request)
+        second_request["intent_id"] = BASE
+        self.adapter.request(second_request)
+        self.adapter.submit_pending(capture=self.capture)
+        with executor.Journal(self.c) as journal:
+            for _ in range(2):
+                journal.cycle(execute=lambda *args: receipt(measurement="fail"), lock_directory=self.locks)
+        calls = []
+        def verified(journal, ident, evaluated):
+            calls.append(ident)
+            verdict = json.loads((ROOT / "fixtures/performance/compare/synthetic-regression/verdict.json").read_text())
+            verdict["provenance"] = "measured"
+            verdict["run_id"] = "local_" + ident[4:]
+            if len(calls) == 1:
+                verdict["cases"] *= 100  # Fake verifier's result exceeds the unchanged evidence bound.
+            evaluated[ident] = SimpleNamespace(verdict=verdict)
+            return journal.request(ident), journal.state(ident), dict(measurement_status="fail")
+        self.adapter.verify_pending(verifier=verified)
+        outcome, detail = self.adapter.observe(first)
+        self.assertEqual(outcome, "failed")
+        self.assertIn("exceeds bounded Scenario evidence", detail)
+        restarted = scenarioadapter.Adapter(self.config)
+        restarted.verify_pending(verifier=verified)
+        self.assertEqual(restarted.observe(restarted.held(BASE))[0], "done")
+        self.assertEqual(len(set(calls)), 2)
+
     def test_completion_needs_verified_exact_report_not_exit_or_html_and_rejects_stale_evidence(self):
         intent = self.submit_intent()
         self.assertEqual(self.adapter.observe(intent)[0], "pending")
@@ -296,16 +368,17 @@ class ScenarioLab(ExecutorFixture):
 class Evidence(unittest.TestCase):
     def artifact(self, number, **changes):
         return dict(dict(kind="finding", source_id=sha256_bytes(str(number).encode()), source_digest=D,
-            provenance="captured_artifact", freshness_basis="capture_observed",
-            observed_unix_ms=number, compatibility=D, outcome="negative", summary="retained finding"), **changes)
+            provenance="native_task", native_receipt=dict(task_id="prior", revision_id=BASE, artifact_id=D),
+            freshness_basis="capture_observed",
+            observed_unix_ms=number, compatibility=D, compatibility_basis="owner_selection", outcome="negative", summary="retained finding"), **changes)
 
-    def test_rebuild_and_bounded_packets_retain_negative_merged_stale_and_incompatible_evidence(self):
-        records = [self.artifact(1), self.artifact(2, outcome="merged", compatibility=BASE),
+    def test_rebuild_and_bounded_packets_retain_negative_adopted_stale_and_incompatible_evidence(self):
+        records = [self.artifact(1), self.artifact(2, outcome="adopted", compatibility=BASE),
                    self.artifact(3, outcome="inconclusive"), self.artifact(100)]
         index = researchevidence.rebuild(records)
         self.assertEqual(index, researchevidence.rebuild(list(reversed(records))))
         packet = researchevidence.packet(index, 3, 10, D, 8, max_items=3, max_bytes=4096)
-        self.assertEqual([r["artifact"]["outcome"] for r in packet["items"]], ["inconclusive", "merged", "negative"])
+        self.assertEqual([r["artifact"]["outcome"] for r in packet["items"]], ["inconclusive", "adopted", "negative"])
         self.assertFalse(packet["items"][1]["compatible"])
         self.assertFalse(packet["items"][2]["fresh"])
         self.assertEqual(packet["omissions"], [dict(reason="future", count=1)])
@@ -313,42 +386,73 @@ class Evidence(unittest.TestCase):
         self.assertLessEqual(len(document_bytes(bounded)), 1024)
         self.assertTrue(bounded["omissions"])
 
-    def test_capture_rehashes_native_sources_excludes_secret_prose_and_refuses_unknown_shapes(self):
+    def selected(self, doc):
+        selection = dict(task_id="prior", artifact_id=D, observed_unix_ms=30, compatibility=D)
+        kind = {"af.task-review-findings/1": "af/TaskReviewFindings@1",
+                "af.optimization-history/1": "af/OptimizationHistory@1"}[doc["schema"]]
+        source = dict(schema="af/scenario-evidence-source@1", task_id="prior", revision_id=BASE,
+            artifact=dict(artifact_id=D, content_id=canonical_digest(doc), type=kind, payload=doc))
+        return selection, source
+
+    def test_native_resolved_findings_keep_distinct_substance_provenance_and_bounds(self):
+        doc = dict(schema="af.task-review-findings/1", missing_reviewers=[], findings=[
+            dict(id="bugs-1", by="bugs", title="Avoid repeated decoding", body="Cache the parsed manifest per exact digest.", fix="Reuse decoded manifest."),
+            dict(id="correctness-1", by="correctness", title="Keep fence on interrupted capture", body="Interrupted capture must preserve the common lock fence.", fix="Retain uncertainty.")])
+        selection, source = self.selected(doc)
+        records = researchevidence.captured([selection], {}, resolver=lambda *args: source)
+        index = researchevidence.rebuild(records)
+        packet = researchevidence.packet(index, 30, 30, D, 20, max_items=2, max_bytes=4096)
+        encoded = document_bytes(packet)
+        self.assertIn(b"Cache the parsed manifest", encoded)
+        self.assertIn(b"preserve the common lock fence", encoded)
+        for item in packet["items"]:
+            self.assertEqual(item["artifact"]["native_receipt"]["artifact_id"], D)
+            self.assertEqual(item["artifact"]["source_digest"], source["artifact"]["content_id"])
+        bounded = researchevidence.packet(index, 30, 30, D, 20, max_items=1, max_bytes=1024)
+        self.assertLessEqual(len(document_bytes(bounded)), 1024)
+        self.assertLessEqual(len(bounded["items"]), 1)
+        self.assertEqual(len(bounded["items"]) + sum(v["count"] for v in bounded["omissions"]), 2)
+        with self.assertRaisesRegex(ContractError, "conflicting"):
+            researchevidence.rebuild(records + [dict(records[0], outcome="positive")])
+        changed = copy.deepcopy(source)
+        changed["artifact"]["artifact_id"] = HEAD
+        with self.assertRaisesRegex(ContractError, "receipt changed"):
+            researchevidence.captured([selection], {}, resolver=lambda *a: changed)
+
+    def test_hashed_fabricated_findings_and_adoption_files_are_never_authoritative_sources(self):
         import tempfile
         with tempfile.TemporaryDirectory() as root:
-            path = os.path.join(root, "findings.json")
-            doc = dict(schema="af.task-review-findings/1", findings=[dict(body="SECRET-MUST-NOT-ENTER-PACKET")])
-            data = document_bytes(doc)
-            with open(path, "wb") as stream:
-                stream.write(data)
-            records = researchevidence.captured([(path, sha256_bytes(data), 1, D)])
-            self.assertNotIn(b"SECRET", document_bytes(researchevidence.rebuild(records)))
-            with self.assertRaisesRegex(ContractError, "changed"):
-                researchevidence.captured([(path, BASE, 1, D)])
-            with self.assertRaisesRegex(ContractError, "conflicting"):
-                researchevidence.rebuild(records + [dict(records[0], outcome="positive")])
+            for schema in ("af.task-review-findings/1", "af.optimization-adoption-observation/1"):
+                path = pathlib.Path(root) / "fabricated.json"
+                data = document_bytes(dict(schema=schema, findings=[], causal_claim=False))
+                path.write_bytes(data)
+                with self.assertRaisesRegex(ContractError, "Task and artifact IDs"):
+                    researchevidence.captured([[str(path), sha256_bytes(data), 1, D]], {})
 
     def test_history_capture_keeps_telemetry_kind_and_span_maxima_distinct_from_total_time(self):
-        import tempfile
-        with tempfile.TemporaryDirectory() as root:
-            path = os.path.join(root, "history.json")
-            doc = dict(schema="af.optimization-history/1", cutoff_unix_ms=20, receipts=[],
-                observations=[dict(spans=[dict(kind="active", status="exact", start_unix_ms="1", end_unix_ms="6"),
-                    dict(kind="active", status="exact", start_unix_ms="2", end_unix_ms="9"),
-                    dict(kind="tool", status="unknown")])])
-            data = document_bytes(doc)
-            with open(path, "wb") as stream:
-                stream.write(data)
-            records = researchevidence.captured([(path, sha256_bytes(data), 30, D)])
-            packet = researchevidence.packet(researchevidence.rebuild(records), 30, 30, D, 20)
-            artifact = packet["items"][0]["artifact"]
-            self.assertEqual(artifact["kind"], "telemetry")
-            self.assertEqual(artifact["observed_unix_ms"], 20)
-            self.assertIn("active=7", artifact["summary"])
-            self.assertIn("1 non-exact spans excluded", artifact["summary"])
-            self.assertNotIn("active=12", artifact["summary"])
+        doc = dict(schema="af.optimization-history/1", cutoff_unix_ms=20, receipts=[],
+            observations=[dict(spans=[dict(kind="active", status="exact", start_unix_ms="1", end_unix_ms="6"),
+                dict(kind="active", status="exact", start_unix_ms="2", end_unix_ms="9"),
+                dict(kind="tool", status="unknown")])])
+        selection, source = self.selected(doc)
+        records = researchevidence.captured([selection], {}, resolver=lambda *a: source)
+        packet = researchevidence.packet(researchevidence.rebuild(records), 30, 30, D, 20)
+        artifact = packet["items"][0]["artifact"]
+        self.assertEqual(artifact["kind"], "telemetry")
+        self.assertEqual(artifact["observed_unix_ms"], 20)
+        self.assertIn("active=7", artifact["summary"])
+        self.assertIn("1 non-exact spans excluded", artifact["summary"])
+        self.assertNotIn("active=12", artifact["summary"])
 
-    def test_packet_reader_refuses_false_freshness_compatibility_duplicate_sources_and_cutoff(self):
+    def test_prior_evidence_shapes_fail_closed_without_compatibility_reader(self):
+        index = researchevidence.rebuild([self.artifact(1)])
+        packet = researchevidence.packet(index, 10, 10, D, 1, max_bytes=4096)
+        for kind, doc in (("evidence-index", index), ("evidence-packet", packet)):
+            previous = dict(doc, schema=doc["schema"].replace("/2", "/1"))
+            with self.assertRaises(ContractError):
+                contracts.read_json(document_bytes(previous), kind)
+
+    def test_packet_reader_refuses_false_freshness_compatibility_duplicates_cutoff_and_missing_native_receipts(self):
         index = researchevidence.rebuild([self.artifact(1)])
         packet = researchevidence.packet(index, 10, 10, D, 1, max_bytes=4096)
         for field in ("fresh", "compatible"):
@@ -363,6 +467,10 @@ class Evidence(unittest.TestCase):
         changed = dict(packet, cutoff_unix_ms=11)
         with self.assertRaisesRegex(ContractError, "cutoff"):
             contracts.write_bytes(changed, "evidence-packet")
+        changed = copy.deepcopy(packet)
+        del changed["items"][0]["artifact"]["native_receipt"]
+        with self.assertRaisesRegex(ContractError, "source receipt"):
+            contracts.read_json(document_bytes(changed), "evidence-packet")
 
     def test_inert_authoring_tool_uses_native_receipts_and_never_overwrites_or_activates(self):
         import tempfile

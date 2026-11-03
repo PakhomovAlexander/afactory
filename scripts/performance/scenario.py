@@ -32,7 +32,11 @@ def parser():
         if name == "launcher":
             cmd.add_argument("--output", required=True)
     cmd = sub.add_parser("evidence", help="rebuild an index from explicit native source selections")
-    cmd.add_argument("--sources", required=True, help="JSON array of [path, raw digest, timestamp, compatibility]")
+    cmd.add_argument("--sources", required=True, help="JSON array of native task_id, artifact_id, observed_unix_ms and compatibility selections")
+    cmd.add_argument("--af", help="absolute trusted native af reader executable")
+    cmd.add_argument("--af-digest", help="exact installed reader byte digest")
+    cmd.add_argument("--task-repo", help="native Task repository")
+    cmd.add_argument("--task-state", help="native Task Store")
     cmd.add_argument("--executor", help="native executor config, with explicit --original IDs")
     cmd.add_argument("--original", action="append", default=[])
     cmd.add_argument("--output-root", required=True, help="existing private content-addressed evidence root")
@@ -95,7 +99,10 @@ def main(argv=None):
     args = parser().parse_args(argv)
     if args.command == "evidence":
         sources = loads_strict(executor.read(args.sources), "selected native sources", 1048576)
-        records = researchevidence.captured(sources)
+        require(not sources or all((args.af, args.af_digest, args.task_repo, args.task_state)),
+                "native sources require --af, --af-digest, --task-repo and --task-state")
+        records = researchevidence.captured(sources, dict(af=args.af, af_digest=args.af_digest,
+            task_repo=args.task_repo, task_state=args.task_state))
         require(not args.original or args.executor, "native original selection needs --executor")
         if args.original:
             with executor.Journal(executor.load_config(args.executor), readonly=True) as journal:

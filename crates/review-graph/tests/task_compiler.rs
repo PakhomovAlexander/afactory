@@ -213,7 +213,7 @@ fn installed_review_retains_its_optional_predecessor_barrier_and_task_branch_dec
 
 #[test]
 fn installed_review_worker_is_guarded_by_the_same_compiled_provider_admission() {
-    use review_core::task::plan::{EffectiveWorkerBindingV1, WorkerExecutionV1};
+    use review_core::task::plan::{EffectiveWorkerBindingV2, WorkerExecutionV2};
     use review_graph::task::{CompiledOperator, OperatorAttemptCost, ReviewOperation};
     let (task, pipelines, signatures) = fixture();
     let mut graph = compile_task(
@@ -243,15 +243,16 @@ fn installed_review_worker_is_guarded_by_the_same_compiled_provider_admission() 
     };
     let bindings = BTreeMap::from([(
         slot.clone(),
-        EffectiveWorkerBindingV1 {
+        EffectiveWorkerBindingV2 {
             package_digest: "a".repeat(64),
             package_artifact_id: "b".repeat(64),
             invocation_policy_id: "c".repeat(64),
-            execution: WorkerExecutionV1::Model {
+            execution: WorkerExecutionV2::Model {
                 provider: "personal".into(),
                 provider_kind: "fixture".into(),
                 principal_id: "fixture-principal".into(),
                 model: "fixture-model".into(),
+                pi: None,
                 effort: "high".into(),
             },
         },
@@ -373,7 +374,7 @@ fn declarations_cannot_invent_worker_contracts_evidence_or_effect_authority() {
 
 #[test]
 fn provider_admission_groups_exact_executions_and_preserves_reservations() {
-    use review_core::task::plan::{EffectiveWorkerBindingV1, WorkerExecutionV1};
+    use review_core::task::plan::{EffectiveWorkerBindingV2, WorkerExecutionV2};
     use review_graph::task::{CompiledOperator, OperatorAttemptCost};
     let (task, pipelines, signatures) = fixture();
     let mut base = compile_task(
@@ -415,15 +416,16 @@ fn provider_admission_groups_exact_executions_and_preserves_reservations() {
         base.allowances["root.nodes.write"].clone(),
     );
     let digest = |c: char| format!("sha256:{}", c.to_string().repeat(64));
-    let binding = EffectiveWorkerBindingV1 {
+    let binding = EffectiveWorkerBindingV2 {
         package_digest: digest('a'),
         package_artifact_id: digest('b'),
         invocation_policy_id: digest('c'),
-        execution: WorkerExecutionV1::Model {
+        execution: WorkerExecutionV2::Model {
             provider: "personal".into(),
             provider_kind: "fixture".into(),
             principal_id: "account".into(),
             model: "resolved".into(),
+            pi: None,
             effort: "high".into(),
         },
     };
@@ -437,7 +439,7 @@ fn provider_admission_groups_exact_executions_and_preserves_reservations() {
         match split {
             1 => bindings.get_mut(&second).unwrap().invocation_policy_id = digest('f'),
             2 => {
-                let WorkerExecutionV1::Model { provider, .. } =
+                let WorkerExecutionV2::Model { provider, .. } =
                     &mut bindings.get_mut(&second).unwrap().execution
                 else {
                     unreachable!()
@@ -466,7 +468,7 @@ fn provider_admission_groups_exact_executions_and_preserves_reservations() {
         for (name, node) in admissions {
             assert_eq!(
                 node.contract.outputs["result"].artifact_type,
-                "af/TaskProviderAdmission@1"
+                "af/TaskProviderAdmission@2"
             );
             let allowance = &graph.allowances[name];
             assert_eq!(

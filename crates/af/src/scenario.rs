@@ -44,6 +44,26 @@ pub(crate) struct Definition {
 }
 #[derive(Debug, Subcommand)]
 pub(crate) enum ScenarioCommand {
+    /// Retrieve one provenance-checked native findings, History Capture or adoption artifact
+    #[command(
+        override_usage = "af scenario evidence-source <TASK_ID> --artifact-id ID\n                            --repo REPO --task-state STORE [OPTIONS]",
+        after_long_help = "Examples:\n  # needs: a native artifact recorded by the selected Task\n  af scenario evidence-source TASK_ID --artifact-id sha256:... \\\n    --repo /project --task-state /private/tasks --json"
+    )]
+    EvidenceSource {
+        /// Task whose recorded evidence authorizes the selected artifact
+        task_id: String,
+        /// Exact native artifact ID, not a path to an exported JSON file
+        #[arg(long)]
+        artifact_id: String,
+        /// Repository the Task belongs to
+        #[arg(long)]
+        repo: PathBuf,
+        /// Private native Task Store containing the artifact and source receipts
+        #[arg(long)]
+        task_state: PathBuf,
+        #[command(flatten)]
+        inspect: Inspect,
+    },
     /// Capture an accepted Task's exact Snapshots as private benchmark Git objects
     #[command(
         long_about = "Write a private experiment source representation from an exact accepted Task receipt. \
@@ -332,6 +352,21 @@ pub(crate) fn scenario(command: ScenarioCommand) -> Result<i32> {
             }
             Ok(0)
         }
+        ScenarioCommand::EvidenceSource {
+            task_id,
+            artifact_id,
+            repo,
+            task_state,
+            inspect,
+        } => print(
+            &crate::task_execution::scenario_evidence::read(
+                &repo,
+                &task_state,
+                &task_id,
+                &artifact_id,
+            )?,
+            &inspect,
+        ),
         ScenarioCommand::TemplatePin {
             file,
             repo,

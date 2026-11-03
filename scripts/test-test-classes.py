@@ -412,6 +412,21 @@ class LabelSetup(unittest.TestCase):
             self.assertIn('release:fast', default.stderr)
             self.assertEqual(sorted(p.name for p in root.iterdir()), ['gh', 'scripts'])
 
+    def test_release_linux_builds_pin_ubuntu24_for_static_qemu_execution(self):
+        text = (ROOT / '.github/workflows/release.yml').read_text()
+        build = text[text.index('  build:'):text.index('  publish:')]
+        matrix = tc.re.findall(r'- target: (\S+)\n +os: (\S+)\n +cross: (\S+)', build)
+        self.assertEqual(matrix, [
+            ('aarch64-apple-darwin', 'macos-latest', 'none'),
+            ('x86_64-unknown-linux-musl', 'ubuntu-24.04', 'zig'),
+            ('aarch64-unknown-linux-musl', 'ubuntu-24.04', 'zig-qemu')])
+        self.assertIn("if: matrix.cross == 'zig-qemu'", build)
+        self.assertIn('sudo apt-get install -y --no-install-recommends qemu-user-static', build)
+        self.assertIn('exec qemu-aarch64-static', build)
+        self.assertIn('scripts/release-smoke.sh "$run" "$RUNNER_TEMP/smoke"', build)
+        self.assertIn('ref: ${{ github.sha }}', build)
+        self.assertIn('"release_key": "embedded"', build)
+
     def test_release_resolver_has_only_the_required_api_read_permission_and_runner_token(self):
         text = (ROOT / '.github/workflows/release.yml').read_text()
         resolver = text[text.index('  resolve:'):text.index('  # This also provides')]
@@ -531,12 +546,12 @@ class SealedEvidence(unittest.TestCase):
     def test_full_gate_build_precedes_python_tests_with_real_step_receipts(self):
         # Keep the actual wrapper, Make graph and receipt writer. Only expensive payloads
         # are stand-ins; never run a nested real gate from this preflight regression.
-        preflight = ['task-preflight', 'prereqs', 'gate-owner', 'nextest-gate', 'stress-proof',
-                     'test-time-report', 'provider-auth-host', 'pr-report', 'pr-lines',
+        preflight = ['adr-catalog', 'task-preflight', 'prereqs', 'gate-owner', 'nextest-gate', 'stress-proof',
+                     'test-time-report', 'provider-auth-host', 'pi-host', 'pr-report', 'pr-lines',
                      'test-classes', 'test-catalog', 'performance-schemas',
                      'performance-kernel-harness']
         lint = ['fmt', 'lint', 'lint-diagnostic-features']
-        tests = ['test', 'performance-lab', 'test-perf-trace', 'test-perf-calibration']
+        tests = ['test', 'scenario-github-adapter', 'performance-lab', 'test-perf-trace', 'test-perf-calibration']
         release = ['release-resolution', 'changelog-notes-tests', 'changelog-notes',
                    'quarantine-scan-tests', 'af-pin-tests', 'af-pin']
         expected = [(label, 'preflight') for label in preflight]
@@ -551,10 +566,10 @@ class SealedEvidence(unittest.TestCase):
             for name in ('verify.sh', 'verify-body.sh', 'gate-owner.py', 'ci-step.py'):
                 shutil.copy2(ROOT / 'scripts' / name, scripts / name)
             # All command paths required by the full Make entry must exist in the fixture.
-            payloads = ['test-task-preflight.py', 'test-prereqs.py', 'test-gate-owner.py',
+            payloads = ['test-adr.py', 'test-task-preflight.py', 'test-prereqs.py', 'test-gate-owner.py',
                         'test-nextest-gate.py', 'test-stress-proof.py',
                         'test-test-time-report.py',
-                        'test-provider-auth-host.py', 'test-check-pr-report.py',
+                        'test-provider-auth-host.py', 'test-scenario-github-adapter.py', 'test-pi-host.py', 'test-check-pr-report.py',
                         'test-pr-lines.py', 'test-class-python.py', 'test-classes.py',
                         'test-performance.py', 'performance/schemas.py', 'performance/cli.py',
                         'nextest-gate.py', 'changelog-notes.py', 'af-pin.py',

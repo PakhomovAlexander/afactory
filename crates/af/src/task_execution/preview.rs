@@ -2,7 +2,7 @@
 use super::*;
 use review_core::task::input_bindings::TaskInputBindingV1;
 use review_core::task::pipeline::TaskOperatorV1;
-use review_core::task::plan::WorkerExecutionV1;
+use review_core::task::plan::WorkerExecutionV2;
 use review_graph::task::{CompiledNode, CompiledOperator};
 use std::fmt::Write;
 
@@ -64,7 +64,7 @@ fn details_hint(out: &mut String, task_id: &str, selectors: &str) {
 }
 pub(super) fn package_label(
     cas: &Cas,
-    plan: &ExecutionPlanV1,
+    plan: &ExecutionPlanV2,
     name: &str,
 ) -> Result<String, String> {
     let (name, version) = package_name_version(cas, plan, name)?;
@@ -73,7 +73,7 @@ pub(super) fn package_label(
 /// A captured package's name and version, as sanitized display text.
 pub(super) fn package_name_version(
     cas: &Cas,
-    plan: &ExecutionPlanV1,
+    plan: &ExecutionPlanV2,
     name: &str,
 ) -> Result<(String, String), String> {
     let dependency = plan
@@ -108,10 +108,10 @@ fn worker(node: &CompiledNode) -> Option<&str> {
         _ => None,
     }
 }
-fn execution_label(execution: &WorkerExecutionV1) -> String {
+fn execution_label(execution: &WorkerExecutionV2) -> String {
     match execution {
-        WorkerExecutionV1::Command {} => "command Worker".into(),
-        WorkerExecutionV1::Model {
+        WorkerExecutionV2::Command {} => "command Worker".into(),
+        WorkerExecutionV2::Model {
             model,
             effort,
             provider,
@@ -119,7 +119,7 @@ fn execution_label(execution: &WorkerExecutionV1) -> String {
         } => format!("{}/{} via {}", text(model), text(effort), text(provider)),
     }
 }
-fn binding(plan: &ExecutionPlanV1, slot: &str) -> String {
+fn binding(plan: &ExecutionPlanV2, slot: &str) -> String {
     plan.bindings
         .get(slot)
         .map(|b| execution_label(&b.execution))
@@ -160,7 +160,7 @@ fn experiment_slots(graph: &CompiledTask) -> Vec<String> {
 /// every arm's Attempt runs under. `None` for a slot no node runs.
 pub(super) fn slot_wall(
     cas: &Cas,
-    plan: &ExecutionPlanV1,
+    plan: &ExecutionPlanV2,
     graph: &CompiledTask,
     slot: &str,
 ) -> Option<u64> {
@@ -189,7 +189,7 @@ pub(super) fn slot_wall(
         .max()
 }
 /// A slot's binding and its Attempt wall, as the plan preview prints them side by side.
-fn binding_and_wall(cas: &Cas, plan: &ExecutionPlanV1, graph: &CompiledTask, slot: &str) -> String {
+fn binding_and_wall(cas: &Cas, plan: &ExecutionPlanV2, graph: &CompiledTask, slot: &str) -> String {
     match slot_wall(cas, plan, graph, slot) {
         Some(wall) => format!(
             "{}, Attempt wall {}",
@@ -215,7 +215,7 @@ fn listed_slots(slots: Vec<(String, bool)>) -> (Vec<String>, usize) {
 }
 /// Every Worker slot of the plan, in the order the preview lists them: the slots of nodes in
 /// graph order, an optimization experiment's arms, then every other bound slot.
-fn ordered_slots(plan: &ExecutionPlanV1, graph: &CompiledTask) -> Vec<String> {
+fn ordered_slots(plan: &ExecutionPlanV2, graph: &CompiledTask) -> Vec<String> {
     let mut slots: Vec<String> = Vec::new();
     let mut push = |slot: &str| {
         if !slots.iter().any(|known| known == slot) {
@@ -239,7 +239,7 @@ fn ordered_slots(plan: &ExecutionPlanV1, graph: &CompiledTask) -> Vec<String> {
 /// the plan's `--json` document (ADR-0257), in the order the preview lists them.
 pub(super) fn slots_value(
     cas: &Cas,
-    plan: &ExecutionPlanV1,
+    plan: &ExecutionPlanV2,
     graph: &CompiledTask,
 ) -> serde_json::Value {
     let slots = ordered_slots(plan, graph);
@@ -253,7 +253,7 @@ pub(super) fn slots_value(
                     "attempt_wall_ms": slot_wall(cas, plan, graph, &slot),
                 });
                 match plan.bindings.get(&slot).map(|b| &b.execution) {
-                    Some(WorkerExecutionV1::Model {
+                    Some(WorkerExecutionV2::Model {
                         provider,
                         model,
                         effort,
@@ -264,7 +264,7 @@ pub(super) fn slots_value(
                         row["model"] = json!(model);
                         row["effort"] = json!(effort);
                     }
-                    Some(WorkerExecutionV1::Command {}) => row["execution"] = json!("command"),
+                    Some(WorkerExecutionV2::Command {}) => row["execution"] = json!("command"),
                     None => row["execution"] = json!(null),
                 }
                 row
@@ -273,7 +273,7 @@ pub(super) fn slots_value(
     )
 }
 /// A slot's Worker package and binding, as the browser's status line names a highlighted row.
-fn slot_binding(plan: &ExecutionPlanV1, graph: &CompiledTask, slot: &str) -> String {
+fn slot_binding(plan: &ExecutionPlanV2, graph: &CompiledTask, slot: &str) -> String {
     let name = text(slot.strip_prefix("root.slots.").unwrap_or(slot));
     let worker = graph.slots.get(slot).map(|slot| slot.worker.as_str());
     let worker = text(worker.unwrap_or("?"));
@@ -304,7 +304,7 @@ fn node_label(
     cas: &Cas,
     id: &str,
     node: &CompiledNode,
-    plan: &ExecutionPlanV1,
+    plan: &ExecutionPlanV2,
     graph: &CompiledTask,
 ) -> String {
     let name = id.rsplit('.').next().unwrap_or(id);
@@ -436,7 +436,7 @@ pub(super) type SlotMarks = Vec<(usize, String)>;
 fn tree_rows(
     out: &mut String,
     cas: &Cas,
-    plan: &ExecutionPlanV1,
+    plan: &ExecutionPlanV2,
     graph: &CompiledTask,
     parent: &str,
     prefix: &str,
@@ -566,7 +566,7 @@ pub(super) fn render(
     cas: &Cas,
     revision: &TaskRevisionV1,
     plan_id: &str,
-    plan: &ExecutionPlanV1,
+    plan: &ExecutionPlanV2,
     graph: &CompiledTask,
     status: &str,
     tree: bool,
@@ -589,7 +589,7 @@ fn render_marked(
     cas: &Cas,
     revision: &TaskRevisionV1,
     plan_id: &str,
-    plan: &ExecutionPlanV1,
+    plan: &ExecutionPlanV2,
     graph: &CompiledTask,
     status: &str,
     tree: bool,
@@ -846,7 +846,7 @@ pub(super) fn current_marked(
         .plan_id
         .as_deref()
         .ok_or("Task has no captured plan")?;
-    let plan: ExecutionPlanV1 = artifact(cas, id, EXECUTION_PLAN_V1)?;
+    let plan: ExecutionPlanV2 = artifact(cas, id, EXECUTION_PLAN_V2)?;
     let graph: CompiledTask = artifact(cas, &plan.compiled_graph_id, COMPILED_TASK_V1)?;
     let status = if matches!(state.phase, TaskPhaseV1::Finished { .. }) {
         "finished"
@@ -905,11 +905,12 @@ mod tests {
     }
     #[test]
     fn model_display_uses_the_effective_model_effort_and_account() {
-        let execution = WorkerExecutionV1::Model {
+        let execution = WorkerExecutionV2::Model {
             provider: "claude-personal".into(),
             provider_kind: "claude".into(),
             principal_id: "private-account-identity".into(),
             model: "claude-opus-5".into(),
+            pi: None,
             effort: "xhigh".into(),
         };
         assert_eq!(
@@ -918,7 +919,7 @@ mod tests {
         );
         assert!(!execution_label(&execution).contains("private-account-identity"));
         assert_eq!(
-            execution_label(&WorkerExecutionV1::Command {}),
+            execution_label(&WorkerExecutionV2::Command {}),
             "command Worker"
         );
     }

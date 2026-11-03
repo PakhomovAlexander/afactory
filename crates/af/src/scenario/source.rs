@@ -14,6 +14,10 @@ pub(crate) struct SourceRequest {
     pub trusted_ref: String,
 }
 impl SourceRequest {
+    /// The adapter protocol hashes canonical request JSON, independently of CAS content IDs.
+    pub(crate) fn digest(&self) -> Result<String> {
+        hash(self)
+    }
     pub(crate) fn validate(&self) -> Result<()> {
         require(
             self.schema == "af/scenario-experiment-source-request@1",
