@@ -297,7 +297,7 @@ the `state` object: `phase`, `outcome`, `cause` and `next_action`, `null` where 
 
 | Outcome | Exit code of `af task run` | Meaning |
 | --- | ---: | --- |
-| `verified` | 0 | every acceptance obligation is satisfied; the result can be delivered |
+| `verified` | 0 | every declared acceptance obligation is satisfied; inspect the domain conclusion |
 | `changes_requested` | 3 | the review or the evaluator ran to completion and asked for changes |
 | `gate_failed` | 5 | a required check of the gate failed or could not run |
 | `provider_failed` | 6 | a Worker's Provider or process failed, or its reply was not admissible |
@@ -1223,3 +1223,7 @@ directory once, or `**Lines added: none**` alone, then the end marker.
 | Worker authentication failure | Re-establish the named machine-local Provider login yourself with `af provider setup … --login` at a private terminal, then confirm with `af provider status`. |
 | missing check tool | Install the repository-approved toolchain; never remove or weaken the check. |
 | state or disk error | Preserve the external Task state directory, restore disk capacity/permissions, and retry the exact inspection or delivery command. |
+
+Package-defined [structured Tasks](task-execution/structured.md) accept captured JSON and return
+typed data with conclusion `structurally_validated`. That is structural acceptance without
+independent semantic verification or code delivery.

@@ -122,7 +122,29 @@ fn validate_revision(
     // delivered, so no execution authority, ledger or evidence is replaced; the barrier still
     // revokes every approval and the plan is authorized like any proposal. A refresh from the
     // same Task file is an issue refresh, held to every rule below.
-    if unstarted(state) && task_file_changed(cas, &state.revision, next)? {
+    // Structured Tasks also capture external bytes and package schemas outside the Task
+    // file. An explicit unstarted recapture crosses the same fenced revision/plan barrier.
+    // This never applies to a Task with execution, admission, planning or delivery state.
+    let structured = |revision: &TaskRevisionV1| {
+        revision.authority.allowed_effects.is_empty()
+            && !revision.inputs.contains_key("source")
+            && revision.acceptance.len() == 1
+            && revision.acceptance.get("structured").is_some_and(|a| {
+                a.evidence_type == review_core::task::structured::STRUCTURED_VALIDATION_V1
+            })
+            && revision
+                .required_outputs
+                .get("validation")
+                .is_some_and(|p| {
+                    p.artifact_type == review_core::task::structured::STRUCTURED_VALIDATION_V1
+                })
+    };
+    if unstarted(state)
+        && (task_file_changed(cas, &state.revision, next)?
+            || (structured(&state.revision)
+                && structured(next)
+                && state.revision.kind == next.kind))
+    {
         if next.task_id != state.task_id
             || state.revision.revision.checked_add(1) != Some(next.revision)
             || next.previous_revision_id.as_deref() != Some(state.revision_id.as_str())

@@ -4,6 +4,19 @@ Status: accepted by the owner on 2026-10-30, revision 3. Decisions 1 to 8 in §2
 owner's; revision 2 folded the 19 findings of the af review `triage-design-1` (Codex
 gpt-6-astra, medium); revision 3 closes the last two open questions.
 
+## Current staged single-model flow
+
+On 2026-11-03 the owner selected a reusable custom structured Task capability for the next
+business flow: one captured issue input, one `gpt-6-astra` medium Worker on `codex-personal`,
+and a typed triage proposal, without a mandatory semantic verifier. The implementation and
+installation recipes are staged under [custom Tasks](../../fixtures/custom-tasks/README.md),
+with the [structural acceptance decision](../adr/2026-11-03-accept-package-defined-structured-tasks.md).
+That staged package supersedes the report-profile recipe below for this single-model flow.
+It preserves held and missing-information outcomes and captures bounded cited knowledge with
+explicit absence and freshness. Structural validation is not a second judgement or publication
+approval. The two-model publication runner, labels and scheduling described below remain the
+older deferred design; they are not prerequisites or effects of this custom Task.
+
 ## 1. Problem
 
 The repository has 54 open issues on 2026-10-30. Only 32 carry a label, and the labels that

@@ -178,9 +178,9 @@ pub struct TaskPlanCompiler {
     policy_id: String,
     packages: BTreeMap<String, Package>,
     pipelines: BTreeMap<String, PipelineDefinitionV1>,
-    workers: BTreeMap<String, TaskWorkerManifest>,
-    kinds: BTreeMap<String, TaskKindManifest>,
-    active_kind: Option<String>,
+    pub(super) workers: BTreeMap<String, TaskWorkerManifest>,
+    pub(super) kinds: BTreeMap<String, TaskKindManifest>,
+    pub(super) active_kind: Option<String>,
     signatures: BTreeMap<String, OperatorSignature>,
     settings: BTreeMap<String, AdmittedWorkerSettings>,
     slot_workers: BTreeMap<String, String>,
@@ -720,6 +720,14 @@ impl TaskPlanCompiler {
                 if kind.name != bytes.name || kind.version != bytes.version {
                     return Err("Task-kind manifest disagrees with its pin".into());
                 }
+                if kind.profile == super::kind::TaskKindProfile::Structured {
+                    super::structured::parse_contract(
+                        bytes
+                            .files
+                            .get("structured.json")
+                            .ok_or("Structured kind requires structured.json")?,
+                    )?;
+                }
                 Ok(ParsedPackage::TaskKind(kind))
             }
             _ => Err(
@@ -885,7 +893,11 @@ impl TaskPlanCompiler {
             .collect()
     }
 
-    fn worker_schema(&self, name: &str, path: &str) -> Result<serde_json::Value, String> {
+    pub(super) fn worker_schema(
+        &self,
+        name: &str,
+        path: &str,
+    ) -> Result<serde_json::Value, String> {
         let files = self
             .package_files(name)
             .ok_or("Missing captured Worker files")?;
@@ -934,6 +946,7 @@ impl TaskPlanCompiler {
         )?;
         self.validate_requirements_inputs(&graph)?;
         self.validate_replacement_schemas(&graph)?;
+        self.validate_structured(cas, &normalized, &graph)?;
         if let Err(reason) = graph.budget(task.limits.clone()) {
             resources.push(reason);
         }
@@ -1067,6 +1080,7 @@ impl TaskPlanCompiler {
         }
         let graph = self.compile_graph(&task, root)?;
         self.validate_replacement_schemas(&graph)?;
+        self.validate_structured(cas, &task, &graph)?;
         Ok(graph
             .slots
             .values()
@@ -1100,6 +1114,7 @@ impl TaskPlanCompiler {
         graph.experimental_slots = self.experimental_slots.clone();
         graph.validate_experimental_slots()?;
         self.validate_replacement_schemas(&graph)?;
+        self.validate_structured(cas, &task, &graph)?;
         remote_check_authority(root, &task, &graph)?;
         let bindings = self.effective_bindings(cas, &graph)?;
         let mut used: BTreeSet<String> = graph

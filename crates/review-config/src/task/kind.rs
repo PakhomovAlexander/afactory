@@ -15,6 +15,8 @@ pub enum TaskKindProfile {
     Report,
     OptimizationAnalysis,
     OptimizationCandidate,
+    /// Package-defined data with deterministic structural acceptance only.
+    Structured,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -29,7 +31,17 @@ pub struct TaskKindManifest {
 
 impl TaskKindManifest {
     pub fn validate(&self) -> Result<(), String> {
-        if self.schema != "af.task-kind/1"
+        if self.schema
+            != if self.profile == TaskKindProfile::Structured {
+                "af.task-kind/2"
+            } else {
+                "af.task-kind/1"
+            }
+            || (self.profile == TaskKindProfile::Structured
+                && matches!(
+                    self.kind.as_str(),
+                    "implement" | "review" | "document" | "report" | "optimize" | "verification"
+                ))
             || !review_core::task::is_package_name(&self.name)
             || !review_core::task::is_package_name(&self.kind)
             || self.version.trim().is_empty()

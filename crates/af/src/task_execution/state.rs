@@ -230,7 +230,7 @@ pub(crate) fn view(
 /// The state of a collected Task, from the summary its tombstone retained.
 pub(crate) fn collected(outcome: &str) -> TaskStateV1 {
     let outcome = match outcome {
-        "verified" | "pass" => TaskOutcomeV1::Verified,
+        "verified" | "pass" | "structurally_validated" => TaskOutcomeV1::Verified,
         "changes_requested" | "convergence_exhausted" => TaskOutcomeV1::ChangesRequested,
         _ => TaskOutcomeV1::Exhausted,
     };

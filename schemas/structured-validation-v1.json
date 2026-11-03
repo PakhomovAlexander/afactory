@@ -1,0 +1,53 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:af:schema:structured-validation:1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema",
+    "invocation",
+    "plan_id",
+    "task_revision_id",
+    "contract_id",
+    "inputs",
+    "outputs",
+    "conclusion"
+  ],
+  "properties": {
+    "schema": {
+      "const": "af.structured-validation/1"
+    },
+    "invocation": {
+      "$ref": "urn:af:schema:task-invocation:1"
+    },
+    "plan_id": {
+      "type": "string",
+      "pattern": "^sha256:[0-9a-f]{64}$"
+    },
+    "task_revision_id": {
+      "type": "string",
+      "pattern": "^sha256:[0-9a-f]{64}$"
+    },
+    "contract_id": {
+      "type": "string",
+      "pattern": "^sha256:[0-9a-f]{64}$"
+    },
+    "inputs": {
+      "type": "object",
+      "minProperties": 1,
+      "additionalProperties": {
+        "$ref": "urn:af:schema:task-contracts:2#/$defs/artifactInput"
+      }
+    },
+    "outputs": {
+      "type": "object",
+      "minProperties": 1,
+      "additionalProperties": {
+        "$ref": "urn:af:schema:task-contracts:2#/$defs/artifactInput"
+      }
+    },
+    "conclusion": {
+      "const": "structurally_validated"
+    }
+  }
+}

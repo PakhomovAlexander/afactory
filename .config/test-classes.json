@@ -167,6 +167,7 @@
       "task_delivery": "e2e",
       "task_developer": "e2e",
       "task_document": "e2e",
+      "task_custom": "e2e",
       "task_experiment": "perf",
       "task_file": "e2e",
       "task_file_errors": "uix",

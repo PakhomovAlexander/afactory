@@ -1087,9 +1087,10 @@ counts.
 ### The port
 
 A pipeline that wants a Brief declares the root port and wires it only to the nodes that should
-see the Project. The port is version 2 of the pipeline shape: a pipeline that declares it says
-`schema = "af.pipeline/2"`, and every other pipeline stays `af.pipeline/1`
-([schema](../schemas/pipeline-definition-v2.json)):
+see the Project. Without a recovery allowance, a pipeline with this port says
+`schema = "af.pipeline/2"` ([schema](../schemas/pipeline-definition-v2.json)); a slot recovery
+allowance uses `af.pipeline/3`. The separate [structured profile](task-execution/structured.md)
+uses `af.pipeline/4` and has no Brief input. Other Pipelines stay `af.pipeline/1`:
 
 ```toml
 schema = "af.pipeline/2"

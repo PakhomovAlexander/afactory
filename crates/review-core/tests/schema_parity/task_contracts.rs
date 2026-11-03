@@ -1521,3 +1521,58 @@ fn pi_validation_historical_claim_is_versioned_and_closed() {
         assert_invalid("pi-validation-claim-v1.json", &bad, field);
     }
 }
+
+#[test]
+fn structured_contract_and_validation_are_closed_versioned_data_only_shapes() {
+    use review_core::task::structured::*;
+    let id = format!("sha256:{}", "a".repeat(64));
+    let port = json!({"artifact_type":"custom/Note@1","schema":{"type":"object"}});
+    let contract = json!({"schema":"af.structured-contract/1","inputs":{"note":port},"outputs":{"capitalized":port},"require_container":false});
+    let typed: StructuredContractV1 = serde_json::from_value(contract.clone()).unwrap();
+    typed.validate().unwrap();
+    assert_valid(
+        "structured-contract-v1.json",
+        &serde_json::to_value(typed).unwrap(),
+    );
+    for bad_type in [
+        "af/SourceTree@1",
+        "af/StructuredValidation@1",
+        "review.kernel/Report@1",
+    ] {
+        let mut bad = contract.clone();
+        bad["inputs"]["note"]["artifact_type"] = json!(bad_type);
+        assert_invalid(
+            "structured-contract-v1.json",
+            &bad,
+            "reserved artifact type",
+        );
+        assert!(
+            serde_json::from_value::<StructuredContractV1>(bad)
+                .unwrap()
+                .validate()
+                .is_err()
+        );
+    }
+    let input = json!({"artifact_type":"custom/Note@1","cardinality":"one","artifact_ids":[id]});
+    let receipt = json!({"schema":"af.structured-validation/1","invocation":{"plan_id":id,"node":"root.accept","inputs":{"note":input}},"plan_id":id,"task_revision_id":id,"contract_id":id,"inputs":{"note":input},"outputs":{"capitalized":input},"conclusion":"structurally_validated"});
+    let typed: StructuredValidationV1 = serde_json::from_value(receipt.clone()).unwrap();
+    typed.validate().unwrap();
+    assert_valid(
+        "structured-validation-v1.json",
+        &serde_json::to_value(typed).unwrap(),
+    );
+    for (field, value) in [
+        ("schema", json!("af.structured-validation/0")),
+        ("conclusion", json!("verified")),
+        ("contract_id", json!("untrusted")),
+        ("acceptance", json!("satisfied")),
+    ] {
+        let mut bad = receipt.clone();
+        bad[field] = value;
+        assert_invalid("structured-validation-v1.json", &bad, field);
+        assert!(
+            serde_json::from_value::<StructuredValidationV1>(bad)
+                .map_or(true, |v| v.validate().is_err())
+        );
+    }
+}

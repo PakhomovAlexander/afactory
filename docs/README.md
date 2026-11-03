@@ -31,7 +31,8 @@ any af command ([design](design/tui.md)).
 
 ## Look up a contract
 
-- [Task runtime](task-execution.md) and [Task inputs](task-execution/task-inputs.md).
+- [Task runtime](task-execution.md), [Task inputs](task-execution/task-inputs.md), and
+  [package-defined structured Tasks](task-execution/structured.md).
 - [Experiment Tasks](task-execution/experiments.md), [self management](self-management.md),
   [storage and telemetry](telemetry.md).
 - [CLI help](../README.md) for exact commands and `schemas/` for JSON documents.
@@ -60,6 +61,7 @@ any af command ([design](design/tui.md)).
 | [`task-execution/task-inputs.md`](task-execution/task-inputs.md) | The Task file's `inputs` table: binding a root input port to a recorded Task's output instead of exporting it to a file, what resolution records, and how a binding is shown. |
 | [`task-execution/experiments.md`](task-execution/experiments.md) | How an experiment Task measures a declared command on the source and on a candidate, compares the two under a declared objective, and gates its evaluator on the result: the `[measures]` and `[objectives]` policy tables, the report line, failure reasons and comparison rules. |
 | [`task-execution/remote-checks.md`](task-execution/remote-checks.md) | How a declared check runs as a Remote Check: the policy's `remote` table, the pipeline's `remote_checks`, the operator's machine-local push target, the plan's `publish-gate` effect, the gate branches and draft pull request, the recorded evidence and reasons, cleanup, and what a workflow must allow. |
+| [`task-execution/structured.md`](task-execution/structured.md) | Package-defined typed JSON inputs and outputs, bounded capture, deterministic structural acceptance and provenance, normal Worker execution and native Scenario consumption. |
 | [`task-execution/report.md`](task-execution/report.md) | How a report Task's author reads an exact source Snapshot, how the kernel resolves the report's repository citations against that Snapshot's Manifest, and how an independent verifier on the same Snapshot accepts it: `report_sources`, `af/DocumentDraft@2`, the report policy, checks and output. |
 | [`self-management.md`](self-management.md) | What the installer does and prints, how releases are signed and verified, how af updates itself, its stable, rc and nightly channels and `af self channel`, how it checks for newer releases (when the check runs, the bounds on every network call, what the `af/self-check@4` cache records, how a stalled check is reported, and what `af self status` prints for a stable or a pre-release user), shell completions and man pages, source builds, and removing af with or without `--purge`. |
 | [`telemetry.md`](telemetry.md) | What Telemetry records about af's own work and what it never touches: the spans a run records, the four levels, how credentials are withheld, the machine-only `[telemetry]` table, a run's executions and retained history, `af telemetry status`, `reindex`, `runs`, `show`, `tail` and `gc`, telemetry in the Storage Budget, and the layout of the telemetry store. |

@@ -62,7 +62,7 @@ impl TaskStatePhaseV1 {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum TaskOutcomeV1 {
-    /// Every acceptance obligation is satisfied: the result can be delivered.
+    /// Every declared acceptance obligation is satisfied; the domain states the guarantee.
     Verified,
     /// The review or the evaluator ran to completion and asked for changes.
     ChangesRequested,
@@ -117,7 +117,7 @@ impl TaskOutcomeV1 {
     pub fn description(self) -> &'static str {
         match self {
             Self::Verified => {
-                "every acceptance obligation is satisfied; the result can be delivered"
+                "every declared acceptance obligation is satisfied; inspect the domain conclusion"
             }
             Self::ChangesRequested => {
                 "the review or the evaluator ran to completion and asked for changes"

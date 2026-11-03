@@ -153,7 +153,7 @@ pub struct WorkerContract {
 
 /// Contracts are local captured data. External schema resolution would add undeclared
 /// filesystem/network inputs while validating a supposedly immutable Worker package.
-fn schema_validator(schema: &Value) -> Result<jsonschema::Validator, String> {
+pub fn schema_validator(schema: &Value) -> Result<jsonschema::Validator, String> {
     fn local(value: &Value, depth: usize, nodes: &mut usize) -> bool {
         *nodes += 1;
         if depth > 64 || *nodes > 16384 {

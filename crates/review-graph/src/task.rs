@@ -232,16 +232,29 @@ pub struct CompiledTask {
 /// need: the clock starts at admission, and the first reservation, which must still find the
 /// whole reserve ahead of it, comes a moment after.
 pub const FIT_WALL_START_MS: u64 = 5_000;
-/// The label of a compiled graph whose slots declare no recovery allowance.
+/// The label of a non-structured graph whose slots declare no recovery allowance.
 pub const COMPILED_TASK_SCHEMA_V1: &str = "af.compiled-task/1";
 /// The label of a compiled graph with a slot that declares `recovery_attempts`, the shape an
 /// `af.pipeline/3` slot compiles to (ADR-0209).
 pub const COMPILED_TASK_SCHEMA_V2: &str = "af.compiled-task/2";
+/// The label of a graph containing installed structural acceptance.
+pub const COMPILED_TASK_SCHEMA_V3: &str = "af.compiled-task/3";
 
 impl CompiledTask {
-    /// The one label this graph's shape has: version 2 when a slot declares
-    /// `recovery_attempts`, version 1 otherwise.
+    /// Structural acceptance takes version 3. Other graphs take version 2 when a slot
+    /// declares `recovery_attempts`, version 1 otherwise.
     pub fn expected_schema(&self) -> &'static str {
+        if self.nodes.values().any(|n| {
+            matches!(
+                n.operator,
+                CompiledOperator::Primitive {
+                    operator: TaskOperatorV1::StructuredAccept {},
+                    ..
+                }
+            )
+        }) {
+            return COMPILED_TASK_SCHEMA_V3;
+        }
         if self
             .slots
             .values()
@@ -2383,6 +2396,7 @@ fn operator_name(operator: &TaskOperatorV1) -> Result<&'static str, String> {
         TaskOperatorV1::DocumentSeal {} => Ok("document-seal"),
         TaskOperatorV1::DocumentCheck {} => Ok("document-check"),
         TaskOperatorV1::DocumentAccept {} => Ok("document-accept"),
+        TaskOperatorV1::StructuredAccept {} => Ok("structured-accept"),
         TaskOperatorV1::ReportSeal {} => Ok("report-seal"),
         TaskOperatorV1::ReportCheck {} => Ok("report-check"),
         TaskOperatorV1::ReportAccept {} => Ok("report-accept"),
@@ -2690,8 +2704,8 @@ mod recovery_tests {
         graph
     }
 
-    /// A graph with a slot recovery allowance is `af.compiled-task/2`, every other graph
-    /// `af.compiled-task/1`, and a graph labelled otherwise than its shape is refused
+    /// Outside structured graphs, a slot recovery allowance takes `af.compiled-task/2`,
+    /// otherwise `af.compiled-task/1`; a graph labelled otherwise than its shape is refused
     /// (ADR-0209).
     #[test]
     fn a_slot_recovery_allowance_labels_the_graph_version_2_and_reaches_its_node() {

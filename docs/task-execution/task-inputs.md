@@ -7,6 +7,12 @@ instead of exporting that output to a file and capturing it again. The decision 
 input the selected Pipeline declares; this page is their Task-file reference and a map of where
 they are implemented.
 
+The [structured profile](structured.md) also captures ordinary external JSON through repeated
+`--input-json PORT=FILE` flags on `plan` and `start`. These files are relative to the Task file,
+bounded to 64 KiB, without symlink traversal, and validated against the captured package schema
+before Provider admission. Its required custom ports also accept the recorded-output bindings
+below, under the same schema checks.
+
 ## The shape
 
 One optional top-level table, `inputs`, maps a root input port name to a reference:
