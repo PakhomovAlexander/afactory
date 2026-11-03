@@ -194,19 +194,20 @@ version = "1.1.0"
 digest = "sha256:579f0f912f7bb51f86f0bd7115afb1593774e95aad48e65eec8670a1a537ff23"
 path = ".af/task-packages/kernel/review-code-remote"
 
-# The repository's default Task pipeline (owner's decision, 27 October 2026): one implementing
-# iteration by Opus 5.5, two bound reviewers (bugs: gpt-5.6-terra, correctness: gpt-6-sol), one
-# advisory reviewer for gate time and quality in the `uix` slot (gpt-6-astra medium) and an
-# evaluator (gpt-6-astra high); `default/verification` judges an existing candidate the same way.
+# The repository's default Task pipeline (owner's decision, 2 November 2026): one implementing
+# iteration by gpt-6.1-sol medium, two bound reviewers (bugs: gpt-6.1-terra high,
+# correctness: gpt-6-sol high), and an independent evaluator (gpt-6-astra medium).
+# `default/verification` judges an existing candidate read-only with the same three judges.
+# Neither default pipeline dispatches an advisory/uix reviewer.
 
 [packages."default/implementer"]
-version = "1.0.0"
-digest = "sha256:e7112e57284398f86883227607b30fb74a10b1e3c2d980ea64a840e64a6dda61"
+version = "1.1.0"
+digest = "sha256:1c3ca90e01840a4caacfa81fc67f5f52b48fff2c8bed17af36d8217da9be5d49"
 path = ".af/task-packages/default/implementer"
 
 [packages."default/bugs"]
-version = "1.1.1"
-digest = "sha256:1ffe8634f084c2490c94c643f5657a86d1057813490d5dc2b207ed2cf6159272"
+version = "1.2.0"
+digest = "sha256:d85f59e307515d462ae86799e28539f46b876a29c7072d582ae37efdf5880099"
 path = ".af/task-packages/default/bugs"
 
 [packages."default/correctness"]
@@ -220,23 +221,23 @@ digest = "sha256:15c52cad62bb7a2e6ef57cad27723ac3369e0065e896e8ee2ab64b7303c8078
 path = ".af/task-packages/default/advisor"
 
 [packages."default/evaluator"]
-version = "1.1.1"
-digest = "sha256:c6885658f294a258381bb2ea4db9cf69e75c3cfa18c97d959b5458c930789120"
+version = "1.2.0"
+digest = "sha256:83b18c19dc11a4df4464356d010c29ad88840b9a5a7e04f7c32e1447a7614966"
 path = ".af/task-packages/default/evaluator"
 
 [packages."default/implementation"]
-version = "1.0.0"
-digest = "sha256:56819b9abe80fe1b0409c032f90ba3654d07e0f816fd0a900d49ccf6305cb27c"
+version = "1.1.0"
+digest = "sha256:9b91c90a4bd3703ddb49b7957ca32fab95365fa1344d1ab273da6354b40b7f20"
 path = ".af/task-packages/default/implementation"
 
 [packages."default/verification"]
-version = "1.0.0"
-digest = "sha256:595fd743b703967b3b4b0c28cf15046d9f4d15b0fa2d0b3a376ad1fdd229fe1f"
+version = "1.1.0"
+digest = "sha256:3b765c3bf8f74242eb012c4c27719378355392ff45f9631f3ba4747e1b45669f"
 path = ".af/task-packages/default/verification"
 
 # The light default pipeline (owner's decision, 29 October 2026) for small, local issues: one
 # implementing iteration by Opus 5.5 at medium effort, the correctness reviewer and the
-# evaluator of the default pipeline with smaller Attempt allowances, no bugs or advisory reviewer.
+# Astra high evaluator with smaller Attempt allowances, no bugs or advisory reviewer.
 # The correctness prompt also owns the concrete functional defects no bugs reviewer looks for.
 
 [packages."default-light/implementer"]
@@ -288,7 +289,7 @@ distinct_models = true
 "kernel/experiment-evaluator" = "codex-main"
 "kernel/analyst" = "claude-main"
 "kernel/report-verifier" = "codex-main"
-"default/implementer" = "claude-main"
+"default/implementer" = "codex-main"
 "default/bugs" = "codex-main"
 "default/correctness" = "codex-main"
 "default/advisor" = "codex-main"

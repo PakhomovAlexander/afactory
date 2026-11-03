@@ -445,3 +445,32 @@ fn every_package_declaring_diff_subject_tells_its_worker_to_read_the_input() {
         "expected the kernel's and the default reviewer packages, found {declaring}"
     );
 }
+
+/// The default model revision must preserve the kernel judges' typed evidence, retention,
+/// acceptance and read-only contracts. Attempt allowances are independently configured.
+#[test]
+fn default_judges_preserve_kernel_evidence_and_acceptance_contracts() {
+    let root = workspace().join(".af/task-packages");
+    for role in ["bugs", "correctness", "evaluator"] {
+        let signature = |family: &str| {
+            let manifest: toml::Value = toml::from_str(
+                &std::fs::read_to_string(root.join(family).join(role).join("worker.toml")).unwrap(),
+            )
+            .unwrap();
+            let mut signature = manifest["signature"].as_table().unwrap().clone();
+            signature.remove("attempt");
+            signature
+        };
+        assert_eq!(signature("default"), signature("kernel"), "{role}");
+    }
+    let catalog: toml::Value = toml::from_str(
+        &std::fs::read_to_string(workspace().join(".af/task-catalog.toml")).unwrap(),
+    )
+    .unwrap();
+    assert_eq!(catalog["review"]["gate"].as_str(), Some("major"));
+    assert_eq!(catalog["review"]["clean_rounds"].as_integer(), Some(1));
+    assert_eq!(
+        catalog["review"]["reviewers"]["correctness"].as_str(),
+        Some("required")
+    );
+}

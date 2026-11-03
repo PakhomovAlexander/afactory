@@ -14,7 +14,7 @@ expanded tree, Claude/Codex workflow and the automation boundary.
 Beside the `kernel/*` and `warm/*` Pipelines, this repository's catalog pins its default Task
 pipeline, `default/implementation` and, for a `verification` Task, `default/verification`:
 one implementing iteration, two bound reviewers whose findings count (bugs, which the catalog's
-policy marks advisory, and correctness), one advisory reviewer for gate time and quality, and an
+policy marks advisory, and correctness), and an
 independent evaluator ([the default pipeline](tasks.md#the-default-pipeline),
 [ADR-0253](adr/0253-the-default-task-pipeline-lives-in-the-catalog.md)). For small, local
 changes it also pins the light default pipeline, `default-light/implementation` and

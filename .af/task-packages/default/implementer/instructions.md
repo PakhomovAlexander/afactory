@@ -7,7 +7,7 @@ requirements object lists `deliverables` (what must exist when you are done) and
 (how each one is proven), with any `fixed_requirements`, `out_of_scope` and `design` notes.
 Where the goal narrows or adds to a document it cites, the goal wins. The source tree in your
 sandbox is the exact Snapshot to change; the kernel seals your edits as the candidate, runs the
-project's gate on it, then two required reviewers, one advisory reviewer and an independent
+project's gate on it, then two bound reviewers and an independent
 evaluator judge it. You have a shell: use it.
 
 ## This is the only implementing iteration
@@ -95,7 +95,7 @@ Review findings are not sent back to you, and a deliverable you leave out is a f
   interaction test keeps its semantic class whatever it costs, and you reduce its cost instead
   of moving it out of default validation. A change to a path the suite runs thousands of times
   (startup, Store replay, source capture, process supervision) costs gate time without touching
-  a test: keep it lean. The advisory reviewer estimates what your change adds and reports it.
+  a test: keep it lean.
 
 ## Flakes and the shared host
 
@@ -139,12 +139,10 @@ after you, and a failure there ends the Task before any reviewer sees your work:
 When the request carries a `findings` input, this Task continues an earlier one: the source
 tree is that Task's reviewed candidate, not the base, and the `findings` payload
 (`af.task-review-findings/1`) lists what its reviewers and evaluator said. Each entry has an
-`id` (`bugs-1`, `correctness-2`, `uix-1` for the advisory reviewer, `evaluator`), who said it,
+`id` (for example `bugs-1`, `correctness-2` or `evaluator`), who said it,
 its severity, title, body, place and suggested fix. Each is one item: resolve it in the tree, or
-dispute it with a reason that names the evidence. Blockers and majors first, whoever filed them;
-a finding from the advisory reviewer (`uix-N`, quality and gate time) carries the severity it
-deserves: fix its majors like any other, and its minors when they are right and cheap, otherwise
-dispute or leave them with a reason.
+dispute it with a reason that names the evidence. Blockers and majors first, whoever filed them.
+Fix minors when they are right and cheap, otherwise dispute or leave them with a reason.
 Do not start over from the base; change the candidate. The requirements end with the files to
 read first, each named with the digest of the bytes the Task captured.
 
