@@ -206,7 +206,8 @@ fn requirements_retention_and_final_snapshot_are_proved_before_attempts() {
 }
 
 /// The shipped reviewed-verification topology publishes evaluator acceptance, while the
-/// canonical Review receipt is retained by its public source. Both judgments must count.
+/// canonical Review receipt is retained by its public source. Both judgments must count,
+/// including when a base-backed source delivers the evaluator's typed Diff Subject.
 #[test]
 fn verification_evaluator_pass_cannot_override_required_open_review_findings() {
     for (case, severity) in [
@@ -218,6 +219,13 @@ fn verification_evaluator_pass_cannot_override_required_open_review_findings() {
         let incomplete = case == "missing-review";
         let root = tempfile::tempdir().unwrap();
         let (repo, state) = task_cli::fixture_named(root.path(), "embedded-review");
+        let base = Command::new("git")
+            .current_dir(&repo)
+            .args(["rev-parse", "HEAD"])
+            .output()
+            .unwrap();
+        assert!(base.status.success());
+        let base = String::from_utf8(base.stdout).unwrap();
         let packages = repo.join(".af/task-packages/fixture");
         let pipeline = include_str!(
             "../../../../.af/task-packages/kernel/verification-reviewed/pipeline.toml"
@@ -248,6 +256,42 @@ fn verification_evaluator_pass_cannot_override_required_open_review_findings() {
             current.signature.contract.inputs["diff_subject"].clone(),
         );
         std::fs::write(path, toml::to_string(&evaluator).unwrap()).unwrap();
+        let path = packages.join("evaluator/input.schema.json");
+        let mut schema: Value = serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
+        let current_schema: Value = serde_json::from_str(include_str!(
+            "../../../../.af/task-packages/kernel/evaluator/input.schema.json"
+        ))
+        .unwrap();
+        schema["properties"]["diff_subject"] = current_schema["properties"]["diff_subject"].clone();
+        std::fs::write(path, serde_json::to_vec(&schema).unwrap()).unwrap();
+        let path = packages.join("evaluator/worker.py");
+        let script = std::fs::read_to_string(&path).unwrap();
+        let load = "request=json.load(sys.stdin)\n";
+        assert!(script.contains(load));
+        std::fs::write(
+            path,
+            script.replace(
+                load,
+                r#"request=json.load(sys.stdin)
+import hashlib,pathlib
+diff,=request['inputs']['diff_subject']
+source,=request['inputs']['source']
+assert diff['artifact_type']=='af/DiffSubject@1'
+assert diff['snapshot_id']==source['snapshot_id']
+subject=diff['payload']
+assert subject['schema']=='af/diff-subject@1'
+assert subject['snapshot_id']==source['snapshot_id']
+assert subject['base_snapshot_id']!=subject['snapshot_id']
+assert subject['base']=='../base'
+change=next(c for c in subject['changes'] if c['path']=='pagination.py')
+for side,path in [('before','../base/pagination.py'),('after','pagination.py')]:
+    content=b'review.kernel/content-id/v1\0'+pathlib.Path(path).read_bytes()
+    assert change[side]=='sha256:'+hashlib.sha256(content).hexdigest()
+assert change['before']!=change['after']
+"#,
+            ),
+        )
+        .unwrap();
         let kind = packages.join("verification-kind");
         std::fs::create_dir(&kind).unwrap();
         std::fs::write(kind.join("kind.toml"),
@@ -291,6 +335,7 @@ fn verification_evaluator_pass_cannot_override_required_open_review_findings() {
         let path = repo.join("ticket.json");
         let mut ticket: Value = serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
         ticket["kind"] = json!("verification");
+        ticket["base"] = json!({"commit": base.trim()});
         ticket.as_object_mut().unwrap().remove("verification");
         std::fs::write(path, serde_json::to_vec(&ticket).unwrap()).unwrap();
         commit(&repo);
